@@ -130,6 +130,14 @@ pub struct EffectDescriptor {
     /// `artifacts` list. A layer of an effect that does not declare it must list none.
     #[serde(default, skip_serializing_if = "is_default")]
     pub artifacts: bool,
+    /// Whether a stack holds at most one layer of this effect per target, because the module owns
+    /// exactly one layer's worth of state and could not say which of two holds it. The global layer
+    /// and each mask are distinct targets of a maskable effect. The host refuses to compile a stack
+    /// that holds two layers of such an effect for one target, with `ambiguous <module title>
+    /// layers`, and a module finds its one layer through [`super::StageContext::own_layer`].
+    /// Serialized only when it is true, like every other flag here.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub single: bool,
 }
 
 /// The closed set of parameter types v0 modules may declare. `f64` bounds rule out `Eq` here and
@@ -2126,6 +2134,7 @@ mod tests {
                 order: 0,
                 maskable: false,
                 artifacts: false,
+                single: false,
             }],
             actions: vec![action()],
             queries: Vec::new(),
@@ -2273,6 +2282,7 @@ mod tests {
                         order: 0,
                         maskable: false,
                         artifacts: false,
+                        single: false,
                     }],
                     ..descriptor()
                 },
@@ -3506,6 +3516,7 @@ mod tests {
                 order,
                 maskable: false,
                 artifacts: false,
+                single: false,
             };
             assert_eq!(serde_json::to_value(stage).unwrap(), json!(name));
             // `order` is always serialized, so `module.list` reports it for every effect.

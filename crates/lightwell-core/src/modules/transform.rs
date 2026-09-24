@@ -200,6 +200,7 @@ impl TransformModule {
                     order: 0,
                     maskable: false,
                     artifacts: false,
+                    single: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: TRANSFORM_ACTION.into(),
@@ -522,6 +523,8 @@ mod tests {
                     insertion_index_for: &insertion_index_for,
                     sample_before: &sample_before,
                     sensor_neutral: None,
+                    registry: &crate::ModuleRegistry::builtin(),
+                    target: None,
                 },
             )
             .expect("a transform always plans")
@@ -595,6 +598,7 @@ mod tests {
                 order: 0,
                 maskable: false,
                 artifacts: false,
+                single: false,
             }]
         );
         let action = descriptor

@@ -176,6 +176,7 @@ impl ShrinkModule {
             order: 0,
             maskable: false,
             artifacts: false,
+            single: false,
         };
         Self(ModuleDescriptor {
             id: "test.shrink".into(),

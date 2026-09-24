@@ -364,6 +364,55 @@ impl ModuleRegistry {
             .is_some_and(|(_, effect)| effect.maskable)
     }
 
+    /// Whether a stack holds at most one layer of this effect per target, as the effect's own
+    /// descriptor declares.
+    pub fn effect_single(&self, effect_id: &str) -> bool {
+        self.effect(effect_id)
+            .is_some_and(|(_, effect)| effect.single)
+    }
+
+    /// Whether `layer` is part of the stack the target `mask` sees: a layer of a maskable effect
+    /// only when it carries that same target, and every other layer always. `None` is the global
+    /// target. Planning filters a maskable module's stack by it, and [`Self::own_layer`] finds a
+    /// module's layer by it, so a capture, a plan and a query all read the layer of one target.
+    pub fn in_target(&self, layer: &Layer, mask: Option<&MaskId>) -> bool {
+        layer.mask.as_ref() == mask || !self.effect_maskable(&layer.effect_id)
+    }
+
+    /// The one layer of `effect_id` that belongs to `target`, with its index, or `None` when the
+    /// stack holds none: how every module that owns one layer finds it, through
+    /// [`super::StageContext::own_layer`], and how a preset captures one. A stack that holds two
+    /// such layers is refused with `ambiguous <module title> layers`, the refusal the whole-stack
+    /// compile makes for a `single` effect, rather than resolved by guessing; nothing is rewritten.
+    /// `O(layers)`; reads no pixels.
+    pub fn own_layer<'l>(
+        &self,
+        layers: &'l [Layer],
+        effect_id: &str,
+        target: Option<&MaskId>,
+    ) -> Result<Option<(usize, &'l Layer)>, Error> {
+        let mut found = None;
+        for (index, layer) in layers.iter().enumerate() {
+            if layer.effect_id != effect_id || !self.in_target(layer, target) {
+                continue;
+            }
+            if found.is_some() {
+                return Err(self.ambiguous(effect_id));
+            }
+            found = Some((index, layer));
+        }
+        Ok(found)
+    }
+
+    /// The refusal of a stack that holds two layers of one effect for one target, named by the
+    /// providing module's title (or the effect, when no provider declares it).
+    fn ambiguous(&self, effect_id: &str) -> Error {
+        let title = self
+            .effect(effect_id)
+            .map_or(effect_id, |(module, _)| module.descriptor().title.as_str());
+        validation(format!("ambiguous {title} layers"))
+    }
+
     /// Whether this action carries the host's optional `mask` target field.
     ///
     /// The field belongs to the actions of a maskable effect, and an action is declared by a module
@@ -791,13 +840,10 @@ impl ModuleRegistry {
             let module = self
                 .provider(&layer.effect_id)
                 .ok_or_else(|| self.unavailable_in(layers, &layer.effect_id))?;
-            if module.single_layer(&layer.effect_id)
+            if self.effect_single(&layer.effect_id)
                 && !single_effects.insert((layer.effect_id.as_str(), layer.mask.as_ref()))
             {
-                return Err(validation(format!(
-                    "ambiguous {} layers",
-                    module.descriptor().title
-                )));
+                return Err(self.ambiguous(&layer.effect_id));
             }
             let segment = segments.last_mut().expect("one segment always exists");
             let stage = Stage {
@@ -1064,6 +1110,7 @@ pub(crate) mod tests {
                     order: 0,
                     maskable: false,
                     artifacts: false,
+                    single: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: action.into(),
@@ -1162,6 +1209,7 @@ pub(crate) mod tests {
                     order: 0,
                     maskable: false,
                     artifacts: false,
+                    single: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: PATCH_ACTION.into(),
@@ -1320,6 +1368,7 @@ pub(crate) mod tests {
                     order,
                     maskable: false,
                     artifacts: false,
+                    single: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: action.into(),
@@ -1444,6 +1493,7 @@ pub(crate) mod tests {
                         stage: EffectStage::Color,
                         order: 0,
                         artifacts: false,
+                        single: false,
                         maskable: false,
                     }],
                     actions: vec![ActionDescriptor {
@@ -2144,6 +2194,7 @@ pub(crate) mod tests {
                 order: 0,
                 maskable: true,
                 artifacts: false,
+                single: false,
             }],
             actions: Vec::new(),
             queries: Vec::new(),
@@ -2223,9 +2274,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// `single_layer` is per target: the global layer and each mask are distinct targets, so one
-    /// effect may hold one layer in each and two layers with the *same* target are still the
-    /// ambiguity the host refuses without rewriting anything.
+    /// A declared `single` effect is one layer per target: the global layer and each mask are
+    /// distinct targets, so one effect may hold one layer in each and two layers with the *same*
+    /// target are still the ambiguity the host refuses without rewriting anything.
     #[test]
     fn one_layer_per_target_is_what_single_layer_means() {
         let registry = ModuleRegistry::builtin();
@@ -2258,6 +2309,70 @@ pub(crate) mod tests {
                 .expect("ambiguous layers");
             assert_eq!(error.kind, ErrorKind::Validation, "{case}");
             assert_eq!(error.detail, "ambiguous Basic layers", "{case}");
+        }
+    }
+
+    /// The one lookup of a module's own layer answers per target exactly as the compile refuses per
+    /// target: a masked layer of a maskable effect belongs only to its mask, a layer of an effect
+    /// that is not maskable belongs to every target, and two layers for one target are refused with
+    /// the compile's own words, whatever else the stack holds.
+    #[test]
+    fn a_modules_own_layer_is_found_for_its_target_only() {
+        let registry = ModuleRegistry::builtin();
+        let first = gradient_mask("Mask 1");
+        let second = gradient_mask("Mask 2");
+        let global = basic_layer();
+        let in_first = bound(basic_layer(), &first);
+        let crop = Layer::crop(CropPayload::NEUTRAL);
+        let stack = [
+            Layer::pixel(0, 0, [1, 2, 3]),
+            global.clone(),
+            in_first.clone(),
+            crop.clone(),
+        ];
+        let found = |target: Option<&MaskId>, effect: &str| {
+            registry
+                .own_layer(&stack, effect, target)
+                .unwrap()
+                .map(|(index, layer)| (index, layer.id.clone()))
+        };
+        assert_eq!(found(None, BASIC_EFFECT), Some((1, global.id.clone())));
+        assert_eq!(
+            found(Some(&first.id), BASIC_EFFECT),
+            Some((2, in_first.id.clone()))
+        );
+        assert_eq!(found(Some(&second.id), BASIC_EFFECT), None);
+        for target in [None, Some(&first.id)] {
+            assert_eq!(
+                found(target, CROP_EFFECT),
+                Some((3, crop.id.clone())),
+                "an effect that is not maskable belongs to every target"
+            );
+        }
+        let ambiguous = registry
+            .own_layer(&[global.clone(), basic_layer()], BASIC_EFFECT, None)
+            .expect_err("two global layers");
+        assert_eq!(ambiguous.kind, ErrorKind::Validation);
+        assert_eq!(ambiguous.detail, "ambiguous Basic layers");
+        assert!(
+            registry
+                .own_layer(&[global, in_first], BASIC_EFFECT, None)
+                .is_ok(),
+            "a global and a masked layer are two targets, not an ambiguity"
+        );
+        // Every built-in module that owns one layer declares it; the transform's orientation does
+        // not, because a fold leaves a neutral orientation stored after the crop beside the one ahead.
+        for effect in [
+            BASIC_EFFECT,
+            crate::MIXER_EFFECT,
+            crate::PRESENCE_EFFECT,
+            crate::VIGNETTE_EFFECT,
+            CROP_EFFECT,
+        ] {
+            assert!(registry.effect_single(effect), "{effect}");
+        }
+        for effect in [crate::PIXEL_EFFECT, ORIENTATION_EFFECT, crate::RAW_EFFECT] {
+            assert!(!registry.effect_single(effect), "{effect}");
         }
     }
 

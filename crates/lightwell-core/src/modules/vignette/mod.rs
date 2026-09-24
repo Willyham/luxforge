@@ -80,7 +80,7 @@ fn vignette_field(
 #[derive(Debug, Default)]
 pub struct Vignette;
 
-/// The Vignette module: [`Vignette`] as a field-patch module.
+/// The Vignette module: `Vignette` as a field-patch module.
 pub type VignetteModule = FieldPatchModule<Vignette>;
 
 impl FieldPatch for Vignette {
@@ -97,6 +97,7 @@ impl FieldPatch for Vignette {
                 order: 0,
                 maskable: false,
                 artifacts: false,
+                single: true,
             },
             set: ActionText {
                 id: SET_VIGNETTE,
@@ -242,6 +243,8 @@ mod tests {
                 insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: None,
+                registry: &crate::ModuleRegistry::builtin(),
+                target: None,
             },
         )
     }
@@ -377,7 +380,7 @@ mod tests {
         assert_eq!(vignette["collapsed"], json!(true));
         assert_eq!(
             vignette["effects"][0],
-            json!({"id": VIGNETTE_EFFECT, "format": EFFECT_FORMAT, "stage": "finish", "order": 0})
+            json!({"id": VIGNETTE_EFFECT, "format": EFFECT_FORMAT, "stage": "finish", "order": 0, "single": true})
         );
         assert!(registry.action(SET_VIGNETTE).is_some());
         assert!(registry.action(RESET_VIGNETTE).is_some());

@@ -61,7 +61,7 @@ impl ControlsModule {
             .collect();
         let descriptor = ModuleDescriptor::parse(&json!({
             "id":"lightwell.controls", "title":"Controls", "hint":"Developer control vocabulary",
-            "effects":[{"id":CONTROLS_EFFECT,"format":EFFECT_FORMAT,"stage":"color"}],
+            "effects":[{"id":CONTROLS_EFFECT,"format":EFFECT_FORMAT,"stage":"color","single":true}],
             "actions":[
                 {"id":SET_CONTROLS,"title":"Set controls","notes":"One field patch for every generated control","patch":true,"parameters":parameters},
                 {"id":RESET_CONTROLS,"title":"Reset controls","notes":"Clear all proof control values","parameters":[]}
@@ -131,10 +131,6 @@ impl ToolModule for ControlsModule {
         &self.descriptor
     }
 
-    fn single_layer(&self, effect_id: &str) -> bool {
-        effect_id == CONTROLS_EFFECT
-    }
-
     fn parse(
         &self,
         action_id: &str,
@@ -166,14 +162,7 @@ impl ToolModule for ControlsModule {
         if input.action_id == SET_CONTROLS && patch.len() != 1 {
             return Err(validation("set-controls requires exactly one field"));
         }
-        let mut existing = context
-            .layers
-            .iter()
-            .filter(|layer| layer.effect_id == CONTROLS_EFFECT);
-        let old = existing.next();
-        if existing.next().is_some() {
-            return Err(validation("multiple controls layers are ambiguous"));
-        }
+        let old = context.own_layer(CONTROLS_EFFECT)?.map(|(_, layer)| layer);
         let mut merged = match old {
             Some(layer) => self.payload(&layer.effect_id, layer.effect_format, &layer.payload)?,
             None => Map::new(),

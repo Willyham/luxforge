@@ -191,7 +191,7 @@ impl CapabilitiesProofModule {
             "id": PROOF_MODULE,
             "title": "Capabilities proof",
             "hint": "Settings, consent, a resource and a worker task",
-            "effects": [{"id": PROOF_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "artifacts": true}],
+            "effects": [{"id": PROOF_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "artifacts": true, "single": true}],
             "actions": [
                 {
                     "id": APPLY_PROOF_TINT,
@@ -367,10 +367,6 @@ impl ToolModule for CapabilitiesProofModule {
         &self.descriptor
     }
 
-    fn single_layer(&self, effect_id: &str) -> bool {
-        effect_id == PROOF_EFFECT
-    }
-
     fn parse(
         &self,
         action_id: &str,
@@ -398,14 +394,7 @@ impl ToolModule for CapabilitiesProofModule {
     /// tinted layer to the neutral payload with no artifact, which keeps the layer's identity and
     /// renders as nothing; it is a no-op when there is no layer or it is already neutral.
     fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        let mut layers = context
-            .layers
-            .iter()
-            .filter(|layer| layer.effect_id == PROOF_EFFECT);
-        let existing = layers.next();
-        if layers.next().is_some() {
-            return Err(validation("ambiguous proof tint layers"));
-        }
+        let existing = context.own_layer(PROOF_EFFECT)?.map(|(_, layer)| layer);
         match input.action_id.as_str() {
             APPLY_PROOF_TINT => {
                 let artifact = Self::artifact(&input.parameters)?;

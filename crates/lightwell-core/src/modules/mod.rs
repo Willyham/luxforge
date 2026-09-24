@@ -68,7 +68,7 @@ pub use transform::{ORIENTATION_EFFECT, TransformModule};
 pub use vignette::{VIGNETTE_EFFECT, VignetteModule};
 
 use crate::{
-    ArtifactId, Error, Layer, LayerId, artifacts::PreparedArtifact,
+    ArtifactId, Error, Layer, LayerId, MaskId, artifacts::PreparedArtifact,
     capabilities::context::ModuleContext,
 };
 use serde_json::{Map, Value};
@@ -209,18 +209,27 @@ pub struct StageContext<'a> {
     /// A bounded pre-WB sensor patch at upright content coordinates, only for RAW sources.
     #[allow(clippy::type_complexity)]
     pub sensor_neutral: Option<&'a dyn Fn(u32, u32) -> Result<[f32; 3], Error>>,
+    /// The providers, which answer [`StageContext::own_layer`].
+    pub registry: &'a ModuleRegistry,
+    /// The target this plan or query addresses: `None` for the global layer, or the mask the
+    /// request named.
+    pub target: Option<&'a MaskId>,
+}
+
+impl<'a> StageContext<'a> {
+    /// The one layer of `effect_id` that belongs to the target this plan or query addresses, with
+    /// its index: how a module that owns one layer finds it. It is
+    /// [`ModuleRegistry::own_layer`] over these layers and this target, so a masked layer of a
+    /// maskable effect belongs only to its own mask's target and a stack that holds two layers of
+    /// the effect for the target is refused, as the whole-stack compile refuses it for a declared
+    /// `single` effect. `O(layers)`; reads no pixels.
+    pub fn own_layer(&self, effect_id: &str) -> Result<Option<(usize, &'a Layer)>, Error> {
+        self.registry.own_layer(self.layers, effect_id, self.target)
+    }
 }
 
 pub trait ToolModule: Send + Sync {
     fn descriptor(&self) -> &ModuleDescriptor;
-    /// Whether a stack may hold at most one layer of this effect. The host refuses to compile a
-    /// stack that holds two of them, because a module that owns exactly one layer cannot say which
-    /// one an action or a payload belongs to; nothing is rewritten and the stack stays readable.
-    /// The default is `false`, so a module says so only when one layer is its contract.
-    fn single_layer(&self, effect_id: &str) -> bool {
-        let _ = effect_id;
-        false
-    }
     /// Normalize an already schema-checked request into its durable action identity and stored
     /// parameters.
     fn parse(&self, action_id: &str, parameters: &Map<String, Value>)

@@ -1152,6 +1152,8 @@ fn apply_commits_then_updates_in_place_and_reset_neutralises_the_same_layer() {
             insertion_index_for: &insertion_for,
             sample_before: &sample_before,
             sensor_neutral: None,
+            registry: &crate::ModuleRegistry::builtin(),
+            target: None,
         };
         module.plan(&input, &context).unwrap()
     };

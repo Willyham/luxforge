@@ -4,7 +4,7 @@ use super::{
     source::validate_source_recipe,
 };
 use crate::{
-    AssetId, EntryId, Error, ErrorKind, Layer, MaskId, ModuleRegistry, Mutation, Recipe,
+    AssetId, EntryId, Error, ErrorKind, MaskId, ModuleRegistry, Mutation, Recipe,
     mask::commands::{
         MaskChange, MaskCommand, MaskCommandResult, MaskListing, MaskOutcome, MaskTarget,
     },
@@ -145,7 +145,7 @@ impl EditorService {
         let source = self.verified_prepared(&state.asset)?;
         // Reading the pixel compiles the stack, so its artifacts are bound first.
         let recipe = self.bound(recipe)?;
-        self.with_stage_context(&source, &recipe, |context| {
+        self.with_stage_context(&source, &recipe, None, |context| {
             let stage = (context.stage_before)(request.layer)?;
             // The stroke's positions are normalized against the stage its mask is compiled against,
             // which is the stage this layer receives, so the pixel is that stage's own. A stroke that
@@ -201,7 +201,7 @@ impl EditorService {
         self.bind_artifacts(&mut entry.snapshot.recipe)?;
         let recipe = &entry.snapshot.recipe;
         let source = self.verified_prepared(asset)?;
-        self.with_stage_context(&source, recipe, |context| {
+        self.with_stage_context(&source, recipe, None, |context| {
             let stage = (context.stage_before)(layer)?;
             if x >= stage.width || y >= stage.height {
                 return Err(Error::new(
@@ -311,10 +311,10 @@ pub(super) fn resolve_mask_target<'a>(
 /// target are hidden, and everything else is exactly where it was.
 ///
 /// This is what makes a target a target without a single line of module code. A module finds its own
-/// layer by scanning the layers it is given — and refuses a stack that holds two of its own, which is
-/// the same refusal the host makes — so handing it the one target's layers is what lets
-/// `edit.set-basic {mask, exposure}` commit and update the masked layer while `edit.set-basic
-/// {exposure}` keeps editing the global one.
+/// layer through [`crate::StageContext::own_layer`], which answers for the context's target by the
+/// same rule, [`ModuleRegistry::in_target`], so `edit.set-basic {mask, exposure}` commits and updates
+/// the masked layer while `edit.set-basic {exposure}` keeps editing the global one; hiding the other
+/// targets' layers is what keeps their colour out of what the module samples.
 ///
 /// Every stage answer the context gives is unchanged by the hiding, because only a colour-, pixel-
 /// or spatial-stage effect may be maskable and none of those changes the stage's dimensions: the
@@ -340,21 +340,13 @@ pub(super) fn recipe_for_target<'a>(
         layers: recipe
             .layers
             .iter()
-            .filter(|layer| in_target(registry, layer, mask))
+            .filter(|layer| registry.in_target(layer, mask))
             .cloned()
             .collect(),
         masks: recipe.masks.clone(),
         strokes: recipe.strokes.clone(),
         artifacts: recipe.artifacts.clone(),
     })
-}
-
-/// Whether `layer` is part of the stack the target `mask` sees: a layer of a maskable effect only
-/// when it carries that same target, and every other layer always. `None` is the global target.
-/// [`recipe_for_target`] filters by it, and a preset's capture reads a module's layer by it, so a
-/// capture reads the one layer a preset step of the same action would plan against.
-pub(crate) fn in_target(registry: &ModuleRegistry, layer: &Layer, mask: Option<&MaskId>) -> bool {
-    layer.mask.as_ref() == mask || !registry.effect_maskable(&layer.effect_id)
 }
 
 #[cfg(test)]
@@ -586,7 +578,7 @@ mod tests {
         fn revision(service: &EditorService, asset: &AssetId) -> u64 {
             service.state(asset).unwrap().revision
         }
-        fn layers(service: &EditorService, asset: &AssetId) -> Vec<Layer> {
+        fn layers(service: &EditorService, asset: &AssetId) -> Vec<crate::Layer> {
             service
                 .state(asset)
                 .unwrap()

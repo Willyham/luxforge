@@ -171,6 +171,7 @@ impl CropModule {
                     order: CROP_ORDER,
                     maskable: false,
                     artifacts: false,
+                    single: true,
                 }],
                 actions: vec![
                     ActionDescriptor {
@@ -480,21 +481,6 @@ pub(crate) fn stored_payload(layer: &Layer) -> Result<CropPayload, Error> {
     payload(&layer.effect_id, layer.effect_format, &layer.payload)
 }
 
-/// The stack's one crop layer. Two of them would each claim their own input stage, so the module
-/// refuses to guess which one an action addresses.
-fn locate(layers: &[Layer]) -> Result<Option<(usize, &Layer)>, Error> {
-    let mut found = None;
-    for (index, layer) in layers.iter().enumerate() {
-        if layer.effect_id == CROP_EFFECT {
-            if found.is_some() {
-                return Err(validation("stack has more than one crop layer"));
-            }
-            found = Some((index, layer));
-        }
-    }
-    Ok(found)
-}
-
 /// Validate coverage on the input stage and choose between updating the existing crop layer,
 /// appending one and reporting a no-op. The coverage error is the one the caller sees.
 fn commit(
@@ -549,7 +535,9 @@ impl ToolModule for CropModule {
     }
 
     fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        let located = locate(context.layers)?;
+        // The stack's one crop layer. Two of them would each claim their own input stage, so the
+        // host refuses to guess which one an action addresses.
+        let located = context.own_layer(CROP_EFFECT)?;
         // A crop layer acts on the stage the layers before it produce, not on the final stage.
         let (stage, existing) = match located {
             Some((index, layer)) => (
@@ -724,6 +712,8 @@ mod tests {
                 insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: None,
+                registry: &crate::ModuleRegistry::builtin(),
+                target: None,
             },
         )
     }
@@ -1039,6 +1029,9 @@ mod tests {
 
     #[test]
     fn more_than_one_crop_layer_is_refused_rather_than_guessed() {
+        // The crop declares a single-layer effect, so the whole-stack compile refuses the same
+        // stack with the same words before any plan sees it.
+        assert!(crate::ModuleRegistry::builtin().effect_single(CROP_EFFECT));
         let layers = [
             crop_layer(CropPayload::NEUTRAL),
             crop_layer(CropPayload::NEUTRAL),
@@ -1052,7 +1045,7 @@ mod tests {
             let error = planned(action, parameters, &layers).expect_err(action);
             assert_eq!(error.kind, ErrorKind::Validation, "{action}");
             assert_eq!(
-                error.detail, "stack has more than one crop layer",
+                error.detail, "ambiguous Crop and straighten layers",
                 "{action}"
             );
         }

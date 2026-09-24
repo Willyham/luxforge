@@ -967,6 +967,7 @@ mod tests {
                 order: 0,
                 maskable: false,
                 artifacts: false,
+                single: false,
             }],
             ..lightwell_core::ModuleDescriptor::default()
         };

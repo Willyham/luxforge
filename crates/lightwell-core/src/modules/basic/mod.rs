@@ -34,9 +34,7 @@ mod white_balance;
 use super::{
     ActionDescriptor, CanvasInteraction, ColorOperation, Control, EffectDescriptor, EffectStage,
     ParameterDescriptor, ParameterKind, PointwiseColor, Processing, Stage, StageContext,
-    field_patch::{
-        ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values, own_layer,
-    },
+    field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
 use crate::{EFFECT_FORMAT, Error, ErrorKind};
 use colour::ColourAdjust;
@@ -145,7 +143,7 @@ const MAX_COORDINATE: i64 = 16383;
 #[derive(Debug, Default)]
 pub struct Basic;
 
-/// The Basic module: [`Basic`] as a field-patch module.
+/// The Basic module: `Basic` as a field-patch module.
 pub type BasicModule = FieldPatchModule<Basic>;
 
 impl FieldPatch for Basic {
@@ -163,6 +161,7 @@ impl FieldPatch for Basic {
                 order: 0,
                 maskable: true,
                 artifacts: false,
+                single: true,
             },
             set: ActionText {
                 id: SET_BASIC,
@@ -351,8 +350,8 @@ impl FieldPatch for Basic {
         };
         let (centre_x, centre_y) = (coordinate("x")?, coordinate("y")?);
 
-        let index = match own_layer(context.layers, BASIC_EFFECT, "Basic")? {
-            Some(index) => index,
+        let index = match context.own_layer(BASIC_EFFECT)? {
+            Some((index, _)) => index,
             // The stage this module's own layer would be committed at, by its declared stage and
             // order, so the picker reads the pixels the layer it creates will receive.
             None => (context.insertion_index_for)(BASIC_EFFECT),
@@ -435,6 +434,16 @@ mod tests {
     /// Plan one request the way the host does: generic parameter check, module parse, then plan
     /// against a stack whose stage questions are answered from constants.
     fn planned(action: &str, parameters: Value, layers: &[Layer]) -> Result<ActionPlan, Error> {
+        planned_for(action, parameters, layers, None)
+    }
+
+    /// [`planned`] for one target: the global layer, or a mask's.
+    fn planned_for(
+        action: &str,
+        parameters: Value,
+        layers: &[Layer],
+        target: Option<&crate::MaskId>,
+    ) -> Result<ActionPlan, Error> {
         let module = BasicModule::new();
         let declared = module
             .descriptor()
@@ -458,6 +467,8 @@ mod tests {
                 insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: None,
+                registry: &crate::ModuleRegistry::builtin(),
+                target,
             },
         )
     }
@@ -1028,6 +1039,31 @@ mod tests {
         assert!(module.parse("set-crop", &Map::new()).is_err());
     }
 
+    /// A set addresses the layer of its own target through the host's one lookup, even over a stack
+    /// that also holds the other target's layer: the global layer and each mask's are distinct.
+    #[test]
+    fn a_set_updates_the_layer_of_its_own_target() {
+        let mask = crate::MaskId::new();
+        let global = basic_layer(json!({"exposure": 1.0}));
+        let masked = Layer {
+            mask: Some(mask.clone()),
+            ..basic_layer(json!({"exposure": -1.0}))
+        };
+        let stack = [global.clone(), masked.clone()];
+        for (target, expected) in [(None, &global), (Some(&mask), &masked)] {
+            match planned_for(SET_BASIC, json!({"exposure": 0.5}), &stack, target).unwrap() {
+                ActionPlan::Update(update) => assert_eq!(update.id, expected.id, "{target:?}"),
+                other => panic!("expected an update for {target:?}, got {other:?}"),
+            }
+        }
+        // Another mask has no layer yet, so its first set commits one.
+        let other = crate::MaskId::new();
+        assert!(matches!(
+            planned_for(SET_BASIC, json!({"exposure": 0.5}), &stack, Some(&other)).unwrap(),
+            ActionPlan::Commit(_)
+        ));
+    }
+
     #[test]
     fn two_basic_layers_are_ambiguous_rather_than_silently_resolved() {
         let stack = [
@@ -1039,11 +1075,12 @@ mod tests {
             assert_eq!(error.kind, ErrorKind::Validation);
             assert_eq!(error.detail, "ambiguous Basic layers");
         }
+        let registry = crate::ModuleRegistry::builtin();
         assert!(
-            BasicModule::new().single_layer(BASIC_EFFECT),
+            registry.effect_single(BASIC_EFFECT),
             "the host refuses to compile the same stack"
         );
-        assert!(!BasicModule::new().single_layer(PIXEL_EFFECT));
+        assert!(!registry.effect_single(PIXEL_EFFECT));
     }
 
     #[test]
@@ -1478,6 +1515,8 @@ mod tests {
                 insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: None,
+                registry: &crate::ModuleRegistry::builtin(),
+                target: None,
             },
         )
     }
@@ -1735,6 +1774,8 @@ mod tests {
                     insertion_index_for: &insertion_index_for,
                     sample_before: &sample_before,
                     sensor_neutral: None,
+                    registry: &crate::ModuleRegistry::builtin(),
+                    target: None,
                 },
             )
             .expect_err("an undeclared query");
@@ -1816,6 +1857,8 @@ mod tests {
                     insertion_index_for: &insertion_index_for,
                     sample_before: &sample_before,
                     sensor_neutral: None,
+                    registry: &crate::ModuleRegistry::builtin(),
+                    target: None,
                 },
             )
             .expect_err("no queries");
@@ -1832,9 +1875,10 @@ mod tests {
         let basic = basic_layer(json!({"exposure": 1.0}));
         let stack = [pixel.clone(), basic.clone(), orientation.clone()];
         let locate = |layers: &[Layer]| {
-            crate::modules::field_patch::own_layer(layers, BASIC_EFFECT, "Basic")
+            crate::ModuleRegistry::builtin()
+                .own_layer(layers, BASIC_EFFECT, None)
                 .unwrap()
-                .map(|index| layers[index].id.clone())
+                .map(|(_, layer)| layer.id.clone())
         };
         assert_eq!(locate(&stack), Some(basic.id.clone()));
         assert_eq!(locate(&[pixel, orientation]), None);

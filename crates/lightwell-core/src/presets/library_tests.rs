@@ -1192,6 +1192,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
             order: 0,
             maskable: false,
             artifacts: false,
+            single: false,
         }],
         actions: vec![ActionDescriptor {
             id: "set-sketch".into(),

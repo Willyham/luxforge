@@ -14,7 +14,7 @@ use super::{
 use crate::{
     AssetId, EditorService, EntryId, Error, ErrorKind, MAX_PRESET_NAME, MAX_SETTINGS_ACTIONS,
     MAX_SETTINGS_FIELDS, ModuleRegistry, MutationOutcome, PresetId,
-    editor::{decode, encode, in_target, now_ms, write},
+    editor::{decode, encode, now_ms, write},
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -590,18 +590,22 @@ impl EditorService {
                     )));
                 }
             };
-            // A preset addresses the global layer, so capture reads the layers a preset step of
-            // this action plans against: the global target's, never a masked layer's.
-            let mut owned = layers.iter().filter(|layer| {
-                descriptor.effect(&layer.effect_id).is_some() && in_target(registry, layer, None)
-            });
-            let values = match (owned.next(), owned.next()) {
-                (None, _) => Map::new(),
-                (Some(layer), None) => {
-                    module.values(&layer.effect_id, layer.effect_format, &layer.payload)?
+            // A preset addresses the global layer, so capture reads the layer a preset step of this
+            // action plans against, through the one lookup planning uses: the global target's,
+            // never a masked layer's.
+            let mut owned = None;
+            for effect in &descriptor.effects {
+                if let Some((_, layer)) = registry.own_layer(layers, &effect.id, None)? {
+                    if owned.is_some() {
+                        return Err(validation(format!("ambiguous {} layers", descriptor.title)));
+                    }
+                    owned = Some(layer);
                 }
-                (Some(_), Some(_)) => {
-                    return Err(validation(format!("ambiguous {} layers", descriptor.title)));
+            }
+            let values = match owned {
+                None => Map::new(),
+                Some(layer) => {
+                    module.values(&layer.effect_id, layer.effect_format, &layer.payload)?
                 }
             };
             let mut captured = Map::new();

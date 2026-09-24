@@ -186,7 +186,7 @@ fn mixer_field(name: &'static str) -> Field {
 #[derive(Debug, Default)]
 pub struct Mixer;
 
-/// The colour mixer module: [`Mixer`] as a field-patch module.
+/// The colour mixer module: `Mixer` as a field-patch module.
 pub type MixerModule = FieldPatchModule<Mixer>;
 
 impl FieldPatch for Mixer {
@@ -203,6 +203,7 @@ impl FieldPatch for Mixer {
                 order: 10,
                 maskable: true,
                 artifacts: false,
+                single: true,
             },
             set: ActionText {
                 id: SET_MIXER,
@@ -314,6 +315,8 @@ mod tests {
                 insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: None,
+                registry: &crate::ModuleRegistry::builtin(),
+                target: None,
             },
         )
     }

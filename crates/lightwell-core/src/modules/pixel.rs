@@ -78,6 +78,7 @@ impl PixelModule {
                     order: 0,
                     maskable: false,
                     artifacts: false,
+                    single: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: SET_PIXEL.into(),

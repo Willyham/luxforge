@@ -147,6 +147,8 @@ impl EditorService {
                 sensor_neutral: neutral_sampler
                     .as_ref()
                     .map(|sample| sample as &dyn Fn(u32, u32) -> Result<[f32; 3], Error>),
+                registry: &registry,
+                target: None,
             };
             let recipe = match module.plan(&input, &context)? {
                 ActionPlan::NoOp => {
@@ -194,10 +196,10 @@ impl EditorService {
         mask: Option<&MaskId>,
     ) -> Result<ActionPlan, Error> {
         // The module plans against the stack of one target: the global layer and each mask are
-        // distinct targets, so a module that owns one layer still owns one per target and finds it by
-        // the same scan it has always made.
+        // distinct targets, so a module that owns one layer still owns one per target and finds it
+        // through the context's own-layer lookup for that target.
         let recipe = recipe_for_target(&self.registry, recipe, accepts_mask, mask);
-        self.with_stage_context(source, &recipe, |context| module.plan(input, context))
+        self.with_stage_context(source, &recipe, mask, |context| module.plan(input, context))
     }
 
     /// Build the questions a module may ask about one stack and hand them to `answer`.
@@ -210,6 +212,7 @@ impl EditorService {
         &self,
         source: &PreparedSource,
         recipe: &Recipe,
+        target: Option<&MaskId>,
         answer: impl FnOnce(&StageContext<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let registry = &self.registry;
@@ -319,6 +322,8 @@ impl EditorService {
             insertion_index_for: &insertion_index_for,
             sample_before: &sample_before,
             sensor_neutral: None,
+            registry,
+            target,
         };
         answer(&context)
     }
@@ -372,7 +377,7 @@ impl EditorService {
                 .any(|effect| effect.maskable),
             None,
         );
-        self.with_stage_context(&source, &recipe, |context| {
+        self.with_stage_context(&source, &recipe, None, |context| {
             module.query(query_id, &checked, context)
         })
     }
@@ -527,7 +532,9 @@ impl EditorService {
                     registry.action_accepts_mask(action_id),
                     None,
                 );
-                self.with_stage_context(source, &target, |context| module.plan(&input, context))?
+                self.with_stage_context(source, &target, None, |context| {
+                    module.plan(&input, context)
+                })?
             };
             if let Some(next) = self.apply_plan(&resolved, plan, None)? {
                 resolved = next;

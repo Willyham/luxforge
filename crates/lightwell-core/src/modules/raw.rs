@@ -284,6 +284,7 @@ impl RawModule {
                     order: 0,
                     maskable: false,
                     artifacts: false,
+                    single: false,
                 }],
                 actions: vec![
                     action(
@@ -640,6 +641,8 @@ mod tests {
             insertion_index_for: &insertion_index_for,
             sample_before: &sample_before,
             sensor_neutral: Some(&neutral),
+            registry: &crate::ModuleRegistry::builtin(),
+            target: None,
         };
         let input = module.parse(action, params.as_object().unwrap())?;
         match module.plan(&input, &context)? {

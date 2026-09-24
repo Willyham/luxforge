@@ -71,7 +71,7 @@ fn presence_field(name: &'static str, label: &str, notes: &str) -> Field {
 #[derive(Debug, Default)]
 pub struct Presence;
 
-/// The Presence module: [`Presence`] as a field-patch module.
+/// The Presence module: `Presence` as a field-patch module.
 pub type PresenceModule = FieldPatchModule<Presence>;
 
 impl FieldPatch for Presence {
@@ -88,6 +88,7 @@ impl FieldPatch for Presence {
                 order: 0,
                 maskable: true,
                 artifacts: false,
+                single: true,
             },
             set: ActionText {
                 id: SET_PRESENCE,
@@ -222,6 +223,8 @@ mod tests {
                 insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: None,
+                registry: &crate::ModuleRegistry::builtin(),
+                target: None,
             },
         )
     }

@@ -388,6 +388,8 @@ mod tests {
             insertion_index_for: &insertion_index_for,
             sample_before: &sample_before,
             sensor_neutral: None,
+            registry: &crate::ModuleRegistry::builtin(),
+            target: None,
         };
         let step = |action_id: &str, parameters: Value| ActionInput {
             action_id: action_id.into(),

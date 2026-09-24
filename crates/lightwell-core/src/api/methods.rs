@@ -2718,6 +2718,7 @@ mod tests {
                     order: 0,
                     maskable: false,
                     artifacts: false,
+                    single: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: "test-angle".into(),
@@ -2819,6 +2820,7 @@ mod tests {
                     order: 0,
                     maskable: false,
                     artifacts: false,
+                    single: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: MARK_ACTION.into(),

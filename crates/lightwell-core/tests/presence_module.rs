@@ -353,6 +353,9 @@ fn module_list_and_schema_list_describe_the_presence_module() {
             // *spatial* primitive is a later step, so a committed masked Presence layer is refused
             // by name until it lands rather than rendered as if it applied everywhere.
             "maskable": true,
+            // The module owns one layer per target, so a stack holding two for one target is
+            // refused rather than guessed at.
+            "single": true,
         }])
     );
     assert_eq!(

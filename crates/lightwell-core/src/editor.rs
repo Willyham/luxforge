@@ -40,7 +40,6 @@ mod test_support;
 
 pub(crate) use catalog::{decode, encode, now_ms, write};
 pub use masks::MASK_FIELD;
-pub(crate) use masks::in_target;
 pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
 pub(crate) use source::source_signature;

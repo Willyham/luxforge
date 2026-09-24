@@ -1431,6 +1431,7 @@ pub(crate) mod tests {
                     order: 0,
                     maskable: true,
                     artifacts: false,
+                    single: false,
                 }],
                 actions: Vec::new(),
                 queries: Vec::new(),

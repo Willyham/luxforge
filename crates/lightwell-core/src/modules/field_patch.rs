@@ -23,7 +23,7 @@ use super::{
     ParameterDescriptor, ParameterKind, Processing, RailDecoration, ResetAction, Stage,
     StageContext, ToolModule,
 };
-use crate::{Error, ErrorKind, Layer};
+use crate::{Error, ErrorKind};
 use serde_json::{Map, Number, Value};
 
 fn validation(detail: impl Into<String>) -> Error {
@@ -338,26 +338,6 @@ impl<M> std::fmt::Debug for FieldPatchModule<M> {
     }
 }
 
-/// The position of the one layer of `effect_id` in `layers`. Two of them would each claim to be the
-/// module's state, so a stack that holds two is refused with `ambiguous <title> layers` rather than
-/// resolved by guessing; nothing is rewritten.
-pub(crate) fn own_layer(
-    layers: &[Layer],
-    effect_id: &str,
-    title: &str,
-) -> Result<Option<usize>, Error> {
-    let mut found = None;
-    for (index, layer) in layers.iter().enumerate() {
-        if layer.effect_id == effect_id {
-            if found.is_some() {
-                return Err(validation(format!("ambiguous {title} layers")));
-            }
-            found = Some(index);
-        }
-    }
-    Ok(found)
-}
-
 impl<M: FieldPatch> FieldPatchModule<M> {
     fn values(&self, values: Vec<f64>) -> Values<'_> {
         Values {
@@ -451,12 +431,6 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         &self.descriptor
     }
 
-    /// At most one layer of the effect exists in a stack, so the host refuses to compile or plan
-    /// against a stack that holds two instead of guessing which one the parameters belong to.
-    fn single_layer(&self, effect_id: &str) -> bool {
-        effect_id == self.spec.effect.id
-    }
-
     fn parse(
         &self,
         action_id: &str,
@@ -484,8 +458,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
     /// places by the effect's declared stage and order.
     fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
         let spec = &self.spec;
-        let existing = own_layer(context.layers, &spec.effect.id, spec.title)?
-            .map(|index| &context.layers[index]);
+        let existing = context.own_layer(&spec.effect.id)?.map(|(_, layer)| layer);
         let current = match existing {
             Some(layer) => {
                 self.read(&layer.effect_id, layer.effect_format, &layer.payload)?
