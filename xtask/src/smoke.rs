@@ -476,12 +476,33 @@ pub static SCENARIOS: &[Scenario] = &[
     Scenario {
         name: mask_brush::SCENARIO,
         about: "Brush strokes painted, erased and deleted, a subtracting brush, and painting over the edge, at 100% and under a rotated crop",
-        launches: &[],
-        verify: |_, _| Ok(()),
-        source: Source::Fixtures(&["fixtures/generated/presence.jpg"]),
+        launches: &[
+            LaunchSpec {
+                name: "launch1",
+                script: "script1.json",
+                plan: mask_brush::plan1,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch2",
+                script: "script2.json",
+                plan: mask_brush::plan2,
+                catalog: Some("launch1"),
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch3",
+                script: "script3.json",
+                plan: mask_brush::plan3,
+                catalog: Some("launch1"),
+                ..APP
+            },
+        ],
+        verify: mask_brush::verify,
+        source: Source::Fixtures(&[mask_brush::FIXTURE]),
         window: Some(PANELLED),
-        note: None,
-        own: Some(|run, _, _| mask_brush::run(run)),
+        note: Some(mask_brush::NOTE),
+        own: None,
     },
     Scenario {
         name: mask_range::SCENARIO,
