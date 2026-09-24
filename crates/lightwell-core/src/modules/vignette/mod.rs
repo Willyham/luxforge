@@ -50,11 +50,6 @@ const FIELDS: [&str; 4] = [AMOUNT, MIDPOINT, ROUNDNESS, FEATHER];
 /// is only one group).
 const GROUP_LABEL: &str = "Vignette";
 
-/// The one ambiguity message, shared by planning and by the host's whole-stack compile check
-/// (which builds the same text from the module's own title).
-#[cfg(test)]
-pub(crate) const AMBIGUOUS: &str = "ambiguous Vignette layers";
-
 /// One Vignette field. Its default is its own — `midpoint` and `feather` default to 50, not 0 —
 /// and a history label names the module and the field, `Vignette amount -35`, because `Amount`
 /// alone says nothing in a history list shared with every other module. `amount` and `roundness`
@@ -465,17 +460,6 @@ mod tests {
             planned(RESET_VIGNETTE, json!({}), &[already_default]).expect("a plan"),
             ActionPlan::NoOp
         );
-    }
-
-    #[test]
-    fn two_vignette_layers_are_refused_as_ambiguous() {
-        let layers = [
-            vignette_layer(json!({"amount": 10.0})),
-            vignette_layer(json!({"amount": 20.0})),
-        ];
-        let error = planned(SET_VIGNETTE, json!({"amount": 30.0}), &layers).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Validation);
-        assert_eq!(error.detail, AMBIGUOUS);
     }
 
     // ------------------------------------------------------------------------------------------

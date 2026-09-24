@@ -234,21 +234,24 @@ over them, and on a photo-sized stack by the acceptance chapter's cropped-popula
 builds a Basic layer that clips the border and a crop that removes it and proves the counts are the
 interior population alone.
 
-Items 2, 3 and 4 are demonstrated, display-independently, by the Basic and histogram chapter of
-`cargo xtask editor-acceptance`, driven through the JSON method table against the independent f64
-reference: whole-raster agreement within the frozen one output code for exposure, the nine-field
-patch and the frozen unit order; `render.sample` byte-identical to the rendered raster and to an
-open draft's later commit; the draft lifecycle, the return-to-start no-op, retry deduplication,
-group and module resets keeping the layer identity, undo, redo, preview, restore and a catalog
-reopen all evaluating byte-identically; an unavailable Basic provider refusing to render the stack
-that names it while keeping the layer and module readable and reporting the analysis failed with no
-counts; two Basic layers and an unsupported payload format both refused without rewriting anything;
-`analysis.request/read` on current, historical and drafted targets equal to an independent
-reduction; mixed stacks against a stepwise quantize-then-bilinear reference, around a point
-replacement on both sides and under an orientation layer; and the two-client races — a draft
-conflicted by another client's commit, a refused commit, a field-preserving reapply committing one
-entry, a historical selection and its analysis staying attached to their entry, and one client's
-cancel leaving another's shared job intact. The original file's SHA-256 is unchanged throughout.
+Items 2, 3 and 4 are demonstrated, display-independently, by two chapters of `cargo xtask
+editor-acceptance`, both driven through the JSON method table. The Basic and histogram chapter
+checks against the independent f64 reference: whole-raster agreement within the frozen one output
+code for exposure, the nine-field patch and the frozen unit order; `render.sample` byte-identical to
+the rendered raster; `analysis.request/read` on current, historical and drafted targets equal to an
+independent reduction; mixed stacks against a stepwise quantize-then-bilinear reference, around a
+point replacement on both sides and under an orientation layer; a historical selection and its
+analysis staying attached to their entry through another client's commit; and one client's cancel
+leaving another's shared job intact. The [field-patch conformance
+chapter](../engineering/development.md#the-field-patch-conformance-chapter), which holds Basic to the
+same suite as every other field-patch module, checks the rest: an open draft's sample equal to its
+later commit, the draft lifecycle, the return-to-start no-op, retry deduplication, group and module
+resets keeping the layer identity, undo, redo, preview, restore and a catalog reopen all evaluating
+byte-identically, an unavailable Basic provider refusing to render the stack that names it while
+keeping the layer and module readable and reporting the analysis failed with no counts, two Basic
+layers and an unsupported payload format both refused without rewriting anything, and a draft
+conflicted by another client's commit, a refused commit and a field-preserving reapply committing
+one entry. The original file's SHA-256 is unchanged throughout.
 
 Item 5 is demonstrated natively on the owner's M4 by the rendered scenarios `basic`, `basic-panel`,
 `basic-crop`, `basic-restart`, `histogram`, `workspace`, `crop`, `crop-draft`, `unavailable`,

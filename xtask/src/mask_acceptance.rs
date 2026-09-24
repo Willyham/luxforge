@@ -12,9 +12,8 @@
 //! state live. This chapter is the other half of the same pillar — that every one of those gestures
 //! has a discoverable programmatic equivalent, that the equivalent produces the stacks, history,
 //! pixels and refusals the design states, and that the failure paths behave with masks in the recipe.
-use crate::basic_acceptance::{
-    as_str, as_u64, call, import, mutation, prepare_source, refused, registry_without,
-};
+use crate::basic_acceptance::{as_str, as_u64, call, import, mutation, prepare_source, refused};
+use crate::conformance::client::registry_without;
 use crate::*;
 use lightwell_core::{OwnerHandle, mask::commands as mask_commands};
 use std::{cell::RefCell, sync::Arc, time::Instant};
@@ -773,7 +772,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             .join()
             .map_err(|_| "The owner thread panicked")?;
         let (limited, limited_join) =
-            OwnerHandle::start_with(&catalog, Arc::new(registry_without("lightwell.presence")))?;
+            OwnerHandle::start_with(&catalog, Arc::new(registry_without("lightwell.presence")?))?;
         let limited_detail = (|| -> Result<Value> {
             let client = limited.register();
             prepare_source(&limited, client, &asset)?;

@@ -420,9 +420,18 @@ pub fn run(root: &Path, out: &Path) -> Result {
         let basic = basic_acceptance::run(root, out)?;
         let basic_ms = basic_started.elapsed().as_secs_f64() * 1000.0;
 
-        // The presence/mixer/vignette chapter runs as its own independent JSON client against its
-        // own catalogs in the same output directory, so the Basic chapter's and this journey's
-        // state are both untouched by it.
+        // The field-patch conformance suite: the same function the core's
+        // `field_patch_conformance` test runs, here in release, over every field-patch module the
+        // registry holds, each as its own independent JSON client against its own catalog in its
+        // own directory. What it returns is this chapter's evidence.
+        let conformance_started = Instant::now();
+        let conformance_out = out.join("field-patch-conformance");
+        fs::create_dir_all(&conformance_out)?;
+        let field_patch_conformance = conformance::run(&fixture, &conformance_out)?;
+        let conformance_ms = conformance_started.elapsed().as_secs_f64() * 1000.0;
+
+        // What Presence, the mixer and the vignette each do that no other module does, each against
+        // its own catalog in the same output directory.
         let pmv_started = Instant::now();
         let presence_mixer_vignette = presence_mixer_vignette_acceptance::run(root, out)?;
         let pmv_ms = pmv_started.elapsed().as_secs_f64() * 1000.0;
@@ -436,6 +445,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
 
         ensure(hash(&fixture)? == fixture_hash, "Original source changed")?;
         result["basic_and_histogram"] = basic;
+        result["field_patch_conformance"] = field_patch_conformance;
         result["presence_mixer_vignette"] = presence_mixer_vignette;
         result["masks"] = masks;
         result["status"] = json!("passed");
@@ -483,6 +493,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "catalog_reopen":reopen_ms,
             "current_render_full_stack":current_render_ms,
             "basic_and_histogram_chapter":basic_ms,
+            "field_patch_conformance":conformance_ms,
             "presence_mixer_vignette_chapter":pmv_ms,
             "masks_chapter":masks_ms,
             "total":total.elapsed().as_secs_f64()*1000.0,
@@ -499,7 +510,8 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "Catalog reopen retains revision, identities, snapshots, the crop layer and dimensions",
             "Module registry and descriptor discovery",
             "Basic and histogram: the whole chapter under basic_and_histogram, driven through the JSON method table",
-            "Presence, mixer and vignette: the whole chapter under presence_mixer_vignette, driven through the JSON method table (Presence itself recorded as pending)",
+            "Field-patch conformance: every field-patch module the registry holds (Basic, Presence, the colour mixer and the vignette) passes one suite under field_patch_conformance, driven through the JSON method table and both evaluation paths — discovery, neutral payloads compiling to nothing and sharing the source, one layer per target, drafts, no-ops, deduplication, resets keeping identity, history, sample equal to render through a straightened crop, an unavailable provider and reopen",
+            "Presence, mixer and vignette: each module's own placement under presence_mixer_vignette, driven through the JSON method table — Presence after the colour run and before the geometry tail in every touch order, the mixer after Basic in both touch orders with identical bytes, and the vignette last and recentred on the stage each crop update produces",
             "Masks: the whole chapter under masks, driven through the JSON method table as an independent client — every kind, every mode, inversion at both levels, amount, reorder, duplicate, delete, masked Basic/Presence/mixer, a live agent against an open gesture, Discard, Reapply, historical preview, Restore, undo, redo, a disabled maskable module, a missing and a changed original, and a reopen that returns the identities it wrote",
             "Source SHA-256 unchanged"
         ]);

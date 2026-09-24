@@ -3397,24 +3397,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn a_neutral_spatial_payload_opens_no_boundary_and_shares_the_source_buffer() {
-        let _guard = spatial_guard();
-        clear_estimates();
-        let registry = spatial_registry();
-        let source = gradient(32, 24);
-        let stack = recipe(vec![spatial_layer(&[])]);
-        let budget = SpatialBudget::default();
-        budget.reset_peak();
-        let raster = crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-        assert_eq!(raster.rgba, source.rgba, "the identity byte path");
-        assert!(
-            Arc::ptr_eq(&raster.rgba, &source.rgba),
-            "and the shared source allocation"
-        );
-        assert_eq!(budget.peak(), 0, "no tile ran");
-    }
-
     // -----------------------------------------------------------------------------------------
     // Measurement.
     // -----------------------------------------------------------------------------------------

@@ -1,7 +1,8 @@
 //! The Basic module's Tone controls (Contrast, Highlights, Shadows, Whites, Blacks) end to end:
-//! monotonicity through the whole production pipeline, identity and buffer sharing, sample/render
-//! agreement, the declared internal evaluation order against exposure, and format/field
-//! compatibility for a payload written before this task existed.
+//! monotonicity through the whole production pipeline, sample/render agreement, the declared
+//! internal evaluation order against exposure, and an exposure-only payload reopening unchanged.
+//! Neutral payloads sharing the source and stored-payload refusals are proved for every field-patch
+//! module by `field_patch_conformance.rs`.
 //!
 //! The frozen per-pixel numerical proof against `fixtures/basic/tone-cases.json` lives in
 //! `crates/lightwell-core/src/modules/basic/tone.rs`, next to the production unit it checks; this
@@ -11,15 +12,12 @@
 mod reference;
 
 use lightwell_core::{
-    BASIC_EFFECT, EFFECT_FORMAT, ErrorKind, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe,
-    SnapshotId, SourceImage, render,
+    BASIC_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId,
+    SourceImage, render,
 };
 use reference::tone::ToneParams;
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------------------------
 // Shared helpers (each Basic integration test file keeps its own copy; see basic_exposure.rs)
@@ -211,54 +209,6 @@ fn negative_contrast_renders_flatter_than_the_source_and_positive_contrast_steep
 }
 
 // ---------------------------------------------------------------------------------------------
-// Identity and buffer sharing
-// ---------------------------------------------------------------------------------------------
-
-/// A Basic layer whose Tone fields are all explicitly neutral (spelled out, or via the canonical
-/// empty payload, or alongside a neutral exposure) compiles to no processing at all: the rendered
-/// bytes are the source's own shared allocation, not a copy of it.
-#[test]
-fn identity_at_all_zero_tone_fields_keeps_the_shared_source_arc() {
-    let registry = ModuleRegistry::builtin();
-    let codes: Vec<[u8; 3]> = (0u8..=255).map(|code| [code, 255 - code, 128]).collect();
-    let source = source_of(16, 16, &codes);
-    let identity = render(&registry, &source, SnapshotId::new(), &recipe(Vec::new()))
-        .expect("the identity render");
-    for payload in [
-        json!({}),
-        json!({"contrast": 0.0, "highlights": 0.0, "shadows": 0.0, "whites": 0.0, "blacks": 0.0}),
-        json!({
-            "exposure": 0.0, "contrast": 0.0, "highlights": 0.0, "shadows": 0.0, "whites": 0.0,
-            "blacks": 0.0,
-        }),
-    ] {
-        let rendered = render(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &recipe(vec![basic_layer(payload.clone())]),
-        )
-        .expect("a neutral render");
-        assert_eq!(rendered.rgba, identity.rgba, "{payload} changed a byte");
-        assert!(
-            Arc::ptr_eq(&rendered.rgba, &source.rgba),
-            "{payload} did not share the source allocation"
-        );
-    }
-    // A non-neutral Tone layer does materialize a frame, which is what makes the sharing above a
-    // real property rather than a render that never happened.
-    let toned = render(
-        &registry,
-        &source,
-        SnapshotId::new(),
-        &recipe(vec![basic_layer(json!({"contrast": 50.0}))]),
-    )
-    .expect("a toned render");
-    assert!(!Arc::ptr_eq(&toned.rgba, &source.rgba));
-    assert_ne!(toned.rgba, identity.rgba);
-}
-
-// ---------------------------------------------------------------------------------------------
 // Sample and render agreement
 // ---------------------------------------------------------------------------------------------
 
@@ -408,43 +358,4 @@ fn an_exposure_only_payload_saved_before_this_change_reopens_with_identical_outp
     // A whole real asset renders unchanged too, not just a synthetic pixel row.
     let real = image::open(jpeg()).expect("the fixture decodes");
     assert!(real.width() > 0 && real.height() > 0);
-}
-
-// ---------------------------------------------------------------------------------------------
-// Format and field compatibility once Tone fields exist
-// ---------------------------------------------------------------------------------------------
-
-/// A stored payload naming Tone fields still refuses an unsupported format and an unknown field
-/// alongside a known one, without rewriting the stack.
-#[test]
-fn a_stored_payload_with_tone_fields_still_refuses_an_unsupported_format_or_unknown_field() {
-    let registry = ModuleRegistry::builtin();
-    let future = Layer {
-        effect_format: 2,
-        ..basic_layer(json!({"contrast": 20.0}))
-    };
-    let error = registry
-        .validate_layer(&future)
-        .expect_err("an unsupported format");
-    assert_eq!(error.kind, ErrorKind::Incompatible);
-    assert!(error.detail.contains("unsupported effect format 2"));
-
-    let unknown = registry
-        .validate_layer(&basic_layer(json!({"contrast": 20.0, "gamma": 1.0})))
-        .expect_err("an unknown field alongside a known one");
-    assert_eq!(unknown.kind, ErrorKind::Validation);
-    assert!(unknown.detail.contains("gamma"), "{}", unknown.detail);
-
-    let out_of_range = registry
-        .validate_layer(&basic_layer(json!({"contrast": 999.0})))
-        .expect_err("a Tone field outside its declared range");
-    assert_eq!(out_of_range.kind, ErrorKind::Validation);
-
-    // The stack is still fully readable even though nothing above rendered it.
-    let (module, _) = registry.effect(BASIC_EFFECT).expect("the Basic provider");
-    assert!(
-        module
-            .describe_layer(BASIC_EFFECT, EFFECT_FORMAT, &json!({"contrast": 20.0}))
-            .is_ok()
-    );
 }

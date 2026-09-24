@@ -26,7 +26,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
-| Exact current-editor journey, display-independent, including the Basic and histogram and the masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
+| Exact current-editor journey, display-independent, including the Basic and histogram, field-patch conformance, Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
 | Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other slider that drafts — a field-patch slider (presence, mixer, vignette, ...) or a RAW slider, whose action declares that one parameter, over a RAW `--source` — in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP and the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
@@ -301,18 +301,70 @@ in `xtask/src/basic_acceptance.rs` from the crop spec and the histogram contract
 `analysis::reduce`. Every result lands in `result.json` under `basic_and_histogram`, and any
 mismatch fails the command.
 
-The chapter covers discovery, `edit.set-basic` as a field patch checked whole-raster against the f64
-reference, the frozen unit order, `render.sample` against the rendered bytes, the draft lifecycle
-with `render.sample {draft_id}` agreeing with the later committed render, a return-to-start no-op,
-request deduplication, group and module resets keeping the layer identity, `analysis.request/read`
-on current, historical and drafted targets against an independent reduction, cropped-population
-semantics, mixed stacks (a straightened 10° crop against a stepwise quantize-then-bilinear
-reference, a point replacement before and after the Basic layer, and Basic under an orientation
-layer), the ambiguity and unsupported-format refusals, two-client draft conflict and reapply,
-analysis sharing and cancellation, an unavailable Basic provider, and a catalog reopen. The
-supersede and disconnect races are covered by
+The chapter covers what is Basic's and the histogram's own: the neutral picker's query and the
+analysis methods in `schema.list` and Basic's ten fields in their frozen order, `edit.set-basic`
+checked whole-raster against the f64 reference for one field and for the frozen unit order of all of
+them, `render.sample` against the rendered bytes, `analysis.request/read` on current, historical and
+drafted targets against an independent reduction, cropped-population semantics, mixed stacks (a
+straightened 10° crop against a stepwise quantize-then-bilinear reference, a point replacement
+before and after the Basic layer, and Basic under an orientation layer), a historical selection and
+its analysis staying attached through another client's commit, and analysis sharing and
+cancellation. The host behaviour Basic shares with every field-patch module is the
+[field-patch conformance chapter](#the-field-patch-conformance-chapter)'s. The supersede and
+disconnect races are covered by
 `lightwell_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest`
 and are referenced rather than duplicated.
+
+### The field-patch conformance chapter
+
+Basic, Presence, the colour mixer and the vignette are one declarative field-patch module each, and
+the host behaviour they share is proved once, for every module the built-in registry holds in that
+shape, by one suite in `crates/lightwell-core/tests/conformance/`. The suite finds the modules from
+their descriptors — one effect, one `patch` action whose parameters are all numbers with defaults,
+and the parameterless action the module reset names — and derives every payload it sends from the
+declared field table, so a new field-patch module is checked the day it is registered. It refuses to
+run when it no longer recognises one of the four built-in ones. The same function runs twice: as the
+core's `field_patch_conformance` integration test in the dev profile, and in release inside
+`editor-acceptance`, which records what it returns under `field_patch_conformance` in `result.json`.
+Each module runs against its own new catalog under the run's `field-patch-conformance` directory, and
+a failure names the module, the step and the property that broke.
+
+For each module the suite checks, in process: every neutral spelling of the payload (`{}`, every
+field at its default, each field alone at its default, zero defaults written as `-0`) compiles to no
+units, is reported neutral and `Neutral`, renders the source's own allocation and changes no byte on
+the linear path; each field moved alone and each whole payload has exactly the consequences of the
+module's own neutrality rule; a stored layer of an undeclared format, an unknown field, an
+out-of-range value and a non-object payload are refused by name without being rewritten; and two
+global layers of the effect are refused by rendering and sampling. Then, through the JSON method
+table as independent clients: discovery (`module.list` serves the registry's descriptor, and
+`schema.list` lists the patch's fields as optional in declared order, the reset with none, the mask
+target exactly when the effect is maskable, and every host method the journey uses); a neutral first
+set and a reset without a layer committing nothing; request refusals; `draft.begin`, `draft.set` and
+`draft.cancel` leaving no entry, revision, event or open draft; a gesture committing exactly one
+entry, labelled by the declared rule, storing the patch as sent and the canonical payload, and
+rendering what its draft previewed; return-to-start and repeated values as no-ops; a retried request
+deduplicated with no event and the same request id with other input a conflict; a whole patch
+updating the one layer in place; for a maskable effect, one layer per mask target beside the global
+one and two layers for one mask refused; group and module resets keeping the layer's identity; undo,
+redo, a read-only preview and restore each returning the stack of the entry they name; `render.sample`
+equal to the rendered raster, and `sample` equal to `render` on the byte path and on the RAW linear
+path over the same pixels, at the corners, edge midpoints, centre and a 4 × 3 stride, through the
+global and masked layers, an axis-aligned crop and a straightened, resampling crop; two clients (a
+conflicted draft, a refused commit, a reapply keeping both fields, a historical selection surviving
+another client's commit); the same catalog served with the module unavailable keeping every layer
+readable and refusing sampling, analysis and a new edit by name; and a reopen returning the same
+revision, entry, layer and mask identities, rows, pixels and analysis identity. The original's bytes
+are unchanged throughout.
+
+A module's own numerics against its frozen reference and its unique behaviour — Basic's neutral
+picker, Presence's halos and tiling, the vignette's recentring against its frozen reference — stay
+in that module's own tests under `crates/lightwell-core/tests/` and `src/modules/`, and Basic's
+numerics on the photo fixture in the Basic and histogram chapter. The placement of Presence, the
+mixer and the vignette is `editor-acceptance`'s Presence, mixer and vignette chapter
+(`xtask/src/presence_mixer_vignette_acceptance.rs`, under `presence_mixer_vignette` in
+`result.json`), driven the same way: Presence after the colour run and before the geometry tail in
+every touch order, the mixer after Basic in both touch orders with the same bytes, and the vignette
+last and recentred on the stage each crop update produces.
 
 ### The masking acceptance chapter
 

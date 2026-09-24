@@ -1,7 +1,8 @@
 //! The Basic module's Vibrance and Saturation parameters end to end: real layers, real rendering
 //! and sampling, the frozen internal order against the independent f64 reference composed the
-//! same way, history/label behaviour, format refusal and reopen compatibility with the
-//! exposure-only payloads TASK-003 shipped.
+//! same way, and reopen compatibility with the exposure-only payloads TASK-003 shipped. Neutral
+//! payloads sharing the source, history labels and values are proved for every field-patch module
+//! by `field_patch_conformance.rs`, and Basic's own label words in `modules::basic`'s unit tests.
 //!
 //! Numerical rule, from `docs/design/basic-colour.md`'s frozen tolerance: a rendered code must
 //! equal the f64 reference's code exactly, except where the reference's linear value sits within
@@ -17,7 +18,7 @@ use lightwell_core::{
 };
 use reference::{RefOp, code_threshold, evaluate_pixel, exposure, srgb_to_linear};
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, path::PathBuf};
 
 // ---------------------------------------------------------------------------------------------
 // Shared helpers, matching `basic_exposure.rs`'s patterns.
@@ -163,45 +164,6 @@ fn saturation_negative_100_renders_grayscale_through_a_real_layer_and_quantizer(
     }
 }
 
-/// A neutral colour-only patch (`vibrance: 0, saturation: 0` sent explicitly) is the canonical
-/// neutral payload and renders the source buffer itself, exactly like the empty object.
-#[test]
-fn a_neutral_colour_layer_shares_the_source_buffer() {
-    let registry = ModuleRegistry::builtin();
-    let pixels: Vec<[u8; 3]> = (0u8..=255).map(|code| [code, 255 - code, 128]).collect();
-    let source = source_of(16, 16, &pixels);
-    let identity = render(&registry, &source, SnapshotId::new(), &recipe(Vec::new()))
-        .expect("the identity render");
-    for payload in [
-        json!({}),
-        json!({"vibrance": 0.0, "saturation": 0.0}),
-        json!({"exposure": 0.0, "vibrance": -0.0, "saturation": -0.0}),
-    ] {
-        let rendered = render(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &recipe(vec![basic_layer(payload.clone())]),
-        )
-        .expect("a neutral render");
-        assert_eq!(rendered.rgba, identity.rgba, "{payload} changed a byte");
-        assert!(
-            Arc::ptr_eq(&rendered.rgba, &source.rgba),
-            "{payload} did not share the source allocation"
-        );
-    }
-    // A non-neutral colour layer does materialize a frame, so the sharing above is a real
-    // property, not a render that never happened.
-    let coloured = render(
-        &registry,
-        &source,
-        SnapshotId::new(),
-        &recipe(vec![basic_layer(json!({"vibrance": 30.0}))]),
-    )
-    .expect("a coloured render");
-    assert!(!Arc::ptr_eq(&coloured.rgba, &source.rgba));
-}
-
 /// Greys stay grey through a real Basic layer and the host's quantizer for a sweep of `v` and
 /// `s`, complementing the exhaustive f32-unit sweep in `modules::basic::colour::tests`.
 #[test]
@@ -316,7 +278,7 @@ fn an_out_of_gamut_positive_exposure_stays_finite_and_renders_with_vibrance_and_
 }
 
 // ---------------------------------------------------------------------------------------------
-// History, reopen and format compatibility
+// Reopen compatibility
 // ---------------------------------------------------------------------------------------------
 
 /// An exposure-only payload, saved before Vibrance and Saturation existed in a running process,
@@ -409,89 +371,4 @@ fn format_2_is_refused_for_a_payload_holding_colour_fields() {
         json!({"vibrance": 50.0, "saturation": 20.0}),
         "unchanged"
     );
-}
-
-/// History labels a single-field Colour edit by its value, a patch that returns both Colour
-/// fields to neutral as `Reset Colour`, and any other multi-field Colour patch as `Basic (n
-/// fields)`; `values` reports both new fields on the stored entry.
-#[test]
-fn labels_report_reset_colour_and_basic_n_fields_and_values_include_the_new_fields() {
-    let path = catalog("labels");
-    let mut service = EditorService::open(&path).expect("a catalog");
-    let asset = service.import(&jpeg()).expect("an import").asset.id;
-
-    let vibrance_only = service
-        .apply_action(
-            &asset,
-            mutation(0, "vibrance"),
-            "set-basic",
-            json!({"vibrance": 30.0}),
-        )
-        .expect("a vibrance-only set");
-    assert_eq!(
-        service
-            .entry(
-                &asset,
-                &vibrance_only.created_entry_id.clone().expect("an entry")
-            )
-            .expect("the entry")
-            .label,
-        "Vibrance +30"
-    );
-
-    let mixed = service
-        .apply_action(
-            &asset,
-            mutation(1, "mixed"),
-            "set-basic",
-            json!({"vibrance": 50.0, "saturation": 20.0}),
-        )
-        .expect("a mixed colour patch");
-    let mixed_entry = service
-        .entry(&asset, &mixed.created_entry_id.clone().expect("an entry"))
-        .expect("the entry");
-    assert_eq!(mixed_entry.label, "Basic (2 fields)");
-    let described = service.describe_entry(&asset, None).expect("a description");
-    let row = described
-        .layers
-        .iter()
-        .find(|layer| layer.effect == BASIC_EFFECT)
-        .expect("the Basic row");
-    assert_eq!(
-        row.values,
-        json!({
-            "temperature": 0.0,
-            "tint": 0.0,
-            "exposure": 0.0,
-            "contrast": 0.0,
-            "highlights": 0.0,
-            "shadows": 0.0,
-            "whites": 0.0,
-            "blacks": 0.0,
-            "vibrance": 50.0,
-            "saturation": 20.0,
-        })
-        .as_object()
-        .cloned()
-        .unwrap()
-    );
-
-    let colour_reset = service
-        .apply_action(
-            &asset,
-            mutation(2, "colour-reset"),
-            "set-basic",
-            json!({"vibrance": 0.0, "saturation": 0.0}),
-        )
-        .expect("the Colour group reset");
-    assert_eq!(
-        service
-            .entry(&asset, &colour_reset.created_entry_id.expect("an entry"))
-            .expect("the entry")
-            .label,
-        "Reset Colour"
-    );
-
-    drop(service);
-    fs::remove_file(path).expect("the catalog is removed");
 }

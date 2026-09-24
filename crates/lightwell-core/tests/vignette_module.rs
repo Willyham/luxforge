@@ -1,22 +1,26 @@
 //! The `lightwell.vignette` module (TASK-008) end to end: real layers through the real host
-//! pipeline (`ModuleRegistry`, `render`, `sample`, `render_linear`, `sample_linear`,
-//! `EditorService`), matching the pattern `basic_tone.rs` and `basic_colour.rs` set for Basic.
+//! pipeline (`ModuleRegistry`, `render`, `EditorService`), matching the pattern `basic_tone.rs` and
+//! `basic_colour.rs` set for Basic.
 //!
 //! Descriptor shape, plan semantics (commit at the end, update in place, no-op, reset, the
-//! missing-key-means-default rule), labels, `values`, `validate_payload` refusals, two-layer
-//! ambiguity, `describe_layer` and `compile`'s neutral/non-neutral split are exercised in-crate,
-//! next to the module, in `crates/lightwell-core/src/modules/vignette/mod.rs` and `unit.rs`. This
-//! file covers what only the real host pipeline can prove: placement and recentring through
-//! `EditorService`, production against every frozen oracle fixture through `render`, mirror/flip
-//! symmetry on rendered bytes, identity/sharing, sample/render agreement through a crop resample,
-//! and RAW linear-path agreement.
+//! missing-key-means-default rule), labels, `values`, `validate_payload` refusals, `describe_layer`
+//! and `compile`'s neutral/non-neutral split are exercised in-crate, next to the module, in
+//! `crates/lightwell-core/src/modules/vignette/mod.rs` and `unit.rs`. What the vignette shares with
+//! every field-patch module — neutral payloads sharing the source, one layer per target, sample
+//! equal to render on both paths and through a resampling crop, drafts, history, an unavailable
+//! provider and reopen — is proved once by `field_patch_conformance.rs`, and the vignette recentring
+//! after a crop update through the JSON method table by the Presence, mixer and vignette chapter of
+//! `editor-acceptance`. This file covers the rest of what is the vignette's own: placement at the
+//! end of the stack through rotations, mirrors and a crop, recentring on the stage a crop produces
+//! against the frozen reference, production against every frozen oracle fixture through `render`,
+//! and mirror/flip symmetry on rendered bytes.
 
 mod reference;
 
 use lightwell_core::{
-    AssetId, CropPayload, EFFECT_FORMAT, EditorService, Layer, LayerId, LinearImage,
-    LinearSettings, ModuleRegistry, Mutation, Orientation, RECIPE_FORMAT, Recipe, SnapshotId,
-    SourceImage, Transform, VIGNETTE_EFFECT, render, render_linear, sample, sample_linear, schemas,
+    AssetId, CropPayload, EFFECT_FORMAT, EditorService, Layer, LayerId, ModuleRegistry, Mutation,
+    Orientation, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, Transform, VIGNETTE_EFFECT,
+    render,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -94,38 +98,6 @@ fn layers_of(service: &EditorService, asset: &AssetId) -> Vec<Layer> {
         .snapshot
         .recipe
         .layers
-}
-
-// -------------------------------------------------------------------------------------------
-// Descriptor / module.list / schema.list, through the real built-in registry.
-// -------------------------------------------------------------------------------------------
-
-/// The vignette module is registered last, declares a finish-stage effect with one collapsed
-/// group of four sliders and both actions, and both actions surface as `edit.*` methods through
-/// `schema.list`.
-#[test]
-fn the_builtin_registry_reports_vignette_last_with_the_finish_effect_and_both_actions() {
-    let registry = ModuleRegistry::builtin();
-    let descriptors = registry.descriptors();
-    let last = descriptors.last().expect("at least one module");
-    assert_eq!(last.id, "lightwell.vignette");
-    assert!(last.collapsed);
-    assert_eq!(last.effects.len(), 1);
-    assert_eq!(last.effects[0].id, VIGNETTE_EFFECT);
-    assert_eq!(last.effects[0].stage, lightwell_core::EffectStage::Finish);
-
-    let schema = schemas(&registry);
-    let methods = schema["methods"].as_object().expect("a methods object");
-    assert!(
-        methods.contains_key("edit.set-vignette"),
-        "{:?}",
-        methods.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        methods.contains_key("edit.reset-vignette"),
-        "{:?}",
-        methods.keys().collect::<Vec<_>>()
-    );
 }
 
 // -------------------------------------------------------------------------------------------
@@ -458,167 +430,4 @@ fn production_is_exactly_mirror_and_flip_symmetric() {
     )
     .expect("a render after flip");
     assert_eq!(raster_pixels(&after_flip), flip_vertically(&plain));
-}
-
-// -------------------------------------------------------------------------------------------
-// Identity and buffer sharing.
-// -------------------------------------------------------------------------------------------
-
-/// A vignette layer whose amount is 0 -- however `midpoint`, `roundness` and `feather` read --
-/// compiles to no processing at all: the rendered bytes are the source's own shared allocation.
-#[test]
-fn a_zero_amount_layer_keeps_the_shared_source_allocation_whatever_the_other_fields_hold() {
-    let registry = ModuleRegistry::builtin();
-    let codes: Vec<[u8; 3]> = (0u8..=255).map(|code| [code, 255 - code, 128]).collect();
-    let source = source_of(16, 16, &codes);
-    let identity = render(&registry, &source, SnapshotId::new(), &recipe(Vec::new()))
-        .expect("the identity render");
-    for payload in [
-        json!({}),
-        json!({"midpoint": 90.0, "roundness": -80.0, "feather": 5.0}),
-        json!({"amount": 0.0, "midpoint": 10.0}),
-    ] {
-        let rendered = render(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &recipe(vec![vignette_layer(payload.clone())]),
-        )
-        .unwrap_or_else(|error| panic!("{payload}: {error:?}"));
-        assert_eq!(rendered.rgba, identity.rgba, "{payload} changed a byte");
-        assert!(
-            std::sync::Arc::ptr_eq(&rendered.rgba, &source.rgba),
-            "{payload} did not share the source allocation"
-        );
-    }
-    // A non-neutral amount does materialize a frame, which is what makes the sharing above a
-    // real property rather than a render that never happened.
-    let darkened = render(
-        &registry,
-        &source,
-        SnapshotId::new(),
-        &recipe(vec![vignette_layer(json!({"amount": -60.0}))]),
-    )
-    .expect("a darkened render");
-    assert!(!std::sync::Arc::ptr_eq(&darkened.rgba, &source.rgba));
-    assert_ne!(darkened.rgba, identity.rgba);
-}
-
-// -------------------------------------------------------------------------------------------
-// Sample / render agreement through a non-zero-angle crop resample.
-// -------------------------------------------------------------------------------------------
-
-/// `render.sample` equals the rendered raster at every pixel of a stack whose crop resamples
-/// (non-zero angle, so the vignette's finish-stage layer runs after a `Resample` segment, not
-/// only an `ExactGeometry` one) before the vignette layer.
-#[test]
-fn sample_equals_the_rendered_raster_through_a_vignette_after_a_resampling_crop() {
-    let registry = ModuleRegistry::builtin();
-    let (width, height) = (12u32, 10u32);
-    let pixels: Vec<[u8; 3]> = (0..width * height)
-        .map(|i| {
-            [
-                ((i * 17) % 256) as u8,
-                ((i * 61) % 256) as u8,
-                ((i * 199) % 256) as u8,
-            ]
-        })
-        .collect();
-    let source = source_of(width, height, &pixels);
-    let stack = recipe(vec![
-        Layer::crop(CropPayload {
-            angle: 12.0,
-            x: 0.2,
-            y: 0.2,
-            width: 0.5,
-            height: 0.5,
-        }),
-        vignette_layer(
-            json!({"amount": 45.0, "midpoint": 30.0, "roundness": -20.0, "feather": 70.0}),
-        ),
-    ]);
-    let rendered = render(&registry, &source, SnapshotId::new(), &stack).expect("a render");
-    assert!(rendered.width > 0 && rendered.height > 0);
-    for y in 0..rendered.height {
-        for x in 0..rendered.width {
-            let sampled = sample(&registry, &source, &stack, x, y)
-                .unwrap_or_else(|error| panic!("({x},{y}): {error:?}"))
-                .rgba
-                .expect("an in-bounds sample");
-            assert_eq!(
-                sampled,
-                rendered.pixel(x, y).expect("an in-bounds pixel"),
-                "({x},{y}) disagreed"
-            );
-        }
-    }
-}
-
-// -------------------------------------------------------------------------------------------
-// The RAW linear path: render_linear and sample_linear agree through a vignette after a crop.
-// -------------------------------------------------------------------------------------------
-
-fn linear_source(width: u32, height: u32, pixels: &[[f32; 3]]) -> LinearImage {
-    assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
-    let mut planes = vec![0.0f32; pixels.len() * 3];
-    let (r, rest) = planes.split_at_mut(pixels.len());
-    let (g, b) = rest.split_at_mut(pixels.len());
-    for (i, pixel) in pixels.iter().enumerate() {
-        r[i] = pixel[0];
-        g[i] = pixel[1];
-        b[i] = pixel[2];
-    }
-    LinearImage::with_fingerprint(width, height, planes, "sha256:vignette-linear-fixture")
-        .expect("a valid linear source")
-}
-
-/// The linear (RAW) path hands the vignette's positional unit the same output-stage coordinates
-/// the 8-bit path does: `sample_linear` equals `render_linear` pixel for pixel through a crop
-/// resample followed by a vignette layer.
-#[test]
-fn render_linear_and_sample_linear_agree_through_a_vignette_after_a_crop() {
-    let registry = ModuleRegistry::builtin();
-    let (width, height) = (8u32, 6u32);
-    let pixels: Vec<[f32; 3]> = (0..width * height)
-        .map(|i| {
-            let t = i as f32 / (width * height) as f32;
-            [t, 0.4, 1.0 - t]
-        })
-        .collect();
-    let source = linear_source(width, height, &pixels);
-    let stack = recipe(vec![
-        Layer::crop(CropPayload {
-            angle: 0.0,
-            x: 0.1,
-            y: 0.1,
-            width: 0.6,
-            height: 0.6,
-        }),
-        vignette_layer(
-            json!({"amount": -40.0, "midpoint": 45.0, "roundness": 10.0, "feather": 55.0}),
-        ),
-    ]);
-    let raster = render_linear(
-        &registry,
-        &source,
-        SnapshotId::new(),
-        &stack,
-        LinearSettings::default(),
-    )
-    .expect("a linear render");
-    assert!(raster.width > 0 && raster.height > 0);
-    for y in 0..raster.height {
-        for x in 0..raster.width {
-            let sampled =
-                sample_linear(&registry, &source, &stack, LinearSettings::default(), x, y)
-                    .unwrap_or_else(|error| panic!("({x},{y}): {error:?}"))
-                    .rgba
-                    .expect("an in-bounds sample");
-            assert_eq!(
-                sampled,
-                raster.pixel(x, y).expect("an in-bounds pixel"),
-                "({x},{y}) disagreed"
-            );
-        }
-    }
 }

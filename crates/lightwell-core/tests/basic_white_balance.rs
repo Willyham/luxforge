@@ -12,8 +12,8 @@
 mod reference;
 
 use lightwell_core::{
-    ApiRequest, BASIC_EFFECT, EFFECT_FORMAT, EditorService, Layer, LayerId, ModuleRegistry,
-    Mutation, OwnerHandle, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render, sample,
+    ApiRequest, BASIC_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, OwnerHandle,
+    RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render, sample,
 };
 use reference::white_balance::{self, RejectReason};
 use reference::{code_threshold, srgb_to_linear};
@@ -66,14 +66,6 @@ fn recipe(layers: Vec<Layer>) -> Recipe {
         layers,
         masks: Vec::new(),
         ..Recipe::default()
-    }
-}
-
-fn mutation(revision: u64, request: &str) -> Mutation {
-    Mutation {
-        expected_revision: revision,
-        request_id: request.into(),
-        actor: "basic-white-balance-test".into(),
     }
 }
 
@@ -236,52 +228,6 @@ fn a_sample_equals_the_rendered_byte_for_every_code() {
     }
 }
 
-/// `0/0` keeps the identity byte path: a Basic layer holding only neutral white balance renders the
-/// source's own allocation, not a copy of it.
-#[test]
-fn a_neutral_white_balance_renders_the_source_buffer_itself() {
-    let registry = ModuleRegistry::builtin();
-    let codes: Vec<[u8; 3]> = (0u8..=255).map(|code| [code, 255 - code, 64]).collect();
-    let source = source_of(16, 16, &codes);
-    let identity =
-        render(&registry, &source, SnapshotId::new(), &recipe(Vec::new())).expect("the identity");
-    for payload in [
-        json!({"temperature": 0.0, "tint": 0.0}),
-        json!({"temperature": 0.0}),
-        json!({"tint": -0.0}),
-        json!({"temperature": -0.0, "tint": 0.0, "exposure": 0.0}),
-    ] {
-        let rendered = render(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &recipe(vec![basic_layer(payload.clone())]),
-        )
-        .expect("a neutral render");
-        assert_eq!(rendered.rgba, identity.rgba, "{payload} changed a byte");
-        assert!(
-            std::sync::Arc::ptr_eq(&rendered.rgba, &source.rgba),
-            "{payload} did not share the source allocation"
-        );
-    }
-    // One axis alone is enough to leave the identity path, which is what makes the sharing above a
-    // real property rather than a render that never happened.
-    for payload in [json!({"temperature": 1.0}), json!({"tint": -1.0})] {
-        let rendered = render(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &recipe(vec![basic_layer(payload.clone())]),
-        )
-        .expect("a corrected render");
-        assert!(
-            !std::sync::Arc::ptr_eq(&rendered.rgba, &source.rgba),
-            "{payload}"
-        );
-        assert_ne!(rendered.rgba, identity.rgba, "{payload}");
-    }
-}
-
 /// The internal order inside the one layer is white balance first, then exposure.
 ///
 /// The order is proved by the compiled unit list, which is what the host evaluates. It cannot also
@@ -347,24 +293,6 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
             );
         }
     }
-}
-
-/// Two Basic layers are ambiguous for rendering, sampling and planning alike; nothing is rewritten.
-#[test]
-fn two_basic_layers_are_ambiguous_for_every_path() {
-    let registry = ModuleRegistry::builtin();
-    let source = source_of(2, 1, &[[10, 20, 30], [40, 50, 60]]);
-    let stack = recipe(vec![
-        basic_layer(json!({"temperature": 10.0})),
-        basic_layer(json!({"tint": -10.0})),
-    ]);
-    for error in [
-        render(&registry, &source, SnapshotId::new(), &stack).unwrap_err(),
-        sample(&registry, &source, &stack, 0, 0).unwrap_err(),
-    ] {
-        assert_eq!(error.detail, "ambiguous Basic layers");
-    }
-    assert_eq!(stack.layers.len(), 2, "the refused stack is kept");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1012,99 +940,4 @@ fn a_query_is_read_only_and_two_clients_agree() {
     join.join().expect("the owner loop ends");
     let _ = fs::remove_file(catalog);
     let _ = fs::remove_file(image.path);
-}
-
-/// The stored values, the history labels and the group reset a white-balance edit produces.
-#[test]
-fn values_and_labels_name_the_white_balance_fields_and_their_group() {
-    let catalog = temp("labels.sqlite");
-    let mut service = EditorService::open(&catalog).expect("a catalog");
-    let asset = service
-        .import(&fixture("s0/orientation-1.jpg"))
-        .expect("an import")
-        .asset
-        .id;
-
-    let labelled = |service: &mut EditorService, revision: u64, request: &str, params: Value| {
-        let result = service
-            .apply_action(&asset, mutation(revision, request), "set-basic", params)
-            .unwrap_or_else(|error| panic!("{request}: {error}"));
-        result.created_entry_id.map(|entry| {
-            service
-                .entry(&asset, &entry)
-                .expect("the entry")
-                .label
-                .clone()
-        })
-    };
-    assert_eq!(
-        labelled(&mut service, 0, "warm", json!({"temperature": 20})).as_deref(),
-        Some("Temperature +20")
-    );
-    assert_eq!(
-        labelled(&mut service, 1, "green", json!({"tint": -5})).as_deref(),
-        Some("Tint -5")
-    );
-    assert_eq!(
-        labelled(
-            &mut service,
-            2,
-            "both",
-            json!({"temperature": -40, "tint": 15})
-        )
-        .as_deref(),
-        Some("Basic (2 fields)"),
-        "a patch that is not one field and not one group's reset names its size"
-    );
-    assert_eq!(
-        labelled(
-            &mut service,
-            3,
-            "wb-reset",
-            json!({"temperature": 0, "tint": 0})
-        )
-        .as_deref(),
-        Some("Reset White balance")
-    );
-
-    // The row reports every implemented field, and the stored payload keeps only what is not
-    // neutral, so a reset group leaves the canonical empty object behind.
-    service
-        .apply_action(
-            &asset,
-            mutation(4, "warm-again"),
-            "set-basic",
-            json!({"temperature": 35, "tint": -12}),
-        )
-        .expect("a correction");
-    let described = service.describe_entry(&asset, None).expect("a description");
-    let row = described
-        .layers
-        .iter()
-        .find(|layer| layer.effect == BASIC_EFFECT)
-        .expect("the Basic row");
-    assert_eq!(row.summary, "Temperature +35, Tint -12");
-    assert_eq!(row.values.get("temperature"), Some(&json!(35.0)));
-    assert_eq!(row.values.get("tint"), Some(&json!(-12.0)));
-    assert_eq!(row.values.get("exposure"), Some(&json!(0.0)));
-
-    // The stored values survive a reopen and still render the same bytes.
-    let before = service.render_current(&asset).expect("a frame");
-    drop(service);
-    let service = EditorService::open(&catalog).expect("the reopened catalog");
-    let after = service.render_current(&asset).expect("a frame");
-    assert_eq!(before.rgba, after.rgba, "a reopen renders the same bytes");
-    let described = service.describe_entry(&asset, None).expect("a description");
-    assert_eq!(
-        described
-            .layers
-            .iter()
-            .find(|layer| layer.effect == BASIC_EFFECT)
-            .expect("the Basic row")
-            .summary,
-        "Temperature +35, Tint -12"
-    );
-
-    drop(service);
-    let _ = fs::remove_file(catalog);
 }

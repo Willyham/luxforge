@@ -15,15 +15,12 @@
 //! reported count is compared with a second implementation.
 use crate::{reference, *};
 use lightwell_core::{
-    ApiRequest, BASIC_EFFECT, ClientId, EFFECT_FORMAT, Layer, ModuleRegistry, OwnerHandle,
-    RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render as core_render,
+    ApiRequest, BASIC_EFFECT, ClientId, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe,
+    SnapshotId, SourceImage, render as core_render,
 };
 use std::{
     cell::RefCell,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -475,27 +472,6 @@ impl Counts {
     }
 }
 
-/// The core's built-in registry with the one module whose descriptor id is `module_id` registered
-/// unavailable, exactly as the desktop's `--disable-module` does. Shared by every chapter's
-/// unavailable-provider check so each one only names which module it disables.
-pub(crate) fn registry_without(module_id: &str) -> ModuleRegistry {
-    let mut registry = ModuleRegistry::new();
-    for module in lightwell_core::builtin_modules() {
-        if module.descriptor().id == module_id {
-            registry.register_unavailable(module, "disabled by the acceptance journey")
-        } else {
-            registry.register(module)
-        }
-        .expect("built-in module descriptors are valid");
-    }
-    registry
-}
-
-/// The built-ins with `lightwell.basic` registered unavailable.
-fn registry_without_basic() -> ModuleRegistry {
-    registry_without("lightwell.basic")
-}
-
 // ---------------------------------------------------------------------------------------------
 // Small journey helpers.
 // ---------------------------------------------------------------------------------------------
@@ -540,14 +516,6 @@ fn expect_values(values: &Value, expected: &Basic, what: &str) -> Result {
         values.as_object().map(serde_json::Map::len) == Some(fields.len()),
         format!("{what}: the reported values are {values}"),
     )
-}
-
-/// One reported effective value as a number.
-pub(crate) fn field(values: &Value, name: &str) -> Result<f64> {
-    values
-        .get(name)
-        .and_then(Value::as_f64)
-        .ok_or_else(|| format!("The values object has no {name}: {values}").into())
 }
 
 /// The one Basic layer of a described entry, with its identity, index and effective values.
@@ -691,35 +659,23 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         let editor = owner.register();
         let agent = owner.register();
 
-        // 1. Discovery. Every capability this chapter uses is in the method table before it is
-        //    used, and `edit.set-basic` declares itself a patch.
+        // 1. Discovery of what only this chapter uses: the neutral picker's query and the analysis
+        //    methods, and Basic's own field table in its declared order. The generic discovery of
+        //    `edit.set-basic`, `edit.reset-basic` and the draft, sample and history methods is the
+        //    field-patch conformance suite's.
         let schema = call(&owner, editor, "schema.list", json!({}))?;
         let methods = &schema["methods"];
         for method in [
-            "edit.set-basic",
-            "edit.reset-basic",
             "query.neutral-sample",
-            "draft.begin",
-            "draft.set",
-            "draft.read",
-            "draft.cancel",
-            "draft.commit",
-            "draft.reapply",
-            "render.sample",
             "analysis.request",
             "analysis.read",
             "analysis.cancel",
-            "recipe.describe",
         ] {
             ensure(
                 methods.get(method).is_some(),
                 format!("{method} is not discoverable"),
             )?;
         }
-        ensure(
-            methods["edit.set-basic"]["patch"] == json!(true),
-            "edit.set-basic does not declare itself a field patch",
-        )?;
         let declared: Vec<String> = methods["edit.set-basic"]["parameters"]
             .as_array()
             .ok_or("edit.set-basic declares no parameters")?
@@ -743,7 +699,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             format!("edit.set-basic declares {declared:?}"),
         )?;
         record(
-            "every Basic, draft and analysis method is discoverable and set-basic is a patch",
+            "the neutral picker's query and the analysis methods are discoverable, and set-basic declares Basic's ten fields in their frozen order",
             json!({"parameters": declared}),
         );
 
@@ -899,8 +855,11 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"largest_code_difference": difference, "values": values, "probes": full_probes}),
         );
 
-        // 5. The draft lifecycle, with the drafted sample agreeing with the later committed render.
-        let revision = current_revision(&owner, editor, &asset)?;
+        // 5. The histogram of an open draft: the analysis of the drafted stack, identified by the
+        //    draft revision it read, equals an independent reduction of that stack's own render,
+        //    which is within one code of the f64 reference. The draft lifecycle itself — begin, set,
+        //    cancel, and a commit that renders what the draft previewed — is the field-patch
+        //    conformance suite's.
         let draft = call(
             &owner,
             editor,
@@ -908,13 +867,6 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"asset_id": asset, "action": "set-basic"}),
         )?;
         let draft_id = draft["draft_id"].clone();
-        ensure(
-            draft["base_revision"] == json!(revision)
-                && draft["draft_revision"] == json!(0)
-                && draft["conflicted"] == json!(false)
-                && draft["fields"] == json!({}),
-            format!("draft.begin answered {draft}"),
-        )?;
         for value in [0.5, 1.5, 2.0] {
             call(
                 &owner,
@@ -922,23 +874,6 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 "draft.set",
                 json!({"draft_id": draft_id, "fields": {"exposure": value}}),
             )?;
-        }
-        let read = call(&owner, editor, "draft.read", json!({"draft_id": draft_id}))?;
-        ensure(
-            read["fields"] == json!({"exposure": 2.0})
-                && read["draft_revision"] == json!(3)
-                && read["conflicted"] == json!(false),
-            format!("draft.read answered {read}"),
-        )?;
-        let mut drafted_samples = Vec::new();
-        for (x, y) in probes {
-            let sample = call(
-                &owner,
-                editor,
-                "render.sample",
-                json!({"asset_id": asset, "x": x, "y": y, "draft_id": draft_id}),
-            )?;
-            drafted_samples.push(sample["rgba"].clone());
         }
         let drafted_analysis = ready_report(
             &owner,
@@ -976,199 +911,24 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 drafted_analysis["identity"]["draft"]
             ),
         )?;
-        let committed = call(
-            &owner,
-            editor,
-            "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(revision, "draft-commit")}),
-        )?;
-        ensure(
-            committed["outcome"] == json!("applied"),
-            format!("draft.commit answered {committed}"),
-        )?;
-        ensure(
-            call(&owner, editor, "session.state", json!({}))?["draft"] == Value::Null,
-            "A committed draft outlived its commit",
-        )?;
-        for ((x, y), drafted) in probes.into_iter().zip(&drafted_samples) {
-            let sample = call(
-                &owner,
-                editor,
-                "render.sample",
-                json!({"asset_id": asset, "x": x, "y": y}),
-            )?;
-            ensure(
-                &sample["rgba"] == drafted,
-                format!(
-                    "The committed pixel at {x},{y} is {} while the draft showed {drafted}",
-                    sample["rgba"]
-                ),
-            )?;
-        }
-        record(
-            "draft begin/set/read/commit: render.sample of the open draft is byte-identical to the committed render, and the drafted analysis matches an independent reduction",
-            json!({"draft_revision": 3, "samples": drafted_samples, "drafted_counters": drafted_counts.counters()}),
-        );
-
-        // 6. A gesture that returns to where it started commits nothing at all.
-        let revision = current_revision(&owner, editor, &asset)?;
-        let before =
-            call(&owner, editor, "asset.state", json!({"asset_id": asset}))?["current_entry"]["id"]
-                .clone();
-        let draft = call(
-            &owner,
-            editor,
-            "draft.begin",
-            json!({"asset_id": asset, "action": "set-basic"}),
-        )?;
-        let draft_id = draft["draft_id"].clone();
         call(
             &owner,
             editor,
-            "draft.set",
-            json!({"draft_id": draft_id, "fields": {"exposure": 3.5}}),
+            "draft.cancel",
+            json!({"draft_id": draft_id}),
         )?;
+        record(
+            "the analysis of an open draft, identified by its draft revision, matches an independent reduction of the drafted stack's render, which is within one code of the f64 reference",
+            json!({"draft_revision": 3, "drafted_counters": drafted_counts.counters()}),
+        );
+
+        // Back to a neutral layer: the analysis sections below state their stacks from it.
         call(
             &owner,
             editor,
-            "draft.set",
-            json!({"draft_id": draft_id, "fields": {"exposure": 2.0}}),
-        )?;
-        let no_op = call(
-            &owner,
-            editor,
-            "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(revision, "return-to-start")}),
-        )?;
-        ensure(
-            no_op["outcome"] == json!("no-op")
-                && no_op["revision"] == json!(revision)
-                && no_op["created_entry_id"] == Value::Null
-                && no_op["current_entry_id"] == before,
-            format!("A return-to-start gesture answered {no_op}"),
-        )?;
-        record(
-            "a gesture that returns to its start: a no-op outcome, no entry and no revision",
-            no_op.clone(),
-        );
-
-        // 7. A retried request id answers the original result and creates nothing.
-        let revision = current_revision(&owner, editor, &asset)?;
-        let first = call(
-            &owner,
-            editor,
-            "edit.set-basic",
-            json!({"asset_id": asset, "mutation": mutation(revision, "retry-me"), "contrast": 10.0}),
-        )?;
-        let retried = call(
-            &owner,
-            editor,
-            "edit.set-basic",
-            json!({"asset_id": asset, "mutation": mutation(revision, "retry-me"), "contrast": 10.0}),
-        )?;
-        ensure(
-            retried["current_entry_id"] == first["current_entry_id"]
-                && retried["revision"] == first["revision"]
-                && retried["deduplicated"] == json!(true),
-            format!("The retry answered {retried} against the original {first}"),
-        )?;
-        record(
-            "a retried request id is deduplicated: the original entry and revision, nothing new",
-            json!({"first": first, "retried": retried}),
-        );
-
-        // 8. Group and module resets keep the layer and its identity.
-        let revision = current_revision(&owner, editor, &asset)?;
-        let tone_reset = call(
-            &owner,
-            editor,
-            "edit.set-basic",
-            json!({"asset_id": asset, "mutation": mutation(revision, "reset-tone"),
-                   "exposure": 0.0, "contrast": 0.0, "highlights": 0.0, "shadows": 0.0, "whites": 0.0, "blacks": 0.0}),
-        )?;
-        let entry = call(
-            &owner,
-            editor,
-            "history.inspect",
-            json!({"asset_id": asset, "entry_id": tone_reset["current_entry_id"]}),
-        )?;
-        ensure(
-            entry["label"] == json!("Reset Tone"),
-            format!("The group reset is labelled {}", entry["label"]),
-        )?;
-        let described = call(
-            &owner,
-            editor,
-            "recipe.describe",
-            json!({"asset_id": asset}),
-        )?;
-        let (layer_after_group_reset, _, values) = described_basic(&described)?;
-        ensure(
-            layer_after_group_reset == basic_layer,
-            "The group reset replaced the Basic layer",
-        )?;
-        expect_values(
-            &values,
-            &Basic {
-                exposure: 0.0,
-                contrast: 0.0,
-                highlights: 0.0,
-                shadows: 0.0,
-                whites: 0.0,
-                blacks: 0.0,
-                ..full
-            },
-            "the Tone group reset",
-        )?;
-        let revision = current_revision(&owner, editor, &asset)?;
-        let module_reset = call(
-            &owner,
-            editor,
             "edit.reset-basic",
-            json!({"asset_id": asset, "mutation": mutation(revision, "reset-basic")}),
+            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "reset-before-analysis")}),
         )?;
-        let entry = call(
-            &owner,
-            editor,
-            "history.inspect",
-            json!({"asset_id": asset, "entry_id": module_reset["current_entry_id"]}),
-        )?;
-        ensure(
-            entry["label"] == json!("Reset Basic"),
-            format!("The module reset is labelled {}", entry["label"]),
-        )?;
-        let described = call(
-            &owner,
-            editor,
-            "recipe.describe",
-            json!({"asset_id": asset}),
-        )?;
-        let (layer_after_module_reset, _, values) = described_basic(&described)?;
-        ensure(
-            layer_after_module_reset == basic_layer,
-            "The module reset replaced the Basic layer",
-        )?;
-        expect_values(&values, &Basic::default(), "the module reset")?;
-        // A neutral Basic layer keeps the exact byte path: the render is the decoded source again.
-        let neutral_render = render(&source, &current_recipe(&owner, editor, &asset)?)?;
-        ensure(
-            neutral_render.rgba[..] == source.rgba[..],
-            "A neutral Basic layer changed the rendered bytes",
-        )?;
-        let repeated = call(
-            &owner,
-            editor,
-            "edit.reset-basic",
-            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "reset-basic-again")}),
-        )?;
-        ensure(
-            repeated["outcome"] == json!("no-op"),
-            format!("Resetting a neutral layer answered {repeated}"),
-        )?;
-        record(
-            "group and module resets keep the one layer with its identity; a neutral layer renders the source bytes and a second reset is a no-op",
-            json!({"layer": basic_layer, "group_label": "Reset Tone", "module_label": "Reset Basic"}),
-        );
 
         // 9. Analysis of the current stack and of a historical entry, each against an independent
         //    reduction of that entry's own render.
@@ -1533,183 +1293,6 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"stack": order, "output": [ow, oh], "largest_code_difference": difference}),
         );
 
-        // 11d. Two Basic layers are ambiguous. The API creates at most one, so the refusal is
-        //      proved on a constructed stack, out of band, which is the only way to hold one.
-        let ambiguous = Recipe {
-            format: RECIPE_FORMAT,
-            layers: vec![
-                Layer {
-                    id: lightwell_core::LayerId::new(),
-                    effect_id: BASIC_EFFECT.into(),
-                    effect_format: EFFECT_FORMAT,
-                    payload: json!({"exposure": 1.0}),
-                    mask: None,
-                    artifacts: Vec::new(),
-                },
-                Layer {
-                    id: lightwell_core::LayerId::new(),
-                    effect_id: BASIC_EFFECT.into(),
-                    effect_format: EFFECT_FORMAT,
-                    payload: json!({"exposure": -1.0}),
-                    mask: None,
-                    artifacts: Vec::new(),
-                },
-            ],
-            masks: Vec::new(),
-            ..Recipe::default()
-        };
-        let error = render(&source, &ambiguous)
-            .err()
-            .ok_or("Two Basic layers rendered instead of being refused")?
-            .to_string();
-        ensure(
-            error.contains("ambiguous Basic layers"),
-            format!("Two Basic layers were refused with {error}"),
-        )?;
-        // A payload of an unsupported format is refused explicitly and nothing is rewritten.
-        let future_format = Recipe {
-            format: RECIPE_FORMAT,
-            layers: vec![Layer {
-                id: lightwell_core::LayerId::new(),
-                effect_id: BASIC_EFFECT.into(),
-                effect_format: 2,
-                payload: json!({"exposure": 1.0}),
-                mask: None,
-                artifacts: Vec::new(),
-            }],
-            masks: Vec::new(),
-            ..Recipe::default()
-        };
-        let format_error = render(&source, &future_format)
-            .err()
-            .ok_or("A format 2 Basic payload rendered")?
-            .to_string();
-        ensure(
-            format_error.contains('2') || format_error.to_lowercase().contains("format"),
-            format!("A format 2 payload was refused with {format_error}"),
-        )?;
-        ensure(
-            ModuleRegistry::builtin()
-                .validate_layer(&future_format.layers[0])
-                .is_err(),
-            "A format 2 Basic layer passed validation",
-        )?;
-        ensure(
-            future_format.layers[0].payload == json!({"exposure": 1.0}),
-            "The refused layer was rewritten",
-        )?;
-        let unchanged = current_recipe(&owner, editor, &asset)?;
-        ensure(
-            unchanged
-                .layers
-                .iter()
-                .all(|layer| layer.effect_format == EFFECT_FORMAT),
-            "A stored layer changed format",
-        )?;
-        record(
-            "two Basic layers and a format 2 payload are both refused explicitly, and neither is rewritten or stored",
-            json!({"ambiguity": error, "format": format_error}),
-        );
-
-        // 12. Two-client races on the real Basic action.
-        let revision = current_revision(&owner, editor, &asset)?;
-        let draft = call(
-            &owner,
-            editor,
-            "draft.begin",
-            json!({"asset_id": asset, "action": "set-basic"}),
-        )?;
-        let draft_id = draft["draft_id"].clone();
-        call(
-            &owner,
-            editor,
-            "draft.set",
-            json!({"draft_id": draft_id, "fields": {"exposure": 1.25}}),
-        )?;
-        // The agent commits a field this gesture never touched.
-        call(
-            &owner,
-            agent,
-            "edit.set-basic",
-            json!({"asset_id": asset, "mutation": mutation(revision, "agent-temperature"), "temperature": 40.0}),
-        )?;
-        ensure(
-            call(&owner, agent, "session.state", json!({}))?["draft"] == Value::Null,
-            "The agent acquired the editor's draft",
-        )?;
-        let conflicted = call(&owner, editor, "draft.read", json!({"draft_id": draft_id}))?;
-        ensure(
-            conflicted["conflicted"] == json!(true)
-                && conflicted["fields"] == json!({"exposure": 1.25}),
-            format!("The drafted gesture answered {conflicted}"),
-        )?;
-        let (code, message) = refused(
-            &owner,
-            editor,
-            "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(revision, "editor-commit")}),
-        )?;
-        ensure(
-            code == "conflict",
-            format!("A conflicted commit was refused with {code}: {message}"),
-        )?;
-        let reapplied = call(
-            &owner,
-            editor,
-            "draft.reapply",
-            json!({"draft_id": draft_id}),
-        )?;
-        let rebased = current_revision(&owner, editor, &asset)?;
-        ensure(
-            reapplied["conflicted"] == json!(false)
-                && reapplied["fields"] == json!({"exposure": 1.25})
-                && reapplied["base_revision"] == json!(rebased),
-            format!("Reapply answered {reapplied}"),
-        )?;
-        let before_entries = call(
-            &owner,
-            editor,
-            "history.list",
-            json!({"asset_id": asset, "limit": 1}),
-        )?["entries"][0]["sequence"]
-            .clone();
-        let committed = call(
-            &owner,
-            editor,
-            "draft.commit",
-            json!({"draft_id": draft_id, "mutation": mutation(rebased, "editor-commit-rebased")}),
-        )?;
-        ensure(
-            committed["outcome"] == json!("applied") && committed["revision"] == json!(rebased + 1),
-            format!("The reapplied commit answered {committed}"),
-        )?;
-        let after_entries = call(
-            &owner,
-            editor,
-            "history.list",
-            json!({"asset_id": asset, "limit": 1}),
-        )?["entries"][0]["sequence"]
-            .clone();
-        ensure(
-            as_u64(&after_entries, "sequence")? == as_u64(&before_entries, "sequence")? + 1,
-            "The reapplied commit created more than one entry",
-        )?;
-        let described = call(
-            &owner,
-            editor,
-            "recipe.describe",
-            json!({"asset_id": asset}),
-        )?;
-        let (_, _, values) = described_basic(&described)?;
-        ensure(
-            field(&values, "exposure")? == 1.25 && field(&values, "temperature")? == 40.0,
-            format!("Reapply lost a field: {values}"),
-        )?;
-        record(
-            "client A drafts exposure while client B commits temperature: conflicted, commit refused, reapply keeps both fields and commits exactly one entry",
-            json!({"reapplied": reapplied, "committed": committed, "values": values}),
-        );
-
         // 12b. A historical selection and its analysis stay attached to their entry while another
         //      client commits.
         call(
@@ -1832,228 +1415,6 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             json!({"job": mine["job_id"], "survivor_status": survivor["status"]}),
         );
 
-        // 13. Undo, redo, restore and historical preview all evaluate byte-identically.
-        let current_entry =
-            call(&owner, editor, "asset.state", json!({"asset_id": asset}))?["current_entry"]["id"]
-                .clone();
-        let current_before_undo = render(&source, &current_recipe(&owner, editor, &asset)?)?;
-        let undone = call(
-            &owner,
-            editor,
-            "history.undo",
-            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "undo-once")}),
-        )?;
-        ensure(
-            undone["outcome"] != json!("no-op"),
-            format!("Undo answered {undone}"),
-        )?;
-        let after_undo = render(&source, &current_recipe(&owner, editor, &asset)?)?;
-        ensure(
-            after_undo.rgba != current_before_undo.rgba,
-            "Undo did not change the rendered bytes",
-        )?;
-        call(
-            &owner,
-            editor,
-            "history.redo",
-            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "redo-once")}),
-        )?;
-        let after_redo = render(&source, &current_recipe(&owner, editor, &asset)?)?;
-        ensure(
-            after_redo.rgba == current_before_undo.rgba,
-            "Redo did not restore the exact bytes undo left",
-        )?;
-        // A read-only preview of the same entry evaluates to the same bytes without committing.
-        let revision_before_preview = current_revision(&owner, editor, &asset)?;
-        call(
-            &owner,
-            editor,
-            "preview.select",
-            json!({"asset_id": asset, "entry_id": current_entry}),
-        )?;
-        ensure(
-            current_revision(&owner, editor, &asset)? == revision_before_preview,
-            "Selecting an entry committed something",
-        )?;
-        call(&owner, editor, "preview.return-current", json!({}))?;
-        let restored = call(
-            &owner,
-            editor,
-            "history.restore",
-            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "restore-current"), "entry_id": current_entry}),
-        )?;
-        ensure(
-            restored["outcome"] == json!("no-op") || restored["outcome"] == json!("applied"),
-            format!("Restore answered {restored}"),
-        )?;
-        let after_restore = render(&source, &current_recipe(&owner, editor, &asset)?)?;
-        ensure(
-            after_restore.rgba == current_before_undo.rgba,
-            "Restore did not reproduce the exact bytes",
-        )?;
-        record(
-            "undo, redo, preview and restore all evaluate byte-identically and a preview commits nothing",
-            json!({"entry": current_entry, "dimensions": [after_restore.width, after_restore.height]}),
-        );
-
-        // 14. The unavailable provider: the same catalog served without Basic refuses to render the
-        //     stack that names it, and keeps the stack readable.
-        let final_recipe = current_recipe(&owner, editor, &asset)?;
-        let final_render = render(&source, &final_recipe)?;
-        let final_values = described_basic(&call(
-            &owner,
-            editor,
-            "recipe.describe",
-            json!({"asset_id": asset}),
-        )?)?;
-        let final_revision = current_revision(&owner, editor, &asset)?;
-        let final_entry =
-            call(&owner, editor, "asset.state", json!({"asset_id": asset}))?["current_entry"]["id"]
-                .clone();
-        owner.stop();
-        join.take()
-            .ok_or("The owner thread was already joined")?
-            .join()
-            .map_err(|_| "The owner thread panicked")?;
-
-        let (limited, limited_join) =
-            OwnerHandle::start_with(&catalog, Arc::new(registry_without_basic()))?;
-        let limited_outcome = (|| -> Result<Value> {
-            let client = limited.register();
-            prepare_source(&limited, client, &asset)?;
-            let described = call(
-                &limited,
-                client,
-                "recipe.describe",
-                json!({"asset_id": asset, "entry_id": final_entry}),
-            )?;
-            let layer = described["layers"]
-                .as_array()
-                .ok_or("No layers")?
-                .iter()
-                .find(|layer| layer["effect"] == json!(BASIC_EFFECT))
-                .ok_or("The unavailable run cannot read the Basic layer at all")?
-                .clone();
-            ensure(
-                layer["available"] == json!(false),
-                format!("The Basic layer reports {layer}"),
-            )?;
-            let modules = call(&limited, client, "module.list", json!({}))?;
-            let basic_module = modules["modules"]
-                .as_array()
-                .ok_or("No modules")?
-                .iter()
-                .find(|module| module["id"] == json!("lightwell.basic"))
-                .ok_or("The Basic module is not listed at all")?
-                .clone();
-            ensure(
-                basic_module["availability"]["kind"] == json!("unavailable"),
-                format!(
-                    "The Basic module reports availability {}",
-                    basic_module["availability"]
-                ),
-            )?;
-            let (code, message) = refused(
-                &limited,
-                client,
-                "render.sample",
-                json!({"asset_id": asset, "x": 0, "y": 0}),
-            )?;
-            ensure(
-                code == "incompatible" && message.contains(BASIC_EFFECT),
-                format!("An unavailable Basic refused rendering with {code}: {message}"),
-            )?;
-            let analysis = analyse(&limited, client, &asset, json!({"kind": "current"}))?;
-            ensure(
-                analysis["status"] == json!("failed") && analysis.get("report").is_none(),
-                format!("The analysis of an unavailable stack answered {analysis}"),
-            )?;
-            Ok(
-                json!({"layer": layer, "module": basic_module, "render_error": message, "analysis_status": analysis["status"], "analysis_error": analysis["error"]}),
-            )
-        })();
-        limited.stop();
-        limited_join
-            .join()
-            .map_err(|_| "The limited owner thread panicked")?;
-        let limited_detail = limited_outcome?;
-        record(
-            "the same catalog served with Basic unavailable refuses to render the stack that names it, keeps the layer and module readable and reports the analysis failed with no counts",
-            limited_detail,
-        );
-
-        // 15. The restart journey: the catalog reopened in a third owner reproduces the values, the
-        //     history and the analysis, and the render is byte-identical.
-        let (reopened, reopened_join) = OwnerHandle::start(&catalog)?;
-        let restart = (|| -> Result<Value> {
-            let client = reopened.register();
-            prepare_source(&reopened, client, &asset)?;
-            let state = call(&reopened, client, "asset.state", json!({"asset_id": asset}))?;
-            ensure(
-                as_u64(&state["revision"], "revision")? == final_revision,
-                format!("The reopened revision is {}", state["revision"]),
-            )?;
-            ensure(
-                state["current_entry"]["id"] == final_entry,
-                "The reopened current entry changed",
-            )?;
-            let described = call(
-                &reopened,
-                client,
-                "recipe.describe",
-                json!({"asset_id": asset}),
-            )?;
-            let (layer, index, values) = described_basic(&described)?;
-            ensure(
-                (layer.clone(), index, values.clone()) == final_values,
-                format!("The reopened Basic layer reads {layer} at {index} with {values}"),
-            )?;
-            let reopened_render = render(&source, &current_recipe(&reopened, client, &asset)?)?;
-            ensure(
-                reopened_render.rgba == final_render.rgba,
-                "The reopened render is not byte-identical",
-            )?;
-            let mut cursor = None;
-            let mut entries = 0usize;
-            loop {
-                let mut params = json!({"asset_id": asset, "limit": 25});
-                if let Some(before) = cursor {
-                    params["before_sequence"] = json!(before);
-                }
-                let page = call(&reopened, client, "history.list", params)?;
-                entries += page["entries"].as_array().map(Vec::len).unwrap_or(0);
-                match page["next_before_sequence"].as_u64() {
-                    Some(next) => cursor = Some(next),
-                    None => break,
-                }
-            }
-            let report = ready_report(
-                &reopened,
-                client,
-                &asset,
-                json!({"kind": "current"}),
-                "the reopened current stack",
-            )?;
-            let reopened_counts = reduce(
-                &reopened_render.rgba,
-                reopened_render.width,
-                reopened_render.height,
-            );
-            reopened_counts.expect(&report["report"], "the reopened current stack")?;
-            Ok(
-                json!({"revision": final_revision, "entries": entries, "values": values, "counters": reopened_counts.counters()}),
-            )
-        })();
-        reopened.stop();
-        reopened_join
-            .join()
-            .map_err(|_| "The reopened owner thread panicked")?;
-        let restart_detail = restart?;
-        record(
-            "the catalog reopened: the Basic values, the layer identity, the history and the analysis all reproduce and the render is byte-identical",
-            restart_detail,
-        );
-
         ensure(
             hash(&fixture)? == fixture_hash,
             "The original source changed",
@@ -2068,6 +1429,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "code_tolerance": CODE_TOLERANCE,
             "resample_tolerance": RESAMPLE_TOLERANCE,
             "oracle": "crates/lightwell-core/tests/reference, compiled into xtask; the crop sampler and the histogram reduction are written here from docs/specs/single-image.md and the histogram contract",
+            "generic": "the host behaviour Basic shares with every field-patch module (discovery, drafts, no-ops, deduplication, resets, one layer per target, history, sample equal to render, an unavailable provider and reopen) is proved under field_patch_conformance",
             "reused_unit_tests": [
                 "lightwell_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest",
                 "lightwell_core::api::owner::tests::two_clients_share_one_job_and_keep_independent_current_and_historical_results",
