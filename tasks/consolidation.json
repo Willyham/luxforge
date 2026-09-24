@@ -1227,6 +1227,79 @@
           "All pass."
         ]
       }
+    },
+    {
+      "id": "TASK-022",
+      "description": "Give every catalog write one path: a `mutate` that validates the envelope, answers a retry, checks the revision, runs the caller's plan, admits the recipe once and writes one transaction that also updates the entry cache; one `write` helper and `From<rusqlite::Error>` for every transaction, including the preset library and the artifact store.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-015",
+        "TASK-017"
+      ],
+      "extra_context": [
+        "Write transactions are hand-built for import, commit, navigate, restore, version create and delete and persisted no-ops; `HistoryEntry` and `MutationResult` literals and the redo-clearing SQL are copied; one commit validates its recipe several times, including again inside `insert_entry`'s transaction.",
+        "Restore's transaction has no request-absent check, so a concurrent duplicate is a catalog error rather than a conflict; `commit_snapshot` assigns `state.current_entry` to a value it then drops; a doc comment meant for `insert_entry` sits on `default_artifact_root`.",
+        "About 95 `.map_err(catalog_error)` and 13 `transaction_with_behavior` blocks repeat across the editor, the preset library and the artifact store.",
+        "The entry cache updates after each committed write; with one write path it updates in one place."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Editor history",
+          "target": "crates/lightwell-core/src/editor/history.rs",
+          "relevance": "Commit, navigate, restore, versions, no-ops."
+        },
+        {
+          "kind": "file",
+          "label": "Editor catalog",
+          "target": "crates/lightwell-core/src/editor/catalog.rs",
+          "relevance": "`insert_entry` and request rows."
+        },
+        {
+          "kind": "file",
+          "label": "Entry cache",
+          "target": "crates/lightwell-core/src/editor/entries.rs",
+          "relevance": "Updated by every write."
+        },
+        {
+          "kind": "file",
+          "label": "Preset library",
+          "target": "crates/lightwell-core/src/presets/library.rs",
+          "relevance": "Its own transactions."
+        },
+        {
+          "kind": "file",
+          "label": "History spec",
+          "target": "docs/specs/edit-history.md",
+          "relevance": "The history contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "Commit, undo, redo, restore, versions and no-ops go through one `mutate`; import and the preset library and artifact store use the one `write` helper; the copied literals and SQL exist once.",
+        "A recipe is validated once per commit.",
+        "A concurrent duplicate of any mutation is a `conflict`, never a catalog error.",
+        "The entry cache is updated in one place and its coherence test still passes.",
+        "History, deduplication, rollback, artifact and preset tests pass unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Existing history, dedup, rollback, restore, artifact, preset and cache-coherence tests; a validation-count test; a duplicate-request test for restore."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass; one validation per commit."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1264,6 +1337,12 @@
         "TASK-019",
         "TASK-020",
         "TASK-021"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-022"
       ]
     }
   ]
