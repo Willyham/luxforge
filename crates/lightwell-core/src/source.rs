@@ -1,10 +1,206 @@
-//! A prepared original: byte-exact JPEG or an immutable RAW mosaic with one WB development.
-use crate::{Error, ErrorKind, LinearImage, SourceImage};
+//! Decoding an original into pixels: the JPEG path (bounded header validation, upright decode,
+//! RGBA written straight into the frame the render returns) and the prepared original, byte-exact
+//! JPEG or an immutable RAW mosaic with one WB development.
+use crate::{Error, ErrorKind, LinearImage, Raster};
+use image::{ImageDecoder, ImageReader, Limits};
 use lightwell_raw::{RawError, RawMetadata, RawSource};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use sha2::{Digest, Sha256};
+use std::{
+    fs::File,
+    io::{Cursor, Read, Seek, SeekFrom},
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
+
+/// The encoded-byte limit for a JPEG original; a RAW original's own limit is
+/// `lightwell_raw::MAX_SOURCE_BYTES`.
+pub(crate) const MAX_JPEG_BYTES: usize = 128 * 1024 * 1024;
+
+/// The complete upright source, decoded once for non-destructive recipe evaluation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<[u8]>,
+    pub fingerprint: String,
+    pub orientation: u8,
+}
+
+fn decode_error(detail: &str) -> Error {
+    Error::new(ErrorKind::Decode, detail)
+}
+
+// Walk JPEG header segments without decoding or allocating from declared dimensions.
+fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
+    if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
+        return Err(decode_error("missing JPEG SOI/EOI"));
+    }
+    let mut i = 2;
+    while i + 4 <= bytes.len() {
+        if bytes[i] != 0xff {
+            return Err(decode_error("JPEG marker"));
+        }
+        while i < bytes.len() && bytes[i] == 0xff {
+            i += 1;
+        }
+        let marker = *bytes.get(i).ok_or_else(|| decode_error("marker"))?;
+        i += 1;
+        if marker == 0xda || marker == 0xd9 {
+            break;
+        }
+        let size = bytes
+            .get(i..i + 2)
+            .ok_or_else(|| decode_error("segment length"))?;
+        let size = u16::from_be_bytes([size[0], size[1]]) as usize;
+        if size < 2 || i + size > bytes.len() {
+            return Err(decode_error("segment bounds"));
+        }
+        if [0xc0, 0xc1, 0xc2].contains(&marker) {
+            if size < 8 || bytes[i + 2] != 8 {
+                return Err(Error::new(ErrorKind::UnsupportedColor, "JPEG precision"));
+            }
+            let h = u16::from_be_bytes([bytes[i + 3], bytes[i + 4]]) as u32;
+            let w = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
+            return Ok((w, h, bytes[i + 7]));
+        }
+        i += size;
+    }
+    Err(Error::new(ErrorKind::UnsupportedInput, "JPEG frame type"))
+}
+
+/// Hash and decode one bounded snapshot read from an already opened handle. The magic bytes pick
+/// the limit: a JPEG original is bounded by [`MAX_JPEG_BYTES`], anything else by RAW's own bound.
+pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
+    let file_error = |e: std::io::Error| Error::new(ErrorKind::FileAccess, e.kind().to_string());
+    if !file.metadata().map_err(file_error)?.is_file() {
+        return Err(Error::new(
+            ErrorKind::UnsupportedInput,
+            "expected a regular file",
+        ));
+    }
+    let mut magic = [0_u8; 2];
+    let _ = file.read(&mut magic).map_err(file_error)?;
+    file.seek(SeekFrom::Start(0)).map_err(file_error)?;
+    let limit = if magic == [0xff, 0xd8] {
+        MAX_JPEG_BYTES
+    } else {
+        lightwell_raw::MAX_SOURCE_BYTES
+    };
+    if file.metadata().map_err(file_error)?.len() > limit as u64 {
+        return Err(Error::new(ErrorKind::ResourceLimit, "encoded bytes"));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(file_error)?;
+    if bytes.len() > limit {
+        return Err(Error::new(ErrorKind::ResourceLimit, "encoded bytes"));
+    }
+    Ok(bytes)
+}
+
+struct Decoded {
+    upright: image::DynamicImage,
+    orientation: u8,
+}
+
+/// Validate the supported JPEG subset, decode within fixed limits and orient once to upright pixels.
+fn decode_upright(bytes: Vec<u8>) -> Result<Decoded, Error> {
+    let (w, h, components) = header(&bytes)?;
+    if w == 0 || h == 0 || w > 16384 || h > 16384 || u64::from(w) * u64::from(h) > 64_000_000 {
+        return Err(Error::new(ErrorKind::ResourceLimit, "dimensions"));
+    }
+    if ![1, 3].contains(&components) {
+        return Err(Error::new(
+            ErrorKind::UnsupportedColor,
+            "only RGB/greyscale",
+        ));
+    }
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Jpeg);
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(16384);
+    limits.max_image_height = Some(16384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|_| decode_error("decoder header"))?;
+    if let Some(profile) = decoder
+        .icc_profile()
+        .map_err(|_| Error::new(ErrorKind::UnsupportedProfile, "unreadable ICC"))?
+    {
+        crate::profile::check(&profile, components)?;
+    }
+    let orientation = decoder
+        .orientation()
+        .map_err(|_| decode_error("orientation"))?;
+    let mut upright =
+        image::DynamicImage::from_decoder(decoder).map_err(|_| decode_error("decode"))?;
+    upright.apply_orientation(orientation);
+    Ok(Decoded {
+        upright,
+        orientation: orientation.to_exif(),
+    })
+}
+
+/// Write `upright`'s pixels into `out` as RGBA, opaque, without an intermediate allocation. `out`
+/// must be exactly `width * height * 4` bytes, the shape [`decode_upright`]'s caller allocates
+/// through [`crate::render::zeroed_frame`].
+fn write_rgba(upright: &image::DynamicImage, out: &mut [u8]) -> Result<(), Error> {
+    match upright {
+        image::DynamicImage::ImageRgb8(buf) => {
+            for (dst, src) in out.chunks_exact_mut(4).zip(buf.as_raw().chunks_exact(3)) {
+                dst[0] = src[0];
+                dst[1] = src[1];
+                dst[2] = src[2];
+                dst[3] = 255;
+            }
+            Ok(())
+        }
+        image::DynamicImage::ImageLuma8(buf) => {
+            for (dst, src) in out.chunks_exact_mut(4).zip(buf.as_raw().iter()) {
+                dst[0] = *src;
+                dst[1] = *src;
+                dst[2] = *src;
+                dst[3] = 255;
+            }
+            Ok(())
+        }
+        _ => Err(decode_error("unexpected decoded color type")),
+    }
+}
+
+/// Decode the complete upright source once for non-destructive recipe evaluation.
+pub fn open_source(path: &Path) -> Result<SourceImage, Error> {
+    let mut file =
+        File::open(path).map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+    open_source_file(&mut file)
+}
+
+pub(crate) fn open_source_file(file: &mut File) -> Result<SourceImage, Error> {
+    open_source_bytes(read_bounded_file(file)?)
+}
+
+/// Decode straight into the shared frame a [`Raster`] would hold, so a JPEG's decoded pixels are
+/// written once: no intermediate RGBA buffer that this then copies into an `Arc<[u8]>`.
+pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
+    let fingerprint = format!("{:x}", Sha256::digest(&bytes));
+    let decoded = decode_upright(bytes)?;
+    let width = decoded.upright.width();
+    let height = decoded.upright.height();
+    let mut frame = crate::render::zeroed_frame(Raster::expected_len(width, height)?);
+    write_rgba(&decoded.upright, crate::render::frame_mut(&mut frame))?;
+    Ok(SourceImage {
+        width,
+        height,
+        rgba: frame,
+        fingerprint,
+        orientation: decoded.orientation,
+    })
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum PreparedSource {
@@ -443,6 +639,250 @@ mod tests {
                 "cases": cases,
             }))
             .unwrap()
+        );
+    }
+}
+
+/// The JPEG decode's input contract: SOI/EOI and marker bounds, declared sizes, orientation and
+/// the encoded-byte limit, plus proof that a decode returns the very frame it wrote pixels into.
+#[cfg(test)]
+mod jpeg_tests {
+    use super::*;
+    use crate::{
+        AssetId, Layer, ModuleRegistry, Orientation, RECIPE_FORMAT, Recipe, Snapshot, SnapshotId,
+        Transform, render,
+    };
+
+    fn fixture(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/s0")
+            .join(name)
+    }
+
+    #[test]
+    fn oversized_jpeg_is_rejected_from_file_length_before_buffer_allocation() {
+        use std::io::{Seek, SeekFrom, Write};
+        let path = std::env::temp_dir().join(format!(
+            "lightwell-oversized-jpeg-{}-{}.jpg",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_JPEG_BYTES as u64 + 1).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(&[0xff, 0xd8]).unwrap();
+        file.flush().unwrap();
+        let mut opened = std::fs::File::open(&path).unwrap();
+        let error = read_bounded_file(&mut opened).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn orientations_and_preservation() {
+        let permutations = [
+            [0, 1, 2, 3],
+            [1, 0, 3, 2],
+            [3, 2, 1, 0],
+            [2, 3, 0, 1],
+            [0, 2, 1, 3],
+            [2, 0, 3, 1],
+            [3, 1, 2, 0],
+            [1, 3, 0, 2],
+        ];
+        let colors: [[u8; 3]; 4] = [[220, 35, 45], [35, 190, 65], [40, 70, 220], [235, 195, 30]];
+        for orientation in 1..=8 {
+            let path = fixture(&format!("orientation-{orientation}.jpg"));
+            let original = std::fs::read(&path).unwrap();
+            let source = open_source(&path).unwrap();
+            assert_eq!(
+                (source.width, source.height),
+                if orientation >= 5 {
+                    (320, 480)
+                } else {
+                    (480, 320)
+                }
+            );
+            for (index, (x, y)) in [(1, 1), (3, 1), (1, 3), (3, 3)].iter().enumerate() {
+                let offset =
+                    (((source.height * y / 4) * source.width + source.width * x / 4) * 4) as usize;
+                for (actual, expected) in source.rgba[offset..offset + 3]
+                    .iter()
+                    .zip(colors[permutations[orientation - 1][index]])
+                {
+                    assert!(actual.abs_diff(expected) <= 5);
+                }
+            }
+            assert_eq!(std::fs::read(path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn pixel_edits_use_upright_coordinates_for_every_exif_orientation() {
+        for orientation in 1..=8 {
+            let path = fixture(&format!("orientation-{orientation}.jpg"));
+            let bytes = std::fs::read(&path).unwrap();
+            let source = open_source(&path).unwrap();
+            let snapshot = Snapshot::original(AssetId::new())
+                .append(Layer::pixel(source.width - 1, source.height - 1, [1, 2, 3]))
+                .unwrap();
+            let raster = render(
+                &ModuleRegistry::builtin(),
+                &source,
+                snapshot.id,
+                &snapshot.recipe,
+            )
+            .unwrap();
+            assert_eq!(
+                raster.pixel(source.width - 1, source.height - 1),
+                Some([1, 2, 3, 255])
+            );
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    /// Every sequence of up to three transform actions on every EXIF orientation, including the
+    /// mirrored ones, renders byte-identically whether the actions are separate single-action
+    /// orientation layers or one layer holding their composition. The source is untouched.
+    #[test]
+    fn composed_and_separate_orientations_agree_on_every_exif_orientation() {
+        let registry = ModuleRegistry::builtin();
+        let transforms = [
+            Transform::RotateLeft,
+            Transform::RotateRight,
+            Transform::MirrorHorizontal,
+            Transform::FlipVertical,
+        ];
+        for orientation in 1..=8 {
+            let path = fixture(&format!("orientation-{orientation}.jpg"));
+            let bytes = std::fs::read(&path).unwrap();
+            let source = open_source(&path).unwrap();
+            let rendered = |layers: Vec<Layer>| {
+                render(
+                    &registry,
+                    &source,
+                    SnapshotId::new(),
+                    &Recipe {
+                        format: RECIPE_FORMAT,
+                        layers,
+                        masks: Vec::new(),
+                        ..Recipe::default()
+                    },
+                )
+                .unwrap()
+            };
+            // Every sequence of one and two actions on every fixture, and every sequence of three
+            // on the mirrored ones, where a reflection composed the wrong way round would show.
+            let mut sequences: Vec<Vec<Transform>> = Vec::new();
+            for first in transforms {
+                sequences.push(vec![first]);
+                for second in transforms {
+                    sequences.push(vec![first, second]);
+                    if matches!(orientation, 2 | 4 | 5 | 7) {
+                        for third in transforms {
+                            sequences.push(vec![first, second, third]);
+                        }
+                    }
+                }
+            }
+            for actions in sequences {
+                let separate: Vec<Layer> = actions
+                    .iter()
+                    .map(|transform| Layer::orientation(Orientation::of(*transform)))
+                    .collect();
+                let composed = actions
+                    .iter()
+                    .fold(Orientation::NEUTRAL, |state, transform| {
+                        state.then(*transform)
+                    });
+                let stepwise = rendered(separate);
+                let collapsed = rendered(vec![Layer::orientation(composed)]);
+                assert_eq!(
+                    (stepwise.width, stepwise.height),
+                    (collapsed.width, collapsed.height),
+                    "orientation {orientation}: {actions:?}"
+                );
+                assert_eq!(
+                    stepwise.rgba, collapsed.rgba,
+                    "orientation {orientation}: {actions:?}"
+                );
+            }
+            assert_eq!(std::fs::read(path).unwrap(), bytes, "source unchanged");
+        }
+    }
+
+    #[test]
+    fn input_contract() {
+        for name in ["srgb.jpg", "portrait.jpg", "greyscale.jpg"] {
+            assert!(open_source(&fixture(name)).is_ok(), "{name}");
+        }
+        for (name, code) in [
+            ("invalid.jpg", "invalid-input"),
+            ("truncated.jpg", "invalid-input"),
+            ("oversized.jpg", "resource-limit"),
+            ("cmyk.jpg", "unsupported-color"),
+            ("invalid-profile.jpg", "unsupported-profile"),
+            ("missing.jpg", "read-error"),
+        ] {
+            assert!(
+                open_source(&fixture(name)).err().unwrap().kind.code() == code,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_headers_never_panic_or_allocate_from_dimensions() {
+        let valid = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg"),
+        )
+        .unwrap();
+        for end in 0..valid.len().min(1024) {
+            assert!(header(&valid[..end]).is_err());
+        }
+        for size in [0u16, 1, 2, 7, u16::MAX] {
+            let mut bytes = vec![0xff, 0xd8, 0xff, 0xc0];
+            bytes.extend(size.to_be_bytes());
+            bytes.extend([8, 0xff, 0xff, 0xff, 0xff, 3, 0xff, 0xd9]);
+            let _ = header(&bytes);
+        }
+    }
+
+    #[test]
+    fn readonly_unicode_source_is_supported_and_preserved() {
+        let dir =
+            std::env::temp_dir().join(format!("lightwell read only ü {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("photo ü.jpg");
+        let bytes = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg"),
+        )
+        .unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let original = std::fs::metadata(&path).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly).unwrap();
+        assert!(open_source(&path).is_ok());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::set_permissions(&path, original).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A JPEG decode allocates its RGBA frame once and writes straight into it: no `into_rgba8()`
+    /// buffer that a second allocation then copies into the `Arc<[u8]>` a [`SourceImage`] holds.
+    /// Proved the way the render tests prove a pass writes the frame it returns
+    /// ([`crate::render::frame_writes`]): the address [`crate::render::frame_mut`] hands out while
+    /// decoding is the address the returned `SourceImage.rgba` itself points at.
+    #[test]
+    fn decode_writes_the_frame_it_returns() {
+        let bytes = std::fs::read(fixture("orientation-1.jpg")).unwrap();
+        let (source, written) =
+            crate::render::frame_writes::record(|| open_source_bytes(bytes).unwrap());
+        assert_eq!(
+            written.last(),
+            Some(&(source.rgba.as_ptr() as usize)),
+            "the decoded source is the frame written last, not a copy of it"
         );
     }
 }

@@ -297,7 +297,7 @@ pub fn check(root: &Path) -> Result {
             json!(hash(&path)?) == e["sha256"],
             format!("Fixture hash changed: {}", path.display()),
         )?;
-        let result = lightwell_core::open(&path);
+        let result = lightwell_core::open_source(&path);
         if e["expected"] != "supported" {
             ensure(
                 result.is_err(),
@@ -309,13 +309,14 @@ pub fn check(root: &Path) -> Result {
             )?;
             continue;
         }
-        let photo = result?;
+        let source = result?;
         ensure(
-            json!([photo.width, photo.height]) == json!([e["display_width"], e["display_height"]]),
+            json!([source.width, source.height])
+                == json!([e["display_width"], e["display_height"]]),
             "Wrong oriented dimensions",
         )?;
         ensure(
-            json!(photo.orientation) == e["orientation"],
+            json!(source.orientation) == e["orientation"],
             "Wrong orientation",
         )?;
         let mut decoder = ImageReader::open(&path)?
@@ -337,19 +338,19 @@ pub fn check(root: &Path) -> Result {
             )?;
         }
         if e["file"].as_str().unwrap().starts_with("orientation-") {
-            let order = ORDERS[(photo.orientation - 1) as usize];
+            let order = ORDERS[(source.orientation - 1) as usize];
             for ((x, y), i) in [
-                (photo.width / 4, photo.height / 4),
-                (3 * photo.width / 4, photo.height / 4),
-                (photo.width / 4, 3 * photo.height / 4),
-                (3 * photo.width / 4, 3 * photo.height / 4),
+                (source.width / 4, source.height / 4),
+                (3 * source.width / 4, source.height / 4),
+                (source.width / 4, 3 * source.height / 4),
+                (3 * source.width / 4, 3 * source.height / 4),
             ]
             .into_iter()
             .zip(order)
             {
-                let offset = ((y * photo.width + x) * 4) as usize;
+                let offset = ((y * source.width + x) * 4) as usize;
                 ensure(
-                    photo.rgba[offset..offset + 3]
+                    source.rgba[offset..offset + 3]
                         .iter()
                         .zip(COLORS[i])
                         .all(|(a, b)| a.abs_diff(b) <= 5),
