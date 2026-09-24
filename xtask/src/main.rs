@@ -32,6 +32,7 @@ mod raw_panel_smoke;
 #[path = "../../crates/lightwell-core/tests/reference/mod.rs"]
 mod reference;
 mod repository;
+mod scenario;
 mod smoke;
 mod verify;
 mod vignette_smoke;
