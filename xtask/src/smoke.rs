@@ -507,12 +507,26 @@ pub static SCENARIOS: &[Scenario] = &[
     Scenario {
         name: mask_range::SCENARIO,
         about: "Luminance and colour range selections typed, picked and combined, then their limits",
-        launches: &[],
-        verify: |_, _| Ok(()),
-        source: Source::Fixtures(&["fixtures/generated/range.jpg"]),
+        launches: &[
+            LaunchSpec {
+                name: "launch1",
+                script: "script1.json",
+                plan: mask_range::launch1_plan,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch2",
+                script: "script2.json",
+                plan: mask_range::launch2_plan,
+                catalog: Some("launch1"),
+                ..APP
+            },
+        ],
+        verify: mask_range::verify,
+        source: Source::Fixtures(&[mask_range::FIXTURE]),
         window: Some(PANELLED),
-        note: None,
-        own: Some(|run, _, _| mask_range::run(run)),
+        note: Some(mask_range::NOTE),
+        own: None,
     },
     Scenario {
         name: performance::SCENARIO,

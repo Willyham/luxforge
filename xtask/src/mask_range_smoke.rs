@@ -34,17 +34,27 @@
 //! Positions are normalized content coordinates — `x` a fraction of the content stage's width, `y` of
 //! its height — which is what a script paints and sweeps in. A pick is in **output-stage pixels**,
 //! which is what `render.locate` takes and what the canvas publishes.
+//!
+//! Each launch is a [`Plan`]: every frame it captures, named by the step that produces it, with what
+//! that step commits and records. [`verify`] reads the frames by those names for everything a plan
+//! cannot say — above all what the photograph and its overlay show.
 use crate::{
     fixtures::{RANGE_COLUMNS, RANGE_PATCHES, RANGE_ROWS},
-    scenario::{Bright, Frame, Launch, Run, Scan, pixels, preamble},
+    scenario::{
+        Bright, Checked, Frame, Plan, Run, Scan, Step, Tolerance,
+        pixels::{self, compare},
+    },
     *,
 };
+use lightwell_core::BASIC_EFFECT;
 
 pub const SCENARIO: &str = "mask-range";
 /// The range fixture: twelve flat patches of the 24-patch chart's own sRGB renderings, laid out so
 /// each of the study's measured failures is legible in one frame. `cargo xtask generate-fixtures`.
-const FIXTURE: &str = "fixtures/generated/range.jpg";
-const WINDOW: [&str; 2] = workspace_smoke::WINDOW;
+pub const FIXTURE: &str = "fixtures/generated/range.jpg";
+
+/// The paragraph `reproduce.md` gives this scenario.
+pub const NOTE: &str = "Generate the fixture first with `cargo xtask generate-fixtures --output fixtures/generated`.\n\nTwo launches over one catalog: the first types a luminance band, intersects a gradient and a picked colour range with it, shows a grey card taken along with the sky and then given back, shows a layer ahead of the mask stop the selection altogether, and asks the composed mask and each component for its coverage overlay, checking the composition's grid patch by patch against the frame the masked adjustment produced; the second takes the colour range's own limits one at a time and finishes with a colour-held erase across two surfaces, read from the picture and then from that painted mask's own overlay.\n\nThe patches are the 24-patch reflective colour chart's own sRGB renderings, which is what `docs/design/range-study.md` measured over.";
 
 const BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
@@ -52,6 +62,8 @@ const LINEAR: &str = "linear";
 const LUMINANCE_RANGE: &str = "luminance-range";
 const COLOUR_RANGE: &str = "colour-range";
 const SET_LUMINANCE: &str = "mask.set-luminance-range";
+/// The gesture a linear component is drawn with, which holds the swept geometry until it is applied.
+const ADD_LINEAR: &str = "mask.add-linear";
 
 /// What every masked gesture in this scenario commits, in EV, and the intermediate value the drag
 /// passes through. A **darkening** rather than a lift, because the fixture holds a near-white patch
@@ -131,10 +143,6 @@ fn paced_path() -> Vec<[f64; 2]> {
 /// below the fold until the panel is scrolled to it, exactly as it is for a person.
 const STATEMENT_SCROLL: f64 = 0.55;
 
-/// The open frame plus one per script step.
-const LAUNCH1_FRAMES: usize = 28;
-const LAUNCH2_FRAMES: usize = 34;
-
 /// Where each patch of the fixture is read, as a fraction of the photograph's own drawn rectangle:
 /// the centre of its cell in the generator's own grid, so the probe and the fixture cannot disagree
 /// about which patch is which.
@@ -171,164 +179,297 @@ fn pick_at(name: &str) -> [u32; 2] {
     ]
 }
 
+/// Mask mode, through the same `workspace.set` the mode strip sends. A pick is its own canvas mode
+/// and it **latches**, exactly as the delivered neutral picker's does, so leaving it is a decision
+/// and not a side effect of having clicked once: every pick is left this way too. A mode commits
+/// nothing.
+fn mask_mode(name: &str) -> Step {
+    Step::new(name, json!({"workspace":{"mode":"mask"}})).commits(0)
+}
+
+/// One row of the open mask selected, which opens it: its number fields, its samples and, above
+/// them, what its kind cannot do. A panel state, so nothing is committed.
+fn select(name: &str, component: usize) -> Step {
+    Step::new(name, json!({"mask":{"select_component":component}})).commits(0)
+}
+
+/// One of the band's declared fields typed and submitted: its own entry.
+fn typed(name: &str, parameter: &str, value: f64) -> Step {
+    Step::new(
+        name,
+        json!({"field":{"action":SET_LUMINANCE,"parameter":parameter,"text":value.to_string(),"submit":true}}),
+    )
+    .commits(1)
+    .label("Update Luminance range 1")
+}
+
+/// One stop down through the open mask, as the panel's own drag, released: one entry.
+fn masked_exposure(name: &str, label: &str) -> Step {
+    Step::new(
+        name,
+        json!({"slider":{"action":BASIC,"parameter":EXPOSURE,"values":[PASSING_EV,MASKED_EV],"release":true}}),
+    )
+    .commits(1)
+    .label(label)
+}
+
+/// The host's own pick entered on the open row. Nothing is committed until the click.
+fn pick_entered(name: &str) -> Step {
+    Step::new(name, json!({"mask":{"pick":true}})).commits(0)
+}
+
+/// One click on the named patch, in output-stage pixels. What it commits is the caller's: a new
+/// colour is one entry and a colour the component already holds is none.
+fn pick(name: &str, patch: &str) -> Step {
+    let [x, y] = pick_at(patch);
+    Step::new(name, json!({"pick":{"x":x,"y":y}}))
+}
+
 /// Launch 1: the band, the gradient, the failure, the remedy, the input dependence and the overlays.
-fn launch1_script() -> Value {
-    let sky = pick_at("sky-top");
-    json!([
-        // 1: Mask mode, through the same `workspace.set` the mode strip sends.
-        {"workspace":{"mode":"mask"}},
-        // 2: a new mask whose first component is a luminance range. A **typed** kind: every field of
+pub fn launch1_plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        // The fixture as launched, with nothing in the recipe: every reading is against this frame.
+        Step::opened("opened").no_layer(BASIC_EFFECT),
+        mask_mode("mask-mode"),
+        // A new mask whose first component is a luminance range. A **typed** kind: every field of
         // its geometry carries a default, so the button creates it in one history entry rather than
         // opening a gesture with no shape to drag. It starts as the whole tonal range with soft
         // shoulders, which is the picture, and is narrowed from there.
-        {"mask":{"new":LUMINANCE_RANGE}},
-        // 3: the row open, which is what shows its number fields and, above them, the host's own
+        Step::new("band-created", json!({"mask":{"new":LUMINANCE_RANGE}}))
+            .commits(1)
+            .label("Add luminance range")
+            .no_draft(),
+        // The row open, which is what shows its number fields and, above them, the host's own
         // statement of what a band cannot separate.
-        {"mask":{"select_component":0}},
-        // 4-7: the band typed, one declared field at a time, each its own entry. `low` before `high`
+        select("band-row", 0),
+        // The band typed, one declared field at a time, each its own entry. `low` before `high`
         // because the payload refuses a crossed band rather than rendering an empty selection.
-        {"field":{"action":SET_LUMINANCE,"parameter":"low","text":BAND_LOW.to_string(),"submit":true}},
-        {"field":{"action":SET_LUMINANCE,"parameter":"high","text":BAND_HIGH.to_string(),"submit":true}},
-        {"field":{"action":SET_LUMINANCE,"parameter":"low_feather","text":BAND_FEATHER.to_string(),"submit":true}},
-        {"field":{"action":SET_LUMINANCE,"parameter":"high_feather","text":BAND_FEATHER.to_string(),"submit":true}},
-        // 8-11: a linear gradient intersected with the band, swept from the side it leaves alone
-        // towards the side it selects, and committed. It is what gives the two sky patches their
-        // difference: the top row is inside it, the bottom row outside.
-        {"mask":{"mode":"intersect"}},
-        {"mask":{"add":LINEAR}},
-        {"mask":{"sweep":{"from":GRADIENT_FROM,"to":GRADIENT_TO}}},
-        {"mask":{"apply":true}},
-        // 12: one stop down through the mask, as the panel's own drag. **This is the failure frame**:
+        typed("band-low", "low", BAND_LOW),
+        typed("band-high", "high", BAND_HIGH),
+        typed("band-low-feather", "low_feather", BAND_FEATHER),
+        typed("band-typed", "high_feather", BAND_FEATHER),
+        // A linear gradient intersected with the band, swept from the side it leaves alone towards
+        // the side it selects, and committed. It is what gives the two sky patches their
+        // difference: the top row is inside it, the bottom row outside. The sweep is a drafted
+        // gesture holding the swept geometry, and the apply commits it as one entry.
+        Step::new("gradient-mode", json!({"mask":{"mode":"intersect"}})).commits(0),
+        Step::new("gradient-added", json!({"mask":{"add":LINEAR}})).commits(0),
+        Step::new(
+            "gradient-swept",
+            json!({"mask":{"sweep":{"from":GRADIENT_FROM,"to":GRADIENT_TO}}}),
+        )
+        .commits(0)
+        .draft(
+            ADD_LINEAR,
+            json!({"mode":"intersect","x0":GRADIENT_FROM[0],"y0":GRADIENT_FROM[1],
+                   "x1":GRADIENT_TO[0],"y1":GRADIENT_TO[1]}),
+        ),
+        Step::new("gradient-applied", json!({"mask":{"apply":true}}))
+            .commits(1)
+            .label("Add intersect linear")
+            .no_draft(),
+        // One stop down through the mask, as the panel's own drag. **This is the failure frame**:
         // the band was drawn for the sky and takes the grey card beside it, because the two are 1.4
         // output codes apart on the axis the band measures.
-        {"slider":{"action":BASIC,"parameter":EXPOSURE,"values":[PASSING_EV,MASKED_EV],"release":true}},
-        // 13-14: a colour range intersected with both. Created with no swatches, which selects
-        // nothing: the picture goes back to the one the mask never touched, and that is what an
-        // unsampled colour range means rather than a component that does nothing.
-        {"mask":{"mode":"intersect"}},
-        {"mask":{"add":COLOUR_RANGE}},
-        // 15-17: its row open, the host's own pick entered, and one click on the sky. **This is the
-        // remedy frame**: the sky stays selected and the grey card comes back, which is the component
-        // list doing the work the band cannot.
-        {"mask":{"select_component":2}},
-        {"mask":{"pick":true}},
-        {"pick":{"x":sky[0],"y":sky[1]}},
-        // 18: back to Mask mode. A pick is its own canvas mode and it **latches**, exactly as the
-        // delivered neutral picker's does, so leaving it is a decision and not a side effect of having
-        // clicked once. The strip is where a person leaves it and `workspace.set` is what the strip
-        // sends.
-        {"workspace":{"mode":"mask"}},
-        // 19: a **global** exposure layer, from JSON with no mask in the request, which the host
-        // places ahead of the masked one. **This is the input-dependence frame**: the band reads the
-        // pixel its own operation receives, that pixel is now 12.8 units further up the axis, and the
-        // sky is outside the band — so the masked layer stops applying to it entirely.
-        {"api":{"method":"edit.set-basic","params":{"exposure":GLOBAL_EV}}},
-        // 20: undone, and the selection comes back with the input it was drawn against.
-        {"api":{"method":"history.undo","params":{}}},
-        // 21: the overlay on with the pointer off the list, which asks for the **composed** mask's
-        // grid. This mask reads pixels, and a layer is bound to it — the masked Exposure of step 12 —
-        // so the grid is read on that layer's own input and drawn. It is checked against frame 20:
-        // the patches it calls selected are the patches that frame moved.
-        {"workspace":{"mask_overlay":"mask-on-black"}},
-        // 22: the pointer on the gradient's row, which asks for that one component's grid.
-        {"mask":{"hover":1}},
-        // 23-24: the pointer on each range component's row in turn. Each has its own grid now, and
-        // the pair is the study's failure and its remedy as pictures: the band takes the grey card
-        // beside the sky, and the picked colour range does not.
-        {"mask":{"hover":0}},
-        {"mask":{"hover":2}},
-        // 25: the overlay off, leaving the photograph.
-        {"workspace":{"mask_overlay":"off"}},
-        // 26-27: the band's own row open and the tools panel scrolled to it, so the frame carries
-        // **the product's own statement of what a band cannot separate** where a person reads it:
-        // above the four numbers it applies to, on the row they belong to. The statement is checked
-        // in the state on every frame that has the row open; this is the one that shows it.
-        {"mask":{"select_component":0}},
-        {"tools_scroll":STATEMENT_SCROLL}
+        masked_exposure("failure", "Mask 1 · Exposure -1.00 EV")
+            .payload(BASIC_EFFECT, json!({ EXPOSURE: MASKED_EV })),
+        // A colour range intersected with both. Created with no swatches, which selects nothing:
+        // the picture goes back to the one the mask never touched, and that is what an unsampled
+        // colour range means rather than a component that does nothing.
+        Step::new("colour-mode", json!({"mask":{"mode":"intersect"}})).commits(0),
+        Step::new("colour-added", json!({"mask":{"add":COLOUR_RANGE}}))
+            .commits(1)
+            .label("Add intersect colour range"),
+        // Its row open, the host's own pick entered, and one click on the sky. **This is the
+        // remedy frame**: the sky stays selected and the grey card comes back, which is the
+        // component list doing the work the band cannot.
+        select("colour-row", 2),
+        pick_entered("sky-pick"),
+        pick("remedy", "sky-top")
+            .commits(1)
+            .label("Sample Colour range 1"),
+        mask_mode("sky-picked"),
+        // A **global** exposure layer, from JSON with no mask in the request, which the host places
+        // ahead of the masked one: the stack's first Basic layer is this one. **This is the
+        // input-dependence frame**: the band reads the pixel its own operation receives, that pixel
+        // is now 12.8 units further up the axis, and the sky is outside the band — so the masked
+        // layer stops applying to it entirely.
+        Step::new(
+            "global",
+            json!({"api":{"method":"edit.set-basic","params":{"exposure":GLOBAL_EV}}}),
+        )
+        .commits(1)
+        .label("Exposure +0.75 EV")
+        .payload(BASIC_EFFECT, json!({ EXPOSURE: GLOBAL_EV })),
+        // Undone, and the selection comes back with the input it was drawn against. An undo moves
+        // the revision on like any commit, to the entry the pick made, and the masked layer is the
+        // stack's first Basic layer again.
+        Step::new(
+            "global-undone",
+            json!({"api":{"method":"history.undo","params":{}}}),
+        )
+        .commits(1)
+        .label("Sample Colour range 1")
+        .payload(BASIC_EFFECT, json!({ EXPOSURE: MASKED_EV }))
+        .same_layer(BASIC_EFFECT, "failure"),
+        // The overlay on with the pointer off the list, which asks for the **composed** mask's
+        // grid. This mask reads pixels, and a layer is bound to it — the masked Exposure of
+        // `failure` — so the grid is read on that layer's own input and drawn. It is checked against
+        // `global-undone`: the patches it calls selected are the patches that frame moved.
+        Step::new(
+            "overlay-composed",
+            json!({"workspace":{"mask_overlay":"mask-on-black"}}),
+        )
+        .commits(0),
+        // The pointer on the gradient's row, which asks for that one component's grid.
+        Step::new("overlay-gradient", json!({"mask":{"hover":1}})).commits(0),
+        // The pointer on each range component's row in turn. Each has its own grid now, and the pair
+        // is the study's failure and its remedy as pictures: the band takes the grey card beside the
+        // sky, and the picked colour range does not.
+        Step::new("overlay-band", json!({"mask":{"hover":0}})).commits(0),
+        Step::new("overlay-colour", json!({"mask":{"hover":2}})).commits(0),
+        // The overlay off, leaving the photograph.
+        Step::new("overlay-off", json!({"workspace":{"mask_overlay":"off"}})).commits(0),
+        // The band's own row open and the tools panel scrolled to it, so the frame carries **the
+        // product's own statement of what a band cannot separate** where a person reads it: above
+        // the four numbers it applies to, on the row they belong to. The statement is checked in the
+        // state on every frame that has the row open; this is the one that shows it.
+        select("band-row-again", 0),
+        Step::new("statement", json!({"tools_scroll":STATEMENT_SCROLL})).commits(0),
     ])
 }
 
 /// Launch 2, over the same catalog: the colour range's own limits, and the colour-constrained brush.
-fn launch2_script() -> Value {
-    let grey = pick_at("grey-card");
-    let orange = pick_at("orange");
-    let skin = pick_at("light-skin");
-    json!([
-        // 1: Mask mode, in a new process.
-        {"workspace":{"mode":"mask"}},
-        // 2-3: a second mask, one colour range, and an adjustment through it before anything is
+pub fn launch2_plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        // The catalog reopened in a new process, on the entry launch 1 ended on.
+        Step::opened("reopened").label("Sample Colour range 1"),
+        mask_mode("mask-mode"),
+        // A second mask, one colour range, and an adjustment through it before anything is
         // sampled. The order is the host's rule and not a convenience: a pick reads the pixel the
         // operation this mask modulates receives, so a mask no layer is bound to is refused by name.
         // With no swatch the mask selects nothing, so this commits a layer and changes no pixel.
-        {"mask":{"new":COLOUR_RANGE}},
-        {"slider":{"action":BASIC,"parameter":EXPOSURE,"values":[PASSING_EV,MASKED_EV],"release":true}},
-        // 4-6: the row open, the pick entered, and one click on the **grey card**. Every neutral is
-        // one colour to a metric with no lightness term — white, the two greys above it and black are
+        Step::new("grey-mask", json!({"mask":{"new":COLOUR_RANGE}}))
+            .commits(1)
+            .label("Mask 2 · Add colour range"),
+        masked_exposure("grey-mask-exposure", "Mask 2 · Exposure -1.00 EV"),
+        // The row open, the pick entered, and one click on the **grey card**. Every neutral is one
+        // colour to a metric with no lightness term — white, the two greys above it and black are
         // mutually within `0.0015`, a third of the tightest radius — so one sampled grey selects the
         // whole tonal range and the frame shows five patches move at once.
-        {"mask":{"select_component":0}},
-        {"mask":{"pick":true}},
-        {"pick":{"x":grey[0],"y":grey[1]}},
-        // 7: back to Mask mode, because a pick latches. Every pick below is left the same way.
-        {"workspace":{"mode":"mask"}},
-        // 8-10: a second swatch, on the orange. A colour range folds its samples by nearest, which is
-        // the same union the component list composes by, so the orange joins the selection and the
+        select("grey-row", 0),
+        pick_entered("grey-pick"),
+        pick("neutral", "grey-card")
+            .commits(1)
+            .label("Mask 2 · Sample Colour range 1"),
+        mask_mode("grey-picked"),
+        // A second swatch, on the orange. A colour range folds its samples by nearest, which is the
+        // same union the component list composes by, so the orange joins the selection and the
         // neutrals stay in it.
-        {"mask":{"pick":true}},
-        {"pick":{"x":orange[0],"y":orange[1]}},
-        {"workspace":{"mode":"mask"}},
-        // 11-13: a third swatch, on the grey card again. It is the colour the component already holds,
-        // so it is exactly a no-op: the fold is by nearest sample and a duplicate changes no pixel's
-        // coverage. The frame is the evidence that a picker misfire costs nothing.
-        {"mask":{"pick":true}},
-        {"pick":{"x":grey[0],"y":grey[1]}},
-        {"workspace":{"mode":"mask"}},
-        // 14-19: a third mask, its own adjustment, and one click on the **light skin** patch. Dark
-        // skin is `0.0108` away in the frozen metric, a third of what one face's own shading spans,
-        // so any setting that holds a lit face takes both — and the frame shows both move.
-        {"mask":{"new":COLOUR_RANGE}},
-        {"slider":{"action":BASIC,"parameter":EXPOSURE,"values":[PASSING_EV,MASKED_EV],"release":true}},
-        {"mask":{"select_component":0}},
-        {"mask":{"pick":true}},
-        {"pick":{"x":skin[0],"y":skin[1]}},
-        {"workspace":{"mode":"mask"}},
-        // 20-23: the colour-constrained brush, in two halves. First an ordinary stroke across the
-        // boundary between the bottom sky patch and the foliage beside it, and an adjustment through
-        // it: one stroke, two surfaces, both selected.
-        {"mask":{"brush":{"size":BRUSH_SIZE,"feather":BRUSH_HARD,"flow":100.0,"erase":false,"limit_to_colour":false}}},
-        {"mask":{"paint":"new-mask"}},
-        {"mask":{"stroke":{"points":[at("sky-bottom"),at("foliage")],"release":true}}},
-        {"slider":{"action":BASIC,"parameter":EXPOSURE,"values":[PASSING_EV,MASKED_EV],"release":true}},
-        // 24-26: then the same path erased back the other way, held to the colour under the brush
-        // where the stroke begins — which is the foliage. The script sets a flag and never a colour:
-        // the host reads the pixel the masked operation receives at the stroke's own first stored
+        pick_entered("orange-pick"),
+        pick("orange", "orange")
+            .commits(1)
+            .label("Mask 2 · Sample Colour range 1"),
+        mask_mode("orange-picked"),
+        // A third swatch, on the grey card again. It is the colour the component already holds, so
+        // it is exactly a no-op: the duplicate is dropped before it is stored, so no entry is
+        // appended, and the fold is by nearest sample so no pixel's coverage changes. The frame is
+        // the evidence that a picker misfire costs nothing.
+        pick_entered("duplicate-pick"),
+        pick("duplicate", "grey-card").commits(0),
+        mask_mode("duplicate-picked"),
+        // A third mask, its own adjustment, and one click on the **light skin** patch. Dark skin is
+        // `0.0108` away in the frozen metric, a third of what one face's own shading spans, so any
+        // setting that holds a lit face takes both — and the frame shows both move.
+        Step::new("skin-mask", json!({"mask":{"new":COLOUR_RANGE}}))
+            .commits(1)
+            .label("Mask 3 · Add colour range"),
+        masked_exposure("skin-mask-exposure", "Mask 3 · Exposure -1.00 EV"),
+        select("skin-row", 0),
+        pick_entered("skin-pick"),
+        pick("skin", "light-skin")
+            .commits(1)
+            .label("Mask 3 · Sample Colour range 1"),
+        mask_mode("skin-picked"),
+        // The colour-constrained brush, in two halves. First an ordinary stroke across the boundary
+        // between the bottom sky patch and the foliage beside it, and an adjustment through it: one
+        // stroke, two surfaces, both selected. The stroke makes the mask and its first stroke in one
+        // entry.
+        Step::new(
+            "brush",
+            json!({"mask":{"brush":{"size":BRUSH_SIZE,"feather":BRUSH_HARD,"flow":100.0,"erase":false,"limit_to_colour":false}}}),
+        )
+        .commits(0),
+        Step::new("brush-mask", json!({"mask":{"paint":"new-mask"}})).commits(0),
+        Step::new(
+            "stroke",
+            json!({"mask":{"stroke":{"points":[at("sky-bottom"),at("foliage")],"release":true}}}),
+        )
+        .commits(1)
+        .label("Mask 4 · Add brush"),
+        masked_exposure("painted", "Mask 4 · Exposure -1.00 EV"),
+        // Then the same path erased back the other way, held to the colour under the brush where
+        // the stroke begins — which is the foliage. The script sets a flag and never a colour: the
+        // host reads the pixel the masked operation receives at the stroke's own first stored
         // position. **This is the constrained-brush frame**: the foliage comes out of the selection
         // and the sky the stroke also crossed stays in it, because the two are `0.116` apart in a
         // metric whose radius here is `0.035`.
-        {"mask":{"brush":{"erase":true,"limit_to_colour":true}}},
-        {"mask":{"paint":{"component":0}}},
-        {"mask":{"stroke":{"points":[at("foliage"),at("sky-bottom")],"release":true}}},
-        // 27-28: the overlay on and off over that mask. **This is the frame P16 bought for a mask a
-        // person painted**: a colour-held stroke makes a brush component read pixels, so before this
-        // there was no grid for it at all and the only way to see what the erase had taken was to
-        // apply an adjustment and look at the picture. The grid is checked against exactly that —
-        // frame 26's own readings — and then the overlay is switched off and the photograph is
+        Step::new(
+            "held-erase",
+            json!({"mask":{"brush":{"erase":true,"limit_to_colour":true}}}),
+        )
+        .commits(0),
+        Step::new("held-erase-paint", json!({"mask":{"paint":{"component":0}}})).commits(0),
+        Step::new(
+            "constrained",
+            json!({"mask":{"stroke":{"points":[at("foliage"),at("sky-bottom")],"release":true}}}),
+        )
+        .commits(1)
+        .label("Mask 4 · Update Brush 1"),
+        // The overlay on and off over that mask. **This is the frame P16 bought for a mask a person
+        // painted**: a colour-held stroke makes a brush component read pixels, so before this there
+        // was no grid for it at all and the only way to see what the erase had taken was to apply an
+        // adjustment and look at the picture. The grid is checked against exactly that —
+        // `constrained`'s own readings — and then the overlay is switched off and the photograph is
         // exactly where it was.
-        {"workspace":{"mask_overlay":"mask-on-black"}},
-        {"workspace":{"mask_overlay":"off"}},
-        // 29: undone. The erase is one entry like any other stroke, so the foliage is selected again.
-        {"api":{"method":"history.undo","params":{}}},
-        // 30-32: one **paced** stroke, which is the measurement rather than a claim about pixels.
-        // Every stroke above sends its whole path in one update, which is what a fast drag does and
-        // what a correctness reading wants; this one sends a position every `STROKE_INTERVAL_MS` in
-        // real time, so each is its own input with its own round trip and its own drafted frame. That
-        // is the only way an end-to-end figure for a paint gesture exists at all: `editor-latency`
+        Step::new(
+            "held-overlay",
+            json!({"workspace":{"mask_overlay":"mask-on-black"}}),
+        )
+        .commits(0),
+        Step::new(
+            "held-overlay-off",
+            json!({"workspace":{"mask_overlay":"off"}}),
+        )
+        .commits(0),
+        // Undone. The erase is one entry like any other stroke, so the foliage is selected again and
+        // the current entry is the adjustment's once more.
+        Step::new(
+            "held-erase-undone",
+            json!({"api":{"method":"history.undo","params":{}}}),
+        )
+        .commits(1)
+        .label("Mask 4 · Exposure -1.00 EV"),
+        // One **paced** stroke, which is the measurement rather than a claim about pixels. Every
+        // stroke above sends its whole path in one update, which is what a fast drag does and what a
+        // correctness reading wants; this one sends a position every `STROKE_INTERVAL_MS` in real
+        // time, so each is its own input with its own round trip and its own drafted frame. That is
+        // the only way an end-to-end figure for a paint gesture exists at all: `editor-latency`
         // drives field-patch sliders, and a stroke is a different gesture.
-        {"mask":{"brush":{"erase":false,"limit_to_colour":false}}},
-        {"mask":{"paint":{"component":0}}},
-        {"mask":{"stroke":{"points":paced_path(),"release":true,"interval_ms":STROKE_INTERVAL_MS}}},
-        // 33: Mask mode left, which returns the tools panel and leaves every selection where it is.
-        {"workspace":{"mode":"pointer"}}
+        Step::new(
+            "plain-brush",
+            json!({"mask":{"brush":{"erase":false,"limit_to_colour":false}}}),
+        )
+        .commits(0),
+        Step::new("paced-paint", json!({"mask":{"paint":{"component":0}}})).commits(0),
+        Step::new(
+            "paced-stroke",
+            json!({"mask":{"stroke":{"points":paced_path(),"release":true,"interval_ms":STROKE_INTERVAL_MS}}}),
+        )
+        .commits(1)
+        .label("Mask 4 · Update Brush 1"),
+        // Mask mode left, which returns the tools panel and leaves every selection where it is.
+        Step::new("pointer-mode", json!({"workspace":{"mode":"pointer"}})).commits(0),
     ])
 }
 
@@ -375,7 +516,7 @@ fn basic_layers(frame: &Frame) -> Vec<(String, Value)> {
         .map(|layers| {
             layers
                 .iter()
-                .filter(|layer| layer["effect"] == json!(lightwell_core::BASIC_EFFECT))
+                .filter(|layer| layer["effect"] == json!(BASIC_EFFECT))
                 .map(|layer| {
                     (
                         layer["id"].as_str().unwrap_or_default().to_owned(),
@@ -420,39 +561,6 @@ fn reading(read: &[(String, f64)], name: &str) -> Result<f64> {
         .ok_or_else(|| format!("No patch called {name} was read").into())
 }
 
-/// One patch moved between two captures by at least the margin a selected patch must move by.
-fn moved(what: &str, after: f64, before: f64) -> Result {
-    ensure(
-        (after - before).abs() >= MOVED,
-        format!("{what}: {after:.2} did not move from {before:.2} by {MOVED}"),
-    )
-}
-
-/// One patch is where it was, within renderer-readback noise.
-fn untouched(what: &str, after: f64, before: f64) -> Result {
-    ensure(
-        (after - before).abs() <= UNTOUCHED,
-        format!("{what}: {after:.2} moved from {before:.2} by more than {UNTOUCHED}"),
-    )
-}
-
-/// Two patches of one capture read the same, within the same noise. This is how every claim about
-/// what a selection *stopped* selecting is made: against a control of the identical colour in the
-/// same frame, rather than against a predicted output code.
-fn same(what: &str, left: f64, right: f64) -> Result {
-    ensure(
-        (left - right).abs() <= UNTOUCHED,
-        format!("{what}: {left:.2} and {right:.2} differ by more than {UNTOUCHED}"),
-    )
-}
-
-fn differ(what: &str, left: f64, right: f64) -> Result {
-    ensure(
-        (left - right).abs() >= MOVED,
-        format!("{what}: {left:.2} and {right:.2} differ by less than {MOVED}"),
-    )
-}
-
 /// Exactly the patches named moved between two captures, and every other one is where it was. This is
 /// what makes "a band takes a grey card as well as a sky" a claim about the whole photograph and not
 /// about the two patches this scenario happened to look at.
@@ -465,15 +573,15 @@ fn only(
     let mut found = Vec::new();
     for (name, value) in after {
         let was = reading(before, name)?;
-        let wanted = selected.contains(&name.as_str());
         if (value - was).abs() >= MOVED {
             found.push(name.clone());
         }
-        if wanted {
-            moved(&format!("{what}: {name}"), *value, was)?;
+        let tolerance = if selected.contains(&name.as_str()) {
+            Tolerance::Apart(MOVED)
         } else {
-            untouched(&format!("{what}: {name}"), *value, was)?;
-        }
+            Tolerance::Within(UNTOUCHED)
+        };
+        compare(&format!("{what}: {name}"), *value, was, tolerance)?;
     }
     let mut expected: Vec<String> = selected.iter().map(|name| (*name).to_owned()).collect();
     expected.sort();
@@ -493,13 +601,10 @@ fn only(
 /// It is the shape of the work, not the shape of the panel: a masked layer whose mask reads pixels
 /// costs an evaluation at every pixel of the frame rather than inside a rectangle, which is most of
 /// what a latency figure taken here is about.
-fn masked_recipe(app: &Value) -> Result<Value> {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?;
-    let last = frames.last().ok_or("The launch wrote no frames")?;
-    let masks = last["state"]["masks"]["masks"]
-        .as_array()
-        .ok_or("The last frame records no mask list")?;
-    let layers = last["state"]["stack"]["layers"]
+fn masked_recipe(launch: &Checked) -> Result<Value> {
+    let last = launch.frames.last().ok_or("The launch wrote no frames")?;
+    let masks = last.masks()?;
+    let layers = last.state()["stack"]["layers"]
         .as_array()
         .ok_or("The last frame records no layer list")?;
     let masked: Vec<&Value> = layers
@@ -514,62 +619,20 @@ fn masked_recipe(app: &Value) -> Result<Value> {
     }))
 }
 
-/// One script step's own record: whether the editor refused it, and in whose words.
-fn step_refusal(app: &Value, index: usize) -> Result<Option<String>> {
-    let step = app["script"]
+/// The steps the editor refused, as the run's own script records them. Neither plan expects a
+/// refusal, so [`Plan::check`] has already held every step `sent` with no input error, and this is the
+/// record of that rather than a check of it. Nothing is refused because the overlay of a mask that
+/// reads pixels, and of each of its range components, reads the input of the mask's first bound
+/// layer, which launch 1 binds when it drags the masked Exposure.
+fn refused(launch: &Checked) -> Vec<Value> {
+    launch.app["script"]
         .as_array()
-        .ok_or("The run recorded no script")?
-        .get(index)
-        .ok_or_else(|| format!("The run recorded no step {index}"))?;
-    if step["status"] != json!("failed") {
-        return Ok(None);
-    }
-    Ok(Some(
-        step["reason"]
-            .as_str()
-            .ok_or("A failed step recorded no reason")?
-            .to_owned(),
-    ))
-}
-
-/// Every step the editor refused, by its position in the script, so a scenario that deliberately
-/// captures a refusal still fails on one it did not mean to capture.
-fn refusals(app: &Value) -> Result<Vec<(usize, String)>> {
-    let steps = app["script"].as_array().ok_or("No script")?;
-    let mut out = Vec::new();
-    for index in 0..steps.len() {
-        if let Some(reason) = step_refusal(app, index)? {
-            out.push((index, reason));
-        }
-    }
-    Ok(out)
-}
-
-/// The refused steps are exactly the ones named, and each says what it was expected to say.
-fn only_refusals(app: &Value, expected: &[(usize, &str)]) -> Result<Vec<Value>> {
-    let found = refusals(app)?;
-    ensure(
-        found.len() == expected.len()
-            && found
-                .iter()
-                .zip(expected)
-                .all(|((index, _), (wanted, _))| index == wanted),
-        format!(
-            "The run refused steps {:?}, expected exactly {:?}",
-            found.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
-            expected.iter().map(|(index, _)| *index).collect::<Vec<_>>()
-        ),
-    )?;
-    for ((index, reason), (_, wanted)) in found.iter().zip(expected) {
-        ensure(
-            reason.contains(wanted),
-            format!("Step {index} was refused with {reason:?}, which does not say {wanted:?}"),
-        )?;
-    }
-    Ok(found
         .into_iter()
-        .map(|(index, reason)| json!({"step":index,"reason":reason}))
-        .collect())
+        .flatten()
+        .enumerate()
+        .filter(|(_, step)| step["status"] != json!("sent"))
+        .map(|(index, step)| json!({"step":index,"reason":step["reason"]}))
+        .collect()
 }
 
 /// Every answer the overlay got while the run was going, in order: a coverage grid that was painted
@@ -577,8 +640,8 @@ fn only_refusals(app: &Value, expected: &[(usize, &str)]) -> Result<Vec<Value>> 
 ///
 /// It is read from the events rather than from the frames because the grid is not part of the state
 /// summary — what a frame carries is the photograph with the overlay drawn over it, which is what the
-/// pixel readings below check. These are the host's own record of *why* one frame has an overlay and
-/// three do not.
+/// pixel readings below check. These are the host's own record of what each overlay request was
+/// answered with, and for which component.
 fn overlay_answers(events: &[Value]) -> Vec<Value> {
     events
         .iter()
@@ -593,55 +656,28 @@ fn overlay_answers(events: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// The whole scenario: two launches over one catalog, checked together.
-pub fn run(mut run: Run) -> Result {
-    let fixture = run.root().join(FIXTURE);
-    run.note(
-        "Generate the fixture first with `cargo xtask generate-fixtures --output fixtures/generated`.\n\nTwo launches over one catalog: the first types a luminance band, intersects a gradient and a picked colour range with it, shows a grey card taken along with the sky and then given back, shows a layer ahead of the mask stop the selection altogether, and asks the composed mask and each component for its coverage overlay, checking the composition's grid patch by patch against the frame the masked adjustment produced; the second takes the colour range's own limits one at a time and finishes with a colour-held erase across two surfaces, read from the picture and then from that painted mask's own overlay.\n\nThe patches are the 24-patch reflective colour chart's own sRGB renderings, which is what `docs/design/range-study.md` measured over.",
-    );
-    run.check(|run| {
-        ensure(
-            fixture.is_file(),
-            format!("{FIXTURE} is missing; run `cargo xtask generate-fixtures`"),
-        )?;
-        run.hash(std::slice::from_ref(&fixture))?;
-        let launch1 = run.launch(
-            Launch::named("launch1")
-                .open(&fixture)
-                .script("script1.json", launch1_script())
-                .window(WINDOW),
-        )?;
-        let (app1, events1) = preamble(&launch1, LAUNCH1_FRAMES)?;
-        let checks = verify_launch1(&launch1, &app1, &events1)?;
-        run.record("launch1", checks.clone());
-
-        let catalog = launch1.join("catalog.sqlite");
-        ensure(catalog.is_file(), "Launch 1 wrote no catalog")?;
-        let launch2 = run.launch(
-            Launch::named("launch2")
-                .catalog(&catalog)
-                .open(&fixture)
-                .script("script2.json", launch2_script())
-                .window(WINDOW),
-        )?;
-        let (app2, events2) = preamble(&launch2, LAUNCH2_FRAMES)?;
-        let limits = verify_launch2(&launch2, &app2, &checks)?;
-        run.record("launch2", limits.clone());
-        // The stroke's own end-to-end latency, from the events of the launch that painted one, with
-        // the recipe it was painted on and the load the host was under. It is a smoke-run figure over
-        // one fixture and is labelled as such where it is recorded; the interval is the same one
-        // `editor-latency` measures for a slider.
-        let recipe = masked_recipe(&app2)?;
-        let latency = stroke_latency(run.root(), &events2, recipe)?;
-        run.record("stroke_latency", latency.clone());
-        run.sources_unchanged()?;
-        ensure(!events1.is_empty() && !events2.is_empty(), "No event log")?;
-        write_json(
-            &run.out().join("mask-range-checks.json"),
-            &json!({"launch1": checks, "launch2": limits, "stroke_latency": latency}),
-        )?;
-        Ok(())
-    })
+/// Both launches, checked together once each has held to its plan: what the photograph, the panel
+/// and the overlay show at each named step, and the paced stroke's own latency.
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
+    let [launch1, launch2] = launches else {
+        return Err(format!("Expected two launches, found {}", launches.len()).into());
+    };
+    let checks = verify_launch1(launch1)?;
+    run.record("launch1", checks.clone());
+    let limits = verify_launch2(launch2, &checks)?;
+    run.record("launch2", limits.clone());
+    // The stroke's own end-to-end latency, from the events of the launch that painted one, with the
+    // recipe it was painted on and the load the host was under. It is a smoke-run figure over one
+    // fixture and is labelled as such where it is recorded; the interval is the same one
+    // `editor-latency` measures for a slider.
+    let recipe = masked_recipe(launch2)?;
+    let latency = stroke_latency(run.root(), &launch2.events, recipe)?;
+    run.record("stroke_latency", latency.clone());
+    write_json(
+        &run.out().join("mask-range-checks.json"),
+        &json!({"launch1": checks, "launch2": limits, "stroke_latency": latency}),
+    )?;
+    Ok(())
 }
 
 /// A painted stroke's own control-to-frame latency, paired from the run's events.
@@ -690,77 +726,66 @@ fn stroke_latency(root: &Path, events: &[Value], recipe: Value) -> Result<Value>
     }))
 }
 
-/// Launch 1, frame by frame.
-fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Value> {
-    let records = app["frames"].as_array().ok_or("Missing frames")?;
-    ensure(
-        records.len() == LAUNCH1_FRAMES,
-        format!("Launch 1 wrote {} frames", records.len()),
-    )?;
-    // Nothing in this launch is refused. The three refusals it used to capture were the overlay of a
-    // mask that reads pixels and each of its two range components' own; the overlay now reads the
-    // input of the mask's first bound layer, which this launch bound when it dragged the masked
-    // Exposure, so all four requests are answered. The set is still pinned, so a refusal this
-    // scenario did not mean to capture still fails the run.
-    let refused = only_refusals(app, &[])?;
-    let frames = Frame::all(evidence, app)?;
-    let bounds = pixels::bright_bounds(&frames[0], BOUNDS)?;
+/// Launch 1, step by step: what the photograph, the panel and the overlay show. What each step
+/// commits, its label, the Basic layers' payloads and the gestures' drafts are the plan's.
+fn verify_launch1(launch: &Checked) -> Result<Value> {
+    let start = launch.at("opened")?;
+    let bounds = pixels::bright_bounds(start, BOUNDS)?;
     let mut shows = Vec::new();
     let mut record = |frame: &Value, what: &str, detail: Value| {
         shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
     };
 
-    // Frame 0: the fixture as launched, with no mask in the recipe. Every reading below is against
-    // this one.
+    // The fixture as launched, with no mask in the recipe. Every reading below is against this one.
     ensure(
-        frames[0].masks()?.is_empty(),
+        start.masks()?.is_empty(),
         "The fixture opened with a mask already in the recipe",
     )?;
-    let opened = read(&frames[0], bounds)?;
+    let opened = read(start, bounds)?;
     // The two sky patches are the same colour, which is what makes every control comparison below a
     // comparison and not a prediction.
-    same(
+    compare(
         "the fixture's two sky patches",
         reading(&opened, "sky-top")?,
         reading(&opened, "sky-bottom")?,
+        Tolerance::Within(UNTOUCHED),
     )?;
     record(
-        &frames[0],
+        start,
         "the range fixture as launched: twelve flat chart patches, no mask in the recipe",
         json!({"patches":opened.clone(),"bounds":bounds}),
     );
 
-    // Frame 2: the band created by its own button. A typed kind: one history entry, no gesture, and
-    // the whole tonal range with soft shoulders, which selects the picture.
+    // The band created by its own button. A typed kind: the plan holds it to one entry and no
+    // draft, and here the mask's own gesture state is empty too; the whole tonal range with soft
+    // shoulders, which selects the picture.
+    let created = launch.at("band-created")?;
     ensure(
-        frames[2].revision()? == frames[0].revision()? + 1,
-        "Creating a luminance range did not commit one entry",
-    )?;
-    ensure(
-        frames[2]["state"]["mask_draft"] == Value::Null,
+        created["state"]["mask_draft"] == Value::Null,
         "A typed kind opened a gesture",
     )?;
     ensure(
-        frames[2].kinds()? == ["add luminance-range"],
-        format!("The button made {:?}", frames[2].kinds()?),
+        created.kinds()? == ["add luminance-range"],
+        format!("The button made {:?}", created.kinds()?),
     )?;
-    // What it was created *as* is read from frame 3, where the row is open: a closed row shows no
+    // What it was created *as* is read from `band-row`, where the row is open: a closed row shows no
     // numbers, which is the panel's own behaviour and not an omission here.
     record(
-        &frames[2],
+        created,
         "a luminance range created by its button in one entry: the whole tonal range with soft \
          shoulders, which is the picture",
-        json!({"label":frames[2].label()?,"kinds":frames[2].kinds()?}),
+        json!({"label":created.label()?,"kinds":created.kinds()?}),
     );
 
-    // Frame 3: the row open. This is where the product says what a band cannot do, before a person
-    // has typed a number into it.
-    let fresh = fields(&frames[3], 0)?.clone();
+    // The row open. This is where the product says what a band cannot do, before a person has typed
+    // a number into it.
+    let row = launch.at("band-row")?;
+    let fresh = fields(row, 0)?.clone();
     ensure(
         fresh["low"] == json!(0.0) && fresh["high"] == json!(100.0),
         format!("A new band starts at {fresh}"),
     )?;
-    let said = limits(&frames[3], 0)?;
+    let said = limits(row, 0)?;
     ensure(
         said.len() == 2
             && said[0].contains("output codes apart")
@@ -768,66 +793,64 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
         format!("The open row said {said:?}"),
     )?;
     record(
-        &frames[3],
+        row,
         "the band's own row, with the host's statement of what brightness alone cannot separate \
          above the numbers it applies to",
         json!({"limits":said.clone(),"fields":fresh}),
     );
 
-    // Frame 7: the band typed, one field per entry. Four entries, four numbers, nothing dragged.
-    ensure(
-        frames[7].revision()? == frames[2].revision()? + 4,
-        format!(
-            "Typing four fields moved the revision to {}",
-            frames[7].revision()?
-        ),
-    )?;
-    let band = fields(&frames[7], 0)?.clone();
+    // The band typed, one field per entry — four entries, which the plan counts — and four numbers,
+    // nothing dragged.
+    let narrowed = launch.at("band-typed")?;
+    let band = fields(narrowed, 0)?.clone();
     ensure(
         band == json!({"low":BAND_LOW,"low_feather":BAND_FEATHER,"high":BAND_HIGH,
                        "high_feather":BAND_FEATHER}),
         format!("The typed band reads {band}"),
     )?;
     record(
-        &frames[7],
+        narrowed,
         "the band narrowed onto the fixture's sky by its own declared fields, one entry each",
-        json!({"fields":band.clone(),"label":frames[7].label()?}),
+        json!({"fields":band.clone(),"label":narrowed.label()?}),
     );
 
-    // Frame 11: the gradient committed, intersected with the band.
+    // The gradient committed, intersected with the band.
+    let gradient = launch.at("gradient-applied")?;
     ensure(
-        frames[11].kinds()? == ["add luminance-range", "intersect linear"],
-        format!("The mask holds {:?}", frames[11].kinds()?),
+        gradient.kinds()? == ["add luminance-range", "intersect linear"],
+        format!("The mask holds {:?}", gradient.kinds()?),
     )?;
     ensure(
-        limits(&frames[11], 1)?.is_empty(),
+        limits(gradient, 1)?.is_empty(),
         "A gradient claimed a limit a position-based component does not have",
     )?;
     record(
-        &frames[11],
+        gradient,
         "a linear gradient intersected with the band, so the fixture's top row is inside the mask \
          and its bottom row outside it",
-        json!({"kinds":frames[11].kinds()?,"label":frames[11].label()?,
-               "limits":limits(&frames[11],1)?}),
+        json!({"kinds":gradient.kinds()?,"label":gradient.label()?,
+               "limits":limits(gradient,1)?}),
     );
 
-    // Frame 12: one stop down through the mask. **The failure.** The band was drawn for the sky and
-    // takes the grey card beside it; the bottom sky patch, the same colour outside the gradient, does
-    // not move at all.
-    let failure = read(&frames[12], bounds)?;
+    // One stop down through the mask. **The failure.** The band was drawn for the sky and takes the
+    // grey card beside it; the bottom sky patch, the same colour outside the gradient, does not move
+    // at all.
+    let failed = launch.at("failure")?;
+    let failure = read(failed, bounds)?;
     let took = only(
         "a band drawn for the sky",
         &failure,
         &opened,
         &["sky-top", "grey-card"],
     )?;
-    differ(
+    compare(
         "the selected sky against its own control outside the gradient",
         reading(&failure, "sky-top")?,
         reading(&failure, "sky-bottom")?,
+        Tolerance::Apart(MOVED),
     )?;
     record(
-        &frames[12],
+        failed,
         "one stop down through the band: it takes the grey card as well as the sky it was drawn for, \
          because the two are 1.4 output codes apart on the axis a band measures",
         json!({"moved":took,"sky_top":reading(&failure,"sky-top")?,
@@ -835,51 +858,54 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
                "sky_bottom_control":reading(&failure,"sky-bottom")?,"patches":failure.clone()}),
     );
 
-    // Frame 14: an unsampled colour range intersected in. It selects nothing, so the whole picture is
-    // back to the one the mask never touched — which is what an empty swatch list means.
+    // An unsampled colour range intersected in. It selects nothing, so the whole picture is back to
+    // the one the mask never touched — which is what an empty swatch list means.
+    let added = launch.at("colour-added")?;
     ensure(
-        frames[14].kinds()?
+        added.kinds()?
             == [
                 "add luminance-range",
                 "intersect linear",
                 "intersect colour-range",
             ],
-        format!("The mask holds {:?}", frames[14].kinds()?),
+        format!("The mask holds {:?}", added.kinds()?),
     )?;
     ensure(
-        sample_count(&frames[14], 2)? == 0,
+        sample_count(added, 2)? == 0,
         "A new colour range already holds a swatch",
     )?;
-    let unsampled = read(&frames[14], bounds)?;
+    let unsampled = read(added, bounds)?;
     only("an unsampled colour range", &unsampled, &opened, &[])?;
     record(
-        &frames[14],
+        added,
         "an unsampled colour range intersected in: it selects nothing, so the masked layer reaches \
          no pixel at all",
-        json!({"kinds":frames[14].kinds()?,"patches":unsampled.clone()}),
+        json!({"kinds":added.kinds()?,"patches":unsampled.clone()}),
     );
 
-    // Frame 17: one click on the sky. **The remedy.** The sky is selected again and the grey card is
-    // not, which is the component list doing what the band cannot.
-    let picked = samples(&frames[17], 2)?;
+    // One click on the sky. **The remedy.** The sky is selected again and the grey card is not,
+    // which is the component list doing what the band cannot.
+    let remedied = launch.at("remedy")?;
+    let picked = samples(remedied, 2)?;
     ensure(
         picked.len() == 1,
         format!("The pick left {picked:?} on the row"),
     )?;
-    let remedy = read(&frames[17], bounds)?;
+    let remedy = read(remedied, bounds)?;
     let held = only(
         "a colour range picked on the sky",
         &remedy,
         &opened,
         &["sky-top"],
     )?;
-    untouched(
+    compare(
         "the grey card once the colour range is intersected in",
         reading(&remedy, "grey-card")?,
         reading(&opened, "grey-card")?,
+        Tolerance::Within(UNTOUCHED),
     )?;
     record(
-        &frames[17],
+        remedied,
         "the sky sampled off the photograph: the selection is the sky alone and the grey card is back \
          where it started",
         json!({"moved":held,"samples":picked.clone(),
@@ -887,28 +913,31 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
                "grey_card":reading(&remedy,"grey-card")?,"patches":remedy.clone()}),
     );
 
-    // Frame 19: a **global** exposure layer, placed ahead of the masked one. The band reads the pixel
-    // its own operation receives, that pixel has moved 12.8 units up the axis, and the sky is outside
-    // the band: the masked layer stops reaching it. Read as an equality against the control patch of
-    // the identical colour, so nothing here is a predicted output code.
-    let layers = basic_layers(&frames[19]);
+    // A **global** exposure layer, placed ahead of the masked one. The band reads the pixel its own
+    // operation receives, that pixel has moved 12.8 units up the axis, and the sky is outside the
+    // band: the masked layer stops reaching it. Read as an equality against the control patch of the
+    // identical colour, so nothing here is a predicted output code.
+    let global = launch.at("global")?;
+    let layers = basic_layers(global);
     ensure(
         layers.len() == 2 && layers[0].1 == Value::Null && layers[1].1 != Value::Null,
         format!("The stack holds Basic layers {layers:?}"),
     )?;
-    let reordered = read(&frames[19], bounds)?;
-    same(
+    let reordered = read(global, bounds)?;
+    compare(
         "the sky under a +0.75 EV layer ahead of the band",
         reading(&reordered, "sky-top")?,
         reading(&reordered, "sky-bottom")?,
+        Tolerance::Within(UNTOUCHED),
     )?;
-    moved(
+    compare(
         "the sky itself under the global layer",
         reading(&reordered, "sky-top")?,
         reading(&remedy, "sky-top")?,
+        Tolerance::Apart(MOVED),
     )?;
     record(
-        &frames[19],
+        global,
         "a +0.75 EV layer ahead of the masked one: the band no longer selects the sky at all, so the \
          selected patch and its unselected control of the same colour read the same",
         json!({"layers":layers,"sky_top":reading(&reordered,"sky-top")?,
@@ -916,49 +945,57 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
                "patches":reordered.clone()}),
     );
 
-    // Frame 20: undone. The selection is back with the input it was drawn against, byte for byte the
-    // picture the pick produced.
-    let undone = read(&frames[20], bounds)?;
+    // Undone. The selection is back with the input it was drawn against, byte for byte the picture
+    // the pick produced.
+    let restored = launch.at("global-undone")?;
+    let undone = read(restored, bounds)?;
     for (name, value) in &undone {
-        untouched(
+        compare(
             &format!("{name} after the global layer was undone"),
             *value,
             reading(&remedy, name)?,
+            Tolerance::Within(UNTOUCHED),
         )?;
     }
     record(
-        &frames[20],
+        restored,
         "the global layer undone: the selection reads what it read before, because its input does",
-        json!({"patches":undone.clone(),"label":frames[20].label()?}),
+        json!({"patches":undone.clone(),"label":restored.label()?}),
     );
 
     // The four answers the overlay got, in order: the composed mask and then each of the three
     // components in turn, every one of them a grid painted and uploaded. Two of those three read the
     // pixel their operation receives, and they are answered because a layer is bound to this mask.
-    let answers = overlay_answers(events);
+    let answers = overlay_answers(&launch.events);
     ensure(
         answers.len() == 4 && answers.iter().all(|answer| answer["drawn"] == json!(true)),
         format!("The overlay answered {}", json!(answers)),
     )?;
-    for (answer, (frame, row)) in answers[1..].iter().zip([(22usize, 1), (23, 0), (24, 2)]) {
+    for (answer, (step, row)) in answers[1..].iter().zip([
+        ("overlay-gradient", 1),
+        ("overlay-band", 0),
+        ("overlay-colour", 2),
+    ]) {
+        let hovered = launch.at(step)?;
         ensure(
-            answer["component"] == frames[frame].component(row)?["id"],
+            answer["component"] == hovered.component(row)?["id"],
             format!(
-                "The grid for frame {frame} names {}, and row {row} is {}",
+                "The grid for step {step:?} names {}, and row {row} is {}",
                 answer["component"],
-                frames[frame].component(row)?["id"]
+                hovered.component(row)?["id"]
             ),
         )?;
     }
 
-    // Frame 21: the **composed** mask's own grid, drawn on black, read in the pixels. This is the
-    // frame P16 exists for, and what it is checked against is the photograph's own measured change:
-    // the composition is a band intersected with a gradient intersected with a picked colour range,
-    // so a patch it covers is exactly a patch the masked Exposure moved in frame 20, and a patch it
+    // The **composed** mask's own grid, drawn on black, read in the pixels. This is the frame P16
+    // exists for, and what it is checked against is the photograph's own measured change: the
+    // composition is a band intersected with a gradient intersected with a picked colour range, so a
+    // patch it covers is exactly a patch the masked Exposure moved in `global-undone`, and a patch it
     // does not cover is exactly a patch that frame left alone. The overlay and the render are
     // therefore compared against each other in a person's own two frames, not against a number this
     // scenario predicted.
-    let composed = read(&frames[21], bounds)?;
+    let overlaid = launch.at("overlay-composed")?;
+    let composed = read(overlaid, bounds)?;
     for (name, value) in &composed {
         let lifted = (reading(&undone, name)? - reading(&opened, name)?).abs();
         let selected = lifted >= MOVED;
@@ -971,19 +1008,20 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
         )?;
     }
     record(
-        &frames[21],
+        overlaid,
         "the composed mask's own coverage, drawn on black: every patch the overlay calls selected is \
          a patch the masked Exposure moved in the frame before it, and every patch it calls \
          unselected is one that frame left alone — the overlay is the selection the render makes",
         json!({"patches":composed.clone(),"moved_against":undone.clone()}),
     );
 
-    // Frame 22: the gradient's own row. A position-based component's grid has not changed: the
-    // fixture's top row is inside the gradient and reads white, its bottom row is outside and reads
-    // black, and the row between them is on the ramp and reads between the two.
-    let drawn = read(&frames[22], bounds)?;
+    // The gradient's own row. A position-based component's grid has not changed: the fixture's top
+    // row is inside the gradient and reads white, its bottom row is outside and reads black, and the
+    // row between them is on the ramp and reads between the two.
+    let ramp = launch.at("overlay-gradient")?;
+    let drawn = read(ramp, bounds)?;
     ensure(
-        frames[22].component(1)?["hovered"] == json!(true),
+        ramp.component(1)?["hovered"] == json!(true),
         "The pointer was not on the gradient's row",
     )?;
     for (index, (name, value)) in drawn.iter().enumerate() {
@@ -1002,20 +1040,22 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
         )?;
     }
     record(
-        &frames[22],
+        ramp,
         "the gradient's own contribution, drawn on black: full over the top row, on its ramp in the \
          middle and nothing over the bottom row",
         json!({"patches":drawn.clone(),
-               "hovered":frames[22].component(1)?["hovered"].clone()}),
+               "hovered":ramp.component(1)?["hovered"].clone()}),
     );
 
-    // Frames 23-24: each range component's own row, each with a grid of its own now. A component's
-    // grid is that component alone, so neither is bounded by the gradient: the band takes both sky
-    // patches and the grey card beside them — which is this study's `1.4` output codes, drawn — and
-    // the colour range picked on the sky takes the sky and leaves the grey card. That pair is the
-    // failure and its remedy, in the overlay, where before they could only be read off the picture.
-    let band = read(&frames[23], bounds)?;
-    let picked = read(&frames[24], bounds)?;
+    // Each range component's own row, each with a grid of its own now. A component's grid is that
+    // component alone, so neither is bounded by the gradient: the band takes both sky patches and the
+    // grey card beside them — which is this study's `1.4` output codes, drawn — and the colour range
+    // picked on the sky takes the sky and leaves the grey card. That pair is the failure and its
+    // remedy, in the overlay, where before they could only be read off the picture.
+    let band_row = launch.at("overlay-band")?;
+    let colour_row = launch.at("overlay-colour")?;
+    let band = read(band_row, bounds)?;
+    let picked = read(colour_row, bounds)?;
     for (what, grid) in [("the band's", &band), ("the colour range's", &picked)] {
         ensure(
             reading(grid, "sky-top")? >= 200.0 && reading(grid, "sky-bottom")? >= 200.0,
@@ -1041,39 +1081,41 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
         ),
     )?;
     record(
-        &frames[23],
+        band_row,
         "the band's own contribution, drawn on black: brightness alone takes the grey card along \
          with the sky, which is this study's 1.4 output codes shown rather than described",
         json!({"patches":band.clone()}),
     );
     record(
-        &frames[24],
+        colour_row,
         "the picked colour range's own contribution, drawn on black: the sky stays and the grey card \
          is gone, which is the remedy the component list is for",
         json!({"patches":picked.clone()}),
     );
 
-    // Frame 27: the statement itself, on screen. The row is open and the panel is scrolled to it, so
-    // what a person reads before typing a number into a band is in a capture and not only in a model.
+    // The statement itself, on screen. The row is open and the panel is scrolled to it, so what a
+    // person reads before typing a number into a band is in a capture and not only in a model.
+    let statement = launch.at("statement")?;
     ensure(
-        limits(&frames[27], 0)? == said,
-        format!("The row on screen says {:?}", limits(&frames[27], 0)?),
+        limits(statement, 0)? == said,
+        format!("The row on screen says {:?}", limits(statement, 0)?),
     )?;
     record(
-        &frames[27],
+        statement,
         "the product's own statement of what brightness alone cannot separate, on the band's row and \
          above the four numbers it applies to",
-        json!({"limits":limits(&frames[27],0)?,"fields":fields(&frames[27],0)?.clone(),
-               "scroll":frames[27]["state"]["tools_scroll"].clone()}),
+        json!({"limits":limits(statement,0)?,"fields":fields(statement,0)?.clone(),
+               "scroll":statement["state"]["tools_scroll"].clone()}),
     );
 
+    let off = launch.at("overlay-off")?;
     Ok(json!({
-        "kinds": frames[25].kinds()?,
+        "kinds": off.kinds()?,
         "opened": opened,
         "failure": failure,
         "remedy": remedy,
-        "revision": frames[25].revision()?,
-        "refusals": refused,
+        "revision": off.revision()?,
+        "refusals": refused(launch),
         "overlay_answers": answers,
         "limits": said,
         "moved_threshold": MOVED,
@@ -1083,42 +1125,38 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
     }))
 }
 
-/// Launch 2: the colour range's own limits, and the colour-constrained brush.
-fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value> {
-    let records = app["frames"].as_array().ok_or("Missing frames")?;
-    ensure(
-        records.len() == LAUNCH2_FRAMES,
-        format!("Launch 2 wrote {} frames", records.len()),
-    )?;
-    only_refusals(app, &[])?;
-    let frames = Frame::all(evidence, app)?;
-    let bounds = pixels::bright_bounds(&frames[0], BOUNDS)?;
+/// Launch 2, step by step: the colour range's own limits, and the colour-constrained brush.
+fn verify_launch2(launch: &Checked, launch1: &Value) -> Result<Value> {
+    let start = launch.at("reopened")?;
+    let bounds = pixels::bright_bounds(start, BOUNDS)?;
     let mut shows = Vec::new();
     let mut record = |frame: &Value, what: &str, detail: Value| {
         shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
     };
 
-    // Frame 0: the reopened catalog. Launch 1's mask and its selection are back, in the pixels and
-    // not only in the rows.
-    let reopened = read(&frames[0], bounds)?;
+    // The reopened catalog. Launch 1's mask and its selection are back, in the pixels and not only in
+    // the rows.
+    let reopened = read(start, bounds)?;
     let remedy: Vec<(String, f64)> = serde_json::from_value(launch1["remedy"].clone())?;
     for (name, value) in &reopened {
-        untouched(
+        compare(
             &format!("{name} after the catalog was reopened"),
             *value,
             reading(&remedy, name)?,
+            Tolerance::Within(UNTOUCHED),
         )?;
     }
     record(
-        &frames[0],
+        start,
         "the catalog reopened in a new process: the band, the gradient and the picked colour range \
          produce the same photograph they produced before it closed",
-        json!({"patches":reopened.clone(),"masks":frames[0].masks()?.len()}),
+        json!({"patches":reopened.clone(),"masks":start.masks()?.len()}),
     );
 
-    // Frame 6: a sampled grey. **Every neutral is one colour** to a metric with no lightness term, so
-    // one click selects the whole tonal range and five patches move at once.
-    let neutral = read(&frames[6], bounds)?;
+    // A sampled grey. **Every neutral is one colour** to a metric with no lightness term, so one
+    // click selects the whole tonal range and five patches move at once.
+    let grey = launch.at("neutral")?;
+    let neutral = read(grey, bounds)?;
     let neutrals = only(
         "a colour range sampled on a grey card",
         &neutral,
@@ -1126,59 +1164,54 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         &["grey-card", "white", "grey-65", "black", "grey-8"],
     )?;
     record(
-        &frames[6],
+        grey,
         "one click on the grey card: white, both other greys and black move with it, because every \
          neutral is within 0.0015 of every other in a metric with no lightness term",
-        json!({"moved":neutrals,"samples":samples(&frames[6],0)?,"patches":neutral.clone()}),
+        json!({"moved":neutrals,"samples":samples(grey,0)?,"patches":neutral.clone()}),
     );
 
-    // Frame 9: a second swatch. The fold is by nearest sample, which is the same union the component
-    // list composes by, so the orange joins and the neutrals stay.
-    let two = read(&frames[9], bounds)?;
+    // A second swatch. The fold is by nearest sample, which is the same union the component list
+    // composes by, so the orange joins and the neutrals stay.
+    let orange = launch.at("orange")?;
+    let two = read(orange, bounds)?;
     only("a second swatch on the orange", &two, &neutral, &["orange"])?;
     ensure(
-        samples(&frames[9], 0)?.len() == 2,
-        format!("The row lists {:?}", samples(&frames[9], 0)?),
+        samples(orange, 0)?.len() == 2,
+        format!("The row lists {:?}", samples(orange, 0)?),
     )?;
     record(
-        &frames[9],
+        orange,
         "a second swatch: the orange joins the selection and every neutral stays in it",
-        json!({"samples":samples(&frames[9],0)?,"patches":two.clone()}),
+        json!({"samples":samples(orange,0)?,"patches":two.clone()}),
     );
 
-    // Frame 12: the same patch sampled again. The duplicate is dropped **before it is stored**, so
-    // the row keeps its two swatches, no entry is appended and no pixel moves. That is stronger than
-    // storing a second copy that happened to change nothing: one of the component's five swatches is
-    // not spent on a colour it already holds.
-    let three = read(&frames[12], bounds)?;
+    // The same patch sampled again. The duplicate is dropped **before it is stored**, so the row keeps
+    // its two swatches, no entry is appended — the plan holds the pick to no commit — and no pixel
+    // moves. That is stronger than storing a second copy that happened to change nothing: one of the
+    // component's five swatches is not spent on a colour it already holds.
+    let duplicate = launch.at("duplicate")?;
+    let three = read(duplicate, bounds)?;
     only("a duplicate swatch", &three, &two, &[])?;
     ensure(
-        samples(&frames[12], 0)? == samples(&frames[9], 0)?,
+        samples(duplicate, 0)? == samples(orange, 0)?,
         format!(
             "The row lists {:?}, and it listed {:?}",
-            samples(&frames[12], 0)?,
-            samples(&frames[9], 0)?
-        ),
-    )?;
-    ensure(
-        frames[12].revision()? == frames[9].revision()?,
-        format!(
-            "The duplicate moved the revision to {}",
-            frames[12].revision()?
+            samples(duplicate, 0)?,
+            samples(orange, 0)?
         ),
     )?;
     record(
-        &frames[12],
+        duplicate,
         "a third click on a colour the component already holds: the same two swatches, no history \
          entry and not one pixel different, so a misfired picker costs nothing and spends no swatch",
-        json!({"samples":samples(&frames[12],0)?,"revision":frames[12].revision()?,
+        json!({"samples":samples(duplicate,0)?,"revision":duplicate.revision()?,
                "patches":three.clone()}),
     );
 
-    // Frame 18: one person's skin. **Two people's skin is one colour**: dark skin is 0.0108 from
-    // light skin, a third of what one face's own shading spans, so any setting that holds a lit face
-    // takes both.
-    let skin = read(&frames[18], bounds)?;
+    // One person's skin. **Two people's skin is one colour**: dark skin is 0.0108 from light skin, a
+    // third of what one face's own shading spans, so any setting that holds a lit face takes both.
+    let lit = launch.at("skin")?;
+    let skin = read(lit, bounds)?;
     let both = only(
         "a colour range sampled on light skin",
         &skin,
@@ -1186,15 +1219,16 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         &["light-skin", "dark-skin"],
     )?;
     record(
-        &frames[18],
+        lit,
         "one click on the light skin patch: the dark skin patch moves with it, because the two are \
          0.0108 apart in a metric whose radius here is 0.035",
-        json!({"moved":both,"samples":samples(&frames[18],0)?,"patches":skin.clone()}),
+        json!({"moved":both,"samples":samples(lit,0)?,"patches":skin.clone()}),
     );
 
-    // Frame 23: one ordinary stroke across two surfaces, with an adjustment through it. Both move,
-    // which is what a brush without a colour limit does.
-    let painted = read(&frames[23], bounds)?;
+    // One ordinary stroke across two surfaces, with an adjustment through it. Both move, which is
+    // what a brush without a colour limit does.
+    let stroked = launch.at("painted")?;
+    let painted = read(stroked, bounds)?;
     only(
         "an unlimited stroke across a sky and a foliage patch",
         &painted,
@@ -1202,52 +1236,57 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         &["sky-bottom", "foliage"],
     )?;
     record(
-        &frames[23],
+        stroked,
         "one stroke across the boundary between two surfaces: a brush selects where it is drawn, so \
          both of them",
-        json!({"patches":painted.clone(),"kinds":frames[23].kinds()?}),
+        json!({"patches":painted.clone(),"kinds":stroked.kinds()?}),
     );
 
-    // Frame 26: the same path erased back, held to the colour under the brush where the stroke began.
-    // **The constrained brush.** The foliage it was seeded on comes out of the selection; the sky the
+    // The same path erased back, held to the colour under the brush where the stroke began. **The
+    // constrained brush.** The foliage it was seeded on comes out of the selection; the sky the
     // stroke crossed just as far stays in it.
-    let constrained = read(&frames[26], bounds)?;
+    let erased = launch.at("constrained")?;
+    let constrained = read(erased, bounds)?;
     only(
         "a colour-held erase seeded on the foliage",
         &constrained,
         &painted,
         &["foliage"],
     )?;
-    untouched(
+    compare(
         "the sky the held erase also crossed",
         reading(&constrained, "sky-bottom")?,
         reading(&painted, "sky-bottom")?,
+        Tolerance::Within(UNTOUCHED),
     )?;
-    same(
+    compare(
         "the foliage after the held erase against its own unmasked reading",
         reading(&constrained, "foliage")?,
         reading(&reopened, "foliage")?,
+        Tolerance::Within(UNTOUCHED),
     )?;
     record(
-        &frames[26],
+        erased,
         "a colour-held erase along the same path: the foliage it was seeded on leaves the selection \
          and the sky the stroke crossed just as far stays in it",
-        json!({"patches":constrained.clone(),"strokes":frames[26].component(0)?["strokes"].clone(),
+        json!({"patches":constrained.clone(),"strokes":erased.component(0)?["strokes"].clone(),
                "foliage":reading(&constrained,"foliage")?,
                "sky_bottom":reading(&constrained,"sky-bottom")?}),
     );
 
-    // Frames 27-28: **the overlay of a mask a person painted and held to a colour.** A colour-held
-    // stroke makes a brush component read the pixel its operation receives, so before P16 was built
-    // this mask had no grid at all and the only way to see what the erase had taken was to apply an
-    // adjustment and look at the picture. The grid is checked against exactly that: every patch the
-    // overlay calls selected is a patch frame 26 moved, and every patch it calls unselected is one
-    // frame 26 left where the unmasked picture had it. Then the overlay goes off and the photograph
-    // is exactly where it was, which is the view-setting contract.
-    let held = read(&frames[27], bounds)?;
+    // **The overlay of a mask a person painted and held to a colour.** A colour-held stroke makes a
+    // brush component read the pixel its operation receives, so before P16 was built this mask had
+    // no grid at all and the only way to see what the erase had taken was to apply an adjustment and
+    // look at the picture. The grid is checked against exactly that: every patch the overlay calls
+    // selected is a patch `constrained` moved, and every patch it calls unselected is one that frame
+    // left where the unmasked picture had it. Then the overlay goes off and the photograph is exactly
+    // where it was, which is the view-setting contract.
+    let overlaid = launch.at("held-overlay")?;
+    let held = read(overlaid, bounds)?;
     for (name, value) in &held {
-        // Frame 18 is the last one before this mask existed, so the difference between it and frame
-        // 26 is this mask's own layer and nothing else — which is exactly what its grid describes.
+        // `skin` is the last frame before this mask existed, so the difference between it and
+        // `constrained` is this mask's own layer and nothing else — which is exactly what its grid
+        // describes.
         let lifted = (reading(&constrained, name)? - reading(&skin, name)?).abs();
         ensure(
             (lifted >= MOVED) == (*value >= 128.0),
@@ -1266,33 +1305,36 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         ),
     )?;
     record(
-        &frames[27],
+        overlaid,
         "what a colour-held erase took, drawn rather than inferred: the sky the stroke crossed is \
          still selected and the foliage it was seeded on is gone, and every patch of the grid agrees \
          with what the masked adjustment did to that patch in the frame before it",
         json!({"patches":held.clone(),"moved_against":constrained.clone()}),
     );
-    let off = read(&frames[28], bounds)?;
+    let cleared = launch.at("held-overlay-off")?;
+    let off = read(cleared, bounds)?;
     for (name, value) in &off {
-        untouched(
+        compare(
             &format!("{name} with the overlay switched off again"),
             *value,
             reading(&constrained, name)?,
+            Tolerance::Within(UNTOUCHED),
         )?;
     }
     record(
-        &frames[28],
+        cleared,
         "the overlay off again: a view setting, so the photograph is exactly where it was",
         json!({"patches":off.clone()}),
     );
 
-    // Frame 29: undone. The held erase is one entry like every other stroke.
-    let undone = read(&frames[29], bounds)?;
+    // Undone. The held erase is one entry like every other stroke.
+    let restored = launch.at("held-erase-undone")?;
+    let undone = read(restored, bounds)?;
     only("the held erase undone", &undone, &constrained, &["foliage"])?;
     record(
-        &frames[29],
+        restored,
         "the held erase undone: one stroke is one entry whether or not it was held to a colour",
-        json!({"patches":undone.clone(),"label":frames[29].label()?}),
+        json!({"patches":undone.clone(),"label":restored.label()?}),
     );
 
     Ok(json!({
@@ -1300,7 +1342,7 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         "neutral": neutral,
         "skin": skin,
         "constrained": constrained,
-        "revision": frames[30].revision()?,
+        "revision": launch.at("plain-brush")?.revision()?,
         "frames": shows,
         "scope": "Mean Rec. 709 luminance of the twelve fixture patches in the displayed photograph, read back from the renderer; every comparison is against the frame before it in the same launch, and none is a colorimetric claim",
     }))
