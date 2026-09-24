@@ -235,14 +235,14 @@ pub static SCENARIOS: &[Scenario] = &[
         name: zoom::SCENARIO,
         about: "Percentage zooms, pans and idle frames over the 24 MP and 60 MP JPEGs, one run each",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, zoom::script(zoom::SCENARIO)),
+            plan: zoom::plan,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(zoom::verify, launches),
+        verify: zoom::verify,
         source: Source::Fixtures(&["fixtures/generated/24mp.jpg", "fixtures/generated/60mp.jpg"]),
         window: Some(PANELLED),
         note: None,
-        own: Some(|run, _, _| zoom::run(run)),
+        own: Some(zoom::run),
     },
     Scenario {
         name: "crop",

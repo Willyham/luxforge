@@ -15,17 +15,12 @@
 //! shorter wait that lets the launch's own refit to the display scale land first. A wgpu
 //! validation error or a panic in either launch fails the run.
 use crate::{
-    scenario::{Fixture, Frame, Run},
+    scenario::{Checked, Fixture, Plan, Run, Step, plan::only},
+    smoke::Scenario,
     *,
 };
 
 pub const SCENARIO: &str = "zoom";
-
-/// The two launches: the generated 24 MP and 60 MP JPEGs, each with its own output directory.
-const FIXTURES: [(&str, &str); 2] = [
-    ("24mp", "fixtures/generated/24mp.jpg"),
-    ("60mp", "fixtures/generated/60mp.jpg"),
-];
 
 /// How long each idle `wait` step lasts: four ticks of the evidence run's 250 ms timer, each of
 /// which rebuilds the view as the editor's own event sync does while a photograph is open.
@@ -63,22 +58,23 @@ enum Kind {
     Pan(f64, f64),
 }
 
-/// Every frame in capture order: the open frame, then one per script step, with the zoom it must be
-/// drawn at.
-const PLAN: [(Kind, Zoom); 13] = [
-    (Kind::Open, Zoom::Fit),
-    (Kind::Settle, Zoom::Fit),
-    (Kind::Wait, Zoom::Fit),
-    (Kind::View, Zoom::Percent(50.0)),
-    (Kind::View, Zoom::Percent(100.0)),
-    (Kind::Wait, Zoom::Percent(100.0)),
-    (Kind::View, Zoom::Percent(120.0)),
-    (Kind::View, Zoom::Percent(800.0)),
-    (Kind::View, Zoom::Percent(1600.0)),
-    (Kind::Pan(0.5, 0.5), Zoom::Percent(1600.0)),
-    (Kind::Wait, Zoom::Percent(1600.0)),
-    (Kind::Pan(1.0, 1.0), Zoom::Percent(1600.0)),
-    (Kind::View, Zoom::Fit),
+/// Every frame in capture order: the open frame, then one per script step, each named, with the
+/// zoom it must be drawn at. The plan, and so the script and the frame count, is made from this
+/// table, and the checks below walk the same table beside the frames the plan held.
+const PLAN: [(&str, Kind, Zoom); 13] = [
+    ("opened", Kind::Open, Zoom::Fit),
+    ("settle", Kind::Settle, Zoom::Fit),
+    ("idle-fit", Kind::Wait, Zoom::Fit),
+    ("50", Kind::View, Zoom::Percent(50.0)),
+    ("100", Kind::View, Zoom::Percent(100.0)),
+    ("idle-100", Kind::Wait, Zoom::Percent(100.0)),
+    ("120", Kind::View, Zoom::Percent(120.0)),
+    ("800", Kind::View, Zoom::Percent(800.0)),
+    ("1600", Kind::View, Zoom::Percent(1600.0)),
+    ("pan-centre", Kind::Pan(0.5, 0.5), Zoom::Percent(1600.0)),
+    ("idle-1600", Kind::Wait, Zoom::Percent(1600.0)),
+    ("pan-corner", Kind::Pan(1.0, 1.0), Zoom::Percent(1600.0)),
+    ("fit", Kind::View, Zoom::Fit),
 ];
 
 /// The step each planned frame after the open one is captured for, as the script writes it and as
@@ -96,32 +92,42 @@ fn request(kind: Kind, zoom: Zoom) -> Option<Value> {
     }
 }
 
-pub fn script(scenario: &str) -> Option<Value> {
-    (scenario == SCENARIO).then(|| {
-        Value::Array(
-            PLAN.iter()
-                .filter_map(|(kind, zoom)| request(*kind, *zoom))
-                .collect(),
-        )
-    })
+/// Every frame of one launch: the photograph opened unedited, then each zoom, pan and wait, none of
+/// which commits anything.
+pub fn plan(_: &[PathBuf]) -> Plan {
+    Plan::new(
+        PLAN.iter()
+            .map(|(name, kind, zoom)| match request(*kind, *zoom) {
+                None => Step::opened(*name).label("Original"),
+                Some(request) => Step::new(*name, request).commits(0),
+            })
+            .collect(),
+    )
 }
 
-/// Two launches, one per fixture, each an ordinary smoke run in its own directory; the scenario
-/// passes when both do. Both always run, so one failing launch never hides the other's evidence.
-pub fn run(mut run: Run) -> Result {
+/// One launch per photograph the row opens, each an ordinary smoke run with the scenario's launch
+/// and checks in its own directory, named for the photograph; the scenario passes when both do.
+/// Both always run, so one failing launch never hides the other's evidence.
+pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
     run.note(
         "Two launches, one per fixture, each an ordinary smoke run with its own `result.json` in its own directory: `24mp/` over the generated 24 MP JPEG and `60mp/` over the generated 60 MP one. Generate them first with `cargo xtask generate-fixtures --output fixtures/generated`.",
     );
     let mut failures = Vec::new();
-    for (name, fixture) in FIXTURES {
-        let outcome = run.child(name).and_then(|child| {
-            smoke::launch_all(
-                child,
-                smoke::find(SCENARIO)?,
-                vec![run.root().join(fixture)],
-            )
-        });
-        run.record_launches(&run.out().join(name), json!({"fixture": fixture}))?;
+    for source in sources {
+        let name = source
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or("A zoom fixture has no name")?
+            .to_owned();
+        let fixture = source
+            .strip_prefix(run.root())
+            .unwrap_or(&source)
+            .to_string_lossy()
+            .into_owned();
+        let outcome = run
+            .child(&name)
+            .and_then(|child| smoke::launch_all(child, scenario, vec![source.clone()]));
+        run.record_launches(&run.out().join(&name), json!({"fixture": fixture}))?;
         if let Err(error) = outcome {
             failures.push(format!("{name}: {error}"));
         }
@@ -389,11 +395,11 @@ fn number(value: &Value, what: &str) -> Result<u64> {
         .ok_or_else(|| format!("Frame records no {what}").into())
 }
 
-pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    ensure(
-        app["had_input_errors"] == json!(false),
-        "The run recorded an input error",
-    )?;
+/// Every frame against the zoom its step asks for: the texture on screen, the source pixels the zoom
+/// and pan put under each sample, and, for the idle steps, a view rebuilt with no new frame.
+pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let (evidence, events) = (&launch.evidence, &launch.events);
     // A validation error aborts the editor; say so plainly if its log carries one.
     let log = fs::read_to_string(
         evidence
@@ -408,8 +414,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             format!("The editor's log reports {marker:?}"),
         )?;
     }
-    let frames = app["frames"].as_array().ok_or("Missing frames")?;
-    ensure(frames.len() == PLAN.len(), "Wrong number of frames")?;
+    let frames = &launch.frames;
     let captures: Vec<usize> = events
         .iter()
         .enumerate()
@@ -426,19 +431,11 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                 .map_err(|_| "The opened frame records no source dimensions")?;
         (dims[0], dims[1])
     };
-    let mut captured: Vec<Frame> = Vec::new();
     let mut checks = Vec::new();
-    for (index, ((kind, zoom), frame)) in PLAN.iter().zip(frames).enumerate() {
-        let what = format!("frame {index} ({kind:?} at {zoom:?})");
+    for (index, ((name, kind, zoom), frame)) in PLAN.iter().zip(frames).enumerate() {
+        let what = format!("step {name:?} (frame {index}, {kind:?} at {zoom:?})");
         let state = &frame["state"];
-        let frame = Frame::identified(evidence, app, frame)?;
         let image = frame.image()?;
-        if let Some(request) = request(*kind, *zoom) {
-            ensure(
-                frame["step"]["request"] == request && frame["step"]["status"] != json!("failed"),
-                format!("{what}: the step was {}", frame["step"]),
-            )?;
-        }
         ensure(
             state["phase"] == "ready" && state["source_dimensions"] == json!([stage.0, stage.1]),
             format!("{what}: not a ready frame of the opened photograph"),
@@ -522,7 +519,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                     ..Fixture::fit(1)
                 })
                 .map_err(|error| format!("{what}: {error}"))?,
-            Zoom::Percent(value) => check_mapping(image, &frame, *value, stage)
+            Zoom::Percent(value) => check_mapping(image, frame, *value, stage)
                 .map_err(|error| format!("{what}: {error}"))?,
         };
 
@@ -583,9 +580,9 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                         views - previous_views
                     ),
                 )?;
-                let rect = canvas_rect(&frame)?;
+                let rect = canvas_rect(frame)?;
                 ensure(
-                    same_canvas(captured[index - 1].image()?, image, rect)?,
+                    same_canvas(frames[index - 1].image()?, image, rect)?,
                     format!("{what}: the canvas changed while idling"),
                 )?;
                 idle = json!({"views_rebuilt":views - previous_views,"canvas_identical":true,"events_between":between.len()});
@@ -593,6 +590,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         }
         checks.push(json!({
             "frame": frame["file"],
+            "step": name,
             "kind": format!("{kind:?}"),
             "zoom": expected_zoom,
             "proxy": proxy,
@@ -605,7 +603,6 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             "pixels": pixels,
             "idle": idle,
         }));
-        captured.push(frame);
     }
     write_json(
         &evidence.join("zoom-checks.json"),
@@ -628,7 +625,9 @@ mod tests {
     /// The script is one step per planned frame after the open one, in order.
     #[test]
     fn the_script_is_one_step_per_planned_frame() {
-        let script = script(SCENARIO).expect("a script");
+        let plan = plan(&[]);
+        assert_eq!(plan.len(), PLAN.len());
+        let script = plan.script();
         let steps = script.as_array().expect("an array");
         assert_eq!(steps.len(), PLAN.len() - 1);
         assert_eq!(steps[0], json!({"wait":{"ms":SETTLE_MS}}));
@@ -638,7 +637,6 @@ mod tests {
             *steps.last().expect("a last step"),
             json!({"view":{"zoom":"fit"}})
         );
-        assert!(super::script("zoom60").is_none());
     }
 
     /// Flat quadrant interiors map to their colour; anything near a drawn feature, or outside the
