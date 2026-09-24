@@ -2959,3 +2959,84 @@ fn every_start_answers_to_the_one_refusal() {
         "nothing displaced the open gesture"
     );
 }
+
+/// A scripted release that ends a sweep where the sweep left it asks for no frame, so the step
+/// captures the next redraw instead of waiting for pixels nothing will render.
+///
+/// The draft driver sends only geometry the core draft does not already hold. The release after a
+/// sweep changes no geometry, so it sends no `draft.set` and no preview job; the step's evidence is
+/// the gesture no longer dragging, drawn on the next frame. Waiting for a preview there ran the
+/// `mask-linear` and `mask-combine` scenarios to their deadline.
+#[test]
+fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
+    use crate::app::testing::{attach_log, attach_script, evidence, logged};
+
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.message(MaskMessage::Handle(MaskPointer::Sweep {
+        from: (0.5, 0.3),
+        to: (0.5, 0.7),
+    }));
+    masking.assert_geometry_sent();
+    let asked = masking.editor.preview_generation;
+
+    attach_script(&mut masking.editor, r#"[{"mask":{"release":true}}]"#);
+    let log = attach_log(&mut masking.editor);
+    let _ = masking.editor.next_step();
+    assert_eq!(
+        masking.editor.preview_generation, asked,
+        "the release asked for no frame"
+    );
+    let run = evidence(&masking.editor);
+    assert_eq!(run.awaiting, None, "nothing is waited for");
+    assert!(run.capture_pending, "the next redraw is the step's frame");
+    assert_eq!(
+        masking.editor.mask_draft_summary()["dragging"],
+        json!(false),
+        "and it shows the gesture released, still open for Apply"
+    );
+    let events = event_names(&logged(&mut masking.editor, &log));
+    assert!(
+        !events.iter().any(|event| event == "mask_draft_set"),
+        "the release re-sent geometry the core draft already holds: {events:?}"
+    );
+}
+
+/// A released stroke's step settles on the committed frame while the brush re-arms.
+///
+/// The brush re-arms on the component its stroke landed on as soon as the commit answers, and its
+/// `draft.begin` is in flight when the committed frame arrives. That begin sends no geometry — an
+/// armed brush has painted nothing — so it brings no frame, and the committed frame is the step's
+/// evidence whether or not the begin has answered. Waiting for the begin as though it would bring a
+/// frame ran the `mask-brush` scenario to its deadline whenever the frame won the race.
+#[test]
+fn a_stroke_settles_on_its_committed_frame_while_the_brush_re_arms() {
+    use crate::app::{
+        evidence::Settle,
+        testing::{attach_script, evidence},
+    };
+
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    drain_queue(&mut masking);
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    attach_script(&mut masking.editor, r#"[{"wait":{"ms":1}}]"#);
+    masking.editor.await_step(Settle::Preview);
+    masking.paint(&[(0.3, 0.3), (0.5, 0.35)]);
+    assert_eq!(
+        testing::core_draft(&masking.editor).and_then(|draft| draft.in_flight()),
+        Some(Round::Begin),
+        "the brush is re-arming and its begin is on its way"
+    );
+    let committed = masking.editor.preview_generation;
+    drain_queue(&mut masking);
+    assert_eq!(masking.editor.presented_generation, committed);
+    assert_eq!(
+        evidence(&masking.editor).awaiting,
+        None,
+        "the committed frame settled the step"
+    );
+}

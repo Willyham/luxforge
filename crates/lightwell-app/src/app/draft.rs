@@ -165,6 +165,18 @@ impl CoreDraft {
         self.in_flight.is_none() && !self.outstanding() && self.finish.is_none()
     }
 
+    /// Something the gesture asked for will still put a frame of its own on screen: a round trip
+    /// whose answer brings one, fields waiting to be sent, or a commit due. A `draft.begin` with
+    /// nothing to send — an armed brush opening — brings none, and neither do fields a conflicted
+    /// draft holds back until Reapply, so a frame on screen then is the gesture's newest.
+    pub(crate) fn frame_pending(&self) -> bool {
+        match self.in_flight {
+            Some(Round::Begin) => self.pending.is_some() || self.finish.is_some(),
+            Some(_) => true,
+            None => (self.outstanding() && !self.conflicted) || self.finish.is_some(),
+        }
+    }
+
     /// The core draft has accepted fields at least once, so drafted frames may be in the queue.
     pub(crate) fn drafted(&self) -> bool {
         self.draft_revision > 0
@@ -439,6 +451,31 @@ mod tests {
         let set = accepted(&draft, 1);
         assert_eq!(draft.handle(Event::Set(Ok(set))), Step::None);
         assert!(draft.drained() && draft.drafted());
+    }
+
+    #[test]
+    fn a_frame_is_pending_only_while_something_asked_will_bring_one() {
+        // An armed brush opening sends nothing once its begin answers: no frame is coming.
+        let brush = opened(None);
+        assert!(!brush.frame_pending() && !brush.drained());
+        // A shape opening sends its geometry once the draft exists.
+        let shape = opened(Some(fields(0.1)));
+        assert!(shape.frame_pending());
+        let (mut draft, _) = begun();
+        assert!(!draft.frame_pending());
+        draft.handle(Event::Offer(fields(0.2)));
+        assert!(draft.frame_pending(), "the set is answered with a frame");
+        let set = accepted(&draft, 1);
+        draft.handle(Event::Set(Ok(set)));
+        assert!(!draft.frame_pending());
+        draft.handle(Event::Revision(5));
+        draft.handle(Event::Offer(fields(0.3)));
+        assert!(
+            !draft.frame_pending() && !draft.drained(),
+            "a conflicted draft holds its fields back and asks for no frame"
+        );
+        draft.handle(Event::Reapply);
+        assert!(draft.frame_pending(), "the reapply re-sends them");
     }
 
     #[test]

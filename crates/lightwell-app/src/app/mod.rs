@@ -922,7 +922,7 @@ impl Editor {
 
     /// The open mask gesture as a captured frame reports it: its shape, with the revision its core
     /// draft is based on and whether that draft is conflicted.
-    fn mask_draft_summary(&self) -> Value {
+    pub(crate) fn mask_draft_summary(&self) -> Value {
         let Some(gesture) = self.core_gesture() else {
             return Value::Null;
         };
@@ -1990,9 +1990,16 @@ impl Editor {
         // settings are the newest.
         // A mask shape gesture drains the same way: while another `draft.set` or the commit is still
         // queued the frame on screen is not the one the step is evidence of, so the step waits for
-        // the geometry that settles.
+        // the geometry that settles, and for the newest frame asked for rather than an older one
+        // still arriving. A brush re-arming after its stroke committed asks for no frame of its
+        // own, so the committed frame settles its step whether or not its `draft.begin` has
+        // answered yet.
         let settle = match self.core_gesture() {
-            Some(gesture) if !gesture.draft.drained() => None,
+            Some(gesture)
+                if gesture.draft.frame_pending() || upload.generation < self.preview_generation =>
+            {
+                None
+            }
             Some(gesture) if gesture.slider().is_some() => Some(Settle::SliderDraft),
             _ => Some(Settle::Preview),
         };

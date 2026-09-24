@@ -29,13 +29,14 @@ impl Editor {
         self.session.workspace.mode == MASK_MODE
     }
 
-    /// The open shape gesture has nothing left in flight: no `draft.set` outstanding, none queued
-    /// and no commit waiting on one. The frame on screen is therefore rendered from the geometry the
-    /// gesture currently holds, which is what a captured frame has to be evidence of.
-    pub(crate) fn mask_draft_drained(&self) -> bool {
+    /// The open mask gesture will still put a frame of its own on screen: a `draft.set` or a commit
+    /// is in flight or queued, or its opening geometry waits for `draft.begin`. Until none is, the
+    /// frame on screen is not rendered from the geometry the gesture holds, which is what a captured
+    /// frame has to be evidence of.
+    pub(crate) fn mask_frame_pending(&self) -> bool {
         self.core_gesture()
             .filter(|gesture| gesture.mask().is_some())
-            .is_none_or(|gesture| gesture.draft.drained())
+            .is_some_and(|gesture| gesture.draft.frame_pending())
     }
 
     /// The mask the generated module sections are bound to.

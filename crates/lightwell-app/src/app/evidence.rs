@@ -1206,6 +1206,30 @@ impl Editor {
         }
     }
 
+    /// The pointer messages of a mask gesture step have run: wait for the frame they asked for, or
+    /// capture the next redraw when they asked for none.
+    ///
+    /// A gesture offers its geometry after every pointer step, and the draft driver sends only
+    /// geometry the core draft does not already hold. A release that ends a drag where the last
+    /// move left it — which is what a release after a sweep is — sends nothing and renders
+    /// nothing: the frame on screen is already that geometry's, and the step's evidence is the
+    /// redraw showing the gesture no longer dragging. Waiting for pixels there would wait for a
+    /// frame nothing asked for. `asked` is the preview generation before the step's messages; a
+    /// round trip still in flight or geometry still queued is a frame that will come.
+    fn await_mask_frame(&mut self, asked: u64) {
+        if self.mask_frame_coming(asked) {
+            self.await_step(self.mask_settle());
+        } else {
+            self.capture_next_frame();
+        }
+    }
+
+    /// A frame will follow the mask gesture messages sent since the preview generation was
+    /// `asked`: they requested one, or a round trip whose answer brings one is still in flight.
+    fn mask_frame_coming(&self, asked: u64) -> bool {
+        self.preview_generation != asked || self.mask_frame_pending()
+    }
+
     /// One owner request with the desktop's own envelope: the current revision and a fresh request
     /// id, exactly as a control would send it. The frame is captured when its pixels arrive.
     ///
@@ -1446,6 +1470,7 @@ impl Editor {
             if self.mask_gesture().is_none() {
                 return self.fail_step("no mask gesture is open to drag");
             }
+            let asked = self.preview_generation;
             let mut tasks = vec![self.mask_message(MaskMessage::Handle(MaskPointer::Begin {
                 handle,
                 x: first[0],
@@ -1458,7 +1483,7 @@ impl Editor {
                 })));
             }
             tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::End)));
-            self.await_step(self.mask_settle());
+            self.await_mask_frame(asked);
             self.note_step(json!({"masks": self.workspace.masks.summary()}));
             return Task::batch(tasks);
         }
@@ -1641,6 +1666,7 @@ impl Editor {
                 let Some((first, rest)) = points.split_first() else {
                     return self.fail_step("a stroke needs at least one position");
                 };
+                let asked = self.preview_generation;
                 let mut tasks =
                     vec![
                         self.mask_message(MaskMessage::Handle(MaskPointer::PaintBegin {
@@ -1657,7 +1683,7 @@ impl Editor {
                 if release {
                     tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::PaintEnd)));
                 }
-                self.await_step(self.mask_settle());
+                self.await_mask_frame(asked);
                 self.note_step(json!({"masks": self.workspace.masks.summary()}));
                 return Task::batch(tasks);
             }
@@ -1753,15 +1779,23 @@ impl Editor {
         // which is also what the refusal replaces.
         self.last_mask_request = None;
         self.await_step(self.mask_settle());
+        let asked = self.preview_generation;
         let task = self.dispatch(message);
         let armed = match expect {
             Expect::Redraw | Expect::Overlay => true,
-            // An open gesture always has a round trip of its own: `draft.begin` while it is
-            // opening, `draft.set` once it has, and a drafted frame at the end of either.
-            Expect::Gesture => self.mask_gesture().is_some(),
+            // An open gesture's own round trip — `draft.begin` while it opens, `draft.set` once it
+            // has — brings a drafted frame. A pointer step that changed no geometry, such as the
+            // release that ends a sweep, sends nothing, so the frame is the next redraw.
+            Expect::Gesture => {
+                let open = self.mask_gesture().is_some();
+                if open && !self.mask_frame_coming(asked) {
+                    self.capture_next_frame();
+                }
+                open
+            }
             // Apply sent its commit, or Cancel ended the gesture: either way something answers.
-            // A refused Apply leaves the gesture drained, with its reason in the status line.
-            Expect::RoundTrip => self.mask_gesture().is_none() || !self.mask_draft_drained(),
+            // A refused Apply leaves nothing in flight, with its reason in the status line.
+            Expect::RoundTrip => self.mask_gesture().is_none() || self.mask_frame_pending(),
             Expect::Request => self.last_mask_request.is_some(),
         };
         self.note_step(json!({"masks": self.workspace.masks.summary()}));
@@ -2153,12 +2187,13 @@ impl Editor {
         } else {
             MaskPointer::PaintTo { x, y }
         };
+        let asked = self.preview_generation;
         let mut tasks = vec![self.mask_message(MaskMessage::Handle(pointer))];
         if done {
             if release {
                 tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::PaintEnd)));
             }
-            self.await_step(self.mask_settle());
+            self.await_mask_frame(asked);
             self.note_step(json!({"masks": self.workspace.masks.summary()}));
         }
         Task::batch(tasks)
