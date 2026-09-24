@@ -437,76 +437,26 @@ fn an_empty_or_blank_name_is_refused() {
     fs::remove_file(path).expect("the catalog is removed");
 }
 
-/// A registered provider wrapped as unavailable, exactly as the desktop's `--disable-module` does.
-struct Disabled {
-    inner: Arc<dyn ToolModule>,
-    descriptor: ModuleDescriptor,
-}
-
-impl Disabled {
-    fn wrap(inner: Arc<dyn ToolModule>) -> Arc<dyn ToolModule> {
-        let descriptor = ModuleDescriptor {
-            availability: Availability::Unavailable {
-                reason: "disabled by --disable-module".into(),
-            },
-            ..inner.descriptor().clone()
-        };
-        Arc::new(Self { inner, descriptor })
+/// The built-in providers with one registered unavailable, exactly as the desktop's
+/// `--disable-module` does.
+fn disabled(id: &str) -> ModuleRegistry {
+    let mut registry = ModuleRegistry::new();
+    for module in lightwell_core::builtin_modules() {
+        if module.descriptor().id == id {
+            registry.register_unavailable(module, "disabled by --disable-module")
+        } else {
+            registry.register(module)
+        }
+        .expect("a registered module");
     }
-}
-
-impl ToolModule for Disabled {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &Map<String, Value>,
-    ) -> Result<ActionInput, Error> {
-        self.inner.parse(action_id, parameters)
-    }
-    fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        self.inner.plan(input, stage)
-    }
-    fn validate_payload(&self, effect_id: &str, format: u32, payload: &Value) -> Result<(), Error> {
-        self.inner.validate_payload(effect_id, format, payload)
-    }
-    fn describe_layer(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-    ) -> Result<String, Error> {
-        self.inner.describe_layer(effect_id, format, payload)
-    }
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-        stage: Stage,
-    ) -> Result<Processing, Error> {
-        self.inner.compile(effect_id, format, payload, stage)
-    }
+    registry
 }
 
 /// A step whose module is registered but unavailable is refused by name, and nothing is written,
 /// even though the steps of available modules in the same preset would have planned.
 #[test]
 fn a_step_of_an_unavailable_module_is_refused() {
-    let mut registry = ModuleRegistry::new();
-    for module in [
-        Arc::new(lightwell_core::PresetsModule::new()) as Arc<dyn ToolModule>,
-        Arc::new(lightwell_core::PixelModule::new()),
-        Arc::new(lightwell_core::BasicModule::new()),
-        Disabled::wrap(Arc::new(lightwell_core::PresenceModule::new())),
-        Arc::new(lightwell_core::TransformModule::new()),
-        Arc::new(lightwell_core::CropModule::new()),
-    ] {
-        registry.register(module).expect("a registered module");
-    }
-    let (mut service, asset, path) = opened("unavailable", Some(registry));
+    let (mut service, asset, path) = opened("unavailable", Some(disabled("lightwell.presence")));
     assert_refused(
         &mut service,
         &asset,
@@ -523,17 +473,8 @@ fn a_step_of_an_unavailable_module_is_refused() {
 /// refuses its action by the module's own availability, and nothing is written.
 #[test]
 fn an_unavailable_presets_module_applies_nothing() {
-    let mut registry = ModuleRegistry::new();
-    for module in [
-        Disabled::wrap(Arc::new(lightwell_core::PresetsModule::new())),
-        Arc::new(lightwell_core::PixelModule::new()) as Arc<dyn ToolModule>,
-        Arc::new(lightwell_core::BasicModule::new()),
-        Arc::new(lightwell_core::TransformModule::new()),
-        Arc::new(lightwell_core::CropModule::new()),
-    ] {
-        registry.register(module).expect("a registered module");
-    }
-    let (mut service, asset, path) = opened("unavailable-presets", Some(registry));
+    let (mut service, asset, path) =
+        opened("unavailable-presets", Some(disabled("lightwell.presets")));
     assert_refused(
         &mut service,
         &asset,

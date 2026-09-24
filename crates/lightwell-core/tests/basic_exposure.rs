@@ -11,10 +11,9 @@
 mod reference;
 
 use lightwell_core::{
-    ApiRequest, Availability, BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, EditorService, Error,
-    ErrorKind, Layer, LayerId, ModuleDescriptor, ModuleRegistry, Mutation, MutationOutcome,
-    ORIENTATION_EFFECT, Orientation, OwnerHandle, PIXEL_EFFECT, RECIPE_FORMAT, Recipe, SnapshotId,
-    SourceImage, ToolModule, Transform, render,
+    ApiRequest, BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, EditorService, ErrorKind, Layer, LayerId,
+    ModuleRegistry, Mutation, MutationOutcome, ORIENTATION_EFFECT, Orientation, OwnerHandle,
+    PIXEL_EFFECT, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, Transform, render,
 };
 use reference::{RefOp, code_threshold, evaluate_pixel, exposure, srgb_to_linear};
 use serde::Deserialize;
@@ -992,64 +991,6 @@ fn two_basic_layers_are_refused_by_planning_and_by_rendering() {
 // An unavailable provider
 // ---------------------------------------------------------------------------------------------
 
-/// A registered provider wrapped as unavailable, exactly as the desktop's `--disable-module` does.
-struct Disabled {
-    inner: Arc<dyn ToolModule>,
-    descriptor: ModuleDescriptor,
-}
-
-impl Disabled {
-    fn wrap(inner: Arc<dyn ToolModule>) -> Arc<dyn ToolModule> {
-        let descriptor = ModuleDescriptor {
-            availability: Availability::Unavailable {
-                reason: "disabled by --disable-module".into(),
-            },
-            ..inner.descriptor().clone()
-        };
-        Arc::new(Self { inner, descriptor })
-    }
-}
-
-impl ToolModule for Disabled {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &Map<String, Value>,
-    ) -> Result<lightwell_core::ActionInput, Error> {
-        self.inner.parse(action_id, parameters)
-    }
-    fn plan(
-        &self,
-        input: &lightwell_core::ActionInput,
-        stage: &lightwell_core::StageContext<'_>,
-    ) -> Result<lightwell_core::ActionPlan, Error> {
-        self.inner.plan(input, stage)
-    }
-    fn validate_payload(&self, effect_id: &str, format: u32, payload: &Value) -> Result<(), Error> {
-        self.inner.validate_payload(effect_id, format, payload)
-    }
-    fn describe_layer(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-    ) -> Result<String, Error> {
-        self.inner.describe_layer(effect_id, format, payload)
-    }
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-        stage: lightwell_core::Stage,
-    ) -> Result<lightwell_core::Processing, Error> {
-        self.inner.compile(effect_id, format, payload, stage)
-    }
-}
-
 /// With the Basic provider disabled, a stack holding a Basic layer reports the unavailable effect
 /// instead of rendering without it, and stays completely readable.
 #[test]
@@ -1068,19 +1009,17 @@ fn a_disabled_basic_provider_reports_its_layers_instead_of_rendering_without_the
     let stored = layers(&service, &asset);
     drop(service);
 
+    // The built-in providers with Basic registered unavailable, exactly as the desktop's
+    // `--disable-module` does.
     let mut registry = ModuleRegistry::new();
-    registry
-        .register(Arc::new(lightwell_core::PixelModule::new()))
-        .expect("the pixel module");
-    registry
-        .register(Disabled::wrap(Arc::new(lightwell_core::BasicModule::new())))
-        .expect("the disabled Basic module");
-    registry
-        .register(Arc::new(lightwell_core::TransformModule::new()))
-        .expect("the transform module");
-    registry
-        .register(Arc::new(lightwell_core::CropModule::new()))
-        .expect("the crop module");
+    for module in lightwell_core::builtin_modules() {
+        if module.descriptor().id == "lightwell.basic" {
+            registry.register_unavailable(module, "disabled by --disable-module")
+        } else {
+            registry.register(module)
+        }
+        .expect("a registered module");
+    }
     let service = EditorService::open_with(&path, Arc::new(registry)).expect("the same catalog");
 
     let error = service

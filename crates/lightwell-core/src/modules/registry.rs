@@ -51,6 +51,131 @@ fn unavailable(effect_id: &str, layers: Vec<&str>) -> Error {
     )
 }
 
+/// The linked built-in providers, in the order a registry lists them: presets first, because the
+/// module owns no layer and its section leads the tools panel, then pixel, RAW, Basic, presence,
+/// the colour mixer, transforms, crop and the vignette. [`ModuleRegistry::builtin`] registers
+/// exactly these, and a client that serves a different set — the desktop's `--disable-module`,
+/// its developer proofs — starts from this list rather than keeping its own. External loading is a
+/// later, separately measured step.
+pub fn builtin_modules() -> Vec<Arc<dyn ToolModule>> {
+    vec![
+        Arc::new(PresetsModule::new()),
+        Arc::new(PixelModule::new()),
+        Arc::new(RawModule::new()),
+        Arc::new(BasicModule::new()),
+        Arc::new(PresenceModule::new()),
+        Arc::new(MixerModule::new()),
+        Arc::new(TransformModule::new()),
+        Arc::new(CropModule::new()),
+        Arc::new(VignetteModule::new()),
+    ]
+}
+
+/// A provider registered unavailable: the module's own descriptor with its availability replaced,
+/// and every other answer the module's own.
+///
+/// The host never plans, runs a query or task, activates or compiles through an unavailable
+/// provider — `apply_action`, `run_query`, the capability host and every compile check
+/// availability first — so its effects stay readable and a stack that holds one is reported rather
+/// than rendered without it. Forwarding every call keeps that a property of the host's checks, not
+/// of what this adapter happens to implement.
+struct Unavailable {
+    inner: Arc<dyn ToolModule>,
+    descriptor: ModuleDescriptor,
+}
+
+impl ToolModule for Unavailable {
+    fn descriptor(&self) -> &ModuleDescriptor {
+        &self.descriptor
+    }
+    fn parse(
+        &self,
+        action_id: &str,
+        parameters: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<super::ActionInput, Error> {
+        self.inner.parse(action_id, parameters)
+    }
+    fn plan(
+        &self,
+        input: &super::ActionInput,
+        context: &super::StageContext<'_>,
+    ) -> Result<super::ActionPlan, Error> {
+        self.inner.plan(input, context)
+    }
+    fn validate_payload(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &serde_json::Value,
+    ) -> Result<(), Error> {
+        self.inner.validate_payload(effect_id, format, payload)
+    }
+    fn describe_layer(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &serde_json::Value,
+    ) -> Result<String, Error> {
+        self.inner.describe_layer(effect_id, format, payload)
+    }
+    fn label(&self, input: &super::ActionInput) -> Option<String> {
+        self.inner.label(input)
+    }
+    fn values(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, Error> {
+        self.inner.values(effect_id, format, payload)
+    }
+    fn query(
+        &self,
+        query_id: &str,
+        parameters: &serde_json::Map<String, serde_json::Value>,
+        context: &super::StageContext<'_>,
+    ) -> Result<serde_json::Value, Error> {
+        self.inner.query(query_id, parameters, context)
+    }
+    fn compile(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &serde_json::Value,
+        stage: Stage,
+    ) -> Result<Processing, Error> {
+        self.inner.compile(effect_id, format, payload, stage)
+    }
+    fn compile_bound(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &serde_json::Value,
+        stage: Stage,
+        artifacts: &[Arc<artifacts::PreparedArtifact>],
+    ) -> Result<Processing, Error> {
+        self.inner
+            .compile_bound(effect_id, format, payload, stage, artifacts)
+    }
+    fn activate(&self, context: &crate::capabilities::context::ModuleContext) -> Result<(), Error> {
+        self.inner.activate(context)
+    }
+    fn deactivate(&self) {
+        self.inner.deactivate();
+    }
+    fn validate_resource(&self, resource_id: &str, path: &std::path::Path) -> Result<(), Error> {
+        self.inner.validate_resource(resource_id, path)
+    }
+    fn run_task(
+        &self,
+        task_id: &str,
+        parameters: &serde_json::Map<String, serde_json::Value>,
+        context: &crate::capabilities::context::ModuleContext,
+    ) -> Result<serde_json::Value, Error> {
+        self.inner.run_task(task_id, parameters, context)
+    }
+}
+
 #[derive(Default)]
 pub struct ModuleRegistry {
     modules: Vec<Arc<dyn ToolModule>>,
@@ -89,26 +214,37 @@ impl ModuleRegistry {
         Self::default()
     }
 
-    /// The linked built-in providers. External loading is a later, separately measured step.
-    /// Presets come first: the module owns no layer, and its section leads the tools panel.
+    /// A registry of [`builtin_modules`], every one available.
     pub fn builtin() -> Self {
         let mut registry = Self::new();
-        for module in [
-            Arc::new(PresetsModule::new()) as Arc<dyn ToolModule>,
-            Arc::new(PixelModule::new()),
-            Arc::new(RawModule::new()),
-            Arc::new(BasicModule::new()),
-            Arc::new(PresenceModule::new()),
-            Arc::new(MixerModule::new()),
-            Arc::new(TransformModule::new()),
-            Arc::new(CropModule::new()),
-            Arc::new(VignetteModule::new()),
-        ] {
+        for module in builtin_modules() {
             registry
                 .register(module)
                 .expect("built-in module descriptors are valid");
         }
         registry
+    }
+
+    /// Register `module` as unavailable, for `reason`: its descriptor, effects, actions, queries and
+    /// tasks are registered and listed exactly as [`Self::register`] would, with its availability
+    /// `unavailable {reason}`. A stack holding one of its effects stays readable and is reported
+    /// rather than rendered without it, and its actions, queries and tasks are refused by name, as
+    /// for any unavailable provider. The desktop's `--disable-module` is one.
+    pub fn register_unavailable(
+        &mut self,
+        module: Arc<dyn ToolModule>,
+        reason: impl Into<String>,
+    ) -> Result<(), Error> {
+        let descriptor = ModuleDescriptor {
+            availability: super::Availability::Unavailable {
+                reason: reason.into(),
+            },
+            ..module.descriptor().clone()
+        };
+        self.register(Arc::new(Unavailable {
+            inner: module,
+            descriptor,
+        }))
     }
 
     /// Validate a descriptor and index its effects and actions. Identities are unique across the
@@ -1983,6 +2119,68 @@ pub(crate) mod tests {
         assert_eq!(
             described(&Layer::crop(crate::CropPayload::NEUTRAL)),
             "Whole image"
+        );
+    }
+
+    /// One list of built-in modules serves every registry, and registering one of them unavailable
+    /// keeps everything it declares, with the reason on its availability: its action is refused by
+    /// name and a stack holding its effect is reported rather than rendered without it.
+    #[test]
+    fn a_built_in_registered_unavailable_keeps_its_declarations_and_reports_why() {
+        let ids = |descriptors: Vec<&ModuleDescriptor>| {
+            descriptors
+                .iter()
+                .map(|descriptor| descriptor.id.clone())
+                .collect::<Vec<_>>()
+        };
+        let listed: Vec<Arc<dyn ToolModule>> = builtin_modules();
+        assert_eq!(
+            ids(ModuleRegistry::builtin().descriptors()),
+            ids(listed.iter().map(|module| module.descriptor()).collect()),
+        );
+
+        let mut registry = ModuleRegistry::new();
+        for module in builtin_modules() {
+            if module.descriptor().id == "lightwell.basic" {
+                registry.register_unavailable(module, "switched off")
+            } else {
+                registry.register(module)
+            }
+            .unwrap();
+        }
+        let (basic, _) = registry
+            .action("set-basic")
+            .expect("the action stays declared");
+        assert_eq!(
+            basic.descriptor().availability,
+            Availability::Unavailable {
+                reason: "switched off".into()
+            }
+        );
+        let mut expected = serde_json::to_value(super::BasicModule::new().descriptor()).unwrap();
+        expected["availability"] = json!({"kind": "unavailable", "reason": "switched off"});
+        assert_eq!(
+            serde_json::to_value(basic.descriptor()).unwrap(),
+            expected,
+            "every declaration but availability is the module's own"
+        );
+        let error = registry
+            .compile(
+                64,
+                48,
+                &Recipe {
+                    layers: vec![basic_layer()],
+                    ..Recipe::default()
+                },
+            )
+            .err()
+            .expect("an unavailable effect never compiles");
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert!(
+            error
+                .detail
+                .starts_with("unavailable effect lightwell.basic.adjust"),
+            "{error}"
         );
     }
 

@@ -52,10 +52,9 @@ use gesture::{Gesture, Starting};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ActionInput, ActionPlan, Availability, ClientAuthority, ClientId, ClientSession, CropStage,
-    EditorState, Error, ErrorKind, HistoryPage, HistorySelection, HostConfig, LocalServer,
-    ModuleDescriptor, ModuleRegistry, OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue,
-    Processing, ProxyBounds, RecipeDescription, StageContext, ToolModule, Version, Zoom,
+    ClientAuthority, ClientId, ClientSession, CropStage, EditorState, ErrorKind, HistoryPage,
+    HistorySelection, HostConfig, LocalServer, ModuleDescriptor, ModuleRegistry, OwnerHandle,
+    POINTER_MODE, PreviewPhase, PreviewQueue, ProxyBounds, RecipeDescription, Version, Zoom,
     capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
 };
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
@@ -112,66 +111,12 @@ pub(crate) struct Boot {
     pub(crate) window: (f32, f32),
 }
 
-/// A registered provider wrapped as unavailable. Its effect identities stay readable, so a stack
-/// that uses it is reported rather than silently rendered without it.
-struct Disabled {
-    inner: Arc<dyn ToolModule>,
-    descriptor: ModuleDescriptor,
-}
+/// The reason a module named by `--disable-module` reports.
+const DISABLED_REASON: &str = "disabled by --disable-module";
 
-impl Disabled {
-    const REASON: &'static str = "disabled by --disable-module";
-
-    fn new(inner: Arc<dyn ToolModule>) -> Self {
-        let descriptor = ModuleDescriptor {
-            availability: Availability::Unavailable {
-                reason: Self::REASON.into(),
-            },
-            ..inner.descriptor().clone()
-        };
-        Self { inner, descriptor }
-    }
-}
-
-impl ToolModule for Disabled {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &Map<String, Value>,
-    ) -> Result<ActionInput, Error> {
-        self.inner.parse(action_id, parameters)
-    }
-    fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        self.inner.plan(input, stage)
-    }
-    fn validate_payload(&self, effect_id: &str, format: u32, payload: &Value) -> Result<(), Error> {
-        self.inner.validate_payload(effect_id, format, payload)
-    }
-    fn describe_layer(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-    ) -> Result<String, Error> {
-        self.inner.describe_layer(effect_id, format, payload)
-    }
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-        stage: lightwell_core::Stage,
-    ) -> Result<Processing, Error> {
-        self.inner.compile(effect_id, format, payload, stage)
-    }
-}
-
-/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable. In
-/// developer mode the controls proof joins them, and the capability proof too when a proof endpoint
-/// is named.
+/// The providers this run serves: the core's built-in modules, with any `--disable-module` one
+/// registered unavailable. In developer mode the controls proof joins them, and the capability
+/// proof too when a proof endpoint is named.
 fn registry(
     disabled: &[String],
     developer: bool,
@@ -179,17 +124,7 @@ fn registry(
 ) -> Result<ModuleRegistry, String> {
     let mut registry = ModuleRegistry::new();
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
-    let mut modules = vec![
-        Arc::new(lightwell_core::PresetsModule::new()) as Arc<dyn ToolModule>,
-        Arc::new(lightwell_core::PixelModule::new()),
-        Arc::new(lightwell_core::RawModule::new()),
-        Arc::new(lightwell_core::BasicModule::new()),
-        Arc::new(lightwell_core::PresenceModule::new()),
-        Arc::new(lightwell_core::MixerModule::new()),
-        Arc::new(lightwell_core::TransformModule::new()),
-        Arc::new(lightwell_core::CropModule::new()),
-        Arc::new(lightwell_core::VignetteModule::new()),
-    ];
+    let mut modules = lightwell_core::builtin_modules();
     if developer {
         modules.push(Arc::new(lightwell_core::ControlsModule::new()));
         if let Some(base) = proof_endpoint {
@@ -198,15 +133,13 @@ fn registry(
     }
     for module in modules {
         let id = module.descriptor().id.clone();
-        let module = if disabled.contains(&id) {
+        let registered = if disabled.contains(&id) {
             unknown.retain(|named| *named != id);
-            Arc::new(Disabled::new(module)) as Arc<dyn ToolModule>
+            registry.register_unavailable(module, DISABLED_REASON)
         } else {
-            module
+            registry.register(module)
         };
-        registry
-            .register(module)
-            .map_err(|error| error.to_string())?;
+        registered.map_err(|error| error.to_string())?;
     }
     match unknown.first() {
         Some(id) => Err(format!("--disable-module names no registered module: {id}")),

@@ -4,11 +4,9 @@
 //! JPEG entry's stored payloads.
 use super::*;
 use crate::{
-    ActionDescriptor, ActionInput, ActionPlan, AssetId, Availability, BASIC_EFFECT, BasicModule,
-    CropModule, EFFECT_FORMAT, EditorService, EffectDescriptor, EffectStage, EntryId, Error,
-    ErrorKind, MAX_PRESET_NAME, MixerModule, ModuleDescriptor, ModuleRegistry, Mutation,
-    MutationOutcome, ParameterDescriptor, ParameterKind, PixelModule, PresenceModule, PresetId,
-    PresetsModule, Processing, Stage, StageContext, ToolModule, TransformModule, VignetteModule,
+    ActionDescriptor, AssetId, Availability, BASIC_EFFECT, EFFECT_FORMAT, EditorService,
+    EffectDescriptor, EffectStage, EntryId, Error, ErrorKind, MAX_PRESET_NAME, ModuleDescriptor,
+    ModuleRegistry, Mutation, MutationOutcome, ParameterDescriptor, ParameterKind, PresetId,
     modules::{STAGE_ACTION, StageModule, TestModule},
 };
 use rusqlite::{Connection, params};
@@ -527,77 +525,19 @@ fn a_delete_applies_then_is_a_no_op() {
 // Unavailable actions.
 // -------------------------------------------------------------------------------------------
 
-/// A registered provider wrapped as unavailable, exactly as the desktop's `--disable-module` does.
-struct Disabled {
-    inner: Arc<dyn ToolModule>,
-    descriptor: ModuleDescriptor,
-}
-
-impl Disabled {
-    fn wrap(inner: Arc<dyn ToolModule>) -> Arc<dyn ToolModule> {
-        let descriptor = ModuleDescriptor {
-            availability: Availability::Unavailable {
-                reason: "disabled by --disable-module".into(),
-            },
-            ..inner.descriptor().clone()
-        };
-        Arc::new(Self { inner, descriptor })
-    }
-}
-
-impl ToolModule for Disabled {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &Map<String, Value>,
-    ) -> Result<ActionInput, Error> {
-        self.inner.parse(action_id, parameters)
-    }
-    fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        self.inner.plan(input, stage)
-    }
-    fn validate_payload(&self, effect_id: &str, format: u32, payload: &Value) -> Result<(), Error> {
-        self.inner.validate_payload(effect_id, format, payload)
-    }
-    fn describe_layer(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-    ) -> Result<String, Error> {
-        self.inner.describe_layer(effect_id, format, payload)
-    }
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-        stage: Stage,
-    ) -> Result<Processing, Error> {
-        self.inner.compile(effect_id, format, payload, stage)
-    }
-}
-
-/// The built-in providers with Presence either disabled or not registered at all.
+/// The built-in providers with Presence either registered unavailable, exactly as the desktop's
+/// `--disable-module` does, or not registered at all.
 fn without_presence(disabled: bool) -> Arc<ModuleRegistry> {
     let mut registry = ModuleRegistry::new();
-    let mut modules: Vec<Arc<dyn ToolModule>> = vec![
-        Arc::new(PresetsModule::new()),
-        Arc::new(PixelModule::new()),
-        Arc::new(BasicModule::new()),
-        Arc::new(MixerModule::new()),
-        Arc::new(TransformModule::new()),
-        Arc::new(CropModule::new()),
-        Arc::new(VignetteModule::new()),
-    ];
-    if disabled {
-        modules.push(Disabled::wrap(Arc::new(PresenceModule::new())));
-    }
-    for module in modules {
-        registry.register(module).expect("a registered module");
+    for module in crate::builtin_modules() {
+        let registered = match module.descriptor().id.as_str() {
+            "lightwell.presence" if disabled => {
+                registry.register_unavailable(module, "disabled by --disable-module")
+            }
+            "lightwell.presence" => continue,
+            _ => registry.register(module),
+        };
+        registered.expect("a registered module");
     }
     Arc::new(registry)
 }

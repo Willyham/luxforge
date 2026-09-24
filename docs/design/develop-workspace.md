@@ -282,7 +282,7 @@ The additions below are the only core changes. Each is visible through `module.l
 | Pickers in the panel | `Control::Picker { label }`, bound to the module's own `point-pick` or `sample-apply` canvas. Registration refuses a picker without such a canvas (a `crop-frame` is a takeover, not a pick), more than one per module, and a module that declares a pick canvas but no picker, so every pick mode is reachable from its panel |
 | Developer section | `ModuleDescriptor.developer: bool`; the pixel module sets it. The desktop lists developer modules only with `--developer` |
 | Workspace state | `ClientSession.workspace {state_panel, tools_panel, mode, thirds, clip_shadows, clip_highlights}` reported by `session.state` and set by `workspace.set` with optional fields; `mode` is `pointer` or an available module id that declares a canvas interaction. The two clipping flags are per-client view state and change nothing in the catalog |
-| Evidence for an unavailable provider | `OwnerHandle::start_with` accepts a registry; the desktop's `--disable-module ID` flag registers that built-in wrapped as unavailable, so rendering a stack that uses it fails with the unavailable-effect error and the notice appears. `LocalServer::connected` reports the live client count for the status bar |
+| Evidence for an unavailable provider | `OwnerHandle::start_with` accepts a registry; the desktop's registry is the core's `builtin_modules()`, and its `--disable-module ID` flag registers that built-in with `register_unavailable`, so rendering a stack that uses it fails with the unavailable-effect error and the notice appears. `LocalServer::connected` reports the live client count for the status bar |
 
 Compare, the command palette and Copy as JSON request need no core change.
 

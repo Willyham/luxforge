@@ -15,12 +15,9 @@
 //! reported count is compared with a second implementation.
 use crate::{reference, *};
 use lightwell_core::{
-    ActionInput, ActionPlan, ApiRequest, Availability, BASIC_EFFECT, BasicModule, ClientId,
-    CropModule, EFFECT_FORMAT, Error, Layer, ModuleDescriptor, ModuleRegistry, OwnerHandle,
-    PixelModule, Processing, RECIPE_FORMAT, RawModule, Recipe, SnapshotId, SourceImage,
-    StageContext, ToolModule, TransformModule, render as core_render,
+    ApiRequest, BASIC_EFFECT, ClientId, EFFECT_FORMAT, Layer, ModuleRegistry, OwnerHandle,
+    RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render as core_render,
 };
-use serde_json::Map;
 use std::{
     cell::RefCell,
     sync::{
@@ -43,10 +40,6 @@ const CODE_TOLERANCE: i32 = 1;
 /// A resampled pixel may differ by one further code: the crop spec's own declared tolerance for the
 /// linear-light bilinear sampler, on top of the Basic stage that fed it.
 const RESAMPLE_TOLERANCE: i32 = 2;
-
-/// The core's own result type, which the crate-wide [`Result`] alias would otherwise shadow inside
-/// a trait implementation.
-type CoreResult<T> = std::result::Result<T, Error>;
 
 /// Request ids are unique per process run so a retry is deliberate, never accidental.
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -482,85 +475,23 @@ impl Counts {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// A built-in registered as unavailable, exactly as the desktop's `--disable-module` does.
-// ---------------------------------------------------------------------------------------------
-
-pub(crate) struct Disabled {
-    inner: Arc<dyn ToolModule>,
-    descriptor: ModuleDescriptor,
-}
-
-impl Disabled {
-    const REASON: &'static str = "disabled by the acceptance journey";
-
-    pub(crate) fn new(inner: Arc<dyn ToolModule>) -> Self {
-        let descriptor = ModuleDescriptor {
-            availability: Availability::Unavailable {
-                reason: Self::REASON.into(),
-            },
-            ..inner.descriptor().clone()
-        };
-        Self { inner, descriptor }
-    }
-}
-
-impl ToolModule for Disabled {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-    fn parse(&self, action_id: &str, parameters: &Map<String, Value>) -> CoreResult<ActionInput> {
-        self.inner.parse(action_id, parameters)
-    }
-    fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> CoreResult<ActionPlan> {
-        self.inner.plan(input, stage)
-    }
-    fn validate_payload(&self, effect_id: &str, format: u32, payload: &Value) -> CoreResult<()> {
-        self.inner.validate_payload(effect_id, format, payload)
-    }
-    fn describe_layer(&self, effect_id: &str, format: u32, payload: &Value) -> CoreResult<String> {
-        self.inner.describe_layer(effect_id, format, payload)
-    }
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-        stage: lightwell_core::Stage,
-    ) -> CoreResult<Processing> {
-        self.inner.compile(effect_id, format, payload, stage)
-    }
-}
-
-/// The full built-in registry (the same set `ModuleRegistry::builtin()` registers, in the same
-/// order) with the one module whose descriptor id is `module_id` wrapped [`Disabled`]. Shared by
-/// every chapter's unavailable-provider check so each one only names which module it disables.
+/// The core's built-in registry with the one module whose descriptor id is `module_id` registered
+/// unavailable, exactly as the desktop's `--disable-module` does. Shared by every chapter's
+/// unavailable-provider check so each one only names which module it disables.
 pub(crate) fn registry_without(module_id: &str) -> ModuleRegistry {
     let mut registry = ModuleRegistry::new();
-    let builtins: [Arc<dyn ToolModule>; 8] = [
-        Arc::new(PixelModule::new()),
-        Arc::new(RawModule::new()),
-        Arc::new(BasicModule::new()),
-        Arc::new(lightwell_core::PresenceModule::new()),
-        Arc::new(lightwell_core::MixerModule::new()),
-        Arc::new(TransformModule::new()),
-        Arc::new(CropModule::new()),
-        Arc::new(lightwell_core::VignetteModule::new()),
-    ];
-    for module in builtins {
-        let module: Arc<dyn ToolModule> = if module.descriptor().id == module_id {
-            Arc::new(Disabled::new(module))
+    for module in lightwell_core::builtin_modules() {
+        if module.descriptor().id == module_id {
+            registry.register_unavailable(module, "disabled by the acceptance journey")
         } else {
-            module
-        };
-        registry
-            .register(module)
-            .expect("built-in module descriptors are valid");
+            registry.register(module)
+        }
+        .expect("built-in module descriptors are valid");
     }
     registry
 }
 
-/// The built-ins with `lightwell.basic` wrapped unavailable.
+/// The built-ins with `lightwell.basic` registered unavailable.
 fn registry_without_basic() -> ModuleRegistry {
     registry_without("lightwell.basic")
 }
