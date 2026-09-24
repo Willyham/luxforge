@@ -63,7 +63,7 @@ Source polling is gated to an outstanding job. The worker sleeps on a blocking q
 
 ## Allocation and liveness
 
-Hard adapter limits are 128 MiB encoded input, 64 MP, 16384 pixels per side and 512 MiB for the three float planes. The supported camera geometries are additionally checked before unpack. Native decode uses a 512 MiB LibRaw allocation setting; the adapter bounds metadata traversal, strides, black patterns and output arithmetic. These limits do not independently constitute a whole-process RSS promise.
+Hard adapter limits are the RAW admission limits in [architecture](architecture.md#rendering-and-limits) (`crates/lightwell-raw/src/limits.rs`). The supported camera geometries are additionally checked before unpack. Native decode uses a 512 MiB LibRaw allocation setting; the adapter bounds metadata traversal, strides, black patterns and output arithmetic. These limits do not independently constitute a whole-process RSS promise.
 
 For the full Fuji sensor, the retained u16 mosaic is 78.02 MiB, the temporary normalized mosaic 156.03 MiB and the output RGB planes 468.10 MiB. Native demosaic row/tile scratch adds about 1.1 MiB in the selected serial configuration. Camera calibration overwrites the planes in place. The terminal camera-cropped RGBA image is 151.9 MiB; GPU textures and renderer overhead are additional.
 
