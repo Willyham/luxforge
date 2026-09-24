@@ -24,7 +24,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
 - Pixel-stage edits address the content stage (the source after EXIF orientation) and are placed before quarter-turns, reflections and the crop, so changing the crop never moves or invalidates them. The host chooses a new layer's position from its effect stage. See [content-space edits](design/content-space-edits.md).
-- Quarter-turns and reflections are one orientation layer holding the composed exact state, updated in place while it is the last layer; four rotations leave one neutral layer. See [orientation layer](design/orientation-layer.md). Decided on 2026-09-24: a finish-stage layer after it, such as the post-crop vignette, no longer stops the fold; the layer updated in place is the orientation layer just before the finish region.
+- Quarter-turns and reflections are one orientation layer holding the composed exact state. It sits ahead of the crop and any finish layer, is updated in place, and carries a later crop through the transform; four rotations leave one neutral layer. See [orientation layer](design/orientation-layer.md).
 - Selecting the current entry in history is Return to current, not a historical preview.
 - Crop (M4): free handles, composition move, thirds overlay, Free/Original/1:1/3:2/4:3/16:9/custom ratios, a drag-to-straighten guide, Apply, Cancel and reset. Option/Alt scales proportionally about a fixed center. Straightening preserves composition with only the trimming needed. Apply commits once; Cancel discards.
 - Export (follow-up): JPEG quality 90, native destination picker, suggested `-edited.jpg`, never overwrite an existing file or a source alias. Optional metadata is stripped by default; Keep metadata retains supported descriptive, capture and GPS fields with correct geometry and profile.
@@ -74,7 +74,7 @@ The work ran to completion on the defaults below without further owner input; th
 
 ## UI components
 
-Accepted on 2026-09-21 for the [UI components design](design/ui-components.md), the closed control vocabulary modules may declare. Implementation is planned, not started.
+Accepted on 2026-09-21 for the [UI components design](design/ui-components.md), the closed control vocabulary modules may declare, and implemented; see [feature status](features.md).
 
 - No scroll-wheel editing of controls in v0, and no preference to enable it: a trackpad scroll over a panel of sliders must never edit a photograph.
 - `text`, `pad` and the `string` parameter kind are the second slice and wait for the colour mixer design; `curve` channels ship with the curve kind.
@@ -127,7 +127,7 @@ The owner asked on 2026-09-23 for presets, with native presets and Lightroom imp
 
 ## Architecture review
 
-Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7ce9557`. The owner decided the first two and asked for the review's recommendation on the rest. Implementation waits for the owner's go-ahead, and each spec changes when its behaviour does.
+Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7ce9557`. The owner decided the first two and asked for the review's recommendation on the rest. The work is planned in [consolidation](design/consolidation.md), and each spec changes when its behaviour does.
 
 - Consolidate rather than rewrite. Each cross-cutting mechanism keeps one implementation that every feature extends, and the copies are deleted. That covers committing and planning an edit, method dispatch and parameters, jobs, latest-job workers, desktop drafts, the JPEG and RAW evaluators, field-patch modules, colour math, smoke scenarios and test support.
 - **Controls are the same for every source kind.** A JPEG and a RAW photo show one Exposure control and one White balance (temperature and tint) control set, as Lightroom does. Each control behaves as its source requires: on a RAW photo it sets the source development's white balance and exposure, and on a JPEG it sets Basic's relative adjustment. The RAW section's duplicate Exposure and white-balance controls merge into that one set. A module's applicability to a source kind is declared, not named by the desktop.

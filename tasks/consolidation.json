@@ -1,0 +1,728 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "consolidation",
+  "title": "Consolidation",
+  "objective": "Give each cross-cutting mechanism one implementation that every feature extends, fix the defects where copies diverged, and delete the copies, with no product change beyond the owner's 2026-09-24 decisions.",
+  "context_summary": "The whole-codebase review of 2026-09-24 found most cross-cutting mechanisms implemented two or more times by parallel feature work, with confirmed defects where copies disagree. The design lists each concept, its copies and its replacement, and the owner's decisions are recorded. Wave 1 fixes defects and deletes; later waves consolidate the core, the module contract, the desktop, rendering and the harness.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Make a deduplicated retry emit no event, refuse an unrouted method explicitly, give Restore the same admission checks as every commit, and plan each preset step against its own target so presets work on masked photos.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "A deduplicated mutation result keeps `outcome: applied`, and the owner's event check reads only the outcome, so a retried request records a second event.",
+        "A method with no service handler that no owner layer matches falls through to the `events.since` answer; it must fail as an internal error naming the method.",
+        "`EditorService::restore` runs only registry recipe validation, while `commit_snapshot` also validates the source recipe, records and requires artifacts and compiles. One admission function serves both, and no copy of the checks stays behind.",
+        "A preset's `Compose` steps plan against the whole resolved recipe, while a direct action plans against `recipe_for_target`. With a global and a masked Basic layer a preset is refused as ambiguous; with only a masked one it silently edits the masked layer. `capture_preset` reads layers the same way."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        },
+        {
+          "kind": "file",
+          "label": "Editor service",
+          "target": "crates/lightwell-core/src/editor.rs",
+          "relevance": "`restore`, `commit_snapshot`, `resolve_plan`, `recipe_for_target`."
+        },
+        {
+          "kind": "file",
+          "label": "API methods and owner",
+          "target": "crates/lightwell-core/src/api/methods.rs",
+          "relevance": "`mutates` and dispatch; the owner loop's fallthrough is in `api/owner.rs`."
+        },
+        {
+          "kind": "file",
+          "label": "Preset library",
+          "target": "crates/lightwell-core/src/presets/library.rs",
+          "relevance": "`capture_preset` reads a module's one layer."
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "Composite actions and capture."
+        }
+      ],
+      "acceptance_criteria": [
+        "A retried mutation that is answered from the request table records no event; the first attempt still records one.",
+        "An unrouted handler-less method is refused with an internal error naming it.",
+        "Restore and every other commit admit a recipe through one function, and Restore refuses what a commit refuses (for example a stack naming a missing stroke).",
+        "Applying and capturing a preset on a stack with a global and a masked Basic layer uses the global layer, and on a stack with only a masked Basic layer creates or reads a global one; the masked layer is untouched."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add a test per acceptance criterion beside the code it covers.",
+          "Run the existing history, deduplication, restore, preset and mask command tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The new tests fail before the change and pass after it; existing tests pass unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Send a mask gesture's `draft.set` synchronously on the desktop thread, as the slider gesture does, and stop a late answer from presenting a drafted frame after Discard.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The slider calls `tasks::draft_set_now` synchronously because a runtime hop costs one display frame during a drag (performance rule 12). The mask gesture sends the same request through `Task::perform` in `mask_draft_set_task`, and the measured paint latency misses its bound.",
+        "`mask_cancel` sends `draft.cancel` while a `draft.set` may be in flight, and the `MaskDraftSet` handler stores the draft and requests its preview without checking that the gesture still exists. The slider defers its cancel until the in-flight answer arrives.",
+        "The single desktop draft driver comes in wave 4; this task changes only the hop and the race, reusing `draft_set_now`.",
+        "A comment in `app/masks.rs` still calls the overlay for a pixel-reading mask (P16) open; it is built."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop owner tasks",
+          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "relevance": "`draft_set_now` and `mask_draft_set_task`."
+        },
+        {
+          "kind": "file",
+          "label": "Mask gesture driver",
+          "target": "crates/lightwell-app/src/app/masks.rs",
+          "relevance": "The mask draft lifecycle, cancel and set handlers."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rule 12."
+        }
+      ],
+      "acceptance_criteria": [
+        "A mask gesture's `draft.set` runs synchronously through the same helper the slider uses, and `mask_draft_set_task` is gone.",
+        "An answer that arrives after Discard presents no frame and leaves no draft.",
+        "Mask gesture, brush and gradient tests pass."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add a desktop test in which a late set answer arrives after cancel and nothing is displayed.",
+          "Run the mask desktop tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app masks",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The late answer is dropped; existing mask tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Key a spatial unit's global estimate by what its preparation reads, reduce the stage only when a missing unit needs an estimate, describe units without rounding, decide proxy approximation from the compiled operations, and take test-only counters and estimate hooks out of the public API.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`resolve_globals` keys each unit by its `describe()` string, which includes the amount, so every new Presence value misses and reduces the whole stage on both preview phases. Clarity and Texture prepare no estimate yet still trigger the reduction; Dehaze's estimate does not depend on its amount.",
+        "Unit `describe()` strings round their values although they are used as identities (operation equality and the estimate key).",
+        "`proxy_approximate` decides by effect stage, so a reset Presence layer, which compiles to nothing, labels exact proxy frames approximate.",
+        "`masked_tile_counts`, `reset_masked_tile_counts`, `cached_estimates` and `clear_estimates` are exported from `lib.rs` and used only by tests; the masked-tile counters are process-global atomics bumped on the hot path."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        },
+        {
+          "kind": "file",
+          "label": "Spatial rendering",
+          "target": "crates/lightwell-core/src/render/spatial.rs",
+          "relevance": "`resolve_globals`, the estimate store and the masked-tile counters."
+        },
+        {
+          "kind": "file",
+          "label": "Presence units",
+          "target": "crates/lightwell-core/src/modules/presence/mod.rs",
+          "relevance": "`prepare` and `describe` of dehaze, clarity and texture."
+        },
+        {
+          "kind": "file",
+          "label": "Registry",
+          "target": "crates/lightwell-core/src/modules/registry.rs",
+          "relevance": "`proxy_approximate`."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "The global-estimate contract to update."
+        }
+      ],
+      "acceptance_criteria": [
+        "Changing only a Presence amount prepares from the stored estimate without a new reduction, and an operation whose units need no estimate never reduces.",
+        "Rendered bytes and samples are unchanged on both paths.",
+        "A stack whose only spatial layer is neutral is not labelled approximate.",
+        "The test hooks are no longer public API; tests still observe the counts.",
+        "The modules-and-api design describes the new estimate key."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Count reductions in tests for an amount change and for an estimate-free operation.",
+          "Run the spatial, presence, proxy and masked-spatial tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Reductions drop as stated; exactness tests pass unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Keep at most two spatial frames alive on the RAW path, stop copying every finished frame into a new allocation, allocate colour scratch once per worker, delete render code only tests use, and correct the RAW Planckian coefficient.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`LinearEvaluation` keeps every spatial segment's full float frame for the whole evaluation, up to five at 60 MP, against the architecture's two-frame rule.",
+        "Renders end by converting `Vec<u8>` into `Arc<[u8]>`, which allocates and copies the whole frame; the linear and proxy paths do the same. The colour pass allocates a fresh scratch buffer per row chunk.",
+        "`render::locate`, `Evaluation::locate`, `locate_in` and `ProxyCache::is_empty` are used only by tests; production uses `locate_dimensions`.",
+        "The RAW white-balance locus uses 0.2343580e6 where the published Kim et al. coefficient, the Basic copy, its reference and the design use 0.2343589e6. The shared colour module arrives in wave 3."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        },
+        {
+          "kind": "file",
+          "label": "RAW linear path",
+          "target": "crates/lightwell-core/src/render/linear.rs",
+          "relevance": "Spatial frame retention and the linear output."
+        },
+        {
+          "kind": "file",
+          "label": "Byte render path",
+          "target": "crates/lightwell-core/src/render.rs",
+          "relevance": "Frame output, colour scratch and `locate`."
+        },
+        {
+          "kind": "file",
+          "label": "Proxy",
+          "target": "crates/lightwell-core/src/proxy.rs",
+          "relevance": "Proxy frame output."
+        },
+        {
+          "kind": "file",
+          "label": "RAW white balance",
+          "target": "crates/lightwell-core/src/modules/raw/white_balance.rs",
+          "relevance": "The locus coefficient."
+        }
+      ],
+      "acceptance_criteria": [
+        "At most two spatial frames are alive at once on the RAW path, proved by a test.",
+        "No render, linear or proxy output is copied after it is written; buffer sharing is proved by a test.",
+        "Rendered bytes and samples are unchanged.",
+        "The test-only locate code is deleted and its tests use `locate_dimensions`.",
+        "The coefficient is corrected and the RAW white-balance tests pass."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add the frame-retention and buffer-sharing tests.",
+          "Run the render, linear, proxy, spatial and RAW tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "New tests pass; exactness tests pass unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Remove `artifact.relocate`, the grant's last-use record and the `read-user-file` capability with the `file` setting kind, across the core, the desktop, the proof module, the capabilities smoke and the docs.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The owner decided these on 2026-09-24. `artifact.relocate` has no caller: the artifact directory moves with its catalog. Recording a grant's last use rewrites and syncs the grants file on the owner after every task and install, for a display field.",
+        "`read-user-file` and the `file` setting kind are used only by the proof module's `input` capability; `preset.import` takes the file's text from its client. The module capabilities design keeps a one-line note that a module reading a user-chosen file may add them back, consented per canonical path."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        },
+        {
+          "kind": "file",
+          "label": "Capabilities",
+          "target": "crates/lightwell-core/src/capabilities/host.rs",
+          "relevance": "Grants, consent, files, context, host and settings."
+        },
+        {
+          "kind": "file",
+          "label": "Artifact store",
+          "target": "crates/lightwell-core/src/editor/artifact_store.rs",
+          "relevance": "Relocation and the artifact root override."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop capabilities",
+          "target": "crates/lightwell-app/src/state/capabilities.rs",
+          "relevance": "File settings and grant display."
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities design",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "The contract to update."
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "Module capabilities, revised 2026-09-24."
+        }
+      ],
+      "acceptance_criteria": [
+        "No code, test or doc refers to `artifact.relocate`, a grant's last use, `read-user-file` or the `file` setting kind, apart from the one note in the design.",
+        "Remote-request and download consent, activation, tasks and artifacts behave as before.",
+        "The capabilities smoke scenario's script and checks no longer use the removed pieces."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Delete the removed code and its tests; keep every test of the remaining behaviour.",
+          "Run the capability, artifact and desktop capability tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core capabilities",
+          "cargo test -p lightwell-app capabilities",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The remaining capability behaviour passes unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Replace the hand-written HTTP/1.1 client in the module transport with a pinned, well-known and tested HTTP client behind the existing address policy.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The owner decided on 2026-09-24 to use a well-known client such as `ureq` instead of the project's own HTTP parser.",
+        "The decided policy stays: HTTPS with platform trust for remote endpoints, public addresses only, plain HTTP only to loopback, no proxies, no redirect followed, the connection made to the address the policy checked with no second resolution, bounded headers and bodies, and a cancel noticed within the current read slice.",
+        "Dependencies are pinned exactly and must pass the repository's license and advisory policy. The executable size and package count change is recorded where the current figure is."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        },
+        {
+          "kind": "file",
+          "label": "Transport",
+          "target": "crates/lightwell-core/src/capabilities/transport/mod.rs",
+          "relevance": "`http.rs` goes; `policy.rs` stays."
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities design",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "Transport section."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "Workspace dependency list."
+        }
+      ],
+      "acceptance_criteria": [
+        "The HTTP parser is deleted and requests go through the pinned client.",
+        "Every policy behaviour the transport tests cover still holds: address classes, loopback-only HTTP, refused redirects, size limits, chunked bodies, timeouts and cancellation.",
+        "The capabilities proof journey passes.",
+        "The dependency policy check passes and the size change is recorded."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Port the transport tests to the new client without weakening any assertion.",
+          "Run the transport and capability tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core transport",
+          "cargo test -p lightwell-core capabilities",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Every ported test passes against the new client."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Delete `cargo xtask raw-reference` and the `probe` command with `probes/s0`, remove the duplicate 33 ms latency target, and run the `raw-panel` and RAW `performance` scenarios in the `full` tier when a manifest is given.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`raw-reference` asserts values against literals in its own file and calls no production code; the production RAW tests cover what it claims.",
+        "The probe served the decided S0 toolkit selection; the decision stays recorded in the research docs.",
+        "One verify target still reads the superseded 33 ms figure from the same JSON path as the 16/32 ms slider target.",
+        "The `raw-panel` scenario and a RAW `performance` run are not in any tier."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        },
+        {
+          "kind": "file",
+          "label": "xtask",
+          "target": "xtask/src/main.rs",
+          "relevance": "`main.rs`, `verify.rs`, `raw.rs`, `diagnostics.rs`, `smoke.rs`."
+        },
+        {
+          "kind": "file",
+          "label": "Development",
+          "target": "docs/engineering/development.md",
+          "relevance": "Tier contents and command lists."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "Mentions `probes/s0`."
+        }
+      ],
+      "acceptance_criteria": [
+        "The two commands, their code and their docs are gone; `raw-corpus` stays.",
+        "The summary has one slider latency target.",
+        "`full` with `--manifest` includes `raw-panel` for each manifest source and one RAW `performance` run."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Build xtask and list the tier plan for `full` with and without a manifest."
+        ],
+        "commands": [
+          "cargo test -p xtask",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The plan lists the new components; nothing references the removed commands."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Cut the run-log prose from the masking design, the Masks row of feature status and the range study's P16, delete the completed masking and UI-components plans, replace the AGENTS.md current-state paragraph with a short pointer, and single-source the slider budget and the RAW admission limits.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "AGENTS.md forbids change logs, run logs and planning history in docs. The masking design's status line is one paragraph of about 2,600 words, the Masks feature row about 2,100 and the range study's P16 row about 1,000, mostly evidence narrative.",
+        "The masking and UI-components plans have every task completed; completed plans are deleted and their outcome lives in the specs.",
+        "AGENTS.md's current-state paragraph is read every session, says catalog format 6 (the code is at 7), and never mentions masking; its map row also names catalog format 2.",
+        "The slider budget is restated in six docs and the RAW admission limits in ten. The performance spec owns the budget and the architecture's rendering and limits section owns the limits; others link.",
+        "Stale statements to fix while there: the masking design still calls P16 not yet built, and the performance spec says no `mask.*` command posts a stroke yet."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        },
+        {
+          "kind": "file",
+          "label": "AGENTS.md",
+          "target": "AGENTS.md",
+          "relevance": "Current state and map."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "relevance": "Status line."
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Masks row."
+        },
+        {
+          "kind": "file",
+          "label": "Range study",
+          "target": "docs/design/range-study.md",
+          "relevance": "Proposal P16."
+        },
+        {
+          "kind": "file",
+          "label": "Task plans",
+          "target": "tasks/README.md",
+          "relevance": "Plan table and deletion convention."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each cut status keeps only current behaviour, its verification in a sentence and outstanding work, at the length of its sibling docs.",
+        "The two completed plans and their README rows are gone and no link points at them.",
+        "AGENTS.md's current state is a short pointer to feature status that names masking and states no version numbers.",
+        "Each budget and limit is stated in one doc and linked from the others.",
+        "Decisions, the consolidation design and this plan are not edited."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Check links and plan schemas."
+        ],
+        "commands": [
+          "cargo xtask check-repository"
+        ],
+        "expected_results": [
+          "All links and plans validate."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Wave 2, core front doors: one mutation path and one plan path over a lazy `StageContext`, table-driven method dispatch with parameters declared once, typed preparation needs, a cache of immutable entries with shared strokes, history rows without snapshots with a narrow desktop refresh, artifacts carried on the recipe and one job status; then split `editor.rs` around a bound evaluation context.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "Detailed into its own tasks when wave 1 is integrated."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each replaced copy is deleted in the change that replaces it.",
+        "Renders are byte-identical and UI/API parity holds."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Targeted tests per task; rendered and timing once on the integrated wave."
+        ],
+        "commands": [
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered",
+          "cargo xtask verify --tier timing"
+        ],
+        "expected_results": [
+          "Every tier passes; timing shows no regression."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Wave 3, module contract: the declarative field-patch module, a plan result whose layer identity, format and mask the host owns, declared single-layer effects, `builtin_modules()` with core-reported neutrality, declared source kinds with one Exposure and white-balance control set for JPEG and RAW, one colour module, descriptor builders with one schema emitter, mask commands through the shared plan path, and capability settings on the parameter vocabulary.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Detailed when wave 2 lands. The source-kind control set needs its own short design first: how one control behaves per source kind."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        }
+      ],
+      "acceptance_criteria": [
+        "Descriptors other than the decided control consolidation are unchanged, proved by comparing them before and after.",
+        "Renders are byte-identical."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Targeted tests per task; rendered once on the integrated wave."
+        ],
+        "commands": [
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "Every tier passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Wave 4, desktop: one core-draft driver and gesture field, `app/mod.rs` split with nested messages, a presenter for the displayed frame, overlays on the photo surface, a silent idle poll, per-message waste removed, and crop on the core draft lifecycle.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Detailed when wave 2 lands."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        }
+      ],
+      "acceptance_criteria": [
+        "Gesture latency and idle CPU are no worse, measured once at the end.",
+        "UI/API parity holds."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Targeted tests per task; rendered and timing once on the integrated wave."
+        ],
+        "commands": [
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered",
+          "cargo xtask verify --tier timing"
+        ],
+        "expected_results": [
+          "Every tier passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Wave 5, rendering and RAW: one latest-job worker primitive for preview, analysis and the clipping overlay, one compile per job, one render entry point and a render context in place of globals, band-parallel RAW development, row evaluation on the RAW path, then one pipeline for both domains.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Detailed when wave 2 lands."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        }
+      ],
+      "acceptance_criteria": [
+        "Renders and samples are byte-identical except where a task proves a decided bound.",
+        "Memory stays within the architecture's limits."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Targeted tests per task; rendered, timing and full once on the integrated wave."
+        ],
+        "commands": [
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier full"
+        ],
+        "expected_results": [
+          "Every tier passes; timing improves where claimed."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Wave 6, harness: a smoke scenario library and scenario table, one conformance suite for field-patch modules, a serde-derived evidence script shared with xtask, test-support and independent-reference crates, and one timing distribution type.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Detailed after wave 1. Old and new verifiers are compared over the same captured artifacts before the old ones are deleted."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table this task follows."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every existing check still runs, and a deliberately broken frame or step fails the new harness where it failed the old one."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Replay existing rendered artifacts through old and new verifiers."
+        ],
+        "commands": [
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "Identical check results on the same artifacts."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-009",
+        "TASK-013"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-010",
+        "TASK-011",
+        "TASK-012"
+      ]
+    }
+  ]
+}
