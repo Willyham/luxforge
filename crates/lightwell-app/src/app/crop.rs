@@ -12,7 +12,10 @@ use crate::{
     state::tools::crop_frame,
 };
 use iced::{Task, widget::operation};
-use lightwell_core::{CropPayload, CropStage, LayerId, MAX_ANGLE, MIN_ANGLE, POINTER_MODE};
+use lightwell_core::{
+    CropPayload, CropStage, Layer, LayerId, MAX_ANGLE, MIN_ANGLE, ORIENTATION_EFFECT, Orientation,
+    POINTER_MODE, insertion_index_among,
+};
 use lightwell_ui::geometry::{quantize, value_from_fraction};
 use serde_json::{Value, json};
 
@@ -36,6 +39,8 @@ pub(crate) const QUEUED_CHANGES: usize = 32;
 pub(crate) struct PendingDraft {
     pub(crate) layer: Option<LayerId>,
     pub(crate) layer_index: usize,
+    /// The orientation the layers ahead of the crop give its input stage.
+    pub(crate) ahead: Orientation,
     pub(crate) payload: Option<CropPayload>,
     pub(crate) base_revision: u64,
     /// A reapply rebases the existing draft instead of opening a new one.
@@ -60,6 +65,17 @@ fn changes_draft(message: &CropMessage) -> bool {
             | CropMessage::SubmitAngle
             | CropMessage::Guide(true)
     )
+}
+
+/// The orientation the exact transforms among `layers` compose into, in stack order: what they do
+/// to the stage a crop after them receives. A payload that does not read as an orientation adds
+/// nothing, since such a stack does not render and no draft opens on it.
+fn orientation_ahead(layers: &[Layer]) -> Orientation {
+    layers
+        .iter()
+        .filter(|layer| layer.effect_id == ORIENTATION_EFFECT)
+        .filter_map(|layer| serde_json::from_value::<Orientation>(layer.payload.clone()).ok())
+        .fold(Orientation::NEUTRAL, Orientation::followed_by)
 }
 
 /// The angle a drag on the rail reaches at this fraction: on the rail's own step, within range.
@@ -224,9 +240,14 @@ impl Editor {
         let state = self.state.as_ref().expect("filtered above");
         let layers = &state.current_entry.snapshot.recipe.layers;
         let found = layers.iter().position(|layer| layer.effect_id == effect);
+        // Without a crop layer the draft shows the stage the host would give a new one: after
+        // every transform and edit, and before any finish layer, which acts on the crop's output.
+        let layer_index =
+            found.unwrap_or_else(|| insertion_index_among(&self.modules, layers, &effect));
         let pending = PendingDraft {
             layer: found.map(|index| layers[index].id.clone()),
-            layer_index: found.unwrap_or(layers.len()),
+            layer_index,
+            ahead: orientation_ahead(&layers[..layer_index]),
             payload: found
                 .and_then(|index| serde_json::from_value(layers[index].payload.clone()).ok()),
             base_revision: state.revision,
@@ -264,6 +285,7 @@ impl Editor {
                     pending.base_revision,
                     pending.layer,
                     pending.layer_index,
+                    pending.ahead,
                 ),
                 None => return self.settle_step(Settle::Draft),
             }
@@ -295,6 +317,9 @@ impl Editor {
                     pending.layer_index,
                 )),
             };
+            if let Some(draft) = &mut self.crop {
+                draft.ahead = pending.ahead;
+            }
         }
         self.crop_changed(if pending.reapply {
             "crop_draft_changed"
@@ -852,6 +877,157 @@ mod tests {
         assert_eq!(draft.base_revision, 9);
         assert_eq!(draft.stage.angle, 6.0, "the angle survives a rebase");
         assert!(editor.crop_request().is_some(), "Apply is possible again");
+        finish(editor, catalog);
+    }
+
+    /// A crop's input stage is everything ahead of it, the transforms included: a draft on a stack
+    /// turned after it was cropped truncates after the orientation layer, which the host keeps
+    /// ahead of the crop, and remembers the turn it opened behind.
+    #[test]
+    fn a_draft_opens_behind_every_transform_ahead_of_its_crop() {
+        let turn = lightwell_core::Layer::orientation(
+            Orientation::NEUTRAL.then(lightwell_core::Transform::RotateRight),
+        );
+        let crop = crop_layer(CropPayload {
+            angle: 0.0,
+            x: 0.25,
+            y: 0.0,
+            width: 0.5,
+            height: 1.0,
+        });
+        let (mut editor, catalog, _, _) = opened(
+            vec![
+                lightwell_core::Layer::pixel(0, 0, [1, 2, 3]),
+                turn,
+                crop.clone(),
+            ],
+            3,
+        );
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        let pending = editor.crop_pending.clone().expect("a pending draft");
+        assert_eq!(pending.layer, Some(crop.id));
+        assert_eq!(
+            pending.layer_index, 2,
+            "the pixel edit and the turn are shown"
+        );
+        assert_eq!(
+            pending.ahead,
+            Orientation::NEUTRAL.then(lightwell_core::Transform::RotateRight)
+        );
+        editor.open_draft(CropStage {
+            width: 320,
+            height: 480,
+            angle: 0.0,
+        });
+        let draft = editor.crop.as_ref().expect("an opened draft");
+        assert_eq!(draft.ahead, pending.ahead);
+        assert_eq!((draft.stage.width, draft.stage.height), (320, 480));
+        finish(editor, catalog);
+    }
+
+    /// Without a crop layer the draft shows the stage the host would give a new one, which is
+    /// before any finish layer: a post-crop effect acts on the crop's output, not on its input.
+    #[test]
+    fn a_first_draft_stops_before_a_finish_layer() {
+        let finish_layer = lightwell_core::Layer {
+            id: LayerId::new(),
+            effect_id: lightwell_core::VIGNETTE_EFFECT.into(),
+            effect_format: 1,
+            payload: json!({"amount": -40}),
+            artifacts: Vec::new(),
+        };
+        let (mut editor, catalog, _, _) = opened(
+            vec![lightwell_core::Layer::pixel(0, 0, [1, 2, 3]), finish_layer],
+            2,
+        );
+        let finishing = lightwell_core::ModuleDescriptor {
+            id: "lightwell.vignette".into(),
+            effects: vec![lightwell_core::EffectDescriptor {
+                id: lightwell_core::VIGNETTE_EFFECT.into(),
+                format: 1,
+                stage: lightwell_core::EffectStage::Finish,
+                order: 0,
+                artifacts: false,
+            }],
+            ..lightwell_core::ModuleDescriptor::default()
+        };
+        let _ = editor.update(Message::ModulesLoaded(Ok(vec![
+            crate::app::testing::crop_descriptor(),
+            finishing,
+        ])));
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        let pending = editor.crop_pending.clone().expect("a pending draft");
+        assert_eq!(pending.layer, None);
+        assert_eq!(
+            pending.layer_index, 1,
+            "the vignette is not part of the input"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A turn committed while drafting, here as another client would commit it, goes ahead of the
+    /// crop and turns its input stage. Reapply carries the draft through the turn, so the frame
+    /// keeps selecting what it did instead of landing on whatever the same box numbers now show.
+    #[test]
+    fn reapply_after_a_turn_carries_the_draft_with_the_photograph() {
+        let crop = crop_layer(CropPayload {
+            angle: 0.0,
+            x: 0.0,
+            y: 0.0,
+            width: 0.5,
+            height: 0.5,
+        });
+        let (mut editor, catalog, asset, _) = opened(vec![crop.clone()], 4);
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        editor.open_draft(stage());
+        let before = editor.crop.as_ref().expect("a draft").rect;
+        assert_eq!(
+            (before.x, before.y, before.width, before.height),
+            (0.0, 0.0, 240.0, 160.0)
+        );
+
+        let right = Orientation::NEUTRAL.then(lightwell_core::Transform::RotateRight);
+        let mut newer = entry(&asset, 5, None);
+        for layer in [
+            lightwell_core::Layer::orientation(right),
+            lightwell_core::Layer {
+                payload: serde_json::to_value(
+                    serde_json::from_value::<CropPayload>(crop.payload.clone())
+                        .unwrap()
+                        .carried((480, 320), right)
+                        .unwrap(),
+                )
+                .unwrap(),
+                ..crop.clone()
+            },
+        ] {
+            newer.snapshot = newer.snapshot.append(layer).expect("a valid stack");
+        }
+        let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
+        let _ = editor.update(Message::Synced(Ok(SyncResult::changed(refresh))));
+        assert!(editor.crop.as_ref().expect("the draft is kept").conflicted);
+
+        editor.busy = false;
+        let _ = editor.update(Message::Crop(CropMessage::Reapply));
+        let pending = editor.crop_pending.clone().expect("a pending rebase");
+        assert_eq!((pending.layer_index, pending.ahead), (1, right));
+        editor.open_draft(CropStage {
+            width: 320,
+            height: 480,
+            angle: 0.0,
+        });
+        let draft = editor.crop.as_ref().expect("the rebased draft");
+        assert!(!draft.conflicted);
+        // The top-left quarter of the photograph, turned clockwise, is its top-right quarter.
+        assert_eq!(
+            (
+                draft.rect.x,
+                draft.rect.y,
+                draft.rect.width,
+                draft.rect.height
+            ),
+            (160.0, 0.0, 160.0, 240.0)
+        );
         finish(editor, catalog);
     }
 

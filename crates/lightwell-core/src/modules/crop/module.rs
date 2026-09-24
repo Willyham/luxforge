@@ -17,6 +17,8 @@ use serde_json::{Map, Value};
 pub(super) const CROP_ACTION: &str = "crop";
 pub(super) const CROP_FIT_ACTION: &str = "crop-fit";
 pub(super) const CROP_RESET_ACTION: &str = "crop-reset";
+/// The crop's order within the geometry stage: after the orientation's default `0`.
+const CROP_ORDER: u16 = 10;
 
 /// Keep the current ratio: the existing crop's output ratio, or the input stage's without one.
 const FREE: &str = "free";
@@ -148,7 +150,9 @@ impl CropModule {
                     id: CROP_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
-                    order: 0,
+                    // Later than the orientation's default order, so the host places every
+                    // transform ahead of the crop and the crop's input stage carries them all.
+                    order: CROP_ORDER,
                     artifacts: false,
                 }],
                 actions: vec![
@@ -453,6 +457,12 @@ fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<CropPayload,
         .map_err(|error| validation(format!("invalid crop payload: {error}")))
 }
 
+/// A stored crop layer's payload, checked against its effect and format exactly as the crop module
+/// checks its own, so another module that has to re-express the crop reads the same numbers.
+pub(crate) fn stored_payload(layer: &Layer) -> Result<CropPayload, Error> {
+    payload(&layer.effect_id, layer.effect_format, &layer.payload)
+}
+
 /// The stack's one crop layer. Two of them would each claim their own input stage, so the module
 /// refuses to guess which one an action addresses.
 fn locate(layers: &[Layer]) -> Result<Option<(usize, &Layer)>, Error> {
@@ -707,6 +717,7 @@ mod tests {
             ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
             ActionPlan::NoOp => panic!("expected a committed layer, not a no-op"),
             ActionPlan::Compose(_) => panic!("expected a committed layer, not a composite"),
+            ActionPlan::Edits(_) => panic!("expected a committed layer, not several edits"),
         };
         assert_eq!(layer.effect_id, CROP_EFFECT);
         assert_eq!(layer.effect_format, EFFECT_FORMAT);

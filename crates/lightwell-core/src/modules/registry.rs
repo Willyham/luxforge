@@ -261,49 +261,9 @@ impl ModuleRegistry {
     ///
     /// Cost is `O(layers)` in descriptor lookups; it reads no pixels and allocates nothing.
     pub fn insertion_index(&self, layers: &[Layer], stage: EffectStage, order: u16) -> usize {
-        if stage == EffectStage::Source {
-            return 0;
-        }
-        // A source layer prepares the content stage and always stays at index zero.
-        let mut lower =
-            usize::from(layers.first().is_some_and(|layer| {
-                self.effect_stage(&layer.effect_id) == Some(EffectStage::Source)
-            }));
-        let opens_region = |candidate: EffectStage| match stage {
-            EffectStage::Pixel | EffectStage::Color => matches!(
-                candidate,
-                EffectStage::Spatial | EffectStage::Geometry | EffectStage::Finish
-            ),
-            EffectStage::Spatial => {
-                matches!(candidate, EffectStage::Geometry | EffectStage::Finish)
-            }
-            EffectStage::Geometry => candidate == EffectStage::Finish,
-            EffectStage::Source | EffectStage::Finish => false,
-        };
-        let mut upper = layers.len();
-        // The first layer of the same stage whose order is greater: the new layer goes before it.
-        let mut successor = None;
-        for (index, layer) in layers.iter().enumerate() {
-            let Some((layer_stage, layer_order)) = self.effect_placement(&layer.effect_id) else {
-                continue;
-            };
-            if opens_region(layer_stage) {
-                upper = index;
-                break;
-            }
-            // A spatial layer reads what the pointwise colour run produced, so it never lands
-            // before a pixel or colour layer a stored stack kept later than usual.
-            if stage == EffectStage::Spatial
-                && matches!(layer_stage, EffectStage::Pixel | EffectStage::Color)
-            {
-                lower = index + 1;
-            }
-            if layer_stage == stage && layer_order > order && successor.is_none() {
-                successor = Some(index);
-            }
-        }
-        let upper = upper.max(lower);
-        successor.unwrap_or(upper).clamp(lower, upper)
+        placement_index(layers, stage, order, |effect_id| {
+            self.effect_placement(effect_id)
+        })
     }
 
     /// Whether this stack may be rendered against a downscaled proxy source.
@@ -596,6 +556,79 @@ impl ModuleRegistry {
         }
         Ok(Compiled { segments })
     }
+}
+
+/// The placement rule of [`ModuleRegistry::insertion_index`] over any lookup of an effect's
+/// declared stage and order, so the host's registry and a client's module list answer alike.
+fn placement_index(
+    layers: &[Layer],
+    stage: EffectStage,
+    order: u16,
+    placement: impl Fn(&str) -> Option<(EffectStage, u16)>,
+) -> usize {
+    if stage == EffectStage::Source {
+        return 0;
+    }
+    // A source layer prepares the content stage and always stays at index zero.
+    let mut lower = usize::from(layers.first().is_some_and(|layer| {
+        placement(&layer.effect_id).map(|(stage, _)| stage) == Some(EffectStage::Source)
+    }));
+    let opens_region = |candidate: EffectStage| match stage {
+        EffectStage::Pixel | EffectStage::Color => matches!(
+            candidate,
+            EffectStage::Spatial | EffectStage::Geometry | EffectStage::Finish
+        ),
+        EffectStage::Spatial => {
+            matches!(candidate, EffectStage::Geometry | EffectStage::Finish)
+        }
+        EffectStage::Geometry => candidate == EffectStage::Finish,
+        EffectStage::Source | EffectStage::Finish => false,
+    };
+    let mut upper = layers.len();
+    // The first layer of the same stage whose order is greater: the new layer goes before it.
+    let mut successor = None;
+    for (index, layer) in layers.iter().enumerate() {
+        let Some((layer_stage, layer_order)) = placement(&layer.effect_id) else {
+            continue;
+        };
+        if opens_region(layer_stage) {
+            upper = index;
+            break;
+        }
+        // A spatial layer reads what the pointwise colour run produced, so it never lands
+        // before a pixel or colour layer a stored stack kept later than usual.
+        if stage == EffectStage::Spatial
+            && matches!(layer_stage, EffectStage::Pixel | EffectStage::Color)
+        {
+            lower = index + 1;
+        }
+        if layer_stage == stage && layer_order > order && successor.is_none() {
+            successor = Some(index);
+        }
+    }
+    let upper = upper.max(lower);
+    successor.unwrap_or(upper).clamp(lower, upper)
+}
+
+/// Where a committed layer of `effect_id` joins `layers`, by the host's placement rule read from a
+/// client's module descriptors (what `module.list` returns) instead of a registry. A client that
+/// has to show a stage the host will address, such as a crop draft showing the crop's input stage
+/// before any crop exists, asks this rather than repeating the rule. An effect no listed module
+/// declares is placed as a geometry effect would be, as the host places it.
+pub fn insertion_index_among(
+    modules: &[ModuleDescriptor],
+    layers: &[Layer],
+    effect_id: &str,
+) -> usize {
+    let placement = |id: &str| {
+        modules
+            .iter()
+            .flat_map(|module| module.effects.iter())
+            .find(|effect| effect.id == id)
+            .map(|effect| (effect.stage, effect.order))
+    };
+    let (stage, order) = placement(effect_id).unwrap_or((EffectStage::Geometry, 0));
+    placement_index(layers, stage, order, placement)
 }
 
 #[cfg(test)]
@@ -1668,21 +1701,31 @@ pub(crate) mod tests {
                 height: 1.0,
             })
         };
-        for (case, layers, expected) in [
-            ("an empty stack", vec![], 0),
-            ("geometry only", vec![turn(), crop()], 0),
-            ("pixels only", vec![pixel(), pixel()], 2),
-            ("a pixel before the tail", vec![pixel(), crop(), turn()], 1),
+        // `geometry` is where a default-order geometry layer such as the orientation goes: ahead
+        // of the crop, whose own order is later, and otherwise at the end of the tail.
+        for (case, layers, expected, geometry) in [
+            ("an empty stack", vec![], 0, 0),
+            ("geometry only", vec![turn(), crop()], 0, 1),
+            ("pixels only", vec![pixel(), pixel()], 2, 2),
+            // A stored stack with a turn after the crop keeps its order.
+            (
+                "a pixel before the tail",
+                vec![pixel(), crop(), turn()],
+                1,
+                1,
+            ),
             (
                 // Such a stack renders as it always did; a new edit still joins the content stage.
                 "an interleaved pixel after geometry",
                 vec![pixel(), turn(), pixel(), crop()],
                 1,
+                3,
             ),
             (
                 "a layer no provider declares does not open the tail",
                 vec![test_layer("test.absent"), turn()],
                 1,
+                2,
             ),
         ] {
             assert_eq!(
@@ -1699,9 +1742,35 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 registry.insertion_index(&layers, EffectStage::Geometry, 0),
-                layers.len(),
-                "{case}: geometry extends the tail"
+                geometry,
+                "{case}: the orientation goes ahead of the crop"
             );
+            assert_eq!(
+                registry.insertion_index_for(&layers, ORIENTATION_EFFECT),
+                geometry,
+                "{case}: the orientation effect's own placement"
+            );
+            assert_eq!(
+                registry.insertion_index_for(&layers, CROP_EFFECT),
+                layers.len(),
+                "{case}: a crop ends the tail"
+            );
+            // A client reading the same rule from its module list places every effect alike.
+            let listed: Vec<ModuleDescriptor> =
+                registry.descriptors().into_iter().cloned().collect();
+            for effect in [
+                PIXEL_EFFECT,
+                ORIENTATION_EFFECT,
+                CROP_EFFECT,
+                crate::VIGNETTE_EFFECT,
+                "test.absent",
+            ] {
+                assert_eq!(
+                    insertion_index_among(&listed, &layers, effect),
+                    registry.insertion_index_for(&layers, effect),
+                    "{case}: {effect} from the module list"
+                );
+            }
             // The host reads the same rule from an effect's own descriptor.
             assert_eq!(
                 registry.insertion_index_for(&layers, PIXEL_EFFECT),

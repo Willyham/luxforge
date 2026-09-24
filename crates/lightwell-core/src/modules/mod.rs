@@ -50,12 +50,12 @@ pub use processing::{
 pub use raw::neutral::{SensorMosaic, sensor_neutral_gains, sensor_neutral_gains_mapped};
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
-pub use registry::ModuleRegistry;
 #[cfg(test)]
 pub(crate) use registry::tests::{
     HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate,
     STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
+pub use registry::{ModuleRegistry, insertion_index_among};
 pub use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
     MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS, Parallelism, Planes, PlanesMut,
@@ -89,12 +89,25 @@ pub enum ActionPlan {
     /// Replace the layer with the same identity in place, keeping its position and every other
     /// layer. The host rejects an identity that is not in the stack.
     Update(Layer),
+    /// Change several layers as this one action, in order, each by the rule of the single-layer
+    /// plan it names, and commit the final stack once. A transform over a crop is one: its
+    /// orientation goes ahead of the crop, and the crop is re-expressed through it in the same
+    /// entry, so the output is the transform applied to what the stack showed. Never empty.
+    Edits(Vec<LayerEdit>),
     /// Apply these field-patch actions, in order, as this one action: a preset is one. The host runs
     /// each step through the registry against the stack the steps before it produced, exactly as it
     /// would run that action alone, and commits the final stack once as one entry that stores this
     /// action's identity, label and parameters. At most [`MAX_COMPOSE_STEPS`] steps; a step's own
     /// plan may not be a composite.
     Compose(Vec<ActionInput>),
+}
+
+/// One layer change of an [`ActionPlan::Edits`]: a [`ActionPlan::Commit`] or an
+/// [`ActionPlan::Update`], with the same placement and identity rules.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LayerEdit {
+    Commit(Layer),
+    Update(Layer),
 }
 
 /// The most steps one [`ActionPlan::Compose`] may hold, which is the most actions a settings set

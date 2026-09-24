@@ -5,7 +5,7 @@
 //! space has its origin at the top-left corner of the rotated bounding box, x to the right and y
 //! down, and a positive angle turns the image clockwise on screen. The formulas are the geometry
 //! contract in `docs/specs/single-image.md`.
-use crate::{Error, ErrorKind};
+use crate::{Error, ErrorKind, Orientation};
 use serde::{Deserialize, Serialize};
 
 /// The most counter-clockwise straightening angle a crop payload may carry, in degrees.
@@ -217,6 +217,33 @@ impl CropPayload {
             }
         }
         self.output_rect(stage)
+    }
+
+    /// This payload re-expressed for its input stage turned or reflected by `orientation`: it
+    /// selects the same content, so the crop's new output is its old output under the same
+    /// orientation. `input` is the crop's input stage before the orientation. This is how a
+    /// transform goes ahead of a crop without moving what the crop shows; the rules for a
+    /// straightened rectangle are [`CropStage::carried`]'s.
+    pub fn carried(&self, input: (u32, u32), orientation: Orientation) -> Result<Self, Error> {
+        if self.is_neutral() {
+            return Ok(Self::NEUTRAL);
+        }
+        let stage = CropStage {
+            width: input.0,
+            height: input.1,
+            angle: self.angle,
+        };
+        let output = self.output_rect(&stage)?;
+        let (stage, rect) = stage.carried(
+            BoxRect {
+                x: output.x as f64,
+                y: output.y as f64,
+                width: f64::from(output.width),
+                height: f64::from(output.height),
+            },
+            orientation,
+        );
+        Ok(rect.normalized(&stage))
     }
 }
 
@@ -538,6 +565,61 @@ impl CropStage {
         ))
     }
 
+    /// This stage and a whole-pixel rectangle in its box, turned or reflected with the input by
+    /// `orientation`: the stage the input has afterwards, at the angle that keeps the same content
+    /// straight, and the rectangle that selects the same content in its box.
+    ///
+    /// The rotated box turns and reflects with its input, and a reflection reverses the
+    /// straightening angle, so the mapping is exact in continuous box space. At angle zero the box
+    /// is the input, every edge stays on whole pixels and the rectangle is carried exactly. At any
+    /// other angle the box extents are not whole pixels, so an edge measured from the far side of
+    /// the box lands between pixels: the extents are kept and the origin moves to the nearest whole
+    /// box pixel at which they are still covered. Only a rectangle with no such position, one that
+    /// touches the rotated source on opposite sides, is fitted instead, which trims it by at most a
+    /// pixel on an axis.
+    pub fn carried(&self, rect: BoxRect, orientation: Orientation) -> (Self, BoxRect) {
+        let (mut box_width, mut box_height) = self.bounding_box();
+        let mut stage = *self;
+        let mut exact = rect;
+        if orientation.mirror {
+            exact.x = box_width - (exact.x + exact.width);
+            // Written as a difference so an unstraightened crop keeps a positive zero angle.
+            stage.angle = 0.0 - stage.angle;
+        }
+        for _ in 0..orientation.turns {
+            // A clockwise quarter turn: box point (x, y) goes to (BH − y, x).
+            exact = BoxRect {
+                x: box_height - (exact.y + exact.height),
+                y: exact.x,
+                width: exact.height,
+                height: exact.width,
+            };
+            (stage.width, stage.height) = (stage.height, stage.width);
+            (box_width, box_height) = (box_height, box_width);
+        }
+        // The nearest whole pixel to an edge, and the one on its other side unless it is already
+        // whole.
+        let near = |value: f64| {
+            let nearest = value.round();
+            let other = nearest + if nearest > value { -1.0 } else { 1.0 };
+            let whole = (value - nearest).abs() <= EPSILON;
+            [nearest, if whole { nearest } else { other }]
+        };
+        let [x_near, x_far] = near(exact.x);
+        let [y_near, y_far] = near(exact.y);
+        let placed = [
+            (x_near, y_near),
+            (x_far, y_near),
+            (x_near, y_far),
+            (x_far, y_far),
+        ]
+        .into_iter()
+        .map(|(x, y)| BoxRect { x, y, ..exact })
+        .find(|candidate| stage.covers(candidate))
+        .unwrap_or_else(|| stage.fit_about_center(exact));
+        (stage, placed)
+    }
+
     /// Clamp a move of a covered rectangle: the horizontal delta is clamped first and the vertical
     /// delta against the already shifted rectangle, so a move into a boundary slides along it
     /// instead of stopping. The moved rectangle is still covered.
@@ -654,6 +736,210 @@ mod tests {
                 ..rect
             },
         }
+    }
+
+    /// The eight exact orientations.
+    fn orientations() -> Vec<Orientation> {
+        [false, true]
+            .into_iter()
+            .flat_map(|mirror| (0..4).map(move |turns| Orientation { mirror, turns }))
+            .collect()
+    }
+
+    /// Where a continuous point of a `size` stage goes under `orientation`, with the stage it goes
+    /// to: the reflection, then clockwise quarter turns, as the exact layer maps pixels.
+    fn oriented(
+        point: (f64, f64),
+        size: (f64, f64),
+        orientation: Orientation,
+    ) -> ((f64, f64), (f64, f64)) {
+        let (mut point, mut size) = (point, size);
+        if orientation.mirror {
+            point = (size.0 - point.0, point.1);
+        }
+        for _ in 0..orientation.turns {
+            point = (size.1 - point.1, point.0);
+            size = (size.1, size.0);
+        }
+        (point, size)
+    }
+
+    /// Carrying a crop through each of the eight orientations turns its stage with the input,
+    /// reverses the angle for a reflection and frames the same content: exactly at angle zero,
+    /// where the inverse orientation carries it back, and otherwise within a box pixel of the
+    /// exactly carried rectangle, on whole box pixels, covered, and with its extents kept unless
+    /// it touches the rotated source.
+    #[test]
+    fn carrying_a_crop_through_an_orientation_frames_the_same_content() {
+        let mut shifted = 0;
+        let mut kept = 0;
+        for (width, height) in [(480, 320), (4000, 6000), (7, 5)] {
+            for angle in ANGLES {
+                let from = stage(width, height, angle);
+                let (box_width, box_height) = from.bounding_box();
+                for (center, extent) in [
+                    ((0.5, 0.5), (0.4, 0.3)),
+                    ((0.42, 0.56), (0.5, 0.45)),
+                    ((0.3, 0.7), (0.2, 0.25)),
+                    // Larger than anything that fits: the largest rectangle, touching the source.
+                    ((0.5, 0.5), (4.0, 4.0)),
+                ] {
+                    let rect = from.fit_about_center(BoxRect::from_center(
+                        (box_width * center.0, box_height * center.1),
+                        box_width * extent.0,
+                        box_height * extent.1,
+                    ));
+                    // Clear of the source edges by a box pixel on every side, so any move onto
+                    // the nearest whole pixel stays covered.
+                    let clear = from.covers(&BoxRect {
+                        x: rect.x - 1.0,
+                        y: rect.y - 1.0,
+                        width: rect.width + 2.0,
+                        height: rect.height + 2.0,
+                    });
+                    for orientation in orientations() {
+                        let case = format!("{width}x{height} at {angle}° {rect:?} {orientation:?}");
+                        let (to, carried) = from.carried(rect, orientation);
+                        let odd = orientation.turns % 2 == 1;
+                        assert_eq!(
+                            (to.width, to.height),
+                            if odd {
+                                (height, width)
+                            } else {
+                                (width, height)
+                            },
+                            "{case}"
+                        );
+                        assert_eq!(
+                            to.angle,
+                            if orientation.mirror {
+                                0.0 - angle
+                            } else {
+                                angle
+                            },
+                            "{case}"
+                        );
+                        assert!(to.angle != 0.0 || to.angle.is_sign_positive(), "{case}");
+                        // Whole box pixels, covered, and exactly what its payload renders.
+                        assert_eq!(carried, carried.snapped_inward(), "{case}");
+                        assert!(to.covers(&carried), "{case}");
+                        assert_eq!(
+                            carried.normalized(&to).output_rect(&to).unwrap(),
+                            OutputRect {
+                                x: carried.x as i64,
+                                y: carried.y as i64,
+                                width: carried.width as u32,
+                                height: carried.height as u32,
+                            },
+                            "{case}"
+                        );
+                        // The exactly carried rectangle, from two opposite corners in box space.
+                        let size = (box_width, box_height);
+                        let ((ax, ay), _) = oriented((rect.x, rect.y), size, orientation);
+                        let far = (rect.x + rect.width, rect.y + rect.height);
+                        let ((bx, by), _) = oriented(far, size, orientation);
+                        let exact = BoxRect {
+                            x: ax.min(bx),
+                            y: ay.min(by),
+                            width: (ax - bx).abs(),
+                            height: (ay - by).abs(),
+                        };
+                        if angle == 0.0 {
+                            assert_eq!(carried, exact, "{case}: exact at angle zero");
+                            assert_eq!(
+                                to.carried(carried, orientation.inverse()),
+                                (from, rect),
+                                "{case}: the inverse carries it back"
+                            );
+                        }
+                        let (dx, dy) = (
+                            carried.center().0 - exact.center().0,
+                            carried.center().1 - exact.center().1,
+                        );
+                        assert!(
+                            dx.abs() <= 1.0 && dy.abs() <= 1.0,
+                            "{case}: moved {dx}, {dy}"
+                        );
+                        assert!(
+                            carried.width <= exact.width + EPSILON
+                                && carried.width >= exact.width - 1.0 - EPSILON
+                                && carried.height <= exact.height + EPSILON
+                                && carried.height >= exact.height - 1.0 - EPSILON,
+                            "{case}: {carried:?} trims {exact:?} by at most a pixel"
+                        );
+                        // Clear of the source edges, the extents are kept and the rectangle moves
+                        // only onto the nearest whole box pixel.
+                        if clear {
+                            assert_eq!(
+                                (carried.width, carried.height),
+                                (exact.width, exact.height),
+                                "{case}"
+                            );
+                            assert!(
+                                dx.abs() <= 0.5 && dy.abs() <= 0.5,
+                                "{case}: moved {dx}, {dy}"
+                            );
+                        }
+                        // The content it frames: the center's input point, carried with the input,
+                        // is the carried center's within the same distance, the rotation being rigid.
+                        let (u, v) = from.to_input(rect.center().0, rect.center().1);
+                        let ((u, v), _) =
+                            oriented((u, v), (f64::from(width), f64::from(height)), orientation);
+                        let (cu, cv) = to.to_input(carried.center().0, carried.center().1);
+                        close(
+                            (cu - u).hypot(cv - v),
+                            dx.hypot(dy),
+                            1e-6,
+                            &format!("{case}: content moves as the rectangle does"),
+                        );
+                        shifted += usize::from(dx != 0.0 || dy != 0.0);
+                        kept += usize::from(
+                            (carried.width, carried.height) == (exact.width, exact.height),
+                        );
+                    }
+                }
+            }
+        }
+        // Both branches ran: straightened crops do move onto the turned box's pixels, and most
+        // keep their extents.
+        assert!(
+            shifted > 0 && kept > shifted / 2,
+            "{shifted} moved, {kept} kept"
+        );
+    }
+
+    /// The payload form: a neutral crop stays neutral, and any other is the stage form normalized.
+    #[test]
+    fn a_carried_payload_is_the_carried_rectangle_normalized() {
+        for orientation in orientations() {
+            assert_eq!(
+                CropPayload::NEUTRAL
+                    .carried((480, 320), orientation)
+                    .unwrap(),
+                CropPayload::NEUTRAL
+            );
+            let from = stage(480, 320, 12.0);
+            let (box_width, box_height) = from.bounding_box();
+            let rect = from.fit_about_center(BoxRect::from_center(
+                (box_width * 0.4, box_height * 0.6),
+                box_width * 0.3,
+                box_height * 0.3,
+            ));
+            let (to, carried) = from.carried(rect, orientation);
+            assert_eq!(
+                rect.normalized(&from)
+                    .carried((480, 320), orientation)
+                    .unwrap(),
+                carried.normalized(&to),
+                "{orientation:?}"
+            );
+        }
+        // A payload that is not covered is refused rather than carried.
+        let uncovered = CropPayload {
+            angle: 20.0,
+            ..CropPayload::NEUTRAL
+        };
+        assert!(uncovered.carried((480, 320), orientations()[1]).is_err());
     }
 
     /// A whole-box rectangle fitted at full resolution is exact there, and re-rounded at a display

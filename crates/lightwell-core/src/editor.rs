@@ -5,8 +5,8 @@ use crate::{
     analysis::AnalysisIdentity,
     artifacts::{ArtifactId, LiveArtifacts, PreparedArtifact, PreparedArtifacts},
     modules::{
-        ActionInput, ActionPlan, EffectStage, MAX_COMPOSE_STEPS, Stage, StageContext, action_label,
-        check_parameters,
+        ActionInput, ActionPlan, EffectStage, LayerEdit, MAX_COMPOSE_STEPS, Stage, StageContext,
+        action_label, check_parameters,
     },
     open_source_bytes, read_bounded_file, render,
     render::{Evaluation, locate_dimensions},
@@ -1545,7 +1545,7 @@ impl EditorService {
                 ActionPlan::Update(layer) => {
                     state.current_entry.snapshot.with_layer_replaced(layer)?
                 }
-                ActionPlan::Commit(_) | ActionPlan::Compose(_) => {
+                ActionPlan::Commit(_) | ActionPlan::Edits(_) | ActionPlan::Compose(_) => {
                     return Err(Error::new(
                         ErrorKind::Validation,
                         "RAW source action may only update its required layer",
@@ -1840,21 +1840,48 @@ impl EditorService {
     }
 
     /// One step's plan applied to a stack: the placement rules of [`Self::resolve_plan`] for a
-    /// single layer. A composite here is a step of another composite, which the host refuses.
+    /// single layer, or for each of several in order. A composite here is a step of another
+    /// composite, which the host refuses.
     fn apply_plan(&self, recipe: &Recipe, plan: ActionPlan) -> Result<Option<Recipe>, Error> {
         match plan {
             ActionPlan::NoOp => Ok(None),
             ActionPlan::Commit(layer) => {
-                let index = self
-                    .registry
-                    .insertion_index_for(&recipe.layers, &layer.effect_id);
-                Ok(Some(recipe.with_layer_inserted(index, layer)?))
+                Ok(Some(self.apply_edit(recipe, LayerEdit::Commit(layer))?))
             }
-            ActionPlan::Update(layer) => Ok(Some(recipe.with_layer_replaced(layer)?)),
+            ActionPlan::Update(layer) => {
+                Ok(Some(self.apply_edit(recipe, LayerEdit::Update(layer))?))
+            }
+            ActionPlan::Edits(edits) => {
+                if edits.is_empty() {
+                    return Err(Error::new(
+                        ErrorKind::Validation,
+                        "a plan of layer edits holds none",
+                    ));
+                }
+                let mut edited = recipe.clone();
+                for edit in edits {
+                    edited = self.apply_edit(&edited, edit)?;
+                }
+                Ok(Some(edited))
+            }
             ActionPlan::Compose(_) => Err(Error::new(
                 ErrorKind::Validation,
                 "composite actions do not nest",
             )),
+        }
+    }
+
+    /// One layer change: a commit placed by its effect's declared stage and order, or an update
+    /// in place by identity.
+    fn apply_edit(&self, recipe: &Recipe, edit: LayerEdit) -> Result<Recipe, Error> {
+        match edit {
+            LayerEdit::Commit(layer) => {
+                let index = self
+                    .registry
+                    .insertion_index_for(&recipe.layers, &layer.effect_id);
+                recipe.with_layer_inserted(index, layer)
+            }
+            LayerEdit::Update(layer) => recipe.with_layer_replaced(layer),
         }
     }
 
@@ -2883,10 +2910,10 @@ fn file_identity(_: &Metadata, canonical: &Path) -> String {
 mod tests {
     use super::*;
     use crate::{
-        ActionDescriptor, Availability, CROP_EFFECT, CropPayload, CropStage, EFFECT_FORMAT,
-        EffectDescriptor, EffectStage, ExactGeometry, Layer, LayerId, ModuleDescriptor,
-        ORIENTATION_EFFECT, PIXEL_EFFECT, ParameterDescriptor, ParameterKind, PreviewQueue,
-        Processing, Stage, ToolModule, open_source,
+        ActionDescriptor, Availability, BoxRect, CROP_EFFECT, CropPayload, CropStage,
+        EFFECT_FORMAT, EffectDescriptor, EffectStage, ExactGeometry, Layer, LayerId,
+        ModuleDescriptor, ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, ParameterDescriptor,
+        ParameterKind, PreviewQueue, Processing, Stage, ToolModule, open_source,
     };
     use serde_json::Map;
     use std::{
@@ -3887,11 +3914,12 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// The planning rule at the service: a transform composes into the last layer of the stack and
-    /// otherwise appends. A crop after an orientation layer ends the tail, so the next transform
-    /// starts a second one; a pixel layer never does, because the host puts it before the tail.
+    /// The planning rule at the service: a transform composes into the orientation layer ahead of
+    /// the crop, and a crop never ends the tail: the next transform composes into the same layer and
+    /// carries the crop through it, so the turned photograph is exactly the cropped one turned. A
+    /// pixel layer never ends it either, because the host puts it before the tail.
     #[test]
-    fn a_transform_updates_the_stacks_last_orientation_layer_and_otherwise_appends() {
+    fn a_transform_composes_ahead_of_the_crop_and_carries_it() {
         let catalog = temp("orientation-placement.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
@@ -3945,17 +3973,19 @@ mod tests {
         assert_eq!(stack[2].id, first_orientation, "the same layer, in place");
         assert_eq!(stack[2].payload, json!({"mirror": true, "turns": 3}));
 
-        // A crop appends after the orientation layer, so the next transform starts a second one:
-        // order stays observable and the later quarter turn carries the visible crop.
+        // A crop joins the tail after the orientation layer; the next transform still composes into
+        // that layer, ahead of the crop, and re-expresses the crop so it frames the same content.
+        // The crop is off-center, so a turn or a reflection has to move it.
         let at = revision(&service);
         service
             .apply_action(
                 &asset,
                 mutation(at, "crop"),
                 "crop",
-                json!({"x":0.25,"y":0.25,"width":0.5,"height":0.5}),
+                json!({"x":0.1,"y":0.2,"width":0.5,"height":0.5}),
             )
             .unwrap();
+        let crop = layers(&service)[3].clone();
         let cropped = service.render_current(&asset).unwrap();
         let at = revision(&service);
         service
@@ -3967,39 +3997,44 @@ mod tests {
                 .iter()
                 .map(|layer| layer.effect_id.as_str())
                 .collect::<Vec<_>>(),
-            [
-                PIXEL_EFFECT,
-                PIXEL_EFFECT,
-                ORIENTATION_EFFECT,
-                CROP_EFFECT,
-                ORIENTATION_EFFECT
-            ],
-            "two orientation layers around the crop, by design"
+            [PIXEL_EFFECT, PIXEL_EFFECT, ORIENTATION_EFFECT, CROP_EFFECT],
+            "one orientation layer, ahead of the crop"
         );
-        assert_eq!(stack[2].id, first_orientation, "the first one is untouched");
-        assert_eq!(stack[2].payload, json!({"mirror": true, "turns": 3}));
-        let second_orientation = stack[4].id.clone();
-        assert_eq!(stack[4].payload, json!({"mirror": false, "turns": 1}));
-        // The quarter turn after the crop carries the visible crop and swaps its ratio.
+        assert_eq!(stack[2].id, first_orientation, "the same layer, in place");
+        assert_eq!(stack[2].payload, json!({"mirror": true, "turns": 0}));
+        assert_eq!(stack[3].id, crop.id, "the crop keeps its identity");
+        assert_ne!(
+            stack[3].payload, crop.payload,
+            "and is re-expressed in the turned stage"
+        );
+        // The quarter turn carries the visible crop and swaps its ratio: every pixel of the turned
+        // photograph is the cropped one's, turned clockwise.
         let turned = service.render_current(&asset).unwrap();
         assert_eq!(
             (turned.width, turned.height),
             (cropped.height, cropped.width)
         );
+        for y in 0..turned.height {
+            for x in 0..turned.width {
+                assert_eq!(
+                    turned.pixel(x, y),
+                    cropped.pixel(y, cropped.height - 1 - x),
+                    "turned pixel {x}, {y}"
+                );
+            }
+        }
 
-        // And a further transform composes into that appended layer, not the first one.
+        // A reflection composes into the same layer and carries the off-center composition with
+        // the image instead of re-cutting it: every row of the turned crop, bottom to top.
         let at = revision(&service);
         service
             .apply_transform(&asset, mutation(at, "fourth"), Transform::FlipVertical)
             .unwrap();
         let stack = layers(&service);
-        assert_eq!(stack.len(), 5);
-        assert_eq!(stack[4].id, second_orientation, "the same layer, in place");
-        assert_eq!(stack[4].payload, json!({"mirror": true, "turns": 1}));
-        assert_eq!(stack[2].id, first_orientation);
-        assert_eq!(stack[2].payload, json!({"mirror": true, "turns": 3}));
-        // The reflection acts on the crop's output stage, so it carries the off-center composition
-        // with the image instead of re-cutting it: every row of the turned crop, bottom to top.
+        assert_eq!(stack.len(), 4);
+        assert_eq!(stack[2].id, first_orientation, "the same layer, in place");
+        assert_eq!(stack[2].payload, json!({"mirror": false, "turns": 2}));
+        assert_eq!(stack[3].id, crop.id);
         let flipped = service.render_current(&asset).unwrap();
         assert_eq!(
             (flipped.width, flipped.height),
@@ -4014,6 +4049,260 @@ mod tests {
                 "row {y}"
             );
         }
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Each pixel of `before` against the pixel of `turned` that `orientation` puts it at: the mean
+    /// absolute difference of their colour channels, in codes, and the largest one.
+    fn difference_under(before: &Raster, turned: &Raster, orientation: Orientation) -> (f64, u8) {
+        let mapping = orientation.geometry(before.width, before.height);
+        assert_eq!(
+            (turned.width, turned.height),
+            (mapping.output_width, mapping.output_height)
+        );
+        let mut total = 0u64;
+        let mut largest = 0;
+        for y in 0..before.height {
+            for x in 0..before.width {
+                let (ix, iy) = (i64::from(x), i64::from(y));
+                let tx = mapping.a * ix + mapping.b * iy + mapping.tx;
+                let ty = mapping.c * ix + mapping.d * iy + mapping.ty;
+                let old = before.pixel(x, y).unwrap();
+                let new = turned.pixel(tx as u32, ty as u32).unwrap();
+                for channel in 0..3 {
+                    let difference = old[channel].abs_diff(new[channel]);
+                    total += u64::from(difference);
+                    largest = largest.max(difference);
+                }
+            }
+        }
+        let channels = 3 * u64::from(before.width) * u64::from(before.height);
+        (total as f64 / channels as f64, largest)
+    }
+
+    /// Through a straightened crop a turn or a reflection still frames the same content: the crop
+    /// keeps its extents and moves by at most half a box pixel, onto the nearest whole-pixel origin
+    /// in the turned stage, so the output is the old one turned up to that sub-pixel resample. The
+    /// geometry tests bound the move; this proves the stack, the payload and the render agree.
+    #[test]
+    fn a_transform_over_a_straightened_crop_frames_the_same_content() {
+        let catalog = temp("straightened-carry.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let revision = |service: &EditorService| service.state(&asset).unwrap().revision;
+        let stage = CropStage {
+            width: 480,
+            height: 320,
+            angle: 7.0,
+        };
+        let (box_width, box_height) = stage.bounding_box();
+        let payload = stage
+            .fit_about_center(BoxRect::from_center(
+                (box_width * 0.42, box_height * 0.56),
+                box_width * 0.5,
+                box_height * 0.45,
+            ))
+            .normalized(&stage);
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "crop"),
+                "crop",
+                serde_json::to_value(payload).unwrap(),
+            )
+            .unwrap();
+        let mut before = service.render_current(&asset).unwrap();
+        let mut composed = Orientation::NEUTRAL;
+        let mut input = (480, 320);
+        for (request, transform) in [
+            ("right", Transform::RotateRight),
+            ("mirror", Transform::MirrorHorizontal),
+            ("flip", Transform::FlipVertical),
+            ("left", Transform::RotateLeft),
+        ] {
+            let stored: CropPayload = serde_json::from_value(
+                service
+                    .state(&asset)
+                    .unwrap()
+                    .current_entry
+                    .snapshot
+                    .recipe
+                    .layers
+                    .last()
+                    .unwrap()
+                    .payload
+                    .clone(),
+            )
+            .unwrap();
+            let at = revision(&service);
+            service
+                .apply_transform(&asset, mutation(at, request), transform)
+                .unwrap();
+            composed = composed.then(transform);
+            let stack = service
+                .state(&asset)
+                .unwrap()
+                .current_entry
+                .snapshot
+                .recipe
+                .layers;
+            assert_eq!(
+                stack
+                    .iter()
+                    .map(|layer| layer.effect_id.as_str())
+                    .collect::<Vec<_>>(),
+                [ORIENTATION_EFFECT, CROP_EFFECT],
+                "{request}"
+            );
+            assert_eq!(
+                serde_json::from_value::<Orientation>(stack[0].payload.clone()).unwrap(),
+                composed,
+                "{request}"
+            );
+            // The catalog stores the payload as JSON, so compare the whole-pixel rectangle it
+            // renders rather than the last bit of each fraction.
+            let carried: CropPayload = serde_json::from_value(stack[1].payload.clone()).unwrap();
+            let expected = stored.carried(input, Orientation::of(transform)).unwrap();
+            let turned_input = if Orientation::of(transform).turns % 2 == 1 {
+                (input.1, input.0)
+            } else {
+                input
+            };
+            let turned_stage = CropStage {
+                width: turned_input.0,
+                height: turned_input.1,
+                angle: expected.angle,
+            };
+            assert_eq!(
+                carried.output_rect(&turned_stage).unwrap(),
+                expected.output_rect(&turned_stage).unwrap(),
+                "{request}"
+            );
+            let old = stored
+                .output_rect(&CropStage {
+                    width: input.0,
+                    height: input.1,
+                    angle: stored.angle,
+                })
+                .unwrap();
+            let new = carried.output_rect(&turned_stage).unwrap();
+            assert_eq!(
+                if turned_input == input {
+                    (new.width, new.height)
+                } else {
+                    (new.height, new.width)
+                },
+                (old.width, old.height),
+                "{request}: a crop clear of the source edges keeps its extents"
+            );
+            // A reflection reverses the straightening angle; a quarter turn keeps it.
+            assert_eq!(
+                carried.angle,
+                if composed.mirror { -7.0 } else { 7.0 },
+                "{request}"
+            );
+            // The resample reads the same content from under a box pixel away, so every output
+            // value lies within what the old output holds a pixel around it.
+            // The resample reads the same content from under a box pixel away, so the output is
+            // the old one turned up to that move: it differs only where detail is finer than the
+            // move, such as the fixture's one-pixel stripes, and a framing of any other content
+            // would differ by tens of codes throughout.
+            let turned = service.render_current(&asset).unwrap();
+            let (mean, _) = difference_under(&before, &turned, Orientation::of(transform));
+            assert!(mean < 4.0, "{request}: {mean} codes apart on average");
+            input = turned_input;
+            before = turned;
+        }
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A stored stack may hold an orientation layer after the crop, where the host never places
+    /// one. The next transform folds that layer ahead of the crop with itself and leaves it
+    /// neutral, so the output is exactly the transform applied to what the stack showed, and the
+    /// crop's input stage holds every turn from then on.
+    #[test]
+    fn a_transform_folds_an_orientation_stored_after_the_crop() {
+        let catalog = temp("trailing-orientation.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let state = {
+            let asset = service.import(&fixture()).unwrap().asset.id;
+            service.state(&asset).unwrap()
+        };
+        let asset = state.asset.id.clone();
+        let crop = Layer::crop(CropPayload {
+            angle: 0.0,
+            x: 0.1,
+            y: 0.2,
+            width: 0.5,
+            height: 0.5,
+        });
+        let trailing = Layer::orientation(Orientation::of(Transform::RotateRight));
+        let snapshot = state
+            .current_entry
+            .snapshot
+            .with_recipe(Recipe {
+                layers: vec![crop.clone(), trailing.clone()],
+                ..state.current_entry.snapshot.recipe.clone()
+            })
+            .unwrap();
+        service
+            .commit_snapshot(
+                &asset,
+                mutation(0, "stored"),
+                json!({}),
+                snapshot,
+                &state.asset,
+                CommittedAction {
+                    input: ActionInput {
+                        action_id: "test-stored-stack".into(),
+                        parameters: Map::new(),
+                    },
+                    label: "Stored stack".into(),
+                },
+            )
+            .unwrap();
+        let before = service.render_current(&asset).unwrap();
+        assert_eq!((before.width, before.height), (160, 240));
+        service
+            .apply_transform(&asset, mutation(1, "mirror"), Transform::MirrorHorizontal)
+            .unwrap();
+        let stack = service
+            .state(&asset)
+            .unwrap()
+            .current_entry
+            .snapshot
+            .recipe
+            .layers;
+        assert_eq!(
+            stack
+                .iter()
+                .map(|layer| layer.effect_id.as_str())
+                .collect::<Vec<_>>(),
+            [ORIENTATION_EFFECT, CROP_EFFECT, ORIENTATION_EFFECT]
+        );
+        assert_eq!(
+            serde_json::from_value::<Orientation>(stack[0].payload.clone()).unwrap(),
+            Orientation::of(Transform::RotateRight).then(Transform::MirrorHorizontal),
+            "the stored turn, then the mirror, ahead of the crop"
+        );
+        assert_eq!(stack[1].id, crop.id);
+        assert_eq!(
+            stack[2].id, trailing.id,
+            "the stored layer keeps its identity"
+        );
+        assert_eq!(stack[2].payload, json!({"mirror": false, "turns": 0}));
+        let mirrored = service.render_current(&asset).unwrap();
+        assert_eq!(
+            difference_under(
+                &before,
+                &mirrored,
+                Orientation::of(Transform::MirrorHorizontal)
+            ),
+            (0.0, 0),
+            "every pixel is the stored stack's, mirrored"
+        );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
@@ -4224,7 +4513,7 @@ mod tests {
         service
             .apply_pixel(&asset, mutation(1, "pixel"), 1, 2, [4, 5, 6])
             .unwrap();
-        // Two quarter turns after the crop: one orientation layer at the end of the tail, whose row
+        // Two quarter turns after the crop: one orientation layer, ahead of the crop, whose row
         // names the orientation it holds rather than the two actions that reached it.
         for (revision, request) in [(2, "turn-a"), (3, "turn-b")] {
             service
@@ -4238,7 +4527,7 @@ mod tests {
         }
         let described = service.describe_entry(&asset, None).unwrap();
         // The pixel layer is in the content stage, so it sits before the geometry tail however
-        // late it was committed; the crop and the orientation keep their own order behind it.
+        // late it was committed, and the orientation goes ahead of the crop it carries.
         assert_eq!(
             described
                 .layers
@@ -4258,15 +4547,15 @@ mod tests {
                     true
                 ),
                 (
-                    Some("lightwell.crop"),
-                    Some("Crop and straighten"),
-                    "50% × 50%",
-                    true
-                ),
-                (
                     Some("lightwell.transform"),
                     Some("Transforms"),
                     "Rotate 180°",
+                    true
+                ),
+                (
+                    Some("lightwell.crop"),
+                    Some("Crop and straighten"),
+                    "50% × 50%",
                     true
                 ),
             ]
@@ -5115,7 +5404,8 @@ mod tests {
             );
             assert_eq!(layers(&service)[0].id, layer_id);
 
-            // A quarter turn after the crop swaps the dimensions and stays after the crop layer.
+            // A quarter turn after the crop swaps the dimensions and goes ahead of the crop layer,
+            // which it carries: the crop frames the same content in the turned stage.
             let at = revision(&service);
             service
                 .apply_transform(&asset, mutation(at, "rotate"), Transform::RotateRight)
@@ -5127,10 +5417,10 @@ mod tests {
             );
             let stack = layers(&service);
             assert_eq!(stack.len(), 2);
-            assert_eq!(stack[0].effect_id, CROP_EFFECT);
-            assert_eq!(stack[1].effect_id, ORIENTATION_EFFECT);
+            assert_eq!(stack[0].effect_id, ORIENTATION_EFFECT);
+            assert_eq!(stack[1].id, layer_id, "the crop layer keeps its identity");
 
-            // Re-cropping after the quarter turn updates in place; the transform still follows.
+            // Re-cropping after the quarter turn updates in place, in the turned stage.
             let at = revision(&service);
             service
                 .apply_action(
@@ -5142,10 +5432,10 @@ mod tests {
                 .unwrap();
             let stack = layers(&service);
             assert_eq!(stack.len(), 2);
-            assert_eq!(stack[0].id, layer_id, "the crop layer keeps its identity");
+            assert_eq!(stack[1].id, layer_id, "the crop layer keeps its identity");
             assert_eq!(
-                stack[1].effect_id, ORIENTATION_EFFECT,
-                "the transform still follows the crop"
+                stack[0].effect_id, ORIENTATION_EFFECT,
+                "the transform stays ahead of the crop"
             );
             let recropped = service.render_current(&asset).unwrap();
             assert_eq!((recropped.width, recropped.height), (160, 240));
@@ -5162,8 +5452,8 @@ mod tests {
                 stack[0].effect_id, PIXEL_EFFECT,
                 "the pixel layer joins the stack before the geometry tail"
             );
-            assert_eq!(stack[1].id, layer_id, "the crop layer keeps its position");
-            assert_eq!(stack[2].effect_id, ORIENTATION_EFFECT);
+            assert_eq!(stack[1].effect_id, ORIENTATION_EFFECT);
+            assert_eq!(stack[2].id, layer_id, "the crop layer stays last");
             let at = revision(&service);
             assert_eq!(
                 service
@@ -5186,16 +5476,16 @@ mod tests {
                 .unwrap();
             assert_eq!(reset.outcome, MutationOutcome::Applied);
             let stack = layers(&service);
-            assert_eq!(stack[1].id, layer_id);
+            assert_eq!(stack[2].id, layer_id);
             assert_eq!(
-                stack[1].payload,
+                stack[2].payload,
                 json!({"angle":0.0,"x":0.0,"y":0.0,"width":1.0,"height":1.0})
             );
             let full = service.render_current(&asset).unwrap();
             assert_eq!(
                 (full.width, full.height),
                 (320, 480),
-                "the whole input stage, turned by the later quarter turn"
+                "the whole input stage, turned by the quarter turn ahead of the crop"
             );
             let at = revision(&service);
             assert_eq!(
@@ -5298,7 +5588,9 @@ mod tests {
                 .layers
         };
 
-        // The tail: an angle-zero rectangle at (48, 32) of the 480x320 source, then a quarter turn.
+        // The tail: an angle-zero rectangle at (48, 32) of the 480x320 source, then a quarter turn,
+        // which goes ahead of the crop and carries it: the crop frames the same content at (128, 48)
+        // of the turned 320x480 stage.
         service
             .apply_action(
                 &asset,
@@ -5325,11 +5617,11 @@ mod tests {
                 .iter()
                 .map(|layer| layer.effect_id.as_str())
                 .collect::<Vec<_>>(),
-            [PIXEL_EFFECT, CROP_EFFECT, ORIENTATION_EFFECT]
+            [PIXEL_EFFECT, ORIENTATION_EFFECT, CROP_EFFECT]
         );
         let edited = service.render_current(&asset).unwrap();
-        // Content (150, 100) less the crop origin is (102, 68) of a 240x160 stage, turned right.
-        let shown = (160 - 1 - 68, 102);
+        // Content (150, 100) is drawn at (219, 150) of the turned stage, less the crop origin.
+        let shown = (219 - 128, 150 - 48);
         assert_eq!(edited.pixel(shown.0, shown.1), Some([1, 2, 3, 255]));
         for y in 0..edited.height {
             for x in 0..edited.width {
@@ -5373,19 +5665,20 @@ mod tests {
             MutationOutcome::NoOp
         );
 
-        // Moving and growing the crop keep the same content pixel edited.
+        // Moving and growing the crop keep the same content pixel edited. The crop addresses the
+        // turned stage, where that pixel is drawn at (219, 150).
         for (request, rectangle, origin, stage) in [
             (
                 "crop-moved",
-                json!({"x":0.3,"y":0.1,"width":0.5,"height":0.5}),
-                (144u32, 32u32),
-                (240u32, 160u32),
+                json!({"x":0.3,"y":0.2,"width":0.5,"height":0.5}),
+                (96u32, 96u32),
+                (160u32, 240u32),
             ),
             (
                 "crop-grown",
                 json!({"x":0.0,"y":0.0,"width":1.0,"height":1.0}),
                 (0, 0),
-                (480, 320),
+                (320, 480),
             ),
         ] {
             let at = revision(&service);
@@ -5394,14 +5687,9 @@ mod tests {
                 .unwrap();
             assert_eq!(result.outcome, MutationOutcome::Applied, "{request}");
             let raster = service.render_current(&asset).unwrap();
+            assert_eq!((raster.width, raster.height), stage, "{request}");
             assert_eq!(
-                (raster.width, raster.height),
-                (stage.1, stage.0),
-                "{request}"
-            );
-            let (x, y) = (150 - origin.0, 100 - origin.1);
-            assert_eq!(
-                raster.pixel(stage.1 - 1 - y, x),
+                raster.pixel(219 - origin.0, 150 - origin.1),
                 Some([1, 2, 3, 255]),
                 "{request}"
             );

@@ -1,14 +1,17 @@
 //! The exact transform module: quarter turns and reflections as integer coordinate mappings.
 //!
-//! The four actions are the vocabulary; the stack holds the orientation they compose into. While
-//! the orientation layer is the last layer of the stack the next action updates it in place, so a
-//! stage carries one layer however many times it is turned or reflected.
+//! The four actions are the vocabulary; the stack holds the orientation they compose into. The
+//! orientation goes ahead of the crop, and the next action updates it in place, so a stage carries
+//! one layer however many times it is turned or reflected and the crop always frames the turned
+//! photograph.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, EffectDescriptor,
-    EffectStage, ExactGeometry, ModuleDescriptor, ParameterDescriptor, ParameterKind, Processing,
-    Stage, StageContext, ToolModule,
+    EffectStage, ExactGeometry, LayerEdit, ModuleDescriptor, ParameterDescriptor, ParameterKind,
+    Processing, Stage, StageContext, ToolModule, crop::stored_payload,
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, ORIENTATION_EFFECT, Orientation, Transform};
+use crate::{
+    CROP_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer, ORIENTATION_EFFECT, Orientation, Transform,
+};
 use serde_json::{Map, Value};
 
 pub(super) const TRANSFORM_ACTION: &str = "transform";
@@ -96,6 +99,28 @@ impl Orientation {
     /// The orientation one action reaches from the neutral one: what a new layer holds.
     pub fn of(transform: Transform) -> Self {
         Self::NEUTRAL.then(transform)
+    }
+
+    /// This orientation and then `next`: `next`'s reflection and quarter turns applied to what this
+    /// one produced.
+    pub fn followed_by(self, next: Self) -> Self {
+        let reflected = if next.mirror {
+            self.then(Transform::MirrorHorizontal)
+        } else {
+            self
+        };
+        (0..next.turns).fold(reflected, |state, _| state.then(Transform::RotateRight))
+    }
+
+    /// The orientation that undoes this one: its quarter turns back, then its reflection.
+    pub fn inverse(self) -> Self {
+        let unturned =
+            (0..self.turns).fold(Self::NEUTRAL, |state, _| state.then(Transform::RotateLeft));
+        if self.mirror {
+            unturned.then(Transform::MirrorHorizontal)
+        } else {
+            unturned
+        }
     }
 
     /// The exact input-to-output mapping of this orientation at one input stage: the mirror, then
@@ -248,13 +273,80 @@ fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<Orientation,
     Ok(orientation)
 }
 
-/// The stack's orientation layer when the next action composes into it: the last layer of the
-/// stack, and nothing else. An orientation layer with a crop or any other layer after it stays
-/// where it is, because that order is what a later quarter turn carrying the visible crop means.
-fn updatable(layers: &[Layer]) -> Option<&Layer> {
-    layers
-        .last()
-        .filter(|layer| layer.effect_id == ORIENTATION_EFFECT)
+/// What one transform does to a stack, as the layer edits that do it.
+///
+/// A new orientation layer would go at `at`, where the host places the orientation effect: after
+/// the pixel, colour and spatial work, and ahead of the crop, whose geometry order is later. The
+/// transform composes into the orientation layer just before that position when there is one, and
+/// otherwise commits a new layer there. Every geometry layer from `at` on is re-expressed so the
+/// output is this transform applied to what the stack produced: the crop is carried through it,
+/// selecting the same content in the turned stage, and an orientation layer after the crop, which
+/// the host never places there but a stored stack may hold, is folded into the layer ahead of it
+/// and left neutral, the crop carried through it too. The crop's input stage therefore includes
+/// every transform once this has run. Finish layers after the tail follow the output as they
+/// always did, and nothing else is placed there.
+fn edits(transform: Transform, context: &StageContext<'_>) -> Result<Vec<LayerEdit>, Error> {
+    let layers = context.layers;
+    let at = (context.insertion_index_for)(ORIENTATION_EFFECT).min(layers.len());
+    let mut crop = None;
+    let mut folded = Orientation::NEUTRAL;
+    let mut edits = Vec::new();
+    for (index, layer) in layers.iter().enumerate().skip(at) {
+        if layer.effect_id == CROP_EFFECT {
+            crop = Some((index, layer));
+        } else if layer.effect_id == ORIENTATION_EFFECT {
+            let trailing = payload(&layer.effect_id, layer.effect_format, &layer.payload)?;
+            folded = folded.followed_by(trailing);
+            if trailing != Orientation::NEUTRAL {
+                edits.push(LayerEdit::Update(Layer {
+                    payload: orientation_value(Orientation::NEUTRAL),
+                    ..layer.clone()
+                }));
+            }
+        }
+    }
+    let turned = folded.then(transform);
+    if let Some((index, layer)) = crop {
+        let stored = stored_payload(layer)?;
+        let input = (context.stage_before)(index)?;
+        let carried = stored.carried((input.width, input.height), turned)?;
+        if carried != stored {
+            edits.push(LayerEdit::Update(Layer {
+                payload: serde_json::to_value(carried).expect("a crop payload is serializable"),
+                ..layer.clone()
+            }));
+        }
+    }
+    let ahead = at
+        .checked_sub(1)
+        .map(|index| &layers[index])
+        .filter(|layer| layer.effect_id == ORIENTATION_EFFECT);
+    // Reaching the neutral orientation leaves a neutral layer, as a crop reset leaves a neutral
+    // crop; only folding a trailing layer back to neutral commits nothing new ahead of the crop.
+    match ahead {
+        Some(layer) => {
+            let current = payload(&layer.effect_id, layer.effect_format, &layer.payload)?;
+            let composed = current.followed_by(turned);
+            if composed != current {
+                edits.insert(
+                    0,
+                    LayerEdit::Update(Layer {
+                        payload: orientation_value(composed),
+                        ..layer.clone()
+                    }),
+                );
+            }
+        }
+        None if turned != Orientation::NEUTRAL => {
+            edits.insert(0, LayerEdit::Commit(Layer::orientation(turned)));
+        }
+        None => {}
+    }
+    Ok(edits)
+}
+
+fn orientation_value(orientation: Orientation) -> Value {
+    serde_json::to_value(orientation).expect("orientation is serializable")
 }
 
 /// What one orientation layer says it does, for the recipe row. The payload is a composed state,
@@ -304,20 +396,15 @@ impl ToolModule for TransformModule {
 
     fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
         let transform = transform_value(&input.parameters)?;
-        // Every exact transform changes the orientation: four quarter turns are an identity, one is
-        // not, so a transform is never a no-op. Reaching the neutral orientation leaves a neutral
-        // layer, as a crop reset leaves a neutral crop.
-        if let Some(layer) = updatable(context.layers) {
-            let composed =
-                payload(&layer.effect_id, layer.effect_format, &layer.payload)?.then(transform);
-            return Ok(ActionPlan::Update(Layer {
-                payload: serde_json::to_value(composed).expect("orientation is serializable"),
-                ..layer.clone()
-            }));
-        }
-        Ok(ActionPlan::Commit(Layer::orientation(Orientation::of(
-            transform,
-        ))))
+        // Every exact transform changes the output: four quarter turns are an identity, one is
+        // not, so a transform is never a no-op and always has at least one edit.
+        Ok(
+            match <[LayerEdit; 1]>::try_from(edits(transform, context)?) {
+                Ok([LayerEdit::Commit(layer)]) => ActionPlan::Commit(layer),
+                Ok([LayerEdit::Update(layer)]) => ActionPlan::Update(layer),
+                Err(edits) => ActionPlan::Edits(edits),
+            },
+        )
     }
 
     fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
@@ -344,7 +431,10 @@ impl ToolModule for TransformModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CROP_EFFECT, LayerId, PIXEL_EFFECT, modules::check_parameters};
+    use crate::{
+        CropPayload, LayerId, ModuleRegistry, PIXEL_EFFECT, VIGNETTE_EFFECT,
+        modules::check_parameters,
+    };
     use serde_json::json;
 
     /// A non-square stage, so a quarter turn that went the wrong way or was dropped shows up in
@@ -369,6 +459,9 @@ mod tests {
             .collect()
     }
 
+    /// Plan one transform against `layers` on [`STAGE`], with the host's own placement rule. Only
+    /// orientation layers change a stage here, so the stage before any index folds them; a
+    /// transform asks for the stage before the crop and nothing else.
     fn planned(transform: Transform, layers: &[Layer]) -> ActionPlan {
         let module = TransformModule::new();
         let declared = module
@@ -381,10 +474,24 @@ mod tests {
         let sampler = |_: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
             panic!("planning a transform never samples a pixel")
         };
-        let stage_before =
-            |_: usize| -> Result<Stage, Error> { panic!("a transform plans no input stage") };
-        let insertion_index = |_: EffectStage| layers.len();
-        let insertion_index_for = |_: &str| layers.len();
+        let stage_before = |index: usize| -> Result<Stage, Error> {
+            assert_eq!(
+                layers[index].effect_id, CROP_EFFECT,
+                "a transform plans only the crop's input stage"
+            );
+            Ok(layers[..index].iter().fold(STAGE, |stage, layer| {
+                match serde_json::from_value::<Orientation>(layer.payload.clone()) {
+                    Ok(orientation) if orientation.turns % 2 == 1 => Stage {
+                        width: stage.height,
+                        height: stage.width,
+                    },
+                    _ => stage,
+                }
+            }))
+        };
+        let registry = ModuleRegistry::builtin();
+        let insertion_index = |_: EffectStage| panic!("a transform places its own effect");
+        let insertion_index_for = |effect: &str| registry.insertion_index_for(layers, effect);
         let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
             panic!("planning a transform never samples a pixel")
         };
@@ -409,8 +516,28 @@ mod tests {
         match plan {
             ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
             ActionPlan::NoOp => panic!("a transform is never a no-op"),
+            ActionPlan::Edits(edits) => panic!("expected one layer, not {edits:?}"),
             ActionPlan::Compose(_) => panic!("a transform is never a composite"),
         }
+    }
+
+    /// The layer edits of a plan that changes several layers.
+    fn edits_of(plan: ActionPlan) -> Vec<LayerEdit> {
+        match plan {
+            ActionPlan::Edits(edits) => edits,
+            other => panic!("expected several layer edits, not {other:?}"),
+        }
+    }
+
+    /// A 7 × 5 crop of the whole stage but its last column and bottom row, unstraightened.
+    fn inset_crop() -> Layer {
+        Layer::crop(CropPayload {
+            angle: 0.0,
+            x: 0.0,
+            y: 0.0,
+            width: 6.0 / 7.0,
+            height: 4.0 / 5.0,
+        })
     }
 
     fn orientation_of(plan: &ActionPlan) -> Orientation {
@@ -690,27 +817,31 @@ mod tests {
         }
     }
 
-    /// The planning rule: the last layer of the stack, and only that, is composed into.
+    /// The planning rule: a transform composes into the orientation layer just ahead of where the
+    /// host would place a new one, which is ahead of the crop and of any finish layer, and commits a
+    /// new layer there otherwise.
     #[test]
-    fn a_transform_updates_the_last_orientation_layer_and_otherwise_commits_a_new_one() {
+    fn a_transform_composes_ahead_of_the_crop_and_otherwise_commits_a_new_layer_there() {
         let existing = Layer::orientation(Orientation {
             mirror: true,
             turns: 1,
         });
+        let neutral_crop = Layer::crop(CropPayload::NEUTRAL);
         for (case, layers) in [
             ("an empty stack", vec![]),
             ("a pixel layer", vec![other_layer(PIXEL_EFFECT)]),
-            ("a crop layer", vec![other_layer(CROP_EFFECT)]),
+            // A neutral crop selects the whole turned stage, so only the orientation changes.
+            ("a neutral crop layer", vec![neutral_crop.clone()]),
             (
-                "an orientation layer that is not the last one",
-                vec![existing.clone(), other_layer(CROP_EFFECT)],
+                "an orientation layer behind a pixel layer",
+                vec![existing.clone(), other_layer(PIXEL_EFFECT)],
             ),
         ] {
             for transform in ACTIONS {
                 let plan = planned(transform, &layers);
                 assert!(
                     matches!(plan, ActionPlan::Commit(_)),
-                    "{case}: {transform:?} appends a new orientation layer"
+                    "{case}: {transform:?} commits a new orientation layer"
                 );
                 assert_eq!(
                     orientation_of(&plan),
@@ -719,21 +850,38 @@ mod tests {
                 );
             }
         }
-        for prefix in [vec![], vec![other_layer(PIXEL_EFFECT)]] {
+        for (case, layers) in [
+            ("the last layer", vec![existing.clone()]),
+            (
+                "after a pixel layer",
+                vec![other_layer(PIXEL_EFFECT), existing.clone()],
+            ),
+            (
+                "ahead of a finish layer",
+                vec![existing.clone(), other_layer(VIGNETTE_EFFECT)],
+            ),
+            (
+                "ahead of a neutral crop",
+                vec![existing.clone(), neutral_crop.clone()],
+            ),
+        ] {
             for transform in ACTIONS {
-                let mut layers = prefix.clone();
-                layers.push(existing.clone());
                 let plan = planned(transform, &layers);
                 assert!(
                     matches!(plan, ActionPlan::Update(_)),
-                    "the last layer is an orientation layer"
+                    "{case}: {transform:?} updates the orientation layer"
                 );
-                assert_eq!(layer_of(&plan).id, existing.id, "the identity is kept");
+                assert_eq!(
+                    layer_of(&plan).id,
+                    existing.id,
+                    "{case}: the identity is kept"
+                );
                 assert_eq!(
                     orientation_of(&plan),
                     serde_json::from_value::<Orientation>(existing.payload.clone())
                         .unwrap()
-                        .then(transform)
+                        .then(transform),
+                    "{case}"
                 );
             }
         }
@@ -749,6 +897,151 @@ mod tests {
             Orientation::NEUTRAL,
             "four quarter turns leave one neutral layer"
         );
+    }
+
+    /// A transform over a crop changes two layers in one action: the orientation ahead of the crop,
+    /// and the crop, re-expressed so it selects the same content in the turned stage.
+    #[test]
+    fn a_transform_over_a_crop_carries_the_crop_through_it() {
+        let crop = inset_crop();
+        let stored: CropPayload = serde_json::from_value(crop.payload.clone()).unwrap();
+        // The 6 × 4 rectangle at the top-left of the 7 × 5 stage, turned clockwise: the top-left of
+        // the stage goes to its top-right, so the rectangle starts one column in and is 4 × 6.
+        assert_eq!(
+            stored
+                .carried((7, 5), Orientation::of(Transform::RotateRight))
+                .unwrap(),
+            CropPayload {
+                angle: 0.0,
+                x: 1.0 / 5.0,
+                y: 0.0,
+                width: 4.0 / 5.0,
+                height: 6.0 / 7.0,
+            }
+        );
+        for transform in ACTIONS {
+            let carried = stored.carried((7, 5), Orientation::of(transform)).unwrap();
+            let edits = edits_of(planned(transform, std::slice::from_ref(&crop)));
+            assert_eq!(edits.len(), 2, "{transform:?}: {edits:?}");
+            let LayerEdit::Commit(orientation) = &edits[0] else {
+                panic!("{transform:?} commits the orientation: {edits:?}")
+            };
+            assert_eq!(orientation.effect_id, ORIENTATION_EFFECT);
+            assert_eq!(
+                serde_json::from_value::<Orientation>(orientation.payload.clone()).unwrap(),
+                Orientation::of(transform)
+            );
+            let LayerEdit::Update(updated) = &edits[1] else {
+                panic!("{transform:?} updates the crop: {edits:?}")
+            };
+            assert_eq!(
+                updated.id, crop.id,
+                "{transform:?}: the crop keeps its identity"
+            );
+            assert_eq!(
+                serde_json::from_value::<CropPayload>(updated.payload.clone()).unwrap(),
+                carried,
+                "{transform:?}"
+            );
+
+            // With an orientation ahead of the crop, that layer composes and the crop's input
+            // stage is the one the orientation produced.
+            let ahead = Layer::orientation(Orientation::of(Transform::RotateLeft));
+            let edits = edits_of(planned(transform, &[ahead.clone(), crop.clone()]));
+            let [LayerEdit::Update(composed), LayerEdit::Update(updated)] = &edits[..] else {
+                panic!("{transform:?} updates both layers: {edits:?}")
+            };
+            assert_eq!(composed.id, ahead.id);
+            assert_eq!(
+                serde_json::from_value::<Orientation>(composed.payload.clone()).unwrap(),
+                Orientation::of(Transform::RotateLeft).then(transform)
+            );
+            assert_eq!(updated.id, crop.id);
+            assert_eq!(
+                serde_json::from_value::<CropPayload>(updated.payload.clone()).unwrap(),
+                stored.carried((5, 7), Orientation::of(transform)).unwrap(),
+                "{transform:?}: carried on the 5 × 7 stage the left turn produced"
+            );
+        }
+    }
+
+    /// A stored stack may hold an orientation layer after the crop, where the host never places
+    /// one. The next transform folds that layer, with itself, into the orientation ahead of the
+    /// crop and carries the crop through both, so the output is this transform applied to what the
+    /// stack showed and the crop's input stage holds every transform from then on.
+    #[test]
+    fn a_transform_folds_an_orientation_stored_after_the_crop_ahead_of_it() {
+        let crop = inset_crop();
+        let stored: CropPayload = serde_json::from_value(crop.payload.clone()).unwrap();
+        let trailing = Layer::orientation(Orientation::of(Transform::RotateRight));
+        for transform in ACTIONS {
+            let turned = Orientation::of(Transform::RotateRight).then(transform);
+            let plan = planned(transform, &[crop.clone(), trailing.clone()]);
+            if turned == Orientation::NEUTRAL {
+                // A left turn undoes the stored right turn: the trailing layer goes neutral and
+                // nothing else changes, because the crop is already where it was made.
+                assert_eq!(transform, Transform::RotateLeft);
+                let ActionPlan::Update(layer) = plan else {
+                    panic!("only the trailing layer changes: {plan:?}")
+                };
+                assert_eq!(layer.id, trailing.id);
+                assert_eq!(
+                    orientation_of(&ActionPlan::Update(layer)),
+                    Orientation::NEUTRAL
+                );
+                continue;
+            }
+            let edits = edits_of(plan);
+            let [
+                LayerEdit::Commit(ahead),
+                LayerEdit::Update(folded),
+                LayerEdit::Update(carried),
+            ] = &edits[..]
+            else {
+                panic!("{transform:?}: {edits:?}")
+            };
+            assert_eq!(
+                serde_json::from_value::<Orientation>(ahead.payload.clone()).unwrap(),
+                turned,
+                "{transform:?}: the stored turn, then this transform"
+            );
+            assert_eq!(folded.id, trailing.id);
+            assert_eq!(
+                serde_json::from_value::<Orientation>(folded.payload.clone()).unwrap(),
+                Orientation::NEUTRAL
+            );
+            assert_eq!(carried.id, crop.id);
+            assert_eq!(
+                serde_json::from_value::<CropPayload>(carried.payload.clone()).unwrap(),
+                stored.carried((7, 5), turned).unwrap(),
+                "{transform:?}"
+            );
+        }
+    }
+
+    /// Composing orientations and undoing one agree with the stepwise exact geometry.
+    #[test]
+    fn orientations_compose_and_invert_as_their_exact_mappings_do() {
+        for first in orientations() {
+            assert_eq!(
+                first.followed_by(first.inverse()),
+                Orientation::NEUTRAL,
+                "{first:?}"
+            );
+            assert_eq!(
+                first.inverse().followed_by(first),
+                Orientation::NEUTRAL,
+                "{first:?}"
+            );
+            let before = first.geometry(STAGE.width, STAGE.height);
+            for next in orientations() {
+                assert_eq!(
+                    first.followed_by(next).geometry(STAGE.width, STAGE.height),
+                    before.then(next.geometry(before.output_width, before.output_height)),
+                    "{first:?} then {next:?}"
+                );
+            }
+        }
     }
 
     #[test]

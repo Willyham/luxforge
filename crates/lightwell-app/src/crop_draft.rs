@@ -11,8 +11,8 @@
 //! [`CropStage::fit_about_center`], so it is covered by the source, snapped to whole box pixels and
 //! accepted by [`CropPayload::output_rect`].
 use lightwell_core::{
-    BoxRect, CropPayload, CropStage, Edge, LayerId, MAX_ANGLE, MIN_ANGLE, OutputRect, guide_angle,
-    largest_with_ratio_inside,
+    BoxRect, CropPayload, CropStage, Edge, LayerId, MAX_ANGLE, MIN_ANGLE, Orientation, OutputRect,
+    guide_angle, largest_with_ratio_inside,
 };
 use serde_json::{Value, json};
 
@@ -229,6 +229,9 @@ pub(crate) struct CropDraft {
     pub(crate) layer: Option<LayerId>,
     /// How many layers precede the crop layer: the preview truncation that shows its input stage.
     pub(crate) layer_index: usize,
+    /// The orientation the layers ahead of the crop give its input stage, so a rebase across a
+    /// turn or a reflection can carry the frame with the photograph.
+    pub(crate) ahead: Orientation,
     /// Something else changed the asset; Apply is refused until Discard or Reapply.
     pub(crate) conflicted: bool,
     gesture: Option<Gesture>,
@@ -315,6 +318,7 @@ impl CropDraft {
             base_revision,
             layer,
             layer_index,
+            ahead: Orientation::NEUTRAL,
             conflicted: false,
             gesture: None,
         }
@@ -515,13 +519,29 @@ impl CropDraft {
     /// Point the draft at a new input stage and revision after something else committed: the angle
     /// and the pixel extents are kept and the center keeps addressing the same input point, so a
     /// stage of a different size keeps the composition as far as it fits.
+    ///
+    /// A turn or a reflection committed ahead of the crop turned its input stage, and `ahead` says
+    /// so: the draft is first carried through that change exactly as the core carries a committed
+    /// crop, frame and angle alike, and a locked ratio turns with it, so the frame keeps selecting
+    /// the content it did.
     pub(crate) fn rebase(
         &mut self,
         input: CropStage,
         base_revision: u64,
         layer: Option<LayerId>,
         layer_index: usize,
+        ahead: Orientation,
     ) {
+        let turned = self.ahead.inverse().followed_by(ahead);
+        if turned != Orientation::NEUTRAL {
+            (self.stage, self.rect) = self.stage.carried(self.rect, turned);
+            if turned.turns % 2 == 1
+                && let Aspect::Locked(ratio) = self.aspect
+            {
+                self.aspect = Aspect::Locked(1.0 / ratio);
+            }
+        }
+        self.ahead = ahead;
         let stage = CropStage {
             angle: self.stage.angle,
             ..input
@@ -1497,6 +1517,7 @@ mod tests {
             21,
             Some(layer.clone()),
             2,
+            Orientation::NEUTRAL,
         );
         assert!(!draft.conflicted);
         assert_eq!(draft.base_revision, 21);
@@ -1517,6 +1538,7 @@ mod tests {
             22,
             None,
             0,
+            Orientation::NEUTRAL,
         );
         assert_eq!(draft.stage.angle, 7.0);
         assert_eq!((draft.stage.width, draft.stage.height), (240, 160));
@@ -1536,6 +1558,7 @@ mod tests {
             23,
             None,
             0,
+            Orientation::NEUTRAL,
         );
         let mapped = draft
             .stage
@@ -1545,6 +1568,85 @@ mod tests {
             "the centre moved from {centre:?} to {mapped:?}"
         );
         check(&draft, "rebased onto a larger stage");
+    }
+
+    /// A turn or a reflection committed ahead of the crop while drafting turns the crop's input
+    /// stage. Reapplying carries the draft through it as the core carries the committed crop: the
+    /// frame selects the same content, a reflection reverses the angle, a quarter turn inverts a
+    /// locked ratio, and turning back returns the draft it started from.
+    #[test]
+    fn rebasing_across_a_turn_carries_the_frame_with_the_photograph() {
+        let mut draft = draft(480, 320, 7.0);
+        draft.set_preset(&preset("3:2"), None);
+        pull(&mut draft, Corner::TopLeft, (140.0, 90.0));
+        let (start_stage, start_rect) = (draft.stage, draft.rect);
+        let right = Orientation::NEUTRAL.then(lightwell_core::Transform::RotateRight);
+        draft.mark_conflicted();
+        draft.rebase(
+            CropStage {
+                width: 320,
+                height: 480,
+                angle: 0.0,
+            },
+            8,
+            draft.layer.clone(),
+            3,
+            right,
+        );
+        assert!(!draft.conflicted);
+        assert_eq!(draft.ahead, right);
+        assert_eq!((draft.stage.width, draft.stage.height), (320, 480));
+        assert_eq!(draft.stage.angle, 7.0);
+        let (stage, rect) = start_stage.carried(start_rect, right);
+        assert_eq!((draft.stage, draft.rect), (stage, rect));
+        assert_eq!(draft.aspect, Aspect::Locked(2.0 / 3.0), "the ratio turned");
+        assert_eq!(draft.preset, "3:2", "a swapped ratio keeps its preset");
+        check(&draft, "rebased across a quarter turn");
+
+        // A reflection on top reverses the angle and keeps the ratio's orientation.
+        let mirrored = right.then(lightwell_core::Transform::MirrorHorizontal);
+        draft.rebase(
+            CropStage {
+                width: 320,
+                height: 480,
+                angle: 0.0,
+            },
+            9,
+            draft.layer.clone(),
+            3,
+            mirrored,
+        );
+        assert_eq!(draft.stage.angle, -7.0);
+        assert_eq!(draft.aspect, Aspect::Locked(2.0 / 3.0));
+        check(&draft, "rebased across a reflection");
+
+        // Undoing both returns the stage, the angle and the ratio; the frame is back within the
+        // pixel each straightened carry may move it by.
+        draft.rebase(
+            CropStage {
+                width: 480,
+                height: 320,
+                angle: 0.0,
+            },
+            10,
+            draft.layer.clone(),
+            3,
+            Orientation::NEUTRAL,
+        );
+        assert_eq!(draft.stage, start_stage);
+        assert_eq!(draft.aspect, Aspect::Locked(1.5));
+        let (dx, dy) = (
+            draft.rect.center().0 - start_rect.center().0,
+            draft.rect.center().1 - start_rect.center().1,
+        );
+        assert!(dx.abs() <= 1.0 && dy.abs() <= 1.0, "moved {dx}, {dy}");
+        assert!(
+            (draft.rect.width - start_rect.width).abs() <= 1.0
+                && (draft.rect.height - start_rect.height).abs() <= 1.0,
+            "{:?} against {start_rect:?}",
+            draft.rect
+        );
+        check(&draft, "turned back");
     }
 
     #[test]

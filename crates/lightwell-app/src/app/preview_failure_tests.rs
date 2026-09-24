@@ -322,6 +322,7 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
     editor.crop_pending = Some(PendingDraft {
         layer: None,
         layer_index: 0,
+        ahead: lightwell_core::Orientation::NEUTRAL,
         payload: None,
         base_revision: 4,
         reapply: false,
@@ -354,6 +355,7 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
     editor.crop_pending = Some(PendingDraft {
         layer: None,
         layer_index: 0,
+        ahead: lightwell_core::Orientation::NEUTRAL,
         payload: None,
         base_revision: 5,
         reapply: true,
