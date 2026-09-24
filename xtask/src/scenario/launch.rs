@@ -363,6 +363,11 @@ impl Run {
         self.result[key] = value;
     }
 
+    /// What this run has recorded under `key` so far; `Null` when nothing has.
+    pub fn recorded_value(&self, key: &str) -> &Value {
+        &self.result[key]
+    }
+
     /// Record the hashes of the sources the run opens, of the binary it launches and of the
     /// lockfile it was built from. [`Run::sources_unchanged`] checks the sources against them.
     pub fn hash(&mut self, sources: &[PathBuf]) -> Result {

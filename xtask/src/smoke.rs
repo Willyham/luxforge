@@ -551,12 +551,13 @@ pub static SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "capabilities",
         about: "Module capabilities against a loopback proof endpoint in this process",
+        // Its one launch's plan names the endpoint and the sentinel its own run makes.
         launches: &[],
-        verify: |_, _| Ok(()),
+        verify: capabilities::verify,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
-        note: None,
-        own: Some(|run, _, _| capabilities::run(run)),
+        note: Some(capabilities::NOTE),
+        own: Some(capabilities::run),
     },
     Scenario {
         name: "unavailable",
@@ -1200,6 +1201,11 @@ mod tests {
         }
         let raw = (find("performance").unwrap().launches[0].plan)(&[PathBuf::from("/x/photo.NEF")]);
         put("performance-raw", "script.json", raw.kept());
+        // `capabilities` plans with its run's own endpoint and sentinels: here, fixed ones.
+        let capabilities =
+            capabilities::plan("http://127.0.0.1:1/generate", "sentinel-KEY", "wrong-KEY");
+        put("capabilities", "sent.json", capabilities.script());
+        put("capabilities", "script.json", capabilities.kept());
     }
 
     /// The proof that each scenario is checked against its own plan: over recorded runs, in

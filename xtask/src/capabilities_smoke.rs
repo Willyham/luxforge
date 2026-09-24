@@ -5,10 +5,12 @@
 //! live inside the evidence directory.
 //!
 //! The script's secret steps carry a sentinel key, so the script itself is written outside the
-//! output directory and removed after the run; the copy kept beside the evidence is redacted.
-//! Every file under the output directory is scanned for the sentinel afterwards.
+//! output directory and removed after the run; the copy kept beside the evidence is redacted, and
+//! the editor records those steps redacted too. Every file under the output directory is scanned
+//! for the sentinel afterwards.
 use crate::{
-    scenario::{Frame, Launch, Run, pixels, preamble},
+    scenario::{Checked, Frame, Launch, Plan, Run, Step, pixels, plan::only},
+    smoke::Scenario,
     *,
 };
 use lightwell_core::{
@@ -19,8 +21,6 @@ use std::{sync::Arc, time::Duration};
 const MODULE: &str = "lightwell.capabilities";
 const TASK: &str = "generate-proof-tint";
 const TINT_EFFECT: &str = "lightwell.capabilities.tint";
-const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
-pub const WINDOW: [&str; 2] = ["1440", "900"];
 /// How long the endpoint holds the palette download and each generation, so a frame can be
 /// captured while the install or the task is still running. Well inside every transfer and adapter
 /// deadline.
@@ -28,6 +28,8 @@ const DELAY: Duration = Duration::from_millis(1200);
 /// A captured tinted frame and the core's own render of the same stack may differ by this much per
 /// channel, in 8-bit codes, over the window's mean: linear filtering of the magnified photograph.
 const MEAN_TOLERANCE: f64 = 2.0;
+/// What a secret step's value is kept and recorded as.
+const REDACTED: &str = "<redacted>";
 
 /// One capability step of the proof module.
 fn step(gesture: Value) -> Value {
@@ -36,55 +38,85 @@ fn step(gesture: Value) -> Value {
     json!({ "capability": object })
 }
 
-/// How many layout steps come before the first capability step.
-const LAYOUT: usize = 5;
-
-/// The script, with the sentinel key in its secret steps. Numbered frames follow the one open
-/// frame, so capability step `n` (from 1) is the frame at index `LAYOUT + n` of the run's frames.
-fn script(generate: &str, key: &str, wrong: &str) -> Value {
-    json!([
+/// Every frame, in order, with the sentinel key in the secret steps' script and redacted in what is
+/// kept and recorded. Only Apply commits anything: every settings write, consent, install, task
+/// and grant is the capability's own state, not the photograph's history.
+pub fn plan(generate: &str, key: &str, wrong: &str) -> Plan {
+    let layout = |name: &str, script: Value| Step::new(name, script).commits(0);
+    let capability = |name: &str, gesture: Value| Step::new(name, step(gesture)).commits(0);
+    let secret = |name: &str, value: &str| {
+        let gesture =
+            |value: &str| json!({"secret": {"field": "api-key", "value": value, "profile": 0}});
+        Step::secret(name, step(gesture(value)), step(gesture(REDACTED))).commits(0)
+    };
+    Plan::new(vec![
+        Step::opened("opened"),
         // Layout: the sections that start expanded are collapsed, the proof section is expanded
         // and the panel is scrolled to its end, so the whole capability block is on screen.
-        {"section":{"module":"lightwell.basic","expanded":false}},
-        {"section":{"module":"lightwell.transform","expanded":false}},
-        {"section":{"module":"lightwell.crop","expanded":false}},
-        {"section":{"module":MODULE,"expanded":true}},
-        {"tools_scroll":1.0},
-        // The capability steps, numbered from 1 by `step` below.
-        step(json!({"section": "settings"})),
-        step(json!({"set": {"field": "strength", "value": 0.8}})),
-        step(json!({"profile": {"create": {"adapter": "proof-echo", "label": "Local proof"}}})),
-        step(json!({"set": {"field": "endpoint", "value": generate, "profile": 0}})),
-        step(json!({"secret": {"field": "api-key", "value": key, "profile": 0}})),
-        step(json!({"section": "status"})),
-        step(json!({"install": {"resource": "proof-palette"}})),
-        step(json!({"consent": "deny"})),
-        step(json!({"install": {"resource": "proof-palette"}})),
-        step(json!({"consent": "allow", "wait": false})),
-        step(json!({"settle": true})),
-        step(json!({"activate": true})),
-        step(json!({"task": {"task": TASK}})),
-        step(json!({"consent": "allow", "wait": false})),
-        step(json!({"settle": true})),
-        step(json!({"apply": true})),
-        step(json!({"secret": {"field": "api-key", "value": wrong, "profile": 0}})),
-        step(json!({"task": {"task": TASK}})),
-        step(json!({"revoke": 1})),
+        layout(
+            "basic-collapsed",
+            json!({"section":{"module":"lightwell.basic","expanded":false}}),
+        )
+        .collapsed("lightwell.basic"),
+        layout(
+            "transform-collapsed",
+            json!({"section":{"module":"lightwell.transform","expanded":false}}),
+        )
+        .collapsed("lightwell.transform"),
+        layout(
+            "crop-collapsed",
+            json!({"section":{"module":"lightwell.crop","expanded":false}}),
+        )
+        .collapsed("lightwell.crop"),
+        layout(
+            "expanded",
+            json!({"section":{"module":MODULE,"expanded":true}}),
+        )
+        .expanded(MODULE),
+        layout("scrolled", json!({"tools_scroll":1.0})).expanded(MODULE),
+        // Its settings: strength, a profile, the profile's endpoint and its key.
+        capability("settings", json!({"section": "settings"})),
+        capability(
+            "strength",
+            json!({"set": {"field": "strength", "value": 0.8}}),
+        ),
+        capability(
+            "profile",
+            json!({"profile": {"create": {"adapter": "proof-echo", "label": "Local proof"}}}),
+        ),
+        capability(
+            "endpoint",
+            json!({"set": {"field": "endpoint", "value": generate, "profile": 0}}),
+        ),
+        secret("key", key),
+        capability("status", json!({"section": "status"})),
+        // The download's consent, declined, then asked again and allowed: installing, then
+        // installed, then active.
+        capability(
+            "install-asked",
+            json!({"install": {"resource": "proof-palette"}}),
+        ),
+        capability("denied", json!({"consent": "deny"})),
+        capability(
+            "install-asked-again",
+            json!({"install": {"resource": "proof-palette"}}),
+        ),
+        capability("installing", json!({"consent": "allow", "wait": false})),
+        capability("installed", json!({"settle": true})),
+        capability("activated", json!({"activate": true})),
+        // The photo-data consent, the running task and its result, and Apply.
+        capability("task-asked", json!({"task": {"task": TASK}})),
+        capability("running", json!({"consent": "allow", "wait": false})),
+        capability("succeeded", json!({"settle": true})),
+        Step::new("applied", step(json!({"apply": true})))
+            .commits(1)
+            .label("Apply proof tint"),
+        // A wrong key makes the endpoint refuse, and the failure is shown; then the photo-data
+        // grant is revoked.
+        secret("wrong-key", wrong),
+        capability("refused-task", json!({"task": {"task": TASK}})),
+        capability("revoked", json!({"revoke": 1})),
     ])
-}
-
-/// The script as it is kept beside the evidence: every secret step's value redacted.
-fn redacted(script: &Value) -> Value {
-    let mut script = script.clone();
-    for step in script.as_array_mut().into_iter().flatten() {
-        if let Some(secret) = step
-            .get_mut("capability")
-            .and_then(|capability| capability.get_mut("secret"))
-        {
-            secret["value"] = json!("<redacted>");
-        }
-    }
-    script
 }
 
 /// A fresh sentinel: nothing in the repository or the run can contain it by accident.
@@ -127,47 +159,72 @@ fn holding(dir: &Path, needles: &[&str]) -> Result<(usize, Vec<String>)> {
     Ok((scanned, found))
 }
 
-pub fn run(mut run: Run) -> Result {
+pub const NOTE: &str = "The runner starts a loopback proof endpoint in its own process, writes the script (whose secret steps carry a sentinel key) outside the output directory and keeps a redacted copy as `script.json`, so the script path in the argument array below was a temporary file. A replay reruns every check over the recorded frames and catalog but carries the endpoint's own record and the secret scan from the recorded checks: they are what the endpoint in the runner's process saw and what the run's own sentinel found, and neither is in the evidence.";
+
+/// The scenario's own run: a proof endpoint in this process for the launch to talk to, the
+/// launch's plan made with that endpoint and a fresh sentinel key, the row's checks over the
+/// launch, and what the endpoint saw and a scan of every file the run wrote for the sentinel.
+pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
     let key = sentinel("sentinel");
     let wrong = sentinel("wrong");
     let endpoint = ProofEndpoint::start(&key)?;
     endpoint.set_delay(DELAY);
     endpoint.set_palette_delay(DELAY);
-    let fixture = run.root().join(FIXTURE);
-    let script = script(&endpoint.generate_url(), &key, &wrong);
-    let steps = script.as_array().expect("a script").len();
-    run.record("endpoint", json!(endpoint.base_url()));
-    run.note(
-        "The runner starts a loopback proof endpoint in its own process, writes the script (whose secret steps carry a sentinel key) outside the output directory and keeps a redacted copy as `script.json`, so the script path in the argument array below was a temporary file. A replay reruns every check over the recorded frames and catalog but carries the endpoint's own record and the secret scan from the recorded checks: they are what the endpoint in the runner's process saw and what the run's own sentinel found, and neither is in the evidence.",
-    );
-    let launch = Launch::app()
+    let base = endpoint.base_url();
+    // A replay checks the recorded run's steps, whose endpoint step names the endpoint the
+    // recorded run's own process started.
+    let generate = if run.replaying() {
+        let recorded = read_json(&run.out().join("result.json"))?;
+        let path = endpoint
+            .generate_url()
+            .strip_prefix(&base)
+            .ok_or("The endpoint's generate URL is not under its base")?
+            .to_owned();
+        format!(
+            "{}{path}",
+            recorded["endpoint"]
+                .as_str()
+                .ok_or("The recorded run names no endpoint")?
+        )
+    } else {
+        endpoint.generate_url()
+    };
+    let plan = plan(&generate, &key, &wrong);
+    run.record("endpoint", json!(base));
+    if let Some(note) = scenario.note {
+        run.note(note);
+    }
+    let mut launch = Launch::app()
         .developer()
-        .proof_endpoint(&endpoint.base_url())
-        .open(&fixture)
-        .secret_script(script.clone(), redacted(&script))
-        .window(WINDOW);
+        .proof_endpoint(&base)
+        .open_all(&sources)
+        .secret_script(plan.script(), plan.kept());
+    if let Some(window) = scenario.window {
+        launch = launch.window(window);
+    }
     let outcome = (|| -> Result {
-        run.hash(std::slice::from_ref(&fixture))?;
+        run.hash(&sources)?;
         let evidence = run.launch(launch)?;
-        let (app, events) = preamble(&evidence, steps + 1)?;
+        let checked = plan.check(&evidence)?;
+        // Everything the run wrote so far, before the checks add their own records.
+        let (scanned, found) = holding(run.out(), &[&key, &wrong])?;
+        (scenario.verify)(&mut run, std::slice::from_ref(&checked))?;
         // A replay has no endpoint and no sentinel of the recorded run's: those two checks are
         // what the recorded run found.
+        let file = evidence.join("capabilities-checks.json");
         let recorded = run
-            .recorded(&evidence.join("capabilities-checks.json"))
+            .recorded(&file)
             .map(|path| {
                 read_json(&path).map_err(|error| {
                     format!("The recorded run's checks, which a replay carries the endpoint's record and the secret scan from, cannot be read: {error}")
                 })
             })
             .transpose()?;
-        let mut checks = verify(&evidence, &app, &events, steps)?;
+        let mut checks = read_json(&file)?;
         checks["endpoint"] = match &recorded {
             Some(recorded) => recorded["endpoint"].clone(),
             None => endpoint_checks(&endpoint)?,
         };
-        checks["render"] = render_checks(&evidence, &app, &endpoint.base_url())?;
-        // Everything the run wrote so far, before this runner adds its own summary.
-        let (scanned, found) = holding(run.out(), &[&key, &wrong])?;
         checks["secret_scan"] = match &recorded {
             Some(recorded) => recorded["secret_scan"].clone(),
             None => json!({
@@ -177,10 +234,10 @@ pub fn run(mut run: Run) -> Result {
                 "scope": "Every file under the output directory, as bytes",
             }),
         };
-        write_json(&evidence.join("capabilities-checks.json"), &checks)?;
+        write_json(&file, &checks)?;
         ensure(found.is_empty(), format!("A secret reached {found:?}"))?;
         run.sources_unchanged()?;
-        run.record("backend", app["frames"][0]["state"]["backend"].clone());
+        run.record("backend", checked.frames[0].state()["backend"].clone());
         Ok(())
     })();
     // The runner's own files are scanned too: nothing it wrote may hold the key either.
@@ -215,50 +272,27 @@ fn tint_layers(frame: &Value) -> Vec<&Value> {
         .unwrap_or_default()
 }
 
-/// Every frame's capability summary against what its step must have left behind.
-fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Result<Value> {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?;
+/// Every frame's capability summary against what its step must have left behind, and the tinted
+/// frame against the core's own render. Writes `capabilities-checks.json`, to which the run adds
+/// what the endpoint saw and the secret scan.
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let base = run
+        .recorded_value("endpoint")
+        .as_str()
+        .ok_or("The run recorded no endpoint to render the tint against")?
+        .to_owned();
     ensure(
-        frames.len() == steps + 1,
-        "Wrong capabilities capture count",
-    )?;
-    ensure(
-        app["had_input_errors"] == false,
-        "The capabilities script reported an input error",
-    )?;
-    ensure(
-        events
-            .iter()
-            .filter(|event| event["event"] == "script_step")
-            .count()
-            == steps,
-        "A script step event is missing",
-    )?;
-    ensure(
-        events
+        launch
+            .events
             .iter()
             .any(|event| event["event"] == "capability_answer"),
         "No capability round trip was logged",
     )?;
-    let script = app["script"].as_array().ok_or("Missing script records")?;
-    for record in script {
-        ensure(
-            record["status"] == "sent",
-            format!("A step was not sent: {record}"),
-        )?;
-        if let Some(secret) = record["request"]["capability"].get("secret") {
-            ensure(
-                secret["value"] == "<redacted>",
-                "A secret step is recorded unredacted",
-            )?;
-        }
-    }
     let mut per_frame = Vec::new();
-    let mut captured = Vec::new();
-    for frame in frames {
-        let frame = Frame::identified(evidence, app, frame)?;
+    for frame in &launch.frames {
         // A secret is only ever set or not set, in every frame.
-        for profile in capability(&frame)["settings"]["profiles"]
+        for profile in capability(frame)["settings"]["profiles"]
             .as_array()
             .into_iter()
             .flatten()
@@ -271,77 +305,79 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         }
         per_frame.push(json!({
             "frame": frame["file"],
-            "view": capability(&frame)["view"],
+            "view": capability(frame)["view"],
             "notices": frame.notices(),
         }));
-        captured.push(frame);
     }
-    let frame = |step: usize| &captured[LAYOUT + step];
-    let settings = |step: usize| &capability(frame(step))["settings"];
-    // 0 (the scrolled layout frame): the section expanded; 1: its settings.
+    let at = |step: &str| launch.at(step);
+    let settings = |step: &str| -> Result<Value> { Ok(capability(at(step)?)["settings"].clone()) };
+    let profile = |step: &str| -> Result<Value> { Ok(settings(step)?["profiles"][0].clone()) };
+    // The section expanded and scrolled to its end, then its settings.
     ensure(
-        frame(0)["state"]["expanded"][MODULE] == true,
-        "The proof section did not expand",
-    )?;
-    ensure(
-        capability(frame(1))["view"] == "settings" && capability(frame(1))["loaded"] == true,
+        capability(at("settings")?)["view"] == "settings"
+            && capability(at("settings")?)["loaded"] == true,
         "The settings sub-view did not open on the read settings",
     )?;
-    // 2–5: each settings write.
+    // Each settings write.
+    let strength = settings("strength")?;
     ensure(
-        settings(2)["fields"]["strength"] == "0.80" && settings(2)["revision"] == 1,
-        format!("Strength was not set: {}", settings(2)),
+        strength["fields"]["strength"] == "0.80" && strength["revision"] == 1,
+        format!("Strength was not set: {strength}"),
     )?;
-    let profile = |step: usize| &settings(step)["profiles"][0];
+    let created = profile("profile")?;
     ensure(
-        profile(3)["adapter"] == "proof-echo"
-            && profile(3)["label"] == "Local proof"
-            && profile(3)["status"] == "incomplete",
-        format!("The profile was not created: {}", profile(3)),
+        created["adapter"] == "proof-echo"
+            && created["label"] == "Local proof"
+            && created["status"] == "incomplete",
+        format!("The profile was not created: {created}"),
     )?;
+    let pointed = profile("endpoint")?;
     ensure(
-        profile(4)["fields"]["endpoint"]
+        pointed["fields"]["endpoint"]
             .as_str()
             .is_some_and(|endpoint| endpoint.ends_with("/generate"))
-            && profile(4)["status"] == "missing-credentials",
-        format!("The endpoint was not set: {}", profile(4)),
+            && pointed["status"] == "missing-credentials",
+        format!("The endpoint was not set: {pointed}"),
     )?;
+    let keyed = profile("key")?;
     ensure(
-        profile(4)["fields"]["api-key"] == "not set" && profile(5)["fields"]["api-key"] == "set",
+        pointed["fields"]["api-key"] == "not set" && keyed["fields"]["api-key"] == "set",
         "The key did not go from not set to set",
     )?;
     ensure(
-        profile(5)["status"] == "ready",
+        keyed["status"] == "ready",
         "The profile is not ready with its key",
     )?;
     ensure(
-        capability(frame(6))["view"] == "status",
+        capability(at("status")?)["view"] == "status",
         "The status sub-view did not open",
     )?;
-    // 7–9: the download's consent, declined, then asked again.
-    let asked = consent(frame(7), "download-artifact")?;
+    // The download's consent, declined, then asked again.
+    let asked_frame = at("install-asked")?;
+    let asked = consent(asked_frame, "download-artifact")?;
     ensure(
         asked["denied"] == false && asked["scope"]["resource"] == "proof-palette",
         format!("Wrong download consent {asked}"),
     )?;
     ensure(
-        frame(7)
+        asked_frame
             .notices()
             .contains(&"Allow Capabilities proof to download a resource?".into()),
         "The download consent notice is not shown",
     )?;
+    let denied = capability(at("denied")?);
     ensure(
-        capability(frame(8))["consent"].is_null()
-            && capability(frame(8))["permissions"]["denials"] == 1
-            && capability(frame(8))["resources"][0]["state"] == "not-installed",
+        denied["consent"].is_null()
+            && denied["permissions"]["denials"] == 1
+            && denied["resources"][0]["state"] == "not-installed",
         "The denial was not recorded, or something was installed",
     )?;
     ensure(
-        consent(frame(9), "download-artifact")?["denied"] == true,
+        consent(at("install-asked-again")?, "download-artifact")?["denied"] == true,
         "A second ask does not say it was declined before",
     )?;
-    // 10–11: installing, with progress, then installed.
-    let installing = &capability(frame(10))["resources"][0];
+    // Installing, with progress, then installed, then active.
+    let installing = &capability(at("installing")?)["resources"][0];
     ensure(
         installing["state"] == "installing"
             && installing["progress"]
@@ -350,7 +386,7 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("The install is not running with progress: {installing}"),
     )?;
     ensure(
-        capability(frame(10))["jobs"]
+        capability(at("installing")?)["jobs"]
             .as_array()
             .is_some_and(|jobs| {
                 jobs.iter()
@@ -359,18 +395,19 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         "No running install job was tracked",
     )?;
     ensure(
-        capability(frame(11))["resources"][0]["state"] == "installed",
+        capability(at("installed")?)["resources"][0]["state"] == "installed",
         "The palette was not installed",
     )?;
     ensure(
-        capability(frame(12))["activation"]["state"] == "active",
+        capability(at("activated")?)["activation"]["state"] == "active",
         format!(
             "The module is not active: {}",
-            capability(frame(12))["activation"]
+            capability(at("activated")?)["activation"]
         ),
     )?;
-    // 13–15: the photo-data consent, the running task and its result.
-    let asked = consent(frame(13), "remote-image-request")?;
+    // The photo-data consent, the running task and its result.
+    let task_frame = at("task-asked")?;
+    let asked = consent(task_frame, "remote-image-request")?;
     ensure(
         asked["scope"]["data"] == "sample-grid-8"
             && asked["scope"]["adapter"] == "proof-echo"
@@ -378,12 +415,12 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("Wrong photo-data consent {asked}"),
     )?;
     ensure(
-        frame(13)
+        task_frame
             .notices()
             .contains(&"Allow Capabilities proof to send photo data?".into()),
         "The photo-data consent notice is not shown",
     )?;
-    let running = &capability(frame(14))["tasks"][TASK];
+    let running = &capability(at("running")?)["tasks"][TASK];
     ensure(
         running["status"] == "running"
             && running["progress"]["fraction"]
@@ -391,7 +428,8 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
                 .is_some_and(|fraction| (0.0..=1.0).contains(&fraction)),
         format!("The task is not running with progress: {running}"),
     )?;
-    let done = &capability(frame(15))["tasks"][TASK];
+    let succeeded = at("succeeded")?;
+    let done = &capability(succeeded)["tasks"][TASK];
     let artifact = done["artifact"]
         .as_str()
         .ok_or_else(|| format!("The task did not succeed: {done}"))?
@@ -401,18 +439,19 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("The task has no result to apply: {done}"),
     )?;
     ensure(
-        tint_layers(frame(15)).is_empty(),
+        tint_layers(succeeded).is_empty(),
         "A tint was committed before Apply",
     )?;
-    // 16: exactly one tint layer, referencing the task's artifact.
-    let layers = tint_layers(frame(16));
+    // Apply: exactly one tint layer, referencing the task's artifact.
+    let applied = at("applied")?;
+    let layers = tint_layers(applied);
     ensure(
         layers.len() == 1,
         "Apply did not commit exactly one tint layer",
     )?;
     ensure(
-        capability(frame(16))["tasks"][TASK]["applied"] == true
-            && capability(frame(15))["tasks"][TASK]["applied"] == false,
+        capability(applied)["tasks"][TASK]["applied"] == true
+            && capability(succeeded)["tasks"][TASK]["applied"] == false,
         "The task control does not say its result is applied",
     )?;
     ensure(
@@ -423,12 +462,13 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
             layers[0]
         ),
     )?;
-    // 17–18: a wrong key makes the endpoint refuse, and the failure is shown.
+    // A wrong key makes the endpoint refuse, and the failure is shown.
     ensure(
-        profile(17)["fields"]["api-key"] == "set",
+        profile("wrong-key")?["fields"]["api-key"] == "set",
         "The replaced key does not read set",
     )?;
-    let failed = &capability(frame(18))["tasks"][TASK];
+    let refused = at("refused-task")?;
+    let failed = &capability(refused)["tasks"][TASK];
     ensure(
         failed["status"] == "failed"
             && failed["error"]["code"] == "read-error"
@@ -438,11 +478,11 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("The failure is not the endpoint's refusal: {failed}"),
     )?;
     ensure(
-        tint_layers(frame(18)).len() == 1,
+        tint_layers(refused).len() == 1,
         "A failed task changed the recipe",
     )?;
-    // 19: the photo-data grant revoked, in the open permissions list.
-    let permissions = &capability(frame(19))["permissions"];
+    // The photo-data grant revoked, in the open permissions list.
+    let permissions = &capability(at("revoked")?)["permissions"];
     let revoked: Vec<&Value> = permissions["grants"]
         .as_array()
         .into_iter()
@@ -455,14 +495,20 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
             && revoked[0]["kind"] == "remote-image-request",
         format!("The remote grant is not listed revoked: {permissions}"),
     )?;
-    Ok(json!({
-        "frames": per_frame,
-        "artifact": artifact,
-        "gains": done["result"]["gains"],
-        "failure": failed["error"],
-        "install_progress": installing["progress"],
-        "task_progress": running["progress"],
-    }))
+    let render = render_checks(launch, &base)?;
+    write_json(
+        &launch.evidence.join("capabilities-checks.json"),
+        &json!({
+            "frames": per_frame,
+            "artifact": artifact,
+            "gains": done["result"]["gains"],
+            "failure": failed["error"],
+            "install_progress": installing["progress"],
+            "task_progress": running["progress"],
+            "render": render,
+        }),
+    )?;
+    Ok(())
 }
 
 /// What the endpoint itself saw: one held palette download, one authorized generation answered
@@ -530,11 +576,10 @@ fn window_mean(
 /// The tinted frame against the frame before Apply and against the core's own render of the
 /// committed stack: the centred window's mean moves the way the published gains say, and matches
 /// the independent render within [`MEAN_TOLERANCE`].
-fn render_checks(evidence: &Path, app: &Value, base: &str) -> Result<Value> {
+fn render_checks(launch: &Checked, base: &str) -> Result<Value> {
     const WINDOW_FRACTIONS: [f64; 2] = [0.25, 0.75];
-    let frames = app["frames"].as_array().ok_or("Missing frames")?;
-    let before = &Frame::identified(evidence, app, &frames[LAYOUT + 15])?;
-    let after = &Frame::identified(evidence, app, &frames[LAYOUT + 16])?;
+    let before = launch.at("succeeded")?;
+    let after = launch.at("applied")?;
     // The untinted frame still shows the fixture's exact colours, which locate the photograph; a
     // tint changes no geometry, so the tinted frame's photograph is in the same place.
     let placed = pixels::identity_photo(before)?;
@@ -575,7 +620,8 @@ fn render_checks(evidence: &Path, app: &Value, base: &str) -> Result<Value> {
     )?;
     let mut registry = ModuleRegistry::builtin();
     registry.register(Arc::new(CapabilitiesProofModule::new(base)))?;
-    let service = EditorService::open_with(&evidence.join("catalog.sqlite"), Arc::new(registry))?;
+    let service =
+        EditorService::open_with(&launch.evidence.join("catalog.sqlite"), Arc::new(registry))?;
     let raster = service.render_entry(&asset, &entry)?;
     drop(service);
     let rendered = window_mean(
@@ -614,14 +660,16 @@ mod tests {
 
     #[test]
     fn the_kept_script_is_redacted_and_the_scan_finds_a_planted_sentinel() {
-        let script = script(
+        let plan = plan(
             "http://127.0.0.1:1/generate",
             "planted-key",
             "planted-wrong",
         );
-        let kept = redacted(&script).to_string();
+        let sent = plan.script().to_string();
+        assert!(sent.contains("planted-key") && sent.contains("planted-wrong"));
+        let kept = plan.kept().to_string();
         assert!(!kept.contains("planted-key") && !kept.contains("planted-wrong"));
-        assert_eq!(kept.matches("<redacted>").count(), 2);
+        assert_eq!(kept.matches(REDACTED).count(), 2);
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("nested")).unwrap();
         fs::write(dir.path().join("clean.json"), kept).unwrap();
