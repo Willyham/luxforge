@@ -596,6 +596,19 @@ fn terminal_srgb(linear: f64) -> Result<u8, Error> {
         ));
     }
     let linear = linear.clamp(0.0, 1.0);
+    let code = super::quantize_channel(linear);
+    // Inverting the half-code thresholds avoids a power function for ordinary values, but
+    // f64 encode/decode are not exact inverses. Keep the canonical forward evaluation close to
+    // either neighbouring threshold. This conservative guard is covered by native boundary
+    // tests; powf has no cross-platform ULP bound, so those tests remain part of platform
+    // qualification. The JPEG quantizer keeps its own contract.
+    const ROUNDING_GUARD: f64 = 1e-12;
+    let thresholds = &*super::SRGB_CODE_THRESHOLDS;
+    let lower = thresholds[usize::from(code.saturating_sub(1))];
+    let upper = thresholds[usize::from(code.min(254))];
+    if (linear - lower).abs() > ROUNDING_GUARD && (linear - upper).abs() > ROUNDING_GUARD {
+        return Ok(code);
+    }
     let encoded = if linear <= 0.003_130_8 {
         12.92 * linear
     } else {
@@ -1384,6 +1397,83 @@ mod tests {
             1.055 * value.powf(1.0 / 2.4) - 0.055
         };
         (encoded * 255.0).round() as u8
+    }
+
+    #[test]
+    fn terminal_quantization_preserves_forward_rounding_at_every_f64_boundary() {
+        // Independent inverse transfer, including every representable neighbour around each
+        // code boundary. Some of these values intentionally disagree with inverse-only lookup.
+        for code in 1..=255_u32 {
+            let encoded = (f64::from(code) - 0.5) / 255.0;
+            let boundary = if encoded <= 0.040_45 {
+                encoded / 12.92
+            } else {
+                ((encoded + 0.055) / 1.055).powf(2.4)
+            };
+            let bits = boundary.to_bits();
+            for bits in bits - 128..=bits + 128 {
+                let value = f64::from_bits(bits);
+                assert_eq!(
+                    terminal_srgb(value).unwrap(),
+                    reference_srgb(value),
+                    "code {code}, bits {bits:#018x}"
+                );
+            }
+            // Include both sides of the guard as well as values within it. The reference is
+            // always the former forward transfer, never the lookup under test.
+            for delta in [-2e-12, -1e-12, -5e-13, 5e-13, 1e-12, 2e-12] {
+                let value = boundary + delta;
+                for value in [value.next_down(), value, value.next_up()] {
+                    assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_quantization_preserves_finite_domain_and_rejects_nonfinite_values() {
+        for value in [
+            f64::MIN,
+            -1.0,
+            -f64::MIN_POSITIVE,
+            -f64::from_bits(1),
+            -0.0,
+            0.0,
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            0.003_130_8_f64.next_down(),
+            0.003_130_8,
+            0.003_130_8_f64.next_up(),
+            1.0_f64.next_down(),
+            1.0,
+            1.0_f64.next_up(),
+            32.0,
+            f64::MAX,
+        ] {
+            assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+        }
+        for step in 0..=40_000 {
+            let value = f64::from(step) / 40_000.0;
+            assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+        }
+        // Deterministic bit-pattern coverage also visits the very dark/subnormal domain that
+        // a uniform sweep misses, plus signed and extended-domain source values.
+        let mut bits = 0x1234_5678_9abc_def0_u64;
+        for _ in 0..100_000 {
+            bits = bits.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let value = f64::from_bits(bits);
+            if value.is_finite() {
+                assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+            }
+        }
+        for value in [f64::NAN, -f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = terminal_srgb(value).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Render);
+            assert_eq!(
+                error.detail,
+                "linear evaluation produced a non-finite value"
+            );
+        }
     }
 
     #[test]
