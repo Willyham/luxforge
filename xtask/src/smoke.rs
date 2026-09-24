@@ -437,22 +437,41 @@ pub static SCENARIOS: &[Scenario] = &[
     Scenario {
         name: mask::SCENARIO,
         about: "A linear mask drawn and edited through, then reopened in a second launch",
-        launches: &[],
-        verify: |_, _| Ok(()),
-        source: Source::Fixtures(&[ORIENTATION_1]),
+        launches: &[
+            LaunchSpec {
+                name: "launch1",
+                script: "script1.json",
+                plan: mask::launch1,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch2",
+                script: "script2.json",
+                plan: mask::launch2,
+                catalog: Some("launch1"),
+                ..APP
+            },
+        ],
+        verify: mask::verify,
+        source: Source::Fixtures(&[mask::FIXTURE]),
         window: Some(PANELLED),
-        note: None,
-        own: Some(|run, _, _| mask::run(run)),
+        note: Some(mask::NOTE),
+        own: None,
     },
     Scenario {
         name: mask_combine::SCENARIO,
         about: "Four radial components in three modes in one mask, its coverage read off the overlay",
-        launches: &[],
-        verify: |_, _| Ok(()),
-        source: Source::Fixtures(&["fixtures/generated/presence.jpg"]),
+        launches: &[LaunchSpec {
+            name: "launch",
+            script: "script.json",
+            plan: mask_combine::plan,
+            ..APP
+        }],
+        verify: mask_combine::verify,
+        source: Source::Fixtures(&[mask_combine::FIXTURE]),
         window: Some(PANELLED),
-        note: None,
-        own: Some(|run, _, _| mask_combine::run(run)),
+        note: Some(mask_combine::NOTE),
+        own: None,
     },
     Scenario {
         name: mask_brush::SCENARIO,
