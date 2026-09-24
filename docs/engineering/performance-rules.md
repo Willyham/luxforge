@@ -20,7 +20,7 @@ The first M1 implementation was correct and fully tested, and every test ran on 
 10. **History storage grows with stack size; do not add copies.** Each entry already stores its complete stack. Do not persist derived pixels, add per-entry buffers or materialize every snapshot to show the first page.
 11. **Preview at the display's size; keep the exact render for the numbers.** A preview job at Fit renders the recipe against the cached display-bounded proxy of the source first and presents that; the exact frame follows for the histogram, the overlay and the 100% view, under a cancellation token that a newer request sets. Every pass checks that token per row or chunk. A new layer kind is proxy-eligible only if its payload is resolution independent; a pixel-addressed one makes the stack take the exact path and says so.
 12. **Every runtime hop costs a display frame.** During a drag a redraw is always in flight and the main thread waits on its present, so a task result, a worker's wake or an allocation answer arrives one frame later. The gesture's `draft.set` and preview job are therefore synchronous owner calls on the desktop thread, and the photograph is drawn through a surface that owns its texture and writes it in the frame that draws it. Put a new hop on the input path only with a measurement.
-13. **Measure on photo-sized inputs before claiming anything.** Run the release diagnostic on 24 MP and 60 MP JPEGs and record p50/p95, host, profile and cache state. The 480×320 fixture proves exactness, not cost. Timing gates do not belong in CI; exactness and bound tests do.
+13. **Measure on photo-sized inputs before claiming anything, once the change is complete.** Run the release diagnostic on 24 MP and 60 MP JPEGs and record p50/p95, host, profile and cache state. The 480×320 fixture proves exactness, not cost. Take the before/after once the feature is complete: a figure taken mid-implementation measures code that is about to change, on a host other sessions are building and testing on. Only work whose subject is performance measures as it goes, with one targeted command at its default sample count, and still takes its claimed distribution at the end. Timing gates do not belong in CI; exactness and bound tests do.
 
 ```sh
 cargo xtask generate-fixtures --output fixtures/generated
@@ -29,7 +29,7 @@ cargo run --release --locked --package xtask -- editor-performance --source fixt
 
 ## Review checklist
 
-Answer each item in the commit or plan for any change under `crates/`:
+Answer each item in the commit or plan for any change under `crates/`, once, for the finished change:
 
 - Which request paths read, hash or decode the original, and do all of them go through the cached verified source?
 - Which new full-frame allocations exist, which limit bounds each one, and which are shared rather than cloned?

@@ -1247,7 +1247,7 @@ pub fn run(
     // build time lands in its elapsed figure. Cargo's output goes to a file, never the terminal.
     let build_started = Instant::now();
     let log = fs::File::create(out.join("build.log"))?;
-    let built = Command::new("cargo")
+    let built = cargo_command()
         .current_dir(root)
         .args([
             "build",

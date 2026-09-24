@@ -48,3 +48,14 @@ iced_wgpu = { version = "=0.14.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# The dev profile is what `cargo test` and `cargo xtask` build with, and the tests run real pixel
+# loops: on the owner's M4 the slowest test binaries took about 145 s at opt-level 0 and 17 s at 1.
+# Debug assertions and overflow checks stay on. Dependencies build without debug info, which keeps a
+# new worktree's first test build near 100 s; the workspace crates keep theirs. See
+# docs/engineering/development.md#test-and-debug-builds.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+debug = false

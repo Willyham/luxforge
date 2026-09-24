@@ -19,6 +19,6 @@ Read [AGENTS.md](AGENTS.md) first. It holds the pillars, workflow and engineerin
 cargo xtask check
 ```
 
-This runs repository checks (Markdown links, task-plan schemas and DAGs), formatting, Clippy and tests. UI or image changes also need a real rendered check; see [development](docs/engineering/development.md). Put run evidence in a fresh `artifacts/<run-id>/`. Never commit private paths, machine identifiers, screenshots, logs, build outputs or camera originals. Only synthetic or licensed inputs may enter CI.
+This runs repository checks (Markdown links, task-plan schemas and DAGs), formatting, Clippy and tests. Run it once the change is complete; while working, run the tests for the code you are changing (`cargo test -p CRATE FILTER`). UI or image changes also need a real rendered check; see [development](docs/engineering/development.md). Put run evidence in a fresh `artifacts/<run-id>/`. Never commit private paths, machine identifiers, screenshots, logs, build outputs or camera originals. Only synthetic or licensed inputs may enter CI.
 
 Keep documentation focused on current behavior and outstanding work. Update [feature status](docs/features.md) and the [user guide](docs/user-guide.md) when behavior or scope changes. Preserve task IDs and truthful statuses when editing a plan.
