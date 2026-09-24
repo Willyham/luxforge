@@ -15,7 +15,7 @@
 //! quadrant reads a colour a preset moves without the white labels, the centre line or the dash
 //! band in it.
 use crate::{
-    scenario::{Frame, pixels},
+    scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
 use std::collections::BTreeMap;
@@ -57,35 +57,70 @@ const PATCHES: [(&str, f64, f64); 4] = [
 ];
 const PATCH_HALF: i64 = 6;
 
-pub fn script(scenario: &str) -> Option<Value> {
-    (scenario == "presets").then(|| {
-        json!([
-            // 1-2: Basic out of the way, the Presets section open.
-            {"section":{"module":BASIC_MODULE,"expanded":false}},
-            {"section":{"module":PRESETS_MODULE,"expanded":true}},
-            // 3-4: two imports through the section's own task.
-            {"preset_import":{"path":XMP}},
-            {"preset_import":{"path":DOCUMENT}},
-            // 5: the document's preset, whose name differs from the XMP's only in case.
-            {"preset":{"name":"Soft film","group":"Synthetic"}},
-            // 6: the XMP's preset over it, by its exact name alone.
-            {"preset":{"name":"Soft Film"}},
-            // 7: undo returns to the document's preset.
-            {"api":{"method":"history.undo"}},
-            // 8: the create form filled, Basic Tone alone, and left open for its frame.
-            {"preset_create":{"name":NATIVE,"groups":[TONE_GROUP],"submit":false}},
-            // 9: the same form submitted: a native preset captured from that entry.
-            {"preset_create":{"name":NATIVE,"groups":[TONE_GROUP]}},
-            // 10: undo to the Original.
-            {"api":{"method":"history.undo"}},
-            // 11: the native preset on the Original.
-            {"preset":{"name":NATIVE}},
-            // 12: the library through the generic api step, a host method that takes no asset.
-            {"api":{"method":"preset.list"}},
-            // 13: the native preset deleted through its row's menu.
-            {"preset_delete":{"name":NATIVE}}
-        ])
-    })
+/// Every frame, in order: the open, then one per step. The plan says what each step commits and
+/// records; `verify` below checks the section's rows, the stored layers against a stepwise merge of
+/// the fixtures' own settings, and the photograph.
+pub fn plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        Step::opened("opened"),
+        // 1-2: Basic out of the way, the Presets section open. Nothing is committed.
+        Step::new(
+            "basic-collapsed",
+            json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
+        )
+        .commits(0)
+        .collapsed(BASIC_MODULE),
+        Step::new(
+            "presets-expanded",
+            json!({"section":{"module":PRESETS_MODULE,"expanded":true}}),
+        )
+        .commits(0)
+        .expanded(PRESETS_MODULE),
+        // 3-4: two imports through the section's own task; an import commits no edit.
+        Step::new("xmp", json!({"preset_import":{"path":XMP}})).commits(0),
+        Step::new("document", json!({"preset_import":{"path":DOCUMENT}})).commits(0),
+        // 5: the document's preset, whose name differs from the XMP's only in case: one entry.
+        Step::new(
+            "soft-film",
+            json!({"preset":{"name":"Soft film","group":"Synthetic"}}),
+        )
+        .commits(1)
+        .label("Preset: Soft film"),
+        // 6: the XMP's preset over it, by its exact name alone: one more entry.
+        Step::new("soft-film-xmp", json!({"preset":{"name":"Soft Film"}}))
+            .commits(1)
+            .label("Preset: Soft Film"),
+        // 7: undo returns to the document's preset.
+        Step::new("undo", json!({"api":{"method":"history.undo"}}))
+            .commits(1)
+            .label("Preset: Soft film"),
+        // 8: the create form filled, Basic Tone alone, and left open for its frame.
+        Step::new(
+            "form",
+            json!({"preset_create":{"name":NATIVE,"groups":[TONE_GROUP],"submit":false}}),
+        )
+        .commits(0),
+        // 9: the same form submitted: a native preset captured from that entry, no edit.
+        Step::new(
+            "created",
+            json!({"preset_create":{"name":NATIVE,"groups":[TONE_GROUP]}}),
+        )
+        .commits(0),
+        // 10: undo to the Original.
+        Step::new("undo-original", json!({"api":{"method":"history.undo"}}))
+            .commits(1)
+            .label("Original"),
+        // 11: the native preset on the Original: one entry.
+        Step::new("native", json!({"preset":{"name":NATIVE}}))
+            .commits(1)
+            .label(format!("Preset: {NATIVE}")),
+        // 12: the library through the generic api step, a host method that takes no asset.
+        Step::new("list", json!({"api":{"method":"preset.list"}})).commits(0),
+        // 13: the native preset deleted through its row's menu. History keeps the entry.
+        Step::new("deleted", json!({"preset_delete":{"name":NATIVE}}))
+            .commits(0)
+            .label(format!("Preset: {NATIVE}")),
+    ])
 }
 
 fn presets(frame: &Frame) -> &Value {
@@ -298,163 +333,122 @@ fn patch_record(patches: &[[f64; 3]]) -> Value {
     )
 }
 
-fn step_status(frame: &Value) -> &Value {
-    &frame["step"]["status"]
-}
-
-pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
-    let root = root()?;
-    ensure(
-        app["had_input_errors"] == json!(false),
-        "The run recorded an input error",
-    )?;
-    let frames = Frame::all(evidence, app)?;
-    for (index, frame) in frames.iter().enumerate().skip(1) {
-        ensure(
-            step_status(frame) == &json!("sent"),
-            format!("Step {index} did not run: {}", frame["step"]),
-        )?;
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let root = run.root().to_owned();
+    for (name, frame) in launch.names().iter().zip(&launch.frames).skip(1) {
         ensure(
             frame.columns()?.is_some(),
-            format!("Frame {index} records no photo surface"),
+            format!("Step {name:?} records no photo surface"),
         )?;
     }
-    let patches_of = |index: usize| patches(&frames[index]);
+    let patches_of = |step: &str| -> Result<Vec<[f64; 3]>> { patches(launch.at(step)?) };
     let registry = Patches::load()?;
     let document = fixture_settings(&root, DOCUMENT)?;
     let xmp = fixture_settings(&root, XMP)?;
     let mut checks = Vec::new();
-    let mut record = |index: usize, shows: &str, detail: Value| {
-        checks.push(json!({"frame":frames[index]["file"],"shows":shows,"detail":detail}));
+    let mut record = |frame: &Frame, shows: &str, detail: Value| {
+        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
     };
 
-    // Frame 0: the photograph opens with the library listed and empty, the section collapsed.
-    let opened = frames[0].revision()?;
+    // The photograph opens with the library listed and empty, the section collapsed.
+    let opened = launch.at("opened")?;
     ensure(
-        presets(&frames[0])["expanded"] == json!(false)
-            && presets(&frames[0])["empty"] == json!(true)
-            && presets(&frames[0])["loading"] == json!(false),
+        presets(opened)["expanded"] == json!(false)
+            && presets(opened)["empty"] == json!(true)
+            && presets(opened)["loading"] == json!(false),
         format!(
-            "Frame 0: the Presets section is not a collapsed, loaded, empty library: {}",
-            presets(&frames[0])
+            "The Presets section does not open as a collapsed, loaded, empty library: {}",
+            presets(opened)
         ),
     )?;
     ensure(
-        layers(&frames[0])?.is_empty(),
-        "Frame 0: the opened stack already holds a layer",
+        layers(opened)?.is_empty(),
+        "The opened stack already holds a layer",
     )?;
-    let original = patches_of(0)?;
+    let original = patches_of("opened")?;
     record(
-        0,
+        opened,
         "the opened photograph, the Presets section collapsed and empty",
-        json!({"revision":opened,"patches":patch_record(&original)}),
+        json!({"revision":opened.revision()?,"patches":patch_record(&original)}),
     );
 
-    // Frames 1-2: Basic collapsed, then Presets expanded. Nothing is committed.
+    // Presets expanded, with its empty-state line.
+    let expanded = launch.at("presets-expanded")?;
     ensure(
-        frames[1]["state"]["expanded"][BASIC_MODULE] == json!(false),
-        "Frame 1: Basic is still expanded",
+        presets(expanded)["expanded"] == json!(true),
+        "The Presets section did not expand",
     )?;
-    ensure(
-        presets(&frames[2])["expanded"] == json!(true)
-            && frames[2]["state"]["expanded"][PRESETS_MODULE] == json!(true),
-        "Frame 2: the Presets section did not expand",
-    )?;
-    for (index, frame) in frames.iter().enumerate().take(3).skip(1) {
-        ensure(
-            frame.revision()? == opened,
-            format!("Frame {index}: a section toggle committed something"),
-        )?;
-    }
-    expect_rows(&frames[2], "Frame 2", &[])?;
+    expect_rows(expanded, "The expanded section", &[])?;
     record(
-        2,
+        expanded,
         "the Presets section expanded with its empty-state line",
-        json!({"presets":presets(&frames[2])}),
+        json!({"presets":presets(expanded)}),
     );
 
-    // Frame 3: the XMP imports as a partial preset in its own group.
+    // The XMP imports as a partial preset in its own group.
+    let imported = launch.at("xmp")?;
     expect_rows(
-        &frames[3],
-        "Frame 3",
+        imported,
+        "The XMP import",
         &[("Soft Film", "Synthetic Looks", true)],
     )?;
-    let status = frames[3]["state"]["status"].as_str().unwrap_or_default();
+    let status = imported["state"]["status"].as_str().unwrap_or_default();
     ensure(
         status.starts_with("Imported \u{201c}Soft Film\u{201d}: ")
             && status.contains(" mapped, ")
             && status.contains(" unsupported, ")
             && status.ends_with(" refused"),
-        format!("Frame 3: the status line reads {status:?}"),
-    )?;
-    ensure(
-        frames[3].revision()? == opened,
-        "Frame 3: an import committed an edit",
+        format!("The XMP import's status line reads {status:?}"),
     )?;
     record(
-        3,
+        imported,
         "the XMP imported: one Partial row in Synthetic Looks and the import status line",
-        json!({"status":status,"rows":presets(&frames[3])["rows"]}),
+        json!({"status":status,"rows":presets(imported)["rows"]}),
     );
 
-    // Frame 4: the document imports into its own group, complete, listed before the XMP's group.
-    expect_rows(
-        &frames[4],
-        "Frame 4",
-        &[
-            ("Soft film", "Synthetic", false),
-            ("Soft Film", "Synthetic Looks", true),
-        ],
-    )?;
-    let before_apply = patches_of(4)?;
+    // The document imports into its own group, complete, listed before the XMP's group.
+    let both = [
+        ("Soft film", "Synthetic", false),
+        ("Soft Film", "Synthetic Looks", true),
+    ];
+    let document_frame = launch.at("document")?;
+    expect_rows(document_frame, "The document import", &both)?;
+    let before_apply = patches_of("document")?;
     record(
-        4,
+        document_frame,
         "the document imported: two groups, only the XMP row Partial",
-        json!({"status":frames[4]["state"]["status"],"rows":presets(&frames[4])["rows"]}),
+        json!({"status":document_frame["state"]["status"],"rows":presets(document_frame)["rows"]}),
     );
 
-    // Frame 5: the document's preset applied from its row: one entry, exactly its settings.
-    ensure(
-        frames[5].revision()? == opened + 1,
-        "Frame 5: applying the preset did not commit exactly one revision",
-    )?;
-    ensure(
-        frames[5].label()? == "Preset: Soft film",
-        format!("Frame 5 is labelled {:?}", frames[5].label()?),
-    )?;
+    // The document's preset applied from its row: exactly its settings, a brighter photograph.
+    let soft_frame = launch.at("soft-film")?;
     let soft = registry.applied(&BTreeMap::new(), &document)?;
-    expect_layers(&frames[5], "Frame 5", &soft)?;
-    let soft_patches = patches_of(5)?;
+    expect_layers(soft_frame, "Soft film applied", &soft)?;
+    let soft_patches = patches_of("soft-film")?;
     ensure(
         mean_luminance(&soft_patches) > mean_luminance(&before_apply) + BRIGHTER,
         format!(
-            "Frame 5: +0.35 EV did not brighten the quadrants: {:.1} against {:.1}",
+            "Soft film's +0.35 EV did not brighten the quadrants: {:.1} against {:.1}",
             mean_luminance(&soft_patches),
             mean_luminance(&before_apply)
         ),
     )?;
     record(
-        5,
+        soft_frame,
         "Soft film applied from its row: one entry \"Preset: Soft film\", its settings exactly, and a brighter photograph",
-        json!({"revision":frames[5].revision()?,"label":frames[5].label()?,"layers":layers(&frames[5])?,"patches":patch_record(&soft_patches)}),
+        json!({"revision":soft_frame.revision()?,"label":soft_frame.label()?,"layers":layers(soft_frame)?,"patches":patch_record(&soft_patches)}),
     );
 
-    // Frame 6: the XMP's preset over it: one more entry, its fields merged over the stack.
-    ensure(
-        frames[6].revision()? == opened + 2,
-        "Frame 6: applying the second preset did not commit exactly one revision",
-    )?;
-    ensure(
-        frames[6].label()? == "Preset: Soft Film",
-        format!("Frame 6 is labelled {:?}", frames[6].label()?),
-    )?;
+    // The XMP's preset over it: its fields merged over the stack.
+    let merged_frame = launch.at("soft-film-xmp")?;
     let merged = registry.applied(&soft, &xmp)?;
-    expect_layers(&frames[6], "Frame 6", &merged)?;
-    let merged_patches = patches_of(6)?;
+    expect_layers(merged_frame, "Soft Film applied over it", &merged)?;
+    let merged_patches = patches_of("soft-film-xmp")?;
     ensure(
         change(&merged_patches, &soft_patches) > CHANGED,
         format!(
-            "Frame 6: the photograph did not change: {:.2} mean change",
+            "Soft Film over Soft film did not change the photograph: {:.2} mean change",
             change(&merged_patches, &soft_patches)
         ),
     )?;
@@ -470,71 +464,67 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     ensure(
         green_after < green_before - BRIGHTER,
         format!(
-            "Frame 6: the green quadrant did not darken: {green_after:.1} against {green_before:.1}"
+            "Soft Film did not darken the green quadrant: {green_after:.1} against {green_before:.1}"
         ),
     )?;
     let (red_before, red_after) = (soft_patches[0][1], merged_patches[0][1]);
     ensure(
         red_after > red_before + BRIGHTER,
         format!(
-            "Frame 6: the red quadrant did not turn toward orange: green channel {red_after:.1} against {red_before:.1}"
+            "Soft Film did not turn the red quadrant toward orange: green channel {red_after:.1} against {red_before:.1}"
         ),
     )?;
     record(
-        6,
+        merged_frame,
         "Soft Film applied over it: one more entry, the XMP's fields merged over the stack, the green quadrant darker and the red one turned toward orange",
-        json!({"revision":frames[6].revision()?,"label":frames[6].label()?,"layers":layers(&frames[6])?,"patches":patch_record(&merged_patches),"change":change(&merged_patches, &soft_patches)}),
+        json!({"revision":merged_frame.revision()?,"label":merged_frame.label()?,"layers":layers(merged_frame)?,"patches":patch_record(&merged_patches),"change":change(&merged_patches, &soft_patches)}),
     );
 
-    // Frame 7: undo returns to the document's preset, its stack and its pixels.
+    // Undo returns to the document's preset: its entry, its stack and its pixels.
+    let undo = launch.at("undo")?;
     ensure(
-        frames[7].entry()? == frames[5].entry()? && frames[7].label()? == "Preset: Soft film",
-        "Frame 7: undo did not return to the Soft film entry",
+        undo.entry()? == soft_frame.entry()?,
+        "Undo did not return to the Soft film entry",
     )?;
-    expect_layers(&frames[7], "Frame 7", &soft)?;
-    let undone = patches_of(7)?;
+    expect_layers(undo, "Undo", &soft)?;
+    let undone = patches_of("undo")?;
     ensure(
         change(&undone, &soft_patches) < SAME,
         format!(
-            "Frame 7: the undone photograph differs from Frame 5's: {:.2}",
+            "The undone photograph differs from Soft film's: {:.2}",
             change(&undone, &soft_patches)
         ),
     )?;
     record(
-        7,
+        undo,
         "undo: the Soft film entry, its stack and its pixels again",
-        json!({"entry":frames[7].entry()?,"patches":patch_record(&undone)}),
+        json!({"entry":undo.entry()?,"patches":patch_record(&undone)}),
     );
 
-    // Frame 8: the create form filled but not submitted: the name, the default group and the Tone
+    // The create form filled but not submitted: the name, the default group and the Tone
     // checkbox alone, with Create enabled. Nothing is stored yet.
-    let form = &presets(&frames[8])["form"];
+    let form_frame = launch.at("form")?;
+    let form = &presets(form_frame)["form"];
     ensure(
         form["open"] == json!(true)
             && form["name"] == json!(NATIVE)
             && form["group"] == json!(USER_GROUP)
             && form["checked"] == json!([TONE_GROUP])
             && form["can_create"] == json!(true),
-        format!("Frame 8: the create form is not filled as scripted: {form}"),
+        format!("The create form is not filled as scripted: {form}"),
     )?;
-    expect_rows(
-        &frames[8],
-        "Frame 8",
-        &[
-            ("Soft film", "Synthetic", false),
-            ("Soft Film", "Synthetic Looks", true),
-        ],
-    )?;
+    expect_rows(form_frame, "The open form", &both)?;
     record(
-        8,
+        form_frame,
         "the create form open and filled: the name, User presets and the Tone group alone",
         json!({"form":form}),
     );
 
-    // Frame 9: the native preset, the Basic Tone group only, in User presets.
+    // The native preset, the Basic Tone group only, in User presets.
+    let created = launch.at("created")?;
     expect_rows(
-        &frames[9],
-        "Frame 9",
+        created,
+        "The created preset",
         &[
             ("Soft film", "Synthetic", false),
             ("Soft Film", "Synthetic Looks", true),
@@ -542,52 +532,38 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ],
     )?;
     ensure(
-        presets(&frames[9])["form"]["open"] == json!(false),
-        "Frame 9: the create form is still open after a successful create",
-    )?;
-    ensure(
-        frames[9]["step"]["request"]["preset_create"]["groups"] == json!([TONE_GROUP]),
-        "Frame 9: the step did not keep the Tone group alone",
-    )?;
-    ensure(
-        frames[9].revision()? == frames[8].revision()?,
-        "Frame 9: creating a preset committed an edit",
+        presets(created)["form"]["open"] == json!(false),
+        "The create form is still open after a successful create",
     )?;
     record(
-        9,
+        created,
         "a native preset of the Tone group alone, listed in User presets",
-        json!({"status":frames[9]["state"]["status"],"rows":presets(&frames[9])["rows"]}),
+        json!({"status":created["state"]["status"],"rows":presets(created)["rows"]}),
     );
 
-    // Frame 10: undo to the Original.
+    // Undo to the Original: an empty stack and the opened pixels.
+    let at_original_frame = launch.at("undo-original")?;
     ensure(
-        layers(&frames[10])?.is_empty(),
-        "Frame 10: undo did not return to the Original's empty stack",
+        layers(at_original_frame)?.is_empty(),
+        "Undo did not return to the Original's empty stack",
     )?;
-    let at_original = patches_of(10)?;
+    let at_original = patches_of("undo-original")?;
     ensure(
         change(&at_original, &original) < SAME,
         format!(
-            "Frame 10: the Original reads differently from Frame 0: {:.2}",
+            "The Original reads differently from the opened photograph: {:.2}",
             change(&at_original, &original)
         ),
     )?;
     record(
-        10,
+        at_original_frame,
         "undo to the Original: an empty stack and the opened pixels",
-        json!({"label":frames[10].label()?,"patches":patch_record(&at_original)}),
+        json!({"label":at_original_frame.label()?,"patches":patch_record(&at_original)}),
     );
 
-    // Frame 11: the native preset on the Original: one entry, a Basic layer holding exactly the
-    // Tone fields the Soft film entry held, and nothing else.
-    ensure(
-        frames[11].revision()? == frames[10].revision()? + 1,
-        "Frame 11: applying the native preset did not commit exactly one revision",
-    )?;
-    ensure(
-        frames[11].label()? == format!("Preset: {NATIVE}"),
-        format!("Frame 11 is labelled {:?}", frames[11].label()?),
-    )?;
+    // The native preset on the Original: a Basic layer holding exactly the Tone fields the Soft
+    // film entry held, and nothing else.
+    let native_frame = launch.at("native")?;
     let basic = lightwell_core::BASIC_EFFECT.to_owned();
     let captured: serde_json::Map<String, Value> = soft
         .get(&basic)
@@ -605,63 +581,48 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The Soft film entry holds no Tone field to capture",
     )?;
     let native = BTreeMap::from([(basic, Value::Object(captured))]);
-    expect_layers(&frames[11], "Frame 11", &native)?;
-    let native_patches = patches_of(11)?;
+    expect_layers(native_frame, "The native preset applied", &native)?;
+    let native_patches = patches_of("native")?;
     ensure(
         mean_luminance(&native_patches) > mean_luminance(&at_original) + BRIGHTER,
         format!(
-            "Frame 11: the Tone preset did not brighten the Original: {:.1} against {:.1}",
+            "The Tone preset did not brighten the Original: {:.1} against {:.1}",
             mean_luminance(&native_patches),
             mean_luminance(&at_original)
         ),
     )?;
     record(
-        11,
+        native_frame,
         "the native preset on the Original: one entry, exactly the captured Tone fields, a brighter photograph",
-        json!({"label":frames[11].label()?,"layers":layers(&frames[11])?,"patches":patch_record(&native_patches)}),
+        json!({"label":native_frame.label()?,"layers":layers(native_frame)?,"patches":patch_record(&native_patches)}),
     );
 
-    // Frame 12: `preset.list` through the generic api step answers with the whole library and
-    // commits nothing.
-    let listed = frames[12]["step"]["result"]["presets"]
+    // `preset.list` through the generic api step answers with the whole library.
+    let list = launch.at("list")?;
+    let listed = list["step"]["result"]["presets"]
         .as_array()
-        .ok_or("Frame 12: the api step recorded no listing")?;
+        .ok_or("The preset.list step recorded no listing")?;
     ensure(
         listed.len() == 3,
-        format!("Frame 12: preset.list answered {} presets", listed.len()),
-    )?;
-    ensure(
-        frames[12].revision()? == frames[11].revision()?,
-        "Frame 12: listing committed something",
+        format!("preset.list answered {} presets", listed.len()),
     )?;
     record(
-        12,
+        list,
         "preset.list through the api step: three presets, nothing committed",
         json!({"listed":listed.len()}),
     );
 
-    // Frame 13: the native preset deleted through its row menu. History keeps the entry.
-    expect_rows(
-        &frames[13],
-        "Frame 13",
-        &[
-            ("Soft film", "Synthetic", false),
-            ("Soft Film", "Synthetic Looks", true),
-        ],
-    )?;
-    ensure(
-        frames[13].revision()? == frames[11].revision()?
-            && frames[13].label()? == format!("Preset: {NATIVE}"),
-        "Frame 13: deleting the preset changed the photograph's history",
-    )?;
+    // The native preset deleted through its row menu; history keeps the entry that applied it.
+    let deleted = launch.at("deleted")?;
+    expect_rows(deleted, "The deleted preset", &both)?;
     record(
-        13,
+        deleted,
         "the native preset deleted from its row menu; the entry that applied it remains",
-        json!({"status":frames[13]["state"]["status"],"rows":presets(&frames[13])["rows"]}),
+        json!({"status":deleted["state"]["status"],"rows":presets(deleted)["rows"]}),
     );
 
     write_json(
-        &evidence.join("presets-checks.json"),
+        &launch.evidence.join("presets-checks.json"),
         &json!({
             "checks": checks,
             "brighter_margin": BRIGHTER,

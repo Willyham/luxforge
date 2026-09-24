@@ -286,10 +286,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "workspace",
         about: "Panels, canvas mode, thirds, a historical preview, a conflict and the palette",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, workspace::script("workspace")),
+            plan: workspace::plan,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(workspace::verify, launches),
+        verify: workspace::verify,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,
@@ -299,10 +299,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "basic",
         about: "The Exposure slider's whole gesture: draft, commit, typed value, undo, reset and conflict",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, basic::script("basic")),
+            plan: basic::plan,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(basic::verify, launches),
+        verify: basic::verify,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,
@@ -312,10 +312,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "basic-panel",
         about: "The whole Basic section, historical values, a group reset and the neutral picker",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, basic::panel_script("basic-panel")),
+            plan: basic::panel_plan,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(basic::verify_panel, launches),
+        verify: basic::verify_panel,
         source: Source::Fixtures(&["fixtures/s0/greyscale.jpg"]),
         window: Some(PANELLED),
         note: None,
@@ -343,12 +343,25 @@ pub static SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "basic-restart",
         about: "A Basic edit committed in one launch and reopened in the next",
-        launches: &[],
-        verify: |_, _| Ok(()),
+        launches: &[
+            LaunchSpec {
+                name: "launch1",
+                script: "script1.json",
+                plan: basic::restart_first,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch2",
+                plan: basic::restart_second,
+                catalog: Some("launch1"),
+                ..APP
+            },
+        ],
+        verify: basic::verify_restart,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
-        note: None,
-        own: Some(|run, _, _| basic::restart(run)),
+        note: Some(basic::RESTART_NOTE),
+        own: None,
     },
     Scenario {
         name: "histogram",
@@ -373,10 +386,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "presence",
         about: "Texture, Clarity and Dehaze over a generated gradient, edge, texture and flat field",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, presence::script("presence")),
+            plan: presence::plan,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(presence::verify, launches),
+        verify: presence::verify,
         source: Source::Fixtures(&[presence::FIXTURE]),
         window: Some(PANELLED),
         note: None,
@@ -386,10 +399,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "mixer",
         about: "The Colour mixer over a generated hue wheel",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, mixer::script("mixer")),
+            plan: mixer::plan,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(mixer::verify, launches),
+        verify: mixer::verify,
         source: Source::Fixtures(&[mixer::FIXTURE]),
         window: Some(PANELLED),
         note: None,
@@ -412,10 +425,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "presets",
         about: "Presets imported, applied, undone, created, listed and deleted",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, presets::script("presets")),
+            plan: presets::plan,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(presets::verify, launches),
+        verify: presets::verify,
         source: Source::Fixtures(&[presets::FIXTURE]),
         window: Some(PANELLED),
         note: None,
@@ -518,12 +531,26 @@ pub static SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "unavailable",
         about: "A committed crop reopened with the crop module disabled: reported, never omitted",
-        launches: &[],
-        verify: |_, _| Ok(()),
+        launches: &[
+            LaunchSpec {
+                name: "launch1",
+                script: "script1.json",
+                plan: workspace::unavailable_first,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch2",
+                plan: workspace::unavailable_second,
+                catalog: Some("launch1"),
+                disable: &["lightwell.crop"],
+                ..APP
+            },
+        ],
+        verify: workspace::verify_unavailable,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
-        note: None,
-        own: Some(|run, _, _| workspace::unavailable(run)),
+        note: Some(workspace::UNAVAILABLE_NOTE),
+        own: None,
     },
     Scenario {
         name: raw_panel::SCENARIO,

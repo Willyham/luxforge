@@ -9,9 +9,10 @@
 //! different colour family entirely, which is what [`patch_mean`] samples at
 //! [`OPPOSITE_ANGLE_DEG`] as an unaffected control for a red-hue edit.
 use crate::{
-    scenario::{Frame, pixels},
+    scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
+use lightwell_core::MIXER_EFFECT;
 
 const MIXER_MODULE: &str = "lightwell.mixer";
 /// The one section the registry lists above the Colour mixer's own that is both a real toggleable
@@ -42,36 +43,109 @@ const CHANGED: f64 = 20.0;
 /// How close two mean channel readings must stay before this scenario calls a patch unaffected.
 const UNCHANGED: f64 = 10.0;
 
-/// The evidence script. Each step is one gesture, one request or one decision; `verify` below
-/// checks exactly what each one is supposed to prove.
-pub fn script(scenario: &str) -> Option<Value> {
-    (scenario == "mixer").then(|| {
-        json!([
-            // 1: collapse Basic, expanded by its own default and the one other section the
-            // registry lists above Colour mixer, so the module's own sliders and rails land on
-            // screen without scrolling once it expands.
-            {"section":{"module":BASIC_MODULE,"expanded":false}},
-            // 2: expand the section. Hue starts expanded by the module's own descriptor, so this
-            // alone exposes its eight rails.
-            {"section":{"module":MIXER_MODULE,"expanded":true}},
-            // 3: a drag on Red hue, left open: the frame shows the drafted preview.
-            {"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[30.0,60.0,90.0]}},
-            // 4: the same gesture released: one entry, one revision, committed at Fit.
-            {"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[90.0],"release":true}},
-            // 5: the same committed state at 100%.
-            {"view":{"zoom":"100"}},
-            // 6: a Saturation field, so its group's reset below has something to undo.
-            {"field":{"action":SET_MIXER,"parameter":AQUA_SATURATION,"text":"-40","submit":true}},
-            // 7: the Saturation group's own reset, leaving the Hue field alone.
-            {"reset":{"module":MIXER_MODULE,"group":SATURATION_GROUP}},
-            // 8: a stronger hue shift, still at 100%, where continuity across the wheel shows.
-            {"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[100.0],"release":true}},
-            // 9: the Saturation tab: the mixer's groups are tabs, and choosing one is view state.
-            {"tab":{"module":MIXER_MODULE,"index":1}},
-            // 10: the Luminance tab, the last of the three.
-            {"tab":{"module":MIXER_MODULE,"index":2}}
-        ])
-    })
+/// Every frame, in order: the open, then one per step. Each step is one gesture, one request or one
+/// decision; the plan says what it commits and records, and `verify` below checks what the wheel
+/// shows.
+pub fn plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        // The fixture opens with Basic expanded above it (its own descriptor default), the mixer
+        // section listed and collapsed, every field at its default, no draft and no mixer layer.
+        Step::opened("opened")
+            .collapsed(MIXER_MODULE)
+            .field(SET_MIXER, RED_HUE, "0")
+            .no_draft()
+            .no_layer(MIXER_EFFECT),
+        // 1: collapse Basic, expanded by its own default and the one other section the
+        // registry lists above Colour mixer, so the module's own sliders and rails land on
+        // screen without scrolling once it expands.
+        Step::new(
+            "basic-collapsed",
+            json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
+        )
+        .commits(0)
+        .collapsed(BASIC_MODULE),
+        // 2: expand the section. Hue starts expanded by the module's own descriptor, so this
+        // alone exposes its eight rails.
+        Step::new(
+            "expanded",
+            json!({"section":{"module":MIXER_MODULE,"expanded":true}}),
+        )
+        .commits(0)
+        .expanded(MIXER_MODULE)
+        .collapsed(BASIC_MODULE),
+        // 3: a drag on Red hue, left open: the frame shows the drafted preview.
+        Step::new(
+            "drag",
+            json!({"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[30.0,60.0,90.0]}}),
+        )
+        .commits(0)
+        .draft(SET_MIXER, json!({ RED_HUE: 90.0 }))
+        .no_layer(MIXER_EFFECT)
+        .field(SET_MIXER, RED_HUE, "90"),
+        // 4: the same gesture released: one entry, one revision, committed at Fit.
+        Step::new(
+            "release",
+            json!({"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[90.0],"release":true}}),
+        )
+        .no_draft()
+        .commits(1)
+        .label("Red hue +90")
+        .payload(MIXER_EFFECT, json!({ RED_HUE: 90.0 })),
+        // 5: the same committed state at 100%.
+        Step::new("percent", json!({"view":{"zoom":"100"}}))
+            .no_draft()
+            .commits(0),
+        // 6: a Saturation field, so its group's reset below has something to undo. The same layer
+        // merges the second field.
+        Step::new(
+            "saturation",
+            json!({"field":{"action":SET_MIXER,"parameter":AQUA_SATURATION,"text":"-40","submit":true}}),
+        )
+        .commits(1)
+        .label("Aqua saturation -40")
+        .payload(
+            MIXER_EFFECT,
+            json!({ RED_HUE: 90.0, AQUA_SATURATION: -40.0 }),
+        )
+        .same_layer(MIXER_EFFECT, "release"),
+        // 7: the Saturation group's own reset, leaving the Hue field alone and the layer kept.
+        // Saturation starts collapsed, so its own group is off screen; the group reset button
+        // lives on the group header and runs the same way whether or not that group is expanded.
+        Step::new(
+            "saturation-reset",
+            json!({"reset":{"module":MIXER_MODULE,"group":SATURATION_GROUP}}),
+        )
+        .commits(1)
+        .label(format!("Reset {SATURATION_GROUP}"))
+        .payload(MIXER_EFFECT, json!({ RED_HUE: 90.0 }))
+        .same_layer(MIXER_EFFECT, "release")
+        .field(SET_MIXER, AQUA_SATURATION, "0")
+        .field(SET_MIXER, RED_HUE, "90"),
+        // 8: a stronger hue shift, still at 100%, where continuity across the wheel shows, with
+        // the Colour mixer still the only expanded section above it.
+        Step::new(
+            "stronger",
+            json!({"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[100.0],"release":true}}),
+        )
+        .no_draft()
+        .commits(1)
+        .label("Red hue +100")
+        .payload(MIXER_EFFECT, json!({ RED_HUE: 100.0 }))
+        .expanded(MIXER_MODULE)
+        .collapsed(BASIC_MODULE),
+        // 9: the Saturation tab: the mixer's groups are tabs, and choosing one is view state.
+        Step::new(
+            "saturation-tab",
+            json!({"tab":{"module":MIXER_MODULE,"index":1}}),
+        )
+        .commits(0),
+        // 10: the Luminance tab, the last of the three.
+        Step::new(
+            "luminance-tab",
+            json!({"tab":{"module":MIXER_MODULE,"index":2}}),
+        )
+        .commits(0),
+    ])
 }
 
 /// Every section this scenario toggles, for the correlation every recorded
@@ -79,16 +153,7 @@ pub fn script(scenario: &str) -> Option<Value> {
 const SECTIONS: [&str; 2] = [BASIC_MODULE, MIXER_MODULE];
 
 fn mixer_payload(frame: &Frame) -> Option<&Value> {
-    frame.payload(lightwell_core::MIXER_EFFECT)
-}
-
-fn mixer_layer_id(frame: &Frame) -> Option<&str> {
-    frame.layer_id(lightwell_core::MIXER_EFFECT)
-}
-
-/// What one generated mixer field showed when the frame was captured.
-fn mixer_field<'a>(frame: &'a Frame, name: &str) -> Result<&'a str> {
-    frame.field(SET_MIXER, name)
+    frame.payload(MIXER_EFFECT)
 }
 
 /// Where the wheel is drawn, measured across it rather than down it. The mode strip floats over the
@@ -179,21 +244,25 @@ fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.iter().zip(b).map(|(a, b)| (a - b).abs()).sum::<f64>()
 }
 
-pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
-    ensure(
-        app["had_input_errors"] == json!(false),
-        "The run recorded an input error",
-    )?;
-    let frames = Frame::all(evidence, app)?;
+/// What the wheel shows at each step, once the plan has held.
+pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
     let mut checks = Vec::new();
     let mut record = |frame: &Value, shows: &str, detail: Value| {
         checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
     };
+    // The red patch and the opposite, control patch of a frame.
+    let patches = |frame: &Frame| -> Result<([f64; 3], [f64; 3])> {
+        let bounds = wheel_bounds(frame)?;
+        Ok((
+            patch_mean(frame, bounds, RED_ANGLE_DEG)?,
+            patch_mean(frame, bounds, OPPOSITE_ANGLE_DEG)?,
+        ))
+    };
 
-    // Frame 0: the fixture opens with Basic expanded above it (its own descriptor default), the
-    // mixer section listed and collapsed, every field at its default, no draft and no mixer layer
-    // yet.
-    let mixer = frames[0]["state"]["modules"]
+    // The fixture as launched, the module listed and available, the wheel at its opened colours.
+    let opened = launch.at("opened")?;
+    let mixer = opened["state"]["modules"]
         .as_array()
         .ok_or("Missing modules")?
         .iter()
@@ -203,102 +272,43 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         mixer["available"] == json!(true),
         "The Colour mixer module is not available",
     )?;
-    ensure(
-        !frames[0].section_expanded(MIXER_MODULE),
-        "The Colour mixer section is not collapsed as launched",
-    )?;
-    ensure(
-        mixer_field(&frames[0], RED_HUE)? == "0",
-        format!(
-            "Red hue does not start neutral: {}",
-            mixer_field(&frames[0], RED_HUE)?
-        ),
-    )?;
-    frames[0].expect_no_draft("Frame 0")?;
-    ensure(
-        mixer_payload(&frames[0]).is_none(),
-        "The opened stack already holds a Colour mixer layer",
-    )?;
-    let opened_bounds = wheel_bounds(&frames[0])?;
-    let opened_red = patch_mean(&frames[0], opened_bounds, RED_ANGLE_DEG)?;
-    let opened_opposite = patch_mean(&frames[0], opened_bounds, OPPOSITE_ANGLE_DEG)?;
+    let (opened_red, opened_opposite) = patches(opened)?;
     record(
-        &frames[0],
+        opened,
         "the collapsed Colour mixer section as launched, the wheel at its opened colours",
-        json!({"red_patch": opened_red, "opposite_patch": opened_opposite, "expanded": frames[0].expanded_sections(&SECTIONS)}),
+        json!({"red_patch": opened_red, "opposite_patch": opened_opposite, "expanded": opened.expanded_sections(&SECTIONS)}),
     );
-
-    // Frame 1: Basic collapsed, so nothing above Colour mixer is expanded once it opens.
-    ensure(
-        !frames[1].section_expanded(BASIC_MODULE),
-        "The section step did not collapse Basic",
-    )?;
-    ensure(
-        frames[1].revision()? == frames[0].revision()?,
-        "Collapsing Basic committed something",
-    )?;
+    let basic = launch.at("basic-collapsed")?;
     record(
-        &frames[1],
+        basic,
         "the Basic section collapsed, above Colour mixer in the registry order",
-        json!({"expanded": frames[1].expanded_sections(&SECTIONS)}),
+        json!({"expanded": basic.expanded_sections(&SECTIONS)}),
     );
-
-    // Frame 2: the section expanded, with Basic still collapsed above it. Hue starts expanded by
-    // the module's own descriptor, so its eight rails are visible without a further group step or
-    // any scrolling.
-    ensure(
-        frames[2].section_expanded(MIXER_MODULE) && !frames[2].section_expanded(BASIC_MODULE),
-        format!(
-            "The section step did not expand Colour mixer alone: {}",
-            frames[2].expanded_sections(&SECTIONS)
-        ),
-    )?;
-    ensure(
-        frames[2].revision()? == frames[1].revision()?,
-        "Expanding the section committed something",
-    )?;
+    let expanded = launch.at("expanded")?;
     record(
-        &frames[2],
+        expanded,
         "the Colour mixer section expanded: the Hue group and its eight rails, on screen with nothing above it expanded",
-        json!({"expanded": frames[2].expanded_sections(&SECTIONS)}),
+        json!({"expanded": expanded.expanded_sections(&SECTIONS)}),
     );
 
-    // Frame 3: mid-gesture at Red hue +90. The draft is open, nothing is committed, and the red
-    // patch has visibly moved while the opposite patch has not.
-    let drafted = frames[3].draft();
-    ensure(
-        drafted["action"] == json!(SET_MIXER)
-            && drafted["fields"] == json!({ RED_HUE: 90.0 })
-            && drafted["conflicted"] == json!(false),
-        format!("Frame 3's draft is not the open Red hue gesture: {drafted}"),
-    )?;
+    // Mid-gesture at Red hue +90: the drafted frame is on screen, the red patch has visibly moved
+    // and the opposite patch has not.
+    let drag = launch.at("drag")?;
+    let drafted = drag.draft();
     ensure(
         drafted["draft_revision"]
             .as_u64()
             .is_some_and(|value| value >= 1),
-        format!("Frame 3's draft carries no draft revision: {drafted}"),
+        format!("The drag's draft carries no draft revision: {drafted}"),
     )?;
     ensure(
-        frames[3]["state"]["displayed_draft_revision"] == drafted["draft_revision"],
+        drag["state"]["displayed_draft_revision"] == drafted["draft_revision"],
         format!(
-            "Frame 3 displays draft revision {} while the draft is at {}",
-            frames[3]["state"]["displayed_draft_revision"], drafted["draft_revision"]
+            "The drag displays draft revision {} while the draft is at {}",
+            drag["state"]["displayed_draft_revision"], drafted["draft_revision"]
         ),
     )?;
-    ensure(
-        frames[3].revision()? == frames[2].revision()? && mixer_payload(&frames[3]).is_none(),
-        "A drag committed something",
-    )?;
-    ensure(
-        mixer_field(&frames[3], RED_HUE)? == "90",
-        format!(
-            "The slider does not show the drafted value: {}",
-            mixer_field(&frames[3], RED_HUE)?
-        ),
-    )?;
-    let drafted_bounds = wheel_bounds(&frames[3])?;
-    let drafted_red = patch_mean(&frames[3], drafted_bounds, RED_ANGLE_DEG)?;
-    let drafted_opposite = patch_mean(&frames[3], drafted_bounds, OPPOSITE_ANGLE_DEG)?;
+    let (drafted_red, drafted_opposite) = patches(drag)?;
     ensure(
         distance(drafted_red, opened_red) > CHANGED,
         format!(
@@ -312,154 +322,53 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ),
     )?;
     record(
-        &frames[3],
+        drag,
         "a drag to Red hue +90, mid-gesture: the drafted preview, nothing committed, Colour mixer still the only expanded section",
-        json!({"draft": drafted, "red_patch": drafted_red, "opposite_patch": drafted_opposite, "expanded": frames[3].expanded_sections(&SECTIONS)}),
+        json!({"draft": drafted, "red_patch": drafted_red, "opposite_patch": drafted_opposite, "expanded": drag.expanded_sections(&SECTIONS)}),
     );
 
-    // Frame 4: the release. One entry, labelled by the module, the revision advanced by one,
-    // displayed at Fit.
-    frames[4].expect_no_draft("Frame 4")?;
-    ensure(
-        frames[4].revision()? == frames[3].revision()? + 1,
-        format!(
-            "The release advanced the revision from {} to {}, expected one step",
-            frames[3].revision()?,
-            frames[4].revision()?
-        ),
-    )?;
-    ensure(
-        frames[4].entry()? != frames[2].entry()?,
-        "The release created no new history entry",
-    )?;
-    ensure(
-        frames[4].label()? == "Red hue +90",
-        format!("The committed entry is labelled {:?}", frames[4].label()?),
-    )?;
-    ensure(
-        mixer_payload(&frames[4]) == Some(&json!({ RED_HUE: 90.0 })),
-        format!(
-            "The committed Colour mixer layer holds {:?}",
-            mixer_payload(&frames[4])
-        ),
-    )?;
-    let layer = mixer_layer_id(&frames[4])
-        .ok_or("The committed stack holds no Colour mixer layer")?
-        .to_owned();
-    let committed_fit_bounds = wheel_bounds(&frames[4])?;
-    let committed_fit_red = patch_mean(&frames[4], committed_fit_bounds, RED_ANGLE_DEG)?;
+    // The release, displayed at Fit, and the same committed state at 100%: nothing changed but the
+    // zoom.
+    let release = launch.at("release")?;
+    let (committed_fit_red, _) = patches(release)?;
+    let layer = release.layer_id(MIXER_EFFECT);
     record(
-        &frames[4],
+        release,
         "released: one entry \"Red hue +90\", displayed at Fit",
-        json!({"revision": frames[4].revision()?, "label": frames[4].label()?, "red_patch": committed_fit_red, "layer": layer, "expanded": frames[4].expanded_sections(&SECTIONS)}),
+        json!({"revision": release.revision()?, "label": release.label()?, "red_patch": committed_fit_red, "layer": layer, "expanded": release.expanded_sections(&SECTIONS)}),
     );
-
-    // Frame 5: the same committed state at 100%. Nothing changed but the zoom.
-    frames[5].expect_no_draft("Frame 5")?;
-    ensure(
-        frames[5].revision()? == frames[4].revision()?
-            && frames[5].entry()? == frames[4].entry()?,
-        "Changing zoom committed something",
-    )?;
-    ensure(
-        frames[5]["step"]["request"] == json!({"view":{"zoom":100.0}}),
-        format!(
-            "Frame 5 did not request 100%: {}",
-            frames[5]["step"]["request"]
-        ),
-    )?;
-    let committed_100_bounds = wheel_bounds(&frames[5])?;
-    let committed_100_red = patch_mean(&frames[5], committed_100_bounds, RED_ANGLE_DEG)?;
+    let percent = launch.at("percent")?;
+    let (committed_100_red, _) = patches(percent)?;
     ensure(
         distance(committed_100_red, committed_fit_red) < UNCHANGED,
         "The same committed edit reads differently at Fit and at 100%",
     )?;
     record(
-        &frames[5],
+        percent,
         "the same committed Red hue +90, at 100%",
-        json!({"red_patch": committed_100_red, "zoom_request": frames[5]["step"]["request"], "expanded": frames[5].expanded_sections(&SECTIONS)}),
+        json!({"red_patch": committed_100_red, "zoom_request": percent["step"]["request"], "expanded": percent.expanded_sections(&SECTIONS)}),
     );
 
-    // Frame 6: a Saturation field, typed and submitted. The same layer merges the second field.
-    ensure(
-        frames[6].revision()? == frames[5].revision()? + 1,
-        "Enter in the value field did not commit exactly one revision",
-    )?;
-    ensure(
-        frames[6].label()? == "Aqua saturation -40",
-        format!("The typed entry is labelled {:?}", frames[6].label()?),
-    )?;
-    ensure(
-        mixer_payload(&frames[6]) == Some(&json!({ RED_HUE: 90.0, AQUA_SATURATION: -40.0 })),
-        format!(
-            "The merged mixer layer holds {:?}",
-            mixer_payload(&frames[6])
-        ),
-    )?;
-    ensure(
-        mixer_layer_id(&frames[6]) == Some(layer.as_str()),
-        "The typed value replaced the Colour mixer layer instead of updating it",
-    )?;
+    let saturation = launch.at("saturation")?;
     record(
-        &frames[6],
+        saturation,
         "Aqua saturation typed as -40 and committed with Enter: the same layer, both fields",
-        json!({"label": frames[6].label()?, "payload": mixer_payload(&frames[6]), "expanded": frames[6].expanded_sections(&SECTIONS)}),
+        json!({"label": saturation.label()?, "payload": mixer_payload(saturation), "expanded": saturation.expanded_sections(&SECTIONS)}),
     );
-
-    // Frame 7: the Saturation group's own reset. One entry labelled by the module, that group's
-    // field back to neutral, Red hue untouched, the layer kept.
-    ensure(
-        frames[7].label()? == format!("Reset {SATURATION_GROUP}"),
-        format!("The group reset is labelled {:?}", frames[7].label()?),
-    )?;
-    ensure(
-        mixer_payload(&frames[7]) == Some(&json!({ RED_HUE: 90.0 })),
-        format!(
-            "The Saturation reset changed more than its own group: {:?}",
-            mixer_payload(&frames[7])
-        ),
-    )?;
-    ensure(
-        mixer_layer_id(&frames[7]) == Some(layer.as_str()),
-        "The group reset replaced the Colour mixer layer instead of updating it",
-    )?;
-    ensure(
-        mixer_field(&frames[7], AQUA_SATURATION)? == "0"
-            && mixer_field(&frames[7], RED_HUE)? == "90",
-        "The group reset did not leave Hue alone",
-    )?;
-    // Saturation starts collapsed, so its own group is off screen; the group reset button lives
-    // on the group header and runs the same way whether or not that group is expanded.
+    let reset = launch.at("saturation-reset")?;
     record(
-        &frames[7],
+        reset,
         "the Saturation group reset: one entry, that field neutral, Hue untouched",
-        json!({"label": frames[7].label()?, "payload": mixer_payload(&frames[7]), "layer": layer, "expanded": frames[7].expanded_sections(&SECTIONS)}),
+        json!({"label": reset.label()?, "payload": mixer_payload(reset), "layer": layer, "expanded": reset.expanded_sections(&SECTIONS)}),
     );
 
-    // Frame 8: a stronger hue shift to +100, still at 100%, where hue continuity across the wheel
-    // can be inspected: the red patch has moved further still and the opposite patch stays clear.
-    frames[8].expect_no_draft("Frame 8")?;
-    ensure(
-        frames[8].revision()? == frames[7].revision()? + 1,
-        "The final release did not commit exactly one revision",
-    )?;
-    ensure(
-        frames[8].label()? == "Red hue +100",
-        format!("The final entry is labelled {:?}", frames[8].label()?),
-    )?;
-    ensure(
-        mixer_payload(&frames[8]) == Some(&json!({ RED_HUE: 100.0 })),
-        format!(
-            "The final mixer layer holds {:?}",
-            mixer_payload(&frames[8])
-        ),
-    )?;
-    let final_bounds = wheel_bounds(&frames[8])?;
-    let final_red = patch_mean(&frames[8], final_bounds, RED_ANGLE_DEG)?;
-    let final_opposite = patch_mean(&frames[8], final_bounds, OPPOSITE_ANGLE_DEG)?;
-    // The bounded rotation angle need not still be moving noticeably between +90 and +100 this
-    // close to its own bound, so this checks the shift against the true opened baseline again,
-    // not against the +90 frame; the wheel itself is where a reader inspects hue continuity.
+    // A stronger hue shift to +100, at 100%, where hue continuity across the wheel can be
+    // inspected: the red patch has moved further still and the opposite patch stays clear. The
+    // bounded rotation angle need not still be moving noticeably between +90 and +100 this close
+    // to its own bound, so this checks the shift against the true opened baseline again, not
+    // against the +90 frame; the wheel itself is where a reader inspects hue continuity.
+    let stronger = launch.at("stronger")?;
+    let (final_red, final_opposite) = patches(stronger)?;
     ensure(
         distance(final_red, opened_red) > CHANGED,
         format!("+100 red hue did not move the red patch: {final_red:?} against {opened_red:?}"),
@@ -470,45 +379,36 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             "+100 red hue moved the opposite patch it should leave alone: {final_opposite:?} against {opened_opposite:?}"
         ),
     )?;
-    ensure(
-        frames[8].section_expanded(MIXER_MODULE) && !frames[8].section_expanded(BASIC_MODULE),
-        format!(
-            "Colour mixer is not still the only expanded section above it: {}",
-            frames[8].expanded_sections(&SECTIONS)
-        ),
-    )?;
     record(
-        &frames[8],
+        stronger,
         "a strong hue shift to Red hue +100 at 100%: hue continuity across the wheel is inspected here, with the Colour mixer sliders and rails still on screen",
-        json!({"red_patch": final_red, "opposite_patch": final_opposite, "expanded": frames[8].expanded_sections(&SECTIONS)}),
+        json!({"red_patch": final_red, "opposite_patch": final_opposite, "expanded": stronger.expanded_sections(&SECTIONS)}),
     );
 
-    // Frame 9: the Saturation tab selected. It is per-client view state: no entry, no revision.
-    let selected = &frames[9]["state"]["control_ui"]["selected_tab"][MIXER_MODULE];
-    ensure(
-        selected == &json!(1) && frames[9].revision()? == frames[8].revision()?,
-        format!("The Saturation tab was not selected as view state alone: {selected}"),
-    )?;
-    record(
-        &frames[9],
-        "the Saturation tab selected: its eight rails shown under the tab row, nothing committed",
-        json!({"selected_tab": selected}),
-    );
-
-    // Frame 10: the Luminance tab, again view state alone.
-    let selected = &frames[10]["state"]["control_ui"]["selected_tab"][MIXER_MODULE];
-    ensure(
-        selected == &json!(2) && frames[10].revision()? == frames[9].revision()?,
-        format!("The Luminance tab was not selected as view state alone: {selected}"),
-    )?;
-    record(
-        &frames[10],
-        "the Luminance tab selected: its eight dark-to-light rails under the tab row, nothing committed",
-        json!({"selected_tab": selected}),
-    );
+    // The Saturation and Luminance tabs, each per-client view state alone.
+    for (step, index, shows) in [
+        (
+            "saturation-tab",
+            1,
+            "the Saturation tab selected: its eight rails shown under the tab row, nothing committed",
+        ),
+        (
+            "luminance-tab",
+            2,
+            "the Luminance tab selected: its eight dark-to-light rails under the tab row, nothing committed",
+        ),
+    ] {
+        let frame = launch.at(step)?;
+        let selected = &frame["state"]["control_ui"]["selected_tab"][MIXER_MODULE];
+        ensure(
+            selected == &json!(index),
+            format!("The {step} step selected tab {selected}, not {index}"),
+        )?;
+        record(frame, shows, json!({"selected_tab": selected}));
+    }
 
     write_json(
-        &evidence.join("mixer-checks.json"),
+        &launch.evidence.join("mixer-checks.json"),
         &json!({
             "checks": checks,
             "changed_margin": CHANGED,

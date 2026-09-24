@@ -6,9 +6,14 @@
 //! brightness check reads a centred window of the canvas, which is inside the fitted photograph at
 //! every zoom this scenario uses and clear of the notices above it and the mode strip below it.
 use crate::{
-    scenario::{Fixture, Frame, Launch, Run, pixels, preamble},
+    scenario::{
+        Checked, Fixture, Frame, Plan, Run, Step,
+        pixels::{self, Tolerance, compare},
+        plan::only,
+    },
     *,
 };
+use lightwell_core::BASIC_EFFECT;
 
 const BASIC_MODULE: &str = "lightwell.basic";
 const SET_BASIC: &str = "set-basic";
@@ -24,412 +29,315 @@ const BRIGHTER: f64 = 10.0;
 /// the same render of the same stack, so this is JPEG-free readback noise only.
 const SAME: f64 = 2.0;
 
-/// The evidence script. Each step is one gesture, one request or one decision; `verify` below
-/// checks exactly what each one is supposed to prove.
-pub fn script(scenario: &str) -> Option<Value> {
-    match scenario {
-        "basic" => Some(json!([
-            // A drag to +1.00 EV, left open: the frame shows the drafted preview.
-            {"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[0.25,0.5,1.0]}},
-            // The same gesture released: one entry, one revision.
-            {"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[1.0],"release":true}},
-            // A second drag that returns to where it started: no entry at all.
-            {"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[0.5,1.0],"release":true}},
-            // The value field and Enter, which commits one field without a draft.
-            {"field":{"action":SET_BASIC,"parameter":EXPOSURE,"text":"-0.5","submit":true}},
-            // Undo: the slider re-seeds from the entry that is current again.
-            {"api":{"method":"history.undo"}},
-            // The Tone group's own reset button.
-            {"reset":{"module":BASIC_MODULE,"group":TONE_GROUP}},
-            // A drag left open, then somebody else commits under it.
-            {"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[2.0]}},
-            {"api":{"method":"edit.transform","params":{"transform":"rotate-right"}}},
-            // The notice's two decisions, in turn.
-            {"slider_draft":"reapply"},
-            {"slider_draft":"discard"}
-        ])),
-        _ => None,
-    }
-}
-
-/// What the Exposure field showed when the frame was captured.
-fn exposure_field(frame: &Frame) -> Result<&str> {
-    frame.field(SET_BASIC, EXPOSURE)
+/// Every frame, in order: the open, then one per step. Each step is one gesture, one request or
+/// one decision; the expectations here are what it commits and records, and `verify` below checks
+/// what the photograph shows.
+pub fn plan(_: &[PathBuf]) -> Plan {
+    let slider = |name: &str, values: Value, release: bool| {
+        let mut slider = json!({"action":SET_BASIC,"parameter":EXPOSURE,"values":values});
+        if release {
+            slider["release"] = json!(true);
+        }
+        Step::new(name, json!({ "slider": slider }))
+    };
+    Plan::new(vec![
+        // The fixture opens with the Basic section listed, its slider at the declared default and
+        // no draft anywhere.
+        Step::opened("opened")
+            .field(SET_BASIC, EXPOSURE, "0.00")
+            .no_draft()
+            .no_layer(BASIC_EFFECT),
+        // A drag to +1.00 EV, left open: the frame shows the drafted preview, nothing committed.
+        slider("drag", json!([0.25, 0.5, 1.0]), false)
+            .commits(0)
+            .draft(SET_BASIC, json!({ EXPOSURE: 1.0 }))
+            .no_layer(BASIC_EFFECT)
+            .field(SET_BASIC, EXPOSURE, "1.00"),
+        // The same gesture released: one entry, labelled by the module, one revision.
+        slider("release", json!([1.0]), true)
+            .no_draft()
+            .commits(1)
+            .label("Exposure +1.00 EV")
+            .payload(BASIC_EFFECT, json!({ EXPOSURE: 1.0 })),
+        // A second drag that returns to where it started: no entry at all.
+        slider("return", json!([0.5, 1.0]), true)
+            .no_draft()
+            .commits(0),
+        // The value field and Enter, which commits one field without a draft.
+        Step::new(
+            "typed",
+            json!({"field":{"action":SET_BASIC,"parameter":EXPOSURE,"text":"-0.5","submit":true}}),
+        )
+        .no_draft()
+        .commits(1)
+        .label("Exposure -0.50 EV")
+        .payload(BASIC_EFFECT, json!({ EXPOSURE: -0.5 })),
+        // Undo: the slider re-seeds from the entry that is current again.
+        Step::new("undo", json!({"api":{"method":"history.undo"}}))
+            .commits(1)
+            .field(SET_BASIC, EXPOSURE, "1.00"),
+        // The Tone group's own reset button: the slider at 0, the layer kept with its neutral
+        // payload.
+        Step::new(
+            "reset",
+            json!({"reset":{"module":BASIC_MODULE,"group":TONE_GROUP}}),
+        )
+        .commits(1)
+        .label("Reset Tone")
+        .field(SET_BASIC, EXPOSURE, "0.00")
+        .payload(BASIC_EFFECT, json!({})),
+        // A drag left open, then somebody else commits under it: the draft is kept, marked
+        // conflicted.
+        Step::new(
+            "drag-open",
+            json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[2.0]}}),
+        )
+        .commits(0)
+        .draft(SET_BASIC, json!({ EXPOSURE: 2.0 })),
+        Step::new(
+            "conflict",
+            json!({"api":{"method":"edit.transform","params":{"transform":"rotate-right"}}}),
+        )
+        .commits(1)
+        .conflicted(SET_BASIC, json!({ EXPOSURE: 2.0 }))
+        .field(SET_BASIC, EXPOSURE, "2.00"),
+        // The notice's two decisions, in turn: Reapply rebases the draft and re-sends its value;
+        // Discard ends the gesture with nothing committed and the authoritative value back.
+        Step::new("reapply", json!({"slider_draft":"reapply"}))
+            .commits(0)
+            .draft(SET_BASIC, json!({ EXPOSURE: 2.0 })),
+        Step::new("discard", json!({"slider_draft":"discard"}))
+            .no_draft()
+            .commits(0)
+            .field(SET_BASIC, EXPOSURE, "0.00"),
+    ])
 }
 
 /// The one Basic layer's stored payload, or `None` when the stack holds no Basic layer.
 fn basic_payload(frame: &Frame) -> Option<&Value> {
-    frame.payload(lightwell_core::BASIC_EFFECT)
+    frame.payload(BASIC_EFFECT)
 }
 
 fn brighter(what: &str, more: f64, less: f64) -> Result {
-    ensure(
-        more > less + BRIGHTER,
-        format!("{what}: mean luminance {more:.1} is not above {less:.1} by {BRIGHTER}"),
-    )
+    compare(what, more, less, Tolerance::Above(BRIGHTER))
 }
 
 fn same(what: &str, a: f64, b: f64) -> Result {
+    compare(what, a, b, Tolerance::Within(SAME))
+}
+
+/// Whether the module registry lists `module` and offers it.
+fn available(frame: &Frame, module: &str) -> Result {
+    let listed = frame["state"]["modules"]
+        .as_array()
+        .ok_or("Missing modules")?
+        .iter()
+        .find(|listed| listed["id"] == json!(module))
+        .ok_or_else(|| format!("The {module} module is not listed at all"))?;
     ensure(
-        (a - b).abs() <= SAME,
-        format!("{what}: mean luminance {a:.1} and {b:.1} differ by more than {SAME}"),
+        listed["available"] == json!(true),
+        format!("The {module} module is not available"),
     )
 }
 
-pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    ensure(
-        app["had_input_errors"] == json!(false),
-        "The run recorded an input error",
-    )?;
-    let frames = Frame::all(evidence, app)?;
-    let luminance: Vec<f64> = frames
+/// What the photograph shows at each step, once the plan has held.
+pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let luminance: Vec<f64> = launch
+        .frames
         .iter()
         .map(pixels::window_luminance)
         .collect::<Result<Vec<_>>>()?;
+    let lum = |step: &str| -> Result<f64> { Ok(luminance[launch.index(step)?]) };
     let mut checks = Vec::new();
     let mut record = |frame: &Value, shows: &str, detail: Value| {
         checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
     };
 
-    // Frame 0: the fixture opens with the Basic section listed, its slider at the declared
-    // default and no draft anywhere.
-    let basic = frames[0]["state"]["modules"]
-        .as_array()
-        .ok_or("Missing modules")?
-        .iter()
-        .find(|module| module["id"] == json!(BASIC_MODULE))
-        .ok_or("The Basic module is not listed at all")?;
-    ensure(
-        basic["available"] == json!(true),
-        "The Basic module is not available",
-    )?;
-    ensure(
-        exposure_field(&frames[0])? == "0.00",
-        format!(
-            "Exposure does not start neutral: {}",
-            exposure_field(&frames[0])?
-        ),
-    )?;
-    frames[0].expect_no_draft("Frame 0")?;
-    ensure(
-        basic_payload(&frames[0]).is_none(),
-        "The opened stack already holds a Basic layer",
-    )?;
+    let opened = launch.at("opened")?;
+    available(opened, BASIC_MODULE)?;
     record(
-        &frames[0],
+        opened,
         "the default panel with the Basic section, Exposure at 0",
         json!({
-            "pixels": frames[0].fixture(Fixture::fit(1))?,
-            "mean_luminance": luminance[0],
+            "pixels": opened.fixture(Fixture::fit(1))?,
+            "mean_luminance": lum("opened")?,
         }),
     );
 
-    // Frame 1: mid-gesture at +1.00 EV. The draft is open, nothing is committed, and the
-    // photograph on screen is the drafted render, which is brighter.
-    let drafted = frames[1].draft();
-    ensure(
-        drafted["action"] == json!(SET_BASIC)
-            && drafted["fields"] == json!({ EXPOSURE: 1.0 })
-            && drafted["conflicted"] == json!(false),
-        format!("Frame 1's draft is not the open Exposure gesture: {drafted}"),
-    )?;
+    // Mid-gesture at +1.00 EV: the photograph on screen is the drafted render, which is brighter.
+    let drag = launch.at("drag")?;
+    let drafted = drag.draft();
     ensure(
         drafted["draft_revision"]
             .as_u64()
             .is_some_and(|value| value >= 1),
-        format!("Frame 1's draft carries no draft revision: {drafted}"),
+        format!("The drag's draft carries no draft revision: {drafted}"),
     )?;
     ensure(
-        frames[1]["state"]["displayed_draft_revision"] == drafted["draft_revision"],
+        drag["state"]["displayed_draft_revision"] == drafted["draft_revision"],
         format!(
-            "Frame 1 displays draft revision {} while the draft is at {}",
-            frames[1]["state"]["displayed_draft_revision"], drafted["draft_revision"]
-        ),
-    )?;
-    ensure(
-        frames[1].revision()? == frames[0].revision()? && basic_payload(&frames[1]).is_none(),
-        "A drag committed something",
-    )?;
-    ensure(
-        exposure_field(&frames[1])? == "1.00",
-        format!(
-            "The slider does not show the drafted value: {}",
-            exposure_field(&frames[1])?
+            "The drag displays draft revision {} while the draft is at {}",
+            drag["state"]["displayed_draft_revision"], drafted["draft_revision"]
         ),
     )?;
     brighter(
         "+1.00 EV drafted against the neutral open",
-        luminance[1],
-        luminance[0],
+        lum("drag")?,
+        lum("opened")?,
     )?;
     record(
-        &frames[1],
+        drag,
         "a drag to +1.00 EV, mid-gesture: the drafted preview, nothing committed",
-        json!({"draft": drafted, "mean_luminance": luminance[1]}),
+        json!({"draft": drafted, "mean_luminance": lum("drag")?}),
     );
 
-    // Frame 2: the release. One entry, labelled by the module, and the revision advanced by one.
-    frames[2].expect_no_draft("Frame 2")?;
-    ensure(
-        frames[2].revision()? == frames[1].revision()? + 1,
-        format!(
-            "The release advanced the revision from {} to {}, expected one step",
-            frames[1].revision()?,
-            frames[2].revision()?
-        ),
-    )?;
-    ensure(
-        frames[2].entry()? != frames[1].entry()?,
-        "The release created no new history entry",
-    )?;
-    ensure(
-        frames[2].label()? == "Exposure +1.00 EV",
-        format!("The committed entry is labelled {:?}", frames[2].label()?),
-    )?;
-    ensure(
-        basic_payload(&frames[2]) == Some(&json!({ EXPOSURE: 1.0 })),
-        format!(
-            "The committed Basic layer holds {:?}",
-            basic_payload(&frames[2])
-        ),
-    )?;
+    let release = launch.at("release")?;
     same(
         "the committed render against the drafted one",
-        luminance[2],
-        luminance[1],
+        lum("release")?,
+        lum("drag")?,
     )?;
     record(
-        &frames[2],
+        release,
         "released: one entry \"Exposure +1.00 EV\", the revision advanced by one",
-        json!({"revision": frames[2].revision()?, "label": frames[2].label()?, "mean_luminance": luminance[2]}),
+        json!({"revision": release.revision()?, "label": release.label()?, "mean_luminance": lum("release")?}),
     );
 
-    // Frame 3: a second drag that returned to +1.00 and released. Nothing at all was committed.
-    frames[3].expect_no_draft("Frame 3")?;
-    ensure(
-        frames[3].revision()? == frames[2].revision()?
-            && frames[3].entry()? == frames[2].entry()?,
-        format!(
-            "A return-to-start gesture created an entry: revision {} entry {}",
-            frames[3].revision()?,
-            frames[3].entry()?
-        ),
+    let returned = launch.at("return")?;
+    same(
+        "the return-to-start render",
+        lum("return")?,
+        lum("release")?,
     )?;
-    same("the return-to-start render", luminance[3], luminance[2])?;
     record(
-        &frames[3],
+        returned,
         "a drag back to +1.00 EV and released: no entry, no revision",
-        json!({"revision": frames[3].revision()?, "entry": frames[3].entry()?}),
+        json!({"revision": returned.revision()?, "entry": returned.entry()?}),
     );
 
-    // Frame 4: -0.50 EV typed into the value field and submitted with Enter. One entry, and the
-    // photograph is darker than it was at neutral.
-    frames[4].expect_no_draft("Frame 4")?;
-    ensure(
-        frames[4].revision()? == frames[3].revision()? + 1,
-        "Enter in the value field did not commit exactly one revision",
-    )?;
-    ensure(
-        frames[4].label()? == "Exposure -0.50 EV",
-        format!("The typed entry is labelled {:?}", frames[4].label()?),
-    )?;
-    ensure(
-        basic_payload(&frames[4]) == Some(&json!({ EXPOSURE: -0.5 })),
-        format!("The typed value stored {:?}", basic_payload(&frames[4])),
-    )?;
+    // -0.50 EV typed: the photograph is darker than it was at neutral.
+    let typed = launch.at("typed")?;
     brighter(
         "the neutral open against -0.50 EV",
-        luminance[0],
-        luminance[4],
+        lum("opened")?,
+        lum("typed")?,
     )?;
     record(
-        &frames[4],
+        typed,
         "-0.50 EV typed and submitted with Enter: one entry",
-        json!({"label": frames[4].label()?, "mean_luminance": luminance[4]}),
+        json!({"label": typed.label()?, "mean_luminance": lum("typed")?}),
     );
 
-    // Frame 5: undo. The current entry is the +1.00 one again and the slider re-seeds from it.
+    // Undo: the current entry is the +1.00 one again, and the pixels follow.
+    let undo = launch.at("undo")?;
     ensure(
-        frames[5].entry()? == frames[2].entry()?,
+        undo.entry()? == release.entry()?,
         "Undo did not return to the +1.00 EV entry",
-    )?;
-    ensure(
-        exposure_field(&frames[5])? == "1.00",
-        format!(
-            "The slider did not re-seed from the entry undo returned to: {}",
-            exposure_field(&frames[5])?
-        ),
     )?;
     brighter(
         "the undone +1.00 EV against -0.50 EV",
-        luminance[5],
-        luminance[4],
+        lum("undo")?,
+        lum("typed")?,
     )?;
     same(
         "undo against the committed +1.00 EV render",
-        luminance[5],
-        luminance[2],
+        lum("undo")?,
+        lum("release")?,
     )?;
     record(
-        &frames[5],
+        undo,
         "history.undo: the values re-seed to +1.00 and the pixels follow",
-        json!({"entry": frames[5].entry()?, "exposure": exposure_field(&frames[5])?, "mean_luminance": luminance[5]}),
+        json!({"entry": undo.entry()?, "exposure": undo.field(SET_BASIC, EXPOSURE)?, "mean_luminance": lum("undo")?}),
     );
 
-    // Frame 6: the Tone group's reset. One entry labelled by the module, the slider at 0, the
-    // layer kept with its neutral payload and the photograph back to the opened one.
-    ensure(
-        frames[6].label()? == "Reset Tone",
-        format!("The group reset is labelled {:?}", frames[6].label()?),
-    )?;
-    ensure(
-        exposure_field(&frames[6])? == "0.00",
-        format!(
-            "The slider did not return to 0: {}",
-            exposure_field(&frames[6])?
-        ),
-    )?;
-    ensure(
-        basic_payload(&frames[6]) == Some(&json!({})),
-        format!(
-            "The reset layer holds {:?}, expected the neutral payload",
-            basic_payload(&frames[6])
-        ),
-    )?;
+    // The Tone group's reset: the photograph back to the opened one.
+    let reset = launch.at("reset")?;
     same(
         "the reset render against the opened one",
-        luminance[6],
-        luminance[0],
+        lum("reset")?,
+        lum("opened")?,
     )?;
     record(
-        &frames[6],
+        reset,
         "the Tone group reset: entry \"Reset Tone\", the slider at 0, the layer kept and neutral",
-        json!({"label": frames[6].label()?, "payload": basic_payload(&frames[6]), "mean_luminance": luminance[6]}),
+        json!({"label": reset.label()?, "payload": basic_payload(reset), "mean_luminance": lum("reset")?}),
     );
 
-    // Frame 7: a drag to +2.00 EV, left open.
-    ensure(
-        frames[7].draft()["fields"] == json!({ EXPOSURE: 2.0 })
-            && frames[7].draft()["conflicted"] == json!(false),
-        format!(
-            "Frame 7's draft is not the open gesture: {}",
-            frames[7].draft()
-        ),
-    )?;
+    let drag_open = launch.at("drag-open")?;
     brighter(
         "+2.00 EV drafted against neutral",
-        luminance[7],
-        luminance[6],
+        lum("drag-open")?,
+        lum("reset")?,
     )?;
     record(
-        &frames[7],
+        drag_open,
         "a drag to +2.00 EV, left open",
-        json!({"draft": frames[7].draft(), "mean_luminance": luminance[7]}),
+        json!({"draft": drag_open.draft(), "mean_luminance": lum("drag-open")?}),
     );
 
-    // Frame 8: a commit by another route while that gesture is open. The draft is kept, marked
-    // conflicted, and the Changed elsewhere notice offers the two decisions.
-    let conflict_notices = frames[8].notices();
+    // A commit by another route while that gesture is open: the Changed elsewhere notice offers the
+    // two decisions.
+    let conflict = launch.at("conflict")?;
+    let conflict_notices = conflict.notices();
     ensure(
         conflict_notices
             .iter()
             .any(|notice| notice == "Changed elsewhere"),
-        format!("Frame 8's notices do not include the conflict: {conflict_notices:?}"),
-    )?;
-    ensure(
-        frames[8].draft()["conflicted"] == json!(true),
-        format!(
-            "The gesture was not marked conflicted: {}",
-            frames[8].draft()
-        ),
-    )?;
-    ensure(
-        frames[8].draft()["fields"] == json!({ EXPOSURE: 2.0 }),
-        "The conflicted draft lost the value the gesture set",
-    )?;
-    ensure(
-        frames[8].revision()? == frames[7].revision()? + 1,
-        "The external commit did not advance the revision by one",
-    )?;
-    ensure(
-        exposure_field(&frames[8])? == "2.00",
-        format!(
-            "The slider lost its drafted value: {}",
-            exposure_field(&frames[8])?
-        ),
+        format!("The conflict frame's notices do not include it: {conflict_notices:?}"),
     )?;
     record(
-        &frames[8],
+        conflict,
         "a commit during the gesture: Changed elsewhere, the draft kept and conflicted",
-        json!({"notices": conflict_notices, "draft": frames[8].draft(), "revision": frames[8].revision()?}),
+        json!({"notices": conflict_notices, "draft": conflict.draft(), "revision": conflict.revision()?}),
     );
 
-    // Frame 9: Reapply. The draft is rebased on the new revision, its value is re-sent and the
-    // drafted preview returns over the committed stack.
-    let reapplied = frames[9].draft();
+    // Reapply: the draft is rebased on the new revision and the drafted preview returns over the
+    // committed stack.
+    let reapply = launch.at("reapply")?;
+    let reapplied = reapply.draft();
     ensure(
-        reapplied["conflicted"] == json!(false),
-        format!("Reapply did not clear the conflict: {reapplied}"),
-    )?;
-    ensure(
-        reapplied["base_revision"].as_u64() == Some(frames[9].revision()?),
+        reapplied["base_revision"].as_u64() == Some(reapply.revision()?),
         format!(
             "The reapplied draft is based on {} while the asset is at {}",
             reapplied["base_revision"],
-            frames[9].revision()?
+            reapply.revision()?
         ),
     )?;
     ensure(
-        reapplied["fields"] == json!({ EXPOSURE: 2.0 }),
-        "Reapply lost the field this client set",
-    )?;
-    ensure(
-        frames[9].notices().is_empty(),
-        format!("Frame 9 still shows a notice: {:?}", frames[9].notices()),
+        reapply.notices().is_empty(),
+        format!("Reapply still shows a notice: {:?}", reapply.notices()),
     )?;
     brighter(
         "the reapplied +2.00 EV against the committed stack",
-        luminance[9],
-        luminance[8],
+        lum("reapply")?,
+        lum("conflict")?,
     )?;
     record(
-        &frames[9],
+        reapply,
         "Reapply: the draft rebases, its value is re-sent and the drafted preview returns",
-        json!({"draft": reapplied, "mean_luminance": luminance[9]}),
+        json!({"draft": reapplied, "mean_luminance": lum("reapply")?}),
     );
 
-    // Frame 10: Discard. The gesture is over, nothing was committed for it, and the canvas is the
-    // committed stack again.
-    frames[10].expect_no_draft("Frame 10")?;
-    ensure(
-        frames[10].revision()? == frames[9].revision()?
-            && frames[10].entry()? == frames[9].entry()?,
-        "Discarding the draft committed something",
-    )?;
-    ensure(
-        exposure_field(&frames[10])? == "0.00",
-        format!(
-            "The slider did not return to the authoritative value: {}",
-            exposure_field(&frames[10])?
-        ),
-    )?;
+    // Discard: the canvas is the committed stack again.
+    let discard = launch.at("discard")?;
     same(
         "the discarded gesture against the committed stack",
-        luminance[10],
-        luminance[8],
+        lum("discard")?,
+        lum("conflict")?,
     )?;
     record(
-        &frames[10],
+        discard,
         "Discard: the gesture ends, nothing is committed and the committed pixels return",
-        json!({"revision": frames[10].revision()?, "mean_luminance": luminance[10]}),
+        json!({"revision": discard.revision()?, "mean_luminance": lum("discard")?}),
     );
 
     // Every drafted and committed frame the gesture presented reports its own render time, and the
     // status bar in each captured frame states one of them, not the time since the open.
-    let render_times = crate::smoke::expect_render_times(events, &frames)?;
+    let render_times = crate::smoke::expect_render_times(&launch.events, &launch.frames)?;
 
     write_json(
-        &evidence.join("basic-checks.json"),
+        &launch.evidence.join("basic-checks.json"),
         &json!({
             "checks": checks,
             "render_times": render_times,
@@ -446,157 +354,127 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
 // The `basic-restart` scenario: a Basic edit survives a restart of the real editor.
 // -------------------------------------------------------------------------------------------
 
-/// The fixture both launches open, and the window both use.
-const RESTART_FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
-
 /// What the first launch commits: two fields in one patch, so the second launch proves both the
 /// stored payload and the panel's re-seeding rather than a single slider.
 const RESTART_EXPOSURE: f64 = 1.5;
 const RESTART_TEMPERATURE: f64 = 25.0;
+/// The entry the module labels a patch of those two fields with.
+const RESTART_LABEL: &str = "Basic (2 fields)";
 
-/// Two launches, because a restart cannot be simulated inside one process: the first commits a
-/// Basic edit into its own evidence catalog, the second reopens that catalog and the same file and
-/// must show the same values, the same layer and the same brighter photograph.
-pub fn restart(mut run: Run) -> Result {
-    let fixture = run.root().join(RESTART_FIXTURE);
-    run.note(
-        "Two launches, because a restart cannot be simulated inside one process: the first opens the fixture and commits one `edit.set-basic` patch of exposure and temperature; the second reuses that launch's own catalog (`--catalog <dir1>/catalog.sqlite`) and reopens the same file, which the catalog dedupes to the same asset, so the saved Basic layer, its identity, the slider values, the history label and the rendered brightness all come back.",
-    );
-    run.check(|run| {
-        run.hash(std::slice::from_ref(&fixture))?;
+pub const RESTART_NOTE: &str = "Two launches, because a restart cannot be simulated inside one process: the first opens the fixture and commits one `edit.set-basic` patch of exposure and temperature; the second reuses that launch's own catalog (`--catalog <dir1>/catalog.sqlite`) and reopens the same file, which the catalog dedupes to the same asset, so the saved Basic layer, its identity, the slider values, the history label and the rendered brightness all come back.";
 
-        // Launch 1: open the fixture, commit one Basic patch through the ordinary edit path.
-        let launch1 = run.launch(
-            Launch::named("launch1")
-                .open(&fixture)
-                .script(
-                    "script1.json",
-                    json!([{"api":{"method":"edit.set-basic","params":{"exposure":RESTART_EXPOSURE,"temperature":RESTART_TEMPERATURE}}}]),
-                )
-                .window(workspace_smoke::WINDOW),
-        )?;
-        let (app1, _) = preamble(&launch1, 2)?;
-        let frames1 = app1["frames"]
-            .as_array()
-            .ok_or("Launch 1 wrote no frames")?;
-        let opened = &Frame::identified(&launch1, &app1, &frames1[0])?;
-        let committed = &Frame::identified(&launch1, &app1, &frames1[1])?;
-        ensure(
-            basic_payload(opened).is_none(),
-            "Launch 1 opened with a Basic layer already in the stack",
-        )?;
-        ensure(
-            committed.revision()? == 1,
-            format!("Launch 1 committed revision {}", committed.revision()?),
-        )?;
-        let stored = basic_payload(committed)
-            .ok_or("Launch 1 committed no Basic layer")?
-            .clone();
-        ensure(
-            stored == json!({ EXPOSURE: RESTART_EXPOSURE, TEMPERATURE: RESTART_TEMPERATURE }),
-            format!("Launch 1 stored {stored}"),
-        )?;
-        let layer = basic_layer_id(committed)
-            .ok_or("Launch 1's Basic layer has no identity")?
-            .to_owned();
-        let neutral_luminance = pixels::window_luminance(opened)?;
-        let edited_luminance = pixels::window_luminance(committed)?;
-        brighter(
-            "launch 1's committed edit against its own neutral open",
-            edited_luminance,
-            neutral_luminance,
-        )?;
+/// The first launch: the fixture opened, then one Basic patch committed through the ordinary edit
+/// path.
+pub fn restart_first(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        Step::opened("opened").no_layer(BASIC_EFFECT),
+        Step::new(
+            "committed",
+            json!({"api":{"method":"edit.set-basic","params":{"exposure":RESTART_EXPOSURE,"temperature":RESTART_TEMPERATURE}}}),
+        )
+        .commits(1)
+        .label(RESTART_LABEL)
+        .payload(
+            BASIC_EFFECT,
+            json!({ EXPOSURE: RESTART_EXPOSURE, TEMPERATURE: RESTART_TEMPERATURE }),
+        ),
+    ])
+}
 
-        // Launch 2: the same catalog and the same file, in a new process. The catalog dedupes the
-        // reopened file to the same asset by file identity, so its saved stack comes back.
-        let catalog = launch1.join("catalog.sqlite");
-        ensure(catalog.is_file(), "Launch 1 wrote no catalog")?;
-        let launch2 = run.launch(
-            Launch::named("launch2")
-                .catalog(&catalog)
-                .open(&fixture)
-                .window(workspace_smoke::WINDOW),
-        )?;
-        let (app2, _) = preamble(&launch2, 1)?;
-        let reopened = &Frame::identified(
-            &launch2,
-            &app2,
-            &app2["frames"]
-                .as_array()
-                .ok_or("Launch 2 wrote no frames")?[0],
-        )?;
-        ensure(
-            reopened.revision()? == committed.revision()? && reopened.entry()? == committed.entry()?,
-            format!(
-                "Launch 2 reopened at revision {} entry {}",
-                reopened.revision()?,
-                reopened.entry()?
-            ),
-        )?;
-        ensure(
-            basic_payload(reopened) == Some(&stored),
-            format!(
-                "Launch 2 reads the Basic layer as {:?}",
-                basic_payload(reopened)
-            ),
-        )?;
-        ensure(
-            basic_layer_id(reopened) == Some(layer.as_str()),
-            "The Basic layer's identity did not survive the restart",
-        )?;
-        // The sliders re-seed from the stored layer, which is what a person sees on reopening.
-        ensure(
-            basic_field(reopened, EXPOSURE)? == "1.50"
-                && basic_field(reopened, TEMPERATURE)? == "25",
-            format!(
-                "Launch 2's fields read exposure {:?}, temperature {:?}",
-                basic_field(reopened, EXPOSURE)?,
-                basic_field(reopened, TEMPERATURE)?
-            ),
-        )?;
-        ensure(
-            reopened.label()? == committed.label()?,
-            format!(
-                "Launch 2's history label is {:?}, launch 1 committed {:?}",
-                reopened.label()?,
-                committed.label()?
-            ),
-        )?;
-        // The photograph itself is the edited one again, to the same measured brightness.
-        let reopened_luminance = pixels::window_luminance(reopened)?;
-        same(
-            "the reopened render against the render launch 1 committed",
-            reopened_luminance,
-            edited_luminance,
-        )?;
-        brighter(
-            "the reopened render against a neutral open",
-            reopened_luminance,
-            neutral_luminance,
-        )?;
-        run.sources_unchanged()?;
-        write_json(
-            &run.out().join("basic-restart-checks.json"),
-            &json!({
-                "stored_payload": stored,
-                "basic_layer": layer,
-                "label": reopened.label()?,
-                "fields_after_restart": {
-                    EXPOSURE: basic_field(reopened, EXPOSURE)?,
-                    TEMPERATURE: basic_field(reopened, TEMPERATURE)?,
-                },
-                "mean_luminance": {
-                    "launch1_neutral_open": neutral_luminance,
-                    "launch1_committed": edited_luminance,
-                    "launch2_reopened": reopened_luminance,
-                },
-                "brighter_margin": BRIGHTER,
-                "same_tolerance": SAME,
-                "scope": "Mean Rec. 709 luminance of a centred window of the photo surface, read back from the renderer; not a colorimetric claim",
-            }),
-        )?;
-        Ok(())
-    })
+/// The second launch: the same catalog and the same file in a new process, which the catalog
+/// dedupes to the same asset, so its saved stack comes back and the sliders re-seed from it.
+pub fn restart_second(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        Step::opened("reopened")
+            .label(RESTART_LABEL)
+            .payload(
+                BASIC_EFFECT,
+                json!({ EXPOSURE: RESTART_EXPOSURE, TEMPERATURE: RESTART_TEMPERATURE }),
+            )
+            .field(SET_BASIC, EXPOSURE, "1.50")
+            .field(SET_BASIC, TEMPERATURE, "25"),
+    ])
+}
+
+/// The two launches checked together: the reopened asset is the committed one, at the same entry,
+/// with the same layer and label, and the same brighter photograph.
+pub fn verify_restart(run: &mut Run, launches: &[Checked]) -> Result {
+    let [first, second] = launches else {
+        return Err(format!("Expected two launches, found {}", launches.len()).into());
+    };
+    let opened = first.at("opened")?;
+    let committed = first.at("committed")?;
+    let reopened = second.at("reopened")?;
+    ensure(
+        committed.revision()? == 1,
+        format!("Launch 1 committed revision {}", committed.revision()?),
+    )?;
+    let stored = basic_payload(committed)
+        .ok_or("Launch 1 committed no Basic layer")?
+        .clone();
+    let layer = basic_layer_id(committed)
+        .ok_or("Launch 1's Basic layer has no identity")?
+        .to_owned();
+    let neutral_luminance = pixels::window_luminance(opened)?;
+    let edited_luminance = pixels::window_luminance(committed)?;
+    brighter(
+        "launch 1's committed edit against its own neutral open",
+        edited_luminance,
+        neutral_luminance,
+    )?;
+    ensure(
+        reopened.revision()? == committed.revision()? && reopened.entry()? == committed.entry()?,
+        format!(
+            "Launch 2 reopened at revision {} entry {}",
+            reopened.revision()?,
+            reopened.entry()?
+        ),
+    )?;
+    ensure(
+        basic_layer_id(reopened) == Some(layer.as_str()),
+        "The Basic layer's identity did not survive the restart",
+    )?;
+    ensure(
+        reopened.label()? == committed.label()?,
+        format!(
+            "Launch 2's history label is {:?}, launch 1 committed {:?}",
+            reopened.label()?,
+            committed.label()?
+        ),
+    )?;
+    // The photograph itself is the edited one again, to the same measured brightness.
+    let reopened_luminance = pixels::window_luminance(reopened)?;
+    same(
+        "the reopened render against the render launch 1 committed",
+        reopened_luminance,
+        edited_luminance,
+    )?;
+    brighter(
+        "the reopened render against a neutral open",
+        reopened_luminance,
+        neutral_luminance,
+    )?;
+    write_json(
+        &run.out().join("basic-restart-checks.json"),
+        &json!({
+            "stored_payload": stored,
+            "basic_layer": layer,
+            "label": reopened.label()?,
+            "fields_after_restart": {
+                EXPOSURE: basic_field(reopened, EXPOSURE)?,
+                TEMPERATURE: basic_field(reopened, TEMPERATURE)?,
+            },
+            "mean_luminance": {
+                "launch1_neutral_open": neutral_luminance,
+                "launch1_committed": edited_luminance,
+                "launch2_reopened": reopened_luminance,
+            },
+            "brighter_margin": BRIGHTER,
+            "same_tolerance": SAME,
+            "scope": "Mean Rec. 709 luminance of a centred window of the photo surface, read back from the renderer; not a colorimetric claim",
+        }),
+    )?;
+    Ok(())
 }
 
 // -------------------------------------------------------------------------------------------
@@ -710,364 +588,274 @@ fn basic_field<'a>(frame: &'a Frame, name: &str) -> Result<&'a str> {
 
 /// The one Basic layer's identity, so evidence can prove an edit updated it in place.
 fn basic_layer_id(frame: &Frame) -> Option<&str> {
-    frame.layer_id(lightwell_core::BASIC_EFFECT)
+    frame.layer_id(BASIC_EFFECT)
 }
 
-/// The evidence script. Each step is one gesture, one request or one decision; `verify_panel`
-/// checks exactly what each one proves.
-pub fn panel_script(scenario: &str) -> Option<Value> {
-    match scenario {
-        "basic-panel" => Some(json!([
-            // The White balance group: a drag to +40 temperature, released.
-            {"slider":{"action":SET_BASIC,"parameter":TEMPERATURE,"values":[10.0,25.0,40.0],"release":true}},
-            // The Colour group: a typed value committed with Enter.
-            {"field":{"action":SET_BASIC,"parameter":VIBRANCE,"text":"25","submit":true}},
-            // The Temperature entry, previewed: its own saved values fill the disabled sliders.
-            {"preview":{"sequence":1}},
-            {"preview":"current"},
-            // The Colour group's own reset button.
-            {"reset":{"module":BASIC_MODULE,"group":COLOUR_GROUP}},
-            // The neutral picker's canvas mode, which `W` also selects.
-            {"workspace":{"mode":BASIC_MODULE}},
-            // A pick on a neutral grey patch: the picker answers 0 and 0 and commits that.
-            {"pick":{"x":NEUTRAL_PICK[0],"y":NEUTRAL_PICK[1]}},
-            // A pick on a clipped patch: refused with its reason, nothing committed.
-            {"pick":{"x":CLIPPED_PICK[0],"y":CLIPPED_PICK[1]}}
-        ])),
-        _ => None,
-    }
+/// Every frame of `basic-panel`, in order: the open, then one per step.
+pub fn panel_plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        // The whole Basic section, expanded, with nothing committed yet.
+        Step::opened("opened")
+            .expanded(BASIC_MODULE)
+            .no_layer(BASIC_EFFECT),
+        // The White balance group: a drag to +40 temperature, released. One entry, one revision.
+        Step::new(
+            "temperature",
+            json!({"slider":{"action":SET_BASIC,"parameter":TEMPERATURE,"values":[10.0,25.0,40.0],"release":true}}),
+        )
+        .no_draft()
+        .commits(1)
+        .label("Temperature +40")
+        .payload(BASIC_EFFECT, json!({ TEMPERATURE: 40.0 }))
+        .field(SET_BASIC, TEMPERATURE, "40"),
+        // The Colour group: a typed value committed with Enter, merged into the same layer.
+        Step::new(
+            "vibrance",
+            json!({"field":{"action":SET_BASIC,"parameter":VIBRANCE,"text":"25","submit":true}}),
+        )
+        .commits(1)
+        .label("Vibrance +25")
+        .payload(BASIC_EFFECT, json!({ TEMPERATURE: 40.0, VIBRANCE: 25.0 }))
+        .same_layer(BASIC_EFFECT, "temperature"),
+        // The Temperature entry, previewed: its own saved values fill the disabled sliders, which
+        // are not the current ones, and nothing is committed.
+        Step::new("preview", json!({"preview":{"sequence":1}}))
+            .commits(0)
+            .field(SET_BASIC, TEMPERATURE, "40")
+            .field(SET_BASIC, VIBRANCE, "0"),
+        // Return to current: the current entry's values come back.
+        Step::new("current", json!({"preview":"current"}))
+            .commits(0)
+            .field(SET_BASIC, VIBRANCE, "25"),
+        // The Colour group's own reset button: that group neutral, every other field untouched and
+        // the layer kept.
+        Step::new(
+            "colour-reset",
+            json!({"reset":{"module":BASIC_MODULE,"group":COLOUR_GROUP}}),
+        )
+        .commits(1)
+        .label(format!("Reset {COLOUR_GROUP}"))
+        .payload(BASIC_EFFECT, json!({ TEMPERATURE: 40.0 }))
+        .same_layer(BASIC_EFFECT, "temperature")
+        .field(SET_BASIC, VIBRANCE, "0")
+        .field(SET_BASIC, TEMPERATURE, "40"),
+        // The neutral picker's canvas mode, which `W` also selects.
+        Step::new("picker-mode", json!({"workspace":{"mode":BASIC_MODULE}})).commits(0),
+        // A pick on a neutral grey patch: the picker answers 0 and 0 and commits that, once,
+        // through the ordinary action path. The module labels a patch that returns exactly one
+        // group to neutral by that group's name, whatever route sent it.
+        Step::new(
+            "neutral-pick",
+            json!({"pick":{"x":NEUTRAL_PICK[0],"y":NEUTRAL_PICK[1]}}),
+        )
+        .commits(1)
+        .field(SET_BASIC, TEMPERATURE, "0")
+        .field(SET_BASIC, TINT, "0")
+        .payload(BASIC_EFFECT, json!({}))
+        .same_layer(BASIC_EFFECT, "temperature")
+        .label(format!("Reset {WHITE_BALANCE_GROUP}")),
+        // A pick on a clipped patch: refused with its reason in the status bar, nothing committed.
+        Step::new(
+            "clipped-pick",
+            json!({"pick":{"x":CLIPPED_PICK[0],"y":CLIPPED_PICK[1]}}),
+        )
+        .commits(0),
+    ])
 }
 
-pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
-    ensure(
-        app["had_input_errors"] == json!(false),
-        "The run recorded an input error",
-    )?;
-    let frames = Frame::all(evidence, app)?;
-    let channels: Vec<[f64; 3]> = frames
+pub fn verify_panel(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let channels: Vec<[f64; 3]> = launch
+        .frames
         .iter()
         .map(pixels::window_rgb)
         .collect::<Result<Vec<_>>>()?;
-    let luminance: Vec<f64> = frames
+    let luminance: Vec<f64> = launch
+        .frames
         .iter()
         .map(pixels::window_luminance)
         .collect::<Result<Vec<_>>>()?;
+    let rgb = |step: &str| -> Result<[f64; 3]> { Ok(channels[launch.index(step)?]) };
+    let lum = |step: &str| -> Result<f64> { Ok(luminance[launch.index(step)?]) };
     let mut checks = Vec::new();
     let mut record = |frame: &Value, shows: &str, detail: Value| {
         checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
     };
 
-    // Frame 0: the whole Basic section. Every implemented field is on screen with a value, the
-    // section is expanded, and nothing is committed yet.
+    // The whole Basic section: every implemented field is on screen at its declared default.
+    let opened = launch.at("opened")?;
     let mut listed = Vec::new();
     for name in BASIC_FIELDS {
-        listed.push(json!({ name: basic_field(&frames[0], name)? }));
+        listed.push(json!({ name: basic_field(opened, name)? }));
         ensure(
-            basic_field(&frames[0], name)? == neutral_text(name)?,
+            basic_field(opened, name)? == neutral_text(name)?,
             format!(
                 "{name} does not start at its declared default: {:?}",
-                basic_field(&frames[0], name)?
+                basic_field(opened, name)?
             ),
         )?;
     }
     ensure(
-        frames[0]["state"]["expanded"][BASIC_MODULE] == json!(true),
-        "The Basic section is not expanded on the opened screen",
-    )?;
-    ensure(
-        basic_payload(&frames[0]).is_none(),
-        "The opened stack already holds a Basic layer",
-    )?;
-    ensure(
-        balance(channels[0]).abs() <= NEUTRAL,
+        balance(rgb("opened")?).abs() <= NEUTRAL,
         format!(
             "The greyscale fixture does not read neutral: {:.1}",
-            balance(channels[0])
+            balance(rgb("opened")?)
         ),
     )?;
     // No frame in this scenario draws a notice, which is what lets `placement` read the band
     // between the notices and the mode strip as photograph and canvas surface only.
-    for (index, frame) in frames.iter().enumerate() {
+    for (name, frame) in launch.names().iter().zip(&launch.frames) {
         ensure(
             frame["state"]["notices"] == json!([]),
             format!(
-                "Frame {index} shows a notice: {}",
+                "Step {name:?} shows a notice: {}",
                 frame["state"]["notices"]
             ),
         )?;
     }
     record(
-        &frames[0],
+        opened,
         "the Basic section with White balance, Tone and Colour, every field at its default",
         json!({
-            "placement": placement(&frames[0])?,
+            "placement": placement(opened)?,
             "fields": listed,
-            "red_minus_blue": balance(channels[0]),
+            "red_minus_blue": balance(rgb("opened")?),
         }),
     );
 
-    // Frame 1: a Temperature drag to +40, released. One entry, one revision, and the neutral
-    // fixture is visibly warmer.
-    frames[1].expect_no_draft("Frame 1")?;
-    ensure(
-        frames[1].revision()? == frames[0].revision()? + 1,
-        "The released drag did not advance the revision by one",
+    // +40 temperature: the neutral fixture is visibly warmer.
+    let temperature = launch.at("temperature")?;
+    compare(
+        "+40 temperature against the neutral open, red minus blue",
+        balance(rgb("temperature")?),
+        balance(rgb("opened")?),
+        Tolerance::Above(WARMER),
     )?;
-    ensure(
-        frames[1].label()? == "Temperature +40",
-        format!("The committed entry is labelled {:?}", frames[1].label()?),
-    )?;
-    ensure(
-        basic_payload(&frames[1]) == Some(&json!({ TEMPERATURE: 40.0 })),
-        format!("The Basic layer holds {:?}", basic_payload(&frames[1])),
-    )?;
-    ensure(
-        basic_field(&frames[1], TEMPERATURE)? == "40",
-        format!(
-            "The Temperature slider shows {:?}",
-            basic_field(&frames[1], TEMPERATURE)?
-        ),
-    )?;
-    ensure(
-        balance(channels[1]) > balance(channels[0]) + WARMER,
-        format!(
-            "+40 temperature did not warm the photograph: red minus blue {:.1} against {:.1}",
-            balance(channels[1]),
-            balance(channels[0])
-        ),
-    )?;
-    let identity = basic_layer_id(&frames[1])
-        .ok_or("The committed stack holds no Basic layer")?
-        .to_owned();
     record(
-        &frames[1],
+        temperature,
         "Temperature dragged to +40 and released: one entry, the photograph warmer",
-        json!({"label": frames[1].label()?, "red_minus_blue": balance(channels[1]), "layer": identity}),
+        json!({"label": temperature.label()?, "red_minus_blue": balance(rgb("temperature")?), "layer": basic_layer_id(temperature)}),
     );
 
-    // Frame 2: Vibrance typed and committed with Enter. The patch merges into the same layer.
-    ensure(
-        frames[2].revision()? == frames[1].revision()? + 1,
-        "Enter in the value field did not commit exactly one revision",
-    )?;
-    ensure(
-        frames[2].label()? == "Vibrance +25",
-        format!("The typed entry is labelled {:?}", frames[2].label()?),
-    )?;
-    ensure(
-        basic_payload(&frames[2]) == Some(&json!({ TEMPERATURE: 40.0, VIBRANCE: 25.0 })),
-        format!(
-            "The merged Basic layer holds {:?}",
-            basic_payload(&frames[2])
-        ),
-    )?;
-    ensure(
-        basic_layer_id(&frames[2]) == Some(identity.as_str()),
-        "The typed value replaced the Basic layer instead of updating it",
-    )?;
+    let vibrance = launch.at("vibrance")?;
     record(
-        &frames[2],
+        vibrance,
         "Vibrance typed as 25 and committed with Enter: the same layer, both fields",
-        json!({"label": frames[2].label()?, "payload": basic_payload(&frames[2])}),
+        json!({"label": vibrance.label()?, "payload": basic_payload(vibrance)}),
     );
 
-    // Frame 3: the Temperature entry previewed. The sliders show that entry's own saved values,
-    // which are not the current ones, and nothing is committed.
+    let preview = launch.at("preview")?;
     ensure(
-        frames[3].status()?.starts_with("Previewing entry 1"),
+        preview.status()?.starts_with("Previewing entry 1"),
         format!(
-            "Frame 3 is not previewing entry 1: {:?}",
-            frames[3].status()?
+            "The preview step is not previewing entry 1: {:?}",
+            preview.status()?
         ),
-    )?;
-    ensure(
-        basic_field(&frames[3], TEMPERATURE)? == "40" && basic_field(&frames[3], VIBRANCE)? == "0",
-        format!(
-            "The previewed entry's values are not shown: temperature {:?}, vibrance {:?}",
-            basic_field(&frames[3], TEMPERATURE)?,
-            basic_field(&frames[3], VIBRANCE)?
-        ),
-    )?;
-    ensure(
-        frames[3].revision()? == frames[2].revision()?,
-        "Selecting a history entry committed something",
     )?;
     record(
-        &frames[3],
+        preview,
         "the Temperature entry previewed: its own saved values in the disabled sliders",
-        json!({"status": frames[3].status()?, "temperature": basic_field(&frames[3], TEMPERATURE)?, "vibrance": basic_field(&frames[3], VIBRANCE)?}),
+        json!({"status": preview.status()?, "temperature": basic_field(preview, TEMPERATURE)?, "vibrance": basic_field(preview, VIBRANCE)?}),
     );
 
-    // Frame 4: Return to current. The current entry's values come back.
-    ensure(
-        basic_field(&frames[4], VIBRANCE)? == "25",
-        format!(
-            "Return to current did not restore the current values: vibrance {:?}",
-            basic_field(&frames[4], VIBRANCE)?
-        ),
-    )?;
-    ensure(
-        frames[4].revision()? == frames[2].revision()?,
-        "Return to current changed the revision",
-    )?;
+    let current = launch.at("current")?;
     record(
-        &frames[4],
+        current,
         "Return to current: the current entry's values are shown again",
-        json!({"vibrance": basic_field(&frames[4], VIBRANCE)?, "status": frames[4].status()?}),
+        json!({"vibrance": basic_field(current, VIBRANCE)?, "status": current.status()?}),
     );
 
-    // Frame 5: the Colour group's reset. One entry labelled by the module, the group's own fields
-    // neutral, every other field untouched and the layer kept.
-    ensure(
-        frames[5].label()? == format!("Reset {COLOUR_GROUP}"),
-        format!("The group reset is labelled {:?}", frames[5].label()?),
-    )?;
-    ensure(
-        basic_payload(&frames[5]) == Some(&json!({ TEMPERATURE: 40.0 })),
-        format!(
-            "The Colour reset changed more than its group: {:?}",
-            basic_payload(&frames[5])
-        ),
-    )?;
-    ensure(
-        basic_layer_id(&frames[5]) == Some(identity.as_str()),
-        "The group reset replaced the Basic layer instead of updating it",
-    )?;
-    ensure(
-        basic_field(&frames[5], VIBRANCE)? == "0" && basic_field(&frames[5], TEMPERATURE)? == "40",
-        "The group reset did not leave the other group alone",
-    )?;
+    let reset = launch.at("colour-reset")?;
     record(
-        &frames[5],
+        reset,
         "the Colour group reset: one entry, that group neutral, White balance untouched",
-        json!({"label": frames[5].label()?, "payload": basic_payload(&frames[5]), "layer": identity}),
+        json!({"label": reset.label()?, "payload": basic_payload(reset), "layer": basic_layer_id(reset)}),
     );
 
-    // Frame 6: the neutral picker's canvas mode.
+    // The neutral picker's canvas mode. The picker lives in the White balance group, beside the
+    // two fields a pick sets, and reads selected exactly while its mode is active. The mode strip
+    // holds no entry for it at all.
+    let mode = launch.at("picker-mode")?;
     ensure(
-        frames[6]["state"]["workspace"]["mode"] == json!(BASIC_MODULE),
-        format!(
-            "The canvas mode is {}",
-            frames[6]["state"]["workspace"]["mode"]
-        ),
+        mode["state"]["workspace"]["mode"] == json!(BASIC_MODULE),
+        format!("The canvas mode is {}", mode["state"]["workspace"]["mode"]),
     )?;
     ensure(
-        frames[6].status()?.starts_with("Neutral picker"),
-        format!("The picker mode says {:?}", frames[6].status()?),
+        mode.status()?.starts_with("Neutral picker"),
+        format!("The picker mode says {:?}", mode.status()?),
     )?;
-    ensure(
-        frames[6].revision()? == frames[5].revision()?,
-        "Entering the picker mode committed something",
-    )?;
-    // The picker lives in the White balance group, beside the two fields a pick sets, and reads
-    // selected exactly while its mode is active. The mode strip holds no entry for it at all.
     let picker = |frame: &Value| frame["state"]["pickers"][BASIC_MODULE].clone();
     ensure(
-        picker(&frames[0])["label"] == json!("Neutral picker")
-            && picker(&frames[0])["shortcut"] == json!("W"),
-        format!("The Basic panel declares no picker: {}", picker(&frames[0])),
+        picker(opened)["label"] == json!("Neutral picker")
+            && picker(opened)["shortcut"] == json!("W"),
+        format!("The Basic panel declares no picker: {}", picker(opened)),
     )?;
     ensure(
-        picker(&frames[0])["selected"] == json!(false),
+        picker(opened)["selected"] == json!(false),
         "The picker reads selected before its mode was entered",
     )?;
     ensure(
-        picker(&frames[6])["selected"] == json!(true),
+        picker(mode)["selected"] == json!(true),
         format!(
             "The picker does not read selected in its own mode: {}",
-            picker(&frames[6])
+            picker(mode)
         ),
     )?;
     record(
-        &frames[6],
+        mode,
         "the neutral picker mode, entered through workspace.set as W and the panel's own picker \
          button do; that button reads selected inside the White balance group",
         json!({
-            "mode": frames[6]["state"]["workspace"]["mode"],
-            "status": frames[6].status()?,
-            "picker": picker(&frames[6]),
+            "mode": mode["state"]["workspace"]["mode"],
+            "status": mode.status()?,
+            "picker": picker(mode),
         }),
     );
 
-    // Frame 7: a pick on a neutral grey patch. The picker answers the exact identity, 0 and 0,
-    // and that patch is committed once through the ordinary action path, so the warm cast the
-    // drag left is gone and the photograph is the opened one again.
-    ensure(
-        frames[7].revision()? == frames[6].revision()? + 1,
-        "The pick did not commit exactly one revision",
+    // The pick on a neutral grey patch took the warm cast the drag left away: the photograph is the
+    // opened one again, and the mode is kept.
+    let pick = launch.at("neutral-pick")?;
+    compare(
+        "the picked correction against the opened photograph, red minus blue",
+        balance(rgb("neutral-pick")?),
+        balance(rgb("opened")?),
+        Tolerance::Within(NEUTRAL),
     )?;
     ensure(
-        basic_field(&frames[7], TEMPERATURE)? == "0" && basic_field(&frames[7], TINT)? == "0",
-        format!(
-            "The picked settings are not neutral: temperature {:?}, tint {:?}",
-            basic_field(&frames[7], TEMPERATURE)?,
-            basic_field(&frames[7], TINT)?
-        ),
-    )?;
-    ensure(
-        basic_payload(&frames[7]) == Some(&json!({})),
-        format!(
-            "The picked layer holds {:?}, expected the neutral payload",
-            basic_payload(&frames[7])
-        ),
-    )?;
-    ensure(
-        basic_layer_id(&frames[7]) == Some(identity.as_str()),
-        "The pick replaced the Basic layer instead of updating it",
-    )?;
-    // The module labels a patch that returns exactly one group to neutral by that group's name,
-    // whatever route sent it, and a pick of a neutral patch is exactly such a patch.
-    ensure(
-        frames[7].label()? == format!("Reset {WHITE_BALANCE_GROUP}"),
-        format!("The pick's entry is labelled {:?}", frames[7].label()?),
-    )?;
-    ensure(
-        (balance(channels[7]) - balance(channels[0])).abs() <= NEUTRAL,
-        format!(
-            "The picked correction did not neutralise the photograph: red minus blue {:.1} against the opened {:.1}",
-            balance(channels[7]),
-            balance(channels[0])
-        ),
-    )?;
-    ensure(
-        frames[7]["state"]["workspace"]["mode"] == json!(BASIC_MODULE),
+        pick["state"]["workspace"]["mode"] == json!(BASIC_MODULE),
         "The pick left the picker mode",
     )?;
     record(
-        &frames[7],
+        pick,
         "a pick on a neutral grey patch: temperature and tint 0, committed once, the mode kept",
-        json!({"label": frames[7].label()?, "payload": basic_payload(&frames[7]), "red_minus_blue": balance(channels[7]), "mean_luminance": luminance[7]}),
+        json!({"label": pick.label()?, "payload": basic_payload(pick), "red_minus_blue": balance(rgb("neutral-pick")?), "mean_luminance": lum("neutral-pick")?}),
     );
 
-    // Frame 8: a pick on a clipped patch. The core's own reason leads the status bar and nothing
-    // at all is committed.
+    // A pick on a clipped patch: the core's own reason leads the status bar.
+    let clipped = launch.at("clipped-pick")?;
     ensure(
-        frames[8].status()?.starts_with("clipped:"),
+        clipped.status()?.starts_with("clipped:"),
         format!(
             "The refused pick does not lead with its reason: {:?}",
-            frames[8].status()?
+            clipped.status()?
         ),
     )?;
-    ensure(
-        frames[8].revision()? == frames[7].revision()?
-            && frames[8].entry()? == frames[7].entry()?,
-        "A refused pick committed something",
-    )?;
-    same(
+    compare(
         "the refused pick's render against the picked one",
-        luminance[8],
-        luminance[7],
+        lum("clipped-pick")?,
+        lum("neutral-pick")?,
+        Tolerance::Within(SAME),
     )?;
     record(
-        &frames[8],
+        clipped,
         "a pick on a clipped patch: refused with its reason, nothing committed",
-        json!({"status": frames[8].status()?, "revision": frames[8].revision()?}),
+        json!({"status": clipped.status()?, "revision": clipped.revision()?}),
     );
 
-    // Frame 0 is also the default screen the Module panels density is accepted on: Basic expanded
-    // and every other section collapsed to its band by its own descriptor, so the histogram, Basic
-    // and every other section's band are on screen at once.
-    let expanded = &frames[0]["state"]["expanded"];
+    // The opened frame is also the default screen the Module panels density is accepted on: Basic
+    // expanded and every other section collapsed to its band by its own descriptor, so the
+    // histogram, Basic and every other section's band are on screen at once.
+    let expanded = &opened["state"]["expanded"];
     let others_collapsed = expanded
         .as_object()
         .ok_or("Missing expanded sections")?
@@ -1078,13 +866,13 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         format!("Only Basic should be expanded on the opened screen: {expanded}"),
     )?;
     record(
-        &frames[0],
+        opened,
         "Basic expanded and every other section collapsed to its band by default",
         expanded.clone(),
     );
 
     write_json(
-        &evidence.join("basic-panel-checks.json"),
+        &launch.evidence.join("basic-panel-checks.json"),
         &json!({
             "checks": checks,
             "red_minus_blue_per_frame": channels.iter().map(|channels| balance(*channels)).collect::<Vec<_>>(),
