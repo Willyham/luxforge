@@ -1427,7 +1427,7 @@
     {
       "id": "TASK-025",
       "description": "Give every timing tool one distribution type with one percentile definition and one JSON shape, and one process sampler, so `verify` reads every timing report the same way.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-007"
       ],
