@@ -38,7 +38,7 @@ The owner's decisions for this work are in [decisions](../decisions.md#architect
 | Field-patch modules | Basic, colour mixer, Presence and vignette, about 85% the same code | One declarative field-patch module: a field table plus `compile` | 3 |
 | A module's one layer | Eight lookups, some ignoring mask targets | A declared single-layer effect and one host lookup | 1 (presets), 3 |
 | Module list and neutrality | The registry's list and the desktop's own; desktop payload parsing for neutrality | One `builtin_modules()`; the core reports a neutral layer | 3 |
-| Source-kind controls | RAW's and Basic's own Exposure and white balance | One control set that behaves per source kind, applicability declared | 3 |
+| Source-kind controls | RAW's and Basic's own Exposure and white balance | One control set that behaves per source kind, applicability declared ([design](source-controls.md)) | 3 |
 | Recipe-bound external data | Strokes carried on the recipe; artifacts through a global weak index and pins | Both carried on the recipe | 2 |
 | Parameter vocabulary | Module parameters and capability settings; four schema emitters | One vocabulary and one schema emitter | 3 |
 | Colour math | sRGB transfer, Planckian locus, 3×3 inverse and Oklab products copied across modules and renderers | One colour module | 3 |
