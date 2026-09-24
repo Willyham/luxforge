@@ -1519,7 +1519,13 @@ mod tests {
         let panel_z6 = full.iter().find(|s| s.name == "raw-panel-z6").unwrap();
         assert_eq!(
             panel_z6.args,
-            ["smoke", "--scenario", "raw-panel", "--source", "/tmp/z6.nef"]
+            [
+                "smoke",
+                "--scenario",
+                "raw-panel",
+                "--source",
+                "/tmp/z6.nef"
+            ]
         );
         assert!(panel_z6.binary && panel_z6.output && !panel_z6.manifest);
         assert_eq!(panel_z6.skip, None);
