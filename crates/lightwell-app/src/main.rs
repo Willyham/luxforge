@@ -1,8 +1,16 @@
+// The evidence summary is one `json!` object holding every key this desktop publishes about a
+// frame, and the merge of the masking and performance work took it past the default macro recursion
+// depth. Raising the limit keeps it one object: splitting it would let two halves disagree about
+// what a frame reported.
+#![recursion_limit = "256"]
+
 mod app;
 mod crop_canvas;
 mod crop_draft;
 mod diagnostics;
 mod draft_photo;
+mod mask_canvas;
+mod mask_draft;
 mod paths;
 mod state;
 mod view;

@@ -14,6 +14,7 @@ use super::{
 };
 use crate::{
     Error, ErrorKind, Recipe, SnapshotId,
+    mask_field::MaskSampling,
     modules::{Global, ModuleRegistry, Parallelism, Region, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
@@ -665,8 +666,11 @@ fn linear_bilinear(
 }
 
 /// How a [`LinearEvaluation`] answers the pixels of its spatial segments.
+///
+/// `pub(crate)` because the mask overlay's per-cell read of a prefix
+/// ([`crate::PreviewSource::layer_input`]) builds an evaluation of its own and is a point query.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SpatialMode {
+pub(crate) enum SpatialMode {
     /// Materialize every spatial operation's output once over its whole stage, for a pass that
     /// reads every pixel.
     Frames,
@@ -692,7 +696,7 @@ struct PointState {
     tiles: Vec<(Region, Region, Vec<f32>)>,
 }
 
-struct LinearEvaluation<'a> {
+pub(crate) struct LinearEvaluation<'a> {
     source: &'a LinearImage,
     compiled: Compiled,
     exposure_multiplier: f64,
@@ -713,7 +717,7 @@ struct LinearEvaluation<'a> {
 }
 
 impl<'a> LinearEvaluation<'a> {
-    fn new(
+    pub(crate) fn new(
         registry: &ModuleRegistry,
         source: &'a LinearImage,
         recipe: &Recipe,
@@ -722,8 +726,36 @@ impl<'a> LinearEvaluation<'a> {
         tile: u32,
         mode: SpatialMode,
     ) -> Result<Self, Error> {
+        Self::sampled(
+            registry,
+            source,
+            recipe,
+            settings,
+            cancel,
+            tile,
+            mode,
+            MaskSampling::Point,
+        )
+    }
+
+    /// The same evaluation with the mask sampling named: the proxy phase supersamples a mask field
+    /// thinner than two of its pixels, and every other caller takes `MaskSampling::Point`. The
+    /// spatial mode is orthogonal to it — one decides how a spatial segment's pixels are answered,
+    /// the other how a mask field is sampled — so both travel to `compile_sampled` unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn sampled(
+        registry: &ModuleRegistry,
+        source: &'a LinearImage,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        cancel: &Cancel,
+        tile: u32,
+        mode: SpatialMode,
+        sampling: MaskSampling,
+    ) -> Result<Self, Error> {
         let exposure_multiplier = settings.multiplier()?;
-        let compiled = registry.compile(source.width(), source.height(), recipe)?;
+        let compiled =
+            registry.compile_sampled(source.width(), source.height(), recipe, sampling)?;
         let resamples = compiled
             .segments
             .iter()
@@ -958,7 +990,7 @@ impl<'a> LinearEvaluation<'a> {
         Ok(pixel)
     }
 
-    fn stage(&self) -> (u32, u32) {
+    pub(crate) fn stage(&self) -> (u32, u32) {
         let segment = self
             .compiled
             .segments
@@ -988,7 +1020,7 @@ impl<'a> LinearEvaluation<'a> {
         }
     }
 
-    fn pixel(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
         self.pixel_in(self.compiled.segments.len() - 1, x, y)
     }
 
@@ -1058,8 +1090,11 @@ impl<'a> LinearEvaluation<'a> {
             let mut linear = [pixel.map(|value| value as f32)];
             // The same coordinates the 8-bit path hands its units, so a position-dependent unit
             // makes `sample_linear` and `render_linear` agree pixel for pixel.
-            for run in super::color_runs(&segment.operations).filter(|run| run.start >= after) {
-                super::apply_units(&run, y, x, &mut linear)?;
+            // One pixel of snapshot scratch on the stack: a masked operation blends against its
+            // own input, and this path pulls single pixels, so nothing is allocated per pixel.
+            let mut scratch = [[0.0f32; 3]; 1];
+            for run in super::color_runs(segment).filter(|run| run.start >= after) {
+                super::apply_units(&run, y, x, &mut linear, &mut scratch)?;
             }
             pixel = linear[0].map(f64::from);
         }
@@ -1135,9 +1170,56 @@ pub(super) fn render_linear_tiled(
     cancel: &Cancel,
     tile: u32,
 ) -> Result<Raster, Error> {
+    render_linear_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        cancel,
+        tile,
+        MaskSampling::Point,
+    )
+}
+
+/// [`render_linear_cancellable`] against a **proxy** source, with the proxy phase's thin-feature
+/// rule applied to the masks in the stack. The linear half of
+/// [`render_proxy_cancellable`](super::render_proxy_cancellable); no exact render takes this path.
+pub(crate) fn render_linear_proxy_cancellable(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    render_linear_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        cancel,
+        PRODUCTION_TILE,
+        MaskSampling::ThinFeature,
+    )
+}
+
+/// [`render_linear_tiled`] with the mask sampling as a parameter as well.
+#[allow(clippy::too_many_arguments)]
+fn render_linear_sampled(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+    tile: u32,
+    sampling: MaskSampling,
+) -> Result<Raster, Error> {
     // A token already cancelled when the call arrives costs no frame at all.
     cancel.check()?;
-    let evaluation = LinearEvaluation::new(
+    let evaluation = LinearEvaluation::sampled(
         registry,
         source,
         recipe,
@@ -1145,6 +1227,7 @@ pub(super) fn render_linear_tiled(
         cancel,
         tile,
         SpatialMode::Frames,
+        sampling,
     )?;
     let (width, height) = evaluation.stage();
     let output_len = output_len(width, height)?;
@@ -1326,8 +1409,11 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: crate::EFFECT_FORMAT,
                 payload: serde_json::json!({"exposure": 1.0}),
+                mask: None,
                 artifacts: Vec::new(),
             }],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let raster = render_linear(
             &ModuleRegistry::builtin(),
@@ -1445,11 +1531,13 @@ mod tests {
         assert_eq!(view.pixel(0, 0), Some([0.4, 1.4, -0.4]));
         assert_eq!(view.pixel(1, 2), Some([0.3, 1.3, -0.3]));
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![Layer::orientation(crate::Orientation {
                 mirror: false,
                 turns: 2,
             })],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let evaluation = LinearEvaluation::new(
             &ModuleRegistry::builtin(),
@@ -1549,8 +1637,10 @@ mod tests {
 
         let source = image(2, 2, &[[0.0, 0.0, 0.0]; 4]);
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![Layer::pixel(1, 0, [128, 64, 255])],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let sample = sample_linear(
             &ModuleRegistry::builtin(),
@@ -1582,7 +1672,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![Layer::crop(CropPayload {
                 angle: 12.0,
                 x: 0.25,
@@ -1590,6 +1680,8 @@ mod tests {
                 width: 0.5,
                 height: 0.5,
             })],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let registry = ModuleRegistry::builtin();
         let raster = render_linear(
@@ -1656,6 +1748,8 @@ mod tests {
             let recipe = Recipe {
                 format: crate::RECIPE_FORMAT,
                 layers,
+                masks: Vec::new(),
+                ..Recipe::default()
             };
             let raster = render_linear(
                 &registry,
@@ -1914,8 +2008,11 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: crate::EFFECT_FORMAT,
                 payload: serde_json::json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                mask: None,
                 artifacts: Vec::new(),
             }],
+            masks: Vec::new(),
+            ..Recipe::default()
         }
     }
 
@@ -1970,7 +2067,10 @@ mod tests {
                 effect_format: crate::EFFECT_FORMAT,
                 payload,
                 artifacts: Vec::new(),
+                mask: None,
             }],
+            masks: Vec::new(),
+            strokes: Default::default(),
         }
     }
 

@@ -11,6 +11,11 @@ mod fixtures;
 mod gallery_smoke;
 mod histogram_smoke;
 mod launch;
+mod mask_acceptance;
+mod mask_brush_smoke;
+mod mask_combine_smoke;
+mod mask_range_smoke;
+mod mask_smoke;
 mod mixer_smoke;
 mod package;
 mod performance_smoke;
@@ -397,6 +402,7 @@ fn main_result() -> Result {
                 .transpose()?;
             let idle = a.flag("--idle");
             let basic = a.flag("--basic");
+            let mask = a.flag("--mask");
             let control = match a.value("--control")?.as_deref().and_then(OsStr::to_str) {
                 None | Some("slider") => editor_latency::Control::Slider,
                 Some("curve") => editor_latency::Control::Curve,
@@ -408,8 +414,11 @@ fn main_result() -> Result {
                 None | Some("drag") => editor_latency::Mode::Drag,
                 Some("commit") => editor_latency::Mode::Commit,
                 Some("burst") => editor_latency::Mode::Burst,
+                Some("paint") => editor_latency::Mode::Paint,
                 Some(other) => {
-                    return Err(format!("--mode is drag, commit or burst, not {other}").into());
+                    return Err(
+                        format!("--mode is drag, commit, burst or paint, not {other}").into(),
+                    );
                 }
             };
             let action = a
@@ -434,6 +443,7 @@ fn main_result() -> Result {
                     crop,
                     idle,
                     basic,
+                    mask,
                 },
             )?;
         }
@@ -547,7 +557,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (raw-panel and performance only)]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (raw-panel and performance only)]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

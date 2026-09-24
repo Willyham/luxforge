@@ -162,6 +162,7 @@ impl TransformModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
                     order: 0,
+                    maskable: false,
                     artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
@@ -426,6 +427,7 @@ mod tests {
             effect_id: effect_id.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
+            mask: None,
             artifacts: Vec::new(),
         }
     }
@@ -444,6 +446,7 @@ mod tests {
                 format: EFFECT_FORMAT,
                 stage: EffectStage::Geometry,
                 order: 0,
+                maskable: false,
                 artifacts: false,
             }]
         );

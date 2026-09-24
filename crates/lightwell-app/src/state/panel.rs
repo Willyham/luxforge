@@ -1,7 +1,8 @@
 //! The state panel model: what has happened to this photograph. Versions, history and the recipe
 //! are three views of the same stored entries, never of the tools panel's values.
 use crate::{app::message::MenuTarget, state::Inputs};
-use lightwell_core::{EntryId, HistoryEntry, LayerId};
+use lightwell_core::{EntryId, HistoryEntry, LayerId, MaskId};
+use std::collections::HashSet;
 
 /// Where an entry sits relative to the current state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,6 +44,36 @@ pub(crate) struct PreviewControls {
     pub(crate) can_restore: bool,
 }
 
+/// The mask a recipe row's layer is modulated by, as the row shows it.
+///
+/// The rows stay in the recipe's durable processing order, because that order is what the list is
+/// for: a mask's layers belong to different stages and are not contiguous, so reordering them under
+/// a heading would hide the very thing the panel exists to show. Grouping is therefore a label on
+/// each masked row plus the mask's own heading on the first of its rows.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RecipeMask {
+    pub(crate) id: MaskId,
+    /// The mask's display name, or its identity when the listing does not describe it.
+    pub(crate) name: String,
+    /// Position in the mask list, which is the order overlapping masks apply in.
+    pub(crate) index: Option<usize>,
+    /// This is the first row of that mask in processing order, so it carries the heading.
+    pub(crate) heading: bool,
+}
+
+impl RecipeMask {
+    /// What the heading above this mask's first row says: the mask's name, once.
+    ///
+    /// A default-named mask is called `Mask 1` *because* it is the first mask, so spelling its
+    /// position beside its name read `Mask 1 · mask 1` — the same fact twice, and a second ordering
+    /// inside a list whose whole subject is the processing order. The position a mask composes in
+    /// belongs to the Masks panel, whose list is that order.
+    pub(crate) fn heading_label(&self) -> String {
+        self.name.clone()
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RecipeRow {
@@ -51,6 +82,8 @@ pub(crate) struct RecipeRow {
     pub(crate) title: String,
     pub(crate) summary: String,
     pub(crate) available: bool,
+    /// The mask this layer applies through, or none for a layer that applies everywhere.
+    pub(crate) mask: Option<RecipeMask>,
 }
 
 #[allow(dead_code)]
@@ -145,6 +178,12 @@ fn recipe(inputs: &Inputs<'_>) -> Vec<RecipeRow> {
     else {
         return Vec::new();
     };
+    // The listing names each mask; a row whose mask the listing does not describe still says which
+    // mask it is bound to, by identity, rather than silently reading as a global layer.
+    let listing = inputs
+        .masks
+        .filter(|listing| Some(&listing.entry_id) == inputs.display_entry);
+    let mut seen: HashSet<MaskId> = HashSet::new();
     described
         .layers
         .iter()
@@ -153,6 +192,39 @@ fn recipe(inputs: &Inputs<'_>) -> Vec<RecipeRow> {
             title: layer.title.clone().unwrap_or_else(|| layer.effect.clone()),
             summary: layer.summary.clone(),
             available: layer.available,
+            mask: layer.mask.as_ref().map(|id| {
+                let report = listing
+                    .and_then(|listing| listing.masks.iter().find(|report| &report.id == id));
+                RecipeMask {
+                    id: id.clone(),
+                    name: report
+                        .map(|report| report.name.clone())
+                        .unwrap_or_else(|| id.as_str().to_owned()),
+                    index: report.map(|report| report.index),
+                    heading: seen.insert(id.clone()),
+                }
+            }),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The heading above a mask's first recipe row names the mask once, whatever its position and
+    /// whatever it is called. It read `Mask 1 · mask 1` before, which is the name and the position
+    /// the name is taken from.
+    #[test]
+    fn a_masks_recipe_heading_names_it_once() {
+        for (name, index) in [("Mask 1", 0), ("Mask 2", 1), ("Sky", 1)] {
+            let mask = RecipeMask {
+                id: MaskId::new(),
+                name: name.to_owned(),
+                index: Some(index),
+                heading: true,
+            };
+            assert_eq!(mask.heading_label(), name);
+        }
+    }
 }

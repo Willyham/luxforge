@@ -126,6 +126,7 @@ impl ToolModule for TintModule {
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
                 artifacts: vec![artifact],
+                mask: None,
             }));
         }
         match context
@@ -144,6 +145,7 @@ impl ToolModule for TintModule {
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
                 artifacts: vec![artifact],
+                mask: None,
             })),
         }
     }

@@ -9,8 +9,10 @@ use iced::Task;
 use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
     EntryId, ErrorKind, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage,
-    MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationResult, OwnerHandle,
-    PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription, Version,
+    MAX_PRESET_BYTES, MaskOverlayRequest, ModuleDescriptor, Mutation, MutationOutcome,
+    MutationResult, OwnerHandle, PresetSummary, PreviewJob, PreviewRequest, ProxyBounds,
+    RecipeDescription, StageTransform, Version,
+    mask::commands::{MaskCommandResult, MaskListing, MaskTarget},
 };
 use serde_json::{Value, json};
 use std::{
@@ -38,6 +40,9 @@ pub(crate) struct Refresh {
     pub(crate) lineage: Lineage,
     /// The displayed entry's layers as the recipe panel reads them.
     pub(crate) recipe: RecipeDescription,
+    /// The same entry's masks. It is read beside the recipe and never on its own, so the panel can
+    /// never show a mask list and a layer list that describe two different entries.
+    pub(crate) masks: MaskListing,
     /// The Original entry, looked up once per asset so Compare needs no search.
     pub(crate) original: Option<EntryId>,
     pub(crate) job: PreviewJob,
@@ -70,9 +75,10 @@ pub(crate) struct Upload {
     pub(crate) proxy_dimensions: Option<(u32, u32)>,
     /// The proxy source was built for this frame rather than taken from the queue's cache.
     pub(crate) proxy_built: bool,
-    /// These proxy pixels approximate the exact render at display size, because the stack holds
-    /// a spatial-stage layer whose neighbourhoods scale with the stage.
-    pub(crate) proxy_approximate: bool,
+    /// Whether these proxy pixels approximate the exact render at display size, and why: a
+    /// spatial-stage layer whose neighbourhoods scale with the stage, a mask drawing a feature
+    /// narrower than two proxy pixels, or both.
+    pub(crate) proxy_approximation: lightwell_core::ProxyApproximation,
     /// These pixels approximate a drafted RAW white balance on planes developed at another one,
     /// at either phase ([`lightwell_core::PreviewResult::approximate_white_balance`]).
     pub(crate) approximate_white_balance: bool,
@@ -335,6 +341,10 @@ pub(crate) fn refresh(
         "recipe.describe",
         json!({"asset_id":asset_id,"entry_id":selected}),
     )?)?;
+    // The masks of that same entry. `recipe.describe` names each layer's mask and `mask.list` names
+    // each mask's layers, so reading both together is what lets the panel show the relation from
+    // either side without a second round trip.
+    let masks: MaskListing = parse(fetch("mask.list", mask_list_params(&asset_id, &selected))?)?;
     // The Original entry is sequence 0, so one bounded page before sequence 1 finds it.
     let original: HistoryPage = parse(fetch(
         "history.list",
@@ -367,6 +377,7 @@ pub(crate) fn refresh(
         versions,
         lineage,
         recipe,
+        masks,
         original: original.entries.first().map(|entry| entry.id.clone()),
         job,
         session,
@@ -493,8 +504,8 @@ pub(crate) fn preview_task(
     )
 }
 
-/// The displayed entry's layers, read after a history selection changed which entry is shown. It
-/// reads payloads only: no decode, no render, no source access.
+/// The displayed entry's layers and masks, read after a history selection changed which entry is
+/// shown. It reads payloads only: no decode, no render, no source access.
 pub(crate) fn recipe_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -509,10 +520,36 @@ pub(crate) fn recipe_task(
                 "recipe.describe",
                 json!({"asset_id":asset_id,"entry_id":entry_id}),
             )?;
-            parse::<RecipeDescription>(described)
+            let (masks, _) = call(
+                &owner,
+                client,
+                "mask.list",
+                mask_list_params(&asset_id, &entry_id),
+            )?;
+            Ok(RecipeRead {
+                recipe: parse::<RecipeDescription>(described)?,
+                masks: parse::<MaskListing>(masks)?,
+            })
         },
         |result| Message::RecipeDescribed(result.map(Box::new)),
     )
+}
+
+/// The `mask.list` request for one entry. The entry is omitted rather than sent as null, because
+/// the method's optional envelope field takes an identity or nothing at all — the session's own
+/// selection is what answers when it is absent.
+fn mask_list_params(asset_id: &AssetId, entry_id: &Option<EntryId>) -> Value {
+    match entry_id {
+        Some(entry_id) => json!({"asset_id":asset_id,"entry_id":entry_id}),
+        None => json!({ "asset_id": asset_id }),
+    }
+}
+
+/// One entry's layers and masks, always read together.
+#[derive(Clone, Debug)]
+pub(crate) struct RecipeRead {
+    pub(crate) recipe: RecipeDescription,
+    pub(crate) masks: MaskListing,
 }
 
 /// The crop draft's only preview job: the stack truncated to the layers before the crop layer, which
@@ -550,11 +587,18 @@ pub(crate) fn crop_preview_task(
 
 /// Open this client's one draft of a patch action. The gesture sends nothing else until this
 /// answers, so the draft identity every later request needs is known before any of them.
+/// `draft.begin` for one generated control's gesture.
+///
+/// The target is the host's own envelope: for a module action it is the mask the panel's sections
+/// are bound to, so the drafted preview shows the masked layer the release will commit rather than
+/// the global one; for a `mask.*` command it is the mask and component the gesture edits, which no
+/// declared parameter kind could carry. A global gesture sends neither and drafts as it always has.
 pub(crate) fn draft_begin_task(
     owner: OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     action: String,
+    target: MaskTarget,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -562,12 +606,26 @@ pub(crate) fn draft_begin_task(
                 &owner,
                 client,
                 "draft.begin",
-                json!({"asset_id":asset_id,"action":action}),
+                draft_begin_params(asset_id, &action, target),
             )?;
             parse::<Draft>(draft)
         },
         |result| Message::SliderDraftBegun(result.map(Box::new)),
     )
+}
+
+/// The `draft.begin` request one action and target produce. One spelling, shared by the slider
+/// gesture and the mask shape gesture, so the two cannot disagree about where an identity goes.
+pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: MaskTarget) -> Value {
+    let mut params = json!({"asset_id":asset_id,"action":action});
+    let object = params.as_object_mut().expect("the envelope is an object");
+    if let Some(mask) = target.mask {
+        object.insert("mask".into(), json!(mask));
+    }
+    if let Some(component) = target.component {
+        object.insert("component".into(), json!(component));
+    }
+    params
 }
 
 /// One `draft.set` and the one preview job for the settings it accepted, as a single round trip.
@@ -741,6 +799,136 @@ pub(crate) fn current_preview_task(
     )
 }
 
+/// The geometry tail of the displayed stack as one affine, read once when a mask gesture opens.
+/// Every later pointer position is mapped from it locally, so a drag costs no host call per move.
+pub(crate) fn transform_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (transform, _) = call(
+                &owner,
+                client,
+                "render.transform",
+                json!({"asset_id":asset_id,"entry_id":entry_id}),
+            )?;
+            parse::<StageTransform>(transform)
+        },
+        Message::MaskTransform,
+    )
+}
+
+/// `draft.begin` for a `mask.*` gesture: the mask and the component it edits travel in the envelope
+/// beside `asset_id`, because no declared parameter kind can carry an identity.
+pub(crate) fn mask_draft_begin_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    action: &'static str,
+    target: MaskTarget,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (draft, _) = call(
+                &owner,
+                client,
+                "draft.begin",
+                draft_begin_params(asset_id, action, target),
+            )?;
+            parse::<Draft>(draft)
+        },
+        |result| Message::MaskDraftBegun(result.map(Box::new)),
+    )
+}
+
+/// One `draft.set` of a mask gesture and the one preview job for the geometry it accepted, with the
+/// coverage grid the overlay draws filled beside that frame rather than by a second render.
+pub(crate) fn mask_draft_set_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    draft_id: DraftId,
+    asset_id: AssetId,
+    fields: Value,
+    proxy: Option<ProxyBounds>,
+    overlay: Option<MaskOverlayRequest>,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (draft, _) = call(
+                &owner,
+                client,
+                "draft.set",
+                json!({"draft_id":draft_id,"fields":fields}),
+            )?;
+            let draft = parse::<Draft>(draft)?;
+            let mut request = PreviewRequest::new(client, asset_id)
+                .draft(draft_id)
+                .analyse();
+            if let Some(overlay) = overlay {
+                request = request.mask_overlay(overlay);
+            }
+            let job = owner
+                .preview_job(proxied(request, proxy))
+                .map_err(|error| error.to_string())?;
+            Ok((draft, job))
+        },
+        |result| Message::MaskDraftSet(result.map(Box::new)),
+    )
+}
+
+pub(crate) fn mask_draft_commit_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    draft_id: DraftId,
+    asset_id: AssetId,
+    mutation: Mutation,
+    proxy: Option<ProxyBounds>,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (committed, sequence) = call(
+                &owner,
+                client,
+                "draft.commit",
+                json!({"draft_id":draft_id,"mutation":mutation}),
+            )?;
+            // A mask gesture commits through the `mask.*` family, whose answer carries the
+            // mutation envelope **and** what it changed — the history label, the mask, the
+            // component, the layers a delete removed. Reading it as the bare envelope refuses
+            // those fields by name, turning every committed gesture into a failure and losing the
+            // commit the core had already made.
+            let result = parse::<MaskCommandResult>(committed)?;
+            if result.mutation.outcome == MutationOutcome::NoOp {
+                return Ok(None);
+            }
+            refresh(&owner, client, asset_id, true, sequence, proxy).map(Some)
+        },
+        |result| Message::MaskDraftCommitted(result.map(|refresh| refresh.map(Box::new))),
+    )
+}
+
+pub(crate) fn mask_draft_reapply_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    draft_id: DraftId,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (draft, _) = call(
+                &owner,
+                client,
+                "draft.reapply",
+                json!({"draft_id":draft_id}),
+            )?;
+            parse::<Draft>(draft)
+        },
+        |result| Message::MaskDraftReapplied(result.map(Box::new)),
+    )
+}
+
 pub(crate) fn session_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -802,21 +990,25 @@ pub(crate) fn locate_task(
     )
 }
 
-/// One declared module query at a located content pixel, which is what a `sample-apply` canvas
-/// mode asks before it commits anything. This is `query.<id>`, the same read-only method an
-/// independent client calls: it mutates nothing, writes no history entry and emits no event, and
-/// the core answers it from point samples over the compiled evaluation a commit would plan
-/// against, so a pick renders no frame. The coordinate parameter names come from the declaration,
-/// not from this file.
+/// One declared read-only query at a located content pixel, which is what a `sample-apply` canvas
+/// mode asks before it commits anything.
+///
+/// `method` is the whole method name, because the two kinds of pick read two namespaces: a module's
+/// is `query.<id>` and the host's own is a `mask.*` read. Either way it mutates nothing, writes no
+/// history entry and emits no event, and the core answers it from point samples over the compiled
+/// evaluation a commit would plan against, so a pick renders no frame. The coordinate parameter names
+/// and the extra envelope fields — the mask a host pick addresses — come from the declaration and from
+/// the panel's own selection, not from this file.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn query_task(
     owner: OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     entry: EntryId,
-    query: String,
+    method: String,
     action: String,
     coordinates: (String, String),
+    envelope: serde_json::Map<String, Value>,
     point: (u32, u32),
 ) -> Task<Message> {
     let answered = entry.clone();
@@ -824,9 +1016,12 @@ pub(crate) fn query_task(
         async move {
             let mut params = json!({"asset_id":asset_id,"entry_id":entry});
             let object = params.as_object_mut().expect("the envelope is an object");
+            for (name, value) in envelope {
+                object.insert(name, value);
+            }
             object.insert(coordinates.0, Value::from(point.0));
             object.insert(coordinates.1, Value::from(point.1));
-            call(&owner, client, &format!("query.{query}"), params).map(|(value, _)| value)
+            call(&owner, client, &method, params).map(|(value, _)| value)
         },
         move |result| Message::SampleQueried {
             entry: answered.clone(),

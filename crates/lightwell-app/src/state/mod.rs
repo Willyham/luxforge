@@ -4,6 +4,7 @@
 pub(crate) mod canvas;
 pub(crate) mod capabilities;
 pub(crate) mod histogram;
+pub(crate) mod masks;
 pub(crate) mod palette;
 pub(crate) mod panel;
 pub(crate) mod performance;
@@ -15,10 +16,11 @@ pub(crate) mod tools;
 use crate::{
     app::{fields::Fields, message::MenuTarget},
     crop_draft::CropDraft,
+    mask_draft::MaskDraft,
 };
 use lightwell_core::{
-    ClientSession, EditorState, EntryId, ErrorKind, HistoryPage, ModuleDescriptor,
-    RecipeDescription, Version,
+    ClientSession, ComponentId, ComponentMode, EditorState, EntryId, ErrorKind, HistoryPage,
+    MaskId, ModuleDescriptor, RecipeDescription, Version, mask::commands::MaskListing,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -51,6 +53,30 @@ pub(crate) struct Inputs<'a> {
     /// The open slider gesture's draft, when a control of a patch action is being moved.
     pub(crate) slider_draft: Option<&'a crate::app::slider::SliderDraft>,
     pub(crate) draft: Option<&'a CropDraft>,
+    /// The masks of the displayed entry as `mask.list` last answered them.
+    pub(crate) masks: Option<&'a MaskListing>,
+    /// The mask the Masks panel has open, and the component selected inside it. Per-client
+    /// selection: it commits nothing and appears in no recipe.
+    pub(crate) selected_mask: Option<&'a MaskId>,
+    pub(crate) selected_component: Option<&'a ComponentId>,
+    /// The component row the pointer is over. While it lasts the overlay shows that component's own
+    /// contribution instead of the composed mask, which is what makes a subtract legible.
+    pub(crate) hovered_component: Option<&'a ComponentId>,
+    /// Masks whose overlay the eye has hidden. View state: a hidden mask still applies to the
+    /// picture, because hiding an edit and hiding its indicator are different things.
+    pub(crate) hidden_masks: &'a HashSet<MaskId>,
+    /// The open mask shape gesture.
+    pub(crate) mask_draft: Option<&'a MaskDraft>,
+    /// The mode the next Add-component gesture will use.
+    pub(crate) mask_mode: ComponentMode,
+    /// The brush the next stroke will be drawn with, and whether the erase modifier is held.
+    pub(crate) brush: crate::mask_draft::Brush,
+    pub(crate) brush_erase_held: bool,
+    /// The open mask's name as it is being typed in the panel's rename field.
+    pub(crate) mask_name: &'a str,
+    /// The mask the generated module sections are bound to, which is what a masked slider edits.
+    /// `None` binds them to the global layer, as they have always been.
+    pub(crate) target: Option<&'a MaskId>,
     /// The truncated preview that opens a draft is in flight.
     pub(crate) draft_pending: bool,
     /// The draft's own input stage is on the GPU and the current state is shown.
@@ -117,6 +143,7 @@ pub(crate) struct Workspace {
     pub(crate) panel: panel::StatePanelModel,
     pub(crate) canvas: canvas::CanvasModel,
     pub(crate) tools: tools::ToolsModel,
+    pub(crate) masks: masks::MasksModel,
     pub(crate) histogram: histogram::HistogramModel,
     pub(crate) status: status::StatusBarModel,
     pub(crate) palette: palette::PaletteModel,
@@ -131,6 +158,7 @@ impl Workspace {
         self.panel = panel::derive(inputs);
         self.performance.refresh(inputs);
         self.canvas = canvas::derive(inputs);
+        self.masks = masks::derive(inputs);
         self.tools.refresh(inputs);
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
@@ -226,6 +254,12 @@ mod tests {
         dragging: Option<(String, String)>,
         expanded: BTreeMap<String, bool>,
         draft: Option<CropDraft>,
+        masks: Option<MaskListing>,
+        selected_mask: Option<MaskId>,
+        selected_component: Option<ComponentId>,
+        hovered_component: Option<ComponentId>,
+        hidden_masks: HashSet<MaskId>,
+        mask_draft: Option<MaskDraft>,
         session: ClientSession,
         status: String,
         busy: bool,
@@ -264,6 +298,12 @@ mod tests {
                 dragging: None,
                 expanded: BTreeMap::new(),
                 draft: None,
+                masks: None,
+                selected_mask: None,
+                selected_component: None,
+                hovered_component: None,
+                hidden_masks: HashSet::new(),
+                mask_draft: None,
                 session: ClientSession::default(),
                 status: "ready".into(),
                 busy: false,
@@ -335,6 +375,20 @@ mod tests {
                 expanded: &self.expanded,
                 slider_draft: self.slider_draft.as_ref(),
                 draft: self.draft.as_ref(),
+                masks: self.masks.as_ref(),
+                selected_mask: self.selected_mask.as_ref(),
+                selected_component: self.selected_component.as_ref(),
+                hovered_component: self.hovered_component.as_ref(),
+                hidden_masks: &self.hidden_masks,
+                mask_draft: self.mask_draft.as_ref(),
+                mask_mode: ComponentMode::Add,
+                brush: crate::mask_draft::NEUTRAL_BRUSH,
+                brush_erase_held: false,
+                mask_name: "",
+                target: self
+                    .selected_mask
+                    .as_ref()
+                    .filter(|_| crate::state::canvas::mask_workspace(&self.session.workspace.mode)),
                 draft_pending: false,
                 drafting: self.draft.is_some(),
                 crop_angle: &self.crop_angle,
@@ -1264,6 +1318,7 @@ mod tests {
                 summary: "Whole image".into(),
                 values: serde_json::Map::new(),
                 available: true,
+                mask: None,
                 artifacts: Vec::new(),
             }],
         });
@@ -1302,6 +1357,11 @@ mod tests {
         assert_eq!(strip[0].id, POINTER_MODE);
         assert_eq!(strip[0].shortcut.as_deref(), Some("V"));
         assert!(strip[0].selected, "the pointer is the default mode");
+        // Mask is the host's own takeover mode: a mask is a host object in the recipe, so it is
+        // offered whatever modules are registered and no module declares its canvas.
+        assert_eq!(strip[1].id, lightwell_core::MASK_MODE);
+        assert_eq!(strip[1].label, "Mask");
+        assert_eq!(strip[1].shortcut.as_deref(), Some("M"));
         let crop = strip
             .iter()
             .find(|mode| mode.id == "lightwell.crop")
@@ -1311,8 +1371,8 @@ mod tests {
         assert!(crop.enabled);
         assert_eq!(
             strip.len(),
-            2,
-            "the pointer and the crop frame alone: {:?}",
+            3,
+            "the pointer, the mask mode and the crop frame alone: {:?}",
             strip.iter().map(|mode| &mode.id).collect::<Vec<_>>()
         );
         // Every module that declares a pick — a point pick or a sample apply — stays out, for
@@ -1348,7 +1408,11 @@ mod tests {
             },
             ..crop_descriptor()
         }];
-        assert_eq!(scene.derive().canvas.modes.len(), 1, "the pointer alone");
+        assert_eq!(
+            scene.derive().canvas.modes.len(),
+            2,
+            "the pointer and the host's mask mode alone"
+        );
     }
 
     #[test]

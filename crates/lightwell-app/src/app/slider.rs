@@ -113,6 +113,14 @@ impl Editor {
         if self.crop.is_some() || self.crop_pending.is_some() {
             return Some("Apply or Cancel the crop draft before editing a slider".into());
         }
+        // A mask gesture holds this client's one core draft, exactly as the crop draft does, and the
+        // adjustments a mask is bound to sit directly under the gesture that drew it — so reaching
+        // one with a gradient half drawn is an ordinary mistake to make. An **armed** brush is the
+        // exception the delivered rule already names: it has painted nothing and has nothing to
+        // Apply, so it gives its draft up below rather than refusing the slider that wants it.
+        if self.mask_draft.is_some() && !self.armed_brush() {
+            return Some("Apply or Cancel the mask gesture before editing a slider".into());
+        }
         if !self.session.preview.can_edit() {
             return Some("Return to the current state before editing".into());
         }
@@ -160,8 +168,13 @@ impl Editor {
             self.status = reason;
             return Task::none();
         }
+        // An armed brush holds the one core draft this gesture needs and has nothing painted to lose
+        // by giving it up, which is what every other gesture and every mask command already do with
+        // one. Without this the host refuses the `draft.begin` a round trip later and the gesture is
+        // left with a draft that does not exist.
+        let disarm = self.disarm_brush();
         let Some(state) = &self.state else {
-            return Task::none();
+            return disarm.unwrap_or_else(Task::none);
         };
         let asset = state.asset.id.clone();
         let base_revision = state.revision;
@@ -186,11 +199,20 @@ impl Editor {
             unpreviewed: false,
         });
         self.status = format!("Drafting {label}…");
+        // The host-owned target this gesture drafts through. For a module action it is the mask the
+        // panel's sections are bound to, which is what makes a masked slider follow the drag the way
+        // a global one does; for a `mask.*` control it is the mask and component the panel has open,
+        // because no declared parameter kind can carry an identity.
+        let target = self.draft_target(&action);
         self.event(
             "slider_draft_begin",
-            json!({"action":action,"revision":base_revision}),
+            json!({"action":action,"revision":base_revision,"target":target}),
         );
-        draft_begin_task(self.owner.clone(), self.client, asset, action)
+        let begin = draft_begin_task(self.owner.clone(), self.client, asset, action, target);
+        match disarm {
+            Some(cancel) => Task::batch([cancel, begin]),
+            None => begin,
+        }
     }
 
     /// The gate every outstanding value passes through: at most one `draft.set` and one preview

@@ -442,6 +442,7 @@ impl ToolModule for CapabilitiesProofModule {
                         effect_id: PROOF_EFFECT.into(),
                         effect_format: EFFECT_FORMAT,
                         payload,
+                        mask: None,
                         artifacts: vec![artifact],
                     }),
                 })

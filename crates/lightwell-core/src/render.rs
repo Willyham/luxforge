@@ -1,8 +1,9 @@
 use crate::{
     Error, ErrorKind, Layer, Recipe, SnapshotId, SourceImage,
+    mask_field::{MaskField, MaskSampling},
     modules::{
-        ColorOperation, ExactGeometry, ModuleRegistry, Parallelism, PointwiseColor, Processing,
-        Resample, SpatialOperation, Stage,
+        ColorOperation, ExactGeometry, ModuleRegistry, Parallelism, Processing, Region, Resample,
+        SpatialOperation, Stage,
     },
 };
 use rayon::prelude::*;
@@ -17,6 +18,7 @@ use std::{
 
 pub mod linear;
 pub mod spatial;
+pub(crate) use linear::render_linear_proxy_cancellable;
 pub use linear::{
     LinearImage, LinearSettings, WhiteBalanceApproximation, render_linear,
     render_linear_cancellable, sample_linear,
@@ -25,7 +27,9 @@ use spatial::{
     PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
     run_tile,
 };
-pub use spatial::{SpatialBudget, cached_estimates, clear_estimates};
+pub use spatial::{
+    SpatialBudget, cached_estimates, clear_estimates, masked_tile_counts, reset_masked_tile_counts,
+};
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
 
@@ -242,27 +246,46 @@ const NON_FINITE_COLOR: &str = "colour processing produced a non-finite value";
 /// geometry is already composed into the segment's single raster pass and commutes with pointwise
 /// colour, so it does not break a run; a point replacement does, because a replacement written
 /// before a run is processed by it and one written after it is not.
+#[derive(Clone, Copy)]
 struct ColorRun<'a> {
     /// The index of this run's first colour operation in the segment's operation list.
     start: usize,
+    /// The index of this run's last colour operation, inclusive.
+    end: usize,
+    /// The **whole** segment's operation list, not just this run's span. A masked operation is
+    /// handed a coordinate of the frame this run colours, which is the segment's output frame, so it
+    /// needs the exact geometry that follows it — inside this run's span and after it — to map that
+    /// coordinate back to the stage its own mask was compiled against.
     operations: &'a [Processing],
+    /// The segment's output stage: the frame this run is applied to.
+    stage: Stage,
 }
 
 impl<'a> ColorRun<'a> {
-    /// Every unit of every operation of this run, in evaluation order.
-    fn units(&self) -> impl Iterator<Item = &'a Arc<dyn PointwiseColor>> {
-        self.operations
+    /// This run's colour operations in evaluation order, each with its index in the segment's
+    /// operation list.
+    fn colour_operations(self) -> impl Iterator<Item = (usize, &'a ColorOperation)> {
+        self.operations[self.start..=self.end]
             .iter()
-            .filter_map(|operation| match operation {
-                Processing::Color(operation) => Some(operation),
+            .enumerate()
+            .filter_map(move |(offset, operation)| match operation {
+                Processing::Color(operation) => Some((self.start + offset, operation)),
                 _ => None,
             })
-            .flat_map(ColorOperation::units)
+    }
+
+    /// Whether any operation of this run is modulated by a mask, which is what decides whether the
+    /// pass needs snapshot scratch at all. An unmasked run costs and allocates exactly what it did
+    /// before masks existed.
+    fn has_mask(self) -> bool {
+        self.colour_operations()
+            .any(|(_, operation)| operation.mask().is_some())
     }
 }
 
 struct ColorRuns<'a> {
     operations: &'a [Processing],
+    stage: Stage,
     position: usize,
 }
 
@@ -289,17 +312,84 @@ impl<'a> Iterator for ColorRuns<'a> {
             self.position = last + 1;
             return Some(ColorRun {
                 start,
-                operations: &self.operations[start..=last],
+                end: last,
+                operations: self.operations,
+                stage: self.stage,
             });
         }
         None
     }
 }
 
-fn color_runs(operations: &[Processing]) -> ColorRuns<'_> {
+fn color_runs(segment: &Segment) -> ColorRuns<'_> {
     ColorRuns {
-        operations,
+        operations: &segment.operations,
+        stage: Stage {
+            width: segment.width,
+            height: segment.height,
+        },
         position: 0,
+    }
+}
+
+/// One masked operation's mask, placed in the frame the run is applied to.
+///
+/// A mask is compiled against the stage its layer receives — the content stage, for every layer that
+/// may carry one — while a colour run is applied to the frame its segment produces, after the
+/// segment's exact geometry has been composed into one pass. The two differ by exactly the exact
+/// steps that follow the operation, which is the same suffix a point replacement is mapped through
+/// ([performance rule 3](../../docs/engineering/performance-rules.md)). Composing that suffix costs
+/// `O(operations)` integer multiplies, allocates nothing, and is exact: `a`, `b`, `c`, `d` are a
+/// signed permutation, so `unmap` is the mapping's exact inverse and a mask lands on the same content
+/// pixels through a quarter turn, a reflection and an axis-aligned crop.
+struct MaskPlacement<'a> {
+    mask: &'a MaskField,
+    /// From the stage the mask was compiled against to the frame this run colours.
+    suffix: ExactGeometry,
+    /// [`MaskField::bounds`] mapped into that frame: outside it coverage is exactly zero, so the
+    /// blend is the identity there and no unit is evaluated at all.
+    bounds: Region,
+}
+
+impl<'a> MaskPlacement<'a> {
+    fn new(run: &ColorRun<'a>, index: usize, mask: &'a MaskField) -> Self {
+        let mut suffix = ExactGeometry::identity(run.stage.width, run.stage.height);
+        for operation in run.operations[index + 1..].iter().rev() {
+            if let Processing::ExactGeometry(step) = operation {
+                suffix = step.then(suffix);
+            }
+        }
+        Self {
+            mask,
+            bounds: suffix.map_region(mask.bounds()),
+            suffix,
+        }
+    }
+
+    /// The coverage at one frame pixel: the mask's own field at the pixel of its own stage that this
+    /// frame pixel came from, for `input` — **the value this operation receives at that pixel**, in
+    /// linear float, which is the snapshot the blend is taken against and not the value the units
+    /// have produced from it. The rasterizing pass and `render.sample` reach this through the same
+    /// call with the same arguments, so a sampled byte equals the rendered byte for a masked
+    /// layer by construction, for a value-based component exactly as for a geometric one.
+    fn coverage(&self, x: u32, y: u32, input: [f32; 3]) -> f32 {
+        let (mask_x, mask_y) = self.suffix.unmap(x, y);
+        self.mask.evaluate(mask_x, mask_y, input)
+    }
+
+    /// The part of one contiguous row span this mask can reach, as offsets into that span, or `None`
+    /// when the span lies entirely outside the bounds rectangle.
+    fn span(&self, y: u32, x0: u32, len: usize) -> Option<(usize, usize)> {
+        if self.bounds.is_empty() || y < self.bounds.y0 || y >= self.bounds.y1() {
+            return None;
+        }
+        let last = x0.saturating_add(len as u32);
+        let from = self.bounds.x0.max(x0);
+        let to = self.bounds.x1().min(last);
+        if to <= from {
+            return None;
+        }
+        Some(((from - x0) as usize, (to - x0) as usize))
     }
 }
 
@@ -334,16 +424,50 @@ pub(crate) fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
     rgb.map(|value| quantize_channel(f64::from(value)))
 }
 
-/// Apply every unit of one run, in order, to one contiguous run of already decoded linear pixels of
-/// row `y` starting at column `x0`, in the coordinates of the stage its segment produces. Nothing
-/// is clamped or quantized between units, so an inverse pair returns its input exactly and a value
-/// outside `[0, 1]` survives to the next unit.
+/// Apply one run to one contiguous run of already decoded linear pixels of row `y` starting at
+/// column `x0`, in the coordinates of the stage its segment produces. Nothing is clamped or
+/// quantized between operations or between units, so an inverse pair returns its input exactly and a
+/// value outside `[0, 1]` survives to the next unit.
 ///
-/// The finite check runs over the whole slice after each unit rather than per pixel inside it, so
-/// the hot loop stays branch-free; the run fails as soon as any unit has produced a non-finite
-/// value, whether the slice is one row of a frame or the single pixel of a point sample.
-fn apply_units(run: &ColorRun<'_>, y: u32, x0: u32, pixels: &mut [[f32; 3]]) -> Result<(), Error> {
-    for unit in run.units() {
+/// The run is walked **operation by operation** rather than as one flat stream of units, because a
+/// masked operation is blended against its own input and an unmasked one is not. An unmasked
+/// operation is applied exactly as before: every unit in order, with the finite check over the whole
+/// slice after each unit rather than per pixel inside it, so the hot loop stays branch-free and the
+/// run fails as soon as a unit has produced a non-finite value. Flattening the units of consecutive
+/// unmasked operations into one stream, which is what this used to do, produces the same arithmetic
+/// in the same order.
+///
+/// `scratch` is the snapshot buffer a masked operation blends against. Its length is free: the units
+/// are pointwise, so a masked span is processed in blocks of at most `scratch.len()` pixels and the
+/// result does not depend on the block size. The rasterizing pass hands it one row of float scratch
+/// reserved from the budget; a point query hands it one pixel on the stack and allocates nothing.
+fn apply_units(
+    run: &ColorRun<'_>,
+    y: u32,
+    x0: u32,
+    pixels: &mut [[f32; 3]],
+    scratch: &mut [[f32; 3]],
+) -> Result<(), Error> {
+    for (index, operation) in run.colour_operations() {
+        match operation.mask() {
+            None => apply_operation(operation, y, x0, pixels)?,
+            Some(mask) => {
+                let placement = MaskPlacement::new(run, index, mask);
+                apply_masked_operation(operation, &placement, y, x0, pixels, scratch)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every unit of one operation, in order, over the whole slice it is given.
+fn apply_operation(
+    operation: &ColorOperation,
+    y: u32,
+    x0: u32,
+    pixels: &mut [[f32; 3]],
+) -> Result<(), Error> {
+    for unit in operation.units() {
         unit.apply_row(y, x0, pixels);
         if !pixels.iter().flatten().all(|channel| channel.is_finite()) {
             return Err(Error::new(ErrorKind::ResourceLimit, NON_FINITE_COLOR));
@@ -352,14 +476,62 @@ fn apply_units(run: &ColorRun<'_>, y: u32, x0: u32, pixels: &mut [[f32; 3]]) -> 
     Ok(())
 }
 
-/// One pixel through one colour run: decode, every unit in order, clamp and quantize. The point
+/// One masked operation over one contiguous row span: `out = (1 − M)·in + M·units(in)` per channel,
+/// in linear float, inside the run.
+///
+/// Three properties are load-bearing and are what the tests assert:
+///
+/// - **The blend is against the operation's own input**, so an unmasked operation before or after it
+///   in the same run is unaffected and nothing is clamped or quantized in between. That is why the
+///   input is snapshotted rather than recomputed.
+/// - **The endpoints are exact.** `M = 0` leaves `1·in + 0·units(in)`, which is `in`, and `M = 1`
+///   leaves `0·in + 1·units(in)`, which is `units(in)` — both bit for bit, which the algebraically
+///   equal `in + M·(units(in) − in)` is not. Only the sign of a zero can change, and a signed zero
+///   quantizes to the same code.
+/// - **Outside the bounds rectangle nothing is evaluated at all**, not merely blended away, so a
+///   small mask on a large frame costs the units of its own rectangle and no more.
+fn apply_masked_operation(
+    operation: &ColorOperation,
+    placement: &MaskPlacement<'_>,
+    y: u32,
+    x0: u32,
+    pixels: &mut [[f32; 3]],
+    scratch: &mut [[f32; 3]],
+) -> Result<(), Error> {
+    let Some((from, to)) = placement.span(y, x0, pixels.len()) else {
+        return Ok(());
+    };
+    debug_assert!(!scratch.is_empty(), "a masked run needs snapshot scratch");
+    let block = scratch.len().max(1);
+    let mut at = from;
+    while at < to {
+        let end = (at + block).min(to);
+        let span = &mut pixels[at..end];
+        let (snapshot, _) = scratch.split_at_mut(span.len());
+        snapshot.copy_from_slice(span);
+        apply_operation(operation, y, x0 + at as u32, span)?;
+        for (offset, (output, input)) in span.iter_mut().zip(snapshot.iter()).enumerate() {
+            let coverage = placement.coverage(x0 + (at + offset) as u32, y, *input);
+            for channel in 0..3 {
+                output[channel] = (1.0 - coverage) * input[channel] + coverage * output[channel];
+            }
+        }
+        at = end;
+    }
+    Ok(())
+}
+
+/// One pixel through one colour run: decode, every operation in order, clamp and quantize. The point
 /// sampler applies a run with this; the rasterizing pass applies the same three steps to a row of a
 /// chunk, calling `apply_row` once per row instead of once per pixel, which changes no arithmetic
 /// and gives a position-dependent unit the same coordinates. Both paths share `decode_pixel`,
-/// `apply_units` and `quantize_pixel`, so a sample cannot disagree with the byte that was rendered.
+/// `apply_units` and `quantize_pixel`, so a sample cannot disagree with the byte that was rendered —
+/// including the mask coverage, which both reach through the one [`MaskPlacement::coverage`] call
+/// inside that shared function.
 fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>, x: u32, y: u32) -> Result<[u8; 3], Error> {
     let mut pixel = [decode_pixel(rgb)];
-    apply_units(run, y, x, &mut pixel)?;
+    let mut scratch = [[0.0f32; 3]; 1];
+    apply_units(run, y, x, &mut pixel, &mut scratch)?;
     Ok(quantize_pixel(pixel[0]))
 }
 
@@ -383,6 +555,9 @@ fn apply_color_run(
     let height = (rows.end - rows.start) as u32;
     let chunk_rows = color_chunk_rows(width);
     let chunk_bytes = chunk_rows * width as usize * 4;
+    // Whether this run needs snapshot scratch at all, decided once for the pass: an unmasked run
+    // reserves and allocates exactly what it did before masks existed.
+    let masked = run.has_mask();
     // A chunk is a whole number of rows, so the row a pixel belongs to is the band's first row
     // plus the chunk's offset inside it: every unit is handed one row at a time, at the
     // coordinates of the stage this segment produces.
@@ -392,13 +567,28 @@ fn apply_color_run(
         let count = chunk.len() / 4;
         let _reservation =
             ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>());
+        // One row of snapshot scratch for a masked operation's own input, reserved before it
+        // allocates and released with the chunk. It is a row and not a chunk because `apply_units`
+        // is handed one row at a time; nothing here scales with the frame, and an unmasked run takes
+        // none of it.
+        let (_snapshot_reservation, mut snapshot) = if masked {
+            let pixels = width as usize;
+            (
+                Some(ScratchBudget::default().reserve(pixels * std::mem::size_of::<[f32; 3]>())),
+                vec![[0.0f32; 3]; pixels],
+            )
+        } else {
+            (None, Vec::new())
+        };
+        let mut unused = [[0.0f32; 3]; 1];
+        let scratch: &mut [[f32; 3]] = if masked { &mut snapshot } else { &mut unused };
         let mut linear: Vec<[f32; 3]> = chunk
             .chunks_exact(4)
             .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]]))
             .collect();
         let first_row = (rows.start + chunk_index * chunk_rows) as u32;
         for (offset, row) in linear.chunks_mut(width as usize).enumerate() {
-            apply_units(run, first_row + offset as u32, 0, row)?;
+            apply_units(run, first_row + offset as u32, 0, row, scratch)?;
         }
         for (pixel, value) in chunk.chunks_exact_mut(4).zip(&linear) {
             pixel[..3].copy_from_slice(&quantize_pixel(*value));
@@ -604,6 +794,45 @@ impl ExactGeometry {
                 (0..i64::from(input_width)).contains(&input_x)
                     && (0..i64::from(input_height)).contains(&input_y)
             })
+    }
+
+    /// Where an input-stage pixel rectangle lands in the output stage, clipped to it.
+    ///
+    /// Closed form and exact: `a`, `b`, `c`, `d` are a signed permutation, so the image of a
+    /// rectangle is a rectangle and its two opposite corners decide it. A rectangle that maps
+    /// entirely outside the output stage comes back empty, which is what lets a masked run skip a
+    /// whole frame whose mask was cropped away.
+    fn map_region(self, region: Region) -> Region {
+        let empty = Region {
+            x0: 0,
+            y0: 0,
+            width: 0,
+            height: 0,
+        };
+        if region.is_empty() || self.output_width == 0 || self.output_height == 0 {
+            return empty;
+        }
+        let corner = |x: u32, y: u32| -> (i64, i64) {
+            (
+                self.a * i64::from(x) + self.b * i64::from(y) + self.tx,
+                self.c * i64::from(x) + self.d * i64::from(y) + self.ty,
+            )
+        };
+        let (first_x, first_y) = corner(region.x0, region.y0);
+        let (last_x, last_y) = corner(region.x1() - 1, region.y1() - 1);
+        let x0 = first_x.min(last_x).clamp(0, i64::from(self.output_width)) as u32;
+        let x1 = (first_x.max(last_x) + 1).clamp(0, i64::from(self.output_width)) as u32;
+        let y0 = first_y.min(last_y).clamp(0, i64::from(self.output_height)) as u32;
+        let y1 = (first_y.max(last_y) + 1).clamp(0, i64::from(self.output_height)) as u32;
+        if x1 <= x0 || y1 <= y0 {
+            return empty;
+        }
+        Region {
+            x0,
+            y0,
+            width: x1 - x0,
+            height: y1 - y0,
+        }
     }
 
     fn unmap(self, x: u32, y: u32) -> (u32, u32) {
@@ -898,6 +1127,39 @@ impl Compiled {
             height: self.last().height,
         }
     }
+
+    /// Whether any mask in this compilation had the thin-feature rule applied to it: it draws a
+    /// feature narrower than two pixels of the stage it was compiled against, so it is evaluated
+    /// with a 2 x 2 supersample per pixel and the frame it produces is approximate.
+    ///
+    /// Read from the compilation the render itself uses rather than recomputed from the recipe, so
+    /// what is reported and what is drawn cannot disagree. Cost is `O(layers)` and reads no pixels.
+    pub(crate) fn supersampled_masks(&self) -> bool {
+        self.segments.iter().any(|segment| {
+            segment.operations.iter().any(|operation| match operation {
+                Processing::Color(colour) => colour
+                    .mask()
+                    .is_some_and(super::mask_field::MaskField::supersampled),
+                Processing::Spatial(spatial) => spatial
+                    .mask()
+                    .is_some_and(super::mask_field::MaskField::supersampled),
+                _ => false,
+            })
+        })
+    }
+
+    /// Whether answering one pixel of this compilation evaluates a spatial segment.
+    ///
+    /// A spatial point query is the declared exception to [performance rule
+    /// 4](../../docs/engineering/performance-rules.md#rules): it evaluates one stage-aligned tile
+    /// plus the operation's halo, and nothing caches that tile, so a caller that asks per display
+    /// cell pays it per cell. The coverage overlay reads this to refuse rather than to pay it.
+    /// `O(segments)` and reads no pixels.
+    pub(crate) fn evaluates_spatial(&self) -> bool {
+        self.segments
+            .iter()
+            .any(|segment| matches!(segment.entry, Some(Entry::Spatial { .. })))
+    }
 }
 
 /// Where one segment-output pixel comes from: the input-frame pixel it reads and the replacement
@@ -998,7 +1260,7 @@ fn apply_operations(
             *next += 1;
         }
     };
-    for run in color_runs(&segment.operations) {
+    for run in color_runs(segment) {
         write(&mut next, run.start, pixels);
         apply_color_run(pixels, segment.width, rows.clone(), &run, cancel)?;
     }
@@ -1043,6 +1305,110 @@ pub struct ContentPoint {
     pub height: u32,
 }
 
+/// One stage's dimensions, as a mapping result names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The whole geometry tail of one recipe as a single affine map, both ways, between the content
+/// stage and the output stage.
+///
+/// [`ContentPoint`] answers one pixel at a time, which is what a pick needs. A gesture that must
+/// follow the pointer cannot pay that call per move ([performance rule
+/// 12](../../docs/engineering/performance-rules.md#rules)), and it does not have to: the tail is
+/// exact integer transforms plus at most one crop resample, so the map is affine and one matrix
+/// answers every position a gesture will ask about.
+///
+/// **Coordinates are continuous and pixel-center based, the convention [`Resample`] already fixes:**
+/// pixel index `n` has its center at `n + 0.5`, so a coordinate `c` lies in pixel `c.floor()` and
+/// the content stage spans `0.0..width` by `0.0..height`. The
+/// [crop spec](../../docs/specs/single-image.md#sampling) states the same thing about the crop's own
+/// sampling, and [`Resample::inverse`] maps output pixel centers to exactly these input
+/// coordinates, so nothing here introduces a second convention.
+///
+/// Both matrices are `[m0, m1, m2, m3, m4, m5]`, again the coefficient order of
+/// [`Resample::inverse`]: `x' = m0·x + m1·y + m2` and `y' = m3·x + m4·y + m5`. `forward` maps a
+/// content coordinate to an output coordinate and `inverse` is its exact inverse; a coordinate that
+/// lands outside the output stage was cropped away, which the caller sees from `output` and this
+/// type does not hide by clamping.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageTransform {
+    pub content: StageSize,
+    pub output: StageSize,
+    pub forward: [f64; 6],
+    pub inverse: [f64; 6],
+}
+
+/// One affine map in the continuous, pixel-center coordinates [`StageTransform`] documents, in the
+/// coefficient order [`Resample::inverse`] fixes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Affine([f64; 6]);
+
+impl Affine {
+    const IDENTITY: Self = Self([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+
+    /// The continuous form of one exact step. [`ExactGeometry`] maps pixel *indices*; this is the
+    /// same mapping over pixel *centers*, so the half-pixel of the convention is conjugated in on
+    /// both sides: `out = A·(in − ½) + t + ½`. An exact step is a signed permutation with an integer
+    /// translation, so every coefficient stays exact in `f64` and the center of an input pixel lands
+    /// exactly on the center of an output pixel.
+    fn from_exact(step: ExactGeometry) -> Self {
+        let (a, b, c, d) = (step.a as f64, step.b as f64, step.c as f64, step.d as f64);
+        Self([
+            a,
+            b,
+            step.tx as f64 + 0.5 - 0.5 * (a + b),
+            c,
+            d,
+            step.ty as f64 + 0.5 - 0.5 * (c + d),
+        ])
+    }
+
+    /// `self` followed by `next`. Composing the tail this way is what keeps the cost `O(layers)`:
+    /// one matrix multiply per layer, and no walk per point afterwards.
+    fn then(self, next: Self) -> Self {
+        let [a0, a1, a2, a3, a4, a5] = self.0;
+        let [b0, b1, b2, b3, b4, b5] = next.0;
+        Self([
+            b0 * a0 + b1 * a3,
+            b0 * a1 + b1 * a4,
+            b0 * a2 + b1 * a5 + b2,
+            b3 * a0 + b4 * a3,
+            b3 * a1 + b4 * a4,
+            b3 * a2 + b4 * a5 + b5,
+        ])
+    }
+
+    /// The exact inverse map, or a refusal. A step that does not invert collapses its stage onto a
+    /// line or a point, so there is no mapping to report and reporting the identity instead would
+    /// put a gesture's pointer somewhere the recipe never puts it. The compiler already refuses a
+    /// resample whose mapping is not finite or whose output stage is empty; this is the remaining
+    /// degenerate case, refused in the same voice.
+    fn invert(self) -> Result<Self, Error> {
+        let [m0, m1, m2, m3, m4, m5] = self.0;
+        let determinant = m0 * m4 - m1 * m3;
+        let inverted = Self([
+            m4 / determinant,
+            -m1 / determinant,
+            (m1 * m5 - m4 * m2) / determinant,
+            -m3 / determinant,
+            m0 / determinant,
+            (m3 * m2 - m0 * m5) / determinant,
+        ]);
+        if determinant == 0.0 || !inverted.0.iter().all(|value| value.is_finite()) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "a geometry layer declares a mapping that cannot be inverted",
+            ));
+        }
+        Ok(inverted)
+    }
+}
+
 /// One compiled recipe bound to its source: the stage it produces and point queries that never
 /// allocate a frame. Compiling once serves any number of sampled pixels.
 pub(crate) struct Evaluation<'a> {
@@ -1082,11 +1448,19 @@ impl<'a> Evaluation<'a> {
         registry: &ModuleRegistry,
         source: &'a SourceImage,
         layers: &[Layer],
+        masks: &[crate::Mask],
+        strokes: &crate::path::StrokeTable,
     ) -> Result<Self, Error> {
         check_source(source)?;
         Ok(Self {
             source,
-            compiled: registry.compile_layers(source.width, source.height, layers)?,
+            compiled: registry.compile_layers(
+                source.width,
+                source.height,
+                layers,
+                masks,
+                strokes,
+            )?,
             tile: PRODUCTION_TILE,
         })
     }
@@ -1155,7 +1529,7 @@ impl<'a> Evaluation<'a> {
         if segment.has_color {
             let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
             let mut rgb = [rgba[0], rgba[1], rgba[2]];
-            for run in color_runs(&segment.operations).filter(|run| run.start >= after) {
+            for run in color_runs(segment).filter(|run| run.start >= after) {
                 rgb = color_pixel(rgb, &run, x, y)?;
             }
             rgba[..3].copy_from_slice(&rgb);
@@ -1255,6 +1629,59 @@ impl<'a> Evaluation<'a> {
             nearest_index(u, previous.width),
             nearest_index(v, previous.height),
         )
+    }
+}
+
+/// The input of one layer of a recipe, as a point query over the stage that layer receives: one
+/// compiled prefix answering any number of pixels in linear light.
+///
+/// **This is where a value-based mask component's pixel comes from.** The colour-constrained brush's
+/// seed and `mask.sample-input` read exactly this — the prefix before the mask's first bound layer,
+/// through `StageContext::sample_before` — one pixel at a time. The coverage overlay asks the same
+/// question once per display cell, so the prefix is compiled *once* here and the per-cell cost is the
+/// point query alone: `O(layers)`, no frame allocated ([performance rule
+/// 4](../../docs/engineering/performance-rules.md#rules)).
+///
+/// The two arms are the two source interpretations and they answer in the same domain the render's
+/// masked primitives blend in. The byte path's prefix ends at a quantized boundary, exactly as the
+/// brush's stored seed and `mask.sample-input` do, so the overlay and the seed read one value; the
+/// linear path never quantizes at all.
+pub(crate) enum LayerInput<'a> {
+    Byte(Evaluation<'a>),
+    Linear(linear::LinearEvaluation<'a>),
+}
+
+impl LayerInput<'_> {
+    /// The stage the layer receives, which is the stage a mask bound to it is compiled against.
+    pub(crate) fn stage(&self) -> Stage {
+        match self {
+            Self::Byte(evaluation) => evaluation.stage(),
+            Self::Linear(evaluation) => {
+                let (width, height) = evaluation.stage();
+                Stage { width, height }
+            }
+        }
+    }
+
+    /// One pixel of the layer's input stage, in linear light, or `None` outside that stage.
+    pub(crate) fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        match self {
+            Self::Byte(evaluation) => Ok(evaluation.pixel(x, y)?.map(|rgba| {
+                let linear = decode_pixel([rgba[0], rgba[1], rgba[2]]);
+                [
+                    f64::from(linear[0]),
+                    f64::from(linear[1]),
+                    f64::from(linear[2]),
+                ]
+            })),
+            Self::Linear(evaluation) => evaluation.pixel(x, y),
+        }
+    }
+}
+
+impl crate::analysis::MaskInputPixel for LayerInput<'_> {
+    fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        LayerInput::linear(self, x, y)
     }
 }
 
@@ -1410,6 +1837,54 @@ pub fn extents(
     Ok((stage.width, stage.height))
 }
 
+/// The whole geometry tail of one recipe as one affine map between the content stage and the output
+/// stage, in both directions.
+///
+/// This is `locate` in closed form. `locate` walks a point back through the compiled segments, which
+/// is right for a pick and wrong for a gesture that follows the pointer, so the composition happens
+/// once here and the caller maps positions itself. Every step of the tail composes: an exact step is
+/// an integer signed permutation with an integer translation, a spatial boundary keeps every
+/// coordinate of the stage it receives, and the one crop resample declares its output-to-input
+/// mapping, which inverts. Nothing else can appear in the tail.
+///
+/// The dimensions are the whole input, not a source: no pixel is read on any path here, so there is
+/// none to pass. Cost is one matrix multiply per layer on top of compiling the stack, and like
+/// [`extents`] it allocates no frame, which is what lets the catalog owner answer it
+/// ([rules 4 and 5](../../docs/engineering/performance-rules.md#rules)).
+///
+/// A stack the compiler refuses has no output stage to map, and its reason is returned unchanged —
+/// an unavailable effect is `Incompatible`, a stack the host cannot evaluate is `Validation`. There
+/// is no identity fallback on any path.
+pub fn stage_transform(
+    registry: &ModuleRegistry,
+    width: u32,
+    height: u32,
+    recipe: &Recipe,
+) -> Result<StageTransform, Error> {
+    let compiled = registry.compile(width, height, recipe)?;
+    let mut forward = Affine::IDENTITY;
+    for segment in &compiled.segments {
+        // A resample declares the map from its output back to its input, which is the direction a
+        // sampler reads; the forward direction is that map inverted. A spatial boundary is at the
+        // dimensions of the stage it receives and moves no coordinate, so it contributes nothing.
+        if let Some(resample) = segment.entry.as_ref().and_then(Entry::resample) {
+            forward = forward.then(Affine(resample.inverse).invert()?);
+        }
+        forward = forward.then(Affine::from_exact(segment.geometry));
+    }
+    let inverse = forward.invert()?;
+    let stage = compiled.stage();
+    Ok(StageTransform {
+        content: StageSize { width, height },
+        output: StageSize {
+            width: stage.width,
+            height: stage.height,
+        },
+        forward: forward.0,
+        inverse: inverse.0,
+    })
+}
+
 pub fn render(
     registry: &ModuleRegistry,
     source: &SourceImage,
@@ -1440,6 +1915,33 @@ pub fn render_cancellable(
     )
 }
 
+/// [`render_cancellable`] against a **proxy** source: the same code and the same colour arithmetic,
+/// with the proxy phase's thin-feature rule applied to the masks in the stack.
+///
+/// The recipe is resolution independent and a mask's geometry is normalized, so this is the exact
+/// recipe at proxy size and its frame is byte for byte [`render_cancellable`] over the same
+/// downscaled source — *unless* a mask draws a feature narrower than two pixels of that smaller
+/// stage, where [`MaskSampling::ThinFeature`] supersamples the mask field 2 x 2 and the caller
+/// reports the frame approximate. Nothing about the effect is supersampled, and no exact render
+/// ever takes this path.
+pub(crate) fn render_proxy_cancellable(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    render_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        cancel,
+        PRODUCTION_TILE,
+        MaskSampling::ThinFeature,
+    )
+}
+
 /// [`render_cancellable`] with the spatial tile size as a parameter. Production always passes
 /// [`PRODUCTION_TILE`]; the tests pass other sizes to prove a rendered frame does not depend on it.
 pub(crate) fn render_tiled(
@@ -1450,10 +1952,33 @@ pub(crate) fn render_tiled(
     cancel: &Cancel,
     tile: u32,
 ) -> Result<Raster, Error> {
+    render_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        cancel,
+        tile,
+        MaskSampling::Point,
+    )
+}
+
+/// [`render_tiled`] with the mask sampling as a parameter as well. The only caller that passes
+/// anything but [`MaskSampling::Point`] is the proxy phase.
+#[allow(clippy::too_many_arguments)]
+fn render_sampled(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    cancel: &Cancel,
+    tile: u32,
+    sampling: MaskSampling,
+) -> Result<Raster, Error> {
     // A token already cancelled when the call arrives costs no frame at all.
     cancel.check()?;
     check_source(source)?;
-    let compiled = registry.compile(source.width, source.height, recipe)?;
+    let compiled = registry.compile_sampled(source.width, source.height, recipe, sampling)?;
     let first = &compiled.segments[0];
     let mut width = first.width;
     let mut height = first.height;
@@ -1538,13 +2063,19 @@ mod tests {
     use super::*;
     use crate::{
         AssetId, EFFECT_FORMAT, Layer, LayerId, MAX_COLOR_UNITS, ORIENTATION_EFFECT, Orientation,
-        PIXEL_EFFECT, PixelReplace, Recipe, Snapshot, Transform,
+        PIXEL_EFFECT, PixelReplace, PointwiseColor, Recipe, Snapshot, Transform,
         modules::{
             ActionInput, ActionPlan, Availability, BoxRect, CropPayload, CropStage,
             EffectDescriptor, EffectStage, ModuleDescriptor, StageContext, ToolModule,
         },
     };
     use serde_json::{Map, Value, json};
+
+    /// The pixel value a geometric component is handed and ignores (proposal P12 of
+    /// `docs/design/range-study.md`): the masks here hold gradients and their coverage is a
+    /// function of position alone, so the value is arbitrary and the same at every call.
+    const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+    const ANY_PIXEL_F32: [f32; 3] = [0.25, 0.5, 0.75];
 
     fn registry() -> ModuleRegistry {
         ModuleRegistry::builtin()
@@ -1579,11 +2110,17 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.7, "contrast": 30.0, "vibrance": 40.0}),
+                mask: None,
                 artifacts: Vec::new(),
             },
             Layer::crop(rect.normalized(&stage)),
         ];
-        let recipe = Recipe { format: 1, layers };
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks: Vec::new(),
+            ..Recipe::default()
+        };
         let compiled = registry
             .compile(source.width, source.height, &recipe)
             .unwrap();
@@ -1649,7 +2186,12 @@ mod tests {
             &registry(),
             source,
             SnapshotId::new(),
-            &Recipe { format: 1, layers },
+            &Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+                ..Recipe::default()
+            },
         )
         .unwrap()
     }
@@ -1781,6 +2323,10 @@ mod tests {
     const TEST_CROP_EFFECT: &str = "test.crop";
     const TEST_SCALE_EFFECT: &str = "test.scale";
     const TEST_OFFSET_EFFECT: &str = "test.offset";
+    /// A resample that is finite and has a non-empty output stage, so compilation accepts it, and
+    /// whose mapping collapses its stage onto a line. No delivered module can declare one; it exists
+    /// so the host's refusal to invent a mapping for it can be proved.
+    const TEST_DEGENERATE_EFFECT: &str = "test.degenerate";
 
     impl GeometryTestModule {
         fn shared() -> Arc<dyn ToolModule> {
@@ -1788,16 +2334,22 @@ mod tests {
                 id: "test.geometry".into(),
                 title: "Test geometry".into(),
                 hint: None,
-                effects: [TEST_CROP_EFFECT, TEST_SCALE_EFFECT, TEST_OFFSET_EFFECT]
-                    .into_iter()
-                    .map(|id| EffectDescriptor {
-                        id: id.into(),
-                        format: EFFECT_FORMAT,
-                        stage: EffectStage::Geometry,
-                        order: 0,
-                        artifacts: false,
-                    })
-                    .collect(),
+                effects: [
+                    TEST_CROP_EFFECT,
+                    TEST_SCALE_EFFECT,
+                    TEST_OFFSET_EFFECT,
+                    TEST_DEGENERATE_EFFECT,
+                ]
+                .into_iter()
+                .map(|id| EffectDescriptor {
+                    id: id.into(),
+                    format: EFFECT_FORMAT,
+                    stage: EffectStage::Geometry,
+                    order: 0,
+                    maskable: false,
+                    artifacts: false,
+                })
+                .collect(),
                 actions: Vec::new(),
                 queries: Vec::new(),
                 controls: Vec::new(),
@@ -1843,6 +2395,15 @@ mod tests {
                     payload["width"].as_u64().expect("test offset") as u32,
                     payload["height"].as_u64().expect("test offset") as u32,
                 )));
+            }
+            if effect_id == TEST_DEGENERATE_EFFECT {
+                // Both axes read the same line of the input stage: finite, non-empty, and not a
+                // mapping anything can be projected back through.
+                return Ok(Processing::Resample(Resample {
+                    inverse: [1.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+                    output_width: stage.width,
+                    output_height: stage.height,
+                }));
             }
             if effect_id == TEST_SCALE_EFFECT {
                 let scale = payload["scale"].as_f64().expect("test scale");
@@ -1900,6 +2461,7 @@ mod tests {
             effect_id: TEST_CROP_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(crop).unwrap(),
+            mask: None,
             artifacts: Vec::new(),
         }
     }
@@ -1910,6 +2472,18 @@ mod tests {
             effect_id: TEST_OFFSET_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"x": x, "y": y, "width": width, "height": height}),
+            mask: None,
+            artifacts: Vec::new(),
+        }
+    }
+
+    fn degenerate_layer() -> Layer {
+        Layer {
+            id: LayerId::new(),
+            effect_id: TEST_DEGENERATE_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({}),
+            mask: None,
             artifacts: Vec::new(),
         }
     }
@@ -1920,6 +2494,7 @@ mod tests {
             effect_id: TEST_SCALE_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"scale": scale}),
+            mask: None,
             artifacts: Vec::new(),
         }
     }
@@ -2088,7 +2663,12 @@ mod tests {
                     ],
                 ),
             ] {
-                let recipe = Recipe { format: 1, layers };
+                let recipe = Recipe {
+                    format: crate::RECIPE_FORMAT,
+                    layers,
+                    masks: Vec::new(),
+                    ..Recipe::default()
+                };
                 let mut best = f64::INFINITY;
                 let mut raster = None;
                 for _ in 0..5 {
@@ -2119,8 +2699,10 @@ mod tests {
             let source = gradient(width, height);
             let crop = fitted_crop(width, height, angle, rect);
             let recipe = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: vec![crop_layer(crop)],
+                masks: Vec::new(),
+                ..Recipe::default()
             };
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             let reference = CropReference::new(&source, crop);
@@ -2193,8 +2775,10 @@ mod tests {
                     layers.push(crop_layer(crop));
                     layers.extend(after.iter().copied().map(turn));
                     let recipe = Recipe {
-                        format: 1,
+                        format: crate::RECIPE_FORMAT,
                         layers: layers.clone(),
+                        masks: Vec::new(),
+                        ..Recipe::default()
                     };
                     let compiled = registry
                         .compile(source.width, source.height, &recipe)
@@ -2225,8 +2809,10 @@ mod tests {
             &source,
             SnapshotId::new(),
             &Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: vec![crop_layer(CropPayload::NEUTRAL)],
+                masks: Vec::new(),
+                ..Recipe::default()
             },
         )
         .unwrap();
@@ -2271,8 +2857,10 @@ mod tests {
                     layers.push(crop_layer(crop));
                     layers.extend(after.iter().copied().map(turn));
                     let recipe = Recipe {
-                        format: 1,
+                        format: crate::RECIPE_FORMAT,
                         layers: layers.clone(),
+                        masks: Vec::new(),
+                        ..Recipe::default()
                     };
                     let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
                     // Every output pixel names a content pixel that the stepwise forward map puts
@@ -2359,8 +2947,10 @@ mod tests {
             let mut layers = vec![Layer::pixel(2, 3, [250, 1, 2]), crop_layer(crop)];
             layers.extend(tail.iter().cloned());
             let recipe = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: layers.clone(),
+                masks: Vec::new(),
+                ..Recipe::default()
             };
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             let reference = CropReference::new(&source, crop);
@@ -2387,6 +2977,341 @@ mod tests {
         }
     }
 
+    /// The 64-bit LCG the randomized geometry points draw from. Fixed seeds, so a disagreement is
+    /// the same disagreement on every host and run.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_unit(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+    }
+
+    /// One affine map applied to a continuous coordinate, written out here rather than shared with
+    /// the composition under test.
+    fn at(matrix: [f64; 6], x: f64, y: f64) -> (f64, f64) {
+        (
+            matrix[0] * x + matrix[1] * y + matrix[2],
+            matrix[3] * x + matrix[4] * y + matrix[5],
+        )
+    }
+
+    /// The stage a tail's transforms hand the crop after them.
+    fn turned_stage(width: u32, height: u32, transforms: &[Transform]) -> (u32, u32) {
+        let (mut width, mut height) = (width, height);
+        for transform in transforms {
+            if matches!(transform, Transform::RotateLeft | Transform::RotateRight) {
+                (width, height) = (height, width);
+            }
+        }
+        (width, height)
+    }
+
+    /// Every geometry tail the delivered modules produce: nothing, each of the eight orientations, a
+    /// crop at zero degrees, a straightened crop, and crops with transforms on both sides. A pixel,
+    /// a colour and a spatial layer ride along in one case each, because they move no coordinate and
+    /// the composition must ignore them while still walking the segments they open.
+    ///
+    /// The flag is whether the tail resamples, which is the only thing that costs the mapping its
+    /// exactness: a straightened crop, and nothing else.
+    fn geometry_tails(width: u32, height: u32) -> Vec<(String, Vec<Layer>, bool)> {
+        let mut tails = vec![("no transform".to_owned(), Vec::new(), false)];
+        for turns in 0..4u8 {
+            for mirror in [false, true] {
+                tails.push((
+                    format!("orientation mirror={mirror} turns={turns}"),
+                    vec![Layer::orientation(Orientation { mirror, turns })],
+                    false,
+                ));
+            }
+        }
+        let crops: [(f64, [f64; 4]); 3] = [
+            (0.0, [0.15, 0.2, 0.6, 0.55]),
+            (11.0, [0.2, 0.15, 0.6, 0.65]),
+            (-37.5, [0.25, 0.2, 0.5, 0.5]),
+        ];
+        let arrangements: [(&[Transform], &[Transform]); 4] = [
+            (&[], &[]),
+            (&[Transform::RotateRight], &[]),
+            (&[], &[Transform::MirrorHorizontal, Transform::RotateLeft]),
+            (
+                &[Transform::MirrorHorizontal, Transform::RotateLeft],
+                &[Transform::FlipVertical],
+            ),
+        ];
+        for (angle, rect) in crops {
+            for (before, after) in arrangements {
+                let (crop_width, crop_height) = turned_stage(width, height, before);
+                let mut layers: Vec<Layer> = before.iter().copied().map(turn).collect();
+                layers.push(Layer::crop(fitted_crop(
+                    crop_width,
+                    crop_height,
+                    angle,
+                    rect,
+                )));
+                layers.extend(after.iter().copied().map(turn));
+                tails.push((
+                    format!("crop at {angle} with {before:?} before and {after:?} after"),
+                    layers,
+                    angle != 0.0,
+                ));
+            }
+        }
+        // A pixel edit, a colour layer and a spatial layer before a straightened crop: three more
+        // operations and one more segment, and not one of them moves a coordinate.
+        tails.push((
+            "pixel, colour and spatial layers before a straightened crop".to_owned(),
+            vec![
+                Layer::pixel(3, 4, [250, 1, 2]),
+                Layer {
+                    id: LayerId::new(),
+                    effect_id: crate::BASIC_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload: json!({"exposure": 0.4, "contrast": 20.0}),
+                    mask: None,
+                    artifacts: Vec::new(),
+                },
+                Layer {
+                    id: LayerId::new(),
+                    effect_id: crate::PRESENCE_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload: json!({"texture": 35.0}),
+                    mask: None,
+                    artifacts: Vec::new(),
+                },
+                Layer::crop(fitted_crop(width, height, 6.0, [0.2, 0.2, 0.55, 0.55])),
+            ],
+            true,
+        ));
+        tails
+    }
+
+    /// `stage_transform` is `locate` in closed form, so the two must name the same content pixel.
+    ///
+    /// The strong direction is `inverse`: rounding the continuous content coordinate it gives for an
+    /// output pixel center to the pixel that contains it must be, exactly, the pixel `locate` walks
+    /// to. That is not the same arithmetic — `locate` rounds at the resample and then applies the
+    /// exact steps before it as integers, while this composes everything continuously and rounds
+    /// once at the end — so the agreement is a real check on the half-pixel convention and on the
+    /// composition order, not a re-run of the walk.
+    ///
+    /// The two orders can disagree in exactly one place: a position that lands *on* a content pixel
+    /// boundary, where `nearest_index`'s floor takes the lower index in the resample's own frame and
+    /// a reflection after it turns that into the higher index in the content stage. The seeded points
+    /// below never land on one, and this asserts that rather than allowing a pixel of slack.
+    #[test]
+    fn the_stage_transform_and_locate_name_the_same_content_pixel() {
+        let registry = registry();
+        let (width, height) = (40, 28);
+        let source = gradient(width, height);
+        for (case, layers, _) in geometry_tails(width, height) {
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+                ..Recipe::default()
+            };
+            let transform = stage_transform(&registry, width, height, &recipe).unwrap();
+            let (stage_width, stage_height) = extents(&registry, &source, &recipe).unwrap();
+            assert_eq!(
+                (transform.content.width, transform.content.height),
+                (width, height),
+                "{case}: the content stage"
+            );
+            assert_eq!(
+                (transform.output.width, transform.output.height),
+                (stage_width, stage_height),
+                "{case}: the output stage"
+            );
+            let mut rng = Lcg(0x5EED_0007);
+            for _ in 0..400 {
+                let x = (rng.next_unit() * f64::from(stage_width)).floor() as u32;
+                let y = (rng.next_unit() * f64::from(stage_height)).floor() as u32;
+                let (x, y) = (x.min(stage_width - 1), y.min(stage_height - 1));
+                let (u, v) = at(transform.inverse, f64::from(x) + 0.5, f64::from(y) + 0.5);
+                assert!(
+                    u.fract() != 0.0 && v.fract() != 0.0,
+                    "{case}: ({x}, {y}) maps onto a content pixel boundary at ({u}, {v}), \
+                     where the two rounding orders are allowed to differ"
+                );
+                let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                assert_eq!(
+                    (located.content_x, located.content_y),
+                    (nearest_index(u, width), nearest_index(v, height)),
+                    "{case}: ({x}, {y}) maps to ({u}, {v})"
+                );
+                assert_eq!(
+                    (located.width, located.height),
+                    (width, height),
+                    "{case}: the content stage"
+                );
+            }
+        }
+    }
+
+    /// The acceptance direction: project a content point through `forward` and locate the rendered
+    /// pixel it lands in.
+    ///
+    /// For every exact tail this is exact. `forward` is then a signed permutation of continuous
+    /// coordinates, so it carries the pixel containing the content point onto the pixel containing
+    /// its image, and `locate` walks straight back to it.
+    ///
+    /// A straightened crop cannot be exact in the index domain, and the reason is arithmetic rather
+    /// than approximate: taking the output *pixel* the projection lands in discards up to half a
+    /// pixel in each axis, and `inverse` carries that back into the content stage scaled by its own
+    /// coefficients, `½(|m0| + |m1|)` in x and `½(|m3| + |m4|)` in y — about 0.71 content pixels for
+    /// the rotation a crop applies. A displacement that large can cross one content pixel boundary
+    /// and no more, so the located pixel is within one index, and the continuous displacement is
+    /// asserted against that derived budget rather than against a chosen number.
+    #[test]
+    fn projecting_a_content_point_forward_locates_the_pixel_it_came_from() {
+        let registry = registry();
+        let (width, height) = (40, 28);
+        let source = gradient(width, height);
+        for (case, layers, resamples) in geometry_tails(width, height) {
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+                ..Recipe::default()
+            };
+            let transform = stage_transform(&registry, width, height, &recipe).unwrap();
+            let budget_x = 0.5 * (transform.inverse[0].abs() + transform.inverse[1].abs());
+            let budget_y = 0.5 * (transform.inverse[3].abs() + transform.inverse[4].abs());
+            let mut rng = Lcg(0x5EED_0070);
+            let mut located_points = 0;
+            for _ in 0..1000 {
+                let px = rng.next_unit() * f64::from(width);
+                let py = rng.next_unit() * f64::from(height);
+                let (qx, qy) = at(transform.forward, px, py);
+                // A content point the crop discarded has no rendered pixel to locate.
+                if qx < 0.0
+                    || qy < 0.0
+                    || qx >= f64::from(transform.output.width)
+                    || qy >= f64::from(transform.output.height)
+                {
+                    continue;
+                }
+                located_points += 1;
+                let (x, y) = (qx.floor() as u32, qy.floor() as u32);
+                let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                let (content_x, content_y) = (px.floor() as u32, py.floor() as u32);
+                if !resamples {
+                    assert_eq!(
+                        (located.content_x, located.content_y),
+                        (content_x, content_y),
+                        "{case}: ({px}, {py}) projects to ({qx}, {qy})"
+                    );
+                    continue;
+                }
+                // The centre of the pixel the projection landed in, carried back: within the budget
+                // of the content point it started from, and therefore within one content pixel.
+                let (u, v) = at(transform.inverse, f64::from(x) + 0.5, f64::from(y) + 0.5);
+                assert!(
+                    (u - px).abs() <= budget_x + 1e-9 && (v - py).abs() <= budget_y + 1e-9,
+                    "{case}: ({px}, {py}) came back as ({u}, {v}), outside \
+                     ({budget_x}, {budget_y})"
+                );
+                assert!(
+                    located.content_x.abs_diff(content_x) <= 1
+                        && located.content_y.abs_diff(content_y) <= 1,
+                    "{case}: ({px}, {py}) located ({}, {}) instead of ({content_x}, {content_y})",
+                    located.content_x,
+                    located.content_y,
+                );
+            }
+            // The narrowest tail here, a half-frame crop at −37.5°, keeps about a fifth of the
+            // content stage; this only proves no case tested nothing.
+            assert!(
+                located_points > 100,
+                "{case}: only {located_points} of the points landed in the output stage"
+            );
+        }
+    }
+
+    /// `forward` and `inverse` are one mapping stated twice. The tolerance is `f64` round-off over a
+    /// handful of multiplies at coordinates of a few thousand — the last bits of the mantissa, some
+    /// three orders of magnitude under the 1e-9 asserted here — and nothing else: every exact tail
+    /// composes integers and half-integers, and the crop's rotation is the only inexact step.
+    #[test]
+    fn the_stage_transform_and_its_inverse_are_mutual_inverses() {
+        let registry = registry();
+        let (width, height) = (40, 28);
+        for (case, layers, _) in geometry_tails(width, height) {
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+                ..Recipe::default()
+            };
+            let transform = stage_transform(&registry, width, height, &recipe).unwrap();
+            let mut rng = Lcg(0x5EED_0700);
+            for _ in 0..400 {
+                let px = rng.next_unit() * f64::from(width);
+                let py = rng.next_unit() * f64::from(height);
+                let (qx, qy) = at(transform.forward, px, py);
+                let (rx, ry) = at(transform.inverse, qx, qy);
+                assert!(
+                    (rx - px).abs() < 1e-9 && (ry - py).abs() < 1e-9,
+                    "{case}: ({px}, {py}) round-tripped to ({rx}, {ry})"
+                );
+                let ox = rng.next_unit() * f64::from(transform.output.width);
+                let oy = rng.next_unit() * f64::from(transform.output.height);
+                let (cx, cy) = at(transform.inverse, ox, oy);
+                let (bx, by) = at(transform.forward, cx, cy);
+                assert!(
+                    (bx - ox).abs() < 1e-9 && (by - oy).abs() < 1e-9,
+                    "{case}: output ({ox}, {oy}) round-tripped to ({bx}, {by})"
+                );
+            }
+        }
+    }
+
+    /// A stack with no output stage has no mapping, and says so in the voice the neighbouring
+    /// methods use. An identity matrix would put a gesture's pointer where the recipe never puts it,
+    /// so no path here returns one.
+    #[test]
+    fn a_stack_without_a_renderable_output_stage_has_no_transform() {
+        let registry = geometry_registry();
+        let (width, height) = (32, 24);
+
+        // An effect no module provides: `extents` and `locate` report it this way too.
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: LayerId::new(),
+                effect_id: "test.absent".into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({}),
+                mask: None,
+                artifacts: Vec::new(),
+            }],
+            masks: Vec::new(),
+            ..Recipe::default()
+        };
+        let error = stage_transform(&registry, width, height, &recipe)
+            .expect_err("an unavailable effect has no output stage");
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert!(error.detail.contains("unavailable effect"), "{error}");
+
+        // A finite, non-empty resample that still collapses its stage onto a line. The compiler's
+        // own checks pass it, so this is the one degenerate mapping that reaches the composition.
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![degenerate_layer()],
+            masks: Vec::new(),
+            ..Recipe::default()
+        };
+        let error = stage_transform(&registry, width, height, &recipe)
+            .expect_err("a collapsed stage has no mapping");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(error.detail.contains("cannot be inverted"), "{error}");
+    }
+
     #[test]
     fn a_translation_with_a_smaller_output_composes_and_is_bounds_checked() {
         let registry = geometry_registry();
@@ -2398,8 +3323,10 @@ mod tests {
             offset_layer(1, 2, 2, 3),
         ];
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: layers.clone(),
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let compiled = registry
             .compile(source.width, source.height, &recipe)
@@ -2431,8 +3358,10 @@ mod tests {
             vec![offset_layer(1, 1, 5, 4), offset_layer(1, 0, 5, 4)],
         ] {
             let recipe = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: layers.clone(),
+                masks: Vec::new(),
+                ..Recipe::default()
             };
             let error = render(&registry, &source, SnapshotId::new(), &recipe)
                 .expect_err(&format!("{layers:?} reads outside the stage"));
@@ -2473,8 +3402,10 @@ mod tests {
             vec![scale_layer(2.0), Layer::pixel(5, 5, [254, 9, 10])],
         ] {
             let recipe = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: layers.clone(),
+                masks: Vec::new(),
+                ..Recipe::default()
             };
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             for y in 0..raster.height {
@@ -2514,12 +3445,16 @@ mod tests {
             crop_layer(fitted_crop(8, 6, 15.0, [0.25, 0.25, 0.5, 0.5])),
         ] {
             let with_outside = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: vec![inside.clone(), outside.clone(), crop.clone()],
+                masks: Vec::new(),
+                ..Recipe::default()
             };
             let without = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: vec![inside.clone(), crop.clone()],
+                masks: Vec::new(),
+                ..Recipe::default()
             };
             let rendered = render(&registry, &source, SnapshotId::new(), &with_outside).unwrap();
             let expected = render(&registry, &source, SnapshotId::new(), &without).unwrap();
@@ -2543,8 +3478,10 @@ mod tests {
         let registry = geometry_registry();
         let source = source(3, 2);
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![scale_layer(10_000.0)],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let error = render(&registry, &source, SnapshotId::new(), &recipe)
             .expect_err("30000x20000 is over the frame limit");
@@ -2556,8 +3493,10 @@ mod tests {
         assert!(sampled.rgba.is_some());
         // A resample must declare a stage the host can address at all.
         let empty = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![scale_layer(0.0)],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let error = sample(&registry, &source, &empty, 0, 0).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Validation);
@@ -2740,7 +3679,7 @@ mod tests {
             .collect();
         source.rgba = rgba.into();
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![
                 Layer::pixel(1, 1, [201, 1, 2]),
                 turn(Transform::RotateLeft),
@@ -2749,6 +3688,8 @@ mod tests {
                 Layer::pixel(0, 0, [204, 8, 9]),
                 Layer::pixel(0, 0, [205, 10, 11]),
             ],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
         for y in 0..raster.height {
@@ -2774,8 +3715,10 @@ mod tests {
             None
         );
         let invalid = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![Layer::pixel(9, 9, [0, 0, 0])],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         assert!(sample(&registry, &source, &invalid, 0, 0).is_err());
     }
@@ -2791,8 +3734,10 @@ mod tests {
                 &source,
                 snapshot.id.clone(),
                 &Recipe {
-                    format: 1,
-                    layers: vec![Layer::pixel(3, 0, [0, 0, 0])]
+                    format: crate::RECIPE_FORMAT,
+                    layers: vec![Layer::pixel(3, 0, [0, 0, 0])],
+                    masks: Vec::new(),
+                    ..Recipe::default()
                 }
             )
             .is_err()
@@ -2900,39 +3845,55 @@ mod tests {
     pub(crate) const TEST_COLOR_EFFECT: &str = "test.colour";
 
     /// A test-only module with one colour effect. The Basic module is a separate deliverable; this
-    /// one exists so the host's colour stage can be tested without it.
-    struct ColorTestModule(ModuleDescriptor);
+    /// one exists so the host's colour stage can be tested without it. Its effect declares itself
+    /// maskable, so a masked layer of it compiles exactly as a delivered maskable effect's does.
+    struct ColorTestModule {
+        descriptor: ModuleDescriptor,
+        /// Handed to the `counting` unit when a payload asks for one, so a test can count the pixels
+        /// a masked operation actually evaluated.
+        counter: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    }
 
     impl ColorTestModule {
+        fn with_counter(
+            counter: Option<Arc<std::sync::atomic::AtomicUsize>>,
+        ) -> Arc<dyn ToolModule> {
+            Arc::new(Self {
+                descriptor: ModuleDescriptor {
+                    id: "test.colour".into(),
+                    title: "Test colour".into(),
+                    hint: None,
+                    effects: vec![EffectDescriptor {
+                        id: TEST_COLOR_EFFECT.into(),
+                        format: EFFECT_FORMAT,
+                        stage: EffectStage::Color,
+                        order: 0,
+                        maskable: true,
+                        artifacts: false,
+                    }],
+                    actions: Vec::new(),
+                    queries: Vec::new(),
+                    controls: Vec::new(),
+                    reset: None,
+                    canvas: None,
+                    developer: false,
+                    collapsed: false,
+                    layout: crate::ModuleLayout::Stacked,
+                    availability: Availability::Available,
+                    ..ModuleDescriptor::default()
+                },
+                counter,
+            })
+        }
+
         fn shared() -> Arc<dyn ToolModule> {
-            Arc::new(Self(ModuleDescriptor {
-                id: "test.colour".into(),
-                title: "Test colour".into(),
-                hint: None,
-                effects: vec![EffectDescriptor {
-                    id: TEST_COLOR_EFFECT.into(),
-                    format: EFFECT_FORMAT,
-                    stage: EffectStage::Color,
-                    order: 0,
-                    artifacts: false,
-                }],
-                actions: Vec::new(),
-                queries: Vec::new(),
-                controls: Vec::new(),
-                reset: None,
-                canvas: None,
-                developer: false,
-                collapsed: false,
-                layout: crate::ModuleLayout::Stacked,
-                availability: Availability::Available,
-                ..ModuleDescriptor::default()
-            }))
+            Self::with_counter(None)
         }
     }
 
     impl ToolModule for ColorTestModule {
         fn descriptor(&self) -> &ModuleDescriptor {
-            &self.0
+            &self.descriptor
         }
         fn parse(&self, _: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
             Err(Error::new(ErrorKind::Internal, "no actions"))
@@ -2972,6 +3933,11 @@ mod tests {
                     height: stage.height as f32,
                 }));
             }
+            if payload["counting"] == json!(true)
+                && let Some(counter) = &self.counter
+            {
+                units.push(Arc::new(Counting(counter.clone())));
+            }
             Ok(Processing::Color(ColorOperation::new(units)))
         }
     }
@@ -2982,6 +3948,7 @@ mod tests {
             effect_id: TEST_COLOR_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            mask: None,
             artifacts: Vec::new(),
         }
     }
@@ -3002,8 +3969,41 @@ mod tests {
         registry
     }
 
+    /// A colour registry whose test module counts the pixels its `counting` unit was handed.
+    fn counting_registry(counter: Arc<std::sync::atomic::AtomicUsize>) -> ModuleRegistry {
+        let mut registry = geometry_registry();
+        registry
+            .register(ColorTestModule::with_counter(Some(counter)))
+            .unwrap();
+        registry
+    }
+
+    /// One rendered frame used as the source of another render: the reference for "the mask travelled
+    /// with the picture" turns an already masked frame with the delivered exact pass.
+    fn rendered_from(raster: &Raster, layers: Vec<Layer>) -> Raster {
+        let source = SourceImage {
+            width: raster.width,
+            height: raster.height,
+            rgba: raster.rgba.clone(),
+            fingerprint: "sha256:rendered-again".into(),
+            orientation: 1,
+        };
+        render(
+            &colour_registry(),
+            &source,
+            SnapshotId::new(),
+            &colour_recipe(layers),
+        )
+        .unwrap()
+    }
+
     fn colour_recipe(layers: Vec<Layer>) -> Recipe {
-        Recipe { format: 1, layers }
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks: Vec::new(),
+            ..Recipe::default()
+        }
     }
 
     /// The sRGB transfer function forwards in f64, written from the contract and used only by the
@@ -3613,6 +4613,645 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------
+    // The masked colour primitive.
+    // ---------------------------------------------------------------------------------------
+
+    /// A test-only colour unit that counts the pixels it was handed, so "outside the bounds nothing
+    /// is evaluated" is a counted fact and not an argument. It leaves red alone and marks green, so a
+    /// frame also shows where it ran.
+    #[derive(Debug)]
+    struct Counting(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl PointwiseColor for Counting {
+        fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
+            self.0
+                .fetch_add(rgb.len(), std::sync::atomic::Ordering::Relaxed);
+            for pixel in rgb {
+                pixel[1] = 1.0;
+            }
+        }
+        fn is_finite(&self) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            "counting".into()
+        }
+    }
+
+    /// One mask of one `add` linear gradient, at full amount: `p0` at coverage 0 and `p1` at 1, both
+    /// as normalized content-stage positions.
+    fn linear_mask(x0: f64, y0: f64, x1: f64, y1: f64) -> crate::Mask {
+        let mut mask = crate::Mask::new("Mask 1");
+        mask.components = vec![crate::Component::new(
+            "Linear 1",
+            crate::ComponentMode::Add,
+            "linear",
+            json!({"x0": x0, "y0": y0, "x1": x1, "y1": y1}),
+        )];
+        mask
+    }
+
+    fn masked(layer: Layer, mask: &crate::Mask) -> Layer {
+        Layer {
+            mask: Some(mask.id.clone()),
+            ..layer
+        }
+    }
+
+    fn masked_recipe(layers: Vec<Layer>, masks: Vec<crate::Mask>) -> Recipe {
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks,
+            ..Recipe::default()
+        }
+    }
+
+    /// The two endpoints of the blend, byte for byte and not approximately: coverage of exactly zero
+    /// everywhere renders the unmasked input, and coverage of exactly one everywhere renders the
+    /// unmasked effect. Two spellings of zero are checked, because they take different paths: an
+    /// `amount` of zero empties the bounds rectangle so nothing is evaluated at all, while a gradient
+    /// whose frame lies entirely behind `p0` is evaluated and blended with `M = 0`.
+    #[test]
+    fn the_endpoints_of_the_mask_are_byte_identical_to_the_unmasked_frames() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(37, 23);
+        let identity = render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &colour_recipe(vec![]),
+        )
+        .unwrap();
+        let exposed = render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &colour_recipe(vec![exposure_layer(&[1.5])]),
+        )
+        .unwrap();
+        // M = 0 by amount: the rectangle is empty, so no unit runs anywhere.
+        let mut silent = linear_mask(0.5, 0.0, 0.5, 1.0);
+        silent.amount = 0.0;
+        // M = 0 by geometry: the whole frame sits behind p0, which is below the frame.
+        let behind = linear_mask(0.5, 1.5, 0.5, 2.0);
+        // M = 1 everywhere: the whole frame sits beyond p1, which is above it.
+        let ahead = linear_mask(0.5, -1.0, 0.5, -0.5);
+        for (case, mask, expected) in [
+            ("amount zero", silent, &identity),
+            ("behind p0", behind, &identity),
+            ("beyond p1", ahead, &exposed),
+        ] {
+            let recipe = masked_recipe(
+                vec![masked(exposure_layer(&[1.5]), &mask)],
+                vec![mask.clone()],
+            );
+            let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+            assert_eq!(
+                raster.rgba.as_ref(),
+                expected.rgba.as_ref(),
+                "{case}: the masked frame is not byte-identical"
+            );
+            // And the sampled byte is the rendered byte at every pixel of both endpoints.
+            for y in 0..raster.height {
+                for x in 0..raster.width {
+                    assert_eq!(
+                        sample(&registry, &source, &recipe, x, y).unwrap().rgba,
+                        raster.pixel(x, y),
+                        "{case}: sample disagrees at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A half-covered frame against an independent stepwise evaluation, and the property that makes
+    /// the blend a *masked operation* rather than a masked run: the operations before and after the
+    /// masked one apply everywhere, nothing is clamped or quantized between them, and the masked one
+    /// is blended against the value it was handed.
+    #[test]
+    fn a_masked_operation_blends_against_its_own_input_inside_the_run() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        // Every byte once at exactly half coverage — the 256×1 strip's one row sits at `v = 0.5` of a
+        // gradient from `v = 0` to `v = 1`, where `smooth(0.5)` is exactly `0.5` — and then a frame
+        // whose coverage varies row by row through the whole feather band.
+        for (case, source) in [
+            ("every byte at M = 0.5", greys()),
+            ("a feather band", gradient(64, 48)),
+        ] {
+            let mask = linear_mask(0.5, 0.0, 0.5, 1.0);
+            let recipe = masked_recipe(
+                vec![
+                    exposure_layer(&[0.5]),
+                    masked(exposure_layer(&[2.0]), &mask),
+                    exposure_layer(&[-0.25]),
+                ],
+                vec![mask.clone()],
+            );
+            let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+            let compiled = crate::mask::CompiledMask::new(
+                &mask,
+                Stage {
+                    width: source.width,
+                    height: source.height,
+                },
+                &crate::path::StrokeTable::default(),
+            )
+            .unwrap();
+            let mut partial = 0;
+            for y in 0..raster.height {
+                let coverage = f64::from(compiled.evaluate(0, y, ANY_PIXEL_F32));
+                if coverage > 0.0 && coverage < 1.0 {
+                    partial += 1;
+                }
+                for x in 0..raster.width {
+                    let byte = source.rgba[((y * source.width + x) * 4) as usize];
+                    // The stepwise f64 reference: decode, the first operation everywhere, the masked
+                    // one blended against its own input, the last one everywhere, one quantization.
+                    let input = decode_reference(f64::from(byte) / 255.0) * 2.0_f64.powf(0.5);
+                    let effect = input * 2.0_f64.powf(2.0);
+                    let coverage = f64::from(compiled.evaluate(x, y, ANY_PIXEL_F32));
+                    let blended = (1.0 - coverage) * input + coverage * effect;
+                    let clamped = (blended * 2.0_f64.powf(-0.25)).clamp(0.0, 1.0);
+                    let expected = (255.0 * encode_reference(clamped) + 0.5).floor() as u8;
+                    let actual = raster.pixel(x, y).unwrap()[0];
+                    assert_code_within_tolerance(
+                        actual,
+                        expected,
+                        clamped,
+                        &format!("{case} at ({x}, {y})"),
+                    );
+                    assert_eq!(
+                        sample(&registry, &source, &recipe, x, y).unwrap().rgba,
+                        raster.pixel(x, y),
+                        "{case}: sample disagrees at ({x}, {y})"
+                    );
+                }
+            }
+            // The coverage the fixture exercised is genuinely partial, not one of the endpoints.
+            assert_eq!(
+                partial, raster.height as usize,
+                "{case}: every row of this fixture must be partially covered"
+            );
+            if case == "every byte at M = 0.5" {
+                assert_eq!(
+                    compiled.coverage(0, 0, ANY_PIXEL),
+                    0.5,
+                    "the strip's own coverage"
+                );
+            }
+        }
+    }
+
+    /// Outside the bounds rectangle a masked operation evaluates **no unit at all**, counted. The
+    /// same test states the rectangle's own conservatism: it is at most one pixel larger on each side
+    /// than the rows whose coverage is non-zero.
+    #[test]
+    fn a_masked_operation_evaluates_no_unit_outside_its_bounds() {
+        let _scratch = scratch_guard();
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let registry = counting_registry(counter.clone());
+        let source = gradient(200, 100);
+        let stage = Stage {
+            width: source.width,
+            height: source.height,
+        };
+        // A gradient over the bottom tenth of the frame: p0 at v = 0.9, p1 at v = 1.0.
+        let mask = linear_mask(0.5, 0.9, 0.5, 1.0);
+        let recipe = masked_recipe(
+            vec![masked(colour_layer(json!({"counting": true})), &mask)],
+            vec![mask.clone()],
+        );
+        counter.store(0, std::sync::atomic::Ordering::Relaxed);
+        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+        let counted = counter.load(std::sync::atomic::Ordering::Relaxed);
+        let compiled =
+            crate::mask::CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default())
+                .unwrap();
+        let bounds = compiled.bounds();
+        assert_eq!(
+            counted as u64,
+            bounds.pixels(),
+            "the unit ran over {counted} pixels against a {}x{} rectangle",
+            bounds.width,
+            bounds.height
+        );
+        // The frame is 20000 pixels and the rectangle is a small part of it: the saving is the point.
+        assert!(
+            (counted as u64) * 8 < u64::from(source.width) * u64::from(source.height),
+            "{counted} pixels is not a small part of the frame"
+        );
+        // Every pixel the unit did not touch kept its input byte exactly, and the rows it did touch
+        // are the rows with coverage.
+        for y in 0..raster.height {
+            let touched = y >= bounds.y0 && y < bounds.y1();
+            let green = raster.pixel(0, y).unwrap()[1];
+            let input = source.rgba[((y * source.width) * 4 + 1) as usize];
+            if !touched {
+                assert_eq!(green, input, "row {y} was outside the rectangle");
+                assert_eq!(
+                    compiled.evaluate(0, y, ANY_PIXEL_F32),
+                    0.0,
+                    "row {y} has coverage"
+                );
+            }
+        }
+        // And a point sample agrees with the frame inside the feather band and at both bounds edges.
+        for y in [
+            0,
+            bounds.y0.saturating_sub(1),
+            bounds.y0,
+            bounds.y0 + 1,
+            95,
+            raster.height - 1,
+        ] {
+            for x in [0, 1, raster.width / 2, raster.width - 1] {
+                assert_eq!(
+                    sample(&registry, &source, &recipe, x, y).unwrap().rgba,
+                    raster.pixel(x, y),
+                    "sample disagrees at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    /// A mask is stored in content-stage coordinates, so it travels through the geometry tail with
+    /// the picture: masking a colour layer and then turning the frame renders the turn of the masked
+    /// frame, exactly. This is what the suffix mapping inside the blend exists for — without it the
+    /// mask would be read at the turned frame's coordinates.
+    #[test]
+    fn a_mask_lands_on_the_same_content_pixels_through_the_geometry_tail() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(24, 16);
+        let mask = linear_mask(0.25, 0.25, 0.75, 0.75);
+        let masked_layer = masked(exposure_layer(&[1.0]), &mask);
+        let flat = render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &masked_recipe(vec![masked_layer.clone()], vec![mask.clone()]),
+        )
+        .unwrap();
+        for transform in [
+            Transform::RotateRight,
+            Transform::RotateLeft,
+            Transform::MirrorHorizontal,
+            Transform::FlipVertical,
+        ] {
+            // The masked colour layer first, then the turn: the host places a colour layer before the
+            // geometry tail, so this is the order a commit produces.
+            let turned = render(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &masked_recipe(
+                    vec![masked_layer.clone(), turn(transform)],
+                    vec![mask.clone()],
+                ),
+            )
+            .unwrap();
+            // The reference: turn the masked frame with the delivered exact pass.
+            let expected = rendered_from(&flat, vec![turn(transform)]);
+            assert_eq!(turned.width, expected.width, "{transform:?}");
+            assert_eq!(
+                turned.rgba.as_ref(),
+                expected.rgba.as_ref(),
+                "{transform:?}: the mask did not travel with the picture"
+            );
+            let recipe = masked_recipe(
+                vec![masked_layer.clone(), turn(transform)],
+                vec![mask.clone()],
+            );
+            for y in 0..turned.height {
+                for x in 0..turned.width {
+                    assert_eq!(
+                        sample(&registry, &source, &recipe, x, y).unwrap().rgba,
+                        turned.pixel(x, y),
+                        "{transform:?}: sample disagrees at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The snapshot block a masked operation is processed in is scratch, not arithmetic: the units are
+    /// pointwise, so the same row blended in blocks of 1, 3 and the whole row is the same row.
+    #[test]
+    fn the_masked_blend_does_not_depend_on_the_snapshot_block_size() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(64, 5);
+        let mask = linear_mask(0.1, 0.2, 0.9, 0.8);
+        let recipe = masked_recipe(
+            vec![
+                exposure_layer(&[0.75]),
+                masked(exposure_layer(&[-1.5]), &mask),
+            ],
+            vec![mask],
+        );
+        let compiled = registry
+            .compile(source.width, source.height, &recipe)
+            .unwrap();
+        let segment = compiled.segments.last().unwrap();
+        let row = |block: usize| -> Vec<[f32; 3]> {
+            let mut pixels: Vec<[f32; 3]> = (0..source.width)
+                .map(|x| decode_pixel([x as u8, (x as u8).wrapping_add(20), 0]))
+                .collect();
+            let mut scratch = vec![[0.0f32; 3]; block];
+            for run in color_runs(segment) {
+                apply_units(&run, 2, 0, &mut pixels, &mut scratch).unwrap();
+            }
+            pixels
+        };
+        let whole = row(source.width as usize);
+        for block in [1, 3, 7, 64] {
+            assert_eq!(row(block), whole, "block of {block}");
+        }
+    }
+
+    /// A neutral payload compiles to no units whether it carries a mask or not, so the segment keeps
+    /// the identity byte path and the shared source buffer: masking nothing is nothing.
+    #[test]
+    fn a_neutral_masked_layer_keeps_the_identity_byte_path() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(16, 9);
+        let mask = linear_mask(0.5, 0.0, 0.5, 1.0);
+        let recipe = masked_recipe(vec![masked(exposure_layer(&[]), &mask)], vec![mask.clone()]);
+        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+        assert!(
+            Arc::ptr_eq(&raster.rgba, &source.rgba),
+            "a neutral masked layer allocated a frame"
+        );
+        let compiled = registry
+            .compile(source.width, source.height, &recipe)
+            .unwrap();
+        assert!(compiled.segments.last().unwrap().operations.is_empty());
+    }
+
+    /// Masked scratch is bounded by the existing float budget and is taken only when a run needs it:
+    /// an unmasked pass reserves what it always reserved.
+    #[test]
+    fn a_masked_run_reserves_its_row_snapshot_from_the_existing_budget() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(64, 48);
+        let mask = linear_mask(0.5, 0.0, 0.5, 1.0);
+        let recipe = masked_recipe(
+            vec![masked(exposure_layer(&[1.0]), &mask)],
+            vec![mask.clone()],
+        );
+        let budget = ScratchBudget::default();
+        let idle = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while budget.in_use() != 0 {
+                assert!(std::time::Instant::now() < deadline, "scratch stayed held");
+                std::thread::yield_now();
+            }
+        };
+        idle();
+        // One row chunk plus one row of snapshot. The budget is a **target and not a limit**, so a
+        // target that fits the chunk but not the snapshot renders anyway rather than refusing: what
+        // the snapshot costs is visible in the high-water mark, never in an error.
+        let chunk = color_chunk_rows(source.width) * source.width as usize * 12;
+        let snapshot = source.width as usize * 12;
+        let previous = budget.set_target(chunk as u64);
+        let rendered = render(&registry, &source, SnapshotId::new(), &recipe);
+        budget.set_target(previous);
+        assert!(
+            rendered.is_ok(),
+            "a masked run past the target still renders: {:?}",
+            rendered.err()
+        );
+        idle();
+        assert!(render(&registry, &source, SnapshotId::new(), &recipe).is_ok());
+        // The unmasked stack renders inside a target that holds only the chunk without ever
+        // overshooting it, so the snapshot is charged to masked runs alone.
+        let unmasked = colour_recipe(vec![exposure_layer(&[1.0])]);
+        let previous = budget.set_target(chunk as u64);
+        let before = budget.peak();
+        let rendered = render(&registry, &source, SnapshotId::new(), &unmasked);
+        budget.set_target(previous);
+        assert!(rendered.is_ok(), "{:?}", rendered.err());
+        idle();
+        // A point sample streams nothing and allocates no snapshot, so it answers at any target.
+        let previous = budget.set_target(0);
+        let sampled = sample(&registry, &source, &recipe, 3, 3).unwrap();
+        budget.set_target(previous);
+        assert!(sampled.rgba.is_some());
+        // The high-water mark is what makes the aggregate observable after the fact: a masked pass
+        // has to have carried at least one chunk and one row of snapshot at once. `peak` is
+        // process-wide and only ever raised, so this reads "at least"; the unmasked and sampled runs
+        // above raised it by nothing, which is the other half of the claim.
+        assert!(
+            budget.peak() >= (chunk + snapshot) as u64,
+            "the peak {} never reached one chunk plus one row of snapshot",
+            budget.peak()
+        );
+        assert_eq!(
+            budget.peak(),
+            before,
+            "an unmasked run or a point sample raised the peak the masked run had already set"
+        );
+    }
+
+    /// What a masked colour layer costs on a photo-sized frame, and what the bounds rectangle saves.
+    /// Ignored by default because it is a recorded measurement rather than a pass/fail property:
+    ///
+    /// ```sh
+    /// cargo test --release --package lightwell-core --lib \
+    ///     render::tests::masked_colour_cost_on_a_24_megapixel_frame -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a recorded measurement, not an assertion"]
+    fn masked_colour_cost_on_a_24_megapixel_frame() {
+        let registry = colour_registry();
+        let source = gradient(6000, 4000);
+        let stage = Stage {
+            width: source.width,
+            height: source.height,
+        };
+        // A gradient over the bottom twentieth of the frame against one over the whole frame: the same
+        // mask mathematics and the same units, differing only in how much of the frame the bounds
+        // rectangle admits.
+        let small = linear_mask(0.5, 0.95, 0.5, 1.0);
+        let whole = linear_mask(0.5, 0.0, 0.5, 1.0);
+        let unmasked = colour_recipe(vec![exposure_layer(&[1.0])]);
+        let identity = colour_recipe(vec![]);
+        let measure = |name: &str, recipe: &Recipe| {
+            // One warm pass, then three measured ones: the frame allocation dominates a single run.
+            render(&registry, &source, SnapshotId::new(), recipe).unwrap();
+            let started = std::time::Instant::now();
+            for _ in 0..3 {
+                std::hint::black_box(
+                    render(&registry, &source, SnapshotId::new(), recipe).unwrap(),
+                );
+            }
+            println!(
+                "{name}: {:.1} ms per 24 MP render",
+                started.elapsed().as_secs_f64() * 1000.0 / 3.0
+            );
+        };
+        measure("identity", &identity);
+        measure("unmasked exposure", &unmasked);
+        for (name, mask) in [("small bounds", small), ("whole frame", whole)] {
+            let compiled =
+                crate::mask::CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default())
+                    .unwrap();
+            let bounds = compiled.bounds();
+            println!(
+                "{name}: the rectangle admits {:.2}% of the frame",
+                100.0 * bounds.pixels() as f64 / (6000.0 * 4000.0)
+            );
+            measure(
+                name,
+                &masked_recipe(
+                    vec![masked(exposure_layer(&[1.0]), &mask)],
+                    vec![mask.clone()],
+                ),
+            );
+        }
+    }
+
+    /// One brush mask over these strokes, with the resolved table its addresses read through.
+    fn brush_mask(strokes: &[crate::path::Stroke]) -> (crate::Mask, crate::path::StrokeTable) {
+        let mut table = crate::path::StrokeTable::new("the brush measurement");
+        let addresses: Vec<String> = strokes
+            .iter()
+            .map(|stroke| table.insert(stroke.clone()).to_string())
+            .collect();
+        let mut mask = crate::Mask::new("Mask 1");
+        let name = mask.next_component_name("brush");
+        mask.components.push(crate::Component::new(
+            name,
+            crate::ComponentMode::Add,
+            "brush",
+            json!({ "strokes": addresses }),
+        ));
+        (mask, table)
+    }
+
+    /// `count` strokes of a plausible retouching brush, laid out so they neither coincide nor leave
+    /// the frame: each is a three-position path across its own column, at a radius of 0.05 mask-space
+    /// units — a twentieth of the frame's height, which is 200 px on a 24 MP stage — and softly
+    /// feathered, which is the brush the panel starts with.
+    fn painted_strokes(count: usize) -> Vec<crate::path::Stroke> {
+        (0..count)
+            .map(|index| {
+                let t = (index as f64 + 0.5) / count as f64;
+                let y = 0.1 + 0.8 * t;
+                crate::path::Stroke::capture(
+                    &[[0.1, y], [0.5, y + 0.02], [0.9, y]],
+                    0.05,
+                    50.0,
+                    100.0,
+                    false,
+                )
+                .expect("a legal stroke")
+            })
+            .collect()
+    }
+
+    /// What a **brush** mask costs on a photo-sized frame: the grid index it compiles to, the
+    /// rectangle it bounds, the render it modulates, and the point query it answers. Ignored by
+    /// default because it is a recorded measurement rather than a pass/fail property:
+    ///
+    /// ```sh
+    /// cargo test --release --package lightwell-core --lib \
+    ///     render::tests::masked_brush_cost_on_photo_sized_frames -- --ignored --nocapture
+    /// ```
+    ///
+    /// Four stroke counts are measured, up to the delivered per-component limit, against the
+    /// unmasked render and against a whole-frame gradient mask — the case
+    /// [`masked_colour_cost_on_a_24_megapixel_frame`] already records — so what a brush costs is
+    /// stated as a difference from a mask whose cost is known rather than on its own.
+    #[test]
+    #[ignore = "a recorded measurement, not an assertion"]
+    fn masked_brush_cost_on_photo_sized_frames() {
+        let registry = colour_registry();
+        for (label, width, height) in [("24 MP", 6000u32, 4000u32), ("60 MP", 9000, 6667)] {
+            let source = gradient(width, height);
+            let stage = Stage { width, height };
+            let pixels = f64::from(width) * f64::from(height);
+            let measure = |name: &str, recipe: &Recipe| {
+                // One warm pass, then three measured ones: the frame allocation dominates a single
+                // run.
+                render(&registry, &source, SnapshotId::new(), recipe).unwrap();
+                let started = std::time::Instant::now();
+                for _ in 0..3 {
+                    std::hint::black_box(
+                        render(&registry, &source, SnapshotId::new(), recipe).unwrap(),
+                    );
+                }
+                println!(
+                    "{label} {name}: {:.1} ms per render",
+                    started.elapsed().as_secs_f64() * 1000.0 / 3.0
+                );
+            };
+            measure("identity", &colour_recipe(vec![]));
+            measure(
+                "unmasked exposure",
+                &colour_recipe(vec![exposure_layer(&[1.0])]),
+            );
+            let gradient_mask = linear_mask(0.5, 0.0, 0.5, 1.0);
+            measure(
+                "whole-frame gradient mask",
+                &masked_recipe(
+                    vec![masked(exposure_layer(&[1.0]), &gradient_mask)],
+                    vec![gradient_mask],
+                ),
+            );
+
+            for count in [1usize, 8, 32, 64] {
+                let strokes = painted_strokes(count);
+                let (mask, table) = brush_mask(&strokes);
+                // The compile is where the grid index is built and the occupancy cap is checked,
+                // before a pixel is read. It is charged to the gesture, not to the frame, so it is
+                // measured on its own.
+                let started = std::time::Instant::now();
+                let rounds = 20;
+                for _ in 0..rounds {
+                    std::hint::black_box(
+                        crate::mask::CompiledMask::new(&mask, stage, &table).unwrap(),
+                    );
+                }
+                let compile = started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds);
+                let compiled = crate::mask::CompiledMask::new(&mask, stage, &table).unwrap();
+                println!(
+                    "{label} {count} strokes: {compile:.3} ms to compile, rectangle admits \
+                     {:.2}% of the frame",
+                    100.0 * compiled.bounds().pixels() as f64 / pixels
+                );
+                let recipe = Recipe {
+                    format: crate::RECIPE_FORMAT,
+                    layers: vec![masked(exposure_layer(&[1.0]), &mask)],
+                    masks: vec![mask.clone()],
+                    strokes: table.clone(),
+                };
+                measure(&format!("{count}-stroke brush mask"), &recipe);
+
+                // The point query, which is the rule-4 claim: a sample through a masked layer costs
+                // `O(layers)` and never rasterizes, so its cost must not grow with the stroke count.
+                // A thousand of them, spread over the frame, because one is too fast to time.
+                let queries = 1000u32;
+                let started = std::time::Instant::now();
+                for index in 0..queries {
+                    let x = (index * 7919) % width;
+                    let y = (index * 6271) % height;
+                    std::hint::black_box(sample(&registry, &source, &recipe, x, y).unwrap());
+                }
+                println!(
+                    "{label} {count} strokes: {:.4} ms per point query",
+                    started.elapsed().as_secs_f64() * 1000.0 / f64::from(queries)
+                );
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
     // Cooperative cancellation.
     // ---------------------------------------------------------------------------------------
 
@@ -3639,7 +5278,7 @@ mod tests {
     /// is the turned one, which is the stage it is fitted onto.
     fn cancellation_stack(width: u32, height: u32) -> Recipe {
         Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![
                 turn(Transform::RotateRight),
                 Layer {
@@ -3647,10 +5286,13 @@ mod tests {
                     effect_id: crate::BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                    mask: None,
                     artifacts: Vec::new(),
                 },
                 Layer::crop(fitted_crop(height, width, 7.0, [0.05, 0.05, 0.9, 0.9])),
             ],
+            masks: Vec::new(),
+            ..Recipe::default()
         }
     }
 

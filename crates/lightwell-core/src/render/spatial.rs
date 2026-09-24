@@ -9,6 +9,7 @@
 pub(crate) use super::Cancel;
 use crate::{
     Error, ErrorKind,
+    mask_field::MaskField,
     modules::{
         ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO,
         Parallelism, Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE,
@@ -167,6 +168,31 @@ impl SpatialPlan {
         tile: u32,
     ) -> Result<Self, Error> {
         operation.validate()?;
+        // **Where the mask is read.** A masked colour operation lives inside a segment, so more
+        // exact geometry may follow it in that same segment and the host has to compose that suffix
+        // and `unmap` the frame coordinate back to the stage the mask was compiled against. A
+        // spatial operation needs the equivalent reasoning and reaches the opposite conclusion: it
+        // *is* a stage boundary, so it opens a new segment at the stage its layer received and the
+        // segment before it is closed at exactly that stage. The frame this operation reads and the
+        // stage this mask was compiled against are therefore the same frame, and the suffix is the
+        // identity — a tile's own stage coordinates are the mask's coordinates, with no mapping at
+        // all. This is not an assumption: the host compiles the mask against the same `stage` it
+        // builds this plan from, and disagreement is a host bug rather than a stack to refuse, so
+        // it is `internal` and it fires before a pixel is read.
+        if let Some(mask) = operation.mask()
+            && mask.stage() != stage
+        {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!(
+                    "a spatial mask compiled against {}x{} reached a {}x{} stage",
+                    mask.stage().width,
+                    mask.stage().height,
+                    stage.width,
+                    stage.height
+                ),
+            ));
+        }
         let halos = operation.halos(stage);
         let summed_halo = operation.summed_halo(stage);
         if summed_halo > MAX_SPATIAL_HALO {
@@ -261,6 +287,12 @@ impl SpatialPlan {
 /// stage. It is an upper bound in two ways — the chain holds at most two plane buffers at a time,
 /// and an edge tile's regions are smaller — which is what makes a batch reservation taken up front
 /// enough for every tile in it.
+///
+/// A **masked** operation adds exactly one tile-sized plane buffer on top of that: the snapshot of
+/// the tile's own input the blend is against. The blend itself is in place in the last unit's
+/// planes, which the chain already counted. One tile does not scale with the frame, and an unmasked
+/// operation adds nothing at all, so its working set, its concurrency and therefore its batching are
+/// byte for byte what they were before masks existed.
 fn worst_case_working_set(
     operation: &SpatialOperation,
     stage: Stage,
@@ -289,6 +321,15 @@ fn worst_case_working_set(
             remaining = remaining.saturating_sub(*halo);
         }
     }
+    if operation.mask().is_some() {
+        let tile = Region {
+            x0: 0,
+            y0: 0,
+            width: tile_width,
+            height: tile_height,
+        };
+        planes = planes.saturating_add(tile.plane_bytes());
+    }
     planes.saturating_add(scratch)
 }
 
@@ -312,14 +353,31 @@ fn scratch_values(operation: &SpatialOperation, regions: &[Region]) -> usize {
 
 const NON_FINITE_SPATIAL: &str = "spatial processing produced a non-finite value";
 
-/// Run one tile's unit chain. `fill` writes the input region's three planes; the result is the last
-/// unit's rectangle and its planar values, which always contains `tile`. `parallelism` is handed to
-/// every unit and decides whether this function's own finiteness check runs on the pool; it never
-/// changes a value.
+/// Run one tile's unit chain. `fill` writes the input region's three planes; the result is the
+/// rectangle the values cover and those planar values, which always contains `tile`. `parallelism`
+/// is handed to every unit and decides whether this function's own finiteness check runs on the
+/// pool; it never changes a value.
 ///
 /// Every path uses this one function: the byte render, the RAW float frame and the point sample.
 /// That is what makes a sample equal to the rendered byte by construction rather than by
-/// agreement between two implementations.
+/// agreement between two implementations — **including the mask**, because the blend below is
+/// inside this function and not in any caller.
+///
+/// An unmasked operation takes exactly the path it always did and returns the last unit's
+/// rectangle. A masked operation takes one of two paths, and neither of them touches the halo, the
+/// tile alignment, what a unit reads, the scratch or the cached global estimates:
+///
+/// - **A tile the mask cannot reach is a copy.** Coverage is exactly zero outside
+///   [`MaskField::bounds`], so the blend there is the identity and no unit is evaluated at all.
+///   The tile is filled directly, which reads the tile and not the tile grown by the summed halo,
+///   and that is what keeps a small masked Presence layer affordable on a 60 MP frame.
+/// - **Every other tile runs the whole chain unchanged** and the *write* is blended in place:
+///   `out = (1 − M)·in + M·u` per channel, in linear float, against the same input the tile already
+///   holds. **The blend covers `tile` and nothing else**, which is exactly what every caller reads
+///   out of the result — away from the stage edges the last unit's rectangle *is* the tile, and
+///   against an edge the shrink rule leaves it wider and the extra rows hold unblended filter
+///   output that nobody takes. Blending in place rather than copying the tile out is what keeps a
+///   masked tile to one extra allocation instead of two.
 pub(crate) fn run_tile(
     plan: &SpatialPlan,
     operation: &SpatialOperation,
@@ -329,9 +387,27 @@ pub(crate) fn run_tile(
     fill: impl FnOnce(Region, &mut [f32]) -> Result<(), Error>,
 ) -> Result<(Region, Vec<f32>), Error> {
     let stage = plan.stage;
+    let mask = operation.mask();
+    if let Some(mask) = mask
+        && !reaches(mask.bounds(), tile)
+    {
+        MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
+        let mut values = vec![0.0_f32; (tile.pixels() * 3) as usize];
+        fill(tile, &mut values)?;
+        return Ok((tile, values));
+    }
     let regions = plan.regions(tile);
     let mut values = vec![0.0_f32; (regions[0].pixels() * 3) as usize];
     fill(regions[0], &mut values)?;
+    // The snapshot of the tile's own input, taken before the chain runs because the chain consumes
+    // the buffer it was read into. It is one tile and it is charged to the budget through
+    // `worst_case_working_set`; nothing here scales with the frame.
+    let input = if mask.is_some() {
+        MASKED_TILES_EVALUATED.fetch_add(1, Ordering::Relaxed);
+        Some(cut_out(regions[0], &values, tile))
+    } else {
+        None
+    };
     let mut scratch = vec![0.0_f32; scratch_values(operation, &regions)];
     for (index, unit) in operation.units().iter().enumerate() {
         let input = Planes::new(stage, regions[index], &values)?;
@@ -353,10 +429,102 @@ pub(crate) fn run_tile(
         }
         values = next;
     }
-    Ok((
-        *regions.last().expect("a chain always has an input region"),
-        values,
-    ))
+    let region = *regions.last().expect("a chain always has an input region");
+    if let (Some(mask), Some(input)) = (mask, &input) {
+        blend(mask, region, tile, input, &mut values);
+    }
+    Ok((region, values))
+}
+
+/// Whether a mask with these bounds can reach any pixel of this tile. An empty rectangle reaches
+/// nothing, which is how an `amount` of exactly zero makes every tile of the frame a copy.
+fn reaches(bounds: Region, tile: Region) -> bool {
+    !bounds.is_empty()
+        && !tile.is_empty()
+        && bounds.x0 < tile.x1()
+        && tile.x0 < bounds.x1()
+        && bounds.y0 < tile.y1()
+        && tile.y0 < bounds.y1()
+}
+
+/// Copy one tile's three planes out of a larger rectangle's planes, row by row. `tile` must lie
+/// inside `region`, which the chain's own shrink rule guarantees.
+///
+/// It is built with `with_capacity` and `extend_from_slice` rather than a zeroed `vec!`, because
+/// every value is written before any is read and zeroing one tile plane per tile is a page fault
+/// per 4 KiB for nothing.
+fn cut_out(region: Region, values: &[f32], tile: Region) -> Vec<f32> {
+    let source = region.pixels() as usize;
+    let width = tile.width as usize;
+    let mut out = Vec::with_capacity(tile.pixels() as usize * 3);
+    for channel in 0..3 {
+        for y in tile.y0..tile.y1() {
+            let from = channel * source
+                + (y - region.y0) as usize * region.width as usize
+                + (tile.x0 - region.x0) as usize;
+            out.extend_from_slice(&values[from..from + width]);
+        }
+    }
+    out
+}
+
+/// The masked write: `out = (1 − M)·in + M·u` per channel, over the tile, in linear float, in place
+/// in the last unit's planes.
+///
+/// It is the colour primitive's spelling on purpose, and for the same reason: `M = 0` leaves
+/// `1·in + 0·u`, which is `in`, and `M = 1` leaves `0·in + 1·u`, which is `u` — both bit for bit,
+/// which the algebraically equal `in + M·(u − in)` is not. The coverage comes from
+/// [`MaskField::evaluate`] at the tile's own stage coordinates, which are the mask's own stage
+/// coordinates because a spatial operation opens its segment at the stage its layer received.
+///
+/// `input` is the tile-shaped snapshot [`cut_out`] took before the chain ran; `output` is the whole
+/// of the last unit's rectangle, and only the `tile` part of it is touched.
+fn blend(mask: &MaskField, region: Region, tile: Region, input: &[f32], output: &mut [f32]) {
+    let source = region.pixels() as usize;
+    let target = tile.pixels() as usize;
+    let width = tile.width as usize;
+    for (row, y) in (tile.y0..tile.y1()).enumerate() {
+        let from = row * width;
+        let to = (y - region.y0) as usize * region.width as usize + (tile.x0 - region.x0) as usize;
+        for (column, x) in (tile.x0..tile.x1()).enumerate() {
+            // One coverage evaluation per pixel, not per channel: the mask is a scalar field and
+            // the three channels of a pixel share it. The pixel it is evaluated for is this
+            // operation's own input, which is exactly what `input` holds — the snapshot taken
+            // before the chain ran — so a value-based component reads the same value here that a
+            // point sample of the same pixel reads.
+            let pixel = [
+                input[from + column],
+                input[target + from + column],
+                input[2 * target + from + column],
+            ];
+            let coverage = mask.evaluate(x, y, pixel);
+            for channel in 0..3 {
+                let value = &mut output[channel * source + to + column];
+                *value = (1.0 - coverage) * pixel[channel] + coverage * *value;
+            }
+        }
+    }
+}
+
+/// How many tiles of a masked operation were copied because the mask could not reach them, and how
+/// many ran the unit chain. A masked layer is affordable exactly when the first number dominates
+/// for a small mask, so this is a counter and not a claim: a test reads it, and so does anyone
+/// measuring. An unmasked operation touches neither.
+static MASKED_TILES_COPIED: AtomicU64 = AtomicU64::new(0);
+static MASKED_TILES_EVALUATED: AtomicU64 = AtomicU64::new(0);
+
+/// `(copied, evaluated)` since the last [`reset_masked_tile_counts`].
+pub fn masked_tile_counts() -> (u64, u64) {
+    (
+        MASKED_TILES_COPIED.load(Ordering::Relaxed),
+        MASKED_TILES_EVALUATED.load(Ordering::Relaxed),
+    )
+}
+
+/// Start counting masked tiles again from zero.
+pub fn reset_masked_tile_counts() {
+    MASKED_TILES_COPIED.store(0, Ordering::Relaxed);
+    MASKED_TILES_EVALUATED.store(0, Ordering::Relaxed);
 }
 
 /// Run every tile of a stage in batches, on the shared Rayon pool above the same one-megapixel
@@ -913,6 +1081,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Spatial,
                     order: 0,
+                    maskable: false,
                     artifacts: false,
                 }],
                 actions: Vec::new(),
@@ -974,12 +1143,18 @@ pub(crate) mod tests {
             effect_id: TEST_SPATIAL_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({ "units": units }),
+            mask: None,
             artifacts: Vec::new(),
         }
     }
 
     fn recipe(layers: Vec<Layer>) -> Recipe {
-        Recipe { format: 1, layers }
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks: Vec::new(),
+            ..Recipe::default()
+        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2221,5 +2396,207 @@ pub(crate) mod tests {
                 SpatialBudget::default().target() as f64 / MIB,
             );
         }
+    }
+
+    /// Release-only measurement, run explicitly:
+    ///
+    /// ```sh
+    /// cargo test --release --locked --package lightwell-core -- --ignored masked_spatial_timing --nocapture
+    /// ```
+    ///
+    /// One to four **masked** Presence layers on in-memory 24 MP and 60 MP frames, against the same
+    /// stacks with no mask at all, at two mask sizes: one whose bounds rectangle covers the whole
+    /// frame (the worst case the cap of four exists for) and one confined to a band at the right
+    /// edge (the case the tile copy exists for). Each masked spatial layer is a stage boundary and
+    /// therefore a sequential full frame, so the row to read is how the cost grows with the layer
+    /// count, and the copied-tile count is what says the small mask's tiles were not evaluated.
+    #[test]
+    #[ignore = "measurement, run explicitly in release"]
+    fn masked_spatial_timing() {
+        use crate::{
+            Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, Mask, PRESENCE_EFFECT,
+        };
+
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        // One `add` linear gradient between two normalized points, as the host stores one.
+        let mask = |name: &str, x0: f64, x1: f64| -> Mask {
+            let mut mask = Mask::new(name);
+            let component = mask.next_component_name("linear");
+            mask.components.push(Component::new(
+                component,
+                ComponentMode::Add,
+                "linear",
+                json!({"x0": x0, "y0": 0.5, "x1": x1, "y1": 0.5}),
+            ));
+            mask
+        };
+        for (width, height) in [(6000_u32, 4000_u32), (10_000, 6000)] {
+            let source = gradient(width, height);
+            for (shape, geometry) in [
+                // Beyond `p1` over the whole frame: bounds is the whole stage, every tile runs the
+                // chain and every tile is blended.
+                ("whole frame", (-1.0, -0.5)),
+                // A band at the right edge: the bounds rectangle covers about a tenth of the
+                // columns, so most tiles are copies.
+                ("right-edge band", (0.90, 0.97)),
+            ] {
+                for count in 1..=crate::modules::MAX_MASKED_SPATIAL_LAYERS {
+                    let masks: Vec<Mask> = (0..count)
+                        .map(|index| mask(&format!("Mask {index}"), geometry.0, geometry.1))
+                        .collect();
+                    let presence = |mask: Option<&Mask>| Layer {
+                        id: LayerId::new(),
+                        effect_id: PRESENCE_EFFECT.into(),
+                        effect_format: EFFECT_FORMAT,
+                        payload: json!({"clarity": 100.0}),
+                        mask: mask.map(|mask| mask.id.clone()),
+                        artifacts: Vec::new(),
+                    };
+                    for masked in [false, true] {
+                        let stack = crate::Recipe {
+                            format: crate::RECIPE_FORMAT,
+                            layers: masks
+                                .iter()
+                                .map(|mask| presence(masked.then_some(mask)))
+                                .collect(),
+                            masks: masks.clone(),
+                            ..Recipe::default()
+                        };
+                        if !masked && count > 1 {
+                            // Two unmasked layers of one single-layer effect share a target and are
+                            // refused, which is the rule and not a defect: the unmasked baseline is
+                            // the one-layer row.
+                            continue;
+                        }
+                        // Warm the source and the estimate store, then measure.
+                        crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+                        SpatialBudget::default().reset_peak();
+                        reset_masked_tile_counts();
+                        let mut samples = Vec::new();
+                        for _ in 0..5 {
+                            let started = std::time::Instant::now();
+                            let raster =
+                                crate::render(&registry, &source, SnapshotId::new(), &stack)
+                                    .unwrap();
+                            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+                            assert_eq!((raster.width, raster.height), (width, height));
+                        }
+                        samples.sort_by(f64::total_cmp);
+                        let p50 = samples[samples.len() / 2];
+                        let p95 = samples[samples.len() - 1];
+                        let (copied, evaluated) = masked_tile_counts();
+                        let runs = samples.len() as u64;
+                        println!(
+                            "{width}x{height} presence clarity +100 x{count} {}, {shape}: p50 \
+                             {p50:.0} ms, p95 {p95:.0} ms over {runs} runs; tiles per run copied \
+                             {}, evaluated {}; budget peak {:.1} MiB of {:.1} MiB",
+                            if masked { "masked" } else { "unmasked" },
+                            copied / runs,
+                            evaluated / runs,
+                            SpatialBudget::default().peak() as f64 / MIB,
+                            SpatialBudget::default().target() as f64 / MIB,
+                        );
+                    }
+                }
+            }
+        }
+        reset_masked_tile_counts();
+    }
+
+    /// Release-only measurement, run explicitly:
+    ///
+    /// ```sh
+    /// cargo test --release --locked --package lightwell-core -- --ignored masked_spatial_component_timing --nocapture
+    /// ```
+    ///
+    /// What a **mask with many components** costs, which is the other half of the masked spatial
+    /// cost: `masked_spatial_timing` above varies the layer count with one component per mask, and
+    /// this varies the component count with one layer. Every component is a linear gradient across
+    /// the whole frame, so the bounds rectangle is the whole stage and every component is evaluated
+    /// at every covered pixel — the worst case, and the one the design's limit of
+    /// [`crate::COMPONENTS_PER_MASK`] exists for. The modes cycle through all three, because a
+    /// subtraction and an intersection are each one more `min` per pixel and nothing else.
+    #[test]
+    #[ignore = "measurement, run explicitly in release"]
+    fn masked_spatial_component_timing() {
+        use crate::{
+            COMPONENTS_PER_MASK, Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, Mask,
+            PRESENCE_EFFECT,
+        };
+
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        // A mask of `count` whole-frame linear gradients, the first an add and the rest cycling
+        // through the three modes, each offset so no two are the same field.
+        let mask = |count: usize| -> Mask {
+            let mut mask = Mask::new("Mask 1");
+            for index in 0..count {
+                let name = mask.next_component_name("linear");
+                // Index 0 falls on `Add`, which is the rule for a mask's first component.
+                let mode = match index % 3 {
+                    0 => ComponentMode::Add,
+                    1 => ComponentMode::Subtract,
+                    _ => ComponentMode::Intersect,
+                };
+                // Each component's ramp ends a little further on, so no two are the same field,
+                // and every one of them ends left of the frame: the whole stage is beyond `p1`, so
+                // each is at coverage 1 everywhere and the bounds rectangle is the whole frame.
+                let shift = index as f64 * 0.01;
+                mask.components.push(Component::new(
+                    name,
+                    mode,
+                    "linear",
+                    json!({"x0": -1.0, "y0": 0.5, "x1": -0.5 + shift, "y1": 0.5}),
+                ));
+            }
+            mask
+        };
+        for (width, height) in [(6000_u32, 4000_u32), (10_000, 6000)] {
+            let source = gradient(width, height);
+            for count in [1, 4, 16, COMPONENTS_PER_MASK] {
+                let mask = mask(count);
+                let stack = crate::Recipe {
+                    format: crate::RECIPE_FORMAT,
+                    layers: vec![Layer {
+                        id: LayerId::new(),
+                        effect_id: PRESENCE_EFFECT.into(),
+                        effect_format: EFFECT_FORMAT,
+                        payload: json!({"clarity": 100.0}),
+                        mask: Some(mask.id.clone()),
+                        artifacts: Vec::new(),
+                    }],
+                    masks: vec![mask],
+                    ..Recipe::default()
+                };
+                // Warm the source and the estimate store, then measure.
+                crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+                SpatialBudget::default().reset_peak();
+                reset_masked_tile_counts();
+                let mut samples = Vec::new();
+                for _ in 0..5 {
+                    let started = std::time::Instant::now();
+                    let raster =
+                        crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+                    samples.push(started.elapsed().as_secs_f64() * 1000.0);
+                    assert_eq!((raster.width, raster.height), (width, height));
+                }
+                samples.sort_by(f64::total_cmp);
+                let p50 = samples[samples.len() / 2];
+                let p95 = samples[samples.len() - 1];
+                let (copied, evaluated) = masked_tile_counts();
+                let runs = samples.len() as u64;
+                println!(
+                    "{width}x{height} presence clarity +100 x1, mask of {count} whole-frame \
+                     components: p50 {p50:.0} ms, p95 {p95:.0} ms over {runs} runs; tiles per run \
+                     copied {}, evaluated {}; budget peak {:.1} MiB of {:.1} MiB",
+                    copied / runs,
+                    evaluated / runs,
+                    SpatialBudget::default().peak() as f64 / MIB,
+                    SpatialBudget::default().target() as f64 / MIB,
+                );
+            }
+        }
+        reset_masked_tile_counts();
     }
 }

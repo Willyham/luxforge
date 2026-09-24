@@ -72,6 +72,7 @@ fn mixer_layer(payload: Value) -> Layer {
         effect_id: MIXER_EFFECT.into(),
         effect_format: EFFECT_FORMAT,
         payload,
+        mask: None,
         artifacts: Vec::new(),
     }
 }
@@ -80,6 +81,8 @@ fn recipe(layers: Vec<Layer>) -> Recipe {
     Recipe {
         format: RECIPE_FORMAT,
         layers,
+        masks: Vec::new(),
+        ..Recipe::default()
     }
 }
 
@@ -192,6 +195,9 @@ fn module_list_and_schema_list_describe_the_mixer_module() {
             "format": 1,
             "stage": "color",
             "order": 10,
+            // The mixer is one of the three effects a mask may be attached to, so its descriptor
+            // says so and `edit.set-mixer` carries the host's optional `mask` field.
+            "maskable": true,
         }])
     );
     let groups = mixer["controls"].as_array().unwrap();

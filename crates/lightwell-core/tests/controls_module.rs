@@ -235,6 +235,7 @@ fn proof_layer_is_byte_exact_and_shares_the_source_allocation() {
         effect_id: CONTROLS_EFFECT.into(),
         effect_format: EFFECT_FORMAT,
         payload: json!({"amount":2.5,"rgb":[20,40,60],"master":[[0.0,0.0],[0.4,0.8],[1.0,1.0]]}),
+        mask: None,
         artifacts: Vec::new(),
     };
     let raster = render(
@@ -244,6 +245,8 @@ fn proof_layer_is_byte_exact_and_shares_the_source_allocation() {
         &Recipe {
             format: RECIPE_FORMAT,
             layers: vec![layer],
+            masks: Vec::new(),
+            ..Recipe::default()
         },
     )
     .expect("identity controls render");

@@ -184,6 +184,70 @@ fn encode_presence(path: &Path) -> Result {
     Ok(())
 }
 
+/// The `mask-range` smoke scenario's own fixture: twelve flat patches of the 24-patch reflective
+/// colour chart's own measured sRGB renderings, which is what the
+/// [range study](../../docs/design/range-study.md) measured every one of its figures over. Nothing
+/// here is a colour chosen to make a point: the patches are that chart's, and the failures they
+/// produce are the study's own, reproduced in a photograph the editor renders.
+///
+/// The layout is what makes each of the study's named limits legible in one frame:
+///
+/// - `blue_sky` and `neutral5` sit side by side in the top row and are **1.43 output codes apart**
+///   on the luminance axis (`47.254` and `47.815`), so no band separates them and a band drawn for
+///   the sky takes the grey card with it;
+/// - `light_skin` and `dark_skin` are `0.0108` apart in the frozen colour metric, a third of what one
+///   face's own shading spans, so one colour range takes both;
+/// - `white`, `neutral8`, `neutral65`, `neutral5` and `black` are mutually within `0.0015`, so a
+///   sampled grey selects the whole tonal range;
+/// - `blue_sky` appears **twice**, in the top row and the bottom row, so a gradient that reaches one
+///   and not the other gives every reading a control of the identical colour inside the same frame.
+///   That is what lets the scenario prove a range selection follows the operation's *input* without
+///   predicting an output code;
+/// - `foliage` sits beside the bottom `blue_sky`, so one brush stroke crosses two surfaces and a
+///   stroke held to the sky's colour can be read against the same stroke unheld;
+/// - `orange` and `red` are the cases that work: far enough away in colour to stay out of a
+///   selection the near ones fall into.
+///
+/// Every patch is flat and its centre is 180 px from the nearest boundary, so a JPEG's chroma
+/// subsampling and its ringing stay at the edges and a probe reads the colour the chart specifies.
+pub const RANGE_FIXTURE: (u32, u32) = (1440, 960);
+pub const RANGE_COLUMNS: u32 = 4;
+pub const RANGE_ROWS: u32 = 3;
+
+/// The twelve patches in row-major order, each an sRGB rendering of one chart patch. The names are
+/// the chart's own and are what the scenario's probes are called.
+pub const RANGE_PATCHES: [(&str, [u8; 3]); 12] = [
+    ("sky-top", [98, 122, 157]),
+    ("grey-card", [122, 122, 121]),
+    ("light-skin", [194, 150, 130]),
+    ("dark-skin", [115, 82, 68]),
+    ("white", [243, 243, 242]),
+    ("grey-65", [160, 160, 160]),
+    ("black", [52, 52, 52]),
+    ("orange", [214, 126, 44]),
+    ("sky-bottom", [98, 122, 157]),
+    ("foliage", [87, 108, 67]),
+    ("grey-8", [200, 200, 200]),
+    ("red", [175, 54, 60]),
+];
+
+fn range_fixture(w: u32, h: u32) -> RgbImage {
+    let (cell_w, cell_h) = (w / RANGE_COLUMNS, h / RANGE_ROWS);
+    RgbImage::from_fn(w, h, |x, y| {
+        let column = (x / cell_w).min(RANGE_COLUMNS - 1);
+        let row = (y / cell_h).min(RANGE_ROWS - 1);
+        Rgb(RANGE_PATCHES[(row * RANGE_COLUMNS + column) as usize].1)
+    })
+}
+
+fn encode_range(path: &Path) -> Result {
+    let (w, h) = RANGE_FIXTURE;
+    let img = range_fixture(w, h);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(path)?, 95)
+        .encode_image(&img)?;
+    Ok(())
+}
+
 pub fn generate(out: &Path) -> Result {
     ensure(
         !out.exists(),
@@ -207,12 +271,19 @@ pub fn generate(out: &Path) -> Result {
     let (pw, ph) = PRESENCE_FIXTURE;
     entries
         .push(json!({"file":"presence.jpg","width":pw,"height":ph,"sha256":hash(&presence_path)?}));
+    let range_path = out.join("range.jpg");
+    encode_range(&range_path)?;
+    let (rw, rh) = RANGE_FIXTURE;
+    entries.push(
+        json!({"file":"range.jpg","width":rw,"height":rh,"sha256":hash(&range_path)?,
+               "patches":RANGE_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes}))}),
+    );
     write_json(
         &out.join("manifest.json"),
         &json!({"generator":"Rust image 0.25.9 / xtask pattern-v1","entries":entries}),
     )?;
     println!(
-        "Generated 24/60 MP, hue-wheel and presence fixtures in {}",
+        "Generated 24/60 MP, hue-wheel, presence and range fixtures in {}",
         out.display()
     );
     Ok(())

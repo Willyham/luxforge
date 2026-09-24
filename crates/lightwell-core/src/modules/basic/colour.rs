@@ -17,14 +17,14 @@ use crate::modules::PointwiseColor;
 /// published digit as `f64` (matching the design and the independent reference byte for byte) and
 /// converted once, below, to the `f32` values the hot loop actually multiplies by: coefficients are
 /// computed in f64, units run in f32, exactly as the colour processing contract requires.
-const M1_F64: [[f64; 3]; 3] = [
+pub(crate) const M1_F64: [[f64; 3]; 3] = [
     [0.4122214708, 0.5363325363, 0.0514459929],
     [0.2119034982, 0.6806995451, 0.1073969566],
     [0.0883024619, 0.2817188376, 0.6299787005],
 ];
 
 /// LMS' (post signed-cube-root) to Oklab `(L, a, b)`.
-const M2_F64: [[f64; 3]; 3] = [
+pub(crate) const M2_F64: [[f64; 3]; 3] = [
     [0.2104542553, 0.7936177850, -0.0040720468],
     [1.9779984951, -2.4285922050, 0.4505937099],
     [0.0259040371, 0.7827717662, -0.8086757660],

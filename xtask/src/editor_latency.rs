@@ -533,6 +533,13 @@ pub enum Mode {
     /// coalescing runs on them instead of the harness deciding what reaches the owner. `--samples`
     /// is ignored; the run is always the same fixed number of values.
     Burst,
+    /// A **paint** gesture rather than a slider: one brush stroke whose positions are paced one per
+    /// [`PAINT_INTERVAL_MS`] in real time, on a recipe holding one brush mask and one masked colour
+    /// layer. `--samples` is the number of positions. This is the mode the [performance
+    /// plan](../../../docs/specs/performance.md) named as the missing paint-gesture measurement: the
+    /// `mask-range` scenario's figure is taken on four masked colour layers, three of whose masks
+    /// bind the whole stage, and is therefore not a baseline for the gesture itself.
+    Paint,
 }
 
 impl Mode {
@@ -541,6 +548,7 @@ impl Mode {
             Self::Drag => "drag",
             Self::Commit => "commit",
             Self::Burst => "burst",
+            Self::Paint => "paint",
         }
     }
 }
@@ -652,11 +660,307 @@ pub struct Options<'a> {
     /// Commit a Basic layer with every field non-neutral before the gesture, so the measured
     /// exposure drag runs every one of the module's colour units on each frame.
     pub basic: bool,
+    /// Draw a linear gradient mask first and bind the panel's sections to it, so the measured
+    /// gesture is a *masked* drag: the same slider, drafting and committing a layer the masked
+    /// colour primitive evaluates per pixel. It is the end-to-end figure for what a mask costs a
+    /// person's hand, with the unmasked run beside it as its baseline.
+    pub mask: bool,
+}
+
+/// The steps that draw a mask and bind the generated sections to it before the gesture.
+///
+/// The mask is created through its own host command, then opened by the name the host gave it —
+/// `mask.create-linear` assigns the identity, so a script has nothing else to name it by. From the
+/// selection on, every generated slider gesture carries that mask, exactly as the panel's own drag
+/// does.
+fn mask_precondition() -> [Value; 3] {
+    [
+        json!({"api":{"method":"mask.create-linear",
+            "params":{"x0":0.5,"y0":0.3,"x1":0.5,"y1":0.7}}}),
+        json!({"workspace":{"mode":"mask"}}),
+        json!({"mask":{"select":{"name":"Mask 1"}}}),
+    ]
 }
 
 /// The step that commits the full Basic layer a `--basic` run drags over.
 fn basic_precondition() -> Value {
     json!({"api":{"method":"edit.set-basic","params":full_basic()}})
+}
+
+/// The paint gesture's own pacing and brush, each a named constant because the report quotes it.
+///
+/// The interval is a little over the delivered masked-drag median of 16.8–17.9 ms, so every position
+/// has a round trip of its own to finish rather than being coalesced into its neighbour — the same
+/// choice, and the same figure, the `mask-range` scenario's paced stroke makes. Anything shorter
+/// measures the desktop's coalescing instead of the gesture.
+const PAINT_INTERVAL_MS: u64 = 24;
+/// The brush, in mask-space units and `0..100`: a hard edge, so the profile costs one compare rather
+/// than a `smooth`, and a size in the middle of the declared range.
+const PAINT_SIZE: f64 = 0.06;
+const PAINT_FEATHER: f64 = 0.0;
+/// The exposure the one masked colour layer holds, in EV. Non-neutral, so the layer exists and its
+/// unit runs on every frame the stroke draws.
+const PAINT_EV: f64 = 0.6;
+
+/// The measured stroke's path: a straight sweep across the middle of the frame, in normalized
+/// content coordinates, one position per paced interval.
+///
+/// A straight path is deliberate. The measurement is the round trip from one position to the frame
+/// carrying it, and a path that wanders changes the component's rectangle between positions, which
+/// would put the growth of the bounds into a figure about latency.
+fn paint_path(positions: usize) -> Vec<[f64; 2]> {
+    (0..positions)
+        .map(|index| {
+            let t = index as f64 / (positions.max(2) - 1) as f64;
+            [0.2 + 0.6 * t, 0.5]
+        })
+        .collect()
+}
+
+/// The steps that build the **bare** recipe the paint measurement wants: one brush mask, one masked
+/// colour layer, and nothing else.
+///
+/// The seeding stroke is what creates the mask and its `Brush 1`, because a brush declares no
+/// geometry and therefore has no `mask.create-brush` to call; the mask it makes is the one that
+/// opens, so the Exposure slider under the component list binds to it with nothing to name it by.
+fn paint_precondition() -> Vec<Value> {
+    vec![
+        json!({"workspace":{"mode":"mask"}}),
+        json!({"mask":{"brush":{"size":PAINT_SIZE,"feather":PAINT_FEATHER,"flow":100.0,
+            "erase":false,"limit_to_colour":false}}}),
+        json!({"mask":{"paint":"new-mask"}}),
+        json!({"mask":{"stroke":{"points":[[0.2,0.3],[0.8,0.3]],"release":true}}}),
+        json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,
+            "values":[PAINT_EV],"release":true}}),
+        json!({"mask":{"paint":{"component":0}}}),
+    ]
+}
+
+/// One paced stroke's input-to-presented-frame samples, paired out of a run's own events.
+///
+/// The pairing is exact rather than by order: every `mask_draft_set` is answered by one
+/// `mask_draft_preview` carrying the preview generation that set queued, and `preview_displayed`
+/// repeats that generation. A gesture holds one round trip at a time, so a set with no answer before
+/// the next one was refused rather than previewed, and a refusal is not a measurement.
+///
+/// Returns the number of inputs that queued a preview job and the latency of each one whose frame
+/// reached the screen. The difference between the two is what a hand does not see: a position
+/// superseded by the next one before its own pixels were drawn.
+pub fn paced_stroke_latencies(events: &[Value]) -> Result<(usize, Vec<f64>)> {
+    let mut pending: Option<f64> = None;
+    let mut inputs: Vec<(f64, u64)> = Vec::new();
+    for event in events {
+        match event["event"].as_str() {
+            Some("mask_draft_set") => pending = Some(elapsed(event)?),
+            Some("mask_draft_preview") => {
+                let Some(sent) = pending.take() else {
+                    return Err("A mask_draft_preview answered no mask_draft_set".into());
+                };
+                let generation = event["detail"]["generation"]
+                    .as_u64()
+                    .ok_or("A mask draft preview named no generation")?;
+                inputs.push((sent, generation));
+            }
+            _ => {}
+        }
+    }
+    let mut latencies = Vec::new();
+    for event in events
+        .iter()
+        .filter(|event| event["event"] == json!("preview_displayed"))
+    {
+        let generation = event["detail"]["generation"].as_u64();
+        if let Some((sent, _)) = inputs
+            .iter()
+            .find(|(_, held)| Some(*held) == generation)
+            .copied()
+        {
+            latencies.push(elapsed(event)? - sent);
+        }
+    }
+    Ok((inputs.len(), latencies))
+}
+
+/// The paint mode: one paced brush stroke on a bare masked recipe, measured end to end.
+///
+/// This is the measurement the [performance plan](../../../docs/specs/performance.md) named as
+/// untaken. It shares nothing with [`run`]'s slider path beyond the launch and the reporting,
+/// because the two gestures are different: a stroke's positions are a path rather than a field's
+/// values, its draft is the mask gesture's own, and its frames are paired through
+/// `mask_draft_preview` rather than `slider_draft_preview`.
+fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
+    ensure(!out.exists(), "Editor latency output must be new")?;
+    ensure(
+        (2..=48).contains(&options.samples),
+        "Paint samples must be 2..48 positions; a stroke of one position has no path and the script takes at most 64 steps",
+    )?;
+    fs::create_dir_all(out)?;
+    let source = options.source.canonicalize()?;
+    let source_hash = hash(&source)?;
+    let path = paint_path(options.samples);
+
+    let mut script = Vec::new();
+    if let Some(angle) = options.crop {
+        script.push(
+            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
+        );
+    }
+    if options.basic {
+        script.push(basic_precondition());
+    }
+    script.extend(paint_precondition());
+    script.push(json!({"mask":{"stroke":{"points":path,"release":true,
+        "interval_ms":PAINT_INTERVAL_MS}}}));
+    let script_file = out.join("gesture-script.json");
+    write_json(&script_file, &json!(script))?;
+
+    let evidence = out.join("app");
+    let args: Vec<OsString> = vec![
+        "--evidence-dir".into(),
+        evidence.clone().into_os_string(),
+        "--evidence-script".into(),
+        script_file.clone().into_os_string(),
+        "--open".into(),
+        source.clone().into_os_string(),
+    ];
+    let (rss, peak_rss) = evidence_run(
+        root,
+        bin,
+        out,
+        "gesture",
+        &args,
+        // The paced stroke itself takes samples × interval of real time on top of the editor's own
+        // 25 s evidence deadline; allow generously for both plus the launch wrapper.
+        Duration::from_secs(90),
+    )?;
+
+    let app = read_json(&evidence.join("result.json"))?;
+    ensure(
+        app["status"] == "captured",
+        "The paint run captured nothing",
+    )?;
+    let events = smoke::events(&evidence.join("events.jsonl"))?;
+    ensure(
+        app["had_input_errors"] == json!(false)
+            && app["script"]
+                .as_array()
+                .is_some_and(|steps| steps.len() == script.len()),
+        format!("A paint step failed or never ran: {}", app["script"]),
+    )?;
+    let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    let last = frames.last().ok_or("No frame was captured")?;
+    // The recipe the stroke was painted on is part of the measurement, not context: the figure this
+    // mode exists to replace was taken on four masked layers, so this one states its own.
+    let masks = last["state"]["masks"]["masks"]
+        .as_array()
+        .ok_or("The run captured no mask list")?;
+    ensure(
+        masks.len() == 1,
+        format!(
+            "A bare paint run must hold exactly one mask, not {}",
+            masks.len()
+        ),
+    )?;
+    // The open mask's own component list, which is where the panel state carries it.
+    let components = last["state"]["masks"]["components"]
+        .as_array()
+        .ok_or("The open mask lists no components")?;
+    ensure(
+        components.len() == 1 && components[0]["kind"] == json!("brush"),
+        format!(
+            "A bare paint run must hold one brush component, not {}",
+            last["state"]["masks"]["components"]
+        ),
+    )?;
+    // The mask names the layers bound to it, which is the relation `mask.list` answers.
+    let bound = masks[0]["layers"]
+        .as_array()
+        .ok_or("The mask names no bound layers")?;
+    ensure(
+        bound.len() == 1,
+        format!(
+            "A bare paint run must hold one masked layer, not {:?}",
+            bound
+        ),
+    )?;
+    let masked_layers = bound.len();
+    let components = components.len();
+
+    let (queued, latencies) = paced_stroke_latencies(&events)?;
+    ensure(
+        !latencies.is_empty(),
+        "The run painted no stroke whose drafted frame reached the screen",
+    )?;
+    let mut ranked = latencies.clone();
+    ranked.sort_by(f64::total_cmp);
+    let p95 = percentile(&ranked, 95);
+    let load = crate::verify::load_average(root);
+
+    let result = json!({
+        "status":"passed",
+        "launch_mode":launch::MODE,
+        "platform":host(root)?,
+        "profile":"release",
+        "binary_sha256":hash(bin)?,
+        "lockfile_sha256":hash(&root.join("Cargo.lock"))?,
+        "source":source,
+        "source_sha256":source_hash,
+        "source_dimensions":last["state"]["source_dimensions"],
+        "preview_dimensions":last["state"]["preview_dimensions"],
+        "backend":last["state"]["backend"],
+        "physical_size":last["physical_size"],
+        "scale":last["scale"],
+        "crop_angle_deg":options.crop,
+        "full_basic_layer":options.basic,
+        "mode":"paint",
+        "samples":options.samples,
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache. One brush stroke of {} positions is handed to the desktop one per {} ms in real time, so the first tick presses, each later one moves and the last releases: one paced step is still one stroke and one history entry. Each position is its own mask draft.set, preview job and displayed frame, paired by the generation mask_draft_preview carries. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source; it is not display scanout.", options.samples, PAINT_INTERVAL_MS),
+        "recipe":{
+            "masks":masks.len(),
+            "components":components,
+            "masked_layers":masked_layers,
+            "reads_pixels":false,
+            "note":"One brush mask of one component and one masked Basic exposure layer: the bare recipe, stated because the figure this mode replaces was taken on four masked colour layers, three of whose masks hold a component that reads pixels and therefore bounds the whole stage.",
+        },
+        "brush":{"size":PAINT_SIZE,"feather":PAINT_FEATHER,"flow":100.0,"erase":false,
+            "exposure_ev":PAINT_EV},
+        "stroke":{
+            "interval_ms":PAINT_INTERVAL_MS,
+            "positions":options.samples,
+            "path":path,
+            "inputs_that_queued_a_preview":queued,
+            "displayed":latencies.len(),
+            "superseded":queued.saturating_sub(latencies.len()),
+            "superseded_note":"A position whose own preview job was superseded by the next position before its pixels were drawn. It is what a hand does not see during a continuous stroke, and it is reported rather than averaged away.",
+        },
+        "provisional_input_to_frame_target":{"p95_below_ms":16.0,"acceptable_below_ms":32.0,
+            "measured_p95_ms":p95,
+            "met":p95.map(|ms| ms < 16.0),"acceptable":p95.map(|ms| ms < 32.0)},
+        "timings_ms":{
+            "input_to_presented_frame":distribution(latencies),
+        },
+        "load_average_1m":load,
+        "load_threshold":launch::LOAD_THRESHOLD,
+        "provisional":load.is_none_or(|load| load > launch::LOAD_THRESHOLD),
+        "resources":{
+            "sampled_peak_rss_mib":peak_rss,
+            "scratch":last["state"]["scratch"],
+            "rss_samples":rss,
+            "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure.",
+        },
+        "workspace":last["state"]["workspace"],
+        "scope":"mask_draft_set to the preview_displayed of the generation it queued, over one paced brush stroke on a bare masked recipe at this source's own size. It is the paint gesture's counterpart of drag mode's slider figure, and it is not comparable to the mask-range scenario's stroke, which is painted on four masked colour layers.",
+        "checks":[
+            "The recipe the stroke was painted on holds exactly one mask, one component and one masked layer",
+            "Every measured interval pairs one mask_draft_set with the preview_displayed of the generation its own mask_draft_preview named",
+            "Source SHA-256 is unchanged",
+        ],
+    });
+    write_json(&out.join("latency.json"), &result)?;
+    ensure(hash(&source)? == source_hash, "The source changed")?;
+
+    println!("PASS editor latency (paint): {}", out.display());
+    Ok(())
 }
 
 pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
@@ -666,6 +970,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     )?;
     if options.mode == Mode::Burst {
         return run_burst(root, out, bin, &options);
+    }
+    if options.mode == Mode::Paint {
+        return run_paint(root, out, bin, &options);
     }
     ensure(!out.exists(), "Editor latency output must be new")?;
     ensure(
@@ -708,6 +1015,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         script.push(
             json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
         );
+    }
+    if options.mask {
+        script.extend(mask_precondition());
     }
     if options.basic {
         script.push(basic_precondition());
@@ -1208,6 +1518,9 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         script.push(
             json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
         );
+    }
+    if options.mask {
+        script.extend(mask_precondition());
     }
     if options.basic {
         script.push(basic_precondition());

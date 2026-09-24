@@ -1274,6 +1274,8 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             &Recipe {
                 format: RECIPE_FORMAT,
                 layers: Vec::new(),
+                masks: Vec::new(),
+                ..Recipe::default()
             },
         )?;
         ensure(
@@ -1604,6 +1606,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                     effect_id: BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 1.0}),
+                    mask: None,
                     artifacts: Vec::new(),
                 },
                 Layer {
@@ -1611,9 +1614,12 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                     effect_id: BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": -1.0}),
+                    mask: None,
                     artifacts: Vec::new(),
                 },
             ],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let error = render(&source, &ambiguous)
             .err()
@@ -1631,8 +1637,11 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: 2,
                 payload: json!({"exposure": 1.0}),
+                mask: None,
                 artifacts: Vec::new(),
             }],
+            masks: Vec::new(),
+            ..Recipe::default()
         };
         let format_error = render(&source, &future_format)
             .err()

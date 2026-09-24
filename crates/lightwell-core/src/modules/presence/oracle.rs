@@ -440,8 +440,11 @@ fn presence_recipe(payload: Value) -> Recipe {
             effect_id: PRESENCE_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            mask: None,
             artifacts: Vec::new(),
         }],
+        masks: Vec::new(),
+        ..Recipe::default()
     }
 }
 

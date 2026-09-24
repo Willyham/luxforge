@@ -9,8 +9,14 @@ mod command_contracts;
 mod draft;
 mod editor;
 mod error;
+/// The host's compiled mask and the component kinds this build can evaluate.
+pub mod mask;
+mod mask_field;
 mod model;
 mod modules;
+/// The host's path primitives: the stored coordinate grid, decimation, the stroke a painting
+/// action captures, and the content-addressed store those strokes live in.
+pub mod path;
 mod presets;
 mod preview;
 mod profile;
@@ -33,11 +39,13 @@ pub use model::*;
 pub use modules::*;
 pub use presets::*;
 pub use preview::*;
-pub use proxy::{ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
+pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
 pub use render::{
     Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget,
-    SpatialBudget, WhiteBalanceApproximation, cached_estimates, clear_estimates, extents, locate,
-    render, render_cancellable, render_linear, render_linear_cancellable, sample, sample_linear,
+    SpatialBudget, StageSize, StageTransform, WhiteBalanceApproximation, cached_estimates,
+    clear_estimates, extents, locate, masked_tile_counts, render, render_cancellable,
+    render_linear, render_linear_cancellable, reset_masked_tile_counts, sample, sample_linear,
+    stage_transform,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -387,6 +395,8 @@ mod tests {
                     &Recipe {
                         format: RECIPE_FORMAT,
                         layers,
+                        masks: Vec::new(),
+                        ..Recipe::default()
                     },
                 )
                 .unwrap()

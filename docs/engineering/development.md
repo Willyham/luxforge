@@ -26,9 +26,9 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
-| Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
+| Exact current-editor journey, display-independent, including the Basic and histogram and the masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other slider that drafts — a field-patch slider (presence, mixer, vignette, ...) or a RAW slider, whose action declares that one parameter, over a RAW `--source` — in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other slider that drafts — a field-patch slider (presence, mixer, vignette, ...) or a RAW slider, whose action declares that one parameter, over a RAW `--source` — in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP and the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -104,7 +104,7 @@ them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus all 26 smoke scenarios, including `zoom`, `presets`, `gallery`, `controls`, `capabilities` and `performance`, through a bounded pool |
+| `rendered` | quick plus all 30 smoke scenarios, including `zoom`, `presets`, `gallery`, `controls`, `capabilities`, `performance` and the four `mask-*` ones, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
 
@@ -161,9 +161,9 @@ review.
 
 Wall-clock on the owner's M4 Pro, release build already current and the Cargo cache warm, on a host
 shared with other work at one-minute load averages between 4 and 13: `quick` 28 s, of which `check`
-is 27 s, mostly the workspace tests, and varies with how much Cargo has to redo; `rendered` 18 s, a measured 17-scenario workload with 19 editor
-launches taking 9 s of wall clock through the pool against 26 s of their own summed elapsed time, or
-23 s serially with `--jobs 1`; `timing` 70 s with the default sample counts, of which `measure` is
+is 27 s, mostly the workspace tests, and varies with how much Cargo has to redo; `rendered` a measured 27-scenario workload with 36 editor launches taking 28 s of wall clock
+through the pool against 82 s of their own summed elapsed time, the four `mask-*` scenarios the
+longest of them at 4 to 12 s each; `timing` 70 s with the default sample counts, of which `measure` is
 48 s and 17 launches, `editor-performance` 4 s and `editor-latency` 5 s; `full` with the owner's three-source
 manifest adds `raw-reference` and `raw-editor`, whose default three trials per source cost about 8 s
 each for the Z6, 19 s for the X100VI and 18 s for the Air 2S, two launches per trial. On a run whose
@@ -309,6 +309,38 @@ analysis sharing and cancellation, an unavailable Basic provider, and a catalog 
 supersede and disconnect races are covered by
 `lightwell_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest`
 and are referenced rather than duplicated.
+
+### The masking acceptance chapter
+
+`editor-acceptance` also ends with a masking chapter, in `xtask/src/mask_acceptance.rs`, driven the
+same way: every step is one JSON request through `OwnerHandle::call`, against its own catalogs inside
+the run's output directory, with no desktop, no window and no pointer. It exists for the parity pillar
+rather than for the pixels: the four `mask-*` smoke scenarios are where a gesture's own frames and
+correlated state live, and this chapter is the claim that each of those gestures has a discoverable
+programmatic equivalent which produces the stacks, history, pixels and refusals the design states.
+
+It covers discovery against the host's own command table (every declared `mask.*` method is in
+`schema.list`; a brush generates none of the three geometry methods; the optional `mask` field is on
+every action of a maskable effect and on no other); all five component kinds created from JSON; one
+mask composing four kinds in three modes, read back from `mask.list` in composition order; a masked
+Basic layer moving the pixels the mask covers and no others; masked Presence and masked mixer layers,
+so a masked spatial layer is in the recipe too; amount, inversion at both levels, a component's mode
+and order, a geometry patch, a rename, a mask reorder and a duplicate that copies the bound layers; a
+second stroke as an update and `mask.delete-stroke` as a forward edit that appends its own entry; four
+refusals checked by the host's own words; a live agent committing during an open mask gesture, the
+conflict on the stale commit, Reapply keeping the agent's edit, and a cancelled gesture writing
+nothing; a read-only historical preview of the entry before the first mask, Restore, undo and redo
+across mask entries; the same catalog served with a maskable module unavailable, which keeps every
+mask and refuses to sample; a missing and a changed original under a masked recipe, which report and
+discard nothing; and a reopen that returns the masks, components and bound layers by identity with the
+same sampled pixels. Everything lands in `result.json` under `masks`, and any mismatch fails the
+command.
+
+One contract shapes how it reads pixels: it uses `render.sample` and never renders a recipe in
+process. A brush component's payload holds its strokes by content address and the resolved strokes are
+never serialized, so a recipe fetched over JSON has addresses and no points and rendering it outside
+the catalog that holds the store is refused by name. That is the retention contract working. The owner
+has the store, so the owner is asked.
 
 ### Authentic RAW evidence
 
@@ -681,6 +713,20 @@ its `preview_displayed` time, paired by generation exactly as drag mode pairs th
 `cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer request
 superseded, which carry no frame) and `proxy` (the last
 presented frame's `proxy`/`proxy_dimensions`).
+
+`--mode paint` measures a **paint** gesture instead of a slider, because a stroke is not a field patch
+and the slider modes cannot drive one. It builds the bare recipe the figure is about — one brush mask
+of one component, seeded by one stroke, and one masked Basic exposure layer, asserted in the captured
+state rather than assumed — and then paints one stroke whose positions are handed to the desktop one
+per 24 ms in real time: the first tick presses, each later one moves and the last releases, so one
+paced step is still one stroke and one history entry. `--samples` is the number of positions, 2 to 48.
+Each position is its own mask `draft.set`, preview job and displayed frame, paired by the generation
+`mask_draft_preview` carries, and a position whose job a later one superseded is reported as
+`superseded` rather than averaged away. `latency.json` records the recipe it was painted on, the brush,
+the path, the distribution and the one-minute load average, and marks itself `provisional` above the
+8.0 threshold. It exists because the `mask-range` scenario's paint figure is taken on four masked
+colour layers, three of whose masks bind the whole stage, and is therefore not a baseline for the
+gesture; the pairing itself is one function shared with that scenario so the two cannot drift.
 
 On macOS, smoke, hardening, measurement, latency, RAW editor and probe subprocesses always use the same background bundle as `develop --background`, and every one of them that launches the editor passes `--hidden-window`, so the run has neither an activated process nor a window on screen. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation, and with an invisible window they do not include the cost of compositing a visible one either.
 

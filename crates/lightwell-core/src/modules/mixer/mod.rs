@@ -344,6 +344,7 @@ impl MixerModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
                     order: 10,
+                    maskable: true,
                     artifacts: false,
                 }],
                 actions: vec![
@@ -472,6 +473,8 @@ impl ToolModule for MixerModule {
                 effect_id: MIXER_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                // The mask is the host's: an update keeps whatever this layer already carries.
+                mask: layer.mask.clone(),
                 artifacts: Vec::new(),
             })),
             // The host inserts a colour-stage layer after Basic by declared order; a neutral first
@@ -482,6 +485,7 @@ impl ToolModule for MixerModule {
                 effect_id: MIXER_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                mask: None,
                 artifacts: Vec::new(),
             })),
         }
@@ -587,6 +591,7 @@ mod tests {
             effect_id: MIXER_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            mask: None,
             artifacts: Vec::new(),
         }
     }

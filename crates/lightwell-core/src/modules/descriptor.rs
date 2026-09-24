@@ -81,6 +81,21 @@ pub enum EffectStage {
     Finish,
 }
 
+impl EffectStage {
+    /// The declared name, spelled as the descriptor serializes it, for an error that has to say
+    /// which stage refused something.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Geometry => "geometry",
+            Self::Pixel => "pixel",
+            Self::Color => "color",
+            Self::Spatial => "spatial",
+            Self::Finish => "finish",
+        }
+    }
+}
+
 /// A durable effect identity stored in every layer, with its internal payload format marker and the
 /// order it takes among layers of its own stage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +110,22 @@ pub struct EffectDescriptor {
     /// placement rule only: a stored stack always renders in its stored order.
     #[serde(default)]
     pub order: u16,
+    /// Whether a layer of this effect may be bound to a mask, and therefore whether the host adds
+    /// its one optional `mask` request field to the actions of this effect's module
+    /// (`docs/design/masking.md`, "How a mask reaches an effect"). It is the whole of what a module
+    /// says about masking: the field, the target semantics, the compiled mask and the blend are the
+    /// host's, and no module parses, plans or compiles any of it.
+    ///
+    /// A mask's geometry is stored in content-stage coordinates, so a `geometry` or `finish` effect
+    /// cannot declare it: registration refuses that descriptor by name rather than accepting a flag
+    /// that could never be honoured.
+    ///
+    /// Serialized only when it is true, as every other flag a descriptor carries is, so an effect
+    /// that is not maskable describes itself exactly as it did before masking existed. A client
+    /// reads maskability from this flag and reads the field it adds from `schema.list`, which lists
+    /// `mask` among the optional fields of every action that accepts it.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub maskable: bool,
     /// Whether a layer of this effect may reference derived artifacts through its host-owned
     /// `artifacts` list. A layer of an effect that does not declare it must list none.
     #[serde(default, skip_serializing_if = "is_default")]
@@ -121,6 +152,20 @@ pub enum ParameterKind {
     /// Three 8-bit sRGB channels as a JSON array.
     Color,
     Boolean,
+    /// An ordered path: `[x, y]` positions in the content stage's normalized coordinates, in drawn
+    /// order, as a drawn gesture produces them. The one parameter kind a painting action needs, and
+    /// a parameter kind rather than a control kind because a path is drawn on the canvas and no
+    /// panel widget edits one.
+    ///
+    /// Unlike a [`ParameterKind::Curve`] it is a path and not a function: positions may repeat an
+    /// `x`, may run in any direction and are not sorted. The coordinate range, the stored
+    /// precision, the decimation contract and the per-stroke bound are
+    /// [`crate::path`]'s and are published with the schema, so a client can post a path without
+    /// reading any desktop code.
+    Points {
+        points_min: usize,
+        points_max: usize,
+    },
     /// One derived artifact published in this catalog, as its opaque `artifact-…` identity. The
     /// generic check validates the identity's syntax; the commit checks that the artifact exists.
     Artifact,
@@ -371,11 +416,28 @@ pub enum CanvasInteraction {
         /// One uppercase ASCII letter that selects the mode, unique across the registry.
         shortcut: Option<String>,
     },
-    /// A pointer pick on the image runs a module query at the picked content pixel and, when the
-    /// query answers, submits its numeric result fields to `action` once. `query` names a query this
-    /// module declares and `x`/`y` name that query's integer coordinate parameters; the fields
-    /// submitted are every top-level number field of the result whose name is a parameter of
-    /// `action`. A refused query commits nothing and its reason is shown instead.
+    /// A pointer pick on the image runs a query at the picked content pixel and, when the query
+    /// answers, submits its numeric result fields to `action` once. `x`/`y` name that query's integer
+    /// coordinate parameters; the fields submitted are every top-level number field of the result
+    /// whose name is a parameter of `action`. A refused query commits nothing and its reason is shown
+    /// instead.
+    ///
+    /// **The pair may be a module's or the host's, and never one of each.** A module declaring this
+    /// names a query and an action it declares itself, which is what
+    /// [`ModuleDescriptor::validate`] checks. The **host** declares its own through
+    /// [`crate::mask::commands::canvas`], where both names are `mask.*` methods of the one command
+    /// family — a mask is a host object and no module declares one, so a pick that fills part of a
+    /// mask could not be expressed at all until this variant admitted a host target (proposal P17 of
+    /// `docs/design/range-study.md`). Everything else about the interaction is unchanged, which is the
+    /// point: one pick mechanism, one field-matching rule, one refusal path, and a client that knows
+    /// neither a module nor a mask by name.
+    ///
+    /// **Why a query at all, rather than a colour the client read.** The query is the only way the
+    /// picked *value* reaches the action. A mask's value-based parts are evaluated on the input the
+    /// masked operation receives, while the frame a client can see holds that operation's output, so a
+    /// colour decoded from the picture would be a different colour and the selection would not be the
+    /// one the person picked. The host answers with the pixel it already computes and the client
+    /// carries numbers it never interprets.
     SampleApply {
         query: String,
         x: String,
@@ -568,6 +630,19 @@ impl ModuleDescriptor {
             }
             if !effects.insert(effect.id.as_str()) {
                 return Err(validation(format!("duplicate effect {}", effect.id)));
+            }
+            // A mask is stored in content-stage coordinates, so an effect whose input is not that
+            // content stage has nothing to read one in: a geometry effect changes the stage and a
+            // finish effect is defined in the output coordinates the geometry tail produced.
+            if effect.maskable
+                && matches!(effect.stage, EffectStage::Geometry | EffectStage::Finish)
+            {
+                return Err(validation(format!(
+                    "effect {} declares maskable at the {} stage, which a mask stored in \
+                     content-stage coordinates cannot reach",
+                    effect.id,
+                    effect.stage.as_str()
+                )));
             }
         }
         let mut actions = HashSet::with_capacity(self.actions.len());
@@ -1144,6 +1219,19 @@ pub(crate) fn check_parameter_declarations(
                     parameter.name
                 )));
             }
+            ParameterKind::Points {
+                points_min,
+                points_max,
+            } if *points_min < 1
+                || *points_max > crate::path::POINTS_PER_STROKE
+                || points_min > points_max =>
+            {
+                return Err(validation(format!(
+                    "parameter {} declares invalid path point bounds; 1..={} is the limit",
+                    parameter.name,
+                    crate::path::POINTS_PER_STROKE
+                )));
+            }
             ParameterKind::Curve {
                 points_min,
                 points_max,
@@ -1364,9 +1452,14 @@ fn summary_value(value: &Value) -> String {
     }
 }
 
-/// `rotate-left` reads as `Rotate left`; `16:9` and other punctuated options keep their shape.
-fn title_case(text: &str) -> String {
-    let spaced = text.replace('-', " ");
+/// `rotate-left` reads as `Rotate left`; `16:9` and other punctuated options keep their shape. A
+/// mask component's display name is built from its kind the same way, so `luminance-range` reads as
+/// `Luminance range 1`.
+pub(crate) fn title_case(text: &str) -> String {
+    // A declared name reaches this as a kind (`colour-range`) or as a parameter (`colour_refine`),
+    // and both read as a phrase, so both separators become a space rather than one of them being
+    // shown to a person as it is spelled in a request.
+    let spaced = text.replace(['-', '_'], " ");
     let mut characters = spaced.chars();
     match characters.next() {
         Some(first) => first.to_uppercase().chain(characters).collect(),
@@ -1429,6 +1522,56 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
         ParameterKind::Boolean => {
             if !value.is_boolean() {
                 return Err(validation(format!("parameter {name} must be a boolean")));
+            }
+        }
+        ParameterKind::Points {
+            points_min,
+            points_max,
+        } => {
+            use crate::path::{COORDINATE_MAX, COORDINATE_MIN};
+            let Some(points) = value.as_array() else {
+                return Err(validation(format!("parameter {name} must be a path")));
+            };
+            // The count is refused as a resource limit when it is over the bound and as a
+            // validation error when it is under one, because the two are different facts: a path
+            // longer than a build will store names the limit it exceeded, and a path too short to
+            // be a gesture is a malformed request.
+            if points.len() > *points_max {
+                return Err(Error::new(
+                    ErrorKind::ResourceLimit,
+                    format!(
+                        "parameter {name} has {} positions; the limit is {points_max} points per \
+                         stroke",
+                        points.len()
+                    ),
+                ));
+            }
+            if points.len() < *points_min {
+                return Err(validation(format!(
+                    "parameter {name} must hold at least {points_min} positions"
+                )));
+            }
+            for (index, point) in points.iter().enumerate() {
+                let Some(pair) = point.as_array().filter(|pair| pair.len() == 2) else {
+                    return Err(validation(format!(
+                        "parameter {name} has a malformed position {index}"
+                    )));
+                };
+                let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) else {
+                    return Err(validation(format!(
+                        "parameter {name} has a malformed position {index}"
+                    )));
+                };
+                if !x.is_finite()
+                    || !y.is_finite()
+                    || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&x)
+                    || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&y)
+                {
+                    return Err(validation(format!(
+                        "parameter {name} position {index} must hold two numbers within \
+                         {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
+                    )));
+                }
             }
         }
         ParameterKind::Artifact => {
@@ -1857,6 +2000,38 @@ mod tests {
         }
     }
 
+    /// A `points` parameter declaring these bounds, on a module with no controls: a path is drawn
+    /// on the canvas and the control vocabulary has no widget for one, so the parameter stands on
+    /// its own and only the bounds rule under test can fail.
+    fn points_module(points_min: usize, points_max: usize) -> ModuleDescriptor {
+        ModuleDescriptor {
+            actions: vec![ActionDescriptor {
+                summary: None,
+                parameters: vec![ParameterDescriptor {
+                    name: "path".into(),
+                    kind: ParameterKind::Points {
+                        points_min,
+                        points_max,
+                    },
+                    required: true,
+                    default: None,
+                    unit: None,
+                    step: None,
+                    precision: None,
+                    notes: "the drawn path".into(),
+                    soft_min: None,
+                    soft_max: None,
+                    fine_step: None,
+                    zero: None,
+                }],
+                ..action()
+            }],
+            controls: Vec::new(),
+            reset: None,
+            ..descriptor()
+        }
+    }
+
     /// The test module with one number control whose field reset runs `action` with `preset`.
     fn number_reset(action: &str, preset: Value) -> ModuleDescriptor {
         ModuleDescriptor {
@@ -1873,6 +2048,40 @@ mod tests {
             }],
             ..descriptor()
         }
+    }
+
+    #[test]
+    fn a_points_parameter_is_declared_within_the_host_path_bound() {
+        let limit = crate::path::POINTS_PER_STROKE;
+        points_module(1, limit)
+            .validate()
+            .expect("the whole bound is declarable");
+        points_module(1, 1)
+            .validate()
+            .expect("a one-position path is a legal declaration");
+        for (min, max) in [(0, 8), (1, limit + 1), (8, 4)] {
+            assert_eq!(
+                points_module(min, max).validate().unwrap_err().detail,
+                format!(
+                    "parameter path declares invalid path point bounds; 1..={limit} is the limit"
+                )
+            );
+        }
+        // A path is not numeric and not a curve, so it carries none of the numeric display hints.
+        let hinted = ModuleDescriptor {
+            actions: vec![ActionDescriptor {
+                parameters: vec![ParameterDescriptor {
+                    step: Some(0.1),
+                    ..points_module(1, 8).actions[0].parameters[0].clone()
+                }],
+                ..points_module(1, 8).actions[0].clone()
+            }],
+            ..points_module(1, 8)
+        };
+        assert_eq!(
+            hinted.validate().unwrap_err().detail,
+            "parameter path declares a step or precision but is not numeric or a curve"
+        );
     }
 
     /// A number control may declare what resetting its field runs. It is validated like a group's
@@ -1915,6 +2124,7 @@ mod tests {
                 format: 1,
                 stage: EffectStage::Pixel,
                 order: 0,
+                maskable: false,
                 artifacts: false,
             }],
             actions: vec![action()],
@@ -2061,6 +2271,7 @@ mod tests {
                         format: 1,
                         stage: EffectStage::Pixel,
                         order: 0,
+                        maskable: false,
                         artifacts: false,
                     }],
                     ..descriptor()
@@ -3293,6 +3504,7 @@ mod tests {
                 format: 1,
                 stage,
                 order,
+                maskable: false,
                 artifacts: false,
             };
             assert_eq!(serde_json::to_value(stage).unwrap(), json!(name));

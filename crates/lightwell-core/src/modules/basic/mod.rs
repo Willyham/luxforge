@@ -509,6 +509,7 @@ impl BasicModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
                     order: 0,
+                    maskable: true,
                     artifacts: false,
                 }],
                 actions: vec![
@@ -771,6 +772,8 @@ impl ToolModule for BasicModule {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                // The mask is the host's: an update keeps whatever this layer already carries.
+                mask: layer.mask.clone(),
                 artifacts: Vec::new(),
             })),
             // The host inserts a colour-stage layer before the geometry tail; a neutral first set
@@ -781,6 +784,7 @@ impl ToolModule for BasicModule {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                mask: None,
                 artifacts: Vec::new(),
             })),
         }
@@ -993,6 +997,7 @@ mod tests {
             effect_id: BASIC_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            mask: None,
             artifacts: Vec::new(),
         }
     }

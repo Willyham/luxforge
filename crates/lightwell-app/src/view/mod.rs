@@ -10,6 +10,7 @@
 pub(crate) mod canvas;
 mod capabilities;
 mod gallery;
+pub(crate) mod masks_panel;
 pub(crate) mod palette;
 pub(crate) mod state_panel;
 pub(crate) mod status_bar;
@@ -47,6 +48,12 @@ pub(crate) struct Surfaces<'a> {
     /// The clipping overlay's own bounded texture, present only when it belongs to the photograph
     /// on screen. It is a second image laid over the first, never a change to the first.
     pub(crate) overlay: Option<&'a image_memory::Allocation>,
+    /// The mask overlay's own bounded texture, present only when it belongs to the photograph on
+    /// screen. Like the clipping overlay it is a second image over the first.
+    pub(crate) mask_overlay: Option<&'a image_memory::Allocation>,
+    /// The open mask shape gesture and the affine its handles are drawn through.
+    pub(crate) mask_draft: Option<&'a crate::mask_draft::MaskDraft>,
+    pub(crate) mask_map: Option<crate::mask_draft::ContentMap>,
     pub(crate) draft: Option<&'a CropDraft>,
 }
 
@@ -87,10 +94,15 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
     if model.title.tools_panel_open {
         middle = middle.push(vertical_divider());
         middle = middle.push(
-            container(tools_panel::tools_panel(&model.tools, &model.histogram))
-                .width(Length::Fixed(TOOLS_PANEL_WIDTH))
-                .height(Length::Fill)
-                .style(theme::panel_surface),
+            container(tools_panel::tools_panel(
+                &model.tools,
+                &model.histogram,
+                &model.masks,
+                model.canvas.mask_panel,
+            ))
+            .width(Length::Fixed(TOOLS_PANEL_WIDTH))
+            .height(Length::Fill)
+            .style(theme::panel_surface),
         );
     }
 

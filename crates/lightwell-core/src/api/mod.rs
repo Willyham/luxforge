@@ -99,10 +99,81 @@ pub struct EventsResult {
     pub gap: bool,
 }
 
+/// What the canvas draws of the selected mask, per the [masking
+/// design](../../../docs/design/masking.md)'s overlay.
+///
+/// Per-client view state exactly as the clipping flags are: it changes no recipe, no histogram
+/// population and no export, and it commits nothing. What it selects is how the coverage grid the
+/// preview worker returns beside the frame is painted, never whether one is correct.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaskOverlayMode {
+    /// The photograph alone.
+    #[default]
+    Off,
+    /// The selected mask as a tint over the photograph, at the coverage of each cell.
+    Tint,
+    /// The mask alone on black: coverage as a greyscale, with no photograph behind it.
+    MaskOnBlack,
+    /// The photograph seen through the mask, on black.
+    ImageOnBlack,
+}
+
+impl MaskOverlayMode {
+    /// Every mode, in the order the design lists them. The accepted vocabulary is read from here,
+    /// so a mode and its spelling cannot drift apart.
+    pub const ALL: [Self; 4] = [Self::Off, Self::Tint, Self::MaskOnBlack, Self::ImageOnBlack];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Tint => "tint",
+            Self::MaskOnBlack => "mask-on-black",
+            Self::ImageOnBlack => "image-on-black",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == value)
+    }
+}
+
+/// The tint a mask overlay is drawn in.
+///
+/// A name, not a colour: the value each name resolves to is a design token in
+/// `crates/lightwell-ui/src/theme.rs`, so the core never holds a colour and a client cannot send
+/// one. Every name here is drawn in a tint a person can tell apart from the clipping indicators,
+/// which already own red and blue on this canvas.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaskOverlayColour {
+    #[default]
+    Green,
+    White,
+}
+
+impl MaskOverlayColour {
+    pub const ALL: [Self; 2] = [Self::Green, Self::White];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Green => "green",
+            Self::White => "white",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|colour| colour.as_str() == value)
+    }
+}
+
 /// Per-client workspace state: which panels are open, which canvas mode is active, whether the
-/// thirds overlay is on, which clipping overlays are shown and which diagnostic gallery page is
-/// open. It is a client preference the owner holds, never authoritative edit state: an overlay or
-/// gallery page never alters the raster, saved recipe, histogram population or a future export.
+/// thirds overlay is on, which clipping overlays are shown, what the canvas draws of the selected
+/// mask and which diagnostic gallery page is open. It is a client preference the owner holds, never
+/// authoritative edit state: an overlay or gallery page never alters the raster, saved recipe,
+/// histogram population or a future export.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceState {
@@ -117,12 +188,26 @@ pub struct WorkspaceState {
     /// Show the highlight (any channel at code 255) clipping overlay.
     #[serde(default)]
     pub clip_highlights: bool,
+    /// What the canvas draws of the selected mask.
+    #[serde(default)]
+    pub mask_overlay: MaskOverlayMode,
+    /// The tint [`MaskOverlayMode::Tint`] is drawn in.
+    #[serde(default)]
+    pub mask_overlay_colour: MaskOverlayColour,
     /// Zero-based diagnostic components page, or `None` for the editor workspace.
     pub component_gallery: Option<usize>,
 }
 
 /// The pointer mode: the canvas shows the photograph and nothing else.
 pub const POINTER_MODE: &str = "pointer";
+
+/// The mask mode: the canvas draws the selected mask's handles and the tools panel shows the Masks
+/// panel in place of the module sections.
+///
+/// It is a host mode and not a module's, because a mask is a host object in the recipe rather than a
+/// tool module ([masking design](../../../docs/design/masking.md)). It is therefore always offered,
+/// exactly as the pointer is, and needs no module to declare a canvas interaction for it.
+pub const MASK_MODE: &str = "mask";
 
 impl Default for WorkspaceState {
     fn default() -> Self {
@@ -133,6 +218,8 @@ impl Default for WorkspaceState {
             thirds: false,
             clip_shadows: false,
             clip_highlights: false,
+            mask_overlay: MaskOverlayMode::Off,
+            mask_overlay_colour: MaskOverlayColour::Green,
             component_gallery: None,
         }
     }

@@ -136,9 +136,29 @@ fn fold_row(
 
 /// `floor(index * cells / extent)`, computed in 64 bits and clamped to the last cell so a rounding
 /// edge can never index past the grid.
-fn cell_index(index: u32, extent: u32, cells: u32) -> u32 {
+pub(crate) fn cell_index(index: u32, extent: u32, cells: u32) -> u32 {
     let cell = u64::from(index) * u64::from(cells) / u64::from(extent);
     (cell as u32).min(cells - 1)
+}
+
+/// The source pixel one display cell is represented *by*: `floor((2·cell + 1)·extent / (2·cells))`,
+/// the pixel at the centre of that cell's own span, computed in 64 bits and clamped to the last
+/// pixel.
+///
+/// This is [`cell_index`] read the other way, and the two agree exactly: while a cell covers at
+/// least one pixel, `cell_index(cell_pixel(c, e, n), e, n) == c` for every cell of every grid, which
+/// this module's tests assert over the whole cell cap rather than on an example.
+///
+/// Two overlays need the same grid for different reasons. A clipping overlay *folds* pixels into
+/// cells, because a single clipped pixel must survive a Fit reduction, so it walks the frame and
+/// costs `O(pixels)`. A coverage field is continuous and needs no such rescue, so a mask overlay
+/// *samples* one pixel per cell instead and costs `O(cells)` — display-sized work for a
+/// display-sized answer, with no full-resolution mask plane anywhere. Both address cells through
+/// this one arithmetic, so the two grids land on the same cells over the same frame and cannot
+/// drift apart.
+pub(crate) fn cell_pixel(cell: u32, extent: u32, cells: u32) -> u32 {
+    let pixel = (2 * u64::from(cell) + 1) * u64::from(extent) / (2 * u64::from(cells));
+    (pixel as u32).min(extent - 1)
 }
 
 #[cfg(test)]
@@ -229,6 +249,38 @@ mod tests {
         );
         // More cells than pixels still maps every pixel into exactly one cell.
         assert_eq!(overlay(&rgba, 1, 1, 3, 3).unwrap().len(), 9);
+    }
+
+    /// The two halves of the cell arithmetic are exact inverses of each other wherever a cell
+    /// covers at least one pixel: the pixel a cell is represented by falls in that same cell. The
+    /// mask overlay samples that pixel and the clipping overlay folds it in, so were the two ever
+    /// to disagree the two overlays would describe different cells of the same frame.
+    #[test]
+    fn a_cells_representative_pixel_falls_in_that_cell() {
+        for extent in [1u32, 2, 3, 7, 64, 1000, 4095, 4096, 16384] {
+            for cells in [1u32, 2, 3, 8, 97, 1024, MAX_OVERLAY_CELLS] {
+                if cells > extent {
+                    // More cells than pixels: several cells share one pixel, so the map is not
+                    // injective and only the clamp is claimed.
+                    for cell in [0, cells / 2, cells - 1] {
+                        assert!(cell_pixel(cell, extent, cells) < extent);
+                    }
+                    continue;
+                }
+                for cell in 0..cells {
+                    let pixel = cell_pixel(cell, extent, cells);
+                    assert!(
+                        pixel < extent,
+                        "{extent}/{cells}: cell {cell} names {pixel}"
+                    );
+                    assert_eq!(
+                        cell_index(pixel, extent, cells),
+                        cell,
+                        "{extent} pixels into {cells} cells: cell {cell} names pixel {pixel}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

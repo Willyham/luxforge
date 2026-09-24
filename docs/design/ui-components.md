@@ -63,13 +63,14 @@ Kinds deliberately left out, with the reason:
 
 ### Parameter kinds and hints
 
-The implemented additions are boolean, curve and string, plus numeric hints. No widget edits a string yet: that is the `text` control of the second slice. The host validates and stores exactly what it is sent, as today; hints change what a client draws and never what the host accepts.
+The implemented additions are boolean, curve, string and points, plus numeric hints. No widget edits a string yet: that is the `text` control of the second slice, and **no widget edits a `points` path at all** — a path is drawn on the canvas, so `points` is a parameter kind with no control kind and the control vocabulary stays closed. The host validates and stores exactly what it is sent, as today; hints change what a client draws and never what the host accepts.
 
 | Kind | Shape | Validation at registration and on every request |
 | --- | --- | --- |
 | `boolean` | `true` or `false` | Exactly a JSON boolean |
 | `string {max_length}` | UTF-8 text | At most `max_length` characters, `max_length` at most 256, no control characters |
 | `curve {points_min, points_max, monotone, fixed_x?}` | `[[x, y], …]` with `x` and `y` in `0..=1`, strictly increasing `x` | Between `points_min` (at least 2) and `points_max` (at most 32) points; `monotone` requires non-decreasing `y`; `fixed_x` requires exactly those `x` values in that order. Interpolation is the module's contract, stated in its notes, and the core exposes the module's sampled curve through a declared query, never through the widget |
+| `points {points_min, points_max}` | `[[x, y], …]` in content-stage normalized coordinates, in drawn order | Between `points_min` (at least 1) and `points_max` (at most 1024, the declared points-per-stroke limit) positions, each two finite numbers within `-1..=2`; unlike a curve it is a path, so positions are unsorted and may repeat or reverse. An over-count is a `resource-limit` error naming the limit. The stored coordinate grid, the decimation contract and the content-addressed store a path is kept in are the host's [path primitives](masking.md#storing-a-path), published by `schema.list` under `paths`, and belong to no one feature |
 
 `number` and `integer` parameters gain: `soft_min` and `soft_max` (the rail's range, inside the hard range; default the hard range), `fine_step` (Option-arrow; default `step / 10`), and `zero` (the tick the fill grows from; default `0` when inside the range and otherwise unipolar from the minimum). The existing `step`, `precision` and `unit` stay. A `number` control's `rail` hint decorates the rail: `plain` (default), `hue` (the spectrum), `temperature` (blue to amber), `tint` (green to magenta) or `gradient {stops: [color, …]}` for a module's own scale. The widget receives colour stops and nothing else, so a mislabelled rail can only be ugly, never wrong.
 

@@ -1,15 +1,18 @@
 use crate::{
     AssetId, ContentPoint, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId,
-    ModuleRegistry, Mutation, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe, Snapshot,
-    SnapshotId, Transform,
+    MaskId, ModuleRegistry, Mutation, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe,
+    Snapshot, SnapshotId, StageTransform, Transform,
     analysis::AnalysisIdentity,
     artifacts::{ArtifactId, LiveArtifacts, PreparedArtifact, PreparedArtifacts},
+    mask::commands::{
+        MaskChange, MaskCommand, MaskCommandResult, MaskListing, MaskOutcome, MaskTarget,
+    },
     modules::{
         ActionInput, ActionPlan, EffectStage, MAX_COMPOSE_STEPS, Stage, StageContext, action_label,
         check_parameters,
     },
     open_source_bytes, read_bounded_file, render,
-    render::{Evaluation, locate_dimensions},
+    render::{Evaluation, locate_dimensions, stage_transform},
     render_linear, sample_linear,
     source::{PreparedSource, RawPrepared},
 };
@@ -31,11 +34,17 @@ mod artifact_store;
 #[cfg(test)]
 mod artifact_tests;
 
-/// Format 6 adds the catalog identity and the derived-artifact tables beside the preset library of
-/// format 5; format 4 made entry records the only stored copy of a stack and format 3 stored each
-/// entry's rendered label. Every other marker, earlier or later, is refused by name and left as it
-/// is; choose a new catalog path.
-const CATALOG_FORMAT: i64 = 6;
+/// Format 7 is the merged shape. It holds the mask table a recipe carries and the layer's mask
+/// reference, the content-addressed stroke store a painted path is kept in — so no catalog ever
+/// holds embedded stroke points — the preset library, and the catalog's own identity with the
+/// derived-artifact tables. Two branches each claimed format **6** for one half of that, the masks
+/// and strokes on one and the catalog identity and artifact tables on the other, exactly as two
+/// earlier branches each claimed format 5; the merged shape is neither, so a catalog written by
+/// either is refused by name rather than read as the other and is left byte for byte as it was.
+/// Format 4 made entry records the only stored copy of a stack and format 3 stored each entry's
+/// rendered label. Every other marker, earlier or later, is refused by name and left as it is;
+/// choose a new catalog path.
+const CATALOG_FORMAT: i64 = 7;
 const MAX_HISTORY_PAGE: usize = 100;
 const MAX_VERSION_NAME: usize = 64;
 const ASSET_COLUMNS: &str =
@@ -142,6 +151,38 @@ pub struct PixelSample {
     pub draft: Option<DraftStamp>,
 }
 
+/// One **input** pixel of a masked operation, which is what a mask's value-based parts are evaluated
+/// on, in linear sRGB, with the stage it was read from.
+///
+/// It is not a [`PixelSample`] and must not be confused with one: that is the *output* the picture
+/// shows, this is the input the operation a mask modulates receives. The two are different colours
+/// wherever the operation does anything at all, which is exactly why a client cannot read this one
+/// off the frame. `r`, `g` and `b` are top-level numbers because that is what a canvas pick submits
+/// to `mask.add-<kind>-sample`, whose own parameters carry those names.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PixelInput {
+    pub r: f64,
+    pub g: f64,
+    pub b: f64,
+    pub x: u32,
+    pub y: u32,
+    /// The stage the masked layer receives, which is the stage `x` and `y` address.
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One 8-bit RGBA sample as the linear-sRGB triple a mask's value-based parts evaluate on, through the
+/// delivered decode and nothing else, so one definition of "linear sRGB" serves the whole editor.
+fn linear_triple(rgba: [u8; 4]) -> [f64; 3] {
+    let linear = crate::render::decode_pixel([rgba[0], rgba[1], rgba[2]]);
+    [
+        f64::from(linear[0]),
+        f64::from(linear[1]),
+        f64::from(linear[2]),
+    ]
+}
+
 /// Which evaluated stack an analysis job should describe: the asset's current entry, one frozen
 /// historical entry, or the caller's own open draft.
 #[derive(Clone, Copy, Debug)]
@@ -242,6 +283,11 @@ pub struct LayerDescription {
     #[serde(default)]
     pub values: Map<String, Value>,
     pub available: bool,
+    /// The mask this layer is modulated by, when it carries one. The recipe is the durable order of
+    /// processing, so a client reading it must be able to tell a masked layer from a global one
+    /// without asking a second question; `mask.list` answers the same relation from the other side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<MaskId>,
     /// The derived artifacts the stored layer references, in its order. Omitted when it has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactId>,
@@ -393,17 +439,7 @@ impl EditorService {
         // root is recorded as the canonical directory the relocation verified.
         let artifact_root = match meta("artifact_root")? {
             Some(root) => PathBuf::from(root),
-            None => {
-                let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                let stem = canonical
-                    .file_stem()
-                    .map(|stem| stem.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "catalog".into());
-                canonical
-                    .parent()
-                    .unwrap_or(Path::new(""))
-                    .join(format!("{stem}.artifacts"))
-            }
+            None => default_artifact_root(path),
         };
         Ok(Self {
             connection,
@@ -488,6 +524,13 @@ impl EditorService {
                     source_text TEXT,
                     UNIQUE(group_name, name)
                  );
+                 CREATE TABLE strokes (
+                    id TEXT PRIMARY KEY,
+                    stroke_json TEXT NOT NULL
+                 );
+                 CREATE TRIGGER strokes_are_immutable BEFORE UPDATE ON strokes BEGIN
+                    SELECT RAISE(ABORT, 'stored strokes are immutable');
+                 END;
                  CREATE TRIGGER entries_are_immutable BEFORE UPDATE ON entries BEGIN
                     SELECT RAISE(ABORT, 'history entries are immutable');
                  END;
@@ -1048,6 +1091,7 @@ impl EditorService {
                     summary: "no provider".into(),
                     values: Map::new(),
                     available: false,
+                    mask: layer.mask.clone(),
                     artifacts: layer.artifacts.clone(),
                 },
                 Some((module, _)) => {
@@ -1089,6 +1133,7 @@ impl EditorService {
                         summary,
                         values,
                         available,
+                        mask: layer.mask.clone(),
                         artifacts: layer.artifacts.clone(),
                     }
                 }
@@ -1188,6 +1233,9 @@ impl EditorService {
             // whole stack does not describe, and the desktop shows it only as a drafting aid. It
             // therefore never has a proxy phase, whatever bounds the caller offered.
             proxy: proxy.filter(|_| layer_count.is_none()),
+            // A coverage grid is asked for by the client that will draw it, through
+            // `PreviewJob::with_mask_overlay`, which validates it against this stack.
+            mask_overlay: None,
             artifacts,
         })
     }
@@ -1444,6 +1492,26 @@ impl EditorService {
         )
     }
 
+    /// The content-to-output affine of a saved entry's geometry tail, both ways. `locate_entry`
+    /// answers one point; this answers all of them at once, so a gesture over the photograph maps
+    /// pointer positions itself instead of asking per move. Like `locate_entry` it reads the compiled
+    /// stack only and rasterizes nothing.
+    pub fn transform_entry(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+    ) -> Result<StageTransform, Error> {
+        let state = self.state(asset_id)?;
+        let entry = self.entry(asset_id, entry_id)?;
+        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        stage_transform(
+            &self.registry,
+            state.asset.width,
+            state.asset.height,
+            &entry.snapshot.recipe,
+        )
+    }
+
     /// One action request for every caller: the desktop, the JSON API and headless clients all
     /// arrive here with an action identity and its declared parameters.
     pub fn apply_action(
@@ -1467,6 +1535,10 @@ impl EditorService {
                 format!("unavailable module {}", module.descriptor().id),
             ));
         }
+        // The host's one optional target field, taken before the action's own parameters are checked
+        // so the module receives exactly its declared fields and never learns a mask was involved.
+        let mut parameters = parameters;
+        let mask = take_mask_target(&registry, action_id, &mut parameters)?;
         let checked = check_parameters(action, &parameters)?;
         let input = module.parse(action_id, &checked)?;
         // The module labels a request its template cannot describe, such as a field patch; the
@@ -1475,7 +1547,7 @@ impl EditorService {
         let label = module
             .label(&input)
             .unwrap_or_else(|| action_label(action, &input.parameters));
-        let request = request_input(&input, &mutation)?;
+        let request = request_input(&input, &mutation, mask.as_ref())?;
         if let Some(result) = self.request_result(asset_id, &mutation.request_id, &request)? {
             return Ok(result);
         }
@@ -1485,6 +1557,20 @@ impl EditorService {
         validate_source_recipe(&state.asset, recipe)?;
         // Both planning paths compile the current stack, so its artifacts are bound first.
         let _artifacts = self.require_artifacts(recipe)?;
+        // A target the stack does not hold is refused here, before a module plans anything.
+        resolve_mask_target(recipe, mask.as_ref())?;
+        // A masked module edit always names its mask, where a `mask.*` command names one only once
+        // the stack holds more than one. The difference is not an inconsistency but the ambiguity
+        // each one actually has: `Update Linear 1` is unmistakable while a recipe holds one mask,
+        // but `Exposure +2.00 EV` is exactly what this module's *global* edit writes, so a single
+        // mask is already enough for a history row to show two entries nothing distinguishes.
+        let label = match mask
+            .as_ref()
+            .and_then(|id| recipe.masks.iter().find(|mask| &mask.id == id))
+        {
+            Some(mask) => format!("{} · {label}", mask.name),
+            None => label,
+        };
         if module.descriptor().id == "lightwell.raw" {
             let (width, height) = (state.asset.width, state.asset.height);
             let stage = registry.compile(width, height, recipe)?.stage();
@@ -1496,7 +1582,13 @@ impl EditorService {
             };
             let stage_before = |index: usize| -> Result<Stage, Error> {
                 Ok(registry
-                    .compile_layers(width, height, prefix(&recipe.layers, index)?)?
+                    .compile_layers(
+                        width,
+                        height,
+                        prefix(&recipe.layers, index)?,
+                        &recipe.masks,
+                        &recipe.strokes,
+                    )?
                     .stage())
             };
             let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
@@ -1562,8 +1654,15 @@ impl EditorService {
             );
         }
         let source = self.verified_prepared(&state.asset)?;
-        let plan = self.plan_input(&state, &source, module, &input)?;
-        let Some(recipe) = self.resolve_plan(&source, recipe, plan)? else {
+        let plan = self.plan_input(
+            &state,
+            &source,
+            module,
+            &input,
+            registry.action_accepts_mask(action_id),
+            mask.as_ref(),
+        )?;
+        let Some(recipe) = self.resolve_plan(&source, recipe, plan, mask.as_ref())? else {
             return self.persist_noop(asset_id, &mutation, &request, &state);
         };
         let snapshot = state.current_entry.snapshot.with_recipe(recipe)?;
@@ -1577,6 +1676,238 @@ impl EditorService {
         )
     }
 
+    /// One `mask.*` host command.
+    ///
+    /// Masks are host commands in their own namespace and not a tool module, because a module commits
+    /// layers through [`ActionPlan`] and must never rewrite the recipe, while every one of these
+    /// rewrites the mask table beside the layers. Everything else is the delivered path and not a
+    /// second implementation of it: the parameters go through the same [`check_parameters`], the
+    /// request identity and its deduplication are built by the same [`request_input`], the revision
+    /// is checked by the same [`ensure_revision`], a change is persisted by the same
+    /// [`Self::commit_snapshot`] — one history entry, one immutable snapshot, one validated and
+    /// compiled recipe — and a change that changes nothing takes the same [`Self::persist_noop`].
+    pub fn apply_mask_command(
+        &mut self,
+        asset_id: &AssetId,
+        mutation: Mutation,
+        command: &'static MaskCommand,
+        parameters: Value,
+        target: MaskTarget,
+    ) -> Result<MaskCommandResult, Error> {
+        mutation.validate()?;
+        command.checked_target(&target)?;
+        let checked = check_parameters(&command.action, &parameters)?;
+        // The entry stores the declared parameters and the envelope fields naming what they addressed,
+        // which is also the deduplication identity: the same request id with a different mask is a
+        // different request and must conflict rather than return the first one's result.
+        let input = ActionInput {
+            action_id: command.method.to_owned(),
+            parameters: crate::mask::commands::stored_parameters(&checked, &target),
+        };
+        // No separate mask argument: a mask command's target is already one of the stored
+        // parameters above, so it is hashed with them. The field a module action passes here names
+        // the *layer* an edit addressed, which is a different question a mask command never asks.
+        let request = request_input(&input, &mutation, None)?;
+        if let Some(result) = self.request_result(asset_id, &mutation.request_id, &request)? {
+            return self.mask_report(asset_id, result);
+        }
+        let state = self.state(asset_id)?;
+        ensure_revision(&state, mutation.expected_revision)?;
+        let recipe = &state.current_entry.snapshot.recipe;
+        validate_source_recipe(&state.asset, recipe)?;
+        let registry = self.registry.clone();
+        // A stroke that asks to be limited to a colour is seeded here, by the host, from the pixel
+        // the operation this mask modulates receives at the position the stroke began. The request
+        // named the limit and never the colour, so nothing a client sends can put a colour in a
+        // stroke that the photograph does not have at that position, and the planner below stays
+        // pure — it is handed the pixel rather than reading one.
+        let seed = self.mask_colour_seed(&state, command, recipe, &target, &checked)?;
+        match crate::mask::commands::plan(command, recipe, &target, &checked, &registry, seed)? {
+            MaskOutcome::NoOp => Ok(MaskCommandResult::plain(
+                self.persist_noop(asset_id, &mutation, &request, &state)?,
+            )),
+            MaskOutcome::Change(MaskChange {
+                recipe,
+                label,
+                mask,
+                component,
+                removed_layers,
+            }) => {
+                let snapshot = Snapshot {
+                    id: SnapshotId::new(),
+                    asset_id: asset_id.clone(),
+                    recipe,
+                };
+                let mutation = self.commit_snapshot(
+                    asset_id,
+                    mutation,
+                    request,
+                    snapshot,
+                    &state.asset,
+                    CommittedAction {
+                        input,
+                        label: label.clone(),
+                    },
+                )?;
+                Ok(MaskCommandResult {
+                    mutation,
+                    label: Some(label),
+                    mask,
+                    component,
+                    removed_layers,
+                })
+            }
+        }
+    }
+
+    /// The report of a deduplicated retry, read back from the entry the original call wrote so the
+    /// retry answers identically. A retried no-op wrote no entry and reports the envelope alone,
+    /// exactly as the no-op itself did.
+    fn mask_report(
+        &self,
+        asset_id: &AssetId,
+        result: MutationResult,
+    ) -> Result<MaskCommandResult, Error> {
+        let Some(entry_id) = result.created_entry_id.clone() else {
+            return Ok(MaskCommandResult::plain(result));
+        };
+        let entry = self.entry(asset_id, &entry_id)?;
+        let parent = match &entry.undo_parent {
+            Some(parent) => Some(self.entry(asset_id, parent)?),
+            None => None,
+        };
+        Ok(crate::mask::commands::report_of(
+            result,
+            &entry,
+            parent.as_ref(),
+            &self.registry,
+        ))
+    }
+
+    /// The pixel a limited stroke is seeded on, as the three sRGB codes the host sampled, or `None`
+    /// when the command asks for no limit.
+    ///
+    /// The **rule** — which layer's input, and what a mask no layer is bound to means — is the
+    /// command family's, stated once in `mask::commands::input_layer_index`; the **pixel** is read
+    /// here, because the editor is the only thing that can evaluate one. That split is what makes a
+    /// stored seed a colour the photograph has: a request carries a flag and a path, never a colour,
+    /// so no client can put anything else in a stroke.
+    fn mask_colour_seed(
+        &self,
+        state: &EditorState,
+        command: &MaskCommand,
+        recipe: &Recipe,
+        target: &MaskTarget,
+        parameters: &Map<String, Value>,
+    ) -> Result<Option<[u8; 3]>, Error> {
+        let Some(request) =
+            crate::mask::commands::colour_limit_request(command, recipe, target, parameters)?
+        else {
+            return Ok(None);
+        };
+        let source = self.verified_prepared(&state.asset)?;
+        self.with_stage_context(&source, recipe, |context| {
+            let stage = (context.stage_before)(request.layer)?;
+            // The stroke's positions are normalized against the stage its mask is compiled against,
+            // which is the stage this layer receives, so the pixel is that stage's own. A stroke that
+            // began outside the picture — an ordinary gesture, which the stored range allows — has no
+            // input pixel to read and is refused by name rather than clamped to an edge whose colour
+            // nobody chose.
+            let pixel = |value: f64, side: u32| -> Option<u32> {
+                let index = (value * f64::from(side)).floor();
+                (index >= 0.0 && index < f64::from(side)).then_some(index as u32)
+            };
+            let outside = || {
+                Error::new(
+                    ErrorKind::Validation,
+                    format!(
+                        "a stroke limited to a colour must begin inside the picture, and \
+                         ({:.4}, {:.4}) is outside the {}x{} stage the masked layer receives",
+                        request.x, request.y, stage.width, stage.height
+                    ),
+                )
+            };
+            let x = pixel(request.x, stage.width).ok_or_else(outside)?;
+            let y = pixel(request.y, stage.height).ok_or_else(outside)?;
+            let rgba = (context.sample_before)(request.layer, x, y)?.ok_or_else(outside)?;
+            // The codes, not the decoded colour: a stroke is addressed by the hash of its bytes, and
+            // an integer survives a JSON round trip exactly where an `f64` does not. Decoding is the
+            // delivered one and happens where the stroke is compiled.
+            Ok(Some([rgba[0], rgba[1], rgba[2]]))
+        })
+    }
+
+    /// `mask.sample-input`: the pixel the operation one mask modulates receives, at one content
+    /// position of the stage that operation's layer receives, in linear sRGB.
+    ///
+    /// Read-only: it reads one entry's snapshot, writes nothing, emits nothing and touches no session
+    /// state. It is where a canvas pick gets the colour a colour range's swatch is, and it exists so
+    /// a client never has to decode one: the frame a client can see holds the masked operation's
+    /// *output*, and a range selection is evaluated on its *input*, so a colour read from the picture
+    /// would be a different colour. Cost is one `O(layers)` point evaluation and no frame is
+    /// allocated.
+    pub fn mask_input_sample(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+        mask: &MaskId,
+        x: u32,
+        y: u32,
+    ) -> Result<PixelInput, Error> {
+        let state = self.state(asset_id)?;
+        let entry = self.entry(asset_id, entry_id)?;
+        let asset = &state.asset;
+        let recipe = &entry.snapshot.recipe;
+        validate_source_recipe(asset, recipe)?;
+        let layer = crate::mask::commands::input_layer_index(recipe, mask)?;
+        let source = self.verified_prepared(asset)?;
+        self.with_stage_context(&source, recipe, |context| {
+            let stage = (context.stage_before)(layer)?;
+            if x >= stage.width || y >= stage.height {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!(
+                        "outside the stage: ({x}, {y}) is not inside the {}x{} stage the masked \
+                         layer receives",
+                        stage.width, stage.height
+                    ),
+                ));
+            }
+            let rgba = (context.sample_before)(layer, x, y)?.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Validation,
+                    format!("outside the stage: ({x}, {y}) has no pixel to read"),
+                )
+            })?;
+            let [r, g, b] = linear_triple(rgba);
+            Ok(PixelInput {
+                r,
+                g,
+                b,
+                x,
+                y,
+                width: stage.width,
+                height: stage.height,
+            })
+        })
+    }
+
+    /// `mask.list`: every mask of one stored stack with its components, its values and the layers
+    /// bound to it. Read-only in every sense — it reads one entry's snapshot and writes nothing,
+    /// emits nothing and touches no session state.
+    pub fn mask_listing(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+    ) -> Result<MaskListing, Error> {
+        let entry = self.entry(asset_id, entry_id)?;
+        Ok(crate::mask::commands::listing(
+            entry.id.clone(),
+            &entry.snapshot.recipe,
+            &self.registry,
+        ))
+    }
+
     /// Ask a module what one parsed request would do to this stack. The stack is compiled once and
     /// every question the module may ask is a point query or a prefix compile, so planning costs
     /// `O(layers)` and rasterizes nothing. Shared by a commit and by a draft's effective recipe, so
@@ -1587,10 +1918,19 @@ impl EditorService {
         source: &PreparedSource,
         module: &dyn crate::ToolModule,
         input: &ActionInput,
+        accepts_mask: bool,
+        mask: Option<&MaskId>,
     ) -> Result<ActionPlan, Error> {
-        self.with_stage_context(source, &state.current_entry.snapshot.recipe, |context| {
-            module.plan(input, context)
-        })
+        // The module plans against the stack of one target: the global layer and each mask are
+        // distinct targets, so a module that owns one layer still owns one per target and finds it by
+        // the same scan it has always made.
+        let recipe = recipe_for_target(
+            &self.registry,
+            &state.current_entry.snapshot.recipe,
+            accepts_mask,
+            mask,
+        );
+        self.with_stage_context(source, &recipe, |context| module.plan(input, context))
     }
 
     /// Build the questions a module may ask about one stack and hand them to `answer`.
@@ -1649,7 +1989,13 @@ impl EditorService {
         // and rasterizes nothing. The whole recipe compiled above, so its format is known good.
         let stage_before = |index: usize| -> Result<Stage, Error> {
             Ok(registry
-                .compile_layers(width, height, prefix(&recipe.layers, index)?)?
+                .compile_layers(
+                    width,
+                    height,
+                    prefix(&recipe.layers, index)?,
+                    &recipe.masks,
+                    &recipe.strokes,
+                )?
                 .stage())
         };
         // One pixel of the stage a prefix produces, for a module planning against the position its
@@ -1658,13 +2004,24 @@ impl EditorService {
         let sample_before = |index: usize, x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> {
             let layers = prefix(&recipe.layers, index)?;
             match source {
-                PreparedSource::Jpeg(image) => {
-                    Evaluation::over_layers(registry, image, layers)?.pixel(x, y)
-                }
+                PreparedSource::Jpeg(image) => Evaluation::over_layers(
+                    registry,
+                    image,
+                    layers,
+                    &recipe.masks,
+                    &recipe.strokes,
+                )?
+                .pixel(x, y),
                 PreparedSource::Raw(_) => {
                     let prefix_recipe = Recipe {
                         format: recipe.format,
                         layers: layers.to_vec(),
+                        // A prefix keeps the whole mask table: the masks a prefix layer references
+                        // are the recipe's, not the prefix's, and dropping them would make a valid
+                        // stack look as if it named a mask that does not exist.
+                        masks: recipe.masks.clone(),
+                        // And the strokes those masks resolved to, for the same reason.
+                        strokes: recipe.strokes.clone(),
                     };
                     Ok(sample_linear(
                         registry,
@@ -1729,7 +2086,22 @@ impl EditorService {
         validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
         let _artifacts = self.require_artifacts(&entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
-        self.with_stage_context(&source, &entry.snapshot.recipe, |context| {
+        // A query carries no mask target, so it asks about the global layer, and the target view hides
+        // the masked layers of the module's own effect. Without it a module that owns one layer would
+        // refuse its own query as ambiguous as soon as a mask held a layer of that effect, and the
+        // pixels it reads are unchanged: what it samples is the stage *before* its own layer, and a
+        // masked layer of the same effect is always after the global one.
+        let recipe = recipe_for_target(
+            &self.registry,
+            &entry.snapshot.recipe,
+            module
+                .descriptor()
+                .effects
+                .iter()
+                .any(|effect| effect.maskable),
+            None,
+        );
+        self.with_stage_context(&source, &recipe, |context| {
             module.query(query_id, &checked, context)
         })
     }
@@ -1750,6 +2122,25 @@ impl EditorService {
             ));
         }
         let registry = self.registry.clone();
+        // A drafted host command previews through the same planner that commits it, so a gesture
+        // shows exactly the stack releasing it would write.
+        if let Some(command) = crate::mask::commands::find(&draft.action) {
+            let state = self.state(asset_id)?;
+            let current = &state.current_entry.snapshot.recipe;
+            validate_source_recipe(&state.asset, current)?;
+            let checked = check_parameters(&command.action, &Value::Object(draft.fields.clone()))?;
+            let target = draft.target.clone().unwrap_or_default();
+            // The same seed the commit will store, read the same way, so a drafted limited stroke
+            // previews the stroke it is about to become rather than an unlimited one.
+            let seed = self.mask_colour_seed(&state, command, current, &target, &checked)?;
+            let recipe = match crate::mask::commands::plan(
+                command, current, &target, &checked, &registry, seed,
+            )? {
+                MaskOutcome::NoOp => current.clone(),
+                MaskOutcome::Change(change) => change.recipe,
+            };
+            return Ok((recipe, state));
+        }
         let (module, action) = registry.action(&draft.action).ok_or_else(|| {
             Error::new(
                 ErrorKind::Validation,
@@ -1764,10 +2155,25 @@ impl EditorService {
         // current one does not, so each caller binds that recipe's artifacts before evaluating it.
         let _artifacts = self.require_artifacts(&state.current_entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
+        // The draft's target is the one the commit will carry: none for a global gesture, and the
+        // mask a masked slider was opened on. The target view hides the layers of the drafted
+        // module's effect that belong to another target, which is what lets a global slider drag and
+        // a masked one each keep working on a stack that holds both.
         let current = &state.current_entry.snapshot.recipe;
-        let plan = self.plan_input(&state, &source, module, &input)?;
+        let mask = draft
+            .target
+            .as_ref()
+            .and_then(|target| target.mask.as_ref());
+        let plan = self.plan_input(
+            &state,
+            &source,
+            module,
+            &input,
+            registry.action_accepts_mask(&draft.action),
+            mask,
+        )?;
         let recipe = self
-            .resolve_plan(&source, current, plan)?
+            .resolve_plan(&source, current, plan, mask)?
             .unwrap_or_else(|| current.clone());
         Ok((recipe, state))
     }
@@ -1794,10 +2200,11 @@ impl EditorService {
         source: &PreparedSource,
         recipe: &Recipe,
         plan: ActionPlan,
+        mask: Option<&MaskId>,
     ) -> Result<Option<Recipe>, Error> {
         let steps = match plan {
             ActionPlan::Compose(steps) => steps,
-            plan => return self.apply_plan(recipe, plan),
+            plan => return self.apply_plan(recipe, plan, mask),
         };
         if steps.len() > MAX_COMPOSE_STEPS {
             return Err(Error::new(
@@ -1832,7 +2239,7 @@ impl EditorService {
             let input = module.parse(action_id, &checked)?;
             let plan =
                 self.with_stage_context(source, &resolved, |context| module.plan(&input, context))?;
-            if let Some(next) = self.apply_plan(&resolved, plan)? {
+            if let Some(next) = self.apply_plan(&resolved, plan, mask)? {
                 resolved = next;
             }
         }
@@ -1841,13 +2248,29 @@ impl EditorService {
 
     /// One step's plan applied to a stack: the placement rules of [`Self::resolve_plan`] for a
     /// single layer. A composite here is a step of another composite, which the host refuses.
-    fn apply_plan(&self, recipe: &Recipe, plan: ActionPlan) -> Result<Option<Recipe>, Error> {
+    fn apply_plan(
+        &self,
+        recipe: &Recipe,
+        plan: ActionPlan,
+        mask: Option<&MaskId>,
+    ) -> Result<Option<Recipe>, Error> {
         match plan {
             ActionPlan::NoOp => Ok(None),
+            // Within the region the effect's stage and order choose, a masked layer follows the
+            // global layer of its effect and the masked layers of earlier masks, so overlapping
+            // masks apply in the order the mask list shows. The target is the host's to write: a
+            // module returns a layer without one, because it never saw the field.
             ActionPlan::Commit(layer) => {
-                let index = self
-                    .registry
-                    .insertion_index_for(&recipe.layers, &layer.effect_id);
+                let index = self.registry.insertion_index_for_target(
+                    &recipe.layers,
+                    &layer.effect_id,
+                    mask,
+                    &recipe.masks,
+                );
+                let layer = Layer {
+                    mask: mask.cloned(),
+                    ..layer
+                };
                 Ok(Some(recipe.with_layer_inserted(index, layer)?))
             }
             ActionPlan::Update(layer) => Ok(Some(recipe.with_layer_replaced(layer)?)),
@@ -2437,7 +2860,7 @@ fn pixel_sample(
 
 /// The ordered layers before a position in the stack, which is what a module asks about when it
 /// plans against the stage that position receives. A position past the end is a validation error.
-fn prefix(layers: &[Layer], index: usize) -> Result<&[Layer], Error> {
+pub(crate) fn prefix(layers: &[Layer], index: usize) -> Result<&[Layer], Error> {
     layers.get(..index).ok_or_else(|| {
         Error::new(
             ErrorKind::Validation,
@@ -2463,19 +2886,130 @@ fn ensure_revision(state: &EditorState, expected: u64) -> Result<(), Error> {
     }
 }
 
-/// The deduplicated request identity: the durable action, the mutation envelope and the parsed
-/// parameters as top-level fields.
-fn request_input(input: &ActionInput, mutation: &Mutation) -> Result<Value, Error> {
+/// The deduplicated request identity: the durable action, the mutation envelope, the mask target and
+/// the parsed parameters as top-level fields.
+///
+/// The target belongs here because it is part of what the request *is*: the same fields sent to the
+/// global layer and to a mask are two different edits, and a client that reused one request id for
+/// both must not receive the first one's result for the second.
+fn request_input(
+    input: &ActionInput,
+    mutation: &Mutation,
+    mask: Option<&MaskId>,
+) -> Result<Value, Error> {
     let mut request = serde_json::Map::new();
     request.insert("action".into(), Value::from(input.action_id.as_str()));
     request.insert(
         "mutation".into(),
         serde_json::to_value(mutation).map_err(|e| json_error("cannot encode request", e))?,
     );
+    if let Some(mask) = mask {
+        request.insert(MASK_FIELD.into(), Value::from(mask.as_str()));
+    }
     for (name, value) in &input.parameters {
         request.insert(name.clone(), value.clone());
     }
     Ok(Value::Object(request))
+}
+
+/// The host's one optional top-level request field on every action of a maskable effect.
+pub const MASK_FIELD: &str = "mask";
+
+/// Take the `mask` target out of a request before the action's own parameters are checked, so no
+/// module's `parse`, `plan` or `compile` ever sees it (`docs/design/masking.md`, "How a mask reaches
+/// an effect").
+///
+/// Sending it to an action that does not accept one is a `validation` error naming the action, not a
+/// silently ignored field: an agent that believes it edited through a mask must be told it did not.
+fn take_mask_target(
+    registry: &ModuleRegistry,
+    action_id: &str,
+    parameters: &mut Value,
+) -> Result<Option<MaskId>, Error> {
+    let Some(object) = parameters.as_object_mut() else {
+        return Ok(None);
+    };
+    let Some(field) = object.remove(MASK_FIELD) else {
+        return Ok(None);
+    };
+    if !registry.action_accepts_mask(action_id) {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            format!("action {action_id} does not accept a mask target"),
+        ));
+    }
+    let id: MaskId = serde_json::from_value(field.clone()).map_err(|_| {
+        Error::new(
+            ErrorKind::Validation,
+            format!("mask target {field} is not a mask identity"),
+        )
+    })?;
+    Ok(Some(id))
+}
+
+/// The mask a request named, resolved against the stack it will edit. A target the recipe does not
+/// hold is refused before anything is planned, so an edit never creates a layer bound to a mask that
+/// does not exist.
+fn resolve_mask_target<'a>(
+    recipe: &'a Recipe,
+    mask: Option<&MaskId>,
+) -> Result<Option<&'a crate::Mask>, Error> {
+    let Some(id) = mask else {
+        return Ok(None);
+    };
+    recipe
+        .masks
+        .iter()
+        .find(|mask| &mask.id == id)
+        .map(Some)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!("unknown mask {id} for this asset"),
+            )
+        })
+}
+
+/// The stack as one target sees it: the layers of every maskable effect that belong to some *other*
+/// target are hidden, and everything else is exactly where it was.
+///
+/// This is what makes a target a target without a single line of module code. A module finds its own
+/// layer by scanning the layers it is given — and refuses a stack that holds two of its own, which is
+/// the same refusal the host makes — so handing it the one target's layers is what lets
+/// `edit.set-basic {mask, exposure}` commit and update the masked layer while `edit.set-basic
+/// {exposure}` keeps editing the global one.
+///
+/// Every stage answer the context gives is unchanged by the hiding, because only a colour-, pixel-
+/// or spatial-stage effect may be maskable and none of those changes the stage's dimensions: the
+/// geometry tail is never hidden, so `stage`, `stage_before` and `insertion_index` answer exactly
+/// what they answer for the whole stack. What a sampler reads does change — it no longer includes the
+/// other targets' colour — and that is why the filtered view is used only for planning an action of a
+/// maskable module and for that module's own queries, where the layers before the module's own layer
+/// are what is sampled and a masked layer of the same effect is never among them.
+///
+/// A recipe with no masks is handed back as it is, so the ordinary path allocates nothing.
+fn recipe_for_target<'a>(
+    registry: &ModuleRegistry,
+    recipe: &'a Recipe,
+    accepts_mask: bool,
+    mask: Option<&MaskId>,
+) -> std::borrow::Cow<'a, Recipe> {
+    if !accepts_mask || recipe.masks.is_empty() {
+        return std::borrow::Cow::Borrowed(recipe);
+    }
+    std::borrow::Cow::Owned(Recipe {
+        format: recipe.format,
+        layers: recipe
+            .layers
+            .iter()
+            .filter(|layer| {
+                layer.mask.as_ref() == mask || !registry.effect_maskable(&layer.effect_id)
+            })
+            .cloned()
+            .collect(),
+        masks: recipe.masks.clone(),
+        strokes: recipe.strokes.clone(),
+    })
 }
 
 fn input_hash(input: &Value) -> Result<String, Error> {
@@ -2726,6 +3260,23 @@ fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
 /// Every path that writes a history entry comes through here, inside its own transaction, so the
 /// entry's artifact references are checked and recorded with it or not at all: a snapshot can
 /// never point at an artifact the catalog does not hold.
+/// The artifact directory a catalog uses when nothing has relocated it: `<stem>.artifacts` beside
+/// the catalog file. One rule, so anything writing an entry without an open service — a test on the
+/// production write path — names the same directory the service would.
+fn default_artifact_root(catalog: &Path) -> PathBuf {
+    let canonical = catalog
+        .canonicalize()
+        .unwrap_or_else(|_| catalog.to_path_buf());
+    let stem = canonical
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "catalog".into());
+    canonical
+        .parent()
+        .unwrap_or(Path::new(""))
+        .join(format!("{stem}.artifacts"))
+}
+
 fn insert_entry(
     registry: &ModuleRegistry,
     tx: &Transaction<'_>,
@@ -2733,6 +3284,7 @@ fn insert_entry(
     entry: &HistoryEntry,
 ) -> Result<(), Error> {
     registry.validate_recipe(&entry.snapshot.recipe)?;
+    store_strokes(tx, &entry.snapshot.recipe)?;
     tx.execute(
         "INSERT INTO entries (id,asset_id,sequence,action_id,undo_parent_id,entry_json)
          VALUES (?1,?2,?3,?4,?5,?6)",
@@ -2747,6 +3299,79 @@ fn insert_entry(
     )
     .map_err(catalog_error)?;
     artifact_store::link_artifacts(tx, artifact_root, entry)
+}
+
+/// Write this recipe's strokes to the content-addressed store, once each.
+///
+/// The address is the content's, so a stroke a later entry references again is already there and
+/// the insert does nothing: that is the whole of "stored once", and it needs no reference count and
+/// no check of what else points at it. The entry's own JSON carries only the addresses, so nothing
+/// written here is ever written into an entry.
+///
+/// A reference the recipe could not resolve writes nothing and is not an error at this boundary: an
+/// unresolvable reference is retained data, and the paths that would *draw* it refuse it by name.
+fn store_strokes(tx: &Transaction<'_>, recipe: &Recipe) -> Result<(), Error> {
+    let references = recipe.stroke_references()?;
+    if references.is_empty() {
+        return Ok(());
+    }
+    let mut statement = tx
+        .prepare("INSERT OR IGNORE INTO strokes (id,stroke_json) VALUES (?1,?2)")
+        .map_err(catalog_error)?;
+    for (_, id) in &references {
+        let Some(stroke) = recipe.strokes.get(id) else {
+            continue;
+        };
+        let text = String::from_utf8(stroke.canonical())
+            .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot store stroke: {e}")))?;
+        statement
+            .execute(params![id.as_str(), text])
+            .map_err(catalog_error)?;
+    }
+    Ok(())
+}
+
+/// Resolve this recipe's stroke references against the store, one lookup each.
+///
+/// Nothing is replayed and no earlier entry is read: an entry is a complete snapshot, and this is
+/// the lookup that turns its addresses back into the strokes they name. A reference the store does
+/// not hold, or whose stored bytes are not the bytes the address names, is recorded as a fault
+/// rather than raised here, so reading, listing, undoing and carrying the stack forward keep
+/// working; the refusal happens where the recipe is compiled, which is every path that would draw
+/// it.
+fn hydrate_strokes(
+    connection: &Connection,
+    recipe: &mut Recipe,
+    origin: &str,
+) -> Result<(), Error> {
+    let references = recipe.stroke_references()?;
+    if references.is_empty() {
+        return Ok(());
+    }
+    let mut table = crate::path::StrokeTable::new(origin);
+    let mut statement = connection
+        .prepare("SELECT stroke_json FROM strokes WHERE id=?1")
+        .map_err(catalog_error)?;
+    for (_, id) in references {
+        if table.get(&id).is_some() {
+            continue;
+        }
+        let stored: Option<String> = statement
+            .query_row(params![id.as_str()], |row| row.get(0))
+            .optional()
+            .map_err(catalog_error)?;
+        match stored {
+            None => table.fault(id, crate::path::StrokeFault::Missing),
+            Some(text) => match crate::path::Stroke::from_stored(&id, text.as_bytes()) {
+                Ok(stroke) => {
+                    table.insert(stroke);
+                }
+                Err(_) => table.fault(id, crate::path::StrokeFault::Corrupt),
+            },
+        }
+    }
+    recipe.strokes = table;
+    Ok(())
 }
 
 fn next_sequence(connection: &Connection, asset_id: &AssetId) -> Result<u64, Error> {
@@ -2827,7 +3452,13 @@ fn entry_from(
                 "history entry does not belong to this asset",
             )
         })?;
-    decode("invalid history entry", json)
+    let mut entry: HistoryEntry = decode("invalid history entry", json)?;
+    // One lookup per referenced stroke, here and nowhere else: every path that evaluates an entry —
+    // state, preview, undo, redo, Restore, export — reads it through this function, and a listing,
+    // which never draws anything, keeps the stored addresses and pays nothing.
+    let origin = format!("entry {}", entry.id);
+    hydrate_strokes(connection, &mut entry.snapshot.recipe, &origin)?;
+    Ok(entry)
 }
 
 pub(crate) fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignature {
@@ -2883,10 +3514,10 @@ fn file_identity(_: &Metadata, canonical: &Path) -> String {
 mod tests {
     use super::*;
     use crate::{
-        ActionDescriptor, Availability, CROP_EFFECT, CropPayload, CropStage, EFFECT_FORMAT,
-        EffectDescriptor, EffectStage, ExactGeometry, Layer, LayerId, ModuleDescriptor,
-        ORIENTATION_EFFECT, PIXEL_EFFECT, ParameterDescriptor, ParameterKind, PreviewQueue,
-        Processing, Stage, ToolModule, open_source,
+        ActionDescriptor, Availability, CROP_EFFECT, Component, ComponentMode, CropPayload,
+        CropStage, EFFECT_FORMAT, EffectDescriptor, EffectStage, ExactGeometry, Layer, LayerId,
+        Mask, ModuleDescriptor, ORIENTATION_EFFECT, PIXEL_EFFECT, ParameterDescriptor,
+        ParameterKind, PreviewQueue, Processing, Stage, ToolModule, open_source,
     };
     use serde_json::Map;
     use std::{
@@ -4046,6 +4677,17 @@ mod tests {
             let error = EditorService::open(&catalog).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Incompatible);
             assert!(error.detail.contains("choose a new catalog path"));
+            // The predecessor format is refused by name like any other: its stacks carry no mask
+            // table, and a marker that is only one behind is not a reason to guess at one.
+            if marker != 0 {
+                assert_eq!(
+                    error.detail,
+                    format!(
+                        "catalog format {marker} is not supported; expected {CATALOG_FORMAT}; \
+                         choose a new catalog path"
+                    )
+                );
+            }
             assert_eq!(std::fs::read(&catalog).unwrap(), before);
             std::fs::remove_file(catalog).unwrap();
         }
@@ -4066,12 +4708,1531 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 2 is not supported; expected 6; choose a new catalog path"
+            "catalog format 2 is not supported; expected 7; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
             before,
             "a refused catalog is left byte for byte as it was"
+        );
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// One stored mask with a component the host can compile, which is what a persisted masked stack
+    /// looks like. A component of a kind this build knows nothing about is its own case and is
+    /// asserted where the kind table lives: the model proves the bytes survive a round trip, and the
+    /// module registry proves every path that would have to draw the mask refuses it by name while
+    /// reading, listing and validating still work.
+    fn stored_mask() -> Mask {
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("linear");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "linear",
+            json!({"x0": 0.25, "y0": 0.5, "x1": 0.75, "y1": 0.5}),
+        ));
+        mask
+    }
+
+    /// The entry a masked stack would commit, over the current one: the same layers, with the last
+    /// one bound to `mask`, and `masks` as given so a dangling reference can be planted too.
+    fn masked_entry(state: &EditorState, mask: &Mask, masks: Vec<Mask>) -> HistoryEntry {
+        let mut layers = state.current_entry.snapshot.recipe.layers.clone();
+        layers.last_mut().expect("a layer to mask").mask = Some(mask.id.clone());
+        HistoryEntry {
+            id: EntryId::new(),
+            sequence: state.current_entry.sequence + 1,
+            label: "Mask 1 exposure +0.50".into(),
+            undo_parent: Some(state.current_entry.id.clone()),
+            base_revision: state.revision,
+            result_revision: state.revision + 1,
+            snapshot: Snapshot {
+                id: SnapshotId::new(),
+                asset_id: state.asset.id.clone(),
+                recipe: Recipe {
+                    format: crate::RECIPE_FORMAT,
+                    layers,
+                    masks,
+                    ..Recipe::default()
+                },
+            },
+            ..state.current_entry.clone()
+        }
+    }
+
+    /// Write one entry and make it current without going through a mutation. The `mask.*` commands
+    /// arrive later, so this is the only way to hold a stored masked stack against reopen now; a
+    /// dangling reference could not be written through [`insert_entry`] at all, which is its own
+    /// guarantee and is asserted below.
+    fn plant(catalog: &Path, entry: &HistoryEntry) {
+        let connection = Connection::open(catalog).unwrap();
+        connection
+            .execute(
+                "INSERT INTO entries (id,asset_id,sequence,action_id,undo_parent_id,entry_json)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    entry.id.as_str(),
+                    entry.asset_id.as_str(),
+                    entry.sequence as i64,
+                    entry.action_id,
+                    entry.undo_parent.as_ref().map(EntryId::as_str),
+                    serde_json::to_string(entry).unwrap(),
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE asset_state SET current_entry_id=?1, revision=?2 WHERE asset_id=?3",
+                params![
+                    entry.id.as_str(),
+                    entry.result_revision as i64,
+                    entry.asset_id.as_str()
+                ],
+            )
+            .unwrap();
+    }
+
+    fn stored_entry_json(catalog: &Path, entry: &EntryId) -> String {
+        Connection::open(catalog)
+            .unwrap()
+            .query_row(
+                "SELECT entry_json FROM entries WHERE id=?1",
+                params![entry.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// One captured stroke, deterministic in the index so a session builds a different stroke per
+    /// entry and the same one twice on demand.
+    fn stroke(index: usize) -> crate::path::Stroke {
+        let base = 0.05 + (index % 40) as f64 * 0.02;
+        let points: Vec<[f64; 2]> = (0..100)
+            .map(|step| {
+                let t = step as f64 / 99.0;
+                [
+                    base + 0.4 * t,
+                    0.2 + 0.3 * (t * 6.0 + index as f64).sin().abs(),
+                ]
+            })
+            .collect();
+        crate::path::Stroke::capture(&points, 0.04, 50.0, 100.0, index.is_multiple_of(7))
+            .expect("a legal stroke")
+    }
+
+    /// A mask whose one component references these strokes by address, with the strokes themselves
+    /// in the recipe's table. The component's kind is the one a brush will carry; this build has no
+    /// provider for it, which is exactly the retention case, and nothing here needs one: the store
+    /// is the host's and knows nothing about what references it.
+    fn brushed(recipe: &Recipe, strokes: &[crate::path::Stroke]) -> Recipe {
+        let mut table = crate::path::StrokeTable::new("the test session");
+        let addresses: Vec<String> = strokes
+            .iter()
+            .map(|stroke| table.insert(stroke.clone()).to_string())
+            .collect();
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("brush");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "brush",
+            json!({ "strokes": addresses }),
+        ));
+        Recipe {
+            masks: vec![mask],
+            strokes: table,
+            ..recipe.clone()
+        }
+    }
+
+    /// Write one entry through the production write path, which is what stores its strokes.
+    fn commit(catalog: &Path, entry: &HistoryEntry) {
+        let registry = ModuleRegistry::builtin();
+        let mut connection = Connection::open(catalog).unwrap();
+        let tx = connection.transaction().unwrap();
+        insert_entry(&registry, &tx, &default_artifact_root(catalog), entry).unwrap();
+        tx.execute(
+            "UPDATE asset_state SET current_entry_id=?1, revision=?2 WHERE asset_id=?3",
+            params![
+                entry.id.as_str(),
+                entry.result_revision as i64,
+                entry.asset_id.as_str()
+            ],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    /// The next entry of a session, carrying `recipe` whole.
+    fn next_entry(state: &EditorState, recipe: Recipe) -> HistoryEntry {
+        HistoryEntry {
+            id: EntryId::new(),
+            sequence: state.current_entry.sequence + 1,
+            label: "Brush 1".into(),
+            undo_parent: Some(state.current_entry.id.clone()),
+            base_revision: state.revision,
+            result_revision: state.revision + 1,
+            snapshot: Snapshot {
+                id: SnapshotId::new(),
+                asset_id: state.asset.id.clone(),
+                recipe,
+            },
+            ..state.current_entry.clone()
+        }
+    }
+
+    fn stored_strokes(catalog: &Path) -> i64 {
+        Connection::open(catalog)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM strokes", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    /// A stroke is stored once under its address however many entries reference it, and an entry
+    /// holds addresses and no positions at all.
+    #[test]
+    fn one_stroke_is_stored_once_and_referenced_from_every_entry_that_holds_it() {
+        let catalog = temp("stroke-store.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let state = service.state(&asset).unwrap();
+        let shared = stroke(1);
+        let first = next_entry(
+            &state,
+            brushed(
+                &state.current_entry.snapshot.recipe,
+                std::slice::from_ref(&shared),
+            ),
+        );
+        drop(service);
+        commit(&catalog, &first);
+
+        let service = EditorService::open(&catalog).unwrap();
+        let state = service.state(&asset).unwrap();
+        // A second entry drawn on top: the same stroke again, plus one more.
+        let second = next_entry(
+            &state,
+            brushed(
+                &state.current_entry.snapshot.recipe,
+                &[shared.clone(), stroke(2)],
+            ),
+        );
+        drop(service);
+        commit(&catalog, &second);
+
+        assert_eq!(
+            stored_strokes(&catalog),
+            2,
+            "the shared stroke is one stored object, not one per entry"
+        );
+        // Neither entry's JSON holds a position: the addresses are there and the points are not.
+        for entry in [&first, &second] {
+            let json = stored_entry_json(&catalog, &entry.id);
+            assert!(
+                json.contains(shared.id().as_str()),
+                "an entry references the stroke by address"
+            );
+            assert!(
+                !json.contains(r#""points""#),
+                "no catalog holds embedded stroke positions"
+            );
+        }
+
+        // And reading an entry back resolves what it references, without replaying anything.
+        let service = EditorService::open(&catalog).unwrap();
+        let read = service.entry(&asset, &second.id).unwrap();
+        assert_eq!(
+            read.snapshot.recipe.strokes.get(&shared.id()),
+            Some(&shared)
+        );
+        assert_eq!(
+            read.snapshot.recipe.strokes.strokes().count(),
+            2,
+            "one resolved stroke per distinct address"
+        );
+        // The earlier entry is still its own complete snapshot and resolves on its own.
+        let earlier = service.entry(&asset, &first.id).unwrap();
+        assert_eq!(earlier.snapshot.recipe.strokes.strokes().count(), 1);
+        assert_eq!(
+            earlier.snapshot.recipe.masks[0].components[0].payload,
+            first.snapshot.recipe.masks[0].components[0].payload,
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A referenced stroke that is gone, or whose stored bytes are not the bytes its address names,
+    /// refuses every path that would draw the recipe and keeps everything it has.
+    #[test]
+    fn a_missing_or_corrupt_stroke_refuses_every_path_that_would_draw_it() {
+        for what in [false, true] {
+            let catalog = temp("broken-stroke.sqlite");
+            let mut service = EditorService::open(&catalog).unwrap();
+            let asset = service.import(&fixture()).unwrap().asset.id;
+            let state = service.state(&asset).unwrap();
+            let drawn = stroke(3);
+            let entry = next_entry(
+                &state,
+                brushed(
+                    &state.current_entry.snapshot.recipe,
+                    std::slice::from_ref(&drawn),
+                ),
+            );
+            drop(service);
+            commit(&catalog, &entry);
+
+            let before = stored_entry_json(&catalog, &entry.id);
+            let connection = Connection::open(&catalog).unwrap();
+            if what {
+                // Tamper with the stored bytes under an address that still names the old ones.
+                connection
+                    .execute(
+                        "DELETE FROM strokes WHERE id=?1",
+                        params![drawn.id().as_str()],
+                    )
+                    .unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO strokes (id,stroke_json) VALUES (?1,?2)",
+                        params![
+                            drawn.id().as_str(),
+                            r#"{"points":[[1,1]],"size":819,"feather":0.0,"flow":100.0,"erase":false}"#
+                        ],
+                    )
+                    .unwrap();
+            } else {
+                connection
+                    .execute(
+                        "DELETE FROM strokes WHERE id=?1",
+                        params![drawn.id().as_str()],
+                    )
+                    .unwrap();
+            }
+            drop(connection);
+
+            let service = EditorService::open(&catalog).unwrap();
+            // Reading, listing and lineage keep working: the stack is retained whole.
+            let read = service.entry(&asset, &entry.id).unwrap();
+            assert_eq!(
+                read.snapshot.recipe.masks, entry.snapshot.recipe.masks,
+                "the stored mask table is retained unchanged"
+            );
+            assert!(service.history(&asset, None, 10).is_ok());
+            assert!(service.describe_entry(&asset, None).is_ok());
+            assert!(service.state(&asset).is_ok());
+            drop(service);
+            assert_eq!(
+                stored_entry_json(&catalog, &entry.id),
+                before,
+                "nothing was rewritten or discarded"
+            );
+
+            // And every path that would have to draw it refuses by name. `render` and `sample` are
+            // the delivered evaluation paths and an image export is not implemented yet; all three
+            // compile the recipe through one function, which is where this refusal lives, so the
+            // refusal is asserted on the compile every one of them makes.
+            let registry = ModuleRegistry::builtin();
+            let source = crate::SourceImage {
+                width: 8,
+                height: 8,
+                rgba: vec![255; 8 * 8 * 4].into(),
+                fingerprint: "test".into(),
+                orientation: 1,
+            };
+            let recipe = &read.snapshot.recipe;
+            let expected = format!(
+                "stroke {} of entry {} {} referenced by component Brush 1 of mask Mask 1",
+                drawn.id(),
+                entry.id,
+                if what {
+                    "does not match its stored content address"
+                } else {
+                    "is not in the stroke store"
+                },
+            );
+            for error in [
+                crate::render(&registry, &source, SnapshotId::new(), recipe).unwrap_err(),
+                crate::sample(&registry, &source, recipe, 0, 0).unwrap_err(),
+                crate::extents(&registry, &source, recipe).unwrap_err(),
+                crate::stage_transform(&registry, source.width, source.height, recipe).unwrap_err(),
+                registry
+                    .compile(source.width, source.height, recipe)
+                    .err()
+                    .expect("compiling refuses a broken reference"),
+            ] {
+                assert_eq!(error.kind, ErrorKind::Incompatible);
+                assert_eq!(error.detail, expected);
+            }
+            std::fs::remove_file(catalog).unwrap();
+        }
+    }
+
+    /// Strokes per mask in the measured session below: the smaller of what the points-per-mask
+    /// limit admits at 100 positions a stroke (81) and the brush component's own declared 64 strokes
+    /// per component. It is why the 200-stroke session paints four masks — 200 strokes of 100
+    /// positions cannot live in one mask at all — and the two assertions below are what keep the
+    /// three limits from drifting apart.
+    const STROKES_PER_MASK: usize = crate::mask::STROKES_PER_COMPONENT;
+    const _: () = assert!(STROKES_PER_MASK * 100 <= crate::POINTS_PER_MASK);
+    const _: () = assert!(STROKES_PER_MASK <= crate::mask::STROKES_PER_COMPONENT);
+
+    /// A mask holding these strokes by address, with a component named for its ordinal so several
+    /// masks in one recipe read apart.
+    fn brush_mask(
+        name: &str,
+        table: &mut crate::path::StrokeTable,
+        strokes: &[crate::path::Stroke],
+    ) -> Mask {
+        let addresses: Vec<String> = strokes
+            .iter()
+            .map(|stroke| table.insert(stroke.clone()).to_string())
+            .collect();
+        let mut mask = Mask::new(name);
+        let component = mask.next_component_name("brush");
+        mask.components.push(Component::new(
+            component,
+            ComponentMode::Add,
+            "brush",
+            json!({ "strokes": addresses }),
+        ));
+        mask
+    }
+
+    /// What one session of `count` strokes costs across its history, content-addressed against
+    /// embedded, measured on the bytes that are actually written.
+    ///
+    /// The store does not change the *shape* of the growth: an entry still holds one reference per
+    /// stroke, so the total is still quadratic in the stroke count. What it changes is the constant
+    /// — a reference instead of a stroke — and that is the only claim measured here.
+    fn session_bytes(catalog: &Path, count: usize) -> (usize, usize, usize) {
+        let mut service = EditorService::open(catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let state = service.state(&asset).unwrap();
+        let base = state.current_entry.snapshot.recipe.clone();
+        drop(service);
+
+        let registry = ModuleRegistry::builtin();
+        let mut connection = Connection::open(catalog).unwrap();
+        let tx = connection.transaction().unwrap();
+        let mut table = crate::path::StrokeTable::new("the measured session");
+        let mut drawn: Vec<Vec<crate::path::Stroke>> = Vec::new();
+        let mut previous = state.current_entry.clone();
+        let mut revision = state.revision;
+        // What an entry embedding its strokes would have cost, accumulated beside what the
+        // content-addressed entries actually cost.
+        let mut embedded = 0_usize;
+        for index in 0..count {
+            let one = stroke(index);
+            if index.is_multiple_of(STROKES_PER_MASK) {
+                drawn.push(Vec::new());
+            }
+            drawn.last_mut().unwrap().push(one);
+            let masks: Vec<Mask> = drawn
+                .iter()
+                .enumerate()
+                .map(|(at, strokes)| brush_mask(&format!("Mask {}", at + 1), &mut table, strokes))
+                .collect();
+            let recipe = Recipe {
+                masks,
+                strokes: table.clone(),
+                ..base.clone()
+            };
+            // The same snapshot with every stroke's positions written into the payload instead of
+            // its address: the shape this store exists to avoid.
+            embedded += drawn
+                .iter()
+                .flatten()
+                .map(|stroke| stroke.canonical().len() + 1)
+                .sum::<usize>();
+            let entry = HistoryEntry {
+                id: EntryId::new(),
+                sequence: previous.sequence + 1,
+                label: format!("Brush {}", index + 1),
+                undo_parent: Some(previous.id.clone()),
+                base_revision: revision,
+                result_revision: revision + 1,
+                snapshot: Snapshot {
+                    id: SnapshotId::new(),
+                    asset_id: asset.clone(),
+                    recipe,
+                },
+                ..previous.clone()
+            };
+            revision += 1;
+            insert_entry(&registry, &tx, &default_artifact_root(catalog), &entry).unwrap();
+            previous = entry;
+        }
+        tx.commit().unwrap();
+
+        let entries: i64 = connection
+            .query_row("SELECT SUM(LENGTH(entry_json)) FROM entries", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let strokes: i64 = connection
+            .query_row("SELECT SUM(LENGTH(stroke_json)) FROM strokes", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let addressed = entries as usize + strokes as usize;
+        (
+            addressed,
+            addressed - strokes as usize + embedded,
+            strokes as usize,
+        )
+    }
+
+    /// The measurement the content-addressed store is justified by: what 200 strokes of 100
+    /// positions cost across a history of 200 entries.
+    ///
+    /// Scope: `lightwell-core`'s own catalog, on the JPEG fixture, counting the bytes of every
+    /// stored entry plus the bytes of the stroke store, against the same entries with each stroke's
+    /// positions embedded in its payload. It is a byte count and not a timing, so no load average
+    /// applies to it. The strokes are spread over four masks because the declared points-per-mask
+    /// limit admits at most 81 strokes of 100 positions in one mask.
+    #[test]
+    fn two_hundred_strokes_cost_about_a_megabyte_rather_than_about_forty() {
+        let catalog = temp("stroke-growth.sqlite");
+        let (addressed, embedded, distinct) = session_bytes(&catalog, 200);
+        std::fs::remove_file(&catalog).unwrap();
+        let mb = |bytes: usize| bytes as f64 / 1_000_000.0;
+        println!(
+            "200 strokes of 100 positions: distinct stroke data {} KiB, content-addressed across \
+             history {:.2} MB, embedded across history {:.2} MB, a factor of {:.1}; one stroke \
+             serializes to {} bytes and one reference costs 35",
+            distinct / 1024,
+            mb(addressed),
+            mb(embedded),
+            embedded as f64 / addressed as f64,
+            distinct / 200,
+        );
+        // The design's table carries these measured figures, and carried predicted ones before this
+        // ran: it predicted 364 KiB of distinct stroke data and 37.5 MB embedded, from a stroke
+        // serializing to about 1.8 KiB. A stored position is a whole grid step and not a decimal, so
+        // a stroke serializes to about 968 bytes, and the table was corrected to what is measured
+        // here rather than the prediction being kept. The content-addressed total was predicted at
+        // 1.08 MB and measures 1.10 MB, because it is dominated by the 35-byte reference, which is
+        // what the prediction got right.
+        assert!(
+            (0.95..1.25).contains(&mb(addressed)),
+            "content-addressed history measured {:.3} MB, not the recorded 1.11 MB",
+            mb(addressed),
+        );
+        assert!(
+            (18.0..23.0).contains(&mb(embedded)),
+            "embedded history measured {:.3} MB, not the recorded 20.4 MB",
+            mb(embedded),
+        );
+        assert!(
+            (170..210).contains(&(distinct / 1024)),
+            "distinct stroke data measured {} KiB, not the recorded 189 KiB",
+            distinct / 1024,
+        );
+        // The store shrinks the constant; it does not change the shape of the growth, which is
+        // still quadratic in the stroke count. This is the constant, per stroke per entry.
+        assert!(
+            (25..32).contains(&(distinct / 200 / 35)),
+            "one reference stands in for {} of its own size, not the recorded 28",
+            distinct / 200 / 35,
+        );
+    }
+
+    /// One sample of a painting session's stored cost, taken after the entry that carried its last
+    /// stroke was committed.
+    ///
+    /// Everything here is a byte count taken from the catalog itself, so nothing in it depends on
+    /// what else the host is doing; the one timed figure a session produces, reopen, is measured
+    /// separately and quoted with its load average.
+    #[derive(Clone, Copy)]
+    struct Growth {
+        strokes: usize,
+        /// The bytes of every stored entry's JSON: the snapshots, which is where the growth is.
+        entries: usize,
+        /// The bytes of the content-addressed store: each distinct stroke once.
+        store: usize,
+        /// The catalog file on disk, which also carries the asset, the page overhead and the index.
+        catalog: u64,
+        /// What the same entries would have cost with each stroke's positions written into its
+        /// payload instead of its address: the shape the store exists to avoid.
+        embedded: usize,
+    }
+
+    impl Growth {
+        /// Entries plus store: what a painting session costs a catalog, and the number the curve is
+        /// read from.
+        fn stored(self) -> usize {
+            self.entries + self.store
+        }
+    }
+
+    /// The host's one-minute load average, so every timed figure below can be quoted with the state
+    /// of the machine that produced it. Byte counts do not need it and are not quoted with it.
+    fn load_average() -> f64 {
+        std::process::Command::new("/usr/sbin/sysctl")
+            .args(["-n", "vm.loadavg"])
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .and_then(|text| {
+                text.split_whitespace()
+                    .nth(1)
+                    .and_then(|first| first.parse().ok())
+            })
+            .unwrap_or(f64::NAN)
+    }
+
+    /// Pack a session's strokes into the densest mask table the declared limits admit, or `None`
+    /// for a session too large to be a recipe at all.
+    ///
+    /// A component takes [`crate::mask::STROKES_PER_COMPONENT`] strokes and a mask takes components
+    /// until its strokes' stored positions would pass [`crate::POINTS_PER_MASK`], so the point bound
+    /// closes a mask long before its 32 components do for any stroke of usable length.
+    /// [`crate::MASKS_PER_RECIPE`] masks of those is the ceiling, and a session past it is not a
+    /// recipe this build will hold; that ceiling is the real end of the quadratic curve and is
+    /// measured rather than assumed.
+    fn packed(addresses: &[String], lengths: &[usize]) -> Option<Vec<Mask>> {
+        fn close(mask: &mut Mask, component: &mut Vec<String>) {
+            if component.is_empty() {
+                return;
+            }
+            let name = mask.next_component_name("brush");
+            mask.components.push(Component::new(
+                name,
+                ComponentMode::Add,
+                "brush",
+                json!({ "strokes": std::mem::take(component) }),
+            ));
+        }
+        let mut masks: Vec<Mask> = Vec::new();
+        let mut mask = Mask::new("Mask 1");
+        let mut component: Vec<String> = Vec::new();
+        let mut points = 0_usize;
+        for (address, length) in addresses.iter().zip(lengths) {
+            if points + length > crate::POINTS_PER_MASK
+                || (component.len() == crate::mask::STROKES_PER_COMPONENT
+                    && mask.components.len() == crate::COMPONENTS_PER_MASK)
+            {
+                close(&mut mask, &mut component);
+                let next = Mask::new(format!("Mask {}", masks.len() + 2));
+                masks.push(std::mem::replace(&mut mask, next));
+                points = 0;
+            }
+            if component.len() == crate::mask::STROKES_PER_COMPONENT {
+                close(&mut mask, &mut component);
+            }
+            component.push(address.clone());
+            points += length;
+        }
+        close(&mut mask, &mut component);
+        masks.push(mask);
+        (masks.len() <= crate::MASKS_PER_RECIPE).then_some(masks)
+    }
+
+    /// Paint `count` strokes into `catalog` over `source`, one stroke per history entry written
+    /// through the production write path, sampling the stored cost every `every` strokes.
+    ///
+    /// The strokes are packed by [`packed`], so the session is the densest one the declared limits
+    /// admit and its cost is the worst case rather than an arrangement chosen to be cheap.
+    ///
+    /// The returned asset is the painted one, so a caller can time reopening the catalog it left.
+    fn painting_session(
+        catalog: &Path,
+        source: &Path,
+        count: usize,
+        every: usize,
+    ) -> (Vec<Growth>, AssetId) {
+        let mut service = EditorService::open(catalog).unwrap();
+        let asset = service.import(source).unwrap().asset.id;
+        let state = service.state(&asset).unwrap();
+        let base = state.current_entry.snapshot.recipe.clone();
+        drop(service);
+
+        let registry = ModuleRegistry::builtin();
+        let mut connection = Connection::open(catalog).unwrap();
+        let mut table = crate::path::StrokeTable::new("the measured session");
+        // One address per stroke, kept rather than recomputed, so building the recipe an entry
+        // carries costs a clone of the table and not a rehash of every stroke drawn so far.
+        let mut addresses: Vec<String> = Vec::with_capacity(count);
+        let mut previous = state.current_entry.clone();
+        let mut revision = state.revision;
+        // The counterfactual, accumulated beside the real thing: `drawn` is what this session's
+        // strokes serialize to in full, and every entry embeds all of them, so `embedded` grows by
+        // the whole of `drawn` once per entry. That is the quadratic term with its large constant.
+        // The entries' own bytes are added to it at each checkpoint, exactly as the 200-stroke
+        // measurement does, so the two tables are read against each other directly.
+        let mut drawn = 0_usize;
+        let mut embedded = 0_usize;
+        let mut lengths: Vec<usize> = Vec::with_capacity(count);
+        let mut curve = Vec::new();
+        for index in 0..count {
+            let one = stroke(index);
+            drawn += one.canonical().len() + 1;
+            embedded += drawn;
+            lengths.push(one.point_count());
+            addresses.push(table.insert(one).to_string());
+            let masks = packed(&addresses, &lengths)
+                .expect("this session is past the per-recipe mask ceiling and is not a recipe");
+            let entry = HistoryEntry {
+                id: EntryId::new(),
+                sequence: previous.sequence + 1,
+                label: format!("Brush {}", index + 1),
+                undo_parent: Some(previous.id.clone()),
+                base_revision: revision,
+                result_revision: revision + 1,
+                snapshot: Snapshot {
+                    id: SnapshotId::new(),
+                    asset_id: asset.clone(),
+                    recipe: Recipe {
+                        masks,
+                        strokes: table.clone(),
+                        ..base.clone()
+                    },
+                },
+                ..previous.clone()
+            };
+            revision += 1;
+            let tx = connection.transaction().unwrap();
+            insert_entry(&registry, &tx, &default_artifact_root(catalog), &entry).unwrap();
+            tx.execute(
+                "UPDATE asset_state SET current_entry_id=?1, revision=?2 WHERE asset_id=?3",
+                params![entry.id.as_str(), revision as i64, asset.as_str()],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            previous = entry;
+            if (index + 1).is_multiple_of(every) || index + 1 == count {
+                let entries: i64 = connection
+                    .query_row("SELECT SUM(LENGTH(entry_json)) FROM entries", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                let store: i64 = connection
+                    .query_row("SELECT SUM(LENGTH(stroke_json)) FROM strokes", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                curve.push(Growth {
+                    strokes: index + 1,
+                    entries: entries as usize,
+                    store: store as usize,
+                    catalog: std::fs::metadata(catalog).map(|m| m.len()).unwrap_or(0),
+                    embedded: entries as usize + embedded,
+                });
+            }
+        }
+        drop(connection);
+        (curve, asset)
+    }
+
+    /// Least squares over `S(n) = a·n² + b·n + c`, returned as `(a, b, c)`.
+    ///
+    /// The point of fitting rather than asserting a ratio is that the quadratic term is then a
+    /// number on the page: a session's cost is not linear in its stroke count and this is what says
+    /// so.
+    fn quadratic_fit(curve: &[Growth]) -> (f64, f64, f64) {
+        // Normal equations for the three-column design matrix [n², n, 1]. Six moments of n and three
+        // of S are all it needs, and the 3×3 solve is written out rather than looped.
+        let (mut s0, mut s1, mut s2, mut s3, mut s4) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        let (mut t0, mut t1, mut t2) = (0.0, 0.0, 0.0);
+        for point in curve {
+            let n = point.strokes as f64;
+            let y = point.stored() as f64;
+            s0 += 1.0;
+            s1 += n;
+            s2 += n * n;
+            s3 += n * n * n;
+            s4 += n * n * n * n;
+            t0 += y;
+            t1 += n * y;
+            t2 += n * n * y;
+        }
+        let m = [[s4, s3, s2], [s3, s2, s1], [s2, s1, s0]];
+        let rhs = [t2, t1, t0];
+        let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        let solve = |column: usize| {
+            let mut c = m;
+            for (row, value) in rhs.iter().enumerate() {
+                c[row][column] = *value;
+            }
+            (c[0][0] * (c[1][1] * c[2][2] - c[1][2] * c[2][1])
+                - c[0][1] * (c[1][0] * c[2][2] - c[1][2] * c[2][0])
+                + c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0]))
+                / det
+        };
+        (solve(0), solve(1), solve(2))
+    }
+
+    /// The largest session of these strokes a recipe can hold: [`crate::MASKS_PER_RECIPE`] masks,
+    /// each filled to [`crate::POINTS_PER_MASK`] stored positions. It is where the quadratic curve
+    /// stops, which is what makes its far end a bounded number rather than an extrapolation, and it
+    /// is measured by the test below rather than reasoned out — these strokes are captured at 100
+    /// positions and decimate to between 67 and 78, so the arithmetic on 100 would be wrong.
+    const CEILING: usize = 1809;
+
+    /// The independent, larger-scale confirmation of the store's figures: a painting session run to
+    /// the per-recipe ceiling on 24 MP and 60 MP, sampled every fifty strokes, with the curve it
+    /// traces, the counterfactual beside it, and the time to reopen the catalog it left.
+    ///
+    /// Peak process memory belongs to the process, so a run measures one source at a time: set
+    /// `LIGHTWELL_MASK_GROWTH_SOURCE` to a fixture's path and wrap the run in `/usr/bin/time -l`,
+    /// which is where the recorded peak resident set comes from. Without it both sources run in one
+    /// process and only the byte counts are attributable.
+    ///
+    /// Printed rather than asserted, because a timing gate does not belong in the test suite; the
+    /// tests below hold the design's figures, the ceiling and the bound in place.
+    ///
+    /// ```text
+    /// cargo test --release --package lightwell-core --lib measure_mask_growth -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement, not a gate"]
+    fn measure_mask_growth_across_a_painting_session() {
+        let generated = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated");
+        let chosen = std::env::var("LIGHTWELL_MASK_GROWTH_SOURCE").ok();
+        let sources: Vec<(String, PathBuf)> = match &chosen {
+            Some(path) => vec![(path.clone(), PathBuf::from(path))],
+            None => ["24mp.jpg", "60mp.jpg"]
+                .iter()
+                .map(|name| ((*name).to_owned(), generated.join(name)))
+                .filter(|(_, path)| path.exists())
+                .collect(),
+        };
+        assert!(
+            !sources.is_empty(),
+            "generate fixtures first: cargo xtask generate-fixtures --output fixtures/generated"
+        );
+        println!(
+            "load average at the start of this run: {:.2}",
+            load_average()
+        );
+        for (name, source) in &sources {
+            let catalog = temp("mask-growth-measured.sqlite");
+            let (curve, asset) = painting_session(&catalog, source, CEILING, 50);
+            println!(
+                "\n{name}: strokes, stored entries + store (MB), catalog file (MB), embedded \
+                 counterfactual (MB), factor"
+            );
+            for point in &curve {
+                println!(
+                    "  {:>4}  {:>8.3}  {:>8.3}  {:>9.3}  {:>5.1}x",
+                    point.strokes,
+                    point.stored() as f64 / 1e6,
+                    point.catalog as f64 / 1e6,
+                    point.embedded as f64 / 1e6,
+                    point.embedded as f64 / point.stored() as f64,
+                );
+            }
+            let (a, b, c) = quadratic_fit(&curve);
+            let at = |n: usize| {
+                curve
+                    .iter()
+                    .find(|point| point.strokes == n)
+                    .copied()
+                    .expect("a sampled stroke count")
+            };
+            println!(
+                "  fit S(n) = {a:.4}·n² + {b:.1}·n + {c:.0} bytes; S(1000)/S(500) = {:.2} and \
+                 S(500)/S(250) = {:.2} (4 is quadratic, 2 would be linear)",
+                at(1000).stored() as f64 / at(500).stored() as f64,
+                at(500).stored() as f64 / at(250).stored() as f64,
+            );
+            println!(
+                "  one stroke serializes to {} bytes; the ceiling's {CEILING} distinct strokes hold \
+                 {} KiB",
+                at(CEILING).store / CEILING,
+                at(CEILING).store / 1024,
+            );
+            for round in 0..3 {
+                let started = Instant::now();
+                let service = EditorService::open(&catalog).unwrap();
+                let state = service.state(&asset).unwrap();
+                let elapsed = started.elapsed();
+                println!(
+                    "  reopen {round}: {:.1} ms at load {:.2} ({} masks, {} strokes resolved)",
+                    elapsed.as_secs_f64() * 1e3,
+                    load_average(),
+                    state.current_entry.snapshot.recipe.masks.len(),
+                    state
+                        .current_entry
+                        .snapshot
+                        .recipe
+                        .strokes
+                        .strokes()
+                        .count(),
+                );
+            }
+            std::fs::remove_file(&catalog).unwrap();
+        }
+    }
+
+    /// The growth is quadratic, and its square term is the one the design records.
+    ///
+    /// Scope: `lightwell-core`'s own catalog on the 24 MP generated fixture when it has been
+    /// generated and on the small JPEG fixture otherwise — the catalog's bytes do not depend on the
+    /// source's pixel dimensions, which the measurement above confirms by measuring both — one
+    /// stroke of 100 positions per history entry, counting the bytes of every stored entry plus the
+    /// bytes of the stroke store. Byte counts, so no load average applies.
+    ///
+    /// It gates the shape at 400 strokes and leaves the thousand-stroke and ceiling figures to the
+    /// measurement above, so the suite does not carry a twenty-second session to learn what four
+    /// hundred strokes already say.
+    #[test]
+    fn a_painting_session_grows_with_the_square_of_its_stroke_count() {
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated/24mp.jpg");
+        let source = if source.exists() { source } else { fixture() };
+        let catalog = temp("quadratic-growth.sqlite");
+        let (curve, _) = painting_session(&catalog, &source, 400, 100);
+        std::fs::remove_file(&catalog).unwrap();
+        let at = |n: usize| {
+            curve
+                .iter()
+                .find(|point| point.strokes == n)
+                .copied()
+                .expect("a sampled stroke count")
+        };
+        let (quadratic, linear, _) = quadratic_fit(&curve);
+        println!(
+            "400 strokes: {:.3} MB stored, {:.1} MB embedded; S(n) = {quadratic:.2}·n² + {linear:.0}·n",
+            at(400).stored() as f64 / 1e6,
+            at(400).embedded as f64 / 1e6,
+        );
+        // Doubling the stroke count multiplies the stored bytes by about four. That is the whole
+        // claim about the shape, and it is what forbids anyone writing that the store made the
+        // growth linear. The ratio is a little under four because the linear term has not washed
+        // out at these counts; it approaches four as the session grows.
+        let doubling = at(400).stored() as f64 / at(200).stored() as f64;
+        assert!(
+            (3.2..4.3).contains(&doubling),
+            "doubling the strokes multiplied the bytes by {doubling:.2}; quadratic growth doubles \
+             to about four and linear growth to two",
+        );
+        // The fitted square term is the design's recorded curve: about twenty bytes per stroke per
+        // stroke, which is the 35-byte reference paid by half the entries on average, plus the mask
+        // and component structure it hangs on.
+        assert!(
+            (17.0..23.0).contains(&quadratic),
+            "the fitted n² coefficient is {quadratic:.2} bytes, not the recorded 19.6",
+        );
+    }
+
+    /// A recipe of 100-position strokes has a ceiling, and it is the masks-per-recipe limit rather
+    /// than anything about the store.
+    ///
+    /// This is what makes the quadratic curve's far end a bounded number: the design's figure for
+    /// 2400 strokes describes a session no recipe of strokes this length can hold, because the
+    /// per-mask point bound admits about 113 of them and a recipe holds sixteen masks.
+    #[test]
+    fn a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling() {
+        let lengths: Vec<usize> = (0..CEILING * 2)
+            .map(|index| stroke(index).point_count())
+            .collect();
+        let addresses: Vec<String> = (0..CEILING * 2).map(|i| format!("{i:032x}")).collect();
+        let ceiling = (1..lengths.len())
+            .take_while(|count| packed(&addresses[..*count], &lengths[..*count]).is_some())
+            .last()
+            .expect("at least one stroke packs");
+        println!(
+            "the measured session's strokes hold {}..={} positions each and {ceiling} of them is \
+             the most a recipe can hold",
+            lengths.iter().min().unwrap(),
+            lengths.iter().max().unwrap(),
+        );
+        // The measurement paints to CEILING, so CEILING has to be a session that packs, and the
+        // stroke past it has to be one that does not: that is what makes the curve's far end the
+        // real end rather than a number chosen to be round.
+        assert_eq!(ceiling, CEILING);
+        let full = packed(&addresses[..ceiling], &lengths[..ceiling]).expect("the ceiling packs");
+        assert_eq!(full.len(), crate::MASKS_PER_RECIPE);
+        for mask in &full {
+            let points: usize = mask
+                .components
+                .iter()
+                .flat_map(|component| {
+                    crate::path::references(&component.payload, "a packed component").unwrap()
+                })
+                .map(|id| {
+                    let at = usize::from_str_radix(id.as_str(), 16).expect("a positional address");
+                    lengths[at]
+                })
+                .sum();
+            assert!(points <= crate::POINTS_PER_MASK);
+            assert!(mask.components.len() <= crate::COMPONENTS_PER_MASK);
+        }
+    }
+
+    /// One single-position stroke, distinct per index, for the sessions that press a count rather
+    /// than a length.
+    fn tiny_stroke(index: usize) -> crate::path::Stroke {
+        let x = 0.1 + (index % 4096) as f64 / 16384.0;
+        let y = 0.1 + (index / 4096) as f64 / 16384.0;
+        crate::path::Stroke::capture(&[[x, y]], 0.04, 50.0, 100.0, false).expect("a legal stroke")
+    }
+
+    /// The per-recipe serialized mask bound is the one that keeps a painting session's snapshots
+    /// bounded, so it is refused by name and the refusal writes nothing.
+    ///
+    /// The bound is reached with single-position strokes because that is the shape that presses it:
+    /// the per-mask point bound stops a session of long strokes long before its references fill
+    /// 256 KiB.
+    #[test]
+    fn a_recipe_over_the_serialized_mask_bound_names_it_and_leaves_the_catalog_as_it_was() {
+        let catalog = temp("serialized-mask-bound.sqlite");
+        let (_, asset) = painting_session(&catalog, &fixture(), 4, 4);
+
+        // The durable state the refusal must not touch: the catalog's own bytes, and what a reopen
+        // reads back out of them.
+        let before = std::fs::read(&catalog).unwrap();
+        let digest = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        let service = EditorService::open(&catalog).unwrap();
+        let state = service.state(&asset).unwrap();
+        let entries = service.history(&asset, None, 64).unwrap().entries.len();
+        let base = state.current_entry.snapshot.recipe.clone();
+        let current = state.current_entry.id.clone();
+        drop(service);
+
+        // Fill masks to their declared component and stroke counts until the mask table serializes
+        // past the bound. Nothing else is at its limit: each mask holds 2048 stored positions
+        // against a bound of 8192, and the recipe holds four masks against a bound of sixteen.
+        let mut table = crate::path::StrokeTable::new("the over-bound session");
+        let mut masks: Vec<Mask> = vec![Mask::new("Full 1")];
+        let mut drawn = 0_usize;
+        let mut under = 0_usize;
+        while serde_json::to_vec(&masks).unwrap().len() <= crate::MASK_BYTES_PER_RECIPE {
+            under = drawn;
+            if masks.last().unwrap().components.len() == crate::COMPONENTS_PER_MASK {
+                masks.push(Mask::new(format!("Full {}", masks.len() + 1)));
+                assert!(
+                    masks.len() <= crate::MASKS_PER_RECIPE,
+                    "the mask-count bound was reached before the byte bound, so this test is \
+                     pressing the wrong limit"
+                );
+            }
+            let addresses: Vec<String> = (0..crate::mask::STROKES_PER_COMPONENT)
+                .map(|_| {
+                    drawn += 1;
+                    table.insert(tiny_stroke(drawn)).to_string()
+                })
+                .collect();
+            let mask = masks.last_mut().unwrap();
+            let name = mask.next_component_name("brush");
+            mask.components.push(Component::new(
+                name,
+                ComponentMode::Add,
+                "brush",
+                json!({ "strokes": addresses }),
+            ));
+        }
+        let bytes = serde_json::to_vec(&masks).unwrap().len();
+        // The byte bound is also the absolute ceiling on a recipe's stroke count, because a
+        // reference costs 35 bytes whatever it points at: no recipe of any shape holds more strokes
+        // than this, whatever its strokes are, and no snapshot a painting session writes is larger
+        // than the bound.
+        println!(
+            "{under} single-position strokes over {} masks are the most that fit the {} KiB bound; \
+             {drawn} of them serialize to {bytes} bytes and are refused",
+            masks.len(),
+            crate::MASK_BYTES_PER_RECIPE / 1024,
+        );
+        let over = HistoryEntry {
+            id: EntryId::new(),
+            sequence: state.current_entry.sequence + 1,
+            label: "Brush past the bound".into(),
+            undo_parent: Some(current.clone()),
+            base_revision: state.revision,
+            result_revision: state.revision + 1,
+            snapshot: Snapshot {
+                id: SnapshotId::new(),
+                asset_id: asset.clone(),
+                recipe: Recipe {
+                    masks,
+                    strokes: table,
+                    ..base
+                },
+            },
+            ..state.current_entry.clone()
+        };
+
+        let registry = ModuleRegistry::builtin();
+        let mut connection = Connection::open(&catalog).unwrap();
+        let tx = connection.transaction().unwrap();
+        let error = insert_entry(&registry, &tx, &default_artifact_root(&catalog), &over)
+            .expect_err("past the serialized bound");
+        drop(tx);
+        drop(connection);
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert_eq!(
+            error.detail,
+            format!(
+                "recipe masks serialize to {bytes} bytes; the limit is {} serialized mask bytes \
+                 per recipe",
+                crate::MASK_BYTES_PER_RECIPE
+            ),
+        );
+
+        // Byte for byte as it was: the bound is checked before anything is written, so the refused
+        // entry left neither an entry row nor a stroke in the store.
+        let after = std::fs::read(&catalog).unwrap();
+        assert_eq!(
+            digest(&before),
+            digest(&after),
+            "the refused write changed the catalog file"
+        );
+        let service = EditorService::open(&catalog).unwrap();
+        let reopened = service.state(&asset).unwrap();
+        assert_eq!(reopened.current_entry.id, current);
+        assert_eq!(
+            service.history(&asset, None, 64).unwrap().entries.len(),
+            entries
+        );
+        drop(service);
+        std::fs::remove_file(&catalog).unwrap();
+    }
+
+    /// The declared points-per-mask limit is enforced where the strokes are in hand, and names
+    /// itself.
+    #[test]
+    fn a_mask_over_the_points_per_mask_limit_names_the_limit() {
+        let catalog = temp("points-per-mask.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let state = service.state(&asset).unwrap();
+        let base = state.current_entry.snapshot.recipe.clone();
+        drop(service);
+        std::fs::remove_file(&catalog).unwrap();
+
+        let registry = ModuleRegistry::builtin();
+        let at_bound: Vec<crate::path::Stroke> = (0..STROKES_PER_MASK).map(stroke).collect();
+        let points: usize = at_bound.iter().map(crate::path::Stroke::point_count).sum();
+        let recipe = |strokes: &[crate::path::Stroke]| {
+            let mut table = crate::path::StrokeTable::new("the test session");
+            Recipe {
+                masks: vec![brush_mask("Mask 1", &mut table, strokes)],
+                strokes: table,
+                ..base.clone()
+            }
+        };
+        // Under the bound the recipe compiles: the brush kind is evaluable and the limit has not
+        // been reached, so nothing refuses.
+        assert!(
+            registry.compile(64, 48, &recipe(&at_bound)).is_ok(),
+            "a mask under the bound should compile"
+        );
+        assert!(points <= crate::POINTS_PER_MASK);
+
+        let mut over = at_bound.clone();
+        while over
+            .iter()
+            .map(crate::path::Stroke::point_count)
+            .sum::<usize>()
+            <= crate::POINTS_PER_MASK
+        {
+            over.push(stroke(over.len()));
+        }
+        let total: usize = over.iter().map(crate::path::Stroke::point_count).sum();
+        let error = registry
+            .compile(64, 48, &recipe(&over))
+            .err()
+            .expect("past the bound");
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert_eq!(
+            error.detail,
+            format!(
+                "mask Mask 1 holds {total} stored path positions; the limit is {} points per mask",
+                crate::POINTS_PER_MASK
+            )
+        );
+    }
+
+    /// Masks ride inside the snapshot every entry already stores, so reopen returns them unchanged
+    /// and an ordinary later edit carries them with no second persistence path.
+    #[test]
+    fn masks_ride_in_the_stored_snapshot_and_reopen_unchanged() {
+        let catalog = temp("masks.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "basic"),
+                "set-basic",
+                json!({"exposure": 0.5}),
+            )
+            .unwrap();
+        let state = service.state(&asset).unwrap();
+        let mask = stored_mask();
+        let entry = masked_entry(&state, &mask, vec![mask.clone()]);
+        drop(service);
+        plant(&catalog, &entry);
+
+        let mut service = EditorService::open(&catalog).unwrap();
+        let reopened = service.state(&asset).unwrap();
+        assert_eq!(
+            reopened.current_entry, entry,
+            "every field of the entry, masks included, survives reopen"
+        );
+        let stored = &reopened.current_entry.snapshot.recipe.masks[0].components[0];
+        assert_eq!(stored.kind, "linear", "the stored kind is kept as it is");
+        assert_eq!(
+            serde_json::to_string(&stored.payload).unwrap(),
+            serde_json::to_string(&mask.components[0].payload).unwrap(),
+            "its payload is retained byte for byte, unparsed"
+        );
+        assert_eq!(
+            reopened
+                .current_entry
+                .snapshot
+                .recipe
+                .layers
+                .last()
+                .unwrap()
+                .mask
+                .as_ref(),
+            Some(&mask.id)
+        );
+        assert_eq!(
+            service.entry(&asset, &entry.id).unwrap(),
+            entry,
+            "the same entry reads the same by identity"
+        );
+        // The recipe panel still lists every layer, so a masked stack is never hidden from it.
+        assert_eq!(
+            service.describe_entry(&asset, None).unwrap().layers.len(),
+            reopened.current_entry.snapshot.recipe.layers.len()
+        );
+        // A later mutation writes the mask table on in its own snapshot: one persistence path.
+        let next = service
+            .apply_pixel(
+                &asset,
+                mutation(reopened.revision, "pixel"),
+                1,
+                1,
+                [9, 9, 9],
+            )
+            .unwrap()
+            .current_entry_id;
+        let committed = service.entry(&asset, &next).unwrap().snapshot.recipe;
+        assert_eq!(committed.masks, vec![mask.clone()]);
+        assert!(
+            committed
+                .layers
+                .iter()
+                .any(|layer| layer.mask.as_ref() == Some(&mask.id)),
+            "the masked layer keeps its mask through an unrelated edit"
+        );
+        // History keeps the earlier unmasked snapshot as it was: nothing was rewritten.
+        assert!(
+            service
+                .entry(&asset, &state.current_entry.id)
+                .unwrap()
+                .snapshot
+                .recipe
+                .masks
+                .is_empty()
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The same entry with a mask table and no layer bound to anything: the state a client is in
+    /// after `mask.create`, which arrives with its own task, so the table is planted here instead.
+    fn planted_masks(state: &EditorState, masks: Vec<Mask>) -> HistoryEntry {
+        HistoryEntry {
+            id: EntryId::new(),
+            sequence: state.current_entry.sequence + 1,
+            label: "Add linear".into(),
+            undo_parent: Some(state.current_entry.id.clone()),
+            base_revision: state.revision,
+            result_revision: state.revision + 1,
+            snapshot: Snapshot {
+                id: SnapshotId::new(),
+                asset_id: state.asset.id.clone(),
+                recipe: Recipe {
+                    masks,
+                    ..state.current_entry.snapshot.recipe.clone()
+                },
+            },
+            ..state.current_entry.clone()
+        }
+    }
+
+    /// The whole of what the `mask` request field does, through the one action path a GUI gesture and
+    /// a JSON client share: it commits the masked layer on the first non-neutral field, updates that
+    /// same layer in place afterwards, leaves the global layer alone, places each masked layer after
+    /// the global one and in its mask's order, and refuses an action that has no target to give.
+    #[test]
+    fn the_mask_target_commits_updates_and_orders_one_layer_per_target() {
+        let catalog = temp("mask-target.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        // One global Basic layer first, so the ordering rule has something to place a mask after.
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "global"),
+                "set-basic",
+                json!({"exposure": 0.5}),
+            )
+            .unwrap();
+        let state = service.state(&asset).unwrap();
+        let first = stored_mask();
+        let mut second = stored_mask();
+        second.name = "Mask 2".into();
+        let planted = planted_masks(&state, vec![first.clone(), second.clone()]);
+        drop(service);
+        plant(&catalog, &planted);
+        let mut service = EditorService::open(&catalog).unwrap();
+
+        fn revision(service: &EditorService, asset: &AssetId) -> u64 {
+            service.state(asset).unwrap().revision
+        }
+        fn layers(service: &EditorService, asset: &AssetId) -> Vec<Layer> {
+            service
+                .state(asset)
+                .unwrap()
+                .current_entry
+                .snapshot
+                .recipe
+                .layers
+                .clone()
+        }
+        let global_layer = layers(&service, &asset)[0].id.clone();
+        assert_eq!(
+            layers(&service, &asset).len(),
+            1,
+            "one global Basic layer to begin with"
+        );
+
+        // A neutral first field through a mask commits nothing at all: masking nothing is nothing.
+        let quiet = service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "neutral-masked"),
+                "set-basic",
+                json!({"mask": first.id, "exposure": 0.0}),
+            )
+            .unwrap();
+        assert_eq!(quiet.outcome, MutationOutcome::NoOp);
+        assert_eq!(layers(&service, &asset).len(), 1);
+
+        // The first non-neutral field commits the masked layer, after the global one.
+        service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "mask-one"),
+                "set-basic",
+                json!({"mask": first.id, "exposure": 0.8}),
+            )
+            .unwrap();
+        let committed = layers(&service, &asset);
+        assert_eq!(committed.len(), 2);
+        assert_eq!(committed[0].id, global_layer, "the global layer is first");
+        assert_eq!(committed[0].mask, None);
+        assert_eq!(committed[1].mask.as_ref(), Some(&first.id));
+        let masked_layer = committed[1].id.clone();
+        assert_eq!(committed[1].payload["exposure"], json!(0.8));
+
+        // A later field updates that same layer in place, keeping its identity and position.
+        service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "mask-one-again"),
+                "set-basic",
+                json!({"mask": first.id, "exposure": 0.9}),
+            )
+            .unwrap();
+        let updated = layers(&service, &asset);
+        assert_eq!(updated.len(), 2, "no second layer for the same target");
+        assert_eq!(updated[1].id, masked_layer, "the masked layer's identity");
+        assert_eq!(updated[1].payload["exposure"], json!(0.9));
+        // And sending the same value again is the no-op it looks like.
+        assert_eq!(
+            service
+                .apply_action(
+                    &asset,
+                    mutation(revision(&service, &asset), "mask-one-noop"),
+                    "set-basic",
+                    json!({"mask": first.id, "exposure": 0.9}),
+                )
+                .unwrap()
+                .outcome,
+            MutationOutcome::NoOp
+        );
+
+        // The global layer is still edited by the same action without the field, and the masked
+        // layer is untouched by it.
+        service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "global-again"),
+                "set-basic",
+                json!({"exposure": 0.25}),
+            )
+            .unwrap();
+        let both = layers(&service, &asset);
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].id, global_layer);
+        assert_eq!(both[0].payload["exposure"], json!(0.25));
+        assert_eq!(both[1].id, masked_layer);
+        assert_eq!(both[1].payload["exposure"], json!(0.9));
+
+        // A layer in the second mask is legal for the same single-layer effect and lands after the
+        // first mask's, because that is the order the mask list shows.
+        service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "mask-two"),
+                "set-basic",
+                json!({"mask": second.id, "exposure": -1.0}),
+            )
+            .unwrap();
+        let three = layers(&service, &asset);
+        assert_eq!(three.len(), 3);
+        assert_eq!(
+            three
+                .iter()
+                .map(|layer| layer.mask.clone())
+                .collect::<Vec<_>>(),
+            vec![None, Some(first.id.clone()), Some(second.id.clone())],
+            "the global layer, then the masks in their own order"
+        );
+        // The stack renders and samples: a masked layer is evaluable the moment it is creatable.
+        service.render_current(&asset).unwrap();
+
+        // A target the stack does not hold is refused, and nothing is written.
+        let absent = Mask::new("Mask 9");
+        let error = service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "absent-mask"),
+                "set-basic",
+                json!({"mask": absent.id, "exposure": 0.1}),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            format!("unknown mask {} for this asset", absent.id)
+        );
+
+        // The field belongs to the actions of a maskable effect and nowhere else, and the refusal
+        // names the action that was asked.
+        for (action, parameters) in [
+            (
+                "set-pixel",
+                json!({"mask": first.id, "x": 0, "y": 0, "rgb": [1, 2, 3]}),
+            ),
+            (
+                "transform",
+                json!({"mask": first.id, "transform": "rotate-left"}),
+            ),
+            ("set-vignette", json!({"mask": first.id, "amount": -40.0})),
+        ] {
+            let error = service
+                .apply_action(
+                    &asset,
+                    mutation(revision(&service, &asset), action),
+                    action,
+                    parameters,
+                )
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Validation, "{action}");
+            assert_eq!(
+                error.detail,
+                format!("action {action} does not accept a mask target"),
+                "{action}"
+            );
+        }
+        assert_eq!(
+            layers(&service, &asset).len(),
+            3,
+            "no refusal changed the stack"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A stored layer naming a mask its own snapshot does not carry is incompatible data: every
+    /// evaluation path refuses it by name, the stack stays readable and its stored bytes do not
+    /// change. The host cannot write such a stack in the first place, which is asserted here too.
+    #[test]
+    fn a_stored_layer_naming_a_missing_mask_is_refused_on_every_path_and_left_as_it_is() {
+        let catalog = temp("dangling-mask.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "basic"),
+                "set-basic",
+                json!({"exposure": 0.5}),
+            )
+            .unwrap();
+        let state = service.state(&asset).unwrap();
+        let mask = stored_mask();
+        let dangling = masked_entry(&state, &mask, Vec::new());
+        // Nothing valid can be written from it either: every write validates the whole recipe.
+        assert_eq!(
+            service
+                .registry()
+                .validate_recipe(&dangling.snapshot.recipe)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Incompatible,
+            "insert_entry validates the same recipe before any row is written"
+        );
+        drop(service);
+        plant(&catalog, &dangling);
+        let before = stored_entry_json(&catalog, &dangling.id);
+
+        let mut service = EditorService::open(&catalog).unwrap();
+        let revision = service.state(&asset).unwrap().revision;
+        let expected = format!(
+            "layer {} references mask {}, which this recipe does not carry",
+            dangling.snapshot.recipe.layers.last().unwrap().id,
+            mask.id
+        );
+        let refusals = [
+            service.render_current(&asset).unwrap_err(),
+            service.render_entry(&asset, &dangling.id).unwrap_err(),
+            service
+                .sample_entry(&asset, &dangling.id, 0, 0)
+                .unwrap_err(),
+            service
+                .locate_entry(&asset, &dangling.id, 0, 0)
+                .unwrap_err(),
+            // The preview worker's own render of the job the owner built for it.
+            service
+                .preview_job(&asset, None, None, None, None)
+                .and_then(|job| {
+                    job.source
+                        .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
+                })
+                .unwrap_err(),
+            // Planning compiles the stored stack before it asks a module for a plan.
+            service
+                .apply_pixel(&asset, mutation(revision, "pixel"), 0, 0, [1, 2, 3])
+                .unwrap_err(),
+            service
+                .apply_transform(&asset, mutation(revision, "turn"), Transform::RotateLeft)
+                .unwrap_err(),
+        ];
+        for error in refusals {
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(error.detail, expected);
+        }
+        // Readable, unchanged and still listed in history: refusing is not discarding.
+        let state = service.state(&asset).unwrap();
+        assert_eq!(state.current_entry, dangling);
+        assert_eq!(service.history(&asset, None, 10).unwrap().entries.len(), 3);
+        drop(service);
+        assert_eq!(
+            stored_entry_json(&catalog, &dangling.id),
+            before,
+            "the refused entry's stored JSON is untouched"
         );
         std::fs::remove_file(catalog).unwrap();
     }
@@ -4102,7 +6263,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 5 is not supported; expected 6; choose a new catalog path"
+            "catalog format 5 is not supported; expected 7; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
@@ -4501,6 +6662,7 @@ mod tests {
                 format: EFFECT_FORMAT,
                 stage: EffectStage::Geometry,
                 order: 0,
+                maskable: false,
                 artifacts: false,
             };
             Self(ModuleDescriptor {
@@ -4535,6 +6697,7 @@ mod tests {
                 effect_id: effect_id.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"width": width, "height": height}),
+                mask: None,
                 artifacts: Vec::new(),
             }
         }
