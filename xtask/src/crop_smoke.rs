@@ -1,13 +1,13 @@
-//! The crop smoke scenarios: the evidence script the editor runs and the pixel checks its captured
-//! frames must satisfy.
+//! The crop smoke scenarios: each one's plan, the steps the editor runs with what each commits, and
+//! the checks its captured frames must satisfy beyond the plan.
 //!
-//! The scripts drive the editor's own crop paths — the module's `crop` and `crop-fit` actions through
+//! The steps drive the editor's own crop paths — the module's `crop` and `crop-fit` actions through
 //! the owner, and the draft through the messages the panel and the canvas publish — and every frame
 //! is checked against the crop state recorded with it, so a capture proves the rectangle, angle and
 //! output it claims.
 use crate::{
     fixtures::COLORS,
-    scenario::{Fixture, Frame},
+    scenario::{Checked, Fixture, Frame, Plan, Run, Step, plan::only},
     *,
 };
 use lightwell_core::{BoxRect, CROP_EFFECT, CropPayload, CropStage};
@@ -55,15 +55,6 @@ const RAIL_ANGLE_FRACTION: f64 = 0.5 + RAIL_ANGLE / 90.0 + 1e-4;
 /// The angle `crop-draft` drags the rail to, as crop-and-straighten.png draws it.
 const RAIL_ANGLE: f64 = 2.4;
 
-/// How many frames a crop scenario captures, or `None` when the scenario is not a crop scenario.
-pub fn frames(scenario: &str) -> Option<usize> {
-    match scenario {
-        "crop" => Some(9),
-        "crop-draft" => Some(13),
-        _ => None,
-    }
-}
-
 /// The ratio chips a committed crop reads as, in the order the crop module declares them, each with
 /// its width over height (`None` for Original, which is the input stage's own).
 const READ_RATIOS: [(&str, Option<f64>); 5] = [
@@ -109,43 +100,91 @@ fn idle_section(frame: &Value, chosen: &str, angle: &str) -> Result<Value> {
     Ok(section.clone())
 }
 
-/// The evidence script for a crop scenario: the steps that run after the fixture is open.
-pub fn script(scenario: &str) -> Result<Option<Value>> {
-    let payload = off_centre()?;
-    Ok(match scenario {
-        // Module actions first, then a draft on the crop layer they committed.
-        "crop" => Some(json!([
-            {"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":0.0}}},
-            {"api":{"method":"edit.crop","params":{"angle":ANGLE,"x":payload.x,"y":payload.y,"width":payload.width,"height":payload.height}}},
-            {"draft":{"start":true}},
-            {"draft":{"angle":12.0}},
-            {"draft":{"cancel":true}},
-            {"draft":{"start":true}},
-            {"draft":{"nudge":NUDGE}},
-            {"draft":{"apply":true}},
-        ])),
-        // The draft's own gestures and controls, at Fit and at 100%. Basic is collapsed and the
-        // section expanded first, so the idle section is on screen, and the panel is scrolled to
-        // its end once the draft is open, so the drafting section is too. The angle is then
-        // dragged on its rail to 2.4°, so the section shows a straightened draft. After Apply the
-        // idle section reads the committed square, and pressing 16:9 there opens a draft on it
-        // with that ratio; Cancel returns to the idle section with nothing committed.
-        "crop-draft" => Some(json!([
-            {"section":{"module":BASIC_MODULE,"expanded":false}},
-            {"section":{"module":CROP_MODULE,"expanded":true}},
-            {"draft":{"start":true}},
-            {"draft":{"rect":[40.0,24.0,300.0,200.0]}},
-            {"draft":{"preset":"1:1"}},
-            {"tools_scroll":1.0},
-            {"draft":{"angle_rail":[0.6,RAIL_ANGLE_FRACTION]}},
-            {"view":{"zoom":"100"}},
-            {"view":{"zoom":"fit"}},
-            {"draft":{"apply":true}},
-            {"draft":{"preset":"16:9"}},
-            {"draft":{"cancel":true}},
-        ])),
-        _ => None,
-    })
+/// A step on the crop draft or the view: it commits nothing.
+fn uncommitted(name: &str, script: Value) -> Step {
+    Step::new(name, script).commits(0)
+}
+
+/// Every `crop` frame, in order: the open, then one per step. Module actions first, then a draft on
+/// the crop layer they committed. The expectations here are what each step commits and records;
+/// `verify` checks the crop state and what the photograph shows.
+pub fn plan(_: &[PathBuf]) -> Plan {
+    // The rectangle comes from the core's own fitting of constants, so it is the same on every
+    // call, and a unit test proves it is covered before any editor sees it.
+    let payload = off_centre().expect("the scripted off-centre rectangle is covered");
+    Plan::new(vec![
+        Step::opened("opened"),
+        // A 16:9 fit at angle zero appends the one crop layer.
+        Step::new(
+            "fit",
+            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":0.0}}}),
+        )
+        .commits(1)
+        .label("Crop 16:9"),
+        // An off-centre straightened rectangle updates that same layer in place.
+        Step::new(
+            "straightened",
+            json!({"api":{"method":"edit.crop","params":{"angle":ANGLE,"x":payload.x,"y":payload.y,"width":payload.width,"height":payload.height}}}),
+        )
+        .commits(1)
+        .label("Crop 7\u{b0}")
+        .same_layer(CROP_EFFECT, "fit"),
+        // A draft on that layer, an angle change and a discard: nothing commits.
+        uncommitted("started", json!({"draft":{"start":true}})),
+        uncommitted("angled", json!({"draft":{"angle":12.0}})),
+        uncommitted("cancelled", json!({"draft":{"cancel":true}})),
+        // A second draft, one nudge and Apply, which commits once to the same layer.
+        uncommitted("restarted", json!({"draft":{"start":true}})),
+        uncommitted("nudged", json!({"draft":{"nudge":NUDGE}})),
+        Step::new("applied", json!({"draft":{"apply":true}}))
+            .commits(1)
+            .label("Crop 7.5\u{b0}")
+            .same_layer(CROP_EFFECT, "fit"),
+    ])
+}
+
+/// Every `crop-draft` frame: the draft's own gestures and controls, at Fit and at 100%. Basic is
+/// collapsed and the section expanded first, so the idle section is on screen, and the panel is
+/// scrolled to its end once the draft is open, so the drafting section is too. The angle is then
+/// dragged on its rail to 2.4°, so the section shows a straightened draft. After Apply the idle
+/// section reads the committed square, and pressing 16:9 there opens a draft on it with that
+/// ratio; Cancel returns to the idle section with nothing committed.
+pub fn draft_plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        Step::opened("opened"),
+        uncommitted(
+            "basic-collapsed",
+            json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
+        )
+        .collapsed(BASIC_MODULE),
+        // The idle section, expanded under a collapsed Basic.
+        uncommitted(
+            "crop-expanded",
+            json!({"section":{"module":CROP_MODULE,"expanded":true}}),
+        )
+        .expanded(CROP_MODULE)
+        .collapsed(BASIC_MODULE),
+        // A neutral draft on a stack without a crop layer.
+        uncommitted("started", json!({"draft":{"start":true}})).no_layer(CROP_EFFECT),
+        uncommitted("rect", json!({"draft":{"rect":[40.0,24.0,300.0,200.0]}})),
+        uncommitted("square", json!({"draft":{"preset":"1:1"}})),
+        uncommitted("scrolled", json!({"tools_scroll":1.0})),
+        uncommitted(
+            "rail",
+            json!({"draft":{"angle_rail":[0.6,RAIL_ANGLE_FRACTION]}}),
+        ),
+        uncommitted("percent", json!({"view":{"zoom":"100"}})),
+        uncommitted("fit", json!({"view":{"zoom":"fit"}})),
+        // Apply commits the straightened square once.
+        Step::new("applied", json!({"draft":{"apply":true}}))
+            .commits(1)
+            .label("Crop 2.4\u{b0}"),
+        // 16:9 pressed in the idle section opens a draft on the committed layer.
+        uncommitted("idle-preset", json!({"draft":{"preset":"16:9"}})),
+        // Cancel ends it with the committed layer untouched.
+        uncommitted("cancelled", json!({"draft":{"cancel":true}}))
+            .same_layer(CROP_EFFECT, "applied"),
+    ])
 }
 
 /// The one crop layer of a frame's committed stack: its identity, its payload and the whole-pixel
@@ -464,401 +503,381 @@ fn correlated(events: &[Value], name: &str, frame: &Value) -> Result<Value> {
     Ok(found.clone())
 }
 
-/// Every scripted step reached the editor and was sent, not refused.
-fn steps(app: &Value, frames: &[Value]) -> Result {
-    let script = app["script"]
-        .as_array()
-        .ok_or("The run recorded no script")?;
+/// The opened frame both scenarios start from: the fixture, ready at Fit. Returns the checks record
+/// it starts.
+fn opened(launch: &Checked) -> Result<Vec<Value>> {
+    let opened = launch.at("opened")?;
     ensure(
-        script.len() + 1 == frames.len(),
-        format!(
-            "{} script steps produced {} frames",
-            script.len(),
-            frames.len()
-        ),
-    )?;
-    for (index, step) in script.iter().enumerate() {
-        ensure(
-            step["status"] == "sent",
-            format!("Script step {} was not sent: {step}", index + 1),
-        )?;
-        ensure(
-            step["frame"] == frames[index + 1]["file"],
-            format!("Script step {} is not recorded with its frame", index + 1),
-        )?;
-    }
-    Ok(())
-}
-
-pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) -> Result {
-    let records = app["frames"].as_array().ok_or("Missing frames")?;
-    ensure(
-        app["had_input_errors"] == json!(false),
-        "The run recorded an input error",
-    )?;
-    steps(app, records)?;
-    let frames = Frame::all(evidence, app)?;
-    // Every frame is the fixture, so the opening frame is the ordinary Fit check.
-    ensure(
-        frames[0]["state"]["source_dimensions"] == json!([STAGE.0, STAGE.1])
-            && frames[0]["state"]["phase"] == "ready",
+        opened["state"]["source_dimensions"] == json!([STAGE.0, STAGE.1])
+            && opened["state"]["phase"] == "ready",
         "The fixture did not open",
     )?;
-    let mut checks = vec![
-        json!({"frame":frames[0]["file"],"shows":"the fixture at Fit","pixels":frames[0].fixture(Fixture::fit(1))?}),
-    ];
+    Ok(vec![
+        json!({"frame":opened["file"],"shows":"the fixture at Fit","pixels":opened.fixture(Fixture::fit(1))?}),
+    ])
+}
+
+/// What the `crop` steps show, once the plan has held: the crop state each frame recorded, the
+/// events that correlate with it and the photograph drawn.
+pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let events = &launch.events;
+    let mut checks = opened(launch)?;
     let mut record = |frame: &Value, shows: &str, detail: Value| {
         checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
     };
-    match scenario {
-        "crop" => {
-            // (a) A 16:9 fit at angle zero appends the one crop layer.
-            let (layer, fitted, output) = committed(&frames[1])?;
-            ensure(fitted.angle == 0.0, "The fit changed the angle")?;
-            let ratio = f64::from(output[0]) / f64::from(output[1]);
-            ensure(
-                (ratio - 16.0 / 9.0).abs() <= 3.0 / f64::from(output[1]),
-                format!("The fitted crop is {output:?}, which is not 16:9 within a pixel"),
-            )?;
-            record(
-                &frames[1],
-                "a 16:9 crop-fit at angle 0",
-                shows_committed(&frames[1], true)?,
-            );
-            // The crop section, collapsed here, reads the fitted crop as 16:9 with its lock closed.
-            ensure(
-                reads_as(STAGE, output) == "16:9",
-                format!("The fitted crop {output:?} does not read as 16:9"),
-            )?;
-            record(
-                &frames[1],
-                "the crop section reading the fit as 16:9",
-                idle_section(&frames[1], "16:9", "0")?,
-            );
+    let fit = launch.at("fit")?;
+    let straightened = launch.at("straightened")?;
+    let started = launch.at("started")?;
+    let angled = launch.at("angled")?;
+    let cancelled = launch.at("cancelled")?;
+    let restarted = launch.at("restarted")?;
+    let nudged = launch.at("nudged")?;
+    let applied = launch.at("applied")?;
 
-            // (b) An off-centre straightened rectangle updates that same layer in place.
-            let wanted = off_centre()?;
-            let (same, committed_payload, straightened) = committed(&frames[2])?;
-            let straightened_reads = reads_as(STAGE, straightened);
-            record(
-                &frames[2],
-                "the crop section reading the straightened crop at 7 degrees",
-                idle_section(&frames[2], straightened_reads, "7")?,
-            );
-            ensure(
-                same == layer,
-                "The straightened crop did not update the crop layer in place",
-            )?;
-            ensure(
-                committed_payload.angle == ANGLE
-                    && [
-                        (committed_payload.x, wanted.x),
-                        (committed_payload.y, wanted.y),
-                        (committed_payload.width, wanted.width),
-                        (committed_payload.height, wanted.height),
-                    ]
-                    .iter()
-                    .all(|(saved, sent)| (saved - sent).abs() <= f64::EPSILON * 8.0),
-                format!(
-                    "The committed payload is not the one that was sent: {committed_payload:?}"
-                ),
-            )?;
-            record(
-                &frames[2],
-                "an off-centre 7 degree crop",
-                shows_committed(&frames[2], false)?,
-            );
+    // (a) A 16:9 fit at angle zero appends the one crop layer.
+    let (layer, fitted, output) = committed(fit)?;
+    ensure(fitted.angle == 0.0, "The fit changed the angle")?;
+    let ratio = f64::from(output[0]) / f64::from(output[1]);
+    ensure(
+        (ratio - 16.0 / 9.0).abs() <= 3.0 / f64::from(output[1]),
+        format!("The fitted crop is {output:?}, which is not 16:9 within a pixel"),
+    )?;
+    record(
+        fit,
+        "a 16:9 crop-fit at angle 0",
+        shows_committed(fit, true)?,
+    );
+    // The crop section, collapsed here, reads the fitted crop as 16:9 with its lock closed.
+    ensure(
+        reads_as(STAGE, output) == "16:9",
+        format!("The fitted crop {output:?} does not read as 16:9"),
+    )?;
+    record(
+        fit,
+        "the crop section reading the fit as 16:9",
+        idle_section(fit, "16:9", "0")?,
+    );
 
-            // (c) A draft on that layer, an angle change and a discard.
-            let draft = &frames[3]["state"]["crop"];
-            ensure(
-                draft["layer"] == json!(layer) && draft["angle"] == json!(ANGLE),
-                "The draft did not open on the committed crop layer",
-            )?;
-            // The draft seeds the ratio the idle section showed, so opening it moves no chip.
-            ensure(
-                draft["section"]["chosen"] == frames[2]["state"]["crop"]["section"]["chosen"]
-                    && draft["section"]["locked"]
-                        == frames[2]["state"]["crop"]["section"]["locked"],
-                format!(
-                    "Opening the draft changed the chosen ratio: {} idle, {} drafting",
-                    frames[2]["state"]["crop"]["section"], draft["section"]
-                ),
-            )?;
-            let output = committed_payload.output_rect(&stage(ANGLE))?;
-            ensure(
-                draft["rect"]
-                    == json!([
-                        output.x as f64,
-                        output.y as f64,
-                        f64::from(output.width),
-                        f64::from(output.height)
-                    ]),
-                format!(
-                    "The draft did not open at the committed rectangle: {}",
-                    draft["rect"]
-                ),
-            )?;
-            record(
-                &frames[3],
-                "a draft opened on the committed crop",
-                json!({"overlay":shows_draft(&frames[3])?,"event":correlated(events, "crop_draft_started", &frames[3])?["elapsed_ms"]}),
-            );
-            ensure(
-                frames[4]["state"]["crop"]["angle"] == json!(12.0),
-                "The scripted angle did not reach the draft",
-            )?;
-            ensure(
-                frames[4].revision()? == frames[2].revision()?
-                    && committed(&frames[4])?.1.angle == ANGLE,
-                "A draft change altered the committed stack",
-            )?;
-            record(
-                &frames[4],
-                "the same draft straightened to 12 degrees",
-                json!({"overlay":shows_draft(&frames[4])?,"event":correlated(events, "crop_draft_changed", &frames[4])?["elapsed_ms"]}),
-            );
-            ensure(
-                frames[5]["state"]["crop"]["drafting"] == json!(false)
-                    && committed(&frames[5])?.1.angle == ANGLE,
-                "Cancel did not discard the draft or changed the committed crop",
-            )?;
-            ensure(
-                events
-                    .iter()
-                    .any(|event| event["event"] == "crop_draft_discarded"),
-                "Cancel logged no discard",
-            )?;
-            record(
-                &frames[5],
-                "the committed crop again after Cancel",
-                json!({"pixels":shows_committed(&frames[5], false)?,"section":idle_section(&frames[5], straightened_reads, "7")?}),
-            );
+    // (b) An off-centre straightened rectangle updates that same layer in place, which the plan
+    // holds; the payload is the one that was sent.
+    let wanted = off_centre()?;
+    let (_, committed_payload, straightened_output) = committed(straightened)?;
+    let straightened_reads = reads_as(STAGE, straightened_output);
+    record(
+        straightened,
+        "the crop section reading the straightened crop at 7 degrees",
+        idle_section(straightened, straightened_reads, "7")?,
+    );
+    ensure(
+        committed_payload.angle == ANGLE
+            && [
+                (committed_payload.x, wanted.x),
+                (committed_payload.y, wanted.y),
+                (committed_payload.width, wanted.width),
+                (committed_payload.height, wanted.height),
+            ]
+            .iter()
+            .all(|(saved, sent)| (saved - sent).abs() <= f64::EPSILON * 8.0),
+        format!("The committed payload is not the one that was sent: {committed_payload:?}"),
+    )?;
+    record(
+        straightened,
+        "an off-centre 7 degree crop",
+        shows_committed(straightened, false)?,
+    );
 
-            // (d) A second draft, one nudge and Apply.
-            ensure(
-                frames[6]["state"]["crop"]["angle"] == json!(ANGLE),
-                "The second draft did not reopen at the committed angle",
-            )?;
-            record(
-                &frames[6],
-                "a second draft on the same layer",
-                shows_draft(&frames[6])?,
-            );
-            ensure(
-                frames[7]["state"]["crop"]["angle"] == json!(ANGLE + NUDGE),
-                "The nudge did not reach the draft",
-            )?;
-            record(
-                &frames[7],
-                "the draft nudged half a degree",
-                shows_draft(&frames[7])?,
-            );
-            let (applied_layer, applied, _) = committed(&frames[8])?;
-            ensure(
-                applied_layer == layer,
-                "Apply did not keep the crop layer's identity",
-            )?;
-            ensure(
-                applied.angle == ANGLE + NUDGE,
-                format!("Apply committed angle {}", applied.angle),
-            )?;
-            ensure(
-                frames[8].revision()? == frames[2].revision()? + 1,
-                "Apply did not commit exactly one new revision",
-            )?;
-            ensure(
-                frames[8]["state"]["crop"]["drafting"] == json!(false),
-                "Apply left the draft open",
-            )?;
-            let applied_event = correlated(events, "crop_draft_applied", &frames[7])?;
-            ensure(
-                applied_event["detail"]["revision"] == json!(frames[8].revision()?)
-                    && applied_event["detail"]["entry_id"] == frames[8]["state"]["stack"]["entry"],
-                "The applied event does not name the committed entry and revision",
-            )?;
-            let (_, _, nudged) = committed(&frames[8])?;
-            record(
-                &frames[8],
-                "the applied crop",
-                json!({"pixels":shows_committed(&frames[8], false)?,"section":idle_section(&frames[8], reads_as(STAGE, nudged), "7.5")?}),
-            );
-        }
-        "crop-draft" => {
-            // The idle section, expanded, with no draft yet: the Ratio and Angle controls reading
-            // an uncropped stack, Free at 0° with the lock open.
-            ensure(
-                frames[2]["state"]["expanded"][CROP_MODULE] == json!(true)
-                    && frames[2]["state"]["expanded"][BASIC_MODULE] == json!(false)
-                    && frames[2]["state"]["crop"]["drafting"] != json!(true),
-                "The idle crop section is not expanded under a collapsed Basic",
-            )?;
-            record(
-                &frames[2],
-                "the idle section on an uncropped stack: Free at 0 degrees",
-                idle_section(&frames[2], "Free", "0")?,
-            );
-            // A neutral draft on a stack without a crop layer: the whole stage.
-            let draft = &frames[3]["state"]["crop"];
-            ensure(
-                draft["layer"] == Value::Null
-                    && draft["angle"] == json!(0.0)
-                    && draft["rect"] == json!([0.0, 0.0, f64::from(STAGE.0), f64::from(STAGE.1)]),
-                format!("A neutral draft is not the whole stage: {draft}"),
-            )?;
-            record(
-                &frames[3],
-                "a neutral draft over the whole stage",
-                shows_draft(&frames[3])?,
-            );
-            // Two corner gestures reach the rectangle exactly in Free mode.
-            ensure(
-                frames[4]["state"]["crop"]["rect"] == json!([40.0, 24.0, 300.0, 200.0]),
-                format!(
-                    "The scripted corner gestures produced {}",
-                    frames[4]["state"]["crop"]["rect"]
-                ),
-            )?;
-            record(
-                &frames[4],
-                "an off-centre rectangle from two corner gestures",
-                shows_draft(&frames[4])?,
-            );
-            // The declared 1:1 preset keeps the centre and fits inside that rectangle.
-            let square = &frames[5]["state"]["crop"];
-            ensure(
-                square["preset"] == json!("1:1")
-                    && square["rect"] == json!([90.0, 24.0, 200.0, 200.0]),
-                format!("The 1:1 preset produced {}", square["rect"]),
-            )?;
-            record(
-                &frames[5],
-                "the declared 1:1 preset, centred on the same rectangle",
-                shows_draft(&frames[5])?,
-            );
-            // Scrolling the panel to the drafting section leaves the draft as it was.
-            ensure(
-                frames[6]["state"]["crop"]["rect"] == frames[5]["state"]["crop"]["rect"]
-                    && frames[6]["state"]["crop"]["preset"] == frames[5]["state"]["crop"]["preset"]
-                    && frames[6]["state"]["tools_scroll"] == json!(1.0),
-                "Scrolling the tools panel changed the draft",
-            )?;
-            record(
-                &frames[6],
-                "the drafting section scrolled into view",
-                shows_draft(&frames[6])?,
-            );
-            // A drag on the angle's rail, released: the draft's angle follows the rail on its step,
-            // the 1:1 ratio holds, the release is the one logged change, and nothing commits.
-            let straightened = &frames[7]["state"]["crop"];
-            let rect = straightened["rect"].as_array();
-            ensure(
-                straightened["angle"] == json!(RAIL_ANGLE)
-                    && straightened["preset"] == json!("1:1")
-                    && rect.is_some_and(|rect| rect.len() == 4 && rect[2] == rect[3])
-                    && frames[7].revision()? == frames[6].revision()?,
-                format!("The angle rail produced {straightened}"),
-            )?;
-            record(
-                &frames[7],
-                "the angle dragged on its rail to 2.4°, the square refitted, nothing committed",
-                json!({"overlay":shows_draft(&frames[7])?,"event":correlated(events, "crop_draft_changed", &frames[7])?["elapsed_ms"]}),
-            );
-            // The overlay follows the view: 100% draws the box at one input pixel per physical pixel.
-            record(
-                &frames[8],
-                "the same draft at 100%",
-                shows_draft(&frames[8])?,
-            );
-            record(
-                &frames[9],
-                "the same draft back at Fit",
-                shows_draft(&frames[9])?,
-            );
-            let (_, applied, output) = committed(&frames[10])?;
-            ensure(
-                applied.angle == RAIL_ANGLE && output[0] == output[1],
-                format!("Apply committed {output:?} at angle {}", applied.angle),
-            )?;
-            ensure(
-                frames[10]["state"]["crop"]["drafting"] == json!(false)
-                    && frames[10].revision()? == frames[0].revision()? + 1,
-                "Apply did not commit exactly one new revision and end the draft",
-            )?;
-            correlated(events, "crop_draft_applied", &frames[9])?;
-            // The square crop's own quarter points straddle the fixture's centre line, so this frame
-            // proves the four quadrants are present rather than sampling their corners.
-            record(
-                &frames[10],
-                "the applied straightened square crop",
-                shows_committed(&frames[10], false)?,
-            );
-            // The idle section now reads that committed crop: 1:1 chosen with the lock closed, at
-            // the rail's 2.4°, the chip computed here from the committed output.
-            let (layer, square, output) = committed(&frames[10])?;
-            let expected = reads_as(STAGE, output);
-            ensure(
-                expected == "1:1",
-                format!("The committed square {output:?} reads as {expected}"),
-            )?;
-            record(
-                &frames[10],
-                "the idle section reading the committed square at 2.4 degrees",
-                idle_section(&frames[10], expected, "2.4")?,
-            );
+    // (c) A draft on that layer, an angle change and a discard; the plan holds that none of them
+    // commits.
+    let draft = &started["state"]["crop"];
+    ensure(
+        draft["layer"] == json!(layer) && draft["angle"] == json!(ANGLE),
+        "The draft did not open on the committed crop layer",
+    )?;
+    // The draft seeds the ratio the idle section showed, so opening it moves no chip.
+    ensure(
+        draft["section"]["chosen"] == straightened["state"]["crop"]["section"]["chosen"]
+            && draft["section"]["locked"] == straightened["state"]["crop"]["section"]["locked"],
+        format!(
+            "Opening the draft changed the chosen ratio: {} idle, {} drafting",
+            straightened["state"]["crop"]["section"], draft["section"]
+        ),
+    )?;
+    let output = committed_payload.output_rect(&stage(ANGLE))?;
+    ensure(
+        draft["rect"]
+            == json!([
+                output.x as f64,
+                output.y as f64,
+                f64::from(output.width),
+                f64::from(output.height)
+            ]),
+        format!(
+            "The draft did not open at the committed rectangle: {}",
+            draft["rect"]
+        ),
+    )?;
+    record(
+        started,
+        "a draft opened on the committed crop",
+        json!({"overlay":shows_draft(started)?,"event":correlated(events, "crop_draft_started", started)?["elapsed_ms"]}),
+    );
+    ensure(
+        angled["state"]["crop"]["angle"] == json!(12.0),
+        "The scripted angle did not reach the draft",
+    )?;
+    ensure(
+        committed(angled)?.1.angle == ANGLE,
+        "A draft change altered the committed stack",
+    )?;
+    record(
+        angled,
+        "the same draft straightened to 12 degrees",
+        json!({"overlay":shows_draft(angled)?,"event":correlated(events, "crop_draft_changed", angled)?["elapsed_ms"]}),
+    );
+    ensure(
+        cancelled["state"]["crop"]["drafting"] == json!(false)
+            && committed(cancelled)?.1.angle == ANGLE,
+        "Cancel did not discard the draft or changed the committed crop",
+    )?;
+    ensure(
+        events
+            .iter()
+            .any(|event| event["event"] == "crop_draft_discarded"),
+        "Cancel logged no discard",
+    )?;
+    record(
+        cancelled,
+        "the committed crop again after Cancel",
+        json!({"pixels":shows_committed(cancelled, false)?,"section":idle_section(cancelled, straightened_reads, "7")?}),
+    );
 
-            // 16:9 pressed in the idle section opens a draft on the committed layer, seeded as Start
-            // seeds it (1:1 at 2.4°, as the started event records), then applies 16:9 to it: the
-            // canvas is in crop mode with a 16:9 frame at the same angle, and nothing commits.
-            let draft = &frames[11]["state"]["crop"];
-            let rect: [f64; 4] = serde_json::from_value(draft["rect"].clone())?;
-            ensure(
-                draft["drafting"] == json!(true)
-                    && draft["layer"] == json!(layer)
-                    && draft["preset"] == json!("16:9")
-                    && draft["angle"] == json!(RAIL_ANGLE)
-                    && (rect[2] - rect[3] * 16.0 / 9.0).abs() <= 2.0 * 16.0 / 9.0
-                    && draft["section"]["chosen"] == json!("16:9")
-                    && frames[11]["state"]["workspace"]["mode"] == json!(CROP_MODULE)
-                    && frames[11].revision()? == frames[10].revision()?,
-                format!("16:9 from the idle section produced {draft}"),
-            )?;
-            let seeded = events
-                .iter()
-                .rfind(|event| event["event"] == "crop_draft_started")
-                .ok_or("The idle change logged no draft start")?;
-            ensure(
-                seeded["detail"]["layer"] == json!(layer)
-                    && seeded["detail"]["preset"] == json!("1:1")
-                    && seeded["detail"]["angle"] == json!(RAIL_ANGLE),
-                format!(
-                    "The draft the idle change opened was not seeded from the committed crop: {}",
-                    seeded["detail"]
-                ),
-            )?;
-            record(
-                &frames[11],
-                "16:9 pressed in the idle section: a draft on the committed square, refitted to 16:9",
-                json!({"overlay":shows_draft(&frames[11])?,"seeded":seeded["detail"],"changed":correlated(events, "crop_draft_changed", &frames[11])?["detail"]}),
-            );
+    // (d) A second draft, one nudge and Apply, which the plan holds as one commit to the same
+    // layer.
+    ensure(
+        restarted["state"]["crop"]["angle"] == json!(ANGLE),
+        "The second draft did not reopen at the committed angle",
+    )?;
+    record(
+        restarted,
+        "a second draft on the same layer",
+        shows_draft(restarted)?,
+    );
+    ensure(
+        nudged["state"]["crop"]["angle"] == json!(ANGLE + NUDGE),
+        "The nudge did not reach the draft",
+    )?;
+    record(
+        nudged,
+        "the draft nudged half a degree",
+        shows_draft(nudged)?,
+    );
+    let (_, applied_payload, nudged_output) = committed(applied)?;
+    ensure(
+        applied_payload.angle == ANGLE + NUDGE,
+        format!("Apply committed angle {}", applied_payload.angle),
+    )?;
+    ensure(
+        applied["state"]["crop"]["drafting"] == json!(false),
+        "Apply left the draft open",
+    )?;
+    let applied_event = correlated(events, "crop_draft_applied", nudged)?;
+    ensure(
+        applied_event["detail"]["revision"] == json!(applied.revision()?)
+            && applied_event["detail"]["entry_id"] == applied["state"]["stack"]["entry"],
+        "The applied event does not name the committed entry and revision",
+    )?;
+    record(
+        applied,
+        "the applied crop",
+        json!({"pixels":shows_committed(applied, false)?,"section":idle_section(applied, reads_as(STAGE, nudged_output), "7.5")?}),
+    );
+    write_json(&launch.evidence.join("crop-checks.json"), &json!(checks))?;
+    Ok(())
+}
 
-            // Cancel ends that draft: the idle section reads the unchanged committed square again.
-            let (same, unchanged, _) = committed(&frames[12])?;
-            ensure(
-                same == layer
-                    && unchanged == square
-                    && frames[12].revision()? == frames[10].revision()?,
-                "Cancelling the idle change's draft changed the committed crop",
-            )?;
-            record(
-                &frames[12],
-                "the idle section again after Cancel, the committed square untouched",
-                json!({"section":idle_section(&frames[12], expected, "2.4")?,"pixels":shows_committed(&frames[12], false)?}),
-            );
-        }
-        other => return Err(format!("Unknown crop scenario {other}").into()),
-    }
-    write_json(&evidence.join("crop-checks.json"), &json!(checks))?;
+/// What the `crop-draft` steps show, once the plan has held: the crop state each frame recorded,
+/// the events that correlate with it and the overlay drawn.
+pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let events = &launch.events;
+    let mut checks = opened(launch)?;
+    let mut record = |frame: &Value, shows: &str, detail: Value| {
+        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
+    };
+    let expanded = launch.at("crop-expanded")?;
+    let started = launch.at("started")?;
+    let rect_frame = launch.at("rect")?;
+    let square_frame = launch.at("square")?;
+    let scrolled = launch.at("scrolled")?;
+    let rail = launch.at("rail")?;
+    let percent = launch.at("percent")?;
+    let fit = launch.at("fit")?;
+    let applied = launch.at("applied")?;
+    let idle_preset = launch.at("idle-preset")?;
+    let cancelled = launch.at("cancelled")?;
+
+    // The idle section, expanded under a collapsed Basic as the plan holds, with no draft yet: the
+    // Ratio and Angle controls reading an uncropped stack, Free at 0° with the lock open.
+    ensure(
+        expanded["state"]["crop"]["drafting"] != json!(true),
+        "The idle crop section is drafting before the draft starts",
+    )?;
+    record(
+        expanded,
+        "the idle section on an uncropped stack: Free at 0 degrees",
+        idle_section(expanded, "Free", "0")?,
+    );
+    // A neutral draft on a stack without a crop layer: the whole stage.
+    let draft = &started["state"]["crop"];
+    ensure(
+        draft["layer"] == Value::Null
+            && draft["angle"] == json!(0.0)
+            && draft["rect"] == json!([0.0, 0.0, f64::from(STAGE.0), f64::from(STAGE.1)]),
+        format!("A neutral draft is not the whole stage: {draft}"),
+    )?;
+    record(
+        started,
+        "a neutral draft over the whole stage",
+        shows_draft(started)?,
+    );
+    // Two corner gestures reach the rectangle exactly in Free mode.
+    ensure(
+        rect_frame["state"]["crop"]["rect"] == json!([40.0, 24.0, 300.0, 200.0]),
+        format!(
+            "The scripted corner gestures produced {}",
+            rect_frame["state"]["crop"]["rect"]
+        ),
+    )?;
+    record(
+        rect_frame,
+        "an off-centre rectangle from two corner gestures",
+        shows_draft(rect_frame)?,
+    );
+    // The declared 1:1 preset keeps the centre and fits inside that rectangle.
+    let square = &square_frame["state"]["crop"];
+    ensure(
+        square["preset"] == json!("1:1") && square["rect"] == json!([90.0, 24.0, 200.0, 200.0]),
+        format!("The 1:1 preset produced {}", square["rect"]),
+    )?;
+    record(
+        square_frame,
+        "the declared 1:1 preset, centred on the same rectangle",
+        shows_draft(square_frame)?,
+    );
+    // Scrolling the panel to the drafting section leaves the draft as it was.
+    ensure(
+        scrolled["state"]["crop"]["rect"] == square["rect"]
+            && scrolled["state"]["crop"]["preset"] == square["preset"]
+            && scrolled["state"]["tools_scroll"] == json!(1.0),
+        "Scrolling the tools panel changed the draft",
+    )?;
+    record(
+        scrolled,
+        "the drafting section scrolled into view",
+        shows_draft(scrolled)?,
+    );
+    // A drag on the angle's rail, released: the draft's angle follows the rail on its step, the
+    // 1:1 ratio holds, the release is the one logged change, and nothing commits (the plan holds
+    // that).
+    let straightened = &rail["state"]["crop"];
+    let rect = straightened["rect"].as_array();
+    ensure(
+        straightened["angle"] == json!(RAIL_ANGLE)
+            && straightened["preset"] == json!("1:1")
+            && rect.is_some_and(|rect| rect.len() == 4 && rect[2] == rect[3]),
+        format!("The angle rail produced {straightened}"),
+    )?;
+    record(
+        rail,
+        "the angle dragged on its rail to 2.4°, the square refitted, nothing committed",
+        json!({"overlay":shows_draft(rail)?,"event":correlated(events, "crop_draft_changed", rail)?["elapsed_ms"]}),
+    );
+    // The overlay follows the view: 100% draws the box at one input pixel per physical pixel.
+    record(percent, "the same draft at 100%", shows_draft(percent)?);
+    record(fit, "the same draft back at Fit", shows_draft(fit)?);
+    // Apply, which the plan holds as the one commit since the open.
+    let (_, applied_payload, output) = committed(applied)?;
+    ensure(
+        applied_payload.angle == RAIL_ANGLE && output[0] == output[1],
+        format!(
+            "Apply committed {output:?} at angle {}",
+            applied_payload.angle
+        ),
+    )?;
+    ensure(
+        applied["state"]["crop"]["drafting"] == json!(false),
+        "Apply did not end the draft",
+    )?;
+    correlated(events, "crop_draft_applied", fit)?;
+    // The square crop's own quarter points straddle the fixture's centre line, so this frame
+    // proves the four quadrants are present rather than sampling their corners.
+    record(
+        applied,
+        "the applied straightened square crop",
+        shows_committed(applied, false)?,
+    );
+    // The idle section now reads that committed crop: 1:1 chosen with the lock closed, at the
+    // rail's 2.4°, the chip computed here from the committed output.
+    let (layer, square, output) = committed(applied)?;
+    let expected = reads_as(STAGE, output);
+    ensure(
+        expected == "1:1",
+        format!("The committed square {output:?} reads as {expected}"),
+    )?;
+    record(
+        applied,
+        "the idle section reading the committed square at 2.4 degrees",
+        idle_section(applied, expected, "2.4")?,
+    );
+
+    // 16:9 pressed in the idle section opens a draft on the committed layer, seeded as Start seeds
+    // it (1:1 at 2.4°, as the started event records), then applies 16:9 to it: the canvas is in
+    // crop mode with a 16:9 frame at the same angle, and nothing commits (the plan holds that).
+    let draft = &idle_preset["state"]["crop"];
+    let rect: [f64; 4] = serde_json::from_value(draft["rect"].clone())?;
+    ensure(
+        draft["drafting"] == json!(true)
+            && draft["layer"] == json!(layer)
+            && draft["preset"] == json!("16:9")
+            && draft["angle"] == json!(RAIL_ANGLE)
+            && (rect[2] - rect[3] * 16.0 / 9.0).abs() <= 2.0 * 16.0 / 9.0
+            && draft["section"]["chosen"] == json!("16:9")
+            && idle_preset["state"]["workspace"]["mode"] == json!(CROP_MODULE),
+        format!("16:9 from the idle section produced {draft}"),
+    )?;
+    let seeded = events
+        .iter()
+        .rfind(|event| event["event"] == "crop_draft_started")
+        .ok_or("The idle change logged no draft start")?;
+    ensure(
+        seeded["detail"]["layer"] == json!(layer)
+            && seeded["detail"]["preset"] == json!("1:1")
+            && seeded["detail"]["angle"] == json!(RAIL_ANGLE),
+        format!(
+            "The draft the idle change opened was not seeded from the committed crop: {}",
+            seeded["detail"]
+        ),
+    )?;
+    record(
+        idle_preset,
+        "16:9 pressed in the idle section: a draft on the committed square, refitted to 16:9",
+        json!({"overlay":shows_draft(idle_preset)?,"seeded":seeded["detail"],"changed":correlated(events, "crop_draft_changed", idle_preset)?["detail"]}),
+    );
+
+    // Cancel ends that draft: the plan holds the same layer and nothing committed, and the idle
+    // section reads the unchanged committed square again.
+    let (_, unchanged, _) = committed(cancelled)?;
+    ensure(
+        unchanged == square,
+        "Cancelling the idle change's draft changed the committed crop",
+    )?;
+    record(
+        cancelled,
+        "the idle section again after Cancel, the committed square untouched",
+        json!({"section":idle_section(cancelled, expected, "2.4")?,"pixels":shows_committed(cancelled, false)?}),
+    );
+    write_json(&launch.evidence.join("crop-checks.json"), &json!(checks))?;
     Ok(())
 }
 
@@ -895,17 +914,74 @@ mod tests {
     }
 
     #[test]
-    fn every_crop_scenario_declares_one_frame_per_step_and_one_for_the_open() {
-        for scenario in ["crop", "crop-draft"] {
-            let script = script(scenario).unwrap().expect("a script");
+    fn every_crop_plan_captures_one_frame_for_the_open_and_one_per_step() {
+        for (scenario, plan) in [("crop", plan(&[])), ("crop-draft", draft_plan(&[]))] {
+            assert!(plan.validate().is_ok(), "{scenario}: {:?}", plan.validate());
+            let (open, steps) = plan.steps().split_first().expect("a frame");
+            assert!(open.script().is_none(), "{scenario}");
+            assert!(
+                steps.iter().all(|step| step.script().is_some()),
+                "{scenario}"
+            );
             assert_eq!(
-                script.as_array().expect("an array").len() + 1,
-                frames(scenario).expect("a frame count"),
+                plan.script().as_array().expect("an array").len() + 1,
+                plan.len(),
                 "{scenario}"
             );
         }
-        assert!(script("load").unwrap().is_none());
-        assert!(frames("load").is_none());
+    }
+
+    /// A launch of `plan` written the way the editor writes one, every scripted step recorded as
+    /// sent except `failed`, and no state beyond what every frame's identity needs.
+    fn recorded(dir: &Path, plan: &Plan, failed: Option<&str>) {
+        let mut frames = Vec::new();
+        let mut script = Vec::new();
+        let mut events = vec![json!({"event":"startup","run_id":"r"})];
+        let mut number = 0;
+        for (index, step) in plan.steps().iter().enumerate() {
+            let file = format!("frame-{}.png", index + 1);
+            image::RgbImage::new(4, 4).save(dir.join(&file)).unwrap();
+            let recorded = match step.script() {
+                None => Value::Null,
+                Some(request) => {
+                    number += 1;
+                    let status = if Some(step.name()) == failed {
+                        "failed"
+                    } else {
+                        "sent"
+                    };
+                    json!({"step":number,"status":status,"request":request})
+                }
+            };
+            if !recorded.is_null() {
+                let mut listed = recorded.clone();
+                listed["frame"] = json!(file);
+                script.push(listed);
+                events.push(json!({"event":"script_step","run_id":"r","detail":recorded}));
+            }
+            let frame = json!({
+                "file": file,
+                "capture_provenance": "window-renderer-readback",
+                "step": recorded,
+                "state": {"run_id":"r","backend":{"backend":"metal","adapter":"test"}},
+            });
+            write_json(&dir.join(format!("state-{}.json", index + 1)), &frame).unwrap();
+            frames.push(frame);
+        }
+        events.push(json!({"event":"shutdown","run_id":"r"}));
+        fs::write(
+            dir.join("events.jsonl"),
+            events
+                .iter()
+                .map(|event| format!("{event}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        write_json(
+            &dir.join("result.json"),
+            &json!({"status":"captured","run_id":"r","had_input_errors":false,"frames":frames,"script":script}),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -926,13 +1002,19 @@ mod tests {
             "a frame without an overlay must fail: {:?}",
             shows_draft(&frame)
         );
-        let app = json!({"script":[{"status":"failed","frame":"frame-2.png"}]});
-        let frames = [json!({"file":"frame-1.png"}), json!({"file":"frame-2.png"})];
-        assert!(
-            steps(&app, &frames)
-                .unwrap_err()
-                .to_string()
-                .contains("was not sent")
-        );
+
+        // Every step sent: the run gets past every step's record and fails only on the first
+        // expectation, which this bare state cannot meet.
+        let sent = tempfile::tempdir().unwrap();
+        recorded(sent.path(), &plan(&[]), None);
+        let error = plan(&[]).check(sent.path()).unwrap_err().to_string();
+        assert!(error.starts_with("Step \"fit\" (frame 1"), "{error}");
+        assert!(error.contains("no revision"), "{error}");
+        // One step the editor did not send fails on that step, before any expectation.
+        let stale = tempfile::tempdir().unwrap();
+        recorded(stale.path(), &plan(&[]), Some("angled"));
+        let error = plan(&[]).check(stale.path()).unwrap_err().to_string();
+        assert!(error.starts_with("Step \"angled\" (frame 4"), "{error}");
+        assert!(error.contains("was not sent"), "{error}");
     }
 }

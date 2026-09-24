@@ -248,16 +248,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "crop",
         about: "Crop actions, a draft cancelled and one applied",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, crop::script("crop").ok().flatten()),
+            plan: crop::plan,
             ..APP
         }],
-        verify: |run, launches| {
-            let scenario = run.scenario().to_owned();
-            legacy::verify(
-                |evidence, app, events| crop::verify(evidence, &scenario, app, events),
-                launches,
-            )
-        },
+        verify: crop::verify,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(["1280", "800"]),
         note: None,
@@ -267,16 +261,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "crop-draft",
         about: "The crop draft's gestures and controls at Fit and 100%",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, crop::script("crop-draft").ok().flatten()),
+            plan: crop::draft_plan,
             ..APP
         }],
-        verify: |run, launches| {
-            let scenario = run.scenario().to_owned();
-            legacy::verify(
-                |evidence, app, events| crop::verify(evidence, &scenario, app, events),
-                launches,
-            )
-        },
+        verify: crop::verify_draft,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(["1280", "800"]),
         note: None,
@@ -325,16 +313,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "basic-crop",
         about: "Basic composed with a crop and a straighten",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, histogram::crop_script("basic-crop")),
+            plan: histogram::crop_plan,
             ..APP
         }],
-        verify: |run, launches| {
-            let root = run.root().to_owned();
-            legacy::verify(
-                |evidence, app, events| histogram::verify_crop(&root, evidence, app, events),
-                launches,
-            )
-        },
+        verify: histogram::verify_crop,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,
@@ -367,16 +349,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "histogram",
         about: "The histogram, its clipping overlays, the pointer readout and a drafted frame",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, histogram::script("histogram")),
+            plan: histogram::plan,
             ..APP
         }],
-        verify: |run, launches| {
-            let root = run.root().to_owned();
-            legacy::verify(
-                |evidence, app, events| histogram::verify(&root, evidence, app, events),
-                launches,
-            )
-        },
+        verify: histogram::verify,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,

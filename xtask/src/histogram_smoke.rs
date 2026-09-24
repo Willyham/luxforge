@@ -15,12 +15,12 @@
 //! status bar. The hover frame is compared with the frame before it pixel for pixel: the tools
 //! panel is identical, and the status bar changes only inside the readout's own slot.
 use crate::{
-    scenario::{Fixture, Frame, pixels},
+    scenario::{Checked, Fixture, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
 use lightwell_core::{
-    BASIC_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId,
-    analysis, render as core_render,
+    BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, PIXEL_EFFECT,
+    RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
 };
 
 /// The fixture: 480x320, orientation 1, the quadrant pattern with the white centre line and the
@@ -60,49 +60,100 @@ const LINE: (u32, u32) = (240, 200);
 /// Quadrant interiors with no channel at either endpoint, so no overlay may appear on them.
 const CLEAN: [(u32, u32); 4] = [(120, 60), (400, 60), (120, 270), (420, 285)];
 
-pub fn script(scenario: &str) -> Option<Value> {
-    (scenario == "histogram").then(|| {
-        json!([
-            // 1: one both-endpoint pixel, committed through the ordinary edit path.
-            {"api":{"method":"edit.set-pixel","params":{"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}}},
-            // 2: the pointer readout over exactly that pixel.
-            {"hover":{"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1}},
-            // 3: the shadow overlay alone.
-            {"workspace":{"clip_shadows":true}},
-            // 4: both overlays, which is where magenta appears.
-            {"workspace":{"clip_highlights":true}},
-            // 5: 100%, one overlay cell per source pixel.
-            {"view":{"zoom":100}},
-            // 6: back to Fit.
-            {"view":{"zoom":"fit"}},
-            // 7: both overlays off again; the photograph is untouched underneath.
-            {"workspace":{"clip_shadows":false,"clip_highlights":false}},
-            // 8: the Original entry, whose counts are the fixture's own again.
-            {"preview":{"sequence":0}},
-            // 9: back to current, because a gesture is refused while a historical entry is shown.
-            {"preview":"current"},
-            // 10: an Exposure drag left open, so the photograph on screen is the drafted render.
-            {"slider":{"action":"set-basic","parameter":"exposure","values":[0.5,1.0]}},
-            // 11: the same gesture released, which commits once; the plot follows the new stack.
-            {"slider":{"action":"set-basic","parameter":"exposure","values":[1.0],"release":true}}
-        ])
-    })
+/// Every `histogram` frame, in order: the open, then one per step. The expectations here are what
+/// each step commits and records; `verify` checks the counts, the readout and the overlays.
+pub fn plan(_: &[PathBuf]) -> Plan {
+    // A step that changes what is shown and commits nothing.
+    let view = |name: &str, script: Value| Step::new(name, script).commits(0);
+    Plan::new(vec![
+        // The default screen: the fixture's own counts, both overlays off.
+        Step::opened("opened"),
+        // One both-endpoint pixel, committed through the ordinary edit path.
+        Step::new(
+            "pixel",
+            json!({"api":{"method":"edit.set-pixel","params":{"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}}}),
+        )
+        .commits(1)
+        .label("Pixel 360, 240")
+        .payload(
+            PIXEL_EFFECT,
+            json!({"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}),
+        ),
+        // The pointer readout over exactly that pixel.
+        view(
+            "hover",
+            json!({"hover":{"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1}}),
+        ),
+        // The shadow overlay alone.
+        view("shadows", json!({"workspace":{"clip_shadows":true}})),
+        // Both overlays, which is where magenta appears.
+        view("both", json!({"workspace":{"clip_highlights":true}})),
+        // 100%, one overlay cell per source pixel.
+        view("percent", json!({"view":{"zoom":100}})),
+        // Back to Fit.
+        view("fit", json!({"view":{"zoom":"fit"}})),
+        // Both overlays off again; the photograph is untouched underneath.
+        view(
+            "overlays-off",
+            json!({"workspace":{"clip_shadows":false,"clip_highlights":false}}),
+        ),
+        // The Original entry, whose counts are the fixture's own again.
+        view("original", json!({"preview":{"sequence":0}})),
+        // Back to current, because a gesture is refused while a historical entry is shown.
+        view("current", json!({"preview":"current"})),
+        // An Exposure drag left open, so the photograph on screen is the drafted render.
+        Step::new(
+            "drag",
+            json!({"slider":{"action":"set-basic","parameter":"exposure","values":[0.5,1.0]}}),
+        )
+        .commits(0)
+        .draft("set-basic", json!({"exposure": 1.0}))
+        .no_layer(BASIC_EFFECT),
+        // The same gesture released, which commits once; the plot follows the new stack.
+        Step::new(
+            "release",
+            json!({"slider":{"action":"set-basic","parameter":"exposure","values":[1.0],"release":true}}),
+        )
+        .commits(1)
+        .no_draft()
+        .label("Exposure +1.00 EV")
+        .payload(BASIC_EFFECT, json!({"exposure": 1.0})),
+    ])
 }
 
-/// The `basic-crop` scenario: a Basic commit, then a 16:9 fit and a 7 degree straighten over it.
+/// Every `basic-crop` frame: a Basic commit, then a 16:9 fit and a 7 degree straighten over it.
 /// Its frames prove the counts describe the composition **after** the crop, and that the
 /// photograph is placed at the ratio the committed payload declares.
-pub fn crop_script(scenario: &str) -> Option<Value> {
-    (scenario == "basic-crop").then(|| {
-        json!([
-            // 1: one Basic commit, so every later frame composes colour with geometry.
-            {"api":{"method":"edit.set-basic","params":{"exposure":1.0}}},
-            // 2: a 16:9 fit at angle zero, which is an exact copy of its input stage.
-            {"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":0.0}}},
-            // 3: the same ratio straightened by 7 degrees, which resamples.
-            {"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":7.0}}}
-        ])
-    })
+pub fn crop_plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        Step::opened("opened"),
+        // One Basic commit, so every later frame composes colour with geometry.
+        Step::new(
+            "exposure",
+            json!({"api":{"method":"edit.set-basic","params":{"exposure":1.0}}}),
+        )
+        .commits(1)
+        .label("Exposure +1.00 EV")
+        .payload(BASIC_EFFECT, json!({"exposure": 1.0})),
+        // A 16:9 fit at angle zero, which is an exact copy of its input stage.
+        Step::new(
+            "fit",
+            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":0.0}}}),
+        )
+        .commits(1)
+        .label("Crop 16:9")
+        .same_layer(BASIC_EFFECT, "exposure"),
+        // The same ratio straightened by 7 degrees, which resamples: the one crop layer updated in
+        // place.
+        Step::new(
+            "straightened",
+            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":7.0}}}),
+        )
+        .commits(1)
+        .label("Crop 16:9")
+        .same_layer(CROP_EFFECT, "fit")
+        .same_layer(BASIC_EFFECT, "exposure"),
+    ])
 }
 
 /// An independent reduction of the fixture through `recipe`: decode, render and reduce in this
@@ -526,12 +577,22 @@ fn chrome_changes(before: &Frame, after: &Frame) -> Result<Value> {
     }))
 }
 
-pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    ensure(
-        app["had_input_errors"] == json!(false),
-        "The run recorded an input error",
-    )?;
-    let frames = Frame::all(evidence, app)?;
+/// What the histogram, the readout and the overlays show at each step, once the plan has held.
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let root = run.root();
+    let opened = launch.at("opened")?;
+    let pixel = launch.at("pixel")?;
+    let hover = launch.at("hover")?;
+    let shadows = launch.at("shadows")?;
+    let both = launch.at("both")?;
+    let percent = launch.at("percent")?;
+    let fit = launch.at("fit")?;
+    let off = launch.at("overlays-off")?;
+    let original = launch.at("original")?;
+    let current = launch.at("current")?;
+    let drag = launch.at("drag")?;
+    let release = launch.at("release")?;
     let mut checks = Vec::new();
     let mut record = |frame: &Value, shows: &str, detail: Value| {
         checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
@@ -563,37 +624,38 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
         ),
     )?;
 
-    // Frame 0: the default screen. The histogram is ready and its counts are the fixture's own.
-    let opened = expect_counts(&frames[0], &plain, "frame 0, the opened fixture")?;
+    // The default screen. The histogram is ready and its counts are the fixture's own.
+    let opened_counts = expect_counts(opened, &plain, "the opened fixture")?;
     ensure(
-        frames[0]["state"]["histogram"]["overlay"] == Value::Null,
+        opened["state"]["histogram"]["overlay"] == Value::Null,
         "An overlay was derived before either flag was set",
     )?;
     ensure(
-        frames[0]["state"]["workspace"]["clip_shadows"] == json!(false)
-            && frames[0]["state"]["workspace"]["clip_highlights"] == json!(false),
+        opened["state"]["workspace"]["clip_shadows"] == json!(false)
+            && opened["state"]["workspace"]["clip_highlights"] == json!(false),
         "The clipping flags do not start off",
     )?;
     record(
-        &frames[0],
+        opened,
         "the default screen with the histogram ready, counts equal to an independent reduction",
-        json!({"histogram":opened,"pixels":frames[0].fixture(Fixture::fit(1))?}),
+        json!({"histogram":opened_counts,"pixels":opened.fixture(Fixture::fit(1))?}),
     );
 
-    // Frame 1: one both-endpoint pixel committed. The counts follow the new stack exactly.
+    // One both-endpoint pixel committed. The counts follow the new stack exactly. The plan holds
+    // that the step commits once; this holds which revision that is, a fresh catalog's first.
     ensure(
-        frames[1]["state"]["stack"]["revision"] == json!(1),
+        pixel["state"]["stack"]["revision"] == json!(1),
         "edit.set-pixel did not commit revision 1",
     )?;
-    let after = expect_counts(&frames[1], &edited, "frame 1, after edit.set-pixel")?;
+    let after = expect_counts(pixel, &edited, "after edit.set-pixel")?;
     record(
-        &frames[1],
+        pixel,
         "one both-endpoint pixel committed; the plot follows the new stack",
         after,
     );
 
-    // Frame 2: the pointer readout of that very pixel, in output codes.
-    let readout = &frames[2]["state"]["readout"];
+    // The pointer readout of that very pixel, in output codes.
+    let readout = &hover["state"]["readout"];
     ensure(
         readout["rgba"] == json!([BOTH_RGB[0], BOTH_RGB[1], BOTH_RGB[2], 255]),
         format!(
@@ -611,20 +673,20 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     )?;
     // The readout is the status bar's, and it arrived with the hover: the frame before it has none.
     ensure(
-        frames[2]["state"]["status_bar"]["readout"] == readout["text"],
+        hover["state"]["status_bar"]["readout"] == readout["text"],
         format!(
             "The status bar shows {} while the readout is {}",
-            frames[2]["state"]["status_bar"]["readout"], readout["text"]
+            hover["state"]["status_bar"]["readout"], readout["text"]
         ),
     )?;
     ensure(
-        frames[1]["state"]["status_bar"]["readout"] == Value::Null,
+        pixel["state"]["status_bar"]["readout"] == Value::Null,
         "The status bar showed a readout before the pointer reached the photograph",
     )?;
     // Nothing else moved. The tools panel is pixel for pixel the frame before the hover, and the
     // status bar changed only inside one readout-slot-wide span that stops short of the trailing
     // facts: had the readout pushed anything, the zoom at the right edge would have moved too.
-    let chrome = chrome_changes(&frames[1], &frames[2])?;
+    let chrome = chrome_changes(pixel, hover)?;
     ensure(
         chrome["tools_panel_pixels_changed"] == json!(0),
         format!(
@@ -648,28 +710,31 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     // The same pixel through the public method, from this process: the readout uses that path, so
     // this is the same answer read a second way rather than a second implementation of it.
     ensure(
-        counters(&frames[2]) == counters(&frames[1]),
+        counters(hover) == counters(pixel),
         "Hovering changed the histogram",
     )?;
     record(
-        &frames[2],
+        hover,
         "the pointer readout over the pixel that was just set, in the status bar; the tools panel is pixel-identical to the frame before and the status bar changed only inside the readout slot",
-        json!({"readout": readout, "status_bar": frames[2]["state"]["status_bar"], "chrome": chrome}),
+        json!({"readout": readout, "status_bar": hover["state"]["status_bar"], "chrome": chrome}),
     );
 
     // The reference the overlay frames are compared against: the same stack, the same zoom, the
     // same panels, both overlays off. Every mask check below is a difference from this, so the
     // fixture's own strongly coloured quadrants cancel out instead of being mistaken for a mask.
-    let (bare_rect, bare) = photo_rect(&frames[2])?;
+    let (bare_rect, bare) = photo_rect(hover)?;
     let bare_radius = radius(bare_rect);
 
-    // Frame 3: the shadow overlay alone. Blue over the black dashes, and nothing red anywhere.
+    // The shadow overlay alone. Blue over the black dashes, and nothing red anywhere.
     ensure(
-        frames[3]["state"]["workspace"]["clip_shadows"] == json!(true)
-            && frames[3]["state"]["workspace"]["clip_highlights"] == json!(false),
-        format!("Frame 3's flags are {}", frames[3]["state"]["workspace"]),
+        shadows["state"]["workspace"]["clip_shadows"] == json!(true)
+            && shadows["state"]["workspace"]["clip_highlights"] == json!(false),
+        format!(
+            "The shadow step's flags are {}",
+            shadows["state"]["workspace"]
+        ),
     )?;
-    let overlay = &frames[3]["state"]["histogram"]["overlay"];
+    let overlay = &shadows["state"]["histogram"]["overlay"];
     ensure(
         overlay["cells"] == json!([SOURCE.0, SOURCE.1]),
         format!(
@@ -678,9 +743,9 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
         ),
     )?;
     ensure(overlay["drawn"] == json!(true), "The overlay was not drawn")?;
-    let (rect3, image3) = photo_rect(&frames[3])?;
-    same_rect(rect3, bare_rect, "frame 3")?;
-    let shadow_on_dash = window(image3, bare, rect3, DASH, bare_radius);
+    let (shadows_rect, shadows_image) = photo_rect(shadows)?;
+    same_rect(shadows_rect, bare_rect, "the shadow overlay")?;
+    let shadow_on_dash = window(shadows_image, bare, shadows_rect, DASH, bare_radius);
     ensure(
         shadow_on_dash.iter().any(|delta| delta.is_shadow_mask()),
         format!(
@@ -695,50 +760,51 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     // The white centre line is at code 255 in every channel, so with only the shadow flag on it
     // must be exactly as it was.
     untouched(
-        image3,
+        shadows_image,
         bare,
-        rect3,
+        shadows_rect,
         &[LINE],
         bare_radius,
         "the shadow overlay alone touched the 255 line",
     )?;
     untouched(
-        image3,
+        shadows_image,
         bare,
-        rect3,
+        shadows_rect,
         &CLEAN,
         bare_radius,
         "the shadow overlay reached an unclipped quadrant",
     )?;
-    // The committed stack is untouched by a view flag: same revision, same layers.
+    // The committed stack is untouched by a view flag: the plan holds the revision and the entry,
+    // and this holds everything else the stack records, its layers included.
     ensure(
-        frames[3]["state"]["stack"] == frames[1]["state"]["stack"],
+        shadows["state"]["stack"] == pixel["state"]["stack"],
         "Switching an overlay on changed the committed stack",
     )?;
     record(
-        &frames[3],
+        shadows,
         "the shadow overlay: blue over the pixels with a channel at 0, nothing over the 255 line",
-        json!({"overlay":overlay,"photo_rect":rect3,"window_radius":bare_radius}),
+        json!({"overlay":overlay,"photo_rect":shadows_rect,"window_radius":bare_radius}),
     );
 
-    // Frame 4: both overlays. Blue over the dashes, red over the white line, magenta where both
-    // hold at once. The fixture has no pixel at both endpoints of its own, so the magenta comes
-    // from the one pixel the scenario set; that is the isolated-pixel case a Fit overlay must keep.
+    // Both overlays. Blue over the dashes, red over the white line, magenta where both hold at
+    // once. The fixture has no pixel at both endpoints of its own, so the magenta comes from the
+    // one pixel the scenario set; that is the isolated-pixel case a Fit overlay must keep.
     ensure(
-        frames[4]["state"]["workspace"]["clip_shadows"] == json!(true)
-            && frames[4]["state"]["workspace"]["clip_highlights"] == json!(true),
-        format!("Frame 4's flags are {}", frames[4]["state"]["workspace"]),
+        both["state"]["workspace"]["clip_shadows"] == json!(true)
+            && both["state"]["workspace"]["clip_highlights"] == json!(true),
+        format!("Both overlays' flags are {}", both["state"]["workspace"]),
     )?;
-    let (rect4, image4) = photo_rect(&frames[4])?;
-    same_rect(rect4, bare_rect, "frame 4")?;
+    let (both_rect, both_image) = photo_rect(both)?;
+    same_rect(both_rect, bare_rect, "both overlays")?;
     ensure(
-        window(image4, bare, rect4, DASH, bare_radius)
+        window(both_image, bare, both_rect, DASH, bare_radius)
             .iter()
             .any(|delta| delta.is_shadow_mask()),
         format!("No blue overlay over the black dash band at source {DASH:?}"),
     )?;
     ensure(
-        window(image4, bare, rect4, LINE, bare_radius)
+        window(both_image, bare, both_rect, LINE, bare_radius)
             .iter()
             .any(|delta| delta.is_highlight_mask()),
         format!("No red overlay over the white centre line at source {LINE:?}"),
@@ -746,7 +812,13 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     // Magenta is measured against the shadow-only frame rather than the bare one: turning the
     // highlight flag on changes that one cell from the shadow mask to the both mask, which adds
     // red and nothing else, whatever the photograph underneath is.
-    let both_upgrade = window(image4, image3, rect4, BOTH_PIXEL, bare_radius);
+    let both_upgrade = window(
+        both_image,
+        shadows_image,
+        both_rect,
+        BOTH_PIXEL,
+        bare_radius,
+    );
     ensure(
         both_upgrade.iter().any(|delta| delta.is_both_upgrade()),
         format!(
@@ -755,37 +827,37 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
         ),
     )?;
     untouched(
-        image4,
+        both_image,
         bare,
-        rect4,
+        both_rect,
         &CLEAN,
         bare_radius,
         "an overlay reached an unclipped quadrant",
     )?;
     record(
-        &frames[4],
+        both,
         "both overlays: blue at code 0, red at code 255, magenta on the one pixel at both",
         json!({
-            "overlay": frames[4]["state"]["histogram"]["overlay"],
-            "photo_rect": rect4,
+            "overlay": both["state"]["histogram"]["overlay"],
+            "photo_rect": both_rect,
             "window_radius": bare_radius,
             "note": "the fixture's own quadrant colours reach neither endpoint, so the only magenta is the isolated pixel this scenario set",
         }),
     );
 
-    // Frame 5: 100%. One overlay cell per source pixel, and the masks still land on their pixels.
-    // There is no overlay-off frame at 100% to difference against, so the two checks here are the
-    // ones whose base colour is unambiguous on its own: the dash band is black and the centre line
-    // is white, so a blue-dominant dash and a red-dominant line can only be the masks.
+    // 100%. One overlay cell per source pixel, and the masks still land on their pixels. There is
+    // no overlay-off frame at 100% to difference against, so the two checks here are the ones
+    // whose base colour is unambiguous on its own: the dash band is black and the centre line is
+    // white, so a blue-dominant dash and a red-dominant line can only be the masks.
     ensure(
-        frames[5]["state"]["histogram"]["overlay"]["cells"] == json!([SOURCE.0, SOURCE.1]),
+        percent["state"]["histogram"]["overlay"]["cells"] == json!([SOURCE.0, SOURCE.1]),
         format!(
             "The 100% overlay grid is {}",
-            frames[5]["state"]["histogram"]["overlay"]["cells"]
+            percent["state"]["histogram"]["overlay"]["cells"]
         ),
     )?;
-    let (rect5, image5) = photo_rect(&frames[5])?;
-    let hundred_width = rect5[2] - rect5[0];
+    let (percent_rect, percent_image) = photo_rect(percent)?;
+    let hundred_width = percent_rect[2] - percent_rect[0];
     ensure(
         hundred_width.abs_diff(SOURCE.0) <= 2,
         format!(
@@ -793,25 +865,25 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
             SOURCE.0
         ),
     )?;
-    let radius5 = radius(rect5);
+    let percent_radius = radius(percent_rect);
     let black = image::Rgb([0u8, 0, 0]);
     let white = image::Rgb([255u8, 255, 255]);
     let against = |base: image::Rgb<u8>, point: (u32, u32)| {
-        let (cx, cy) = map(rect5, point);
+        let (cx, cy) = map(percent_rect, point);
         let mut deltas = Vec::new();
-        for dy in -radius5..=radius5 {
-            for dx in -radius5..=radius5 {
+        for dy in -percent_radius..=percent_radius {
+            for dx in -percent_radius..=percent_radius {
                 let x = i64::from(cx) + dx;
                 let y = i64::from(cy) + dy;
                 if x < 0
                     || y < 0
-                    || x >= i64::from(image5.width())
-                    || y >= i64::from(image5.height())
+                    || x >= i64::from(percent_image.width())
+                    || y >= i64::from(percent_image.height())
                 {
                     continue;
                 }
                 deltas.push(Delta::between(
-                    image5.get_pixel(x as u32, y as u32).0,
+                    percent_image.get_pixel(x as u32, y as u32).0,
                     base.0,
                 ));
             }
@@ -831,175 +903,157 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
         "At 100% the highlight overlay no longer lines up with the white centre line",
     )?;
     ensure(
-        counters(&frames[5]) == counters(&frames[1]),
+        counters(percent) == counters(pixel),
         "Zooming changed the histogram",
     )?;
     record(
-        &frames[5],
+        percent,
         "100% with both overlays on: one cell per physical pixel, still aligned",
-        json!({"photo_rect":rect5,"physical_width":hundred_width,"overlay":frames[5]["state"]["histogram"]["overlay"]}),
+        json!({"photo_rect":percent_rect,"physical_width":hundred_width,"overlay":percent["state"]["histogram"]["overlay"]}),
     );
 
-    // Frame 6: back to Fit, still no re-analysis.
+    // Back to Fit, still no re-analysis.
     ensure(
-        counters(&frames[6]) == counters(&frames[1]),
+        counters(fit) == counters(pixel),
         "Returning to Fit changed the histogram",
     )?;
     record(
-        &frames[6],
+        fit,
         "back at Fit with both overlays on",
-        counters(&frames[6]).clone(),
+        counters(fit).clone(),
     );
 
-    // Frame 7: both overlays off. The photograph underneath is byte for byte the frame from before
-    // either flag was set, at every point the masks had covered.
+    // Both overlays off. The photograph underneath is byte for byte the frame from before either
+    // flag was set, at every point the masks had covered.
     ensure(
-        frames[7]["state"]["workspace"]["clip_shadows"] == json!(false)
-            && frames[7]["state"]["workspace"]["clip_highlights"] == json!(false),
+        off["state"]["workspace"]["clip_shadows"] == json!(false)
+            && off["state"]["workspace"]["clip_highlights"] == json!(false),
         "The overlays did not switch off",
     )?;
     ensure(
-        frames[7]["state"]["histogram"]["overlay"] == Value::Null,
+        off["state"]["histogram"]["overlay"] == Value::Null,
         "An overlay is still derived with both flags off",
     )?;
-    let (rect7, image7) = photo_rect(&frames[7])?;
-    same_rect(rect7, bare_rect, "frame 7")?;
+    let (off_rect, off_image) = photo_rect(off)?;
+    same_rect(off_rect, bare_rect, "the overlays switched off")?;
     let mut covered = vec![DASH, LINE, BOTH_PIXEL];
     covered.extend(CLEAN);
     untouched(
-        image7,
+        off_image,
         bare,
-        rect7,
+        off_rect,
         &covered,
         bare_radius,
         "an overlay survived both flags being switched off",
     )?;
     ensure(
-        counters(&frames[7]) == counters(&frames[1]),
+        counters(off) == counters(pixel),
         "Switching the overlays off changed the histogram",
     )?;
     record(
-        &frames[7],
+        off,
         "both overlays off: the photograph is the fixture again and the counts are unchanged",
-        json!({"photo_rect":rect7,"points_compared":covered}),
+        json!({"photo_rect":off_rect,"points_compared":covered}),
     );
 
-    // Frame 8: the Original entry. The plot follows the displayed generation, not the newest stack.
-    let original = expect_counts(&frames[8], &plain, "frame 8, previewing the Original")?;
+    // The Original entry. The plot follows the displayed generation, not the newest stack.
+    let original_counts = expect_counts(original, &plain, "previewing the Original")?;
     ensure(
-        counters(&frames[8]) != counters(&frames[1]),
+        counters(original) != counters(pixel),
         "The Original's counts are indistinguishable from the edited stack's",
     )?;
     ensure(
-        frames[8]["state"]["histogram"]["identity"]["entry"]
-            != frames[1]["state"]["histogram"]["identity"]["entry"],
+        original["state"]["histogram"]["identity"]["entry"]
+            != pixel["state"]["histogram"]["identity"]["entry"],
         "The plot still names the entry the edited stack belongs to",
     )?;
     // The readout describes one pixel of one stack, so moving to another entry clears it rather
     // than leaving the edited stack's codes on screen over the Original.
     ensure(
-        frames[8]["state"]["readout"] == Value::Null,
+        original["state"]["readout"] == Value::Null,
         format!(
             "The readout survived the change of displayed entry: {}",
-            frames[8]["state"]["readout"]
+            original["state"]["readout"]
         ),
     )?;
     record(
-        &frames[8],
-        "previewing the Original: the plot follows the displayed entry, not the newest one",
         original,
+        "previewing the Original: the plot follows the displayed entry, not the newest one",
+        original_counts,
     );
 
-    // Frame 9: back to current. A gesture is refused while a historical entry is shown, so the
-    // run returns first; the plot is the edited stack's again.
+    // Back to current. A gesture is refused while a historical entry is shown, so the run returns
+    // first; the plot is the edited stack's again.
     ensure(
-        counters(&frames[9]) == counters(&frames[1]),
+        counters(current) == counters(pixel),
         "Returning to current did not restore the edited stack's counts",
     )?;
     record(
-        &frames[9],
+        current,
         "back to current before the gesture",
-        counters(&frames[9]).clone(),
+        counters(current).clone(),
     );
 
-    // Frame 10: an Exposure drag left open. The photograph on screen is the drafted render, and
-    // the contract ties the counts to the image presented, drafts included — so the inspector
-    // describes that render: its identity carries the draft revision the pixels were planned from
-    // and its counters equal an independent render and reduction of the drafted stack, computed
-    // here from the layers the frame says it displays and the drafted payload it records.
-    let drafted = &frames[10]["state"]["draft"];
+    // An Exposure drag left open, which the plan holds as the draft and nothing committed. The
+    // photograph on screen is the drafted render, and the contract ties the counts to the image
+    // presented, drafts included — so the inspector describes that render: its identity carries
+    // the draft revision the pixels were planned from and its counters equal an independent render
+    // and reduction of the drafted stack, computed here from the layers the frame says it displays
+    // and the drafted payload it records.
+    let drafted = &drag["state"]["draft"];
     ensure(
-        drafted["action"] == json!("set-basic") && drafted["fields"] == json!({"exposure": 1.0}),
-        format!("Frame 10's draft is not the open Exposure gesture: {drafted}"),
-    )?;
-    ensure(
-        frames[10]["state"]["displayed_draft_revision"] == drafted["draft_revision"]
+        drag["state"]["displayed_draft_revision"] == drafted["draft_revision"]
             && drafted["draft_revision"].as_u64().is_some_and(|r| r >= 1),
         format!(
-            "Frame 10 displays draft revision {} while the draft is at {}",
-            frames[10]["state"]["displayed_draft_revision"], drafted["draft_revision"]
+            "The drag displays draft revision {} while the draft is at {}",
+            drag["state"]["displayed_draft_revision"], drafted["draft_revision"]
         ),
     )?;
-    let drafted_report = reduction(root, &drafted_recipe(&frames[10])?)?;
-    let drafted_detail = expect_counts(&frames[10], &drafted_report, "frame 10, the open gesture")?;
+    let drafted_report = reduction(root, &drafted_recipe(drag)?)?;
+    let drafted_detail = expect_counts(drag, &drafted_report, "the open gesture")?;
     ensure(
-        frames[10]["state"]["histogram"]["identity"]["draft_revision"] == drafted["draft_revision"],
+        drag["state"]["histogram"]["identity"]["draft_revision"] == drafted["draft_revision"],
         format!(
             "The plot names draft revision {} while the frame displays {}",
-            frames[10]["state"]["histogram"]["identity"]["draft_revision"],
-            drafted["draft_revision"]
+            drag["state"]["histogram"]["identity"]["draft_revision"], drafted["draft_revision"]
         ),
     )?;
     // The drafted exposure is +1 EV, so it clips highlights the committed stack does not: the
     // counts are demonstrably the drafted population rather than the previous frame's relabelled.
     ensure(
-        counters(&frames[10]) != counters(&frames[9]),
+        counters(drag) != counters(current),
         "The drafted exposure left the counts identical to the committed frame's",
     )?;
-    ensure(
-        frames[10]["state"]["stack"]["revision"] == frames[9]["state"]["stack"]["revision"],
-        "The open gesture committed something",
-    )?;
     record(
-        &frames[10],
+        drag,
         "an Exposure drag left open: the photograph is the drafted render and the plot is that render, its identity carrying the draft revision and its counts equal to an independent reduction of the drafted stack",
         json!({"draft": drafted, "histogram": drafted_detail}),
     );
 
-    // Frame 11: the gesture released. One commit, and the plot follows the composed stack: an
-    // independent render and reduction of exactly the layers the frame says it displays.
+    // The gesture released, which the plan holds as one commit and no draft. The plot follows the
+    // composed stack: an independent render and reduction of exactly the layers the frame says it
+    // displays.
+    let released = reduction(root, &displayed_recipe(release)?)?;
+    let released_detail = expect_counts(release, &released, "the released gesture")?;
     ensure(
-        frames[11]["state"]["draft"] == Value::Null,
-        "The released gesture left a draft open",
-    )?;
-    ensure(
-        frames[11]["state"]["stack"]["revision"]
-            == json!(
-                frames[10]["state"]["stack"]["revision"]
-                    .as_u64()
-                    .unwrap_or(0)
-                    + 1
-            ),
-        "The release did not advance the revision by exactly one",
-    )?;
-    let released = reduction(root, &displayed_recipe(&frames[11])?)?;
-    let released_detail = expect_counts(&frames[11], &released, "frame 11, the released gesture")?;
-    ensure(
-        counters(&frames[11]) != counters(&frames[9]),
+        counters(release) != counters(current),
         "The committed exposure left the counts unchanged",
     )?;
     record(
-        &frames[11],
+        release,
         "the gesture released: one commit, and the counts equal an independent reduction of the composed pixel-and-exposure stack",
         released_detail,
     );
 
     // Every frame the run presented reports its own render time, and each captured status bar
     // states one of them rather than the time since the open.
-    let render_times = crate::smoke::expect_render_times(events, &frames)?;
+    let render_times = crate::smoke::expect_render_times(&launch.events, &launch.frames)?;
     checks.push(json!({"shows":"the render time of every presented frame","detail":render_times}));
 
-    write_json(&evidence.join("histogram-checks.json"), &json!(checks))?;
+    write_json(
+        &launch.evidence.join("histogram-checks.json"),
+        &json!(checks),
+    )?;
     Ok(())
 }
 
@@ -1047,69 +1101,53 @@ fn expect_placement(frame: &Frame, ratio: f64, what: &str) -> Result<Value> {
     }))
 }
 
-pub fn verify_crop(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> Result {
-    ensure(
-        app["had_input_errors"] == json!(false),
-        "The run recorded an input error",
-    )?;
-    let frames = Frame::all(evidence, app)?;
+/// What each `basic-crop` step's frame shows, for its checks record.
+fn crop_shows(step: &str) -> Result<&'static str> {
+    Ok(match step {
+        "opened" => "the opened fixture",
+        "exposure" => "one Basic commit",
+        "fit" => "a 16:9 fit at angle zero over the Basic layer",
+        "straightened" => "the same ratio straightened by 7 degrees",
+        other => return Err(format!("No description for the basic-crop step {other:?}").into()),
+    })
+}
+
+/// What the histogram and the placement show at each `basic-crop` step, once the plan has held.
+pub fn verify_crop(run: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let root = run.root();
 
     // Every frame's counts are an independent render and reduction of exactly the layers that
     // frame says it displays, so the plot is proved against the composition rather than itself.
-    let expected: Vec<&str> = vec![
-        "the opened fixture",
-        "one Basic commit",
-        "a 16:9 fit at angle zero over the Basic layer",
-        "the same ratio straightened by 7 degrees",
-    ];
     let mut details = Vec::new();
-    for (index, frame) in frames.iter().enumerate() {
+    for (step, frame) in launch.names().iter().zip(&launch.frames) {
+        let shows = crop_shows(step)?;
         let recipe = displayed_recipe(frame)?;
         let report = reduction(root, &recipe)?;
-        let counts = expect_counts(
-            frame,
-            &report,
-            &format!("frame {index}, {}", expected[index]),
-        )?;
+        let counts = expect_counts(frame, &report, &format!("step {step:?}, {shows}"))?;
         details.push(json!({
             "frame": frame["file"],
-            "shows": expected[index],
+            "shows": shows,
             "stack": recipe.layers.iter().map(|layer| layer.effect_id.clone()).collect::<Vec<_>>(),
             "output": [report.width, report.height],
             "counts": counts,
         }));
     }
 
-    // The Basic commit is one entry and one revision, and it changes the population.
+    // The Basic commit is one entry, and it changes the population. The plan holds that each step
+    // commits once and that the straighten keeps the crop layer; this holds which revision the
+    // first commit is, a fresh catalog's first, so with the plan the straighten is revision 3.
+    let opened = launch.at("opened")?;
+    let exposure = launch.at("exposure")?;
+    let fit = launch.at("fit")?;
+    let straightened = launch.at("straightened")?;
     ensure(
-        frames[1]["state"]["stack"]["revision"] == json!(1),
+        exposure["state"]["stack"]["revision"] == json!(1),
         "edit.set-basic did not commit revision 1",
     )?;
     ensure(
-        counters(&frames[1]) != counters(&frames[0]),
+        counters(exposure) != counters(opened),
         "The exposure left the population unchanged",
-    )?;
-    // Each crop commits once and keeps the one crop layer with its identity.
-    let crop_layer = |frame: &Value| -> Result<String> {
-        frame["state"]["stack"]["layers"]
-            .as_array()
-            .ok_or("No layers")?
-            .iter()
-            .find(|layer| layer["effect"] == json!(lightwell_core::CROP_EFFECT))
-            .and_then(|layer| layer["id"].as_str())
-            .map(str::to_owned)
-            .ok_or_else(|| "The frame holds no crop layer".into())
-    };
-    ensure(
-        crop_layer(&frames[2])? == crop_layer(&frames[3])?,
-        "The straighten replaced the crop layer instead of updating it",
-    )?;
-    ensure(
-        frames[3]["state"]["stack"]["revision"] == json!(3),
-        format!(
-            "The straighten left the revision at {}",
-            frames[3]["state"]["stack"]["revision"]
-        ),
     )?;
     // The counts follow the crop: a 16:9 rectangle of this stage holds fewer pixels than the
     // whole one, and the identity says so.
@@ -1122,32 +1160,31 @@ pub fn verify_crop(root: &Path, evidence: &Path, app: &Value, _events: &[Value])
                 .unwrap_or(0)
     };
     ensure(
-        pixels_of(&frames[2]) < pixels_of(&frames[1])
-            && pixels_of(&frames[3]) < pixels_of(&frames[1]),
+        pixels_of(fit) < pixels_of(exposure) && pixels_of(straightened) < pixels_of(exposure),
         "A crop did not reduce the analysed output stage",
     )?;
 
     // Placement: each crop frame shows a 16:9 photograph, centred in the photo surface.
     let mut placements = Vec::new();
-    for (index, ratio) in [
-        (0usize, 3.0 / 2.0),
-        (1, 3.0 / 2.0),
-        (2, CROP_RATIO),
-        (3, CROP_RATIO),
+    for (step, ratio) in [
+        ("opened", 3.0 / 2.0),
+        ("exposure", 3.0 / 2.0),
+        ("fit", CROP_RATIO),
+        ("straightened", CROP_RATIO),
     ] {
         placements.push(expect_placement(
-            &frames[index],
+            launch.at(step)?,
             ratio,
-            &format!("frame {index}"),
+            &format!("step {step:?}"),
         )?);
     }
 
     write_json(
-        &evidence.join("basic-crop-checks.json"),
+        &launch.evidence.join("basic-crop-checks.json"),
         &json!({
             "frames": details,
             "placement": placements,
-            "crop_layer": crop_layer(&frames[3])?,
+            "crop_layer": straightened.layer_id(CROP_EFFECT).ok_or("The frame holds no crop layer")?,
             "scope": "Counts against an independent core render and reduction of the displayed stack; placement read back from the renderer",
         }),
     )?;
