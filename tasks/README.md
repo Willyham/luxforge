@@ -4,7 +4,6 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 
 | Plan | Purpose |
 | --- | --- |
-| [Isolated rendering performance](isolated-performance.json) | Exact local CPU optimizations for Presence access, RAW terminal conversion and Basic hue weighting, plus bounded native demosaic assessment |
 | [Initial RAW editing](implementation-initial-raw.json) | Continuous high-precision RAW recipes for the original Nikon Z6, Fujifilm X100VI and supplied DJI Air 2S DNG: mode qualification, decoder/development evidence, bounded preparation, neutral rendering, exposure/WB, history and UI/API parity |
 | [UI components](implementation-ui-components.json) | The closed control vocabulary for modules: new parameter and control kinds, pure widgets, desktop gesture rules, a controls proof module and rendered evidence, per the accepted [design](../docs/design/ui-components.md); completed with native M4 captures and scoped before/after timing evidence |
 | [Masking](implementation-masking.json) | Local adjustments as a host concept: the mask model and persistence, mask targeting of the delivered modules, masked colour and spatial primitives, linear and radial gradients, brushes with feathering and erasing, and deterministic non-AI luminance and colour range selections, per the [design](../docs/design/masking.md) |

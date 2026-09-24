@@ -1250,6 +1250,85 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release build
 
 Expanding the section costs 0.3 to 0.6% of one core, which is one sample a second: two owner calls of a few microseconds each, the state panel's re-derivation and the window's redraw. Collapsed it costs nothing. The owner chose that it starts open, so from this change every ordinary launch samples, and the timing tier's idle figure (`measure` holds the 60 MP image in an ordinary launch) includes the open section: expect it 0.3 to 0.6% of one core above the figures recorded before.
 
+## Isolated rendering kernels
+
+The Presence scalar accessor is inlined, RAW terminal conversion reuses the existing sRGB
+code-boundary table with the original forward conversion within `1e-12` linear of a boundary,
+and Basic's skin-hue weighting uses its bounded atan2 input directly without periodic normalization.
+These changes preserve tile geometry, filter arithmetic, scratch targets, scheduling and image
+semantics. The boundary fallback retains the previous forward rounding in the native exactness
+checks; cross-platform numerical qualification remains open.
+
+Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0 release, generated 6000 × 4000
+and 10000 × 6000 inputs. Each isolated candidate and retained baseline ran in before/after/after/before order,
+15 samples per leg, 30 per variant and size, with one warm-up per process. These are complete
+core renders, including the output allocation, from already-prepared data; JPEG decoding,
+RAW decoding/demosaicing, proxy creation, histogram reduction and desktop presentation are
+outside the timed region. The RAW workload converts the generated JPEG into planar linear
+floats before timing and applies source exposure +0.7 EV; it is not an authentic RAW development
+latency measurement. The baseline source is `22c4e90`.
+
+| Workload | Baseline p50 / p95 | Optimized p50 / p95 | Median time saved |
+| --- | --- | --- | --- |
+| 24 MP, Texture +100, Clarity +100, Dehaze +100 | 815.8 / 877.9 ms | 664.1 / 791.1 ms | 151.7 ms, 18.6% |
+| 60 MP, Texture +100, Clarity +100, Dehaze +100 | 3688.8 / 3791.9 ms | 2877.7 / 2927.0 ms | 811.2 ms, 22.0% |
+| 24 MP, prepared linear image, source exposure +0.7 EV | 68.0 / 70.9 ms | 57.7 / 62.4 ms | 10.3 ms, 15.1% |
+| 60 MP, prepared linear image, source exposure +0.7 EV | 173.8 / 185.4 ms | 146.2 / 152.2 ms | 27.6 ms, 15.9% |
+| 24 MP, full Basic | 121.7 / 143.6 ms | 119.0 / 129.7 ms | 2.7 ms, 2.2% |
+| 60 MP, full Basic | 304.7 / 315.6 ms | 296.0 / 318.6 ms | 8.6 ms, 2.8% |
+| 24 MP, Vibrance +50 / Saturation +20 | 87.4 / 93.9 ms | 84.6 / 88.2 ms | 2.8 ms, 3.2% |
+| 60 MP, Vibrance +50 / Saturation +20 | 222.9 / 234.1 ms | 214.7 / 237.3 ms | 8.1 ms, 3.7% |
+| 2700 × 1800 proxy from 24 MP, full Basic | 26.1 / 27.4 ms | 25.3 / 29.3 ms | 0.9 ms, 3.3% |
+
+Every Presence and RAW candidate leg beats both baseline legs for its workload; Basic's median
+improves in each paired order, including the proxy. Basic's 60 MP and proxy p95 values are slightly
+worse, so only a median improvement is established there. Full Basic uses all ten non-neutral
+fields of `editor-performance`'s full Basic layer, without its geometry tail in these kernel runs.
+Agents' builds and tests were paused during timing. One-minute load was 5.0–8.0 (strictly below
+8 at each leg's start) for Basic, 7.0–9.4 for RAW and 12.2–15.2 for Presence, including
+the benchmark itself; the Presence results and some RAW legs exceed the harness's 8.0 load
+threshold. They establish a relative improvement on this live host, not a new absolute latency
+budget or a passed responsiveness target. Presence's 60 MP median CPU time per leg falls from
+43.6 CPU-seconds to 33.3–33.4 CPU-seconds, so the wall-time gain also reduces total CPU work.
+
+Complete before/after RGBA buffers match byte for byte for Presence at both sizes, prepared
+linear exposure at both sizes, a full Basic layer over a 24 MP linear image, and Basic/vibrance
+at both JPEG sizes plus the full Basic proxy. Independent
+filter, tile, masked sample/render and quantization-boundary references supplement these
+photo-sized comparisons. The unchanged 512 px tile still incurs the halo amplification and
+point-sampling cost described above. Native demosaic remains serial; its separate
+[shared-pool proposal](../design/native-demosaic-parallelism.md) preserves tile equations and
+bounds per-worker scratch without adding another thread pool.
+
+The combined source also passes release `editor-performance` against the retained baseline on
+both source sizes, again 15 samples per leg in ABBA order, 30 per variant. This official diagnostic
+includes its composed transforms and 10° crop, so these values are separate from the bare kernel
+rows above. Full Basic at 24 MP is essentially flat (0.4% median reduction); at 60 MP it saves
+3.5%. Vibrance/Saturation saves 3.3% and 2.0%. Untouched median rows vary by up to about 3%, so
+smaller shifts are not attributed to an optimization. All original-source hash checks pass.
+One-minute load at the start of a leg ranges from 4.99 to 15.87; these are live-host comparisons,
+not new absolute budgets.
+
+| Integrated `editor-performance` workload | Baseline p50 / p95 | Integrated p50 / p95 |
+| --- | --- | --- |
+| 24 MP source, Full Basic + geometry | 83.0 / 89.7 ms | 82.7 / 88.6 ms |
+| 24 MP source, Vibrance/Saturation + geometry | 68.1 / 73.7 ms | 65.8 / 69.4 ms |
+| 24 MP source, Full Basic proxy + geometry | 51.0 / 53.2 ms | 49.6 / 52.4 ms |
+| 60 MP source, Full Basic + geometry | 202.2 / 277.9 ms | 195.1 / 202.8 ms |
+| 60 MP source, Vibrance/Saturation + geometry | 160.8 / 192.2 ms | 157.7 / 161.3 ms |
+| 60 MP source, Full Basic proxy + geometry | 53.9 / 58.7 ms | 53.4 / 58.3 ms |
+
+Integrated `verify --tier full --manifest ...` passes all 38 components: workspace/API checks,
+30 rendered scenarios, RAW references, three editor/reopen trials each on the supplied Nikon,
+Fujifilm and DJI originals, and the timing journeys. Its default timing runs started at load
+9.86–11.20, so their absolute target verdicts are **unreliable**, not passed. The existing native
+Presence sample/render test also passes explicitly on all three originals, for 41 points including
+the far corner through each of Clarity and Clarity plus Dehaze. Those test times are not a new
+latency distribution.
+
+The local evidence is under `artifacts/performance-first-wave/`; the implementation and
+performance review checklist are in [isolated rendering performance](../design/isolated-performance.md).
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

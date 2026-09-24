@@ -40,6 +40,8 @@ The last block of the state panel, pinned under History and Recipe, is **Perform
 
 The section reads the same `resources.read` and `activity.list` methods any client can call, once a second, and only while it is open and the state panel is shown; closed, it costs nothing. It opens again with every launch. Show performance and Hide performance in the command palette do the same as the heading.
 
+The [measured rendering costs](specs/performance.md#isolated-rendering-kernels) distinguish rendering an already-prepared image from developing a RAW sensor image and from presenting a preview. Faster rendering can shorten the wait for an exact photograph and histogram; changing RAW white balance still needs redevelopment.
+
 ## Edit and inspect
 
 The tools panel is generated from registered modules. Each module is a band you click to open or close, with its hint while closed and its reset while open; groups inside it are separated by a rule that ends in their Original or Custom caption and their reset. A section whose controls form a single group, such as RAW, Presence, Transforms or Vignette, shows them directly under its band with no group rule. Only Basic starts open, so every section's band fits on screen under it. Declared resets are offered, and an unavailable section shows its reason on its band. Every control reflects the displayed history entry, including edits made by another API client. Historical previews keep the controls visible and disabled.
