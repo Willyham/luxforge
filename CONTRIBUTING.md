@@ -10,7 +10,7 @@ Read [AGENTS.md](AGENTS.md) first. It holds the pillars, workflow and engineerin
 - `docs/`: product, design, spec, engineering and research documentation.
 - `tasks/`: JSON task plans ([index](tasks/README.md)).
 - `fixtures/`: small synthetic inputs with a hash manifest ([details](fixtures/README.md)). Generated large workloads live in ignored `fixtures/generated/`.
-- `probes/s0`: isolated UI and decoder experiments, not the maintained application.
+- `probes/raw`: isolated RAW decoder experiments, not the maintained application.
 - Ignored: `artifacts/` (per-run evidence), `dist/`, `private/` and `fixtures/jpg/` (local originals; never force-add).
 
 ## Before handing off

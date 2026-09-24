@@ -11,7 +11,6 @@ Rust 1.94 workspace: Iced 0.14 on wgpu, `image` for JPEG and PNG, `moxcms` for c
 - `crates/lightwell-process`: the counters the operating system keeps for this process (CPU time, memory, GPU time and GPU allocations), behind a safe API; with `lightwell-raw`, one of the two crates allowed `unsafe`.
 - `crates/lightwell-app`: the desktop, split into `app/` (the Iced application, messages, update, owner tasks, evidence, keymap and the crop driver), `state/` (the pure view model, no framework types) and `view/` (rendering, no core types and no owner access), plus native adapters, diagnostics and the crop draft state machine and its canvas (`crop_draft.rs`, `crop_canvas.rs`); the desktop and headless `lightwell-json` binaries. The boundaries between those layers are enforced by `cargo xtask check-repository`.
 - `xtask`: development, check, evidence, acceptance and packaging commands.
-- `probes/s0`: the isolated Iced/egui comparison workspace used to select Iced; not the maintained application.
 
 Add boundaries when there is real code to own them. Crates and dynamically loaded binaries are separate choices.
 

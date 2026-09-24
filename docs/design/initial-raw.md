@@ -56,7 +56,7 @@ The source path is integrated into the existing M4/Develop editor. JPEG Basic, e
 | Core `render/linear.rs` | Retained float32 linear sRGB, exact geometry and linear crop interpolation, bounded sampling and terminal display conversion |
 | Core `modules/raw.rs` | Required source-stage RAW layer, exposure/WB/neutral/reset actions, descriptor-generated controls with their field resets, the reported control values including the as-shot equivalent, and neutrality |
 | App `app/` / `state/` | Source readiness, current/historical control values, stale-result rejection and displayed frame identity |
-| `xtask raw-corpus`, `raw-reference`, `raw-editor` | Source integrity, independent numerical references and correlated real-editor evidence |
+| `xtask raw-corpus`, `raw-editor` | Source integrity and correlated real-editor evidence |
 
 The workspace forbids unsafe Rust outside the private `lightwell-raw` native adapter. That crate exposes a safe ownership API and contains the locally documented FFI and callback lifetimes. Core, app and other crates retain the workspace forbid policy. No public provider ABI or generalized graph is needed.
 

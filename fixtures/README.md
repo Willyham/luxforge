@@ -43,7 +43,6 @@ Private originals for local diagnostics go in ignored `fixtures/jpg/`, `fixtures
 
 ```sh
 cargo xtask raw-corpus --manifest fixtures/raw-public.json --output artifacts/new-raw-corpus
-cargo xtask raw-reference --output artifacts/new-raw-reference
 ```
 
-The first command validates bounded manifests and streams read-only SHA-256 checks with before/after source signatures. It records errors in the new output directory and returns failure for missing or changed files. It never marks a decoder qualified. The second runs independent f64/synthetic stage references outside production core. Neither command imports RAW into the editor or proves camera rendering quality. Both refuse existing output directories.
+This command validates bounded manifests and streams read-only SHA-256 checks with before/after source signatures. It records errors in the new output directory and returns failure for missing or changed files. It never marks a decoder qualified. It does not import RAW into the editor or prove camera rendering quality, and refuses an existing output directory.

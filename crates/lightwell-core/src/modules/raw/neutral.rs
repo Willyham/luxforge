@@ -13,9 +13,10 @@ pub const PATCH_RADIUS: u32 = 6;
 pub const PATCH_SIDE: u32 = PATCH_RADIUS * 2 + 1;
 /// Samples at or below this normalized value are considered too dark.
 ///
-/// These are the independent fixture thresholds from `xtask raw-reference`; keeping them here
-/// makes the numerical policy explicit. The UI may choose when to offer the picker, but it must
-/// not weaken this source-stage rejection once sampling is requested.
+/// `fixed_patch_rejects_bounds_dark_clipped_and_unusable_inputs` below exercises both bounds;
+/// keeping the constants here makes the numerical policy explicit. The UI may choose when to
+/// offer the picker, but it must not weaken this source-stage rejection once sampling is
+/// requested.
 pub const DARK_THRESHOLD: f64 = 0.01;
 /// Samples at or above this normalized value are considered clipped or too close to clipping.
 pub const CLIPPED_THRESHOLD: f64 = 0.995;
