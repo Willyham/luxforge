@@ -1558,7 +1558,7 @@
     {
       "id": "TASK-027",
       "description": "Plan every action, draft and query through one path over a lazy `StageContext`, so a draft equals its commit by construction: delete the unused point sampler and stage-insertion question, remove the host's RAW special case, build the RAW payload without throwaway layers, and carry preparation needs as a type instead of a string plus re-parsed parameters.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-019",
         "TASK-022",
