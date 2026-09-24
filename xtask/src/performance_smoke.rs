@@ -94,6 +94,15 @@ fn heavy_step(raw: bool) -> Value {
 /// Every frame, in order, over the source the run opens. What each step commits is planned here:
 /// nothing but the two edits commits anything. What the section shows, `verify` checks.
 pub fn plan(sources: &[PathBuf]) -> Plan {
+    let raw = is_raw(sources);
+    let heavy = Step::new("heavy", heavy_step(raw)).commits(1);
+    // The JPEG's Clarity commit is labelled by the module; a RAW temperature's label is the
+    // photograph's own, so it is left to the commit count.
+    let heavy = if raw {
+        heavy
+    } else {
+        heavy.label(format!("Clarity +{CLARITY}"))
+    };
     Plan::new(vec![
         // The photograph opened with the section open and sampling, as every launch starts it.
         Step::opened("opened"),
@@ -104,8 +113,9 @@ pub fn plan(sources: &[PathBuf]) -> Plan {
             "straightened",
             json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":ANGLE}}}),
         )
-        .commits(1),
-        Step::new("heavy", heavy_step(is_raw(sources))).commits(1),
+        .commits(1)
+        .label("Crop 16:9"),
+        heavy,
         // Its render listed as finished.
         Step::new("finished", json!({"wait":{"ms":FINISHED_WAIT_MS}})).commits(0),
         // Collapsed, then asleep.

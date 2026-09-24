@@ -142,11 +142,6 @@ impl Launch {
         self
     }
 
-    pub fn open(mut self, source: &Path) -> Self {
-        self.sources.push(source.into());
-        self
-    }
-
     pub fn open_all(mut self, sources: &[PathBuf]) -> Self {
         self.sources.extend(sources.iter().cloned());
         self
@@ -598,7 +593,7 @@ mod tests {
         // A plain developer scenario, as `smoke::run_sources` wrote it for `gallery`.
         let gallery = Launch::app()
             .window(["1440", "1000"])
-            .open(fixture)
+            .open_all(&[fixture.into()])
             .developer()
             .script("script.json", json!([]));
         assert_eq!(
@@ -633,7 +628,7 @@ mod tests {
         let capabilities = Launch::app()
             .developer()
             .proof_endpoint("http://127.0.0.1:1")
-            .open(fixture)
+            .open_all(&[fixture.into()])
             .window(["1440", "900"]);
         assert_eq!(
             strings(capabilities.arguments(evidence, Some(Path::new("/tmp/s.json")))),
@@ -655,7 +650,7 @@ mod tests {
         // `unavailable`'s second launch: an existing catalog and a disabled module come first,
         // and a launch with no script still sets its window.
         let reopened = Launch::named("launch2")
-            .open(fixture)
+            .open_all(&[fixture.into()])
             .window(["1440", "900"])
             .disable("lightwell.crop")
             .catalog(Path::new("/out/launch1/catalog.sqlite"));
@@ -709,7 +704,7 @@ mod tests {
             .is_err()
         );
         let launch = Launch::named("launch2")
-            .open(Path::new("/f.jpg"))
+            .open_all(&[PathBuf::from("/f.jpg")])
             .window(["1440", "900"])
             .catalog(Path::new("/c.sqlite"))
             .script("script2.json", json!([{"wait":{"ms":1}}]))

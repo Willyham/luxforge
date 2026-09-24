@@ -118,17 +118,8 @@ impl Frame {
         Ok(Self::new(record, Some(identity(evidence, app, record)?)))
     }
 
-    /// Every frame of a run, in capture order, each identified in turn.
-    pub fn all(evidence: &Path, app: &Value) -> Result<Vec<Self>> {
-        app["frames"]
-            .as_array()
-            .ok_or("Missing frames")?
-            .iter()
-            .map(|record| Self::identified(evidence, app, record))
-            .collect()
-    }
-
-    /// A frame read for its recorded state alone, before or without checking its provenance.
+    /// A frame read for its recorded state alone, without checking its provenance.
+    #[cfg(test)]
     pub fn state_only(record: &Value) -> Self {
         Self::new(record, None)
     }

@@ -169,20 +169,19 @@ impl Step {
         }
     }
 
+    #[cfg(test)]
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    #[cfg(test)]
     pub fn script(&self) -> Option<&Value> {
         self.script.as_ref()
     }
 
+    #[cfg(test)]
     pub fn expect(&self) -> &Expect {
         &self.expect
-    }
-
-    pub fn expect_mut(&mut self) -> &mut Expect {
-        &mut self.expect
     }
 
     /// The step as the kept script holds it and the editor records it.
@@ -286,6 +285,7 @@ impl Plan {
         plan
     }
 
+    #[cfg(test)]
     pub fn steps(&self) -> &[Step] {
         &self.steps
     }
@@ -338,6 +338,7 @@ impl Plan {
     /// Every name is unique, and every open's frame comes before the first script step's, which is
     /// the order the editor captures them in.
     pub fn validate(&self) -> Result {
+        ensure(!self.is_empty(), "A launch captures at least one frame")?;
         let mut names = std::collections::BTreeSet::new();
         for step in &self.steps {
             ensure(
@@ -374,7 +375,6 @@ impl Plan {
     /// step's expectations. Writes `plan-checks.json` beside the evidence, and returns the launch
     /// with its frames for the scenario's own checks.
     pub fn check(&self, evidence: &Path) -> Result<Checked> {
-        self.validate()?;
         let (app, events) = preamble(evidence, self.len()).map_err(|error| {
             let captured = read_json(&evidence.join("result.json"))
                 .ok()
@@ -389,6 +389,7 @@ impl Plan {
                 _ => format!("{}: {error}", evidence.display()),
             }
         })?;
+        self.validate()?;
         let records = app["frames"].as_array().ok_or("Missing frames")?;
         let script: &[Value] = app["script"].as_array().map_or(&[], Vec::as_slice);
         let scripted = self
@@ -732,13 +733,6 @@ impl Checked {
     /// The named step's frame.
     pub fn at(&self, name: &str) -> Result<&Frame> {
         Ok(&self.frames[self.index(name)?])
-    }
-
-    /// The frames of the named steps and every step between them, in order.
-    pub fn span(&self, first: &str, last: &str) -> Result<&[Frame]> {
-        let (first, last) = (self.index(first)?, self.index(last)?);
-        ensure(first <= last, "A span that runs backwards")?;
-        Ok(&self.frames[first..=last])
     }
 
     /// The step names, in capture order.

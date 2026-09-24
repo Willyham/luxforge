@@ -68,6 +68,9 @@ pub const APP: LaunchSpec = LaunchSpec {
 /// The scenario's own checks, over every launch's evidence once its plan has held, in launch order.
 pub type Verify = fn(&mut Run, &[Checked]) -> Result;
 
+/// A scenario's own run, over the row and the sources it opens.
+pub type Own = fn(Run, &'static Scenario, Vec<PathBuf>) -> Result;
+
 /// One row of the table.
 pub struct Scenario {
     pub name: &'static str,
@@ -83,7 +86,7 @@ pub struct Scenario {
     /// the same library and with the same launches and checks: `zoom` makes its launch once per
     /// photograph, each a whole run of its own, and `capabilities` starts a proof endpoint in this
     /// process for its launch to talk to and scans everything the run wrote for its secret.
-    pub own: Option<fn(Run, &'static Scenario, Vec<PathBuf>) -> Result>,
+    pub own: Option<Own>,
 }
 
 impl Scenario {
@@ -157,8 +160,11 @@ pub static SCENARIOS: &[Scenario] = &[
         launches: &[LaunchSpec {
             plan: |_| {
                 Plan::new(vec![
-                    Step::opened("opened"),
-                    Step::opened("replaced").refused("invalid-input"),
+                    Step::opened("opened").label("Original"),
+                    // The failed replacement keeps the photograph and its history on screen.
+                    Step::opened("replaced")
+                        .refused("invalid-input")
+                        .label("Original"),
                 ])
             },
             ..APP
@@ -756,7 +762,7 @@ pub fn launch_all(mut run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> R
 fn opens(sources: &[PathBuf]) -> Plan {
     Plan::new(
         (1..=sources.len())
-            .map(|number| Step::opened(format!("open-{number}")))
+            .map(|number| Step::opened(format!("open-{number}")).label("Original"))
             .collect(),
     )
 }
@@ -978,39 +984,6 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
     Ok(json!({"bound_ms":RENDER_MS_BOUND,"preview_displayed":displayed,"status_bar":shown}))
 }
 
-/// Scaffolding while the scenarios move onto plans; removed once the last one has.
-mod legacy {
-    use super::*;
-
-    /// `opens` open frames, then one step per scripted step, each named by its frame's position.
-    pub fn numbered(opens: usize, script: Option<Value>) -> Plan {
-        let script = script.unwrap_or_else(|| json!([]));
-        Plan::new(
-            (0..opens)
-                .map(|index| Step::opened(format!("frame-{index}")))
-                .chain(
-                    script
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .enumerate()
-                        .map(|(index, step)| {
-                            Step::new(format!("frame-{}", opens + index), step.clone())
-                        }),
-                )
-                .collect(),
-        )
-    }
-
-    pub fn verify(
-        verify: impl FnOnce(&Path, &Value, &[Value]) -> Result,
-        launches: &[Checked],
-    ) -> Result {
-        let launch = &launches[0];
-        verify(&launch.evidence, &launch.app, &launch.events)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1102,7 +1075,7 @@ mod tests {
         image::RgbImage::new(4, 4)
             .save(tmp.path().join("frame-1.png"))
             .unwrap();
-        let mut app = json!({"status":"captured","run_id":"current","had_input_errors":false,"frames":[{"file":"frame-1.png","capture_provenance":"window-renderer-readback","state":{"run_id":"old","requested_generation":1,"backend":{"backend":"metal","adapter":"a"}}}]});
+        let mut app = json!({"status":"captured","run_id":"current","had_input_errors":false,"frames":[{"file":"frame-1.png","capture_provenance":"window-renderer-readback","state":{"run_id":"old","requested_generation":1,"backend":{"backend":"metal","adapter":"a"},"stack":{"label":"Original"}}}]});
         let write = |app: &Value| {
             write_json(&tmp.path().join("result.json"), app).unwrap();
             write_json(&tmp.path().join("state-1.json"), &app["frames"][0]).unwrap();
@@ -1181,7 +1154,7 @@ mod tests {
         let dir =
             PathBuf::from(std::env::var("SCRIPT_DUMP").expect("SCRIPT_DUMP names a directory"));
         let root = root().unwrap();
-        let mut put = |scenario: &str, file: &str, script: Value| {
+        let put = |scenario: &str, file: &str, script: Value| {
             let dir = dir.join(scenario);
             fs::create_dir_all(&dir).unwrap();
             write_json(&dir.join(file), &script).unwrap();

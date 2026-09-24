@@ -10,8 +10,6 @@ use crate::{
 };
 use lightwell_core::CROP_EFFECT;
 
-/// The window the design's layout constants are written against.
-pub const WINDOW: [&str; 2] = ["1440", "900"];
 /// `edit.transform rotate-right` on an orientation-1 fixture reorders its quadrants exactly as
 /// EXIF orientation 6 does (a 90 degree clockwise turn: new top-left is old bottom-left, and so
 /// on), so every rotated frame reuses the ordinary fixture check at that orientation, with width
