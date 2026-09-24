@@ -204,6 +204,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             format: 1,
             stage: EffectStage::Geometry,
             order: 10,
+            maskable: false,
             artifacts: false,
         }],
         actions: vec![
@@ -276,6 +277,7 @@ pub(crate) fn crop_layer(payload: CropPayload) -> lightwell_core::Layer {
         effect_id: CROP_EFFECT.into(),
         effect_format: 1,
         payload: serde_json::to_value(payload).expect("a serializable payload"),
+        mask: None,
         artifacts: Vec::new(),
     }
 }
@@ -325,6 +327,10 @@ pub(crate) fn refresh_for(
             entry_id: current.id.clone(),
             layers: Vec::new(),
         },
+        masks: lightwell_core::mask::commands::MaskListing {
+            entry_id: current.id.clone(),
+            masks: Vec::new(),
+        },
         original: None,
         job: PreviewJob {
             registry: std::sync::Arc::new(lightwell_core::ModuleRegistry::builtin()),
@@ -351,6 +357,7 @@ pub(crate) fn refresh_for(
             .expect("a test analysis identity"),
             analyse: false,
             proxy: None,
+            mask_overlay: None,
             artifacts: Vec::new(),
         },
         session: ClientSession::default(),
@@ -409,6 +416,7 @@ pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
                 .values(&layer.effect_id, layer.effect_format, &layer.payload)
                 .expect("RAW values"),
             available: true,
+            mask: layer.mask.clone(),
             artifacts: layer.artifacts.clone(),
         })
         .collect();
@@ -453,9 +461,11 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         steps: Vec::new(),
         frames: Vec::new(),
         capture_pending: false,
+        capture_overlay: false,
         saving: false,
         had_errors: false,
         paced_slider: None,
+        paced_stroke: None,
         second_click: None,
         tools_scroll: None,
         capability_wait: None,
@@ -467,12 +477,19 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
 /// An editor with an evidence run attached and a script queued, so steps can be driven without a
 /// window. Nothing is captured here: the capture itself needs a real renderer.
 pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
-    let evidence = scripted_evidence(steps);
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+    let dir = attach_script(&mut editor, steps);
+    (editor, catalog, asset, dir)
+}
+
+/// Attach an evidence run with this script to an editor that is already open, for the suites that
+/// build their own. Returns the run's directory.
+pub(crate) fn attach_script(editor: &mut Editor, steps: &str) -> PathBuf {
+    let evidence = scripted_evidence(steps);
     let dir = evidence.dir.clone();
     editor.evidence = Some(evidence);
     editor.activity.requested = 1;
-    (editor, catalog, asset, dir)
+    dir
 }
 
 /// An editor with the registered modules discovered and one empty-stack asset open, which is what

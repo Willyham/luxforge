@@ -149,6 +149,8 @@ impl RawPayload {
             effect_id: RAW_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(self).expect("validated RAW payload serializes"),
+            // Source development is the whole content stage: a mask has no stage to read here.
+            mask: None,
             artifacts: Vec::new(),
         }
     }
@@ -271,6 +273,7 @@ impl RawModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Source,
                     order: 0,
+                    maskable: false,
                     artifacts: false,
                 }],
                 actions: vec![
@@ -524,6 +527,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            mask: None,
             artifacts: Vec::new(),
         })
         .map(|_| ())
@@ -534,6 +538,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            mask: None,
             artifacts: Vec::new(),
         })?;
         Ok(format!(
@@ -562,6 +567,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            mask: None,
             artifacts: Vec::new(),
         })?;
         let [kelvin, tint] = payload.white_balance_controls();

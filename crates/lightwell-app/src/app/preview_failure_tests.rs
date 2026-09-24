@@ -281,7 +281,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
         raster: raster(1),
         dimensions: (1200, 900),
         built: false,
-        approximate: false,
+        approximation: lightwell_core::ProxyApproximation::default(),
         approximate_white_balance: false,
         render_ms: 5.0,
     });
@@ -405,6 +405,7 @@ fn basic() -> Layer {
         effect_id: BASIC_EFFECT.into(),
         effect_format: EFFECT_FORMAT,
         payload: json!({"exposure": 0.5, "contrast": 20.0}),
+        mask: None,
         artifacts: Vec::new(),
     }
 }

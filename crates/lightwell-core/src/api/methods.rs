@@ -2,12 +2,16 @@
 //! every module action resolves to a generated `edit.<action>` method from the same registry, so
 //! discovery, event emission and dispatch cannot drift apart.
 use super::{
-    ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, POINTER_MODE, PROTOCOL,
+    ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, MASK_MODE,
+    MaskOverlayColour, MaskOverlayMode, POINTER_MODE, PROTOCOL,
 };
 use crate::{
-    ActionDescriptor, ArtifactId, AssetId, Draft, DraftId, EditorService, EntryId, Error,
-    ErrorKind, HistorySelection, ModuleRegistry, Mutation, MutationOutcome, PresetId, Zoom,
+    ActionDescriptor, ArtifactId, AssetId, ComponentId, Draft, DraftId, EditorService, EntryId,
+    Error, ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome,
+    PresetId, Zoom,
     capabilities::{descriptor::TaskDescriptor, host::TASK_PREFIX},
+    mask::commands::{self as mask_commands, MaskCommand, MaskTarget},
+    path,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -502,6 +506,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
                 "bool; show the highlight clipping overlay",
             ),
             (
+                "mask_overlay",
+                "off, tint, mask-on-black or image-on-black; what the canvas draws of the selected mask",
+            ),
+            (
+                "mask_overlay_colour",
+                "green or white; the tint the mask overlay is drawn in",
+            ),
+            (
                 "component_gallery",
                 "null closes the diagnostic components board; integer 0..9 selects a page",
             ),
@@ -529,7 +541,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         name: "draft.begin",
         mutates: false,
         required: &["asset_id", "action"],
-        optional: &[],
+        optional: &[
+            (
+                "mask",
+                "the mask a mask.* gesture edits, or the mask an action of a maskable effect drafts through",
+            ),
+            (
+                "component",
+                "the component inside that mask, for a mask.* gesture only",
+            ),
+        ],
         notes: "opens this client's one draft of that action, bound to the asset's current revision; refused while a draft is open or a historical entry is previewed",
         handler: Some(draft_begin),
     },
@@ -594,6 +615,17 @@ pub(super) const METHODS: &[MethodSpec] = &[
         )],
         notes: "the content pixel, the source after EXIF orientation, that one output pixel shows",
         handler: Some(render_locate),
+    },
+    MethodSpec {
+        name: "render.transform",
+        mutates: false,
+        required: &["asset_id"],
+        optional: &[(
+            "entry_id",
+            "entry to answer for; default the session's selection",
+        )],
+        notes: "the geometry tail as one affine map, {content, output, forward, inverse}, in continuous pixel-center coordinates, so a gesture maps pointer positions between the content stage and the rendered image without asking per move",
+        handler: Some(render_transform),
     },
     MethodSpec {
         name: "events.since",
@@ -672,6 +704,9 @@ pub(super) enum Method {
     Action(String),
     /// A module's read-only query. It writes nothing, so it never emits an event.
     Query(String),
+    /// A host command of the `mask.*` family, declared with the same descriptor types a module
+    /// action uses and dispatched through the same lookup.
+    Mask(&'static MaskCommand),
     /// A module's worker task. The request queues a capability job and changes nothing itself; the
     /// catalog owner answers it and announces the task when it succeeds.
     Task,
@@ -682,6 +717,7 @@ impl Method {
         match self {
             Self::Host(spec) => spec.mutates,
             Self::Action(_) => true,
+            Self::Mask(command) => command.mutates,
             Self::Query(_) | Self::Task => false,
         }
     }
@@ -690,7 +726,7 @@ impl Method {
         match self {
             Self::Host(spec) => spec.handler.is_none(),
             Self::Task => true,
-            Self::Action(_) | Self::Query(_) => false,
+            Self::Action(_) | Self::Query(_) | Self::Mask(_) => false,
         }
     }
 }
@@ -715,6 +751,9 @@ pub(super) fn task_method(task_id: &str) -> String {
 pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
     if let Some(spec) = METHODS.iter().find(|spec| spec.name == name) {
         return Some(Method::Host(spec));
+    }
+    if let Some(command) = mask_commands::find(name) {
+        return Some(Method::Mask(command));
     }
     if let Some(action_id) = name.strip_prefix("edit.") {
         return service
@@ -760,6 +799,7 @@ pub(super) fn dispatch(
             edit_action(service, session, &action_id, &request.params)
         }
         Some(Method::Query(query_id)) => module_query(service, session, &query_id, &request.params),
+        Some(Method::Mask(command)) => mask_command(service, session, command, &request.params),
         None => Err(Error::new(
             ErrorKind::Protocol,
             format!("unknown method {}", request.method),
@@ -773,9 +813,24 @@ pub(super) fn dispatch(
 
 /// One generated method description: the envelope every action shares plus the action's own
 /// declared parameters, so a client needs no hand-maintained list.
-fn action_schema(action: &ActionDescriptor) -> Value {
+///
+/// `maskable` says whether this action belongs to a module that declares a maskable effect, in which
+/// case the host's one optional `mask` field is listed with the envelope. It is listed here rather
+/// than declared as a parameter because it is the host's and no module parses it: sending it to any
+/// other action is a validation error naming that action.
+fn action_schema(action: &ActionDescriptor, maskable: bool) -> Value {
     let mut required = vec![json!("asset_id"), json!("mutation")];
     let mut optional = Map::new();
+    if maskable {
+        optional.insert(
+            "mask".to_owned(),
+            json!(
+                "the mask this edit applies through; omit it to edit the layer that applies \
+                 everywhere. The global layer and each mask are distinct targets, so this action \
+                 commits or updates one layer per target"
+            ),
+        );
+    }
     for parameter in &action.parameters {
         // A patch carries whichever fields the caller names, so none of them is required however
         // the parameter is declared; its default is what a client seeds or resets the field to.
@@ -872,10 +927,18 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             )
         })
         .collect();
+    // The host's own `mask.*` family, declared from the same descriptor types, so a client
+    // discovers a mask command and a module action from one listing.
+    for command in mask_commands::all() {
+        methods.insert(command.method.to_owned(), command.schema());
+    }
     let descriptors = registry.descriptors();
     for descriptor in &descriptors {
+        // One maskable effect makes this module's actions carry the target field; the registry
+        // answers the same question the same way for dispatch.
+        let maskable = descriptor.effects.iter().any(|effect| effect.maskable);
         for action in &descriptor.actions {
-            methods.insert(action_method(&action.id), action_schema(action));
+            methods.insert(action_method(&action.id), action_schema(action, maskable));
         }
         for query in &descriptor.queries {
             methods.insert(query_method(&query.id), query_schema(query));
@@ -889,6 +952,31 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         "coordinate_space": "Each edit uses integer coordinates in its own input image stage after EXIF orientation. A pixel or colour edit addresses the content stage, the source after EXIF orientation, because the host places both before the quarter-turns, reflections and crop that carry them; a colour edit addresses every pixel of that stage and changes no dimension. A number parameter carries a finite JSON number within its declared range, such as an angle in degrees or a rectangle normalized to its stage; a JSON integer is accepted and passed through unchanged.",
         "methods": methods,
         "modules": descriptors,
+        // The host's path primitives, described here because a `points` parameter is the one
+        // parameter kind whose value a client has to construct rather than move a widget to: a
+        // painting action is a canvas gesture, so nothing in the control vocabulary edits a path.
+        // Everything needed to post one — the coordinate space and its range, the stored precision,
+        // the decimation the desktop applies before it posts, the deviation that leaves, and the
+        // per-stroke bound — is published here, so an agent draws the same stored stroke a hand
+        // does without reading any desktop code.
+        "paths": {
+            "coordinates": "A points parameter carries an ordered list of [x, y] positions in the content stage's normalized coordinates, in drawn order, where 1.0 is the stage's height on both axes, so a shape is the shape it looks like at any aspect ratio. Positions are not sorted and may repeat or reverse: a path is a path and not a function.",
+            "range": [path::COORDINATE_MIN, path::COORDINATE_MAX],
+            "stored_steps_per_unit": path::COORDINATE_STEPS_PER_UNIT,
+            "decimation_tolerance": path::DECIMATION_TOLERANCE,
+            "stored_deviation": path::STORED_DEVIATION,
+            "points_per_stroke": path::POINTS_PER_STROKE,
+            "notes": "A posted path is snapped to a grid of stored_steps_per_unit steps per unit and decimated on that grid at decimation_tolerance, so a stored position is at most stored_deviation from the position that was posted and the same posted path always produces the same stored stroke. Decimation is idempotent: a desktop decimates before it posts, and a path posted undecimated arrives at the same stored bytes. A stroke is stored once under the hash of its contents and an entry's recipe references it by that hash, so a payload's strokes field holds addresses and never positions.",
+        },
+        // The host's mask surface: the widgets of the `mask.*` commands, in the same `Control`
+        // vocabulary a module declares, so a client renders a mask's fields, toggles and mode
+        // selector with the widgets it already has and invents no operation of its own.
+        "masks": {
+            "controls": mask_commands::controls(),
+            // The one path bound that is the mask's own rather than the host path primitive's, so
+            // the `paths` block above says nothing about masks and this one says what a mask adds.
+            "points_per_mask": crate::POINTS_PER_MASK,
+        },
         "mutation": {"required": ["expected_revision", "request_id", "actor"]},
     })
 }
@@ -1058,6 +1146,98 @@ fn module_query(
     service.run_query(&asset_id, &entry_id, query_id, Value::Object(parameters))
 }
 
+/// Every `mask.*` method: `asset_id` and `mutation` are the envelope a mutation always carries, and
+/// `mask`, `component` and `name` join it because no declared parameter kind can carry an identity or
+/// a person's free text. The remaining top-level fields are the command's own declared parameters and
+/// go through the same generic check a module action's do.
+fn mask_command(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    command: &'static MaskCommand,
+    request_params: &Value,
+) -> Result<Value, Error> {
+    let mut parameters = object(request_params)?;
+    let asset_id: AssetId = envelope(&mut parameters, "asset_id")?;
+    // The one read-only command resolves its entry exactly as `render.sample` and `render.locate` do
+    // and touches nothing at all.
+    if command.method == mask_commands::LIST {
+        let entry_id: Option<EntryId> = optional_envelope(&mut parameters, "entry_id")?;
+        if let Some(name) = parameters.keys().next() {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("unknown field {name} for {}", command.method),
+            ));
+        }
+        let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
+        return value(service.mask_listing(&asset_id, &entry_id)?);
+    }
+    // The other read: the pixel the operation one mask modulates receives. It resolves its entry the
+    // way `mask.list` does, takes the mask in the envelope like every other command, and its two
+    // coordinates through the same generic check a mutation's parameters take.
+    if command.method == mask_commands::SAMPLE_INPUT {
+        let entry_id: Option<EntryId> = optional_envelope(&mut parameters, "entry_id")?;
+        let mask = optional_envelope(&mut parameters, "mask")?;
+        let target = MaskTarget {
+            mask,
+            ..MaskTarget::default()
+        };
+        command.checked_target(&target)?;
+        let checked = crate::check_parameters(&command.action, &Value::Object(parameters))?;
+        let coordinate = |name: &str| -> Result<u32, Error> {
+            u32::try_from(
+                checked
+                    .get(name)
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| missing_parameter(name, command.method))?,
+            )
+            .map_err(|_| missing_parameter(name, command.method))
+        };
+        let (x, y) = (coordinate("x")?, coordinate("y")?);
+        let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
+        let mask = target
+            .mask
+            .as_ref()
+            .expect("checked_target requires a mask");
+        return value(service.mask_input_sample(&asset_id, &entry_id, mask, x, y)?);
+    }
+    require_current(session)?;
+    let mutation: Mutation = envelope(&mut parameters, "mutation")?;
+    let target = MaskTarget {
+        mask: optional_envelope(&mut parameters, "mask")?,
+        component: optional_envelope(&mut parameters, "component")?,
+        name: optional_envelope(&mut parameters, "name")?,
+        // A stroke's content address is an identity like the other two and travels here for the
+        // same reason: no declared parameter kind carries one.
+        stroke: optional_envelope(&mut parameters, "stroke")?,
+    };
+    value(service.apply_mask_command(
+        &asset_id,
+        mutation,
+        command,
+        Value::Object(parameters),
+        target,
+    )?)
+}
+
+/// A declared parameter a request did not carry, in the spelling the generic check already uses.
+fn missing_parameter(name: &str, method: &str) -> Error {
+    Error::new(
+        ErrorKind::Validation,
+        format!("missing required parameter {name} for action {method}"),
+    )
+}
+
+fn object(params: &Value) -> Result<Map<String, Value>, Error> {
+    match params {
+        Value::Object(object) => Ok(object.clone()),
+        Value::Null => Ok(Map::new()),
+        _ => Err(Error::new(
+            ErrorKind::Validation,
+            "params must be a JSON object",
+        )),
+    }
+}
+
 fn envelope<T: DeserializeOwned>(
     parameters: &mut Map<String, Value>,
     name: &str,
@@ -1069,6 +1249,18 @@ fn envelope<T: DeserializeOwned>(
         )
     })?;
     params(&field)
+}
+
+/// An envelope field the request may omit. A command that requires it says so itself, so the refusal
+/// names the command.
+fn optional_envelope<T: DeserializeOwned>(
+    parameters: &mut Map<String, Value>,
+    name: &str,
+) -> Result<Option<T>, Error> {
+    match parameters.remove(name) {
+        Some(field) => params(&field).map(Some),
+        None => Ok(None),
+    }
 }
 
 fn history_undo(
@@ -1372,7 +1564,21 @@ fn recipe_describe(
 /// The canvas modes this registry offers: the pointer plus every available module that declares a
 /// canvas interaction. `O(modules)`; it touches no image resource.
 fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
-    let mut modes = vec![POINTER_MODE.to_owned()];
+    // The host modes first: the pointer, the mask mode — a mask is a host object rather than a
+    // module — and one per canvas pick the host itself declares, which is one per sampling component
+    // kind. A pick's mode is its own action's method name, read from the same table that generates
+    // the command, so registering a kind is what makes its mode legal here too. Then one per module
+    // that declares a canvas.
+    let mut modes = vec![POINTER_MODE.to_owned(), MASK_MODE.to_owned()];
+    modes.extend(
+        crate::mask::commands::canvas()
+            .iter()
+            .filter_map(|pick| match pick {
+                crate::CanvasInteraction::SampleApply { action, .. } => Some(action.clone()),
+                crate::CanvasInteraction::PointPick { .. }
+                | crate::CanvasInteraction::CropFrame { .. } => None,
+            }),
+    );
     modes.extend(
         registry
             .descriptors()
@@ -1406,6 +1612,10 @@ fn workspace_set(
         thirds: Option<bool>,
         clip_shadows: Option<bool>,
         clip_highlights: Option<bool>,
+        // Taken as strings so an unknown one is refused with the vocabulary spelled out, as `mode`
+        // is, rather than with serde's report of an unmatched variant.
+        mask_overlay: Option<String>,
+        mask_overlay_colour: Option<String>,
         #[serde(default, deserialize_with = "present_nullable_page")]
         component_gallery: Option<Option<usize>>,
     }
@@ -1420,6 +1630,32 @@ fn workspace_set(
             ));
         }
     }
+    let mask_overlay = match &p.mask_overlay {
+        None => None,
+        Some(value) => Some(MaskOverlayMode::parse(value).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "mask_overlay must be one of {}",
+                    MaskOverlayMode::ALL.map(MaskOverlayMode::as_str).join(", ")
+                ),
+            )
+        })?),
+    };
+    let mask_overlay_colour = match &p.mask_overlay_colour {
+        None => None,
+        Some(value) => Some(MaskOverlayColour::parse(value).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "mask_overlay_colour must be one of {}",
+                    MaskOverlayColour::ALL
+                        .map(MaskOverlayColour::as_str)
+                        .join(", ")
+                ),
+            )
+        })?),
+    };
     if let Some(Some(page)) = p.component_gallery
         && page >= COMPONENT_GALLERY_PAGE_COUNT
     {
@@ -1449,6 +1685,14 @@ fn workspace_set(
     }
     if let Some(clip_highlights) = p.clip_highlights {
         session.workspace.clip_highlights = clip_highlights;
+    }
+    // The mask overlay is the same kind of view state: it chooses what the canvas draws of the
+    // selected mask and commits nothing.
+    if let Some(mode) = mask_overlay {
+        session.workspace.mask_overlay = mode;
+    }
+    if let Some(colour) = mask_overlay_colour {
+        session.workspace.mask_overlay_colour = colour;
     }
     if let Some(page) = p.component_gallery {
         session.workspace.component_gallery = page;
@@ -1556,10 +1800,18 @@ fn session_value(service: &EditorService, session: &mut ClientSession) -> Result
 }
 
 /// The action a draft will run, and the parameters its fields are validated against.
+///
+/// A host command of the `mask.*` family resolves here as a module action does, so `draft.set`,
+/// `draft.read` and `draft.reapply` validate a drafted gesture's fields against the same declared
+/// parameters with the same generic check, and the conflict, Discard and Reapply rules below are the
+/// delivered ones rather than a second copy.
 fn draft_action<'a>(
     service: &'a EditorService,
     action_id: &str,
 ) -> Result<&'a ActionDescriptor, Error> {
+    if let Some(command) = mask_commands::find(action_id) {
+        return Ok(&command.action);
+    }
     service
         .registry()
         .action(action_id)
@@ -1577,6 +1829,9 @@ fn draft_begin(
     struct P {
         asset_id: AssetId,
         action: String,
+        /// The mask and component a `mask.*` gesture edits. A module action's draft takes neither.
+        mask: Option<MaskId>,
+        component: Option<ComponentId>,
     }
     let p = parse::<P>(params)?;
     if let Some(draft) = &session.draft {
@@ -1595,8 +1850,44 @@ fn draft_begin(
         ));
     }
     let _ = draft_action(service, &p.action)?;
+    // A `mask.*` gesture says which mask and component it is editing, checked by the command itself.
+    // A module action's draft takes the host's one optional `mask` field — the same field the
+    // committed request carries — when its effect is maskable, so a masked slider previews what it
+    // is about to commit instead of committing blind. It never takes a component: a module edits a
+    // layer through the whole mask and knows nothing of the components that composed it. A rename is
+    // not a gesture: it needs a `name`, which `draft.begin` does not take, so the command's own
+    // envelope check refuses drafting it.
+    let target = MaskTarget {
+        mask: p.mask,
+        component: p.component,
+        name: None,
+        // A stroke is deleted, never drafted: `mask.delete-stroke` requires one, so its own envelope
+        // check refuses drafting it, exactly as a rename's missing `name` does.
+        stroke: None,
+    };
+    let target = match mask_commands::find(&p.action) {
+        Some(command) => {
+            command.checked_target(&target)?;
+            Some(target)
+        }
+        None if target == MaskTarget::default() => None,
+        None if target.component.is_some() => {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("action {} takes no mask component", p.action),
+            ));
+        }
+        None if service.registry().action_accepts_mask(&p.action) => Some(target),
+        None => {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("action {} does not accept a mask target", p.action),
+            ));
+        }
+    };
     let revision = service.state(&p.asset_id)?.revision;
-    let draft = Draft::new(&p.action, p.asset_id, revision);
+    let mut draft = Draft::new(&p.action, p.asset_id, revision);
+    draft.target = target;
     session.draft = Some(draft);
     session.touch();
     value(session.draft.as_ref().expect("the draft just opened"))
@@ -1677,13 +1968,32 @@ fn draft_commit(
     }
     let asset_id = draft.asset_id.clone();
     let action = draft.action.clone();
-    let fields = Value::Object(draft.fields.clone());
+    let target = draft.target.clone().unwrap_or_default();
+    let mut fields = draft.fields.clone();
     // A failed commit keeps the draft, so the client can correct it and try again; a no-op ends it
-    // exactly like an applied one, because the gesture is over either way.
-    let result = service.apply_action(&asset_id, p.mutation, &action, fields)?;
+    // exactly like an applied one, because the gesture is over either way. A drafted host command
+    // commits through its own family; everything above this line — the conflict check, the revision
+    // check and what a failure leaves behind — is the same for both.
+    let result = match mask_commands::find(&action) {
+        Some(command) => value(service.apply_mask_command(
+            &asset_id,
+            p.mutation,
+            command,
+            Value::Object(fields),
+            target,
+        )?)?,
+        None => {
+            // A module action's target is the host's one request field, so a drafted masked gesture
+            // commits exactly the request an independent client would send for the same edit.
+            if let Some(mask) = &target.mask {
+                fields.insert(crate::MASK_FIELD.to_owned(), json!(mask));
+            }
+            value(service.apply_action(&asset_id, p.mutation, &action, Value::Object(fields))?)?
+        }
+    };
     session.draft = None;
     session.touch();
-    value(result)
+    Ok(result)
 }
 
 fn draft_reapply(
@@ -1727,13 +2037,7 @@ fn render_locate(
         y: u32,
     }
     let p = parse::<P>(params)?;
-    let entry_id = match p.entry_id {
-        Some(entry_id) => entry_id,
-        None => match &session.preview.selection {
-            HistorySelection::Current => service.state(&p.asset_id)?.current_entry.id,
-            HistorySelection::Entry(id) => id.clone(),
-        },
-    };
+    let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
     value(service.locate_entry(&p.asset_id, &entry_id, p.x, p.y)?)
 }
 
@@ -1763,6 +2067,44 @@ fn artifact_inspect(
     }
     let p = parse::<P>(params)?;
     service.inspect_artifact(&p.artifact_id)
+}
+
+/// The geometry tail of one entry as a single affine map. Read-only in every sense: it resolves the
+/// entry exactly as `render.locate` does, compiles the stack, composes the tail and touches nothing —
+/// no history entry, no event, no session state. A gesture asks once and maps pointer positions
+/// itself, which is the whole reason it is a matrix and not a point query.
+fn render_transform(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        asset_id: AssetId,
+        entry_id: Option<EntryId>,
+    }
+    let p = parse::<P>(params)?;
+    let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
+    value(service.transform_entry(&p.asset_id, &entry_id)?)
+}
+
+/// The entry a read-only question is answered against: the one the caller named, or the session's
+/// selection, which is the rule `render.sample` follows and the only rule there is. A client
+/// previewing a historical entry therefore asks about the stack it is looking at.
+fn selected_entry(
+    service: &EditorService,
+    session: &ClientSession,
+    asset_id: &AssetId,
+    named: Option<EntryId>,
+) -> Result<EntryId, Error> {
+    match named {
+        Some(entry_id) => Ok(entry_id),
+        None => match &session.preview.selection {
+            HistorySelection::Current => Ok(service.state(asset_id)?.current_entry.id),
+            HistorySelection::Entry(id) => Ok(id.clone()),
+        },
+    }
 }
 
 fn require_current(session: &ClientSession) -> Result<(), Error> {
@@ -1915,11 +2257,66 @@ mod tests {
             .map(|query| query_method(&query.id))
             .collect();
         assert_eq!(queries, ["query.neutral-sample"]);
+        // The host's own `mask.*` family, declared from the same descriptor types and listed from the
+        // same table dispatch resolves through.
+        let masks: Vec<&str> = mask_commands::all()
+            .iter()
+            .map(|command| command.method)
+            .collect();
+        assert_eq!(
+            masks,
+            [
+                // The kind-independent commands, then three geometry methods per registered
+                // component kind, generated from the host's own kind table.
+                "mask.list",
+                "mask.sample-input",
+                "mask.delete",
+                "mask.rename",
+                "mask.duplicate",
+                "mask.set-amount",
+                "mask.set-invert",
+                "mask.reorder",
+                "mask.set-component-mode",
+                "mask.set-component-invert",
+                "mask.delete-component",
+                "mask.reorder-component",
+                "mask.add-stroke",
+                "mask.delete-stroke",
+                "mask.create-linear",
+                "mask.add-linear",
+                "mask.set-linear",
+                "mask.create-radial",
+                "mask.add-radial",
+                "mask.set-radial",
+                "mask.create-luminance-range",
+                "mask.add-luminance-range",
+                "mask.set-luminance-range",
+                "mask.create-colour-range",
+                "mask.add-colour-range",
+                "mask.set-colour-range",
+                // And, for the one kind that holds a list of picked colours, the two sample methods
+                // the same table generates.
+                "mask.add-colour-range-sample",
+                "mask.delete-colour-range-sample"
+            ]
+        );
         let schema = schemas(service.registry());
         let listed = schema["methods"].as_object().unwrap();
         assert_eq!(
             listed.len(),
-            METHODS.len() + generated.len() + queries.len()
+            METHODS.len() + generated.len() + queries.len() + masks.len()
+        );
+        for method in &masks {
+            assert!(listed.contains_key(*method), "{method} is not discoverable");
+            assert!(
+                matches!(find(&service, method), Some(Method::Mask(_))),
+                "{method} does not dispatch as a host mask command"
+            );
+        }
+        assert_eq!(
+            listed["mask.list"]["mutates"],
+            json!(false),
+            "mask.list writes nothing"
         );
         assert_eq!(
             listed["query.neutral-sample"]["mutates"],
@@ -2068,6 +2465,8 @@ mod tests {
                 "clip_highlights",
                 "clip_shadows",
                 "component_gallery",
+                "mask_overlay",
+                "mask_overlay_colour",
                 "mode",
                 "state_panel",
                 "thirds",
@@ -2329,6 +2728,7 @@ mod tests {
         assert_eq!(
             listed.len(),
             METHODS.len()
+                + mask_commands::all().len()
                 + count(|descriptor| descriptor.actions.len())
                 + count(|descriptor| descriptor.queries.len())
                 + tasks.len()
@@ -2461,6 +2861,110 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// The same geometry `render.locate` walks a point through, as one matrix, because a gesture
+    /// cannot ask per pointer move.
+    #[test]
+    fn render_transform_answers_the_geometry_tail_as_one_affine() {
+        let catalog =
+            std::env::temp_dir().join(format!("lightwell-transform-{}.sqlite", std::process::id()));
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service
+            .import(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg"),
+            )
+            .unwrap()
+            .asset
+            .id;
+        let mut session = ClientSession::default();
+        let original = service.state(&asset).unwrap().current_entry.id;
+
+        // Discovery lists the method beside its neighbours before anyone calls it.
+        let schema = call(&mut service, &mut session, "schema.list", json!({}))
+            .result
+            .expect("the schema");
+        let listed = &schema["methods"]["render.transform"];
+        assert_eq!(listed["mutates"], json!(false));
+        assert_eq!(listed["required"], json!(["asset_id"]));
+        assert!(
+            listed["optional"]["entry_id"]
+                .as_str()
+                .expect("the optional entry")
+                .contains("default"),
+            "{listed}"
+        );
+        assert!(!listed["notes"].as_str().unwrap().is_empty());
+
+        let turned = call(
+            &mut service,
+            &mut session,
+            "edit.transform",
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": 0, "request_id": "turn", "actor": "test"},
+                "transform": "rotate-right",
+            }),
+        );
+        assert!(turned.error.is_none(), "{:?}", turned.error);
+        let revision = session.revision;
+
+        // A quarter turn right lays the content stage's y axis along the output's x axis, reversed:
+        // content (0.5, 0.5), the first pixel's center, lands at output (319.5, 0.5).
+        let mapped = call(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id": asset}),
+        )
+        .result
+        .expect("the geometry tail as a matrix");
+        assert_eq!(
+            mapped,
+            json!({
+                "content": {"width": 480, "height": 320},
+                "output": {"width": 320, "height": 480},
+                "forward": [0.0, -1.0, 320.0, 1.0, 0.0, 0.0],
+                "inverse": [0.0, 1.0, 0.0, -1.0, 0.0, 320.0],
+            })
+        );
+        assert_eq!(
+            session.revision, revision,
+            "reading the transform changes no session state"
+        );
+
+        // A named entry answers for its own stack, which here is the untransformed original.
+        let untouched = call(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id": asset, "entry_id": original}),
+        )
+        .result
+        .expect("the original entry's matrix");
+        assert_eq!(
+            untouched,
+            json!({
+                "content": {"width": 480, "height": 320},
+                "output": {"width": 480, "height": 320},
+                "forward": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                "inverse": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            })
+        );
+
+        // An entry that is not this asset's fails structurally, exactly as the neighbours do.
+        let error = call(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id": asset, "entry_id": "entry-absent"}),
+        )
+        .error
+        .expect("an unknown entry");
+        assert_eq!(error.code, "validation");
+
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// A module with one number parameter that records what dispatch handed it.
     struct NumberModule {
         descriptor: ModuleDescriptor,
@@ -2509,6 +3013,7 @@ mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
                     order: 0,
+                    maskable: false,
                     artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
@@ -2614,6 +3119,7 @@ mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
                     order: 0,
+                    maskable: false,
                     artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
@@ -2659,6 +3165,7 @@ mod tests {
                 effect_id: MARK_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
+                mask: None,
                 artifacts: Vec::new(),
             }))
         }
@@ -2813,6 +3320,8 @@ mod tests {
                 "thirds": false,
                 "clip_shadows": false,
                 "clip_highlights": false,
+                "mask_overlay": "off",
+                "mask_overlay_colour": "green",
                 "component_gallery": null,
             }),
             "a fresh session opens with both panels, the pointer and no overlay"
@@ -2832,6 +3341,8 @@ mod tests {
                 "thirds": true,
                 "clip_shadows": false,
                 "clip_highlights": false,
+                "mask_overlay": "off",
+                "mask_overlay_colour": "green",
                 "component_gallery": null,
             })
         );
@@ -2845,9 +3356,11 @@ mod tests {
             (
                 "an unknown mode",
                 json!({"mode": "lightwell.heal"}),
-                // The accepted modes are derived from the registry's canvas declarations, so the
-                // RAW and Basic neutral pickers join the list without a change here.
-                "mode must be one of pointer, lightwell.pixel, lightwell.raw, lightwell.basic, lightwell.crop",
+                // The host modes first — the pointer, the mask mode and one per canvas pick the host
+                // declares for a sampling component kind — then the registry's canvas declarations,
+                // so the RAW and Basic neutral pickers join the list without a change here.
+                "mode must be one of pointer, mask, mask.add-colour-range-sample, lightwell.pixel, \
+                 lightwell.raw, lightwell.basic, lightwell.crop",
             ),
             (
                 "a module that declares no canvas",
@@ -2879,6 +3392,80 @@ mod tests {
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// `schema.list` says everything a client needs to post a path, so an agent draws the stroke a
+    /// hand draws without reading any desktop code — and it says it under `paths`, with no mention
+    /// of the one feature that happens to use it first.
+    #[test]
+    fn schema_list_publishes_the_path_primitives_without_naming_a_feature() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-paths-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+        let listed = ok(&mut service, &mut session, "schema.list", json!({}));
+        let paths = &listed["paths"];
+
+        assert_eq!(
+            paths["range"],
+            json!([path::COORDINATE_MIN, path::COORDINATE_MAX])
+        );
+        assert_eq!(paths["stored_steps_per_unit"], json!(16384.0));
+        assert_eq!(
+            paths["decimation_tolerance"],
+            json!(path::DECIMATION_TOLERANCE)
+        );
+        assert_eq!(paths["stored_deviation"], json!(path::STORED_DEVIATION));
+        assert_eq!(paths["points_per_stroke"], json!(1024));
+        for text in [&paths["coordinates"], &paths["notes"]] {
+            let text = text.as_str().expect("prose a client can read");
+            assert!(!text.to_lowercase().contains("mask"), "{text}");
+            assert!(!text.to_lowercase().contains("brush"), "{text}");
+        }
+        assert!(
+            paths["notes"]
+                .as_str()
+                .unwrap()
+                .contains("the same posted path always produces the same stored stroke")
+        );
+        // The bound that is the mask's own is published with the masks, not with the paths.
+        assert!(paths.get("points_per_mask").is_none());
+        assert_eq!(
+            listed["masks"]["points_per_mask"],
+            json!(crate::POINTS_PER_MASK)
+        );
+
+        // And the kind itself serializes flat, as every other parameter kind does.
+        let declared = crate::ParameterDescriptor {
+            name: "path".into(),
+            kind: crate::ParameterKind::Points {
+                points_min: 1,
+                points_max: 512,
+            },
+            required: true,
+            default: None,
+            unit: None,
+            step: None,
+            precision: None,
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
+            notes: "the drawn path".into(),
+        };
+        let listed_kind = serde_json::to_value(&declared).unwrap();
+        assert_eq!(listed_kind["kind"], json!("points"));
+        assert_eq!(listed_kind["points_min"], json!(1));
+        assert_eq!(listed_kind["points_max"], json!(512));
+        assert_eq!(
+            serde_json::from_value::<crate::ParameterDescriptor>(listed_kind).unwrap(),
+            declared
+        );
+        drop(service);
+        let _ = std::fs::remove_file(&catalog);
     }
 
     #[test]

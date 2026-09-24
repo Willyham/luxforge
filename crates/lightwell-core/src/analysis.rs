@@ -7,11 +7,16 @@
 //! output** of a composition, not scene-linear or RAW/sensor data.
 
 mod jobs;
+mod mask_overlay;
 mod overlay;
 
 pub use jobs::{
     AnalysisDomain, AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStatus,
     AnalysisStore, MAX_JOB_RECORDS, MAX_READY_REPORTS, Release,
+};
+pub use mask_overlay::{
+    MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MaskInputPixel, MaskOverlay, MaskPixels, coverage_grid,
+    quantize_coverage,
 };
 pub use overlay::{
     MAX_OVERLAY_CELLS, OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay,

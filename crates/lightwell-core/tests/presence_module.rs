@@ -60,6 +60,7 @@ fn presence_layer(payload: Value) -> Layer {
         effect_id: PRESENCE_EFFECT.into(),
         effect_format: EFFECT_FORMAT,
         payload,
+        mask: None,
         artifacts: Vec::new(),
     }
 }
@@ -68,6 +69,8 @@ fn recipe(layers: Vec<Layer>) -> Recipe {
     Recipe {
         format: RECIPE_FORMAT,
         layers,
+        masks: Vec::new(),
+        ..Recipe::default()
     }
 }
 
@@ -338,6 +341,11 @@ fn module_list_and_schema_list_describe_the_presence_module() {
             "format": 1,
             "stage": "spatial",
             "order": 0,
+            // Presence is one of the three effects a mask may be attached to, so its descriptor says
+            // so and `edit.set-presence` carries the host's optional `mask` field. The masked
+            // *spatial* primitive is a later step, so a committed masked Presence layer is refused
+            // by name until it lands rather than rendered as if it applied everywhere.
+            "maskable": true,
         }])
     );
     assert_eq!(
@@ -882,6 +890,7 @@ fn a_crop_after_a_presence_layer_still_samples_the_rendered_byte() {
             payload: json!({
                 "x": 0.1, "y": 0.1, "width": 0.6, "height": 0.6, "angle": 0.0,
             }),
+            mask: None,
             artifacts: Vec::new(),
         },
     ]);

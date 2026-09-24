@@ -14,6 +14,7 @@ fn basic_exposure_layer(ev: f64) -> Layer {
         effect_id: BASIC_EFFECT.into(),
         effect_format: 1,
         payload: json!({ "exposure": ev }),
+        mask: None,
         artifacts: Vec::new(),
     }
 }
@@ -34,6 +35,7 @@ fn basic_exposure_and_tone_layer(ev: f64) -> Layer {
             "whites": -10.0,
             "blacks": 10.0,
         }),
+        mask: None,
         artifacts: Vec::new(),
     }
 }
@@ -47,6 +49,7 @@ fn basic_vibrance_saturation_layer(vibrance: f64, saturation: f64) -> Layer {
         effect_id: BASIC_EFFECT.into(),
         effect_format: 1,
         payload: json!({ "vibrance": vibrance, "saturation": saturation }),
+        mask: None,
         artifacts: Vec::new(),
     }
 }
@@ -59,6 +62,7 @@ fn basic_white_balance_layer(temperature: f64, tint: f64) -> Layer {
         effect_id: BASIC_EFFECT.into(),
         effect_format: 1,
         payload: json!({ "temperature": temperature, "tint": tint }),
+        mask: None,
         artifacts: Vec::new(),
     }
 }
@@ -82,6 +86,7 @@ fn basic_full_layer() -> Layer {
             "vibrance": 30.0,
             "saturation": 15.0,
         }),
+        mask: None,
         artifacts: Vec::new(),
     }
 }
@@ -272,6 +277,8 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let identity = Recipe {
         format: stack.format,
         layers: Vec::new(),
+        masks: Vec::new(),
+        ..Recipe::default()
     };
     let mut coloured = stack.clone();
     let index = colour_registry.insertion_index_for(&coloured.layers, BASIC_EFFECT);

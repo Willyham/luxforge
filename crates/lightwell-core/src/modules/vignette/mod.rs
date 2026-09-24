@@ -336,6 +336,7 @@ impl VignetteModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Finish,
                     order: 0,
+                    maskable: false,
                     artifacts: false,
                 }],
                 actions: vec![
@@ -499,6 +500,8 @@ impl ToolModule for VignetteModule {
                 effect_id: VIGNETTE_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                // The mask is the host's: an update keeps whatever this layer already carries.
+                mask: layer.mask.clone(),
                 artifacts: Vec::new(),
             })),
             // The host inserts a finish-stage layer at the end of the stack; a first set whose
@@ -509,6 +512,7 @@ impl ToolModule for VignetteModule {
                 effect_id: VIGNETTE_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                mask: None,
                 artifacts: Vec::new(),
             })),
         }
@@ -616,6 +620,7 @@ mod tests {
             effect_id: VIGNETTE_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            mask: None,
             artifacts: Vec::new(),
         }
     }

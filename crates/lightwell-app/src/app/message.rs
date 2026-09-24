@@ -8,6 +8,7 @@ use crate::{
         HostAnswer, PerformanceRead, PresetChange, PreviewPayload, Refresh, SyncResult, Upload,
     },
     crop_draft::Handle,
+    mask_draft::MaskHandle,
     state::{
         capabilities::{CapabilityView, SecretText},
         histogram::Readout,
@@ -16,7 +17,7 @@ use crate::{
 use iced_runtime::image as image_memory;
 use lightwell_core::{
     ClientSession, ContentPoint, Draft, EntryId, HistoryPage, ModuleDescriptor, PresetSummary,
-    PreviewJob, RecipeDescription, Version, capabilities::jobs::JobRecord,
+    PreviewJob, StageTransform, Version, capabilities::jobs::JobRecord,
 };
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value};
@@ -78,6 +79,13 @@ pub(crate) enum MenuTarget {
     /// A library preset's row, by its identity: Delete, Export and, for an imported preset, Copy
     /// import report.
     Preset(String),
+    /// A mask's row in the Masks panel, by its identity: Duplicate, Invert and Delete. Rename is the
+    /// row's own field rather than a menu item, because it needs one.
+    Mask(String),
+    /// A component's row in the open mask, by its identity: the Copy as JSON request of every
+    /// command that row's own controls send. They are a menu rather than four more buttons because
+    /// a copy is read once and a control is used often, and the row has to stay scannable.
+    Component(String),
 }
 
 /// What running one command palette entry does. Every entry is an existing message, so running an
@@ -144,6 +152,175 @@ pub(crate) enum PresetMessage {
     Export(String),
     /// The export was written to the file of this name, or the dialog was cancelled.
     Exported(Result<Option<String>, String>),
+}
+
+/// One pointer step of a mask shape gesture, already mapped into normalized content coordinates by
+/// the canvas through `render.transform`'s affine and the canvas view.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum MaskPointer {
+    /// A press on a drawn handle.
+    Begin {
+        handle: MaskHandle,
+        x: f64,
+        y: f64,
+    },
+    /// A press on the photograph away from every handle: the whole gradient is drawn in one stroke,
+    /// from the untouched side towards the affected one.
+    Sweep {
+        from: (f64, f64),
+        to: (f64, f64),
+    },
+    Drag {
+        x: f64,
+        y: f64,
+    },
+    End,
+    /// A press on the photograph while a painted gesture is open: this stroke starts here, at the
+    /// brush being held, with its erase flag frozen for the stroke's whole life.
+    PaintBegin {
+        x: f64,
+        y: f64,
+    },
+    /// One pointer move with the button down. The path is extended and drawn immediately; the
+    /// drafted picture follows one frame behind it, exactly as a slider's does.
+    PaintTo {
+        x: f64,
+        y: f64,
+    },
+    /// The pointer came up. What it drew stays; the commit is a separate decision.
+    PaintEnd,
+}
+
+/// One change to the brush the next stroke will be drawn with.
+///
+/// It is per-client gesture state and sends nothing on its own: the brush reaches the host as the
+/// settings of the stroke it drew, on that stroke's own request. Every one of these is reachable
+/// from the panel as well as from a key, so nothing here is reachable only by pointer.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum BrushEdit {
+    /// Move one declared number by that many of its own declared steps: the bracket keys and the
+    /// panel's nudges, which are the same call and therefore always move by the same amount.
+    Nudge { name: String, steps: f64 },
+    /// Set one declared number outright, as a typed field does.
+    Set { name: String, value: f64 },
+    /// The Erase toggle in the panel, which latches until it is turned off again.
+    Erase(bool),
+    /// The erase modifier went down or came up. It erases while it is held, and a stroke already
+    /// down keeps the flag it started with.
+    EraseHeld(bool),
+    /// The Limit to colour toggle: the next stroke is held to the colour under the brush where it
+    /// begins. It sends nothing on its own, exactly as the other brush settings do not — the flag
+    /// travels on the stroke's own request, and the colour is the host's to read.
+    LimitToColour(bool),
+}
+
+/// Every Masks-panel change is one message, so a script drives the whole panel through the update
+/// function exactly as its rows, buttons and menus do.
+#[derive(Clone, Debug)]
+pub(crate) enum MaskMessage {
+    /// Open one mask, by its identity. Per-client selection; it commits nothing.
+    Select(String),
+    /// Select one component of the open mask, which shows its handles and its number fields.
+    SelectComponent(String),
+    /// The eye: show or hide this mask's overlay. View state; the mask still applies.
+    ToggleVisible(String),
+    /// The mode the next Add gesture will use, chosen before the gesture starts, by its index in
+    /// the panel's declared list. An index rather than a mode, so the view names no vocabulary.
+    SetAddMode(usize),
+    /// What the canvas draws of the selected mask, and in which tint, each by its index in the
+    /// host's own declared list.
+    Overlay(usize),
+    OverlayColour(usize),
+    /// Shift+M: the tint overlay on, or off again.
+    ToggleOverlay,
+    /// Draw a new mask whose first component is of this kind.
+    New(String),
+    /// Draw a further component of this kind on the open mask, in the chosen mode.
+    Add(String),
+    /// Reopen one component's geometry as a gesture.
+    EditShape(String),
+    /// One pointer step of the open gesture.
+    Handle(MaskPointer),
+    /// Open a painted gesture: a new mask, a further brush on the open mask in the chosen mode, or
+    /// another stroke on the component that is selected. The Add row does not offer a brush — it is
+    /// built from the kinds that declare their geometry as numbers, and a brush declares none — so
+    /// this is the route a brush is reached by.
+    Paint(PaintTarget),
+    /// One change to the brush the next stroke will be drawn with.
+    Brush(BrushEdit),
+    /// One declared geometry field of the open gesture, typed rather than dragged.
+    Field {
+        name: String,
+        value: f64,
+    },
+    Apply,
+    Cancel,
+    Reapply,
+    /// The rename field's text, as it is typed.
+    Name(String),
+    /// Submit the rename field for that mask.
+    Rename(String),
+    /// Enter or leave the canvas pick that fills the selected component's swatches, which is the
+    /// host's own declared pick for that component's kind. It is one `workspace.set`, exactly as a
+    /// module's picker control is.
+    Pick,
+    /// One list edit from a row, run as the command it names.
+    Row(RowEdit),
+    /// The same edit, copied as the JSON request it would send rather than sent.
+    CopyRow(RowEdit),
+    /// The pointer entered or left a component row. Per-client view state: the overlay shows that
+    /// component's own contribution while a row is under the pointer, which is what makes a subtract
+    /// on top of a gradient legible, and the composed mask again when the pointer leaves.
+    Hover(Option<String>),
+}
+
+/// What the next stroke will land on, chosen before the gesture starts rather than guessed from
+/// where the pointer went down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaintTarget {
+    /// A new mask whose first component is an add brush.
+    NewMask,
+    /// A further brush on the open mask, in the mode the Add row has chosen.
+    NewBrush,
+    /// Another stroke on that brush component, which is one more history entry named for it.
+    Component(String),
+}
+
+/// One list edit a Masks-panel row offers: the objects it addresses and the one value it changes.
+///
+/// Every row control is one of these, and every one of them resolves to exactly one declared
+/// `mask.*` command through a single builder — so the request a row sends and the request its Copy
+/// as JSON request produces are the same request, built once, and neither can drift from the other.
+/// What a row may *not* do is not represented here at all: the panel reads the family's own reasons
+/// and offers no control the host would refuse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RowEdit {
+    /// `mask.delete`, which also removes the layers bound to the mask.
+    DeleteMask(String),
+    /// `mask.duplicate`.
+    DuplicateMask(String),
+    /// `mask.set-invert`.
+    InvertMask { mask: String, invert: bool },
+    /// `mask.reorder`.
+    MoveMask { mask: String, index: usize },
+    /// `mask.delete-component`.
+    DeleteComponent(String),
+    /// `mask.reorder-component`.
+    MoveComponent { component: String, index: usize },
+    /// `mask.set-component-mode`, with the mode token the host declares.
+    ComponentMode { component: String, mode: String },
+    /// `mask.set-component-invert`.
+    ComponentInvert { component: String, invert: bool },
+    /// `mask.delete-stroke`: a forward edit that removes one stroke from a brush component and
+    /// appends one entry. It is not an undo, and the panel names it as its own thing.
+    DeleteStroke { component: String, stroke: String },
+    /// `mask.delete-<kind>-sample`: one sampled colour removed on its own, by its position in the
+    /// component's list, so a swatch picked by accident goes without clearing them all.
+    DeleteSample {
+        component: String,
+        kind: String,
+        index: usize,
+    },
 }
 
 /// One pointer step of a crop gesture, already mapped to box pixels by the canvas.
@@ -353,8 +530,8 @@ pub(crate) enum Message {
     PanSynced(Result<ClientSession, String>),
     /// The named versions after a create or delete.
     VersionsLoaded(Result<(Vec<Version>, u64), String>),
-    /// The displayed entry's layers as the recipe panel reads them.
-    RecipeDescribed(Result<Box<RecipeDescription>, String>),
+    /// The displayed entry's layers and masks as the panels read them.
+    RecipeDescribed(Result<Box<crate::app::tasks::RecipeRead>, String>),
     /// The result of one live-refresh poll.
     Synced(Result<SyncResult, String>),
     /// An older history page.
@@ -395,6 +572,25 @@ pub(crate) enum Message {
     ),
     /// One crop draft change.
     Crop(CropMessage),
+    /// One Masks-panel change.
+    Mask(MaskMessage),
+    /// `render.transform` answered for an open mask gesture: the affine it maps pointers with.
+    MaskTransform(Result<StageTransform, String>),
+    /// `draft.begin` answered for a mask gesture.
+    MaskDraftBegun(Result<Box<Draft>, String>),
+    /// One `draft.set` and the preview job for the geometry it accepted.
+    MaskDraftSet(Result<Box<(Draft, PreviewJob)>, String>),
+    /// `draft.commit` answered. `None` is a no-op: the gesture returned to its start.
+    MaskDraftCommitted(Result<Option<Box<Refresh>>, String>),
+    /// `draft.reapply` answered.
+    MaskDraftReapplied(Result<Box<Draft>, String>),
+    /// One painted mask coverage grid reached the GPU. The generation says which frame it belongs
+    /// to, so a grid for a replaced frame is dropped instead of drawn over the new one.
+    MaskOverlayUploaded(
+        u64,
+        (u32, u32),
+        Result<image_memory::Allocation, image_memory::Error>,
+    ),
     /// One Presets-section change.
     Preset(PresetMessage),
     /// A host method an evidence script called directly answered, with the preset library read
@@ -653,6 +849,12 @@ pub(crate) enum Message {
     /// One tick of a paced evidence slider step: send its next value. Exists only while a paced
     /// step has values left to send, which is also when the subscription that produces it exists.
     PacedSliderTick,
+    /// One tick of a **paced stroke** step: the next pointer position of a scripted brush stroke,
+    /// sent in real time rather than with the whole path at once. It exists for the same reason
+    /// `PacedSliderTick` does — a gesture delivered all at once measures the driver's coalescing and
+    /// not the editor's own latency — and a stroke is the one gesture whose positions arrive that way
+    /// from a hand.
+    PacedStrokeTick,
     /// A scripted double-click's second press, once its gap has passed. Exists only while a
     /// double-click step waits for it, which is also when the timer that produces it exists.
     DoubleClickSecond,

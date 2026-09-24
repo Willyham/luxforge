@@ -5,7 +5,7 @@ use crate::{
     app::message::{PaletteAction, Panel},
     state::{Inputs, tools::palette_entries},
 };
-use lightwell_core::POINTER_MODE;
+use lightwell_core::{MASK_MODE, POINTER_MODE};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PaletteEntry {
@@ -63,6 +63,13 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             "Pointer".to_owned(),
             "workspace.set".to_owned(),
             PaletteAction::Mode(POINTER_MODE.to_owned()),
+        ),
+        // Mask is a host mode, so it is offered here beside the pointer rather than generated from
+        // a module's canvas declaration: a mask is a host object and no module declares one.
+        (
+            "Mode · Mask".to_owned(),
+            "workspace.set".to_owned(),
+            PaletteAction::Mode(MASK_MODE.to_owned()),
         ),
         (
             toggle_label(workspace.thirds, "thirds"),

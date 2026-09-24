@@ -64,6 +64,7 @@ fn basic_layer(payload: Value) -> Layer {
         effect_id: BASIC_EFFECT.into(),
         effect_format: EFFECT_FORMAT,
         payload,
+        mask: None,
         artifacts: Vec::new(),
     }
 }
@@ -76,6 +77,8 @@ fn recipe(layers: Vec<Layer>) -> Recipe {
     Recipe {
         format: RECIPE_FORMAT,
         layers,
+        masks: Vec::new(),
+        ..Recipe::default()
     }
 }
 

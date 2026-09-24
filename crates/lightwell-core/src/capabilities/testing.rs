@@ -105,6 +105,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
             stage: EffectStage::Color,
             order: 0,
             artifacts: true,
+            maskable: false,
         }],
         actions: vec![
             ActionDescriptor {

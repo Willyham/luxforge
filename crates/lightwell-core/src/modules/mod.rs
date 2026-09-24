@@ -1,7 +1,7 @@
 //! Tool modules: each one owns its descriptor, input parsing, state validation, no-op detection
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
-mod basic;
+pub(crate) mod basic;
 mod capabilities_proof;
 mod controls;
 mod crop;
@@ -32,6 +32,7 @@ pub use crop::geometry::{
     BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
     guide_angle, largest_with_ratio_inside,
 };
+pub(crate) use descriptor::title_case;
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
     Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, MAX_SETTINGS_ACTIONS,
@@ -58,8 +59,9 @@ pub(crate) use registry::tests::{
 pub use registry::{ModuleRegistry, insertion_index_among};
 pub use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
-    MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS, Parallelism, Planes, PlanesMut,
-    Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE, SpatialOperation, SpatialUnit,
+    MAX_MASKED_SPATIAL_LAYERS, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS,
+    Parallelism, Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE,
+    SpatialOperation, SpatialUnit,
 };
 pub use transform::TransformModule;
 pub use vignette::VignetteModule;

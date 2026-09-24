@@ -62,6 +62,7 @@ impl PixelModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Pixel,
                     order: 0,
+                    maskable: false,
                     artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {

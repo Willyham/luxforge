@@ -190,7 +190,7 @@ The neutral rendition uses camera calibration without film simulations, Picture 
 
 ### Keyboard
 
-Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `J` toggles both clipping overlays, `V` returns to the pointer, and each module's declared letter (`R` for crop and straighten, `W` for the Basic neutral picker, `N` for the RAW sensor picker) enters its canvas mode, exactly as the mode strip and the pickers in the tools panel do. Escape leaves a canvas mode that has no draft of its own. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
+Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `J` toggles both clipping overlays, `V` returns to the pointer, `M` enters Mask mode and `Shift+M` turns its overlay on and off, and each module's declared letter (`R` for crop and straighten, `W` for the Basic neutral picker, `N` for the RAW sensor picker) enters its canvas mode, exactly as the mode strip and the pickers in the tools panel do. Escape leaves a canvas mode that has no draft of its own. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
 
 ### Crop and straighten
 
@@ -217,6 +217,124 @@ If an edit commits but its picture cannot be rendered, the edit stays in history
 
 Selecting a historical state pauses the draft rather than discarding it: the historical preview is shown and Return to current resumes drafting. If anything else changes the photograph while a draft is open — another client, or your own Undo, Redo or Restore — the draft is kept and marked "Changed elsewhere". Apply is refused until you choose Discard, which drops the draft, or Reapply, which re-reads the current stack, rebases the draft onto it keeping the angle and the composition as far as it fits, and lets you apply normally.
 
+### Masks
+
+A mask is a selection plus the adjustments that apply through it. Choose Mask in the mode strip, press `M` or pick Mode · Mask from the command palette; the tools panel then shows the Masks panel in place of the module sections, and the canvas draws what the open mask selects.
+
+**New mask** names every component kind this build offers — Linear, Radial, Luminance range and Colour range — and each acts the way its own shape demands: a gradient has handles to drag, so choosing it starts a gesture, while a range selection has numbers rather than a shape, so choosing it creates the selection those numbers start at in one history entry. Either way, **the mask you just made is the one that opens**, so the adjustments under the component list are already bound to it and the next slider you move belongs to it. Under the list of kinds the panel says the thing no absent button can: there is no Sky, Subject, People, Objects or Background here, and every selection it does offer is brightness, colour or painted coverage with no model behind it. A linear gradient is drawn across the photograph from the side you do not want to the side you do, exactly as Lightroom's gradient works: the press sets the end at no coverage and the pointer the end at full coverage. The three lines the design draws are that first end, the midpoint and the far end, each with a handle; drag an end to move it, or the midpoint to move the whole axis without changing its length or direction. The whole drag is one draft, so nothing is written until you Apply, and Apply writes exactly one history entry. Escape or Cancel discards it and changes nothing. Every handle also has a number beside it while the gesture is open, so no part of a gradient is reachable only by pointer, and a committed component's `x0`, `y0`, `x1` and `y1` are ordinary fields under its row, each with the same Copy as JSON request its context menu offers anywhere else.
+
+A **radial** is drawn the same way in one stroke: the press sets the centre and the drag sets both radii. Its handles are four radius grips on the ellipse's own axes, a centre that moves the whole ellipse, a rotation grip just beyond the sideways radius, and a feather grip on the ellipse's diagonal, where the dashed inner ring shows where the falloff begins. **Inside the ellipse is selected**, which is the other way round from Lightroom; the component's own Invert gives Lightroom's reading exactly. Radii are in units of the picture's height on both axes, so a circle stays a circle whatever the shape of the frame, and `x`, `y`, `radius_x`, `radius_y`, `angle` and `feather` are fields beside the handles and under the row. Dragging any handle is one draft and one history entry, and the numbers beside it follow the drag exactly.
+
+The **brush** is painted rather than dragged, so it is reached from the Brush section of the panel rather than from New mask or Add component — those two offer the kinds whose shape is a set of numbers, and a brush's shape is the path you draw. Set **Size**, **Feather** and **Flow**, then press **Paint new mask** to draw a mask, or **Paint on this mask** to put a further brush on the one that is open, in the mode the Add row has chosen. The cursor is two circles: the outer one where coverage ends, the dashed inner one where the falloff begins. `[` and `]` change the size, `Shift+[` and `Shift+]` the feather, and holding Option erases for as long as the stroke lasts — letting go halfway along a path does not turn an erase back into an add. The line you are drawing appears under the pointer as you move, without waiting for anything, and the picture follows a frame behind it exactly as a slider's does. A stroke may begin outside the picture and paint in over its edge, and painting behaves the same at Fit, at 100% and under a straightened crop: what you paint is recorded in the photograph's own coordinates, so the zoom you were at and the crop you were under are no part of the edit. The brush stays in your hand when you reach for the adjustments under the component list — it gives up nothing you painted, because an armed brush has painted nothing — while a gradient you have half drawn asks to be applied or cancelled first.
+
+**Each stroke is one history entry.** The first reads "Add brush", every later one "Update Brush 1", and undo walks back one stroke at a time. The brush stays in your hand between strokes, so you keep painting without starting a new gesture; Escape puts it down. Strokes combine inside their component rather than being flattened, so each of them stays an object: select the component and its strokes are listed in the order they compose, each with its own Delete. **That Delete is not an undo.** It removes one stroke and appends an entry of its own, so a stroke you made ten edits ago can go while everything after it stays exactly where it is. A component's last stroke has no Delete, because a component with no stroke selects nothing: delete the component instead.
+
+One brush control is worth naming because you may go looking for it and will not find it: there is no **Density**. In Lightroom, Density and Flow interact through a build-up model *along a single stroke*: coverage accumulates from overlapping stamps, so what you get depends on how densely the stroke was stamped, and therefore on the size of the picture it was stamped on. Lightwell's stroke is a path rather than a row of stamps: one pass of the brush reaches its Flow and no more, however fast your hand moved, however finely the pointer was sampled and whatever the picture's resolution. A second pass over the same place is a second stroke and does build up. A control called Density on top of that would have to mean something other than Lightroom's, so it is left out and named here rather than shipped under a familiar label with unfamiliar behaviour.
+
+**Limit to colour** holds a stroke to the colour it started on. Turn it on, put the brush down on a
+blue sky, and the stroke paints the sky and leaves the red roof beside it; **Colour refine** says how
+tight the hold is, on the same 0-to-100 axis a colour range's Refine uses and with the same meaning,
+where a higher number is a narrower hold and 50 holds an ordinary surface across a stop of shading.
+**It is not Lightroom's Auto Mask:** it compares each pixel with the colour under the brush where the
+stroke began and knows nothing about edges or connectivity, so it will also paint that same colour
+anywhere else the stroke passes over — if a strip of the same sky shows through on the far side of the
+roof and your stroke reaches it, it is painted too, and the remedy is to subtract a brush over what it
+caught. The colour is sampled once, where the stroke starts, and stored with the stroke: later edits
+never move it, and nothing is re-read when the picture is drawn. Because the stroke then reads pixels,
+it inherits what the range selections say below — what it holds follows the adjustment's own input, so
+a layer ahead of the mask changes it, and its overlay is read on that input rather than on the finished
+picture.
+Limit to colour needs an adjustment to read the input of, so the toggle is unavailable until the open
+mask is bound to a layer, and it says so.
+
+A mask's geometry is stored in the photograph's own content coordinates, so it travels through every quarter-turn, reflection and crop with the picture: cropping after masking never moves the mask. A stroke is stored on a grid fine enough that a position is one pixel of the largest picture the editor admits, and each stroke is kept once under the fingerprint of its own contents, so painting for an afternoon costs kilobytes rather than megabytes.
+
+Selecting a mask opens it. Its **components** are always listed, in the order they compose, each row carrying its kind, its own three-way Add / Subtract / Intersect control, its own Invert toggle, Move up and Move down, Delete and Edit shape. Each of those is one command, and each has a Copy button beside it that copies the exact JSON request that control sends. A control belongs to the row it sits on: changing the third component's mode never touches the first, and none of it changes what is selected or what the handles are editing. Pointing at a row shows that component's own contribution in the overlay and leaving the row brings the composed mask back, which is how you see what a Subtract is doing on top of a gradient. **Add component** offers the same kinds, with the mode — Add, Subtract or Intersect — chosen before the gesture starts rather than guessed from a modifier afterwards. A mask's first component is always an Add, because nothing precedes it to subtract from; the panel says so on that row rather than offering a mode it would refuse, it refuses a move that would leave a component that is not an Add at the front, and while Add component is set to Subtract or Intersect, New mask is refused with that reason rather than quietly making an Add. A recipe that holds sixteen masks, or a mask that holds thirty-two components, says so in place of the button. A mask never exists empty either, so its only component offers no Delete: the row says to delete the mask instead.
+
+Under the component list are the **adjustments**: the ordinary Basic, Presence and Colour mixer sections, bound to this mask. They are the same controls with the same ranges, the same drafting behaviour and the same Copy as JSON request, which now carries the mask, and they edit that mask's own layer rather than the global one — so a photograph can carry a global exposure and a different exposure through each mask. Leaving Mask mode binds them back to the global layer. A module with nothing a mask can carry, such as Crop, is not offered inside a mask.
+
+The whole mask has an **Amount** (0 to 100, multiplying the composed coverage) and an **Invert**. Each row carries a dot when the mask is doing something, an eye that shows or hides its overlay, and a menu with Duplicate, Invert and Delete; the name field beside the list renames it. Duplicating a mask copies its components **and** the layers bound to it, because a mask without its adjustments is not a useful copy, and deleting one deletes those layers and names them in the history entry.
+
+The **overlay** shows what the mask selects: off, a tint over the photograph, the mask alone on black, or the photograph seen through the mask on black. `Shift+M` turns the tint on and off. The tint is green or white and never red — the clipping indicators already own red, blue and the magenta between them on this canvas, and an overlay you cannot tell apart from a clipping indicator is worse than none. The overlay is a view setting: it changes no recipe, and hiding a mask's overlay with the eye does not stop that mask applying to the picture. `O` still means the thirds overlay everywhere, Mask mode included.
+
+Masked layers stay in the recipe list on the left, in the durable processing order, each naming the mask it applies through and the first of them carrying that mask's heading. They are not moved under it: the list's job is to show the order edits are applied in, and a mask's layers belong to different stages.
+
+**Luminance range** and **Colour range** select by what a pixel *is* rather than by where it is, and
+they combine with gradients and brushes in the same component list. A luminance range has a **Low**
+and a **High** edge with a shoulder below and above each, all on the histogram's own horizontal axis
+from 0 to 100, so one unit is 2.55 output codes and the number on the slider is the number you read
+off the histogram. A shoulder of 0 is a hard edge; anything else is at least 1, because a narrower
+shoulder is a hard edge asked for indirectly. A colour range holds up to five sampled colours, each
+added and removed on its own, and one **Refine** slider from 0 to 100: a higher refine is always a
+tighter selection, from a whole family of related colours at 0 to a single flat patch at 100, and the
+default of 50 is the setting measured to hold an ordinary surface together across a stop of shading.
+An unsampled colour range selects nothing, which is what a new one is.
+
+Neither kind is drawn on the photograph, because neither has a shape: choosing it from New mask or
+Add component creates it straight away as a starting selection — the whole tonal range with soft
+shoulders for a band, no swatches for a colour range — and you narrow it through the numbers under
+its row. A colour range's swatches are **picked off the photograph**: select the component and press
+**Pick colour range**, then click the picture, and each click adds one swatch, up to five. Every
+swatch is listed under the row with the colour it holds and a Remove of its own, so one picked by
+accident goes without clearing the rest, and picking a colour the component already holds changes
+nothing rather than spending a swatch on it. The same two commands do it from a script:
+`mask.add-colour-range-sample` takes a linear sRGB triple and `mask.delete-colour-range-sample` an
+index.
+
+The pick needs something to read: a selection by value is evaluated on the pixel the adjustment it
+modulates *receives*, so the mask has to be bound to a layer before a colour can be picked into it.
+Until it is, the button says so. The colour never comes from the frame you are looking at — that
+frame holds the adjustment's output, and picking from it would sample a colour the selection is never
+evaluated against — so the host reads the pixel itself and the click carries a position, not a
+colour.
+
+Four things about a range selection are worth knowing before you rely on one, because they are how it
+works rather than faults to be fixed. **The panel says all but the third on the component's own
+row**, above the numbers they apply to, so you read them before you type a number rather than after
+you have made an edit you did not mean; what it cannot say in a line is the arithmetic behind them,
+which is here:
+
+- **It reads the input of the adjustment it modulates, not the finished picture.** A layer ahead of
+  it changes what it selects: a `+0.75 EV` lift before a band drawn for a sky takes that sky from
+  fully selected to not selected at all. Reordering layers therefore moves a range selection, which
+  the gradients and brushes never do.
+- **It is evaluated on what the current view can see.** At Fit the picture has been scaled down, and
+  the coverage of an averaged pixel is not the average of the coverages — at a sky/roof edge a band
+  that takes the sky at 0.475 and the roof at 0 takes their average pixel at 0. The 100% view is the
+  truth for a range selection; the fitted view is an honest preview of a downscaled picture. The
+  overlay is read on the same input the adjustment is — the input of the first layer the mask is bound
+  to, one pixel per overlay cell — and never on the finished frame, whose pixels are the adjustment's
+  *output* and would draw a selection the picture never had. So the overlay at Fit is as honest, and as
+  approximate, as the fitted picture behind it. Two masks have no grid at all and say why: one no layer
+  is bound to yet, because there is no adjustment whose input to read, and one whose adjustment sits
+  behind Presence or another neighbourhood effect, because reading that input costs a tile of the
+  picture per overlay cell. Read either in the picture at 100%.
+- **A narrow band speckles on noise.** A range selection is a per-pixel test, so it inherits the
+  picture's grain: on a shadow around output code 40 with two codes of noise, a hard edge flips 47%
+  of neighbouring pixels by more than half, a shoulder of 1 flips 31%, and a shoulder of 5 — about 13
+  output codes, comfortably wider than the noise — flips none. Feather generously in the shadows.
+- **These are deterministic selections, not subject recognition.** A luminance band cannot separate a
+  photographed blue sky from a mid-grey card: they sit 1.4 output codes apart, and no band takes one
+  without the other. A colour range cannot separate one person's skin from another's — dark skin is
+  0.0108 from light skin in the metric, a third of what one face's own shading spans — and it cannot
+  separate a face from an oak floor, which at the default refine stays about 30% selected. Every
+  neutral is one colour to it: white, mid grey and black are within 0.0015 of each other, so a
+  sampled grey selects the whole tonal range at any refine, which is what the luminance range is for.
+  The remedy in each case is the component list: intersect a band with a colour range, or subtract a
+  brush over what you do not want.
+
+Leaving Mask mode with a gesture open is refused with the reason rather than discarding what you drew, as the crop draft is; so is holding Compare. If anything else changes the photograph while a gesture is open the gesture is kept and marked "Changed elsewhere", with Discard and Reapply, exactly as a crop or slider draft is.
+
+A mask made of several components is ordinary, not a special case: draw a radial, take a region back out of it with a Subtract, confine what is left with an Intersect, and adjust through the result exactly as through a single gradient. Order matters, and the list is the order: an Add moved above a Subtract is no longer cut by it, and moving a row is an ordinary history entry like any other edit.
+
+The linear gradient, the radial gradient, the brush and the two range selections are every kind this
+build offers, and Limit to colour is the part of Lightroom's Auto Mask that can be evaluated exactly:
+a colour similarity, not edge detection. **A genuinely edge-aware refinement is not built.** Nothing
+here finds a boundary, follows one, or snaps a selection to it; that needs a neighbourhood operation
+over what is today a test of one pixel at a time, and it will get its own design rather than being
+approximated under a familiar name. No selection here is made by a model either: there is no Select
+Subject, Sky, People, Objects or Background, and none of them is drawn as a control that does nothing.
+
 ### Vignette
 
 Vignette is the last section of the tools panel, collapsed until you open it, and it is applied after the crop: its centre is the centre of the cropped picture, and a later crop moves it, exactly as a post-crop vignette should. **Amount** runs −100 to +100; negative darkens toward black at the edges, and −100 reaches black at the corners, while positive lightens toward white without ever exceeding it. **Midpoint** (0 to 100) sets how far from the centre the falloff begins, **Feather** (0 to 100) how wide the transition is, from a hard edge at 0 to a gradient that spans the whole picture at 100, and **Roundness** (−100 to +100) the shape, from a rounded rectangle through the ellipse that matches the picture's proportions to a circle. The corners are always the far edge of the mask, whatever the shape.
@@ -239,7 +357,7 @@ Versions are chips naming saved states. Choose + to reveal the name field and Sa
 
 Undo and Redo navigate saved states without appending rows. Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z invoke the same service as the buttons. A new edit clears shortcut redo while every older entry remains available for preview or Restore. Layers, history, navigation state and stable IDs survive reopening the catalog.
 
-Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog format (6, which stores the preset library and derived-artifact references as well as typed source interpretation and entry labels) and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
+Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog format (7, which stores the recipe's masks and its content-addressed stroke store, the preset library and derived-artifact references, as well as typed source interpretation and entry labels) and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
 
 ## JSON automation
 
@@ -260,7 +378,7 @@ Import returns a job acknowledgment. Poll `job.status` with the returned `job_id
 
 A source-dependent request after reopen can return `preparation-required` with `error.job_id`. Wait for that job and retry against the current asset revision. `source.prepare` also allows explicit preparation. Loading, hashing, decoding and RAW development run on a bounded worker so other catalog requests can continue.
 
-A request has `id`, `method` and `params`. A success carries the matching `id`, an event `sequence` and `result`; a failure carries a structured `error` with a `code`, a `message` and, for some codes, structured `data`. Start with `schema.list` for the authoritative method list and `catalog.list` for the referenced assets. Edit actions are generated from the registered tool modules: `module.list` returns every module with its effects, actions, parameter descriptors (kind, range, unit, default), semantic controls, hint, reset action, canvas title and shortcut, summary templates and developer flag, and each action `<id>` is callable as `edit.<id>` with its parameters as top-level fields beside `asset_id` and `mutation`. `recipe.describe` lists an entry's layers with each module's summary; `workspace.set` and `session.state` carry the per-client panels, canvas mode, thirds overlay and clipping overlays beside the view; every history entry carries its rendered `label`. Today that is `edit.set-pixel` (`x`, `y`, `rgb`), `edit.set-basic` (`temperature`, `tint`, `exposure`, `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `vibrance`, `saturation`), `edit.reset-basic`, `edit.transform` (`transform`), the crop module's three actions and the RAW module's development actions. Pass `asset_id` to `module.list` to request only applicable modules; `source.inspect` reports source interpretation and readiness. A module may also declare read-only **queries**, which are generated the same way as `query.<id>`; they take `asset_id`, an optional `entry_id` defaulting to the session's selection, and their own parameters, and they write nothing. The controls proof adds `query.sample-controls-curve` with the active channel's points when `--developer` is enabled; its curve interpolation belongs to that module. The Basic neutral picker uses `query.neutral-sample` (`x`, `y`). Parameters are checked against the descriptors before the module sees them, so every client gets the same structured validation error. A number parameter may declare a `step` and a display `precision` for the control that drives it; they are hints, and a request is never rounded to them. An action listed with `patch: true` takes whichever of its fields you name: the fields you send are validated, nothing declared is filled in, the module merges them over what it already stores, the entry records the fields as sent, and a patch that changes nothing writes no entry. `version.create`, `version.list`, `version.delete` and `history.lineage` cover named states and the undo-parent chain. The `preset.*` methods cover the preset library, and `edit.apply-preset` applies one (below). `render.sample` reads one rendered pixel and `render.locate` maps a rendered pixel back to the content pixel it shows. `activity.list` and `resources.read` report the editor's running work and its own resource use ([below](#activity-and-resources)). Mutations require `asset_id` and a `mutation` object:
+A request has `id`, `method` and `params`. A success carries the matching `id`, an event `sequence` and `result`; a failure carries a structured `error` with a `code`, a `message` and, for some codes, structured `data`. Start with `schema.list` for the authoritative method list and `catalog.list` for the referenced assets. Edit actions are generated from the registered tool modules: `module.list` returns every module with its effects, actions, parameter descriptors (kind, range, unit, default), semantic controls, hint, reset action, canvas title and shortcut, summary templates and developer flag, and each action `<id>` is callable as `edit.<id>` with its parameters as top-level fields beside `asset_id` and `mutation`. `recipe.describe` lists an entry's layers with each module's summary; `workspace.set` and `session.state` carry the per-client panels, canvas mode, thirds overlay and clipping overlays beside the view; every history entry carries its rendered `label`. Today that is `edit.set-pixel` (`x`, `y`, `rgb`), `edit.set-basic` (`temperature`, `tint`, `exposure`, `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `vibrance`, `saturation`), `edit.reset-basic`, `edit.transform` (`transform`), the crop module's three actions and the RAW module's development actions. Pass `asset_id` to `module.list` to request only applicable modules; `source.inspect` reports source interpretation and readiness. A module may also declare read-only **queries**, which are generated the same way as `query.<id>`; they take `asset_id`, an optional `entry_id` defaulting to the session's selection, and their own parameters, and they write nothing. The controls proof adds `query.sample-controls-curve` with the active channel's points when `--developer` is enabled; its curve interpolation belongs to that module. The Basic neutral picker uses `query.neutral-sample` (`x`, `y`). Parameters are checked against the descriptors before the module sees them, so every client gets the same structured validation error. A number parameter may declare a `step` and a display `precision` for the control that drives it; they are hints, and a request is never rounded to them. An action listed with `patch: true` takes whichever of its fields you name: the fields you send are validated, nothing declared is filled in, the module merges them over what it already stores, the entry records the fields as sent, and a patch that changes nothing writes no entry. `version.create`, `version.list`, `version.delete` and `history.lineage` cover named states and the undo-parent chain. The `preset.*` methods cover the preset library, and `edit.apply-preset` applies one (below). `render.sample` reads one rendered pixel, `render.locate` maps a rendered pixel back to the content pixel it shows, and `render.transform` answers the whole geometry tail as one affine (below). The `mask.*` methods cover masks, and every action of a maskable module takes an optional `mask` (below). `activity.list` and `resources.read` report the editor's running work and its own resource use ([below](#activity-and-resources)). Mutations require `asset_id` and a `mutation` object:
 
 ```json
 {"id":"rotate","method":"edit.transform","params":{"asset_id":"asset-…","mutation":{"expected_revision":0,"request_id":"rotate-1","actor":"my-client"},"transform":"rotate-right"}}
@@ -353,6 +471,40 @@ A gesture that changes a setting over and over — a slider drag, a held arrow k
 ```
 
 `mutation.expected_revision` must be the draft's `base_revision`. If any client commits while the draft is open, the draft is kept and marked `conflicted: true`; committing it is then refused with a `conflict`. `draft.cancel` discards the gesture, or `draft.reapply {draft_id}` rebases it on the current revision and keeps only the fields this client set, so an unrelated field another client changed is retained by the commit that follows.
+
+### Masks
+
+Masks are host commands in their own namespace, declared with the same descriptors a module's actions are, so `schema.list` publishes them and their controls. `mask.list {asset_id, entry_id?}` is read-only and answers every mask with its `amount`, `invert`, its `components` — each with its `id`, `index`, `name`, `mode`, `invert`, `kind`, `payload` and whether this build can evaluate the kind — and the `layers` bound to it. `recipe.describe` reports the same relation from the other side, naming each layer's `mask`, so a client reading the processing order can tell a masked layer from a global one without a second question.
+
+The geometry commands are **generated per component kind**, because one command carrying a kind and every kind's fields could not be declared honestly: `mask.create-linear {x0, y0, x1, y1}` creates a mask whose first component is that gradient, `mask.add-linear {mask, mode, …}` adds a further component, and `mask.set-linear {mask, component, …}` patches one component's geometry. `linear`, `radial`, `luminance-range`, `colour-range` and `brush` are the kinds this build registers, and the first four generate that trio of commands each; a **brush** declares no geometry, because its shape is a drawn path rather than a set of numbers, so it has no `mask.create-brush`, `mask.add-brush` or `mask.set-brush` and reaches a mask through `mask.add-stroke` instead. A colour range's swatches are not a declared parameter either, so they are edited one at a time through `mask.add-colour-range-sample` and `mask.delete-colour-range-sample`. The kind-independent commands keep one name each: `mask.delete`, `mask.rename {name}`, `mask.duplicate`, `mask.set-amount {amount}`, `mask.set-invert {invert}`, `mask.reorder {index}`, `mask.set-component-mode {mode}`, `mask.set-component-invert {invert}`, `mask.delete-component`, `mask.reorder-component {index}` and `mask.delete-stroke {mask, component, stroke}`.
+
+`mask.sample-input {mask, x, y}` is the family's second read-only method: it answers `r`, `g` and `b`
+— the linear-sRGB pixel the adjustment that mask modulates *receives* at one content position of the
+stage that adjustment's layer sees — plus the position and that stage's size. It is where a canvas
+pick gets the colour a colour range's swatch is, and it exists because a client must not read that
+colour off the frame: the frame holds the adjustment's output, which is a different colour wherever
+the adjustment does anything. A mask no layer is bound to has no adjustment to be the input of and is
+refused by name. `mask.add-stroke` takes `limit_to_colour` and `colour_refine` beside its path and its
+brush; it carries **no colour**, because the host reads the pixel at the stroke's first position
+itself, and a stroke limited on a mask no layer carries is refused by name for the same reason.
+
+A `mask`, a `component` and a `name` travel in the request envelope beside `asset_id` and `mutation`, not as declared parameters: the parameter vocabulary has no string kind, so an identity is not something a control could edit. Everything a control *can* edit — an endpoint, an amount, a mode, an inversion — is a declared parameter, validated by the same generic check a module action goes through. Every one of these is an ordinary mutation with a revision check, request deduplication, one history entry and one immutable snapshot, and each drafts through `draft.*` exactly as a module action does, so a whole gradient drag costs one entry.
+
+An effect declares `maskable`, and the host then puts one optional top-level `mask` field on every action of that effect's module. `lightwell.basic`, `lightwell.mixer` and `lightwell.presence` declare it; sending `mask` to any other action is a `validation` error rather than being ignored. `edit.set-basic {asset_id, exposure}` edits the global Basic layer; `edit.set-basic {asset_id, mask, exposure}` edits the Basic layer bound to that mask, committing it on the first non-neutral field and updating it in place afterwards. At most one layer of an effect exists per target, where the global layer and each mask are distinct targets.
+
+```json
+{"id":"draw","method":"mask.create-linear","params":{"asset_id":"asset-…","mutation":{"expected_revision":0,"request_id":"sky-1","actor":"my-client"},"x0":0.5,"y0":0.3,"x1":0.5,"y1":0.7}}
+{"id":"draw","sequence":4,"result":{"outcome":"applied","revision":1,"current_entry_id":"entry-…","created_entry_id":"entry-…","deduplicated":false,"label":"Add linear","mask":"mask-…","component":"component-…"}}
+{"id":"lift","method":"edit.set-basic","params":{"asset_id":"asset-…","mutation":{"expected_revision":1,"request_id":"sky-2","actor":"my-client"},"mask":"mask-…","exposure":0.8}}
+```
+
+Positions are normalized fractions of the **content stage** — the picture after EXIF orientation and before the geometry tail — in the range −1 to 2, so a gradient dragged from off the canvas is an ordinary edit. Distances are in mask-space units, where one unit is the content stage's height. Storing geometry there is what makes a mask travel with the picture through every quarter-turn, reflection and crop, and what keeps a masked recipe resolution independent.
+
+A mask attaches only to a layer before the geometry tail, so a `finish`- or `geometry`-stage layer carrying one is refused. A component of a kind this build cannot evaluate is retained byte for byte and reported, and refused for rendering, sampling, appending an edit and restoring — exactly as a layer whose effect has no provider is. A mask is never rendered as if it were not there.
+
+`workspace.set` also accepts `mask_overlay` (`off`, `tint`, `mask-on-black`, `image-on-black`) and `mask_overlay_colour` (`green`, `white`), reported by `session.state`. Both are per-client view state: they change no pixels of the saved recipe and no history, and hiding a mask's overlay does not stop that mask applying.
+
+`render.transform {asset_id, entry_id?}` answers the whole geometry tail as one affine, so a client editing in content coordinates can map pointer positions without a request per move. It is read-only and writes nothing. It returns `{content: {width, height}, output: {width, height}, forward: [6], inverse: [6]}`, where each matrix is `[m0, m1, m2, m3, m4, m5]` meaning `x' = m0·x + m1·y + m2` and `y' = m3·x + m4·y + m5`. Coordinates are continuous and pixel-centre based: pixel index `n` has its centre at `n + 0.5`, a coordinate `c` lies in pixel `floor(c)`, and a stage spans `0..width` by `0..height`. `forward` maps a content coordinate to an output coordinate and `inverse` is its exact inverse; a coordinate outside the output stage was cropped away rather than clamped. A stack the host cannot compile has no output stage and therefore no mapping, so the method returns that stack's own reason and never an identity matrix. `render.locate` keeps its own job of mapping one rendered pixel back for a pick.
 
 Read-only **analysis** answers "what does this image actually contain": an exact RGB histogram and the output clipping counters of one evaluated stack, with no GUI and without changing what the editor is showing. `analysis.request {asset_id, target}` returns `{job_id, status, identity}` right away, where `target` is `{"kind":"current"}`, `{"kind":"entry","entry_id":"entry-…"}` for a frozen historical entry, or `{"kind":"draft","draft_id":"draft-…"}` for this client's own open draft at the revision it holds now. `analysis.read {job_id}` returns `{status, identity, report?, error?}` and `analysis.cancel {job_id}` returns `{"cancelled":true}`; a job this client did not request is a `validation` error. None of the three changes anything or emits an event.
 

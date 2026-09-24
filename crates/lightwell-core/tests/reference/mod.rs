@@ -17,8 +17,10 @@
 #![allow(dead_code)]
 
 pub mod colour;
+pub mod mask;
 pub mod mixer;
 pub mod presence;
+pub mod range;
 pub mod tone;
 pub mod vignette;
 pub mod white_balance;

@@ -19,7 +19,7 @@ use crate::{
 use lightwell_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
     CropPayload, CropStage, CurveBackground, EffectStage, EntryId, Layer, MAX_ANGLE, MIN_ANGLE,
-    ModuleDescriptor, NumberStyle, ORIENTATION_EFFECT, Orientation, ParameterDescriptor,
+    MaskId, ModuleDescriptor, NumberStyle, ORIENTATION_EFFECT, Orientation, ParameterDescriptor,
     ParameterKind, RAW_EFFECT, RailDecoration, RawPayload, ResetAction,
 };
 use serde_json::{Map, Value};
@@ -528,7 +528,14 @@ impl ToolsModel {
         };
         let mut sections = Vec::new();
         let mut developer = Vec::new();
+        // Mask mode replaces the module sections with the Masks panel and the adjustments that can
+        // apply through a mask: a module with no maskable effect has nothing to offer a mask, so
+        // offering its controls there would be offering an edit the mask cannot carry.
+        let masking = crate::state::canvas::mask_workspace(&inputs.session.workspace.mode);
         for module in inputs.modules {
+            if masking && !module.effects.iter().any(|effect| effect.maskable) {
+                continue;
+            }
             if module.id == "lightwell.raw"
                 && !inputs.state.is_some_and(|state| {
                     matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
@@ -596,12 +603,24 @@ fn section(
     match headerless_group(module) {
         Some(children) => {
             for (index, control) in children.iter().enumerate() {
-                controls.push(control_model(module, control, inputs, enabled, &[0, index]));
+                controls.push(control_model(
+                    ControlOwner::Module(module),
+                    control,
+                    inputs,
+                    enabled,
+                    &[0, index],
+                ));
             }
         }
         None => {
             for (index, control) in module.controls.iter().enumerate() {
-                controls.push(control_model(module, control, inputs, enabled, &[index]));
+                controls.push(control_model(
+                    ControlOwner::Module(module),
+                    control,
+                    inputs,
+                    enabled,
+                    &[index],
+                ));
             }
         }
     }
@@ -707,7 +726,11 @@ fn disabled_reason(unavailable: Option<&str>, inputs: &Inputs<'_>) -> Option<Str
         .then(|| "Waiting for the last request".to_owned())
 }
 
-/// The current recipe holds a layer of one of this module's effects, and that layer does something.
+/// The current recipe holds a layer of one of this module's effects **for the bound target**, and
+/// that layer does something.
+///
+/// The target is what makes the section's dot honest while a mask is open: a global Basic layer says
+/// nothing about whether this mask's Basic layer is doing anything, and vice versa.
 fn active(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
     let Some(state) = inputs.state else {
         return false;
@@ -718,6 +741,7 @@ fn active(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
         .recipe
         .layers
         .iter()
+        .filter(|layer| layer.mask.as_ref() == inputs.target)
         .any(|layer| {
             module
                 .effects
@@ -847,12 +871,17 @@ fn digest(
             (key, value).hash(&mut hasher);
         }
     }
+    // The bound target is part of what this section is derived from: opening another mask changes
+    // which layer its controls represent, so the section must re-derive even though nothing else
+    // moved. Only the layers of that target are hashed, for the same reason.
+    inputs.target.map(MaskId::as_str).hash(&mut hasher);
     if let Some(state) = inputs.state {
         for layer in &state.current_entry.snapshot.recipe.layers {
-            if module
-                .effects
-                .iter()
-                .any(|effect| effect.id == layer.effect_id)
+            if layer.mask.as_ref() == inputs.target
+                && module
+                    .effects
+                    .iter()
+                    .any(|effect| effect.id == layer.effect_id)
             {
                 layer.id.as_str().hash(&mut hasher);
                 layer.payload.to_string().hash(&mut hasher);
@@ -945,9 +974,10 @@ fn draft_digest(frame: Option<&CropFrame<'_>>, inputs: &Inputs<'_>) -> String {
     }
 }
 
-/// One declared control as the panel models it.
-fn control_model(
-    module: &ModuleDescriptor,
+/// One declared control as the panel models it. `owner` says whose declarations resolve its
+/// parameter: the declaring module's, or the host's own `mask.*` family for a host control.
+pub(crate) fn control_model(
+    owner: ControlOwner<'_>,
     control: &Control,
     inputs: &Inputs<'_>,
     enabled: bool,
@@ -966,7 +996,7 @@ fn control_model(
                 .map(|(index, child)| {
                     let mut child_path = path.to_vec();
                     child_path.push(index);
-                    control_model(module, child, inputs, enabled, &child_path)
+                    control_model(owner, child, inputs, enabled, &child_path)
                 })
                 .collect();
             ControlModel::Group(GroupControl {
@@ -976,7 +1006,7 @@ fn control_model(
                 expanded: inputs
                     .control_ui
                     .group_expanded
-                    .get(&group_key(&module.id, path))
+                    .get(&group_key(owner.id(), path))
                     .copied()
                     .unwrap_or(!collapsed),
                 state: group_state(&controls, inputs),
@@ -993,7 +1023,7 @@ fn control_model(
             rail,
             ..
         } => {
-            let mut model = value_model(module, inputs, action, parameter, label);
+            let mut model = value_model(owner, inputs, action, parameter, label);
             if let ControlModel::Slider(slider) = &mut model {
                 slider.style = match style {
                     NumberStyle::Slider => NumberControlStyle::Slider,
@@ -1027,7 +1057,7 @@ fn control_model(
             label,
             ..
         } => {
-            let mut model = value_model(module, inputs, action, parameter, label);
+            let mut model = value_model(owner, inputs, action, parameter, label);
             if let Rendered::Choice { style, .. } = classify(control)
                 && let ControlModel::Enum(choice) = &mut model
             {
@@ -1080,34 +1110,49 @@ fn control_model(
         }
         // The picker reads its mode's name and letter from the same canvas declaration the keymap
         // binds, so the panel and the keyboard always agree about what the mode is called.
-        Rendered::Picker { label } => ControlModel::Picker(PickerControl {
-            module_id: module.id.clone(),
-            label: label.to_owned(),
-            title: module
-                .canvas
-                .as_ref()
-                .map(CanvasInteraction::title)
-                .unwrap_or(label)
-                .to_owned(),
-            shortcut: module
-                .canvas
-                .as_ref()
-                .and_then(CanvasInteraction::shortcut)
-                .map(str::to_owned),
-            selected: owns_mode(module, inputs),
-            target: if owns_mode(module, inputs) {
-                lightwell_core::POINTER_MODE.to_owned()
-            } else {
-                module.id.clone()
-            },
-            enabled,
-        }),
-        Rendered::Task { task, label } => ControlModel::Task(capabilities::task_control(
-            module, task, label, inputs, enabled,
-        )),
+        Rendered::Picker { label } => {
+            let Some(module) = owner.descriptor() else {
+                return ControlModel::Unsupported("a picker needs a declaring module".into());
+            };
+            ControlModel::Picker(PickerControl {
+                module_id: module.id.clone(),
+                label: label.to_owned(),
+                title: module
+                    .canvas
+                    .as_ref()
+                    .map(CanvasInteraction::title)
+                    .unwrap_or(label)
+                    .to_owned(),
+                shortcut: module
+                    .canvas
+                    .as_ref()
+                    .and_then(CanvasInteraction::shortcut)
+                    .map(str::to_owned),
+                selected: owns_mode(module, inputs),
+                target: if owns_mode(module, inputs) {
+                    lightwell_core::POINTER_MODE.to_owned()
+                } else {
+                    module.id.clone()
+                },
+                enabled,
+            })
+        }
+        Rendered::Task { task, label } => {
+            let Some(module) = owner.descriptor() else {
+                return ControlModel::Unsupported("a task needs a declaring module".into());
+            };
+            ControlModel::Task(capabilities::task_control(
+                module, task, label, inputs, enabled,
+            ))
+        }
         // The library is host data beside the recipe; the module declares only where it goes and
         // which of its actions a row submits.
         Rendered::Presets { action } => {
+            let Some(module) = owner.descriptor() else {
+                return ControlModel::Unsupported(
+                    "a preset library needs a declaring module".into(),
+                );
+            };
             let unavailable = match &module.availability {
                 lightwell_core::Availability::Available => None,
                 lightwell_core::Availability::Unavailable { reason } => Some(reason.as_str()),
@@ -1211,13 +1256,13 @@ fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupSt
 /// A value control is modelled by the kind its parameter declares, so a descriptor that grows a
 /// kind this build cannot draw is named rather than dropped.
 fn value_model(
-    module: &ModuleDescriptor,
+    owner: ControlOwner<'_>,
     inputs: &Inputs<'_>,
     action: &str,
     parameter: &str,
     label: &str,
 ) -> ControlModel {
-    let Some(declared) = declared_parameter(module, action, parameter) else {
+    let Some(declared) = owner.parameter(action, parameter) else {
         return ControlModel::Unsupported(undeclared_label(action, parameter));
     };
     let text = inputs.fields.get(action, parameter).unwrap_or_default();
@@ -1339,6 +1384,12 @@ fn value_model(
         )),
         ParameterKind::Settings => ControlModel::Unsupported(format!(
             "settings parameter {parameter} of action {action} needs a presets control"
+        )),
+        // A path has no control and is never meant to get one: it is drawn on the canvas, so a
+        // panel that finds one declared says so rather than inventing a widget for it.
+        ParameterKind::Points { .. } => ControlModel::Unsupported(format!(
+            "points parameter {parameter} of action {action} is drawn on the canvas and has no \
+             panel control"
         )),
     }
 }
@@ -1951,19 +2002,60 @@ pub(crate) fn control_kind(control: &Control) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// The declaration one action identity carries, whether a module declares it or the host does.
+///
+/// The `mask.*` family is declared with the same [`ActionDescriptor`] type a module uses, so every
+/// generic path below it — the request builder, the patch rule, the draft rule, the field store and
+/// the generated controls — works on a mask command without a second copy of itself. A method name
+/// carries a dot, which an action identity may not, so the two namespaces cannot collide.
 pub(crate) fn declared_action<'a>(
     modules: &'a [ModuleDescriptor],
     action: &str,
 ) -> Option<&'a ActionDescriptor> {
+    if let Some(command) = lightwell_core::mask::commands::find(action) {
+        return Some(&command.action);
+    }
     modules.iter().find_map(|module| module.action(action))
 }
 
-pub(crate) fn declared_parameter<'a>(
-    module: &'a ModuleDescriptor,
-    action: &str,
-    parameter: &str,
-) -> Option<&'a ParameterDescriptor> {
-    module.action(action)?.parameter(parameter)
+/// Who declares the control being modelled: one module, or the host's own mask command family.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ControlOwner<'a> {
+    Module(&'a ModuleDescriptor),
+    /// A host control, whose action is looked up in the mask command table.
+    Host,
+}
+
+impl<'a> ControlOwner<'a> {
+    /// The declared parameter this control edits. A module's control is resolved against its own
+    /// declarations only, so a control naming another module's action is reported rather than drawn.
+    pub(crate) fn parameter(
+        self,
+        action: &str,
+        parameter: &str,
+    ) -> Option<&'a ParameterDescriptor> {
+        match self {
+            Self::Module(module) => module.action(action)?.parameter(parameter),
+            Self::Host => lightwell_core::mask::commands::find(action)?
+                .action
+                .parameter(parameter),
+        }
+    }
+
+    /// The module's own id, for the per-module keys a group's expansion and a tab selection use.
+    fn id(self) -> &'a str {
+        match self {
+            Self::Module(module) => &module.id,
+            Self::Host => "mask",
+        }
+    }
+
+    fn descriptor(self) -> Option<&'a ModuleDescriptor> {
+        match self {
+            Self::Module(module) => Some(module),
+            Self::Host => None,
+        }
+    }
 }
 
 /// This action merges the fields it is sent into the state it already holds, so each of its
@@ -1991,7 +2083,6 @@ pub(crate) fn drafts(modules: &[ModuleDescriptor], action: &str, parameter: &str
     is_patch(modules, action) || drafts_alone(modules, action, parameter)
 }
 
-/// The label a generated control carries for one field, as the panel and the status line name it.
 /// The reset a number control declares for its own field, if the first number control of this
 /// action and parameter declares one: the action and preset that resetting the field runs instead
 /// of its parameter's declared default.
@@ -2022,18 +2113,34 @@ pub(crate) fn declared_field_reset<'a>(
         .flatten()
 }
 
+/// The label a generated control carries for one field, as the panel and the status line name it.
+///
+/// The host's own `mask.*` controls are searched first, for the same reason `declared_action` looks
+/// there first: a mask command is declared with the same types and its controls carry the same
+/// labels, so a status line naming a dragged field must find one wherever it was declared.
 pub(crate) fn control_label(
     modules: &[ModuleDescriptor],
     action: &str,
     parameter: &str,
 ) -> Option<String> {
-    modules
-        .iter()
-        .find_map(|module| labelled_control(&module.controls, action, parameter))
-        .map(str::to_owned)
+    labelled_control(
+        lightwell_core::mask::commands::controls(),
+        action,
+        parameter,
+    )
+    .or_else(|| {
+        modules
+            .iter()
+            .find_map(|module| labelled_control(&module.controls, action, parameter))
+    })
+    .map(str::to_owned)
 }
 
-fn labelled_control<'a>(controls: &'a [Control], action: &str, parameter: &str) -> Option<&'a str> {
+pub(crate) fn labelled_control<'a>(
+    controls: &'a [Control],
+    action: &str,
+    parameter: &str,
+) -> Option<&'a str> {
     controls.iter().find_map(|control| match classify(control) {
         Rendered::Group { controls, .. } => labelled_control(controls, action, parameter),
         Rendered::Number {
@@ -2075,6 +2182,21 @@ fn labelled_control<'a>(controls: &'a [Control], action: &str, parameter: &str) 
     })
 }
 
+/// The JSON method an action id is published as: `edit.<id>` for a module action, and the id itself
+/// for a host `mask.*` command, whose method name *is* its action identity.
+///
+/// It lives here rather than in the view because "which method does this control send" is a fact about
+/// the host's command table, and the view layer holds no core dependency. Reading it from that table
+/// is also what keeps the caption a person copies and the method the request carries from drifting
+/// apart when a kind is registered.
+pub(crate) fn published_method(action: &str) -> String {
+    if lightwell_core::mask::commands::find(action).is_some() {
+        action.to_owned()
+    } else {
+        format!("edit.{action}")
+    }
+}
+
 /// The module that declares this id, when it is registered.
 pub(crate) fn module_of<'a>(
     modules: &'a [ModuleDescriptor],
@@ -2100,7 +2222,8 @@ pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &s
     })
 }
 
-/// What a click on the photograph does in one canvas mode, as that mode's module declares it.
+/// What a click on the photograph does in one canvas mode, as that mode's module — or the host —
+/// declares it.
 ///
 /// A pick belongs to the mode the session is in, never to "whichever module declares one first":
 /// several modules declare a canvas pick, and only the one whose canvas is on screen may answer
@@ -2114,9 +2237,20 @@ pub(crate) enum CanvasPick<'a> {
         x: &'a str,
         y: &'a str,
     },
-    /// Run this query at the located content pixel and submit the fields it answers with to the
-    /// action once. A refused query commits nothing and its reason is shown.
+    /// Run this module query at the located content pixel and submit the fields it answers with to
+    /// the module action once. A refused query commits nothing and its reason is shown.
     Sample {
+        query: &'a str,
+        x: &'a str,
+        y: &'a str,
+        action: &'a str,
+    },
+    /// The same interaction with the **host's** own pair: a `mask.*` read answers the pixel and a
+    /// `mask.*` command receives it. A mask is a host object and no module declares one, so a pick
+    /// that fills part of a mask reaches the host's declarations instead of a module's; everything
+    /// else about it — the query first, the numeric fields the action declares, the refusal that
+    /// commits nothing — is identical, which is why it is the same enum and not a second mechanism.
+    HostSample {
         query: &'a str,
         x: &'a str,
         y: &'a str,
@@ -2125,10 +2259,28 @@ pub(crate) enum CanvasPick<'a> {
 }
 
 /// The pick the active canvas mode declares, if that mode declares one at all.
+///
+/// The host's own picks are consulted first and by the same key: a pick's mode is its action's method
+/// name, which carries a dot and therefore can never be a module id.
 pub(crate) fn canvas_pick<'a>(
     modules: &'a [ModuleDescriptor],
     mode: &str,
 ) -> Option<CanvasPick<'a>> {
+    if let Some(CanvasInteraction::SampleApply {
+        query,
+        x,
+        y,
+        action,
+        ..
+    }) = lightwell_core::mask::commands::canvas_pick(mode)
+    {
+        return Some(CanvasPick::HostSample {
+            query: query.as_str(),
+            x: x.as_str(),
+            y: y.as_str(),
+            action: action.as_str(),
+        });
+    }
     let module = module_of(modules, mode).filter(|module| module.is_available())?;
     match module.canvas.as_ref()? {
         CanvasInteraction::PointPick { action, x, y, .. } => Some(CanvasPick::Point {

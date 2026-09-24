@@ -732,7 +732,10 @@ fn a_stack_that_cannot_be_held_ready_at_once_is_a_resource_limit() {
             effect_format: crate::EFFECT_FORMAT,
             payload: json!({}),
             artifacts: ids,
+            mask: None,
         }],
+        masks: Vec::new(),
+        strokes: Default::default(),
     };
     let error = service.require_artifacts(&recipe).unwrap_err();
     assert_eq!(error.kind, ErrorKind::ResourceLimit);

@@ -96,6 +96,19 @@ pub const CLIPPING_BOTH: Color = Color {
     a: 1.0,
 };
 
+/// The mask overlay tints, one per name in the core's `MaskOverlayColour`. Reserved for the mask
+/// overlay: they say "this is the selection", never "this is clipped".
+///
+/// They are deliberately not red. Clipping already owns red, blue and the magenta between them on
+/// this canvas, and an overlay a person cannot tell apart from a clipping indicator is worse than
+/// no overlay at all, so each of these is a long way from all three — the distance is measured in
+/// this module's tests rather than claimed. The [masking design](../../../docs/design/masking.md)
+/// records red as the default tint, from Lightroom; that default predates the clipping tokens and
+/// is the owner's to settle.
+pub const MASK_OVERLAY_GREEN: Color = Color::from_rgb8(0x3f, 0xd0, 0x7a);
+/// The neutral mask overlay tint, for a scene the green reads into.
+pub const MASK_OVERLAY_WHITE: Color = Color::from_rgb8(0xf2, 0xf2, 0xf5);
+
 /// The three histogram channel fills. They are the plain additive primaries rather than tinted
 /// versions of them, because the plot's whole job is to say which channel a count belongs to and
 /// what their overlap is; the alpha below is what makes the overlap readable.
@@ -817,6 +830,37 @@ mod tests {
         // It is visibly neither of the two it is made from, which is the point of a third class.
         assert_ne!(CLIPPING_BOTH, CLIPPING_HIGHLIGHT);
         assert_ne!(CLIPPING_BOTH, CLIPPING_SHADOW);
+    }
+
+    #[test]
+    fn mask_overlay_tokens_match_the_visual_language_table() {
+        assert_eq!(MASK_OVERLAY_GREEN, Color::from_rgb8(0x3f, 0xd0, 0x7a));
+        assert_eq!(MASK_OVERLAY_WHITE, Color::from_rgb8(0xf2, 0xf2, 0xf5));
+    }
+
+    /// A mask overlay must never be mistaken for a clipping indicator. The bar is measured, not
+    /// asserted by eye: every overlay tint is at least 100 codes away, as a distance over the three
+    /// 8-bit channels, from each of the three clipping colours.
+    #[test]
+    fn every_mask_overlay_tint_is_far_from_every_clipping_colour() {
+        fn distance(a: Color, b: Color) -> f32 {
+            let channel = |x: f32, y: f32| ((x - y) * 255.0).powi(2);
+            (channel(a.r, b.r) + channel(a.g, b.g) + channel(a.b, b.b)).sqrt()
+        }
+        let mut closest = f32::INFINITY;
+        for overlay in [MASK_OVERLAY_GREEN, MASK_OVERLAY_WHITE] {
+            for clipping in [CLIPPING_HIGHLIGHT, CLIPPING_SHADOW, CLIPPING_BOTH] {
+                let apart = distance(overlay, clipping);
+                assert!(
+                    apart >= 100.0,
+                    "{overlay:?} is only {apart:.0} codes from {clipping:?}"
+                );
+                closest = closest.min(apart);
+            }
+        }
+        // The two tints are also each other's alternatives, so they must differ as well.
+        assert!(distance(MASK_OVERLAY_GREEN, MASK_OVERLAY_WHITE) >= 100.0);
+        println!("closest mask overlay tint to a clipping colour: {closest:.0} codes");
     }
 
     #[test]

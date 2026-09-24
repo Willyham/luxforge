@@ -19,7 +19,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 
 - Originals are read-only. Import references existing files with a stable asset ID, a verified content fingerprint and a changeable locator. SQLite is the local catalog. Folder relinking, sidecars, portability, backups and sync need their own workflow decisions.
 - A "layer" is an ordered edit operation in a recipe. Each committed action stores a complete immutable recipe snapshot and one attributed history entry. Bitmap compositing, blend modes and arbitrary layer reordering are not selected.
-- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 6; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
+- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 7; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
 - Undo and redo navigate saved entries without appending rows. Preview is read-only. Restore appends an action and keeps all later entries. A new edit clears shortcut redo, but every entry stays available. Committed state survives restart; drafts do not.
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
@@ -91,7 +91,7 @@ Decided on 2026-09-23 under the owner's delegation for the [shared module capabi
 - Only the desktop (after Allow) or `lightwell-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint or path change revokes the old grants.
 - Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
 - No remote provider adapter ships with the framework; the first real adapters arrive with Corrections. `managed-storage` and `local-runtime` wait for their first consumer.
-- Derived artifacts live in a directory beside the catalog and move with it; catalog format 6 holds their references beside the preset library, and earlier formats are refused.
+- Derived artifacts live in a directory beside the catalog and move with it; catalog format 7 holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
 
 ## Programmable operations and modules
 
@@ -112,7 +112,7 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 
 ## Presets
 
-The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (format 5), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Lightwell has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
+The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (format 7), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Lightwell has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
 
 ## Rendering memory
 
@@ -125,6 +125,8 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work?
 - Beyond the supplied files, which RAW recording modes/firmware and controlled quality scenes should be prioritized? The implemented decoder/developer and neutral defaults are explicit; broad visual acceptance, the measured resource target and additional DJI modes/scenes remain in [RAW qualification](design/initial-raw.md#remaining-qualification-and-decisions).
+- Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in catalog format 7. The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
+- Do masking's remaining recorded defaults stand — masks as a target for the delivered modules rather than a local-adjustment module of their own, the idempotent component algebra, a radial that selects inside, one stroke amount instead of Flow and Density, and the A-to-D phase order with brushes before range selections?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?

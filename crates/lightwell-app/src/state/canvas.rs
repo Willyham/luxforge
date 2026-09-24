@@ -4,7 +4,7 @@ use crate::{
     state::{Inputs, tools::canvas_pick},
 };
 use lightwell_core::{
-    Availability, CanvasInteraction, ErrorKind, ModuleDescriptor, POINTER_MODE, Zoom,
+    Availability, CanvasInteraction, ErrorKind, MASK_MODE, ModuleDescriptor, POINTER_MODE, Zoom,
 };
 
 /// How the photograph is sized on the surface. The view never reads the session itself.
@@ -56,6 +56,9 @@ pub(crate) struct ModeEntry {
 /// The bar over the top of the canvas while a mode has a draft open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DraftBar {
+    /// The bar belongs to a mask shape gesture rather than to the crop draft, so Apply and Cancel
+    /// reach the gesture that is actually open.
+    pub(crate) mask: bool,
     pub(crate) title: String,
     /// One line of the draft's own numbers, e.g. `300 × 200 px · 0°`.
     pub(crate) readout: String,
@@ -80,6 +83,9 @@ pub(crate) enum NoticeAction {
     /// The same two decisions for an open slider gesture's draft, which the core holds.
     DiscardSliderDraft,
     ReapplySliderDraft,
+    /// And the same two for an open mask shape gesture.
+    DiscardMaskDraft,
+    ReapplyMaskDraft,
     ReturnCurrent,
     /// Grant exactly the scope the open consent notice names, then retry what was refused.
     AllowConsent,
@@ -113,6 +119,24 @@ pub(crate) struct CanvasModel {
     pub(crate) surface_mode: SurfaceMode,
     /// Option is held, so a handle scales about the centre.
     pub(crate) option: bool,
+    /// Mask mode is active, so the tools panel shows the Masks panel and the canvas draws the
+    /// selected mask's handles and overlay.
+    pub(crate) masking: bool,
+    /// The tools panel shows the Masks panel: Mask mode, or one of the host's picks, which is
+    /// entered from that panel and must not hide it.
+    pub(crate) mask_panel: bool,
+}
+
+/// Whether the workspace is on a mask: Mask mode itself, or one of the host's own canvas picks,
+/// which fill part of a mask and are entered from the Masks panel.
+///
+/// The panel a pick was started from has to stay on screen while the pick is taken — a button that
+/// hides the list it belongs to is not a control — so the tools panel, the maskable sections and the
+/// mask each adjustment is bound to all read this. The canvas's own `masking` flag is *not* this: a
+/// pick mode takes a click, while Mask mode drives a gesture, and only one of the two may own the
+/// pointer.
+pub(crate) fn mask_workspace(mode: &str) -> bool {
+    mode == MASK_MODE || lightwell_core::mask::commands::canvas_pick(mode).is_some()
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
@@ -123,13 +147,24 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
     // not a canvas takeover: it belongs beside the controls its pick fills, so its module declares
     // a picker control in its own panel and the strip does not list it. Developer modules stay out
     // of the strip unless the run asked for them.
-    let mut modes = vec![ModeEntry {
-        id: POINTER_MODE.into(),
-        label: "Pointer".into(),
-        shortcut: Some("V".into()),
-        selected: inputs.session.workspace.mode == POINTER_MODE,
-        enabled: true,
-    }];
+    let mut modes = vec![
+        ModeEntry {
+            id: POINTER_MODE.into(),
+            label: "Pointer".into(),
+            shortcut: Some("V".into()),
+            selected: inputs.session.workspace.mode == POINTER_MODE,
+            enabled: true,
+        },
+        // Mask is a host mode, not a module's: a mask is a host object in the recipe, so no module
+        // declares its canvas and the strip offers it whatever is registered.
+        ModeEntry {
+            id: MASK_MODE.into(),
+            label: "Mask".into(),
+            shortcut: Some("M".into()),
+            selected: inputs.session.workspace.mode == MASK_MODE,
+            enabled: editable,
+        },
+    ];
     modes.extend(
         inputs
             .modules
@@ -179,6 +214,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             SurfaceMode::Frame
         },
         option: inputs.crop_option,
+        masking: inputs.session.workspace.mode == MASK_MODE,
+        mask_panel: mask_workspace(&inputs.session.workspace.mode),
     }
 }
 
@@ -205,6 +242,33 @@ fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
 }
 
 fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
+    // A mask shape gesture takes the bar over while it is open: only one draft exists per client, so
+    // the two can never both be there.
+    if let Some(draft) = inputs.mask_draft {
+        let readout = draft
+            .values()
+            .into_iter()
+            .map(|(name, value)| format!("{name} {value:.3}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let apply_reason = if draft.conflicted {
+            Some("Changed elsewhere: discard the gesture or reapply it".to_owned())
+        } else if !inputs.session.preview.can_edit() {
+            Some("Return to the current state to apply".to_owned())
+        } else if inputs.busy {
+            Some("Waiting for the last request".to_owned())
+        } else {
+            None
+        };
+        return Some(DraftBar {
+            mask: true,
+            title: format!("{} · {}", draft.op.label(), draft.kind),
+            readout,
+            can_apply: apply_reason.is_none(),
+            conflicted: draft.conflicted,
+            apply_reason,
+        });
+    }
     let draft = inputs.draft?;
     let title = inputs
         .modules
@@ -233,6 +297,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
         None
     };
     Some(DraftBar {
+        mask: false,
         title,
         readout,
         can_apply: apply_reason.is_none(),
@@ -265,6 +330,23 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
             actions: vec![
                 ("Discard".into(), NoticeAction::DiscardSliderDraft),
                 ("Reapply".into(), NoticeAction::ReapplySliderDraft),
+            ],
+        });
+    }
+    if inputs.mask_draft.is_some_and(|draft| draft.conflicted) {
+        let revision = inputs.state.map(|state| state.revision);
+        notices.push(Notice {
+            tone: NoticeTone::Warning,
+            title: "Changed elsewhere".into(),
+            body: match revision {
+                Some(revision) => format!(
+                    "Another client committed revision {revision} while your mask gesture was open. Your gesture is kept."
+                ),
+                None => "Another client committed while your mask gesture was open. Your gesture is kept.".into(),
+            },
+            actions: vec![
+                ("Discard".into(), NoticeAction::DiscardMaskDraft),
+                ("Reapply".into(), NoticeAction::ReapplyMaskDraft),
             ],
         });
     }

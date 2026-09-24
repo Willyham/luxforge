@@ -387,6 +387,8 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
             "thirds": false,
             "clip_shadows": false,
             "clip_highlights": false,
+            "mask_overlay": "off",
+            "mask_overlay_colour": "green",
             "component_gallery": null,
         })
     );
@@ -402,6 +404,8 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
             "thirds": false,
             "clip_shadows": false,
             "clip_highlights": false,
+            "mask_overlay": "off",
+            "mask_overlay_colour": "green",
             "component_gallery": null,
         })
     );

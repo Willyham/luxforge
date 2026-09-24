@@ -9,7 +9,7 @@
 //! different colour family entirely, which is what [`patch_mean`] samples at
 //! [`OPPOSITE_ANGLE_DEG`] as an unaffected control for a red-hue edit.
 use crate::{
-    smoke::{columns, frame_identity, longest_run},
+    smoke::{columns, frame_identity},
     *,
 };
 
@@ -149,11 +149,18 @@ fn mixer_field<'a>(frame: &'a Value, name: &str) -> Result<&'a str> {
         .ok_or_else(|| format!("Frame records no {name} field").into())
 }
 
-/// Where the wheel is drawn: found by the row with the widest run of saturated pixels (an
-/// accurate horizontal extent no title-bar icon or coloured control rail can win, since none of
-/// them spans as wide as the wheel itself) and the column with the tallest run (the same, for the
-/// vertical extent). This works whether the zoom centres the photograph (Fit) or anchors it to the
-/// photo surface's own top-left corner, which 100% does for a wheel smaller than the canvas.
+/// Where the wheel is drawn, measured across it rather than down it. The mode strip floats over the
+/// bottom of the canvas, so the wheel's own vertical extent is not on screen to be scanned for: at
+/// Fit a square fixture fills the canvas and its lowest rows are behind the strip, and at 100% the
+/// strip stands clear of a wheel smaller than the canvas but carries a saturated pill of its own
+/// that a scan down the frame can join to the wheel. Scanning across it instead needs neither, since
+/// the fixture is a disc centred in a square: each row's span of saturated pixels — first to last,
+/// not the longest unbroken run, because the wheel's own centre is desaturated and splits every row
+/// that crosses it — is widest exactly across the wheel's diameter, the rows that attain that width
+/// straddle its centre row, and the diameter is its extent in both axes. This reads the same wheel
+/// whatever the chrome around it does, and whether the zoom centres the photograph (Fit) or anchors
+/// it to the photo surface's own top-left corner, which 100% does for a wheel smaller than the
+/// canvas.
 fn wheel_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
     let image = image::open(path)?.to_rgb8();
     let (width, height) = image.dimensions();
@@ -167,37 +174,46 @@ fn wheel_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
         "Photo surface too narrow to inset from its own edge dividers",
     )?;
     let saturated = |p: [u8; 3]| p.iter().max().unwrap() - p.iter().min().unwrap() >= 40;
-    // Clear of the title bar above and the mode strip / status line below, and of the divider that
-    // marks each edge of the photo surface itself, so none of those is ever scanned as a row or a
-    // column: the divider is a thin, full-height line exactly at the surface's own boundary.
+    // Clear of the title bar above and the status line below, and of the divider that marks each
+    // edge of the photo surface itself: the divider is a thin, full-height line exactly at the
+    // surface's own boundary, and a photograph at 100% is drawn flush against it, so the inset
+    // clears the divider without eating into the wheel it is measuring.
     let top_margin = (height / 20).max(20);
     let bottom_margin = height - top_margin;
-    let side_inset = 10;
+    let side_inset = 2;
     let (inset_left, inset_right) = (surface_left + side_inset, surface_right - side_inset);
-    let mut widest: Option<(u32, u32, u32)> = None;
+    let span = |y: u32| -> Option<(u32, u32)> {
+        let mut first = None;
+        let mut last = None;
+        for x in inset_left..inset_right {
+            if saturated(image.get_pixel(x, y).0) {
+                first.get_or_insert(x);
+                last = Some(x);
+            }
+        }
+        Some((first?, last?))
+    };
+    let mut diameter = None;
+    let (mut left, mut right, mut first_row, mut last_row) = (0, 0, 0, 0);
     for y in top_margin..bottom_margin {
-        let run =
-            longest_run((inset_left..inset_right).map(|x| (x, saturated(image.get_pixel(x, y).0))));
-        if let Some((left, right)) = run
-            && widest.is_none_or(|(w, ..)| right - left > w)
-        {
-            widest = Some((right - left, left, right));
+        let Some((row_left, row_right)) = span(y) else {
+            continue;
+        };
+        let across = row_right - row_left;
+        if diameter.is_none_or(|widest| across > widest) {
+            diameter = Some(across);
+            (left, right, first_row, last_row) = (row_left, row_right, y, y);
+        } else if diameter == Some(across) {
+            (left, right, last_row) = (left.min(row_left), right.max(row_right), y);
         }
     }
-    let (_, left, right) = widest.ok_or("No saturated wheel content in any row")?;
-    let mut tallest: Option<(u32, u32, u32)> = None;
-    for x in inset_left..inset_right {
-        let run = longest_run(
-            (top_margin..bottom_margin).map(|y| (y, saturated(image.get_pixel(x, y).0))),
-        );
-        if let Some((top, bottom)) = run
-            && tallest.is_none_or(|(h, ..)| bottom - top > h)
-        {
-            tallest = Some((bottom - top, top, bottom));
-        }
-    }
-    let (_, top, bottom) = tallest.ok_or("No saturated wheel content in any column")?;
-    Ok([left, top, right, bottom])
+    let diameter = diameter.ok_or("No saturated wheel content in any row")?;
+    // The rows that span the whole diameter straddle the centre row, so their own midpoint is it.
+    let top = (first_row + last_row)
+        .checked_sub(diameter)
+        .ok_or("The wheel runs off the top of the frame")?
+        / 2;
+    Ok([left, top, right, top + diameter])
 }
 
 /// The mean RGB of a small patch at `angle_deg` around the wheel's own centre, `SAMPLE_RADIUS_FRACTION`

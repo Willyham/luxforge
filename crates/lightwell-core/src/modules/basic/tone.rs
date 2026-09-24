@@ -15,9 +15,18 @@
 use crate::modules::PointwiseColor;
 
 /// Rec. 709 / sRGB luma coefficients on linear sRGB. See "Luminance" in the design doc.
-const LUMA_R: f32 = 0.2126;
-const LUMA_G: f32 = 0.7152;
-const LUMA_B: f32 = 0.0722;
+///
+/// Written as `f64` and narrowed once, the pattern `colour.rs` already uses for the Oklab matrices:
+/// the units below multiply the `f32` values, and the host's value-based mask components
+/// (`crate::mask::range`) multiply the `f64` ones, so the editor has **one** definition of
+/// luminance rather than two that could drift.
+pub(crate) const LUMA_R_F64: f64 = 0.2126;
+pub(crate) const LUMA_G_F64: f64 = 0.7152;
+pub(crate) const LUMA_B_F64: f64 = 0.0722;
+
+const LUMA_R: f32 = LUMA_R_F64 as f32;
+const LUMA_G: f32 = LUMA_G_F64 as f32;
+const LUMA_B: f32 = LUMA_B_F64 as f32;
 
 /// The curve domain's pivot: encoded mid-grey. See "Contrast" in the design doc.
 const PIVOT: f32 = 0.5;

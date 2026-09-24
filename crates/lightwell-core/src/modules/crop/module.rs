@@ -153,6 +153,7 @@ impl CropModule {
                     // Later than the orientation's default order, so the host places every
                     // transform ahead of the crop and the crop's input stage carries them all.
                     order: CROP_ORDER,
+                    maskable: false,
                     artifacts: false,
                 }],
                 actions: vec![

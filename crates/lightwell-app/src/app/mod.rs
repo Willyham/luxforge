@@ -11,6 +11,9 @@ pub(crate) mod crop;
 pub(crate) mod evidence;
 pub(crate) mod fields;
 pub(crate) mod keymap;
+pub(crate) mod masks;
+#[cfg(test)]
+mod masks_tests;
 pub(crate) mod message;
 pub(crate) mod overlay;
 pub(crate) mod performance;
@@ -319,8 +322,9 @@ pub(crate) struct ProxyFrame {
     pub(crate) dimensions: (u32, u32),
     /// The proxy source was built for this frame rather than taken from the queue's cache.
     pub(crate) built: bool,
-    /// The frame approximates the exact render at display size: the stack holds a spatial layer.
-    pub(crate) approximate: bool,
+    /// Whether the frame approximates the exact render at display size, and why: a spatial layer
+    /// whose neighbourhoods scale with the stage, a thin mask, or both.
+    pub(crate) approximation: lightwell_core::ProxyApproximation,
     /// The frame approximates a drafted RAW white balance on planes developed at another one, as
     /// the exact phase of the same job does.
     pub(crate) approximate_white_balance: bool,
@@ -556,6 +560,55 @@ pub(crate) struct Editor {
     /// session already reports it, so the mode strip shows Crop selected during every draft
     /// however it was opened, and pointer again however it ended.
     pub(crate) mode_sync: Option<String>,
+    /// The masks of the displayed entry, as `mask.list` last answered them. Read back with the
+    /// recipe after every change, so the panel never shows a mask the stack no longer holds.
+    pub(crate) masks: Option<lightwell_core::mask::commands::MaskListing>,
+    /// The mask the Masks panel has open, and the component selected inside it. Per-client
+    /// selection: it changes no recipe and is never sent.
+    pub(crate) selected_mask: Option<lightwell_core::MaskId>,
+    pub(crate) selected_component: Option<lightwell_core::ComponentId>,
+    /// The component row the pointer is over, which the overlay shows on its own while it lasts.
+    /// View state of the same kind as the selection, and never sent.
+    pub(crate) hovered_component: Option<lightwell_core::ComponentId>,
+    /// Masks whose overlay the eye has hidden. A hidden mask still applies to the picture.
+    pub(crate) hidden_masks: std::collections::HashSet<lightwell_core::MaskId>,
+    /// The open mask shape gesture, which commits one `mask.*` command through the draft lifecycle.
+    pub(crate) mask_draft: Option<crate::mask_draft::MaskDraft>,
+    /// This gesture's content-to-output map, read once from `render.transform` when it opened and
+    /// then applied locally per pointer move.
+    pub(crate) mask_map: Option<crate::mask_draft::ContentMap>,
+    /// The mode the next Add-component gesture will use.
+    pub(crate) mask_mode: lightwell_core::ComponentMode,
+    /// The brush the next stroke will be drawn with: per-client gesture state, never sent on its
+    /// own. It is copied into a painted draft when the gesture opens, because the brush a stroke was
+    /// begun with is the brush it was drawn with for the whole of its life.
+    pub(crate) brush: crate::mask_draft::Brush,
+    /// The erase modifier is held down. It is read when a stroke starts and then frozen, so letting
+    /// the key go mid-stroke does not turn an erase into an add halfway along the path.
+    pub(crate) brush_erase_held: bool,
+    /// The open mask's name as it is being typed in the rename field.
+    pub(crate) mask_name: String,
+    /// The core draft behind the open shape gesture, known once `draft.begin` answers.
+    pub(crate) mask_draft_id: Option<lightwell_core::DraftId>,
+    /// A `draft.*` round trip is in flight; nothing else is sent until it answers.
+    pub(crate) mask_draft_in_flight: bool,
+    /// The gesture produced geometry while a round trip was in flight; the answer sends it.
+    pub(crate) mask_draft_pending: bool,
+    /// Apply was pressed while a round trip was in flight; the answer commits.
+    pub(crate) mask_draft_finish: bool,
+    /// The method and parameters of the last `mask.*` command this desktop sent. Correlated
+    /// evidence: a captured frame and a driven run can both say which request produced the stack on
+    /// screen, without reconstructing it from the panel afterwards.
+    pub(crate) last_mask_request: Option<(String, Value)>,
+    /// A `mask.*` command this desktop sent is still in flight, so its answer is the one that
+    /// settles a waiting script step. A mask command changes no pixel when the host refuses it, so
+    /// without this the refusal arrives with no frame behind it and a driven run waits out its
+    /// deadline on a step that has already been answered.
+    pub(crate) mask_command_in_flight: bool,
+    /// A coverage grid the preview worker filled beside a frame, waiting to be uploaded.
+    pub(crate) mask_overlay_pending: Option<(u64, lightwell_core::analysis::MaskOverlay)>,
+    /// The mask overlay on the GPU, with the preview generation it belongs to.
+    pub(crate) mask_overlay_photo: Option<(u64, image_memory::Allocation)>,
     /// What the desktop knows about every capability-declaring module: its last settings and
     /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
     /// the authoritative state; this is what was last read back.
@@ -601,9 +654,11 @@ impl Editor {
                 steps: Vec::new(),
                 frames: Vec::new(),
                 capture_pending: false,
+                capture_overlay: false,
                 saving: false,
                 had_errors: false,
                 paced_slider: None,
+                paced_stroke: None,
                 second_click: None,
                 tools_scroll: None,
                 capability_wait: None,
@@ -727,6 +782,25 @@ impl Editor {
             crop_option: false,
             crop_space: false,
             mode_sync: None,
+            masks: None,
+            selected_mask: None,
+            selected_component: None,
+            hovered_component: None,
+            hidden_masks: std::collections::HashSet::new(),
+            mask_draft: None,
+            mask_map: None,
+            mask_mode: lightwell_core::ComponentMode::Add,
+            brush: crate::mask_draft::NEUTRAL_BRUSH,
+            brush_erase_held: false,
+            mask_name: String::new(),
+            mask_draft_id: None,
+            mask_draft_in_flight: false,
+            mask_draft_pending: false,
+            mask_draft_finish: false,
+            last_mask_request: None,
+            mask_command_in_flight: false,
+            mask_overlay_pending: None,
+            mask_overlay_photo: None,
             capabilities: CapabilityStore::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
@@ -869,7 +943,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref()),"performance":self.performance_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft.as_ref().map(|draft| draft.summary()),"last_mask_request":self.last_mask_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref()),"performance":self.performance_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -984,7 +1058,12 @@ impl Editor {
                 (None, false) => None,
             },
             "declined": self.proxy_declined,
-            "approximate": self.presented_proxy_frame().map(|frame| frame.approximate),
+            "approximate": self
+                .presented_proxy_frame()
+                .map(|frame| frame.approximation.is_approximate()),
+            "approximate_reason": self
+                .presented_proxy_frame()
+                .and_then(|frame| frame.approximation.reason()),
             "dimensions": self
                 .presented_proxy_frame()
                 .map(|frame| json!([frame.dimensions.0, frame.dimensions.1])),
@@ -1043,14 +1122,14 @@ impl Editor {
                     .layers
                     .iter()
                     .map(|layer| {
-                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"artifacts":layer.artifacts})
+                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(lightwell_core::MaskId::as_str),"artifacts":layer.artifacts})
                     })
                     .collect();
                 let displayed = self.rendered_entry.as_ref().map(|entry| json!({
                     "entry": entry.id.as_str(),
                     "snapshot": entry.snapshot.id.as_str(),
                     "dimensions": self.dimensions,
-                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"artifacts":layer.artifacts})).collect::<Vec<_>>(),
+                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(lightwell_core::MaskId::as_str),"artifacts":layer.artifacts})).collect::<Vec<_>>(),
                 }));
                 json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"label":state.current_entry.label,"layers":layers,"displayed":displayed})
             }
@@ -1279,7 +1358,13 @@ impl Editor {
         // `view.set` reaching us through an adopted session — is answered in one place.
         let zoomed = self.zoom_changed(&zoom);
         let refit = self.refit_proxy();
-        let task = self.sync_mode(Task::batch([task, sample]));
+        // The panel's selection follows the stack and the mode before anything is derived from it,
+        // so a section is never bound to a mask the recipe no longer holds.
+        if self.follow_mask_selection() {
+            self.seed_values();
+        }
+        let mask_overlay = self.upload_mask_overlay();
+        let task = self.sync_mode(Task::batch([task, sample, mask_overlay]));
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
@@ -1703,12 +1788,12 @@ impl Editor {
             let Some(frame) = self.presented_proxy_frame() else {
                 return Task::none();
             };
-            let (generation, raster, dimensions, built, approximate, white_balance, render_ms) = (
+            let (generation, raster, dimensions, built, approximation, white_balance, render_ms) = (
                 frame.generation,
                 frame.raster.clone(),
                 frame.dimensions,
                 frame.built,
-                frame.approximate,
+                frame.approximation,
                 frame.approximate_white_balance,
                 frame.render_ms,
             );
@@ -1717,7 +1802,7 @@ impl Editor {
                 raster,
                 Some(dimensions),
                 built,
-                approximate,
+                approximation,
                 white_balance,
                 Some(render_ms),
             );
@@ -1736,7 +1821,7 @@ impl Editor {
             raster,
             None,
             false,
-            false,
+            lightwell_core::ProxyApproximation::default(),
             white_balance,
             render_ms,
         )
@@ -1755,6 +1840,20 @@ impl Editor {
         } else {
             self.proxy_bounds()
         };
+        // The mask overlay's coverage grid rides whichever frame is about to be rendered, so it is
+        // attached here rather than by each task that builds a job: one rule, every preview path,
+        // and no second render for the overlay. The core validates the request against the stack
+        // this job will render, so a mask the stack does not hold leaves the frame without a grid
+        // instead of failing the render.
+        if let Some(overlay) = self.mask_overlay_request() {
+            match job.clone().with_mask_overlay(overlay) {
+                Ok(with_overlay) => job = with_overlay,
+                Err(error) => self.event(
+                    "mask_overlay_refused",
+                    json!({"detail": error.detail.clone()}),
+                ),
+            }
+        }
         let bounds = job.proxy;
         // The job still waiting in the pending slot is replaced by this one and never starts, so
         // nothing about it will ever be delivered: when it was the crop draft's input stage, the
@@ -1838,7 +1937,7 @@ impl Editor {
         raster: Arc<lightwell_core::Raster>,
         proxy_dimensions: Option<(u32, u32)>,
         proxy_built: bool,
-        proxy_approximate: bool,
+        proxy_approximation: lightwell_core::ProxyApproximation,
         approximate_white_balance: bool,
         render_ms: Option<f64>,
     ) -> Task<Message> {
@@ -1862,7 +1961,7 @@ impl Editor {
             proxy,
             proxy_dimensions,
             proxy_built,
-            proxy_approximate,
+            proxy_approximation,
             approximate_white_balance,
             reason: Some("zoom"),
             render_ms,
@@ -1939,7 +2038,8 @@ impl Editor {
                 "proxy":upload.proxy,
                 "proxy_dimensions":upload.proxy_dimensions.map(|(width,height)| json!([width,height])),
                 "proxy_built":upload.proxy_built,
-                "proxy_approximate":upload.proxy_approximate,
+                "proxy_approximate":upload.proxy_approximation.is_approximate(),
+                "proxy_approximate_reason":upload.proxy_approximation.reason(),
                 "approximate_white_balance":upload.approximate_white_balance,
                 "reason":upload.reason,
                 "render_ms":upload.render_ms,
@@ -1952,6 +2052,10 @@ impl Editor {
         let settle = match &self.slider_draft {
             Some(draft) if draft.drained() => Some(Settle::SliderDraft),
             Some(_) => None,
+            // A mask shape gesture drains the same way: while another `draft.set` or the commit is
+            // still queued the frame on screen is not the one the step is evidence of, so the step
+            // waits for the geometry that settles.
+            None if !self.mask_draft_drained() => None,
             None => Some(Settle::Preview),
         };
         if upload.proxy {
@@ -2074,6 +2178,38 @@ impl Editor {
         })
     }
 
+    /// The display cell grid an overlay is reduced into: the same bounded grid the clipping overlay
+    /// already defines, so the mask overlay allocates no plane of its own and costs no second
+    /// render — the preview worker fills it beside the frame it is already producing.
+    pub(crate) fn overlay_cells(&self) -> Option<(u32, u32)> {
+        // The displayed raster's size, or the source's own before the first frame has landed: the
+        // grid is bounded by what the display can show, and the aspect ratio is what decides how
+        // the cells divide, so a mask overlay can be asked for with the first preview job rather
+        // than only from the second one onwards.
+        let source = self.dimensions.or_else(|| {
+            self.state
+                .as_ref()
+                .map(|state| (state.asset.width, state.asset.height))
+        })?;
+        let workspace = &self.session.workspace;
+        let surface = state::histogram::photo_surface(
+            self.window,
+            workspace.state_panel,
+            workspace.tools_panel,
+        );
+        let displayed = state::histogram::displayed_size(
+            match self.session.preview.view.zoom {
+                lightwell_core::Zoom::Fit => state::canvas::ZoomView::Fit,
+                lightwell_core::Zoom::Percent { value } => state::canvas::ZoomView::Percent(value),
+            },
+            source,
+            surface,
+            self.scale_factor,
+            view::canvas::PHOTO_PADDING,
+        )?;
+        state::histogram::overlay_cells(source, displayed)
+    }
+
     /// The raster a clipping overlay is derived from, with whether the mask is approximate: derived
     /// from the display proxy, or from a frame that approximates a drafted RAW white balance.
     ///
@@ -2177,6 +2313,20 @@ impl Editor {
             expanded: &self.expanded,
             slider_draft: self.slider_draft.as_ref(),
             draft: self.crop.as_ref(),
+            masks: self.masks.as_ref(),
+            selected_mask: self.selected_mask.as_ref(),
+            selected_component: self.selected_component.as_ref(),
+            hovered_component: self.hovered_component.as_ref(),
+            hidden_masks: &self.hidden_masks,
+            mask_draft: self.mask_draft.as_ref(),
+            mask_mode: self.mask_mode,
+            brush: self.brush,
+            brush_erase_held: self.brush_erase_held,
+            mask_name: &self.mask_name,
+            // The generated sections follow the open mask while Mask mode is active, and the global
+            // layer everywhere else: one target at a time, so a field always shows the layer the
+            // control in front of it would edit.
+            target: self.section_target(),
             draft_pending: self.crop_pending.is_some(),
             drafting: self.drafting(),
             crop_angle: &self.crop_angle,
@@ -2307,6 +2457,7 @@ impl Editor {
                     return Task::none();
                 }
                 self.busy = false;
+                let mask_command = std::mem::take(&mut self.mask_command_in_flight);
                 match result {
                     Ok(refresh) => {
                         if self.activity.pending {
@@ -2314,10 +2465,32 @@ impl Editor {
                                 Some((refresh.state.asset.width, refresh.state.asset.height));
                             self.activity.orientation = Some(refresh.job.source.orientation());
                         }
+                        // A `mask.*` command that **created** a mask names none in its envelope, and
+                        // the mask it made has to be the one the panel opens: the adjustments below
+                        // the component list are bound to the open mask, so leaving the previous one
+                        // open would put the next slider on a mask the person was not looking at.
+                        // A drafted create already does this on its own commit; this is the same rule
+                        // for a **typed** kind, which is created by its button rather than by a
+                        // gesture and so never reaches that path.
+                        let created_a_mask = mask_command
+                            && self.last_mask_request.as_ref().is_some_and(|(_, request)| {
+                                request.get(lightwell_core::MASK_FIELD).is_none()
+                            });
+                        let before = self.listed_masks();
                         self.accept(*refresh);
+                        if created_a_mask {
+                            self.open_created_mask(&before);
+                        }
                     }
                     Err(error) => {
                         self.status = error.clone();
+                        // A refused `mask.*` command renders nothing, so the step that sent it has
+                        // no pixels to settle on: the refusal itself is what ends it, recorded on
+                        // the step with the frame that is on screen as its evidence. Without this
+                        // a driven run waits out its whole deadline on a step already answered.
+                        if mask_command {
+                            self.mask_command_failed(&error);
+                        }
                         // Recorded, so a refused request is visible in the evidence log even when
                         // a later frame's status line has replaced it.
                         self.event("command_failed", json!({ "error": error }));
@@ -2364,6 +2537,7 @@ impl Editor {
                 self.wait_elapsed();
             }
             Message::PacedSliderTick => return self.slider_paced_tick(),
+            Message::PacedStrokeTick => return self.stroke_paced_tick(),
             Message::DoubleClickSecond => return self.double_click_second(),
             Message::Capture => {
                 let rows_shown = self.recipe_rows_shown();
@@ -2372,6 +2546,7 @@ impl Editor {
                 };
                 // Wait for the backend, for tool discovery and for the preset library, so a frame
                 // always shows real controls and the library rather than their loading lines.
+                let overlay_wanted = evidence.capture_overlay;
                 // The screenshot reads back the frame drawn last, so it waits for a frame built
                 // after every update so far; the next frame tick tries again.
                 if !evidence.capture_pending
@@ -2386,7 +2561,18 @@ impl Editor {
                 {
                     return Task::none();
                 }
+                // And, for a step the overlay armed, the grid of the frame that is on screen: an
+                // upload belongs to one generation, and a newer frame presented after it leaves the
+                // canvas drawing the photograph alone. This subscription runs per window frame, so
+                // waiting costs nothing and the grid of that newer frame arrives a message later.
+                if overlay_wanted && self.mask_overlay_surface().is_none() {
+                    return Task::none();
+                }
+                let Some(evidence) = &mut self.evidence else {
+                    return Task::none();
+                };
                 evidence.capture_pending = false;
+                evidence.capture_overlay = false;
                 evidence.saving = true;
                 let recorded = (self.snapshot(), self.activity.requested);
                 if let Some(evidence) = &mut self.evidence {
@@ -2538,9 +2724,11 @@ impl Editor {
                 self.settle_step(Settle::Session);
             }
             Message::RecipeDescribed(result) => match result {
-                Ok(recipe) => {
+                Ok(read) => {
+                    let read = *read;
                     self.recipe_failed = false;
-                    self.recipe = Some(*recipe);
+                    self.recipe = Some(read.recipe);
+                    self.masks = Some(read.masks);
                     self.seed_values();
                 }
                 Err(error) => {
@@ -2660,9 +2848,25 @@ impl Editor {
                     let entry_id = result.entry_id.clone();
                     let proxy_dimensions = result.proxy_dimensions;
                     let proxy_built = result.proxy_built;
-                    let proxy_approximate = result.proxy_approximate;
+                    let proxy_approximation = result.proxy_approximation;
                     let approximate_white_balance = result.approximate_white_balance;
                     let render_ms = result.render_ms;
+                    // The mask overlay's coverage grid rides the frame the worker already produced,
+                    // so the overlay costs no second render. Only the exact phase fills it; the
+                    // proxy phase leaves the previous grid on screen until it lands. The upload is
+                    // handed to `update_inner`, which is the one place a task can be added to
+                    // whatever this arm returns.
+                    if let Some(overlay) = result.mask_overlay.take() {
+                        self.mask_overlay_pending = Some((generation, overlay));
+                    } else if let Some(reason) = result.mask_overlay_absent.take() {
+                        // The overlay was asked for and the host will not draw it: a mask whose
+                        // coverage depends on the pixel it reads has no grid until there is an
+                        // operation whose input to read that pixel from, and one it can afford to
+                        // read. The reason is the host's own and it is said rather than an absence —
+                        // an overlay switched on and silently not drawn is exactly what
+                        // "never silently omit an effect" forbids.
+                        self.mask_overlay_unavailable(generation, &reason);
+                    }
                     // Only an exact result can say why a job that offered bounds has no proxy phase,
                     // and it says nothing when the job had one.
                     if !for_draft && !proxy {
@@ -2733,7 +2937,7 @@ impl Editor {
                                         raster: retained,
                                         dimensions: proxy_dimensions.unwrap_or(stage),
                                         built: proxy_built,
-                                        approximate: proxy_approximate,
+                                        approximation: proxy_approximation,
                                         approximate_white_balance,
                                         render_ms,
                                     });
@@ -2771,7 +2975,7 @@ impl Editor {
                                 proxy,
                                 proxy_dimensions,
                                 proxy_built,
-                                proxy_approximate,
+                                proxy_approximation,
                                 approximate_white_balance,
                                 reason: None,
                                 render_ms: Some(render_ms),
@@ -2920,6 +3124,42 @@ impl Editor {
             }
             Message::Resized(width, height) => self.window = (width, height),
             Message::Crop(message) => return self.crop_update(message),
+            Message::Mask(message) => return self.mask_message(message),
+            Message::MaskTransform(result) => return self.mask_transform(result),
+            Message::MaskDraftBegun(result) => {
+                return self.mask_draft_begun(result.map(|draft| *draft));
+            }
+            Message::MaskDraftSet(result) => return self.mask_draft_set(result.map(|both| *both)),
+            Message::MaskDraftCommitted(result) => {
+                return self
+                    .mask_draft_committed(result.map(|refresh| refresh.map(|boxed| *boxed)));
+            }
+            Message::MaskDraftReapplied(result) => {
+                return self.mask_draft_reapplied(result.map(|draft| *draft));
+            }
+            Message::MaskOverlayUploaded(generation, dimensions, result) => {
+                let uploaded = result.is_ok();
+                match result {
+                    Ok(allocation) => self.mask_overlay_photo = Some((generation, allocation)),
+                    Err(_) => {
+                        self.mask_overlay_photo = None;
+                        self.status =
+                            "Mask overlay unavailable: the grid could not be uploaded".into();
+                        self.event(
+                            "mask_overlay_failed",
+                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1]}),
+                        );
+                    }
+                }
+                // Released either way: a refused overlay is visible in the evidence rather than
+                // leaving the run waiting for a frame nothing will arm.
+                self.settle_step(Settle::MaskOverlay);
+                if !uploaded && let Some(evidence) = &mut self.evidence {
+                    // And with no texture to draw, the capture is the frame as it is: waiting for
+                    // the overlay of the frame on screen would wait for one that failed.
+                    evidence.capture_overlay = false;
+                }
+            }
             Message::Capability(message) => return self.capability_update(message),
             Message::Preset(message) => return self.preset_update(message),
             Message::HostAnswered(result) => self.host_answered(result.map(|answer| *answer)),
@@ -3194,6 +3434,14 @@ impl Editor {
                         "Finish or discard the slider draft before entering this mode".into();
                     return Task::none();
                 }
+                // Leaving Mask mode with an open shape gesture is refused with its reason rather
+                // than discarding what was drawn.
+                if mode != self.session.workspace.mode
+                    && let Some(reason) = self.mask_mode_refusal()
+                {
+                    self.status = reason;
+                    return Task::none();
+                }
                 let opens_draft = tools::crop_frame(&self.modules)
                     .is_some_and(|frame| frame.module.id == mode)
                     && self.crop.is_none()
@@ -3216,6 +3464,12 @@ impl Editor {
                 // Compare selects the Original entry, which pauses an open draft: the draft would
                 // have to be resumed on release, and the design keeps one draft and one preview
                 // selection at a time. Refuse it and say so rather than pausing silently.
+                if self.mask_draft.is_some() {
+                    self.status =
+                        "Apply or Cancel the mask gesture before comparing with the original"
+                            .into();
+                    return Task::none();
+                }
                 if self.crop.is_some() {
                     self.status =
                         "Apply or Cancel the crop draft before comparing with the original".into();
@@ -3337,7 +3591,13 @@ impl Editor {
                 else {
                     return Task::none();
                 };
-                self.status = format!("Copied the edit.{action} request");
+                // A `mask.*` command is its own method, so the status names the method the copied
+                // request actually carries rather than prefixing `edit.` to all of them. It reads the
+                // request's own method, so the line can only ever name what was copied.
+                self.status = match request["method"].as_str() {
+                    Some(method) => format!("Copied the {method} request"),
+                    None => format!("Copied the {} request", tools::published_method(&action)),
+                };
                 // A copied request passes through the same redaction as every recorded one.
                 let request = json!({
                     "method": request["method"],
@@ -3352,9 +3612,14 @@ impl Editor {
             }
             Message::CopyModeRequest(module_id) => {
                 self.status = "Copied the workspace.set request".into();
+                // Mask is a host mode with no module behind it, so its request is the host's own.
+                let request = if module_id == lightwell_core::MASK_MODE {
+                    self.mask_mode_request()
+                } else {
+                    self.mode_request(&module_id)
+                };
                 return iced::clipboard::write(
-                    serde_json::to_string_pretty(&self.mode_request(&module_id))
-                        .unwrap_or_default(),
+                    serde_json::to_string_pretty(&request).unwrap_or_default(),
                 );
             }
             Message::CopyDraftRequest => match self.crop_request() {
@@ -3375,6 +3640,12 @@ impl Editor {
                 let Some(state) = &self.state else {
                     return Task::none();
                 };
+                // A host command of the `mask.*` family is its own method, and its identities are
+                // envelope fields: the generic builder below would spell it `edit.mask.set-amount`
+                // and drop the target, so it goes through the family's own path.
+                if lightwell_core::mask::commands::find(&action).is_some() {
+                    return self.run_mask_action(&action, &preset);
+                }
                 let Some(declared) = tools::declared_action(&self.modules, &action) else {
                     self.status = format!("No module declares the action {action}");
                     return Task::none();
@@ -3390,6 +3661,7 @@ impl Editor {
                     json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
                 let object = request.as_object_mut().expect("the envelope is an object");
                 object.extend(params);
+                self.add_mask_target(&action, object);
                 return self.command(format!("edit.{action}"), request);
             }
             Message::PointerMoved(point) => {
@@ -3532,9 +3804,48 @@ impl Editor {
                             self.client,
                             asset,
                             entry,
+                            format!("query.{query}"),
+                            action,
+                            (x_parameter, y_parameter),
+                            Map::new(),
+                            (x, y),
+                        );
+                    }
+                    // The host's own pick: the same two steps, reaching the host's declarations
+                    // instead of a module's. The mask travels in the envelope because it is an
+                    // identity, and the component the answer lands on is the one the panel has
+                    // open — a pick fills the swatch list a person is looking at.
+                    PickTarget::HostSample {
+                        query,
+                        x: x_parameter,
+                        y: y_parameter,
+                        action,
+                    } => {
+                        let Some(state) = &self.state else {
+                            return Task::none();
+                        };
+                        let asset = state.asset.id.clone();
+                        let Some(mask) = self.selected_mask.clone() else {
+                            self.status = "Open a mask to pick a colour into it".into();
+                            self.settle_step(Settle::Pick);
+                            return Task::none();
+                        };
+                        let mut envelope = Map::new();
+                        envelope.insert("mask".into(), json!(mask.as_str()));
+                        self.event(
+                            "canvas_pick",
+                            json!({"query":query,"action":action,"mask":mask.as_str(),"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
+                        );
+                        self.status = format!("Sampling ({x}, {y})…");
+                        return query_task(
+                            self.owner.clone(),
+                            self.client,
+                            asset,
+                            entry,
                             query,
                             action,
                             (x_parameter, y_parameter),
+                            envelope,
                             (x, y),
                         );
                     }
@@ -3568,8 +3879,15 @@ impl Editor {
                 };
                 // Every top-level number the query answered that the action declares as a
                 // parameter, and nothing else: the answer may carry metadata the action knows
-                // nothing about, and an unknown field would be refused by the generic check.
-                let fields = tools::declared_action(&self.modules, &action)
+                // nothing about, and an unknown field would be refused by the generic check. The
+                // declaration is read from whichever table owns the action — a module's or the
+                // host's command family — so one rule covers both kinds of pick.
+                let host = lightwell_core::mask::commands::find(&action);
+                let declared = match host {
+                    Some(command) => Some(&command.action),
+                    None => tools::declared_action(&self.modules, &action),
+                };
+                let fields = declared
                     .zip(answer.as_object())
                     .map(|(declared, answer)| {
                         answer
@@ -3603,10 +3921,30 @@ impl Editor {
                 }
                 let mut request =
                     json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
-                request
-                    .as_object_mut()
-                    .expect("the envelope is an object")
-                    .extend(fields.clone());
+                let object = request.as_object_mut().expect("the envelope is an object");
+                object.extend(fields.clone());
+                // A host command addresses the objects it edits in the envelope, because no declared
+                // parameter kind carries an identity. The pick fills the component the panel has
+                // open, and a pick with nothing open is refused with its reason rather than sent.
+                let method = match host {
+                    None => format!("edit.{action}"),
+                    Some(command) => {
+                        let Some(mask) = self.selected_mask.clone() else {
+                            self.status = "Open a mask to pick a colour into it".into();
+                            self.settle_step(Settle::Pick);
+                            return Task::none();
+                        };
+                        let Some(component) = self.selected_component.clone() else {
+                            self.status =
+                                "Select the component this pick fills before picking".into();
+                            self.settle_step(Settle::Pick);
+                            return Task::none();
+                        };
+                        object.insert("mask".into(), json!(mask.as_str()));
+                        object.insert("component".into(), json!(component.as_str()));
+                        command.method.to_owned()
+                    }
+                };
                 self.event(
                     "canvas_sample",
                     json!({"action":action,"x":x,"y":y,"fields":fields}),
@@ -3614,8 +3952,8 @@ impl Editor {
                 // This pick commits, so its evidence is the render that follows rather than the
                 // status it leaves.
                 self.await_step(Settle::Preview);
-                // One command for the whole pick: one history entry, labelled by the module.
-                return self.command(format!("edit.{action}"), request);
+                // One command for the whole pick: one history entry, labelled by its own family.
+                return self.command(method, request);
             }
             Message::FocusNext => return operation::focus_next(),
             Message::FocusPrevious => return operation::focus_previous(),
@@ -3805,6 +4143,13 @@ impl Editor {
         json!({"method":"workspace.set","params":{"mode": self.mode_target(module_id)}})
     }
 
+    /// The `workspace.set` the Mask mode strip entry sends, for Copy as JSON request. Mask is a
+    /// host mode, so it has no module to read the target from; it toggles against the pointer
+    /// exactly as a module's picker does.
+    pub(crate) fn mask_mode_request(&self) -> Value {
+        json!({"method":"workspace.set","params":{"mode": if self.mask_mode_active() { POINTER_MODE } else { lightwell_core::MASK_MODE }}})
+    }
+
     /// The mode a click on that module's picker selects.
     fn mode_target(&self, module_id: &str) -> String {
         if self.session.workspace.mode == module_id {
@@ -3852,12 +4197,69 @@ impl Editor {
                 return None;
             }
         };
+        // A `mask.*` command is its own method and carries the panel's identities in its envelope;
+        // a module action is an `edit.<action>` with the bound mask beside its fields. Either way
+        // this is byte for byte the request the control sends.
+        if lightwell_core::mask::commands::find(action).is_some() {
+            let target = self.draft_target(action);
+            let envelope = self.mask_request(&target, &params)?;
+            return Some(json!({"method":action,"params":envelope}));
+        }
         let mut envelope = json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
-        envelope
-            .as_object_mut()
-            .expect("the envelope is an object")
-            .extend(params);
+        let object = envelope.as_object_mut().expect("the envelope is an object");
+        object.extend(params);
+        self.add_mask_target(action, object);
         Some(json!({"method":format!("edit.{action}"),"params":envelope}))
+    }
+
+    /// One generated `mask.*` control submitting its own field. The method is the action, the
+    /// identities are the envelope and the declared fields go beside them, exactly as in the request
+    /// an independent JSON client sends.
+    fn run_mask_action(&mut self, action: &str, preset: &Map<String, Value>) -> Task<Message> {
+        let Some(declared) = tools::declared_action(&self.modules, action) else {
+            return Task::none();
+        };
+        let params = match action_params(declared, preset, &self.fields) {
+            Ok(params) => params,
+            Err(message) => {
+                self.status = message;
+                return Task::none();
+            }
+        };
+        let target = self.draft_target(action);
+        let Some(request) = self.mask_request(&target, &params) else {
+            return Task::none();
+        };
+        let method = declared.id.clone();
+        // Recorded exactly as a row control's is, so "what is copied is what is sent" is a comparison
+        // a test can make for a generated `mask.*` control and not only an argument about the two
+        // functions sharing `mask_request`.
+        self.last_mask_request = Some((method.clone(), request.clone()));
+        self.command(method, request)
+    }
+
+    /// Put the host's one optional `mask` field on a module action's request when the panel's
+    /// sections are bound to a mask and that action's module declares a maskable effect.
+    ///
+    /// It is the same field an independent JSON client sends, in the same place, which is what makes
+    /// a control's Copy as JSON request exactly the request that control sent. An action whose
+    /// module declares no maskable effect never carries it: the host refuses it by name rather than
+    /// ignoring it, and a client that believes it edited through a mask must be told it did not.
+    pub(crate) fn add_mask_target(&self, action: &str, request: &mut Map<String, Value>) {
+        let Some(mask) = self.section_target() else {
+            return;
+        };
+        if self.maskable_action(action) {
+            request.insert(lightwell_core::MASK_FIELD.to_owned(), json!(mask));
+        }
+    }
+
+    /// This action belongs to a module that declares a maskable effect, so the host accepts the
+    /// target field on it. Read from the descriptors, so no module is named here.
+    pub(crate) fn maskable_action(&self, action: &str) -> bool {
+        self.modules.iter().any(|module| {
+            module.action(action).is_some() && module.effects.iter().any(|effect| effect.maskable)
+        })
     }
 
     pub(crate) fn accept(&mut self, refresh: Refresh) {
@@ -3885,6 +4287,7 @@ impl Editor {
             self.original_entry = refresh.original;
         }
         self.recipe = Some(refresh.recipe);
+        self.masks = Some(refresh.masks);
         self.recipe_failed = false;
         let revision = refresh.state.revision;
         let entry = refresh.state.current_entry.id.clone();
@@ -3902,6 +4305,7 @@ impl Editor {
         self.seed_values();
         self.settle_draft(revision, &entry);
         self.settle_slider_draft(revision);
+        self.settle_mask_draft(revision);
     }
 
     /// Seed every generated field of every module from the displayed entry's values for that
@@ -3916,12 +4320,18 @@ impl Editor {
         let Some(recipe) = self.recipe.clone() else {
             return;
         };
+        // The target the generated sections are bound to. The global layer and each mask are
+        // distinct targets of the same module, so seeding filters by it: without that, a stack
+        // holding both a global Basic layer and a masked one would look like "two layers of that
+        // module" and nothing would be seeded at all.
+        let target = self.section_target().cloned();
         let modules = std::mem::take(&mut self.modules);
         for module in &modules {
             let mut layers = recipe
                 .layers
                 .iter()
-                .filter(|layer| layer.module.as_deref() == Some(module.id.as_str()));
+                .filter(|layer| layer.module.as_deref() == Some(module.id.as_str()))
+                .filter(|layer| layer.mask.as_ref() == target.as_ref());
             // "The one layer of that module": a stack holding two of them says nothing about which
             // one the controls represent, so nothing is seeded rather than guessing.
             let values = match (layers.next(), layers.next()) {
@@ -3954,6 +4364,7 @@ impl Editor {
             }
         }
         self.modules = modules;
+        self.seed_mask_fields();
     }
 
     /// A new authoritative revision arrived while a draft was open. The draft's own Apply ends it;
@@ -4129,6 +4540,9 @@ impl Editor {
                     photo: self.photo.as_ref(),
                     draft_photo: self.draft_photo.as_ref(),
                     overlay: self.overlay_surface(),
+                    mask_overlay: self.mask_overlay_surface(),
+                    mask_draft: self.mask_draft.as_ref(),
+                    mask_map: self.mask_map,
                     draft: self.crop.as_ref(),
                 },
             ),
@@ -4152,6 +4566,8 @@ impl Editor {
             gallery_open: self.gallery_page().is_some(),
             drafting: self.crop.is_some(),
             slider_drafting: self.slider_draft.is_some(),
+            mask_drafting: self.mask_draft.is_some(),
+            mask_brush: self.mask_mode_active(),
             palette_open: self.palette_open,
             mode_active: self.session.workspace.mode != POINTER_MODE,
             modes: self
@@ -4207,6 +4623,14 @@ impl Editor {
                 subscriptions.push(
                     iced::time::every(Duration::from_millis(paced.interval_ms))
                         .map(|_| Message::PacedSliderTick),
+                );
+            }
+            // A paced stroke's own timer, gated the same way: a script with no paced stroke in
+            // flight runs none.
+            if let Some(paced) = &evidence.paced_stroke {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(paced.interval_ms))
+                        .map(|_| Message::PacedStrokeTick),
                 );
             }
             // A scripted double-click's gap before its second press, which the first tick ends.
@@ -4299,6 +4723,14 @@ enum PickTarget {
         y: String,
         action: String,
     },
+    /// The host's own pair: a `mask.*` read answers the pixel the masked operation receives and a
+    /// `mask.*` command receives it, addressed to the mask and component the panel has open.
+    HostSample {
+        query: String,
+        x: String,
+        y: String,
+        action: String,
+    },
 }
 
 impl PickTarget {
@@ -4315,6 +4747,17 @@ impl PickTarget {
                 y,
                 action,
             } => Some(Self::Sample {
+                query: query.to_owned(),
+                x: x.to_owned(),
+                y: y.to_owned(),
+                action: action.to_owned(),
+            }),
+            tools::CanvasPick::HostSample {
+                query,
+                x,
+                y,
+                action,
+            } => Some(Self::HostSample {
                 query: query.to_owned(),
                 x: x.to_owned(),
                 y: y.to_owned(),
@@ -5454,6 +5897,7 @@ mod tests {
                     summary: "Test".into(),
                     values: values.as_object().cloned().unwrap_or_default(),
                     available: true,
+                    mask: None,
                     artifacts: Vec::new(),
                 })
                 .collect();
@@ -6034,6 +6478,7 @@ mod tests {
                     .cloned()
                     .unwrap_or_default(),
                 available: true,
+                mask: None,
                 artifacts: Vec::new(),
             }];
             Box::new(refresh)
@@ -6050,7 +6495,12 @@ mod tests {
         editor.session.preview.selection = HistorySelection::Entry(older.id.clone());
         editor.display_entry = Some(older.id.clone());
         let historical = described(&mut editor, -1.0);
-        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(historical.recipe))));
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
+            crate::app::tasks::RecipeRead {
+                recipe: historical.recipe,
+                masks: historical.masks,
+            },
+        ))));
         assert_eq!(
             editor.fields.get(&action, &parameter),
             Some("-1"),
@@ -6081,7 +6531,12 @@ mod tests {
         editor.session.preview.selection = HistorySelection::Current;
         let current = described(&mut editor, 2.0);
         editor.display_entry = Some(current.state.current_entry.id.clone());
-        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(current.recipe))));
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
+            crate::app::tasks::RecipeRead {
+                recipe: current.recipe,
+                masks: current.masks,
+            },
+        ))));
         assert_eq!(
             editor.fields.get(&action, &parameter),
             Some("2"),
@@ -6863,7 +7318,7 @@ mod tests {
             raster: pixels(1),
             dimensions: (1200, 900),
             built: true,
-            approximate: false,
+            approximation: lightwell_core::ProxyApproximation::default(),
             approximate_white_balance: false,
             render_ms: 12.0,
         });
@@ -6968,7 +7423,7 @@ mod tests {
             raster: raster.clone(),
             dimensions: (2, 2),
             built: false,
-            approximate: false,
+            approximation: lightwell_core::ProxyApproximation::default(),
             approximate_white_balance: true,
             render_ms: 9.2,
         });
@@ -6983,7 +7438,7 @@ mod tests {
             proxy: true,
             proxy_dimensions: Some((2, 2)),
             proxy_built: false,
-            proxy_approximate: false,
+            proxy_approximation: lightwell_core::ProxyApproximation::default(),
             approximate_white_balance: true,
             reason: None,
             render_ms: Some(9.2),
@@ -7071,7 +7526,7 @@ mod tests {
             proxy: false,
             proxy_dimensions: None,
             proxy_built: false,
-            proxy_approximate: false,
+            proxy_approximation: lightwell_core::ProxyApproximation::default(),
             approximate_white_balance: false,
             reason: None,
             render_ms: Some(150.0),
@@ -7115,7 +7570,7 @@ mod tests {
             proxy,
             proxy_dimensions: proxy.then_some((240, 160)),
             proxy_built: false,
-            proxy_approximate: false,
+            proxy_approximation: lightwell_core::ProxyApproximation::default(),
             approximate_white_balance: false,
             reason: None,
             render_ms: Some(render_ms),
@@ -7937,9 +8392,11 @@ mod tests {
             !editor.recipe_rows_shown(),
             "an evidence frame waits for the displayed entry's own rows"
         );
-        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
-            raw_refresh(&asset, &historical).recipe,
-        ))));
+        let read = raw_refresh(&asset, &historical);
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(tasks::RecipeRead {
+            recipe: read.recipe,
+            masks: read.masks,
+        }))));
         assert!(editor.recipe_rows_shown());
         let [kelvin, tint] =
             lightwell_core::temperature_tint_from_gains(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
@@ -7961,9 +8418,11 @@ mod tests {
                 sequence: 9,
             },
         ))));
-        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
-            raw_refresh(&asset, &current).recipe,
-        ))));
+        let read = raw_refresh(&asset, &current);
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(tasks::RecipeRead {
+            recipe: read.recipe,
+            masks: read.masks,
+        }))));
         assert_eq!(editor.display_entry, Some(current.id));
         assert_eq!(
             shown(&editor),
@@ -8009,7 +8468,7 @@ mod tests {
             proxy: false,
             proxy_dimensions: None,
             proxy_built: false,
-            proxy_approximate: false,
+            proxy_approximation: lightwell_core::ProxyApproximation::default(),
             approximate_white_balance: false,
             reason: None,
             render_ms: Some(3.0),
@@ -8303,6 +8762,7 @@ mod tests {
             .expect("a test analysis identity"),
             analyse: false,
             proxy: None,
+            mask_overlay: None,
             entry,
             artifacts: Vec::new(),
         }

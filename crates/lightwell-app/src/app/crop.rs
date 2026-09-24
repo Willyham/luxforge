@@ -935,6 +935,7 @@ mod tests {
             effect_format: 1,
             payload: json!({"amount": -40}),
             artifacts: Vec::new(),
+            mask: None,
         };
         let (mut editor, catalog, _, _) = opened(
             vec![lightwell_core::Layer::pixel(0, 0, [1, 2, 3]), finish_layer],
@@ -947,6 +948,7 @@ mod tests {
                 format: 1,
                 stage: lightwell_core::EffectStage::Finish,
                 order: 0,
+                maskable: false,
                 artifacts: false,
             }],
             ..lightwell_core::ModuleDescriptor::default()
