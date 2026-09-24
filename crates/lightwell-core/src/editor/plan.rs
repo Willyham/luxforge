@@ -147,7 +147,7 @@ impl EditorService {
                 sensor_neutral: neutral_sampler
                     .as_ref()
                     .map(|sample| sample as &dyn Fn(u32, u32) -> Result<[f32; 3], Error>),
-                registry: &registry,
+                registry,
                 target: None,
             };
             let recipe = match module.plan(&input, &context)? {
@@ -155,7 +155,7 @@ impl EditorService {
                     return Ok(Change::NoOp);
                 }
                 ActionPlan::Update(update) => {
-                    edited(&registry, recipe, LayerEdit::Update(update), None)?
+                    edited(registry, recipe, LayerEdit::Update(update), None)?
                 }
                 ActionPlan::Commit(_) | ActionPlan::Edits(_) | ActionPlan::Compose(_) => {
                     return Err(Error::new(
