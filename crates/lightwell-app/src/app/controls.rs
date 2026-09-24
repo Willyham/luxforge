@@ -131,11 +131,11 @@ impl Editor {
         Task::none()
     }
     pub(crate) fn control_release(&mut self, action: String, parameter: String) -> Task<Message> {
-        if let Some(draft) = &self.slider_draft {
-            if draft.action != action || draft.parameter != parameter {
+        if let Some((drafting, field)) = self.drafting_control() {
+            if drafting != action || field != parameter {
                 return Task::none();
             }
-            return self.slider_commit();
+            return self.release();
         }
         if tools::drafts(&self.modules, &action, &parameter) {
             return self.release_without_draft(&action, &parameter);
@@ -245,9 +245,8 @@ impl Editor {
         direction: i8,
     ) -> Task<Message> {
         if self
-            .slider_draft
-            .as_ref()
-            .is_some_and(|draft| draft.action != action || draft.parameter != parameter)
+            .drafting_control()
+            .is_some_and(|(drafting, field)| drafting != action || field != parameter)
         {
             return Task::none();
         }
@@ -279,7 +278,7 @@ impl Editor {
         let drafts = tools::drafts(&self.modules, &action, &parameter);
         let task = self.control_value(action, parameter, value, drafts);
         if drafts {
-            Task::batch([task, self.slider_commit()])
+            Task::batch([task, self.release()])
         } else {
             task
         }
@@ -403,9 +402,8 @@ impl Editor {
             }
             ColorPickerEvent::Release => {
                 if self
-                    .slider_draft
-                    .as_ref()
-                    .is_some_and(|draft| draft.action == action && draft.parameter == parameter)
+                    .drafting_control()
+                    .is_some_and(|(drafting, field)| drafting == action && field == parameter)
                     || self.dragging.as_ref() == Some(&key)
                 {
                     self.control_release(action, parameter)
@@ -614,7 +612,8 @@ impl Editor {
                 self.request_curve_samples(&action, &next_parameter, index, value)
             }
             CurveEditorEvent::Release => self.control_release(action, parameter),
-            CurveEditorEvent::Cancel => self.slider_cancel(),
+            CurveEditorEvent::Cancel if self.slider_gesture().is_some() => self.discard(),
+            CurveEditorEvent::Cancel => Task::none(),
             CurveEditorEvent::Nudge {
                 index,
                 dx,
@@ -700,9 +699,8 @@ impl Editor {
             return Task::none();
         }
         if self
-            .slider_draft
-            .as_ref()
-            .is_some_and(|draft| draft.action != action || draft.parameter != parameter)
+            .drafting_control()
+            .is_some_and(|(drafting, field)| drafting != action || field != parameter)
         {
             return Task::none();
         }

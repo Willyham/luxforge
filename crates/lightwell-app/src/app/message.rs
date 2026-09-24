@@ -4,6 +4,7 @@
 use crate::{
     app::capabilities::Answer,
     app::controls::CurveSampleIdentity,
+    app::draft::GestureId,
     app::tasks::{
         HostAnswer, PerformanceRead, PresetChange, PreviewPayload, Refresh, SyncResult, Upload,
     },
@@ -16,8 +17,8 @@ use crate::{
 };
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ClientSession, ContentPoint, Draft, EntryId, HistoryPage, ModuleDescriptor, PresetSummary,
-    PreviewJob, StageTransform, Version, capabilities::jobs::JobRecord,
+    ClientSession, ContentPoint, Draft, DraftId, EntryId, HistoryPage, ModuleDescriptor,
+    PresetSummary, PreviewJob, StageTransform, Version, capabilities::jobs::JobRecord,
 };
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value};
@@ -214,6 +215,46 @@ pub(crate) enum BrushEdit {
     LimitToColour(bool),
 }
 
+/// The core draft lifecycle of the one open slider or mask gesture: the three decisions a person
+/// makes about it, and the owner's answers. Every answer names the gesture it belongs to — and,
+/// once known, the core draft — so an answer for a gesture that has since ended is recognised and
+/// dropped rather than taken up by a newer one. `draft.set` has no message: it is answered in the
+/// update that sends it.
+#[derive(Clone, Debug)]
+pub(crate) enum DraftMessage {
+    /// Release, Enter or Apply: commit the gesture once.
+    Commit,
+    /// Escape, Cancel or the Changed elsewhere notice's Discard: commit nothing.
+    Cancel,
+    /// The Changed elsewhere notice's Reapply.
+    Reapply,
+    /// `draft.begin` answered.
+    Begun {
+        gesture: GestureId,
+        result: Result<Box<Draft>, String>,
+    },
+    /// `draft.commit` answered. `None` is a no-op outcome: the gesture returned to its start, so
+    /// there is no entry and no history to refresh.
+    Committed {
+        gesture: GestureId,
+        draft: DraftId,
+        result: Result<Option<Box<Refresh>>, String>,
+    },
+    /// `draft.reapply` answered.
+    Reapplied {
+        gesture: GestureId,
+        draft: DraftId,
+        result: Result<Box<Draft>, String>,
+    },
+    /// `draft.cancel` answered, with the displayed entry's preview read after it when the gesture
+    /// left drafted pixels on screen.
+    Cancelled {
+        draft: DraftId,
+        cancelled: Result<(), String>,
+        reseed: Option<Result<Box<PreviewPayload>, String>>,
+    },
+}
+
 /// Every Masks-panel change is one message, so a script drives the whole panel through the update
 /// function exactly as its rows, buttons and menus do.
 #[derive(Clone, Debug)]
@@ -253,9 +294,6 @@ pub(crate) enum MaskMessage {
         name: String,
         value: f64,
     },
-    Apply,
-    Cancel,
-    Reapply,
     /// The rename field's text, as it is typed.
     Name(String),
     /// Submit the rename field for that mask.
@@ -563,14 +601,10 @@ pub(crate) enum Message {
     Crop(CropMessage),
     /// One Masks-panel change.
     Mask(MaskMessage),
-    /// `render.transform` answered for an open mask gesture: the affine it maps pointers with.
-    MaskTransform(Result<StageTransform, String>),
-    /// `draft.begin` answered for a mask gesture.
-    MaskDraftBegun(Result<Box<Draft>, String>),
-    /// `draft.commit` answered. `None` is a no-op: the gesture returned to its start.
-    MaskDraftCommitted(Result<Option<Box<Refresh>>, String>),
-    /// `draft.reapply` answered.
-    MaskDraftReapplied(Result<Box<Draft>, String>),
+    /// `render.transform` answered for the mask gesture it names: the affine it maps pointers with.
+    MaskTransform(GestureId, Result<StageTransform, String>),
+    /// One decision about, or owner answer for, the open slider or mask gesture's core draft.
+    Draft(DraftMessage),
     /// One painted mask coverage grid reached the GPU. The generation says which frame it belongs
     /// to, so a grid for a replaced frame is dropped instead of drawn over the new one.
     MaskOverlayUploaded(
@@ -677,29 +711,6 @@ pub(crate) enum Message {
         action: String,
         parameter: String,
     },
-    /// Send an open slider draft's outstanding value, if a round trip is not already in flight.
-    ///
-    /// No timer produces this any more: a move sends its own `draft.set` the moment nothing is in
-    /// flight. It remains as the entry point the evidence driver and the paced step still use after
-    /// each move, where it finds the send already done and does nothing.
-    SliderDraftTick,
-    /// `draft.begin` answered.
-    SliderDraftBegun(Result<Box<Draft>, String>),
-    /// One `draft.set` and the preview job for the settings it accepted.
-    SliderDraftSet(Result<Box<(Draft, PreviewJob, crate::app::tasks::RoundTrip)>, String>),
-    /// End the open slider draft and commit it once.
-    SliderDraftCommit,
-    /// `draft.commit` answered. `None` is a no-op outcome: the gesture returned to its start, so
-    /// there is no entry and no history to refresh.
-    SliderDraftCommitted(Result<Option<Box<Refresh>>, String>),
-    /// Discard the open slider draft: Escape, the Changed elsewhere notice or a script.
-    SliderDraftCancel,
-    /// `draft.cancel` answered; the draft is over either way.
-    SliderDraftEnded(Result<(), String>),
-    /// Rebase the conflicted slider draft on the current revision and re-send its value.
-    SliderDraftReapply,
-    /// `draft.reapply` answered.
-    SliderDraftReapplied(Result<Box<Draft>, String>),
     /// Return one generated field to its declared default. On a patch action that is one action
     /// submitting that field alone; otherwise it only refills the text, as it always has.
     ResetField {

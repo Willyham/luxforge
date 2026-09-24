@@ -24,6 +24,15 @@ use lightwell_core::{
 };
 use std::collections::{BTreeMap, HashSet};
 
+/// The open slider gesture as the models read it: the control it drafts and whether its core draft
+/// is conflicted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SliderDrafting<'a> {
+    pub(crate) action: &'a str,
+    pub(crate) parameter: &'a str,
+    pub(crate) conflicted: bool,
+}
+
 /// Everything the models are derived from, borrowed for one derivation.
 pub(crate) struct Inputs<'a> {
     pub(crate) state: Option<&'a EditorState>,
@@ -50,8 +59,15 @@ pub(crate) struct Inputs<'a> {
     pub(crate) dragging: Option<&'a (String, String)>,
     /// Sections the person collapsed or expanded; everything else follows the default.
     pub(crate) expanded: &'a BTreeMap<String, bool>,
-    /// The open slider gesture's draft, when a control of a patch action is being moved.
-    pub(crate) slider_draft: Option<&'a crate::app::slider::SliderDraft>,
+    /// The open slider gesture, when a drafting control is being moved.
+    pub(crate) slider_draft: Option<SliderDrafting<'a>>,
+    /// The open slider or mask gesture's core draft is conflicted: something else committed since
+    /// it was based, and its commit waits for Discard or Reapply.
+    pub(crate) gesture_conflicted: bool,
+    /// Why a preset cannot be applied, and why the components gallery cannot open, while this
+    /// client's one draft is held — the one refusal every such start answers to.
+    pub(crate) preset_refusal: Option<String>,
+    pub(crate) gallery_refusal: Option<String>,
     pub(crate) draft: Option<&'a CropDraft>,
     /// The masks of the displayed entry as `mask.list` last answered them.
     pub(crate) masks: Option<&'a MaskListing>,
@@ -271,7 +287,8 @@ mod tests {
         readout: Option<histogram::Readout>,
         presets: presets::PresetLibrary,
         preset_form: presets::PresetForm,
-        slider_draft: Option<crate::app::slider::SliderDraft>,
+        /// An open slider gesture's (action, parameter, conflicted).
+        slider_draft: Option<(String, String, bool)>,
         capabilities: capabilities::CapabilityStore,
         performance_expanded: bool,
         performance: performance::PerformanceHistory,
@@ -373,7 +390,22 @@ mod tests {
                 editing: self.editing.as_ref(),
                 dragging: self.dragging.as_ref(),
                 expanded: &self.expanded,
-                slider_draft: self.slider_draft.as_ref(),
+                slider_draft: self
+                    .slider_draft
+                    .as_ref()
+                    .map(|(action, parameter, conflicted)| SliderDrafting {
+                        action,
+                        parameter,
+                        conflicted: *conflicted,
+                    }),
+                gesture_conflicted: self
+                    .slider_draft
+                    .as_ref()
+                    .is_some_and(|(_, _, conflicted)| *conflicted),
+                preset_refusal: (self.slider_draft.is_some() || self.draft.is_some())
+                    .then(|| "Finish the open draft before applying a preset".to_owned()),
+                gallery_refusal: (self.slider_draft.is_some() || self.draft.is_some())
+                    .then(|| "Finish the open draft before opening Components".to_owned()),
                 draft: self.draft.as_ref(),
                 masks: self.masks.as_ref(),
                 selected_mask: self.selected_mask.as_ref(),

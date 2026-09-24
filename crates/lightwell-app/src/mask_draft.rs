@@ -573,10 +573,6 @@ pub(crate) struct MaskDraft {
     /// `render.transform` answers, which is also when the handles first become drawable, so no
     /// gesture is ever evaluated against an aspect that was guessed.
     aspect: f64,
-    /// The revision this draft was opened against; the commit expects it.
-    pub(crate) base_revision: u64,
-    /// Something else changed the asset; the commit is refused until Discard or Reapply.
-    pub(crate) conflicted: bool,
     gesture: Option<Gesture>,
 }
 
@@ -608,16 +604,8 @@ pub(crate) const NEUTRAL_RADIAL: RadialGradient = RadialGradient {
 
 impl MaskDraft {
     /// Start a gesture that will create a new mask from a shape of this kind, or from a stroke.
-    pub(crate) fn creating(kind: impl Into<String>, brush: Brush, base_revision: u64) -> Self {
-        Self::seeded(
-            None,
-            None,
-            kind,
-            MaskDraftOp::Create,
-            None,
-            brush,
-            base_revision,
-        )
+    pub(crate) fn creating(kind: impl Into<String>, brush: Brush) -> Self {
+        Self::seeded(None, None, kind, MaskDraftOp::Create, None, brush)
     }
 
     /// Start a gesture that will add a further component to an existing mask, in that mode.
@@ -626,17 +614,8 @@ impl MaskDraft {
         kind: impl Into<String>,
         mode: ComponentMode,
         brush: Brush,
-        base_revision: u64,
     ) -> Self {
-        Self::seeded(
-            Some(mask),
-            None,
-            kind,
-            MaskDraftOp::Add(mode),
-            None,
-            brush,
-            base_revision,
-        )
+        Self::seeded(Some(mask), None, kind, MaskDraftOp::Add(mode), None, brush)
     }
 
     /// Edit an existing component: the shape starts at exactly the stored payload, so reopening a
@@ -648,7 +627,6 @@ impl MaskDraft {
         kind: impl Into<String>,
         shape: Option<MaskShape>,
         brush: Brush,
-        base_revision: u64,
     ) -> Self {
         Self::seeded(
             Some(mask),
@@ -657,7 +635,6 @@ impl MaskDraft {
             MaskDraftOp::Set,
             shape,
             brush,
-            base_revision,
         )
     }
 
@@ -668,7 +645,6 @@ impl MaskDraft {
         op: MaskDraftOp,
         shape: Option<MaskShape>,
         brush: Brush,
-        base_revision: u64,
     ) -> Self {
         let kind = kind.into();
         // A painted kind has no shape at all: what it edits is the stroke about to be drawn, at the
@@ -691,8 +667,6 @@ impl MaskDraft {
             op,
             geometry,
             aspect: 1.0,
-            base_revision,
-            conflicted: false,
             gesture: None,
         }
     }
@@ -848,17 +822,10 @@ impl MaskDraft {
         self.gesture.map(|gesture| gesture.handle)
     }
 
-    pub(crate) fn mark_conflicted(&mut self) {
-        self.conflicted = true;
-        self.gesture = None;
-        self.paint_end();
-    }
-
-    /// Point the draft at a new revision after something else committed. The gradient this client
-    /// drew is kept: it is what a Reapply re-sends.
-    pub(crate) fn rebase(&mut self, base_revision: u64) {
-        self.base_revision = base_revision;
-        self.conflicted = false;
+    /// Let go of whatever the pointer holds: the core draft behind this gesture was conflicted or
+    /// rebased, so a drag must not carry on into it. What was drawn is kept — it is what a Reapply
+    /// re-sends.
+    pub(crate) fn interrupt(&mut self) {
         self.gesture = None;
         self.paint_end();
     }
@@ -1050,8 +1017,6 @@ impl MaskDraft {
             "kind": self.kind,
             "op": self.op.label(),
             "method": self.method(),
-            "base_revision": self.base_revision,
-            "conflicted": self.conflicted,
             "dragging": self.dragging(),
             "aspect": self.aspect,
             "shape": Value::Object(
@@ -1322,11 +1287,11 @@ mod tests {
     use lightwell_core::{ParameterKind, mask::commands};
 
     fn draft() -> MaskDraft {
-        MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 7)
+        MaskDraft::creating(LINEAR, NEUTRAL_BRUSH)
     }
 
     fn radial_draft() -> MaskDraft {
-        let mut draft = MaskDraft::creating(RADIAL, NEUTRAL_BRUSH, 7);
+        let mut draft = MaskDraft::creating(RADIAL, NEUTRAL_BRUSH);
         // A landscape frame, so a bug that confuses mask space with normalized content coordinates
         // cannot hide behind a square one.
         draft.set_aspect(1.5);
@@ -1368,7 +1333,7 @@ mod tests {
     #[test]
     fn the_method_and_fields_come_from_the_hosts_own_kind_table() {
         assert_eq!(
-            MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 1).method(),
+            MaskDraft::creating(LINEAR, NEUTRAL_BRUSH).method(),
             Some("mask.create-linear")
         );
         assert_eq!(
@@ -1377,7 +1342,6 @@ mod tests {
                 LINEAR,
                 ComponentMode::Subtract,
                 NEUTRAL_BRUSH,
-                1
             )
             .method(),
             Some("mask.add-linear")
@@ -1389,14 +1353,13 @@ mod tests {
                 LINEAR,
                 Some(MaskShape::Linear(NEUTRAL)),
                 NEUTRAL_BRUSH,
-                1
             )
             .method(),
             Some("mask.set-linear")
         );
         // The radial's methods are generated by the same table, from the same three operations.
         assert_eq!(
-            MaskDraft::creating(RADIAL, NEUTRAL_BRUSH, 1).method(),
+            MaskDraft::creating(RADIAL, NEUTRAL_BRUSH).method(),
             Some("mask.create-radial")
         );
         assert_eq!(
@@ -1405,42 +1368,31 @@ mod tests {
                 RADIAL,
                 ComponentMode::Intersect,
                 NEUTRAL_BRUSH,
-                1
             )
             .method(),
             Some("mask.add-radial")
         );
         // A kind this build cannot evaluate has no method at all, so nothing is spelled out here.
-        assert_eq!(
-            MaskDraft::creating("cloud", NEUTRAL_BRUSH, 1).method(),
-            None
-        );
+        assert_eq!(MaskDraft::creating("cloud", NEUTRAL_BRUSH).method(), None);
         // A painted kind has no *generated* method — there is no number a `mask.set-brush` could
         // patch — so all three of its edits go through the one command that carries a path, and the
         // envelope says which of the three the stroke was.
         for op in [
-            MaskDraft::creating(BRUSH, NEUTRAL_BRUSH, 1),
-            MaskDraft::adding(
-                MaskId::new(),
-                BRUSH,
-                ComponentMode::Subtract,
-                NEUTRAL_BRUSH,
-                1,
-            ),
+            MaskDraft::creating(BRUSH, NEUTRAL_BRUSH),
+            MaskDraft::adding(MaskId::new(), BRUSH, ComponentMode::Subtract, NEUTRAL_BRUSH),
             MaskDraft::editing(
                 MaskId::new(),
                 ComponentId::new(),
                 BRUSH,
                 None,
                 NEUTRAL_BRUSH,
-                1,
             ),
         ] {
             assert_eq!(op.method(), Some("mask.add-stroke"));
         }
 
         // A create carries the four geometry fields and no mode; an add carries its mode too.
-        let create = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 1).fields();
+        let create = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH).fields();
         assert_eq!(create.len(), 4);
         assert_eq!(create["x0"], json!(NEUTRAL.x0));
         assert_eq!(create["y1"], json!(NEUTRAL.y1));
@@ -1450,13 +1402,12 @@ mod tests {
             LINEAR,
             ComponentMode::Intersect,
             NEUTRAL_BRUSH,
-            1,
         )
         .fields();
         assert_eq!(add["mode"], json!("intersect"));
         assert_eq!(add.len(), 5);
         // A radial carries its own six, named exactly as its kind declares them.
-        let radial = MaskDraft::creating(RADIAL, NEUTRAL_BRUSH, 1).fields();
+        let radial = MaskDraft::creating(RADIAL, NEUTRAL_BRUSH).fields();
         assert_eq!(radial.len(), 6);
         for name in ["x", "y", "radius_x", "radius_y", "angle", "feather"] {
             assert!(radial.contains_key(name), "a radial declares {name}");
@@ -1585,7 +1536,7 @@ mod tests {
         draft.end();
         check(&draft, "swept");
         // A sweep that never moved still leaves an axis the host will accept.
-        let mut still = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 7);
+        let mut still = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH);
         still.sweep((0.4, 0.4), (0.4, 0.4));
         check(&still, "a sweep that did not move");
     }
@@ -1779,7 +1730,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gesture_without_a_press_changes_nothing_and_a_conflict_ends_the_drag() {
+    fn a_gesture_without_a_press_changes_nothing_and_an_interruption_ends_the_drag() {
         let mut draft = draft();
         let before = draft.shape().expect("a shape gesture");
         draft.drag((0.9, 0.9));
@@ -1790,24 +1741,14 @@ mod tests {
         let gradient = draft.linear().expect("a gradient");
         draft.begin(MaskHandle::End, (gradient.x1, gradient.y1));
         assert!(draft.dragging());
-        draft.mark_conflicted();
-        assert!(
-            draft.conflicted && !draft.dragging(),
-            "a conflict drops the gesture"
-        );
+        // A conflict or a reapply of the core draft behind the gesture interrupts it.
+        draft.interrupt();
+        assert!(!draft.dragging(), "an interruption drops the gesture");
         draft.drag((0.9, 0.9));
         assert_eq!(
             draft.shape().expect("a shape gesture"),
             before,
-            "a conflicted draft ignores the pointer"
-        );
-        draft.rebase(11);
-        assert_eq!(draft.base_revision, 11);
-        assert!(!draft.conflicted);
-        assert_eq!(
-            draft.shape().expect("a shape gesture"),
-            before,
-            "a reapply keeps what this client drew"
+            "an interrupted drag ignores the pointer and keeps what this client drew"
         );
     }
 
@@ -1902,7 +1843,6 @@ mod tests {
             LINEAR,
             Some(MaskShape::Linear(NEUTRAL)),
             NEUTRAL_BRUSH,
-            4,
         );
         let summary = draft.summary();
         assert_eq!(summary["mask"], json!(mask.as_str()));
@@ -1910,11 +1850,9 @@ mod tests {
         assert_eq!(summary["kind"], json!(LINEAR));
         assert_eq!(summary["op"], json!("Update"));
         assert_eq!(summary["method"], json!("mask.set-linear"));
-        assert_eq!(summary["base_revision"], json!(4));
-        assert_eq!(summary["conflicted"], json!(false));
         assert_eq!(summary["shape"]["y1"], json!(NEUTRAL.y1));
         // A create names no mask and no component, because it has none yet.
-        let creating = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 4).summary();
+        let creating = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH).summary();
         assert_eq!(creating["mask"], Value::Null);
         assert_eq!(creating["op"], json!("New mask"));
         // A radial's summary carries its own six fields under the same key.

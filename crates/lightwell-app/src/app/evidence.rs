@@ -6,8 +6,8 @@ use crate::{
         Editor,
         fields::number_text,
         message::{
-            BrushEdit, CropMessage, CropPointer, MaskMessage, MenuTarget, Message, PaintTarget,
-            PaletteAction, PresetMessage, RowEdit,
+            BrushEdit, CropMessage, CropPointer, DraftMessage, MaskMessage, MenuTarget, Message,
+            PaintTarget, PaletteAction, PresetMessage, RowEdit,
         },
         performance,
         tasks::{HostAnswer, host_task, mutation, request, workspace_task},
@@ -1443,7 +1443,7 @@ impl Editor {
             let Some((first, rest)) = points.split_first() else {
                 return self.fail_step("a mask drag needs at least one point");
             };
-            if self.mask_draft.is_none() {
+            if self.mask_gesture().is_none() {
                 return self.fail_step("no mask gesture is open to drag");
             }
             let mut tasks = vec![self.mask_message(MaskMessage::Handle(MaskPointer::Begin {
@@ -1484,7 +1484,7 @@ impl Editor {
         };
         let (message, expect) = match step {
             MaskStep::Select(reference) => match self.resolve_mask(&reference) {
-                Ok(id) => (MaskMessage::Select(id), Expect::Redraw),
+                Ok(id) => (Message::Mask(MaskMessage::Select(id)), Expect::Redraw),
                 Err(reason) => return self.fail_step(reason),
             },
             // A selection opens that row's own numbers and renders nothing: the overlay follows the
@@ -1492,7 +1492,10 @@ impl Editor {
             // waiting for pixels nothing asked for.
             MaskStep::SelectComponent(Some(reference)) => {
                 match self.resolve_component(None, &reference) {
-                    Ok(id) => (MaskMessage::SelectComponent(id), Expect::Redraw),
+                    Ok(id) => (
+                        Message::Mask(MaskMessage::SelectComponent(id)),
+                        Expect::Redraw,
+                    ),
                     Err(reason) => return self.fail_step(reason),
                 }
             }
@@ -1504,12 +1507,12 @@ impl Editor {
                 return Task::none();
             }
             MaskStep::Hover(Some(reference)) => match self.resolve_component(None, &reference) {
-                Ok(id) => (MaskMessage::Hover(Some(id)), hovering),
+                Ok(id) => (Message::Mask(MaskMessage::Hover(Some(id))), hovering),
                 Err(reason) => return self.fail_step(reason),
             },
-            MaskStep::Hover(None) => (MaskMessage::Hover(None), hovering),
+            MaskStep::Hover(None) => (Message::Mask(MaskMessage::Hover(None)), hovering),
             MaskStep::EditShape(reference) => match self.resolve_component(None, &reference) {
-                Ok(id) => (MaskMessage::EditShape(id), Expect::Gesture),
+                Ok(id) => (Message::Mask(MaskMessage::EditShape(id)), Expect::Gesture),
                 Err(reason) => return self.fail_step(reason),
             },
             // Choosing the next component's mode changes no pixel and asks for nothing: it is the
@@ -1521,7 +1524,10 @@ impl Editor {
                 else {
                     return self.fail_step(format!("no component mode is called {mode}"));
                 };
-                (MaskMessage::SetAddMode(index), Expect::Redraw)
+                (
+                    Message::Mask(MaskMessage::SetAddMode(index)),
+                    Expect::Redraw,
+                )
             }
             // A kind with handles opens a gesture; a **typed** kind — one whose geometry is entirely
             // defaulted, as a range selection's is — is created straight away and so has a round
@@ -1534,7 +1540,7 @@ impl Editor {
                 } else {
                     Expect::Gesture
                 };
-                (MaskMessage::New(kind), expect)
+                (Message::Mask(MaskMessage::New(kind)), expect)
             }
             MaskStep::Add(kind) => {
                 let expect = if mask_kind_is_typed(&kind) {
@@ -1542,7 +1548,7 @@ impl Editor {
                 } else {
                     Expect::Gesture
                 };
-                (MaskMessage::Add(kind), expect)
+                (Message::Mask(MaskMessage::Add(kind)), expect)
             }
             // Arming the brush asks for no frame of its own: a stroke with no path is not a geometry
             // the host can preview, so the gesture waits for the pointer rather than for pixels
@@ -1560,7 +1566,7 @@ impl Editor {
                 };
                 let task = self.mask_message(MaskMessage::Paint(target));
                 self.note_step(json!({"masks": self.workspace.masks.summary()}));
-                if self.mask_draft.is_none() {
+                if self.mask_gesture().is_none() {
                     let reason = self.status.clone();
                     return Task::batch([task, self.fail_step(reason)]);
                 }
@@ -1612,12 +1618,7 @@ impl Editor {
                 release,
                 interval_ms,
             } => {
-                if self
-                    .mask_draft
-                    .as_ref()
-                    .and_then(MaskDraft::brush)
-                    .is_none()
-                {
+                if self.mask_shape().and_then(MaskDraft::brush).is_none() {
                     return self.fail_step("no painted gesture is open to paint into");
                 }
                 // A paced stroke hands its positions to the timer and sends nothing here, exactly as
@@ -1661,22 +1662,25 @@ impl Editor {
                 return Task::batch(tasks);
             }
             MaskStep::Sweep { from, to } => {
-                if self.mask_draft.is_none() {
+                if self.mask_gesture().is_none() {
                     return self.fail_step("no mask gesture is open to sweep");
                 }
                 (
-                    MaskMessage::Handle(MaskPointer::Sweep {
+                    Message::Mask(MaskMessage::Handle(MaskPointer::Sweep {
                         from: (from[0], from[1]),
                         to: (to[0], to[1]),
-                    }),
+                    })),
                     Expect::Gesture,
                 )
             }
             MaskStep::Release => {
-                if self.mask_draft.is_none() {
+                if self.mask_gesture().is_none() {
                     return self.fail_step("no mask gesture is open to release");
                 }
-                (MaskMessage::Handle(MaskPointer::End), Expect::Gesture)
+                (
+                    Message::Mask(MaskMessage::Handle(MaskPointer::End)),
+                    Expect::Gesture,
+                )
             }
             // The host's own pick, entered and left the way the panel's button does: one
             // `workspace.set` and nothing committed, so the frame after it shows the mode.
@@ -1686,19 +1690,19 @@ impl Editor {
                 }
                 // Entering or leaving a pick mode commits nothing and changes no pixel, so the
                 // frame is the next redraw rather than a preview that will never arrive.
-                (MaskMessage::Pick, Expect::Redraw)
+                (Message::Mask(MaskMessage::Pick), Expect::Redraw)
             }
             MaskStep::Apply => {
-                if self.mask_draft.is_none() {
+                if self.mask_gesture().is_none() {
                     return self.fail_step("no mask gesture is open to apply");
                 }
-                (MaskMessage::Apply, Expect::RoundTrip)
+                (Message::Draft(DraftMessage::Commit), Expect::RoundTrip)
             }
             MaskStep::Cancel => {
-                if self.mask_draft.is_none() {
+                if self.mask_gesture().is_none() {
                     return self.fail_step("no mask gesture is open to cancel");
                 }
-                (MaskMessage::Cancel, Expect::RoundTrip)
+                (Message::Draft(DraftMessage::Cancel), Expect::RoundTrip)
             }
             MaskStep::Row {
                 component: at,
@@ -1709,7 +1713,7 @@ impl Editor {
                     Err(reason) => return self.fail_step(reason),
                 };
                 (
-                    MaskMessage::Row(match edit {
+                    Message::Mask(MaskMessage::Row(match edit {
                         RowStep::Mode(mode) => RowEdit::ComponentMode {
                             component: id,
                             mode,
@@ -1732,7 +1736,7 @@ impl Editor {
                             },
                             Err(reason) => return self.fail_step(reason),
                         },
-                    }),
+                    })),
                     Expect::Request,
                 )
             }
@@ -1740,7 +1744,7 @@ impl Editor {
         };
         if matches!(expect, Expect::Redraw) {
             self.capture_next_frame();
-            let task = self.mask_message(message);
+            let task = self.dispatch(message);
             self.note_step(json!({"masks": self.workspace.masks.summary()}));
             return task;
         }
@@ -1749,18 +1753,15 @@ impl Editor {
         // which is also what the refusal replaces.
         self.last_mask_request = None;
         self.await_step(self.mask_settle());
-        let task = self.mask_message(message);
+        let task = self.dispatch(message);
         let armed = match expect {
             Expect::Redraw | Expect::Overlay => true,
             // An open gesture always has a round trip of its own: `draft.begin` while it is
             // opening, `draft.set` once it has, and a drafted frame at the end of either.
-            Expect::Gesture => self.mask_draft.is_some(),
-            Expect::RoundTrip => {
-                self.mask_draft_in_flight
-                    || self.mask_draft_pending
-                    || self.mask_draft_finish
-                    || self.mask_draft.is_none()
-            }
+            Expect::Gesture => self.mask_gesture().is_some(),
+            // Apply sent its commit, or Cancel ended the gesture: either way something answers.
+            // A refused Apply leaves the gesture drained, with its reason in the status line.
+            Expect::RoundTrip => self.mask_gesture().is_none() || !self.mask_draft_drained(),
             Expect::Request => self.last_mask_request.is_some(),
         };
         self.note_step(json!({"masks": self.workspace.masks.summary()}));
@@ -1775,7 +1776,7 @@ impl Editor {
     /// One crop-draft change through its own message, captured on the next rendered frame. Opening a
     /// draft waits for the truncated preview; Apply is a mutation and waits for its pixels.
     fn draft_step(&mut self, step: DraftStep) -> Task<Message> {
-        let drafting = self.crop.is_some();
+        let drafting = self.crop().is_some();
         let message = match &step {
             DraftStep::Start | DraftStep::Reapply => {
                 if drafting == matches!(step, DraftStep::Start) {
@@ -1793,7 +1794,7 @@ impl Editor {
                 });
                 // A refused start never reaches the draft, so the step would wait for a frame that
                 // nothing arms; the preview request is the only thing that can settle it.
-                if self.crop_pending.is_none() {
+                if self.crop_pending().is_none() {
                     return self.fail_step("the draft could not be prepared");
                 }
                 return task;
@@ -1895,7 +1896,7 @@ impl Editor {
             .into_iter()
             .map(|message| self.crop_update(message))
             .collect();
-        if self.crop_pending.is_none() {
+        if self.crop_pending().is_none() {
             return self.fail_step("the idle change could not open a draft");
         }
         Task::batch(tasks)
@@ -1904,7 +1905,7 @@ impl Editor {
     /// A rectangle in box pixels, applied as two corner gestures: the top-left corner first, then the
     /// bottom-right, each a begin, a drag and an end exactly as the canvas publishes them.
     fn rect_step(&mut self, [x, y, width, height]: [f64; 4]) -> Task<Message> {
-        if self.crop.is_none() {
+        if self.crop().is_none() {
             return self.fail_step("no crop draft is open");
         }
         let mut tasks = Vec::new();
@@ -1912,7 +1913,7 @@ impl Editor {
             (Corner::TopLeft, (x, y)),
             (Corner::BottomRight, (x + width, y + height)),
         ] {
-            let Some(from) = self.crop.as_ref().map(|draft| corner.point(&draft.rect)) else {
+            let Some(from) = self.crop().map(|draft| corner.point(&draft.rect)) else {
                 break;
             };
             let option = self.crop_option;
@@ -1938,7 +1939,7 @@ impl Editor {
 
     /// One slider gesture, driven as the exact messages a pointer drag produces: one `SliderMoved`
     /// per value, then the release, Escape or nothing at all. Each move sends its own `draft.set`
-    /// when nothing is in flight, so the `SliderDraftTick` after it normally finds nothing to do.
+    /// when nothing is in flight.
     /// Nothing here reaches the owner directly; the gesture's own driver does, under its own bound.
     ///
     /// A step with `interval_ms` sends nothing here: it hands its values to
@@ -1974,9 +1975,8 @@ impl Editor {
                 parameter: step.parameter.clone(),
                 value: *value,
             }));
-            tasks.push(self.update(Message::SliderDraftTick));
         }
-        if self.slider_draft.is_none() && step.end != SliderEnd::Cancel {
+        if self.slider_gesture().is_none() && step.end != SliderEnd::Cancel {
             return self.fail_step(format!(
                 "the {} draft could not be opened: {}",
                 step.action, self.status
@@ -2000,15 +2000,12 @@ impl Editor {
             ));
         }
         self.note_step(json!({ "revision_before": revision }));
-        let mut tasks = vec![
-            self.update(Message::SliderMoved {
-                action: step.action.clone(),
-                parameter: step.parameter.clone(),
-                value: step.value,
-            }),
-            self.update(Message::SliderDraftTick),
-        ];
-        if self.slider_draft.is_none() {
+        let mut tasks = vec![self.update(Message::SliderMoved {
+            action: step.action.clone(),
+            parameter: step.parameter.clone(),
+            value: step.value,
+        })];
+        if self.slider_gesture().is_none() {
             return self.fail_step(format!(
                 "the first press opened no gesture: {}",
                 self.status
@@ -2047,7 +2044,7 @@ impl Editor {
             "double_click_second",
             json!({"action":second.action,"parameter":second.parameter,
                 "revision":self.state.as_ref().map(|state| state.revision),
-                "gesture_open":self.slider_draft.is_some()}),
+                "gesture_open":self.slider_gesture().is_some()}),
         );
         self.await_step(Settle::Quiet);
         self.update(Message::ResetField {
@@ -2064,7 +2061,8 @@ impl Editor {
             .as_ref()
             .is_some_and(|evidence| evidence.awaiting == Some(Settle::Quiet));
         if waiting
-            && self.slider_draft.is_none()
+            && self.slider_gesture().is_none()
+            && !self.gesture_closing()
             && !self.busy
             && self.pending_reset.is_none()
             && !self.preview_queue.is_busy()
@@ -2103,16 +2101,13 @@ impl Editor {
             evidence.paced_slider = None;
         }
         self.event("slider_step_value", json!({"value": value, "index": index}));
-        let mut tasks = vec![
-            self.update(Message::SliderMoved {
-                action: action.clone(),
-                parameter: parameter.clone(),
-                value,
-            }),
-            self.update(Message::SliderDraftTick),
-        ];
+        let mut tasks = vec![self.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value,
+        })];
         if done {
-            if self.slider_draft.is_none() && end != SliderEnd::Cancel {
+            if self.slider_gesture().is_none() && end != SliderEnd::Cancel {
                 return self.fail_step(format!(
                     "the {action} draft could not be opened: {}",
                     self.status
@@ -2187,7 +2182,7 @@ impl Editor {
             // Escape, through the same message the keyboard table produces.
             SliderEnd::Cancel => {
                 self.await_step(Settle::Preview);
-                self.update(Message::SliderDraftCancel)
+                self.update(Message::Draft(DraftMessage::Cancel))
             }
             // Left open: the frame shows the drafted preview, captured once the gesture has
             // drained, so the pixels belong to the newest value it sent.
@@ -2196,9 +2191,11 @@ impl Editor {
                 // A value whose preview job was refused has already drained with no frame of its
                 // own to wait for, so the frame on screen is the step's evidence.
                 if self
-                    .slider_draft
-                    .as_ref()
-                    .is_some_and(|draft| draft.drained() && draft.unpreviewed)
+                    .core_gesture()
+                    .is_some_and(|gesture| gesture.draft.drained())
+                    && self
+                        .slider_gesture()
+                        .is_some_and(|slider| slider.unpreviewed)
                 {
                     self.settle_step(Settle::SliderDraft);
                 }
@@ -2227,7 +2224,6 @@ impl Editor {
                         parameter: parameter.clone(),
                         fraction,
                     }));
-                    tasks.push(self.update(Message::SliderDraftTick));
                 }
                 self.finish_generated_gesture(
                     action,
@@ -2280,7 +2276,6 @@ impl Editor {
                 parameter: step.parameter.clone(),
                 event: ColorPickerEvent::Hue(hue),
             }));
-            tasks.push(self.update(Message::SliderDraftTick));
         }
         if let Some(plane) = step.plane {
             tasks.push(self.update(Message::ControlPicker {
@@ -2288,7 +2283,6 @@ impl Editor {
                 parameter: step.parameter.clone(),
                 event: ColorPickerEvent::Plane(plane),
             }));
-            tasks.push(self.update(Message::SliderDraftTick));
         }
         if step.hue.is_none() && step.plane.is_none() {
             self.capture_next_frame();
@@ -2316,7 +2310,6 @@ impl Editor {
                         parameter: step.parameter.clone(),
                         event: CurveEditorEvent::Move { index, position },
                     }));
-                    tasks.push(self.update(Message::SliderDraftTick));
                 }
                 self.finish_generated_gesture(
                     step.action,
@@ -2378,9 +2371,8 @@ impl Editor {
         kind: GeneratedKind,
     ) -> Task<Message> {
         if !self
-            .slider_draft
-            .as_ref()
-            .is_some_and(|draft| draft.action == action && draft.parameter == parameter)
+            .drafting_control()
+            .is_some_and(|(drafting, field)| drafting == action && field == parameter)
         {
             return self.fail_step(format!(
                 "the {action} draft could not be opened: {}",
@@ -2408,7 +2400,7 @@ impl Editor {
             }
             SliderEnd::Cancel => {
                 self.await_step(Settle::Preview);
-                tasks.push(self.update(Message::SliderDraftCancel));
+                tasks.push(self.update(Message::Draft(DraftMessage::Cancel)));
             }
         }
         Task::batch(tasks)
@@ -2645,17 +2637,17 @@ impl Editor {
     /// Answer an open slider draft's Changed elsewhere notice, through the same messages its two
     /// buttons raise.
     fn slider_draft_step(&mut self, step: SliderDraftStep) -> Task<Message> {
-        if self.slider_draft.is_none() {
+        if self.slider_gesture().is_none() {
             return self.fail_step("no slider draft is open");
         }
         match step {
             SliderDraftStep::Discard => {
                 self.await_step(Settle::Preview);
-                self.update(Message::SliderDraftCancel)
+                self.update(Message::Draft(DraftMessage::Cancel))
             }
             SliderDraftStep::Reapply => {
                 self.await_step(Settle::SliderDraft);
-                self.update(Message::SliderDraftReapply)
+                self.update(Message::Draft(DraftMessage::Reapply))
             }
         }
     }
@@ -5373,7 +5365,7 @@ mod tests {
             height: 320,
             angle: 0.0,
         });
-        assert!(editor.crop.is_some());
+        assert!(editor.crop().is_some());
         assert_eq!(evidence(&editor).awaiting, None);
         assert!(evidence(&editor).capture_pending);
 
@@ -5383,17 +5375,17 @@ mod tests {
                 // Two corner gestures in Free mode reach the rectangle exactly.
                 2u64,
                 &(|editor: &Editor| {
-                    let rect = editor.crop.as_ref().expect("a draft").rect;
+                    let rect = editor.crop().expect("a draft").rect;
                     assert_eq!((rect.x, rect.y), (20.0, 10.0));
                     assert_eq!((rect.width, rect.height), (200.0, 150.0));
                 }) as &dyn Fn(&Editor),
             ),
             (3, &|editor: &Editor| {
-                assert_eq!(editor.crop.as_ref().expect("a draft").stage.angle, 9.0);
+                assert_eq!(editor.crop().expect("a draft").stage.angle, 9.0);
                 assert_eq!(editor.crop_angle, "9");
             }),
             (4, &|editor: &Editor| {
-                let draft = editor.crop.as_ref().expect("a draft");
+                let draft = editor.crop().expect("a draft");
                 assert_eq!(draft.preset, "1:1");
                 assert!(
                     (draft.rect.width - draft.rect.height).abs() <= 1.0,
@@ -5401,7 +5393,7 @@ mod tests {
                     draft.rect
                 );
             }),
-            (5, &|editor: &Editor| assert!(editor.crop.is_none())),
+            (5, &|editor: &Editor| assert!(editor.crop().is_none())),
         ] {
             editor.evidence.as_mut().expect("evidence").capture_pending = false;
             let _ = editor.next_step();
@@ -5599,7 +5591,7 @@ mod tests {
         assert_eq!(record["status"], json!("sent"), "{record}");
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Draft));
         assert!(!evidence(&editor).capture_pending, "nothing is drafted yet");
-        let pending = editor.crop_pending.as_ref().expect("a starting draft");
+        let pending = editor.crop_pending().expect("a starting draft");
         assert!(
             matches!(pending.queued.as_slice(), [CropMessage::Preset(_)]),
             "{:?}",
@@ -5610,7 +5602,7 @@ mod tests {
             height: 320,
             angle: 0.0,
         });
-        assert_eq!(editor.crop.as_ref().expect("a draft").preset, "16:9");
+        assert_eq!(editor.crop().expect("a draft").preset, "16:9");
         assert!(
             evidence(&editor).capture_pending,
             "the opened draft settles the step"

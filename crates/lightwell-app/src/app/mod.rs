@@ -8,8 +8,10 @@ pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
 pub(crate) mod crop;
+pub(crate) mod draft;
 pub(crate) mod evidence;
 pub(crate) mod fields;
+pub(crate) mod gesture;
 pub(crate) mod keymap;
 pub(crate) mod masks;
 #[cfg(test)]
@@ -44,9 +46,9 @@ use crate::{
     },
     view,
 };
-use crop::PendingDraft;
 use evidence::{EVIDENCE_DEADLINE, Evidence, SCRIPT_EVIDENCE_DEADLINE, Settle};
 use fields::{Fields, action_params, number_text, submit_preset};
+use gesture::{Gesture, Starting};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
@@ -59,7 +61,6 @@ use lightwell_core::{
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
 use overlay::{OverlayQueue, OverlayRequest};
 use serde_json::{Map, Value, json};
-use slider::SliderDraft;
 use std::{
     collections::{BTreeMap, HashSet},
     path::PathBuf,
@@ -514,9 +515,15 @@ pub(crate) struct Editor {
     pub(crate) editing: Option<(String, String)>,
     /// The (action, parameter) whose slider is being dragged.
     pub(crate) dragging: Option<(String, String)>,
-    /// The open slider gesture's draft, when a control of a patch action is being moved. At most
-    /// one draft exists per client, so this and the crop draft exclude each other.
-    pub(crate) slider_draft: Option<SliderDraft>,
+    /// This client's one draft: a slider or mask gesture on the core lifecycle, a discarded one
+    /// still closing, or the crop draft. One field, so two drafts cannot exist at once.
+    pub(crate) gesture: Option<Gesture>,
+    /// The last local gesture identity minted, so every owner answer names the gesture it is for.
+    pub(crate) gesture_serial: u64,
+    /// A test's stand-in for the owner's `draft.set`, for a photograph the owner does not hold:
+    /// every set is accepted, except that each queued refusal answers one set in turn.
+    #[cfg(test)]
+    pub(crate) fake_sets: Option<std::collections::VecDeque<String>>,
     /// A field reset waiting for the gesture commit or request in flight to answer.
     pub(crate) pending_reset: Option<slider::PendingReset>,
     /// The draft revision the displayed preview was rendered from, for correlation.
@@ -537,10 +544,6 @@ pub(crate) struct Editor {
     pub(crate) version_name: String,
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
-    /// The transient crop draft. It is session state, never authoritative: only Apply commits.
-    pub(crate) crop: Option<crate::crop_draft::CropDraft>,
-    /// What a started or reapplied draft still needs from its truncated preview.
-    pub(crate) crop_pending: Option<PendingDraft>,
     /// The crop layer's input stage on the GPU: one extra picture, bounded like the main preview,
     /// held in tiles of at most one atlas layer and dropped as soon as the draft ends.
     pub(crate) draft_photo: Option<draft_photo::DraftPhoto>,
@@ -573,11 +576,6 @@ pub(crate) struct Editor {
     pub(crate) hovered_component: Option<lightwell_core::ComponentId>,
     /// Masks whose overlay the eye has hidden. A hidden mask still applies to the picture.
     pub(crate) hidden_masks: std::collections::HashSet<lightwell_core::MaskId>,
-    /// The open mask shape gesture, which commits one `mask.*` command through the draft lifecycle.
-    pub(crate) mask_draft: Option<crate::mask_draft::MaskDraft>,
-    /// This gesture's content-to-output map, read once from `render.transform` when it opened and
-    /// then applied locally per pointer move.
-    pub(crate) mask_map: Option<crate::mask_draft::ContentMap>,
     /// The mode the next Add-component gesture will use.
     pub(crate) mask_mode: lightwell_core::ComponentMode,
     /// The brush the next stroke will be drawn with: per-client gesture state, never sent on its
@@ -589,14 +587,6 @@ pub(crate) struct Editor {
     pub(crate) brush_erase_held: bool,
     /// The open mask's name as it is being typed in the rename field.
     pub(crate) mask_name: String,
-    /// The core draft behind the open shape gesture, known once `draft.begin` answers.
-    pub(crate) mask_draft_id: Option<lightwell_core::DraftId>,
-    /// A `draft.*` round trip is in flight; nothing else is sent until it answers.
-    pub(crate) mask_draft_in_flight: bool,
-    /// The gesture produced geometry while a round trip was in flight; the answer sends it.
-    pub(crate) mask_draft_pending: bool,
-    /// Apply was pressed while a round trip was in flight; the answer commits.
-    pub(crate) mask_draft_finish: bool,
     /// The method and parameters of the last `mask.*` command this desktop sent. Correlated
     /// evidence: a captured frame and a driven run can both say which request produced the stack on
     /// screen, without reconstructing it from the panel afterwards.
@@ -757,7 +747,10 @@ impl Editor {
             curve_sample_pending: None,
             editing: None,
             dragging: None,
-            slider_draft: None,
+            gesture: None,
+            gesture_serial: 0,
+            #[cfg(test)]
+            fake_sets: None,
             pending_reset: None,
             displayed_draft_revision: None,
             expanded: BTreeMap::new(),
@@ -771,8 +764,6 @@ impl Editor {
             zoom: "100".into(),
             version_name: String::new(),
             version_form_open: false,
-            crop: None,
-            crop_pending: None,
             draft_photo: None,
             draft_assembly: None,
             draft_generation: None,
@@ -788,16 +779,10 @@ impl Editor {
             selected_component: None,
             hovered_component: None,
             hidden_masks: std::collections::HashSet::new(),
-            mask_draft: None,
-            mask_map: None,
             mask_mode: lightwell_core::ComponentMode::Add,
             brush: crate::mask_draft::NEUTRAL_BRUSH,
             brush_erase_held: false,
             mask_name: String::new(),
-            mask_draft_id: None,
-            mask_draft_in_flight: false,
-            mask_draft_pending: false,
-            mask_draft_finish: false,
             last_mask_request: None,
             mask_command_in_flight: false,
             mask_overlay_pending: None,
@@ -944,7 +929,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft.as_ref().map(|draft| draft.summary()),"last_mask_request":self.last_mask_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref()),"performance":self.performance_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"last_mask_request":self.last_mask_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref()),"performance":self.performance_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -980,7 +965,7 @@ impl Editor {
     /// gesture whose session copy has not caught up reports what the desktop itself knows, so a
     /// frame never shows "no draft" while one is plainly on screen.
     fn draft_summary(&self) -> Value {
-        match (&self.session.draft, &self.slider_draft) {
+        match (&self.session.draft, self.slider_gesture()) {
             (Some(draft), _) => json!({
                 "draft_id": draft.draft_id.as_str(),
                 "action": draft.action,
@@ -989,9 +974,29 @@ impl Editor {
                 "draft_revision": draft.draft_revision,
                 "conflicted": draft.conflicted,
             }),
-            (None, Some(gesture)) => gesture.summary(),
+            (None, Some(slider)) => self
+                .core_gesture()
+                .map(|gesture| gesture.draft.summary(&slider.action))
+                .unwrap_or(Value::Null),
             (None, None) => Value::Null,
         }
+    }
+
+    /// The open mask gesture as a captured frame reports it: its shape, with the revision its core
+    /// draft is based on and whether that draft is conflicted.
+    fn mask_draft_summary(&self) -> Value {
+        let Some(gesture) = self.core_gesture() else {
+            return Value::Null;
+        };
+        let Some(mask) = gesture.mask() else {
+            return Value::Null;
+        };
+        let mut summary = mask.shape.summary();
+        if let Some(object) = summary.as_object_mut() {
+            object.insert("base_revision".into(), json!(gesture.draft.base_revision));
+            object.insert("conflicted".into(), json!(gesture.draft.conflicted));
+        }
+        summary
     }
 
     /// The histogram inspector as a captured frame reports it: its status, the render identity the
@@ -1141,7 +1146,7 @@ impl Editor {
     /// The crop draft as a captured frame reports it, so a rendered frame correlates with the
     /// rectangle, angle and output size that produced it.
     fn crop_summary(&self) -> Value {
-        match &self.crop {
+        match self.crop() {
             Some(draft) => {
                 let mut summary = draft.summary();
                 if let Some(object) = summary.as_object_mut() {
@@ -1172,7 +1177,7 @@ impl Editor {
                 summary
             }
             None => {
-                json!({"drafting":false,"pending":self.crop_pending.is_some(),"section":self.crop_section_summary()})
+                json!({"drafting":false,"pending":self.crop_pending().is_some(),"section":self.crop_section_summary()})
             }
         }
     }
@@ -1677,7 +1682,7 @@ impl Editor {
     /// not even be marked conflicted. Shielding it would hold the newer state's frame behind the
     /// whole input-stage render, and requesting it again would stop that frame in turn.
     pub(crate) fn draft_preview_superseded(&mut self, generation: Option<u64>) {
-        let Some(pending) = &self.crop_pending else {
+        let Some(pending) = self.crop_pending() else {
             return;
         };
         let again = if pending.reapply { "reapply" } else { "start" };
@@ -1703,11 +1708,8 @@ impl Editor {
         detail: &str,
         generation: Option<u64>,
     ) {
-        let reapply = self
-            .crop_pending
-            .as_ref()
-            .is_some_and(|pending| pending.reapply);
-        self.crop_pending = None;
+        let reapply = self.crop_pending().is_some_and(|pending| pending.reapply);
+        self.set_crop_pending(None);
         self.draft_generation = None;
         if !reapply {
             self.end_draft();
@@ -1874,9 +1876,7 @@ impl Editor {
     /// gesture or a crop draft owns the preview, or while a refit is already on its way.
     fn refit_proxy(&mut self) -> Task<Message> {
         if self.state.is_none()
-            || self.slider_draft.is_some()
-            || self.crop.is_some()
-            || self.crop_pending.is_some()
+            || self.gesture_refusal(Starting::Refit).is_some()
             || self.presented_generation == 0
             || !self.presented_proxy
             || self.refit_pending
@@ -2050,14 +2050,13 @@ impl Editor {
         // belongs to the one open request evidence tracks below. While a slider gesture is open the
         // drafted previews replace one another, so a scripted gesture waits for the one whose
         // settings are the newest.
-        let settle = match &self.slider_draft {
-            Some(draft) if draft.drained() => Some(Settle::SliderDraft),
-            Some(_) => None,
-            // A mask shape gesture drains the same way: while another `draft.set` or the commit is
-            // still queued the frame on screen is not the one the step is evidence of, so the step
-            // waits for the geometry that settles.
-            None if !self.mask_draft_drained() => None,
-            None => Some(Settle::Preview),
+        // A mask shape gesture drains the same way: while another `draft.set` or the commit is still
+        // queued the frame on screen is not the one the step is evidence of, so the step waits for
+        // the geometry that settles.
+        let settle = match self.core_gesture() {
+            Some(gesture) if !gesture.draft.drained() => None,
+            Some(gesture) if gesture.slider().is_some() => Some(Settle::SliderDraft),
+            _ => Some(Settle::Preview),
         };
         if upload.proxy {
             // The photograph is on screen, but every number a captured frame reports — the
@@ -2312,14 +2311,25 @@ impl Editor {
             editing: self.editing.as_ref(),
             dragging: self.dragging.as_ref(),
             expanded: &self.expanded,
-            slider_draft: self.slider_draft.as_ref(),
-            draft: self.crop.as_ref(),
+            slider_draft: self.slider_gesture().map(|slider| state::SliderDrafting {
+                action: &slider.action,
+                parameter: &slider.parameter,
+                conflicted: self
+                    .core_gesture()
+                    .is_some_and(|gesture| gesture.draft.conflicted),
+            }),
+            gesture_conflicted: self
+                .core_gesture()
+                .is_some_and(|gesture| gesture.draft.conflicted),
+            preset_refusal: self.gesture_refusal(Starting::Preset),
+            gallery_refusal: self.gesture_refusal(Starting::Gallery),
+            draft: self.crop(),
             masks: self.masks.as_ref(),
             selected_mask: self.selected_mask.as_ref(),
             selected_component: self.selected_component.as_ref(),
             hovered_component: self.hovered_component.as_ref(),
             hidden_masks: &self.hidden_masks,
-            mask_draft: self.mask_draft.as_ref(),
+            mask_draft: self.mask_shape(),
             mask_mode: self.mask_mode,
             brush: self.brush,
             brush_erase_held: self.brush_erase_held,
@@ -2328,7 +2338,7 @@ impl Editor {
             // layer everywhere else: one target at a time, so a field always shows the layer the
             // control in front of it would edit.
             target: self.section_target(),
-            draft_pending: self.crop_pending.is_some(),
+            draft_pending: self.crop_pending().is_some(),
             drafting: self.drafting(),
             crop_angle: &self.crop_angle,
             crop_custom: (&self.crop_custom.0, &self.crop_custom.1),
@@ -2387,9 +2397,7 @@ impl Editor {
                 }
                 if page.is_some()
                     && (self.busy
-                        || self.crop.is_some()
-                        || self.crop_pending.is_some()
-                        || self.slider_draft.is_some()
+                        || self.gesture_refusal(Starting::Gallery).is_some()
                         || self.compare_return.is_some())
                 {
                     self.status = "Finish the current operation before opening Components".into();
@@ -2499,7 +2507,7 @@ impl Editor {
                         // the user chooses Discard or Reapply rather than losing the composition.
                         if self.crop_applying.take().is_some() {
                             let conflict = error.starts_with(ErrorKind::Conflict.code());
-                            if conflict && let Some(draft) = &mut self.crop {
+                            if conflict && let Some(draft) = self.crop_mut() {
                                 draft.mark_conflicted();
                             }
                             if conflict {
@@ -3065,7 +3073,7 @@ impl Editor {
                     Err(_) => {
                         self.draft_assembly = None;
                         self.uploading = false;
-                        self.crop_pending = None;
+                        self.set_crop_pending(None);
                         self.draft_generation = None;
                         self.status = "Could not upload the crop's input stage".into();
                         self.settle_step(Settle::Draft);
@@ -3126,17 +3134,10 @@ impl Editor {
             Message::Resized(width, height) => self.window = (width, height),
             Message::Crop(message) => return self.crop_update(message),
             Message::Mask(message) => return self.mask_message(message),
-            Message::MaskTransform(result) => return self.mask_transform(result),
-            Message::MaskDraftBegun(result) => {
-                return self.mask_draft_begun(result.map(|draft| *draft));
+            Message::MaskTransform(gesture, result) => {
+                return self.mask_transform(gesture, result);
             }
-            Message::MaskDraftCommitted(result) => {
-                return self
-                    .mask_draft_committed(result.map(|refresh| refresh.map(|boxed| *boxed)));
-            }
-            Message::MaskDraftReapplied(result) => {
-                return self.mask_draft_reapplied(result.map(|draft| *draft));
-            }
+            Message::Draft(message) => return self.draft_message(message),
             Message::MaskOverlayUploaded(generation, dimensions, result) => {
                 let uploaded = result.is_ok();
                 match result {
@@ -3313,8 +3314,8 @@ impl Editor {
             Message::SliderReleased { action, parameter } => {
                 // Release ends the gesture: an open draft commits once, and a slider that never
                 // drafted submits its own field exactly as Enter in that field does.
-                if self.slider_draft.is_some() {
-                    return self.slider_commit();
+                if self.slider_gesture().is_some() {
+                    return self.release();
                 }
                 if tools::drafts(&self.modules, &action, &parameter) {
                     return self.release_without_draft(&action, &parameter);
@@ -3346,25 +3347,6 @@ impl Editor {
             }
             Message::ResetField { action, parameter } => {
                 return self.reset_field(action, parameter);
-            }
-            Message::SliderDraftTick => return self.slider_tick(),
-            Message::SliderDraftBegun(result) => {
-                return self.slider_begun(result.map(|draft| *draft));
-            }
-            Message::SliderDraftSet(result) => return self.slider_set(result.map(|both| *both)),
-            Message::SliderDraftCommit => return self.slider_commit(),
-            Message::SliderDraftCommitted(result) => {
-                return self.slider_committed(result.map(|refresh| refresh.map(|boxed| *boxed)));
-            }
-            Message::SliderDraftCancel => return self.slider_cancel(),
-            Message::SliderDraftEnded(result) => {
-                if let Err(error) = result {
-                    self.status = error;
-                }
-            }
-            Message::SliderDraftReapply => return self.slider_reapply(),
-            Message::SliderDraftReapplied(result) => {
-                return self.slider_reapplied(result.map(|draft| *draft));
             }
             Message::TogglePerformance => self.performance.expanded = !self.performance.expanded,
             Message::PerformanceTick => return self.performance_tick(),
@@ -3422,30 +3404,19 @@ impl Editor {
                 );
             }
             Message::SetMode(mode) => {
-                // A draft is never discarded implicitly: leaving crop mode asks for Apply or Cancel.
-                if mode != self.session.workspace.mode && self.crop.is_some() {
-                    self.status = "Apply or Cancel the crop draft before leaving this mode".into();
-                    return Task::none();
-                }
-                // One draft per client: a canvas mode would need its own, so an open slider
-                // gesture is finished deliberately rather than replaced.
-                if mode != self.session.workspace.mode && self.slider_draft.is_some() {
-                    self.status =
-                        "Finish or discard the slider draft before entering this mode".into();
-                    return Task::none();
-                }
-                // Leaving Mask mode with an open shape gesture is refused with its reason rather
-                // than discarding what was drawn.
+                // A draft is never discarded implicitly: leaving the crop mode or Mask mode with a
+                // draft open asks for Apply or Cancel, and a slider gesture is finished deliberately
+                // rather than replaced by a mode that would need the client's one draft.
                 if mode != self.session.workspace.mode
-                    && let Some(reason) = self.mask_mode_refusal()
+                    && let Some(reason) = self.gesture_refusal(Starting::Mode)
                 {
                     self.status = reason;
                     return Task::none();
                 }
                 let opens_draft = tools::crop_frame(&self.modules)
                     .is_some_and(|frame| frame.module.id == mode)
-                    && self.crop.is_none()
-                    && self.crop_pending.is_none();
+                    && self.crop().is_none()
+                    && self.crop_pending().is_none();
                 let mut tasks = vec![workspace_task(
                     self.owner.clone(),
                     self.client,
@@ -3464,21 +3435,8 @@ impl Editor {
                 // Compare selects the Original entry, which pauses an open draft: the draft would
                 // have to be resumed on release, and the design keeps one draft and one preview
                 // selection at a time. Refuse it and say so rather than pausing silently.
-                if self.mask_draft.is_some() {
-                    self.status =
-                        "Apply or Cancel the mask gesture before comparing with the original"
-                            .into();
-                    return Task::none();
-                }
-                if self.crop.is_some() {
-                    self.status =
-                        "Apply or Cancel the crop draft before comparing with the original".into();
-                    return Task::none();
-                }
-                if self.slider_draft.is_some() {
-                    self.status =
-                        "Finish or discard the slider draft before comparing with the original"
-                            .into();
+                if let Some(reason) = self.gesture_refusal(Starting::Compare) {
+                    self.status = reason;
                     return Task::none();
                 }
                 let (Some(state), Some(original)) = (&self.state, self.original_entry.clone())
@@ -4305,8 +4263,7 @@ impl Editor {
         // the recipe: no extra request, no render.
         self.seed_values();
         self.settle_draft(revision, &entry);
-        self.settle_slider_draft(revision);
-        self.settle_mask_draft(revision);
+        self.gesture_revision(revision);
     }
 
     /// Seed every generated field of every module from the displayed entry's values for that
@@ -4373,8 +4330,7 @@ impl Editor {
     /// it, because no history operation discards a draft implicitly.
     fn settle_draft(&mut self, revision: u64, entry: &lightwell_core::EntryId) {
         let Some((base, conflicted, summary)) = self
-            .crop
-            .as_ref()
+            .crop()
             .map(|draft| (draft.base_revision, draft.conflicted, draft.summary()))
         else {
             return;
@@ -4391,7 +4347,7 @@ impl Editor {
         if base == revision || conflicted {
             return;
         }
-        if let Some(draft) = &mut self.crop {
+        if let Some(draft) = self.crop_mut() {
             draft.mark_conflicted();
         }
         self.crop_changed("crop_draft_conflicted");
@@ -4461,15 +4417,8 @@ impl Editor {
     /// draft is finished deliberately, never displaced by a click. A point pick commits nothing,
     /// but it answers to the same rule so that one sentence describes every canvas pick.
     fn pick_refusal(&self) -> Option<String> {
-        if self.crop.is_some() || self.crop_pending.is_some() {
-            return Some(
-                "Apply or Cancel the crop draft before picking from the photograph".into(),
-            );
-        }
-        if self.slider_draft.is_some() {
-            return Some(
-                "Finish or discard the slider draft before picking from the photograph".into(),
-            );
+        if let Some(reason) = self.gesture_refusal(Starting::Pick) {
+            return Some(reason);
         }
         if !self.session.preview.can_edit() {
             return Some("Return to the current state before picking from the photograph".into());
@@ -4522,7 +4471,7 @@ impl Editor {
     /// The crop draft is displayed instead of the plain preview only while its own input stage is on
     /// the GPU and the session shows the current state.
     pub(crate) fn drafting(&self) -> bool {
-        self.crop.is_some() && self.draft_photo.is_some() && self.session.preview.can_edit()
+        self.crop().is_some() && self.draft_photo.is_some() && self.session.preview.can_edit()
     }
 
     fn gallery_page(&self) -> Option<usize> {
@@ -4542,9 +4491,9 @@ impl Editor {
                     draft_photo: self.draft_photo.as_ref(),
                     overlay: self.overlay_surface(),
                     mask_overlay: self.mask_overlay_surface(),
-                    mask_draft: self.mask_draft.as_ref(),
-                    mask_map: self.mask_map,
-                    draft: self.crop.as_ref(),
+                    mask_draft: self.mask_shape(),
+                    mask_map: self.mask_gesture().and_then(|mask| mask.map),
+                    draft: self.crop(),
                 },
             ),
         };
@@ -4565,9 +4514,9 @@ impl Editor {
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
             gallery_open: self.gallery_page().is_some(),
-            drafting: self.crop.is_some(),
-            slider_drafting: self.slider_draft.is_some(),
-            mask_drafting: self.mask_draft.is_some(),
+            drafting: self.crop().is_some(),
+            slider_drafting: self.slider_gesture().is_some(),
+            mask_drafting: self.mask_gesture().is_some(),
             mask_brush: self.mask_mode_active(),
             palette_open: self.palette_open,
             mode_active: self.session.workspace.mode != POINTER_MODE,
@@ -4890,32 +4839,14 @@ mod tests {
     }
 
     /// The `draft.begin` answer the core would send, so the state machine runs on real messages
-    /// without a running task executor.
+    /// without a running task executor. The owner does not hold this photograph, so the editor's
+    /// own `draft.set` is answered by the test's stand-in, which accepts it.
     fn begun(editor: &mut Editor, asset: &AssetId, action: &str, revision: u64) {
+        editor
+            .fake_sets
+            .get_or_insert_with(std::collections::VecDeque::new);
         let draft = lightwell_core::Draft::new(action, asset.clone(), revision);
-        let _ = editor.update(Message::SliderDraftBegun(Ok(Box::new(draft))));
-    }
-
-    /// The `draft.set` answer for the fields the gesture last sent, with the preview job that
-    /// carries its draft revision.
-    fn was_set(editor: &mut Editor, asset: &AssetId, current: &lightwell_core::HistoryEntry) {
-        let mut draft = editor
-            .session
-            .draft
-            .clone()
-            .expect("the draft was begun before it was set");
-        draft.draft_revision += 1;
-        let job = refresh_for(asset, current, Vec::new(), &[current], false).job;
-        let now = std::time::Instant::now();
-        let round_trip = crate::app::tasks::RoundTrip {
-            queued: now,
-            started: now,
-            answered: now,
-            planned: now,
-        };
-        let _ = editor.update(Message::SliderDraftSet(Ok(Box::new((
-            draft, job, round_trip,
-        )))));
+        testing::answer_begin(editor, draft);
     }
 
     /// Every `draft.*` request this run logged, by event name.
@@ -4928,28 +4859,20 @@ mod tests {
     }
 
     /// A drag of a patch action's slider opens exactly one draft, sends exactly one `draft.set`
-    /// per tick for the newest value, and sends nothing at all while a round trip is in flight.
+    /// for the newest value, and sends nothing at all while a round trip is in flight.
     #[test]
-    fn a_drag_sends_one_draft_set_per_tick_for_the_newest_value() {
+    fn a_drag_sends_one_draft_set_for_the_newest_value() {
         let (mut editor, catalog, log, asset, action, parameter) = drafting();
-        let current = editor
-            .state
-            .as_ref()
-            .expect("an open asset")
-            .current_entry
-            .clone();
 
-        // Every move inside one tick is one pending value: the tick that follows sends the last.
-        // The values are ones the widget would send: it quantizes each drag to the parameter's
-        // declared step and precision before the message is published.
+        // Every move while `draft.begin` is in flight replaces one pending value: the answer sends
+        // the last. The values are ones the widget would send: it quantizes each drag to the
+        // parameter's declared step and precision before the message is published.
         for value in [25.0, 50.0, 75.0] {
             let _ = editor.update(Message::SliderMoved {
                 action: action.clone(),
                 parameter: parameter.clone(),
                 value,
             });
-            // Nothing can be sent yet: `draft.begin` has not answered.
-            let _ = editor.update(Message::SliderDraftTick);
         }
         assert_eq!(
             editor.fields.get(&action, &parameter),
@@ -4964,9 +4887,12 @@ mod tests {
         );
 
         begun(&mut editor, &asset, &action, 4);
-        let _ = editor.update(Message::SliderDraftTick);
-        let _ = editor.update(Message::SliderDraftTick);
-        let _ = editor.update(Message::SliderDraftTick);
+        // A move to the value already accepted sends nothing again.
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: 75.0,
+        });
 
         let records = logged(&mut editor, &log);
         assert_eq!(
@@ -4978,22 +4904,12 @@ mod tests {
         assert_eq!(
             sets.len(),
             1,
-            "three ticks with one round trip in flight send one draft.set: {sets:?}"
+            "three moves with one round trip in flight send one draft.set: {sets:?}"
         );
         assert_eq!(
             sets[0]["fields"],
             json!({ parameter.clone(): 75.0 }),
             "and it carries the newest value, as one field patch"
-        );
-
-        // The tick is gated on the draft exactly as the preview poll is on an in-flight preview.
-        let log = attach_log(&mut editor);
-        was_set(&mut editor, &asset, &current);
-        let _ = editor.update(Message::SliderDraftTick);
-        let _ = editor.update(Message::SliderDraftTick);
-        assert!(
-            draft_events(&logged(&mut editor, &log), "slider_draft_set").is_empty(),
-            "a tick with nothing pending sends nothing"
         );
         assert_eq!(
             editor
@@ -5048,12 +4964,6 @@ mod tests {
     fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
         let (mut editor, catalog, log, asset, _, _) = drafting();
         let (action, parameter) = single_parameter_control(&editor);
-        let current = editor
-            .state
-            .as_ref()
-            .expect("an open asset")
-            .current_entry
-            .clone();
 
         for value in [0.25, 0.5] {
             let _ = editor.update(Message::SliderMoved {
@@ -5061,23 +4971,18 @@ mod tests {
                 parameter: parameter.clone(),
                 value,
             });
-            let _ = editor.update(Message::SliderDraftTick);
         }
         assert!(
-            editor.slider_draft.is_some(),
+            editor.slider_gesture().is_some(),
             "the gesture opened a draft: {}",
             editor.status
         );
         begun(&mut editor, &asset, &action, 4);
-        let _ = editor.update(Message::SliderDraftTick);
-        was_set(&mut editor, &asset, &current);
         let _ = editor.update(Message::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 0.75,
         });
-        let _ = editor.update(Message::SliderDraftTick);
-        was_set(&mut editor, &asset, &current);
         let _ = editor.update(Message::SliderReleased {
             action: action.clone(),
             parameter: parameter.clone(),
@@ -5090,11 +4995,11 @@ mod tests {
             "one gesture opens one draft"
         );
         let sets = draft_events(&records, "slider_draft_set");
-        assert_eq!(sets.len(), 2, "one draft.set per tick: {sets:?}");
+        assert_eq!(sets.len(), 2, "one draft.set per accepted value: {sets:?}");
         assert_eq!(
             sets[0]["fields"],
             json!({ parameter.clone(): 0.5 }),
-            "and it carries the newest value the tick saw, as the whole request"
+            "and it carries the newest value, as the whole request"
         );
         assert_eq!(sets[1]["fields"], json!({ parameter.clone(): 0.75 }));
         assert_eq!(
@@ -5137,9 +5042,8 @@ mod tests {
                 parameter: parameter.clone(),
                 value,
             });
-            let _ = editor.update(Message::SliderDraftTick);
         }
-        assert!(editor.slider_draft.is_none(), "no draft was opened");
+        assert!(editor.slider_gesture().is_none(), "no draft was opened");
         assert_eq!(
             editor.fields.get(&action, &parameter),
             Some("7"),
@@ -5186,17 +5090,15 @@ mod tests {
             value,
         });
         begun(editor, asset, action, current.sequence);
-        let _ = editor.update(Message::SliderDraftTick);
-        was_set(editor, asset, &current);
         let _ = editor.update(Message::ControlReleased {
             action: action.into(),
             parameter: parameter.into(),
         });
-        assert!(
+        assert_eq!(
             editor
-                .slider_draft
-                .as_ref()
-                .is_some_and(|draft| draft.in_flight),
+                .core_gesture()
+                .and_then(|gesture| gesture.draft.in_flight()),
+            Some(draft::Round::Commit),
             "the release's commit is in flight"
         );
         let _ = editor.update(Message::ResetField {
@@ -5263,7 +5165,7 @@ mod tests {
             // The commit answers with the next revision; the reset goes out in the same update.
             let log = attach_log(&mut editor);
             let refresh = refresh_for(&asset, &committed, Vec::new(), &[&committed], false);
-            let _ = editor.update(Message::SliderDraftCommitted(Ok(Some(Box::new(refresh)))));
+            testing::answer_commit(&mut editor, Ok(Some(refresh)));
             let records = logged(&mut editor, &log);
             let sent = draft_events(&records, "field_reset_sent");
             assert_eq!(sent.len(), 1, "{action}: sent once");
@@ -5467,26 +5369,23 @@ mod tests {
             parameter: "kelvin".into(),
             value: 5000.0,
         });
+        // The owner accepts the value, but its preview job answers preparation-required.
+        editor.fake_sets = Some(["preparation-required: source-job-7".to_owned()].into());
         begun(&mut editor, &asset, "set-raw-temperature", 4);
-        let _ = editor.update(Message::SliderDraftSet(Err(
-            "preparation-required: source-job-7".into(),
-        )));
         assert_eq!(
             editor.status,
             "Custom temperature cannot be previewed until the RAW development is ready; it shows on release"
         );
         assert!(
             editor
-                .slider_draft
-                .as_ref()
-                .is_some_and(slider::SliderDraft::drained),
+                .core_gesture()
+                .is_some_and(|gesture| gesture.draft.drained()),
             "the gesture is still open and has nothing in flight"
         );
         assert!(
             editor
-                .slider_draft
-                .as_ref()
-                .is_some_and(|draft| draft.unpreviewed),
+                .slider_gesture()
+                .is_some_and(|slider| slider.unpreviewed),
             "and no frame of its own is coming for the value it holds"
         );
         let records = logged(&mut editor, &log);
@@ -5603,12 +5502,6 @@ mod tests {
     #[test]
     fn release_commits_once_and_a_return_to_start_commits_nothing() {
         let (mut editor, catalog, log, asset, action, parameter) = drafting();
-        let current = editor
-            .state
-            .as_ref()
-            .expect("an open asset")
-            .current_entry
-            .clone();
         let history = editor.history.entries.len();
         let _ = editor.update(Message::SliderMoved {
             action: action.clone(),
@@ -5616,8 +5509,6 @@ mod tests {
             value: 1.0,
         });
         begun(&mut editor, &asset, &action, 4);
-        let _ = editor.update(Message::SliderDraftTick);
-        was_set(&mut editor, &asset, &current);
 
         let _ = editor.update(Message::SliderReleased {
             action: action.clone(),
@@ -5638,8 +5529,8 @@ mod tests {
         assert!(editor.dragging.is_none(), "release ends the drag");
 
         // The gesture returned to its start: a no-op outcome, no entry, no history refresh.
-        let _ = editor.update(Message::SliderDraftCommitted(Ok(None)));
-        assert!(editor.slider_draft.is_none(), "the gesture is over");
+        testing::answer_commit(&mut editor, Ok(None));
+        assert!(editor.slider_gesture().is_none(), "the gesture is over");
         assert!(editor.session.draft.is_none(), "and so is the core draft");
         assert_eq!(
             editor.history.entries.len(),
@@ -5660,20 +5551,12 @@ mod tests {
             .get(&action, &parameter)
             .expect("a seeded field")
             .to_owned();
-        let current = editor
-            .state
-            .as_ref()
-            .expect("an open asset")
-            .current_entry
-            .clone();
         let _ = editor.update(Message::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 2.0,
         });
         begun(&mut editor, &asset, &action, 4);
-        let _ = editor.update(Message::SliderDraftTick);
-        was_set(&mut editor, &asset, &current);
 
         // Exactly the message the keyboard table raises for Escape while a gesture is open.
         let context = keymap::KeyContext {
@@ -5696,7 +5579,7 @@ mod tests {
             &context,
         );
         assert!(
-            matches!(escape, Some(Message::SliderDraftCancel)),
+            matches!(escape, Some(Message::Draft(message::DraftMessage::Cancel))),
             "Escape discards an open slider gesture: {escape:?}"
         );
         let _ = editor.update(escape.expect("the mapped message"));
@@ -5707,7 +5590,7 @@ mod tests {
             draft_events(&records, "slider_draft_commit").is_empty(),
             "a cancelled gesture commits nothing"
         );
-        assert!(editor.slider_draft.is_none());
+        assert!(editor.slider_gesture().is_none());
         assert_eq!(
             editor.fields.get(&action, &parameter),
             Some(default.as_str()),
@@ -5721,26 +5604,18 @@ mod tests {
     #[test]
     fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
         let (mut editor, catalog, log, asset, action, parameter) = drafting();
-        let current = editor
-            .state
-            .as_ref()
-            .expect("an open asset")
-            .current_entry
-            .clone();
         let _ = editor.update(Message::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 15.0,
         });
         begun(&mut editor, &asset, &action, 4);
-        let _ = editor.update(Message::SliderDraftTick);
-        was_set(&mut editor, &asset, &current);
 
         // Somebody else committed, which is also what this desktop's own undo looks like.
         let newer = entry(&asset, 9, None);
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
         let _ = editor.update(Message::Synced(Ok(tasks::SyncResult::changed(refresh))));
-        let draft = editor.slider_draft.as_ref().expect("the draft is kept");
+        let draft = &editor.core_gesture().expect("the draft is kept").draft;
         assert!(draft.conflicted);
         assert_eq!(
             editor.fields.get(&action, &parameter),
@@ -5762,12 +5637,12 @@ mod tests {
             "the conflict is recorded once, with the revision that caused it"
         );
         let log2 = attach_log(&mut editor);
-        let _ = editor.update(Message::SliderDraftCommit);
+        let _ = editor.update(Message::Draft(message::DraftMessage::Commit));
         assert!(
             draft_events(&logged(&mut editor, &log2), "slider_draft_commit").is_empty(),
             "a conflicted gesture refuses to commit"
         );
-        assert!(editor.slider_draft.as_ref().expect("kept").conflicted);
+        assert!(editor.core_gesture().expect("kept").draft.conflicted);
 
         // Reapply rebases it on the new revision and re-sends the value this client set.
         let log3 = attach_log(&mut editor);
@@ -5778,9 +5653,9 @@ mod tests {
             .cloned()
             .expect("an object");
         rebased.conflicted = false;
-        let _ = editor.update(Message::SliderDraftReapply);
-        let _ = editor.update(Message::SliderDraftReapplied(Ok(Box::new(rebased))));
-        let draft = editor.slider_draft.as_ref().expect("the rebased draft");
+        let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
+        testing::answer_reapply(&mut editor, Ok(rebased));
+        let draft = &editor.core_gesture().expect("the rebased draft").draft;
         assert!(!draft.conflicted);
         assert_eq!(draft.base_revision, 9);
         let records = logged(&mut editor, &log3);
@@ -5801,19 +5676,12 @@ mod tests {
     #[test]
     fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
         let (mut editor, catalog, log, asset, action, parameter) = drafting();
-        let current = editor
-            .state
-            .as_ref()
-            .expect("an open asset")
-            .current_entry
-            .clone();
         let _ = editor.update(Message::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 1.0,
         });
         begun(&mut editor, &asset, &action, 4);
-        let _ = editor.update(Message::SliderDraftTick);
         let sets = {
             let records = logged(&mut editor, &log);
             draft_events(&records, "slider_draft_set")
@@ -5822,8 +5690,7 @@ mod tests {
                 .cloned()
                 .expect("one draft.set")
         };
-        was_set(&mut editor, &asset, &current);
-        let _ = editor.update(Message::SliderDraftCancel);
+        let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
 
         // The same value typed into the field and submitted with Enter.
         editor.busy = false;
@@ -5954,7 +5821,6 @@ mod tests {
     fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
         let asset = editor.state.as_ref().expect("open").asset.id.clone();
-        let current = editor.state.as_ref().expect("open").current_entry.clone();
         let (action, _) = patch_control(&editor);
         let declared = tools::declared_action(&editor.modules, &action)
             .expect("the declared patch action")
@@ -5991,12 +5857,11 @@ mod tests {
                 value: *value,
             });
             assert!(
-                editor.slider_draft.is_some(),
+                editor.slider_gesture().is_some(),
                 "{parameter} did not open a draft: {}",
                 editor.status
             );
             begun(&mut editor, &asset, &action, 4);
-            let _ = editor.update(Message::SliderDraftTick);
             let records = logged(&mut editor, &log);
             let sets = draft_events(&records, "slider_draft_set");
             assert_eq!(sets.len(), 1, "{parameter}: {sets:?}");
@@ -6016,7 +5881,6 @@ mod tests {
 
             // The release: one commit, then the no-op outcome that ends the gesture.
             let log = attach_log(&mut editor);
-            was_set(&mut editor, &asset, &current);
             let _ = editor.update(Message::SliderReleased {
                 action: action.clone(),
                 parameter: parameter.clone(),
@@ -6027,9 +5891,9 @@ mod tests {
                 1,
                 "{parameter} committed once"
             );
-            let _ = editor.update(Message::SliderDraftCommitted(Ok(None)));
+            testing::answer_commit(&mut editor, Ok(None));
             assert!(
-                editor.slider_draft.is_none(),
+                editor.slider_gesture().is_none(),
                 "{parameter} left a gesture open"
             );
 
@@ -6042,10 +5906,7 @@ mod tests {
                 value: *value,
             });
             begun(&mut editor, &asset, &action, 4);
-            // The `draft.set` the open gesture sent has to answer before Escape can end it:
-            // nothing is sent while a round trip is in flight, which is the gesture's own bound.
-            was_set(&mut editor, &asset, &current);
-            let _ = editor.update(Message::SliderDraftCancel);
+            let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
             let records = logged(&mut editor, &log);
             assert!(
                 draft_events(&records, "slider_draft_commit").is_empty(),
@@ -6055,7 +5916,16 @@ mod tests {
                 !draft_events(&records, "slider_draft_cancelled").is_empty(),
                 "{parameter} did not cancel"
             );
-            assert!(editor.slider_draft.is_none(), "{parameter} kept its draft");
+            assert!(
+                editor.slider_gesture().is_none(),
+                "{parameter} kept its draft"
+            );
+            // The slot is free once the owner has ended the draft.
+            testing::answer_cancel(&mut editor);
+            assert!(
+                editor.gesture.is_none(),
+                "{parameter} left its draft closing"
+            );
 
             // An external commit under the gesture, then Reapply.
             editor.busy = false;
@@ -6065,35 +5935,38 @@ mod tests {
                 value: *value,
             });
             begun(&mut editor, &asset, &action, 4);
-            let _ = editor.update(Message::SliderDraftTick);
-            was_set(&mut editor, &asset, &current);
-            editor.settle_slider_draft(5);
+            editor.gesture_revision(5);
             assert!(
                 editor
-                    .slider_draft
-                    .as_ref()
-                    .is_some_and(|draft| draft.conflicted),
+                    .core_gesture()
+                    .is_some_and(|gesture| gesture.draft.conflicted),
                 "{parameter} was not marked conflicted"
             );
-            let _ = editor.update(Message::SliderDraftReapply);
-            let _ = editor.update(Message::SliderDraftReapplied(Ok(Box::new(
-                lightwell_core::Draft::new(&action, asset.clone(), 5),
-            ))));
-            let rebased = editor.slider_draft.as_ref().expect("the rebased draft");
+            let _ = editor.update(Message::Draft(message::DraftMessage::Reapply));
+            let log = attach_log(&mut editor);
+            testing::answer_reapply(
+                &mut editor,
+                Ok(lightwell_core::Draft::new(&action, asset.clone(), 5)),
+            );
+            let rebased = &editor.core_gesture().expect("the rebased draft").draft;
             assert!(!rebased.conflicted, "{parameter} stayed conflicted");
             assert_eq!(
                 rebased.base_revision, 5,
                 "{parameter} was not rebased on the new revision"
             );
             assert_eq!(
-                rebased.sent,
-                Some(Value::from(*value)),
+                rebased.sent(),
+                Some(&json!({ parameter.clone(): value })),
                 "{parameter} did not re-send the value this client set"
             );
-            was_set(&mut editor, &asset, &current);
-            let _ = editor.update(Message::SliderDraftCancel);
-            let _ = editor.update(Message::SliderDraftEnded(Ok(())));
-            assert!(editor.slider_draft.is_none());
+            assert_eq!(
+                draft_events(&logged(&mut editor, &log), "slider_draft_set").len(),
+                1,
+                "{parameter}: the reapply re-sent it once"
+            );
+            let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
+            testing::answer_cancel(&mut editor);
+            assert!(editor.gesture.is_none());
         }
         finish(editor, catalog);
     }
@@ -6442,10 +6315,13 @@ mod tests {
             value: 1.0,
         });
         begun(&mut editor, &asset, &action, 4);
-        assert!(editor.slider_draft.is_some());
+        assert!(editor.slider_gesture().is_some());
         let _ = editor.update(Message::PointPicked { x: 7, y: 9 });
         assert!(editor.status.contains("slider draft"), "{}", editor.status);
-        assert!(editor.slider_draft.is_some(), "the pick discarded a draft");
+        assert!(
+            editor.slider_gesture().is_some(),
+            "the pick discarded a draft"
+        );
         finish(editor, catalog);
     }
 
@@ -6644,7 +6520,7 @@ mod tests {
             parameter: parameter.clone(),
             value: 1.0,
         });
-        assert!(editor.slider_draft.is_none(), "{}", editor.status);
+        assert!(editor.slider_gesture().is_none(), "{}", editor.status);
         assert!(editor.status.contains("crop draft"), "{}", editor.status);
         let _ = editor.update(Message::Crop(CropMessage::Cancel));
 
@@ -6656,9 +6532,9 @@ mod tests {
             value: 1.0,
         });
         begun(&mut editor, &asset, "unused", 4);
-        assert!(editor.slider_draft.is_some());
+        assert!(editor.slider_gesture().is_some());
         let _ = editor.update(Message::SetMode(crop));
-        assert!(editor.crop.is_none() && editor.crop_pending.is_none());
+        assert!(editor.crop().is_none() && editor.crop_pending().is_none());
         assert!(editor.status.contains("slider draft"), "{}", editor.status);
         editor.original_entry = Some(entry(&asset, 0, None).id);
         let _ = editor.update(Message::CompareBegin);
@@ -8013,7 +7889,7 @@ mod tests {
         // Entering the crop module's mode opens its draft; leaving it with a draft open is refused.
         let _ = editor.update(Message::SetMode(crop.id.clone()));
         assert!(
-            editor.crop_pending.is_some(),
+            editor.crop_pending().is_some(),
             "the mode opens the draft: {}",
             editor.status
         );
@@ -8024,7 +7900,7 @@ mod tests {
         });
         editor.session.workspace.mode = crop.id.clone();
         let _ = editor.update(Message::SetMode(POINTER_MODE.into()));
-        assert!(editor.crop.is_some(), "the draft is never discarded");
+        assert!(editor.crop().is_some(), "the draft is never discarded");
         assert!(
             editor.status.contains("Apply or Cancel"),
             "{}",
@@ -8090,7 +7966,7 @@ mod tests {
             revision
         );
         assert_eq!(editor.displayed_entry(), Some(entry_id));
-        assert!(editor.slider_draft.is_none() && editor.crop.is_none());
+        assert!(editor.slider_gesture().is_none() && editor.crop().is_none());
 
         // The mode strip no longer offers it: the panel is the only place it lives.
         assert!(
@@ -8153,7 +8029,7 @@ mod tests {
         assert_eq!(editor.status, "Copied the edit.crop request");
 
         // With no draft open there is nothing to copy, and the status says so plainly.
-        editor.crop = None;
+        editor.set_crop(None);
         let _ = editor.update(Message::CopyDraftRequest);
         assert_eq!(editor.status, "No crop draft to copy");
         finish(editor, catalog);
@@ -8252,7 +8128,7 @@ mod tests {
             "{}",
             editor.status
         );
-        assert!(editor.crop.is_some(), "the draft is untouched");
+        assert!(editor.crop().is_some(), "the draft is untouched");
         assert_eq!(editor.session.preview.selection, selection);
         assert!(!editor.workspace.title.compare_held);
 

@@ -8,7 +8,7 @@
 use crate::{
     app::{
         crop::SURFACE_ID,
-        message::{CapabilityMessage, CropMessage, MaskMessage, Message},
+        message::{CapabilityMessage, CropMessage, DraftMessage, Message},
     },
     crop_canvas::{CropCanvas, Mode, Part, View},
     mask_canvas::{MaskCanvas, OutputView as MaskView, Placement},
@@ -141,8 +141,8 @@ fn draft_bar(model: &DraftBar) -> Element<'_, Message> {
     // The bar belongs to whichever gesture is open; only one ever is.
     let (cancel, apply_message) = if model.mask {
         (
-            Message::Mask(MaskMessage::Cancel),
-            Message::Mask(MaskMessage::Apply),
+            Message::Draft(DraftMessage::Cancel),
+            Message::Draft(DraftMessage::Commit),
         )
     } else {
         (
@@ -187,10 +187,8 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                 match action {
                     NoticeAction::DiscardDraft => Message::Crop(CropMessage::Cancel),
                     NoticeAction::ReapplyDraft => Message::Crop(CropMessage::Reapply),
-                    NoticeAction::DiscardSliderDraft => Message::SliderDraftCancel,
-                    NoticeAction::ReapplySliderDraft => Message::SliderDraftReapply,
-                    NoticeAction::DiscardMaskDraft => Message::Mask(MaskMessage::Cancel),
-                    NoticeAction::ReapplyMaskDraft => Message::Mask(MaskMessage::Reapply),
+                    NoticeAction::DiscardGesture => Message::Draft(DraftMessage::Cancel),
+                    NoticeAction::ReapplyGesture => Message::Draft(DraftMessage::Reapply),
                     NoticeAction::ReturnCurrent => Message::ReturnCurrent,
                     NoticeAction::AllowConsent => {
                         Message::Capability(CapabilityMessage::Consent(true))

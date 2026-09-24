@@ -319,7 +319,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
 fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
     let (mut editor, catalog, _, _) = opened_and_shown();
     let error = Error::new(ErrorKind::ResourceLimit, "linear output exceeds 512 MiB");
-    editor.crop_pending = Some(PendingDraft {
+    editor.set_crop_pending(Some(PendingDraft {
         layer: None,
         layer_index: 0,
         ahead: lightwell_core::Orientation::NEUTRAL,
@@ -327,11 +327,11 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         base_revision: 4,
         reapply: false,
         queued: Vec::new(),
-    });
+    }));
     editor.draft_generation = Some(99);
     editor.draft_preview_failed(&error);
-    assert!(editor.crop_pending.is_none() && editor.draft_generation.is_none());
-    assert!(editor.crop.is_none());
+    assert!(editor.crop_pending().is_none() && editor.draft_generation.is_none());
+    assert!(editor.crop().is_none());
     assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
     assert!(
         editor
@@ -351,8 +351,8 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         height: 320,
         angle: 0.0,
     };
-    editor.crop = Some(crate::crop_draft::CropDraft::neutral(stage, 4, 0));
-    editor.crop_pending = Some(PendingDraft {
+    editor.set_crop(Some(crate::crop_draft::CropDraft::neutral(stage, 4, 0)));
+    editor.set_crop_pending(Some(PendingDraft {
         layer: None,
         layer_index: 0,
         ahead: lightwell_core::Orientation::NEUTRAL,
@@ -360,14 +360,14 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         base_revision: 5,
         reapply: true,
         queued: Vec::new(),
-    });
+    }));
     editor.draft_generation = Some(100);
     editor.draft_preview_failed(&error);
     assert!(
-        editor.crop.is_some(),
+        editor.crop().is_some(),
         "a failed reapply discarded the draft"
     );
-    assert!(editor.crop_pending.is_none() && editor.draft_generation.is_none());
+    assert!(editor.crop_pending().is_none() && editor.draft_generation.is_none());
     finish(editor, catalog);
 }
 
@@ -428,7 +428,7 @@ fn large() -> SourceImage {
 fn draft_job(editor: &Editor, source: SourceImage) -> PreviewJob {
     let state = editor.state.as_ref().expect("an open asset");
     let current = &state.current_entry;
-    let pending = editor.crop_pending.as_ref().expect("a starting draft");
+    let pending = editor.crop_pending().expect("a starting draft");
     let mut job = refresh_for(&state.asset.id, current, Vec::new(), &[current], false).job;
     job.source = PreviewSource::Jpeg(source);
     job.layer_count = Some(pending.layer_index);
@@ -495,10 +495,10 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     let newer = editor.preview_generation;
     assert!(newer > draft);
     dispatch_polls_until(&mut editor, "the draft's end", |editor| {
-        editor.crop_pending.is_none()
+        editor.crop_pending().is_none()
     });
     assert_eq!(editor.draft_generation, None);
-    assert!(editor.crop.is_none() && editor.draft_photo.is_none());
+    assert!(editor.crop().is_none() && editor.draft_photo.is_none());
     assert_eq!(
         editor.mode_sync.as_deref(),
         Some(POINTER_MODE),
@@ -513,7 +513,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
         editor.presented_generation == newer && !editor.preview_queue.is_busy()
     });
     assert!(!editor.uploading, "nothing of the draft was uploaded");
-    assert!(editor.crop_pending.is_none() && editor.draft_photo.is_none());
+    assert!(editor.crop_pending().is_none() && editor.draft_photo.is_none());
     assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
     assert_eq!(editor.render_error, None);
     let records = logged(&mut editor, &log);
@@ -553,15 +553,9 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
     });
     // The first commit makes the draft conflicted; its frame is still rendering.
     committed_elsewhere(&mut editor, &asset, 5, large());
-    assert!(editor.crop.as_ref().expect("the draft is kept").conflicted);
+    assert!(editor.crop().expect("the draft is kept").conflicted);
     let _ = editor.update(Message::Crop(CropMessage::Reapply));
-    assert!(
-        editor
-            .crop_pending
-            .as_ref()
-            .expect("a pending rebase")
-            .reapply
-    );
+    assert!(editor.crop_pending().expect("a pending rebase").reapply);
     let log = attach_log(&mut editor);
     let job = draft_job(&editor, large());
     let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
@@ -576,10 +570,10 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
 
     let next = committed_elsewhere(&mut editor, &asset, 6, small());
     assert!(
-        editor.crop_pending.is_none() && editor.draft_generation.is_none(),
+        editor.crop_pending().is_none() && editor.draft_generation.is_none(),
         "the replaced reapply is still waiting"
     );
-    let draft = editor.crop.as_ref().expect("the reapply kept its draft");
+    let draft = editor.crop().expect("the reapply kept its draft");
     assert!(draft.conflicted, "the kept draft is still conflicted");
     assert_eq!(draft.base_revision, 4);
 
@@ -587,7 +581,7 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
         editor.presented_entry.as_ref() == Some(&next.id) && !editor.preview_queue.is_busy()
     });
     assert!(!editor.uploading, "the replaced job delivered a stage");
-    assert!(editor.crop.as_ref().expect("the draft is kept").conflicted);
+    assert!(editor.crop().expect("the draft is kept").conflicted);
     let records = logged(&mut editor, &log);
     assert_eq!(
         events(&records, "crop_draft_failed"),
@@ -617,7 +611,7 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
     let _ = editor.dispatch(Message::Crop(CropMessage::PreviewReady(Err(
         "superseded preview".into(),
     ))));
-    assert!(editor.crop_pending.is_none() && editor.crop.is_none());
+    assert!(editor.crop_pending().is_none() && editor.crop().is_none());
     assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
     assert!(
         editor.status.ends_with("start the crop again"),

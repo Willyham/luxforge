@@ -452,12 +452,10 @@ pub(crate) fn presets_model(
     let declared = crate::state::tools::declared_action(inputs.modules, action);
     // One draft per client: a preset is a commit, so it waits for an open gesture or crop draft to
     // finish rather than displacing it.
-    let drafting = inputs.slider_draft.is_some() || inputs.draft.is_some() || inputs.draft_pending;
     let apply_disabled = match (enabled, reason) {
         (false, Some(reason)) => Some(reason.to_owned()),
         (false, None) => Some("Presets cannot apply right now".to_owned()),
-        (true, _) if drafting => Some("Finish the open draft before applying a preset".to_owned()),
-        (true, _) => None,
+        (true, _) => inputs.preset_refusal.clone(),
     };
     let mut groups: Vec<PresetGroupModel> = Vec::new();
     for preset in library.presets.as_deref().unwrap_or_default() {

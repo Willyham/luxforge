@@ -816,7 +816,7 @@ fn digest(
         inputs
             .slider_draft
             .filter(|draft| draft.action == action.id)
-            .map(|draft| (draft.parameter.as_str(), draft.conflicted))
+            .map(|draft| (draft.parameter, draft.conflicted))
             .hash(&mut hasher);
         for ((curve_action, first_parameter), selected) in &inputs.control_ui.curve_channels {
             if curve_action == &action.id {
@@ -913,9 +913,7 @@ fn digest(
         (presets.version, presets.pending).hash(&mut hasher);
         inputs.preset_form.hash(&mut hasher);
         (
-            inputs.slider_draft.is_some(),
-            inputs.draft.is_some(),
-            inputs.draft_pending,
+            &inputs.preset_refusal,
             inputs.display_entry,
             inputs.state.is_some(),
             inputs.session.preview.can_edit(),

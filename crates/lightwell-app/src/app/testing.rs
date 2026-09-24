@@ -4,16 +4,18 @@ use crate::{
     Config,
     app::{
         Boot, Editor,
+        draft::{CoreDraft, GestureId, Round},
         evidence::{Evidence, parse_script},
-        message::Message,
-        tasks::{REQUEST_NUMBER, Refresh},
+        gesture::{Gesture, Kind},
+        message::{DraftMessage, Message},
+        tasks::{REQUEST_NUMBER, Refresh, RoundTrip},
     },
 };
 use lightwell_core::{
     ActionDescriptor, AssetId, AssetRecord, Availability, CanvasInteraction, ClientSession,
-    Control, CropPayload, EditorState, EffectStage, EntryId, HistoryEntry, HistoryPage, LayerId,
-    Lineage, LineageStep, MAX_ANGLE, MIN_ANGLE, ModuleDescriptor, ParameterDescriptor,
-    ParameterKind, PreviewJob, RecipeDescription, Snapshot, SourceImage,
+    Control, CropPayload, Draft, DraftId, EditorState, EffectStage, EntryId, HistoryEntry,
+    HistoryPage, LayerId, Lineage, LineageStep, MAX_ANGLE, MIN_ANGLE, ModuleDescriptor,
+    ParameterDescriptor, ParameterKind, PreviewJob, RecipeDescription, Snapshot, SourceImage,
 };
 use serde_json::{Map, Value, json};
 use std::{collections::VecDeque, path::PathBuf, sync::atomic::Ordering};
@@ -608,6 +610,229 @@ pub(crate) fn pick_events(records: &[Value]) -> Vec<&Value> {
 
 pub(crate) fn evidence(editor: &Editor) -> &Evidence {
     editor.evidence.as_ref().expect("an evidence run")
+}
+
+/// Put an open slider gesture of this control in the editor's one slot directly, its `draft.begin`
+/// on its way, as a test that is about something else needs one to be there.
+pub(crate) fn hold_slider(editor: &mut Editor, action: &str, parameter: &str) {
+    let asset = editor
+        .state
+        .as_ref()
+        .expect("a photograph")
+        .asset
+        .id
+        .clone();
+    let gesture = editor.next_gesture();
+    let (draft, _) = CoreDraft::open(gesture, 0, None);
+    editor.gesture = Some(Gesture::Core(crate::app::gesture::CoreGesture {
+        asset,
+        draft,
+        kind: Kind::Slider(crate::app::gesture::SliderGesture {
+            action: action.into(),
+            parameter: parameter.into(),
+            label: parameter.into(),
+            target: Default::default(),
+            unpreviewed: false,
+        }),
+    }));
+}
+
+/// The core draft of the open gesture, or of the discarded one still closing.
+pub(crate) fn core_draft(editor: &Editor) -> Option<&CoreDraft> {
+    match editor.gesture.as_ref()? {
+        Gesture::Core(gesture) => Some(&gesture.draft),
+        Gesture::Closing { draft, .. } => Some(draft),
+        Gesture::Crop(_) => None,
+    }
+}
+
+/// The local identity of the open or closing core gesture, which its owner answers name.
+pub(crate) fn gesture_of(editor: &Editor) -> GestureId {
+    core_draft(editor).expect("a core gesture").gesture
+}
+
+/// Answer the open gesture's `draft.begin` with this draft, as its task would, without an owner.
+pub(crate) fn answer_begin(editor: &mut Editor, draft: Draft) {
+    let gesture = gesture_of(editor);
+    let _ = editor.update(Message::Draft(DraftMessage::Begun {
+        gesture,
+        result: Ok(Box::new(draft)),
+    }));
+}
+
+/// Answer the open gesture's `draft.commit`, as its task would.
+pub(crate) fn answer_commit(editor: &mut Editor, result: Result<Option<Refresh>, String>) {
+    let draft = core_draft(editor).expect("a core gesture");
+    let (gesture, draft) = (
+        draft.gesture,
+        draft.draft_id.clone().expect("an open core draft"),
+    );
+    let _ = editor.update(Message::Draft(DraftMessage::Committed {
+        gesture,
+        draft,
+        result: result.map(|refresh| refresh.map(Box::new)),
+    }));
+}
+
+/// Answer the open gesture's `draft.reapply`, as its task would.
+pub(crate) fn answer_reapply(editor: &mut Editor, result: Result<Draft, String>) {
+    let draft = core_draft(editor).expect("a core gesture");
+    let (gesture, draft) = (
+        draft.gesture,
+        draft.draft_id.clone().expect("an open core draft"),
+    );
+    let _ = editor.update(Message::Draft(DraftMessage::Reapplied {
+        gesture,
+        draft,
+        result: result.map(Box::new),
+    }));
+}
+
+/// Answer a closing gesture's `draft.cancel`, as its task would, with no frame read after it.
+pub(crate) fn answer_cancel(editor: &mut Editor) {
+    let draft = core_draft(editor)
+        .and_then(|draft| draft.draft_id.clone())
+        .expect("a closing core draft");
+    let _ = editor.update(Message::Draft(DraftMessage::Cancelled {
+        draft,
+        cancelled: Ok(()),
+        reseed: None,
+    }));
+}
+
+/// Run the owner round trip the open or closing core gesture is waiting on, through the plain call
+/// its task runs, and hand the answer back as the runtime does. Returns the round that was run.
+///
+/// A `draft.begin` that displaced an armed brush cancels that brush's draft first, in its own task;
+/// here that is whatever draft the session still holds.
+pub(crate) fn run_round(editor: &mut Editor) -> Option<Round> {
+    let owner = editor.owner.clone();
+    let client = editor.client;
+    let draft = core_draft(editor)?.clone();
+    let round = draft.in_flight()?;
+    match round {
+        Round::Begin => {
+            let gesture = editor.core_gesture().expect("an open gesture");
+            let asset = gesture.asset.clone();
+            let (action, target) = match &gesture.kind {
+                Kind::Slider(slider) => (slider.action.clone(), slider.target.clone()),
+                Kind::Mask(mask) => (
+                    mask.shape.method().expect("a method").to_owned(),
+                    lightwell_core::mask::commands::MaskTarget {
+                        mask: mask.shape.mask.clone(),
+                        component: mask.shape.component.clone(),
+                        ..Default::default()
+                    },
+                ),
+            };
+            if let Ok((session, _)) =
+                crate::app::tasks::call(&owner, client, "session.state", json!({}))
+                && let Some(held) = session["draft"]["draft_id"].as_str()
+            {
+                let _ = crate::app::tasks::call(
+                    &owner,
+                    client,
+                    "draft.cancel",
+                    json!({"draft_id": held}),
+                );
+            }
+            let result = crate::app::tasks::call(
+                &owner,
+                client,
+                "draft.begin",
+                crate::app::tasks::draft_begin_params(asset, &action, target),
+            )
+            .and_then(|(value, _)| {
+                serde_json::from_value::<Draft>(value).map_err(|e| e.to_string())
+            });
+            let _ = editor.update(Message::Draft(DraftMessage::Begun {
+                gesture: draft.gesture,
+                result: result.map(Box::new),
+            }));
+        }
+        Round::Commit => {
+            let gesture = editor.core_gesture().expect("an open gesture");
+            let asset = gesture.asset.clone();
+            let draft_id = draft.draft_id.clone().expect("an open core draft");
+            let result = crate::app::tasks::draft_commit_now(
+                &owner,
+                client,
+                &draft_id,
+                asset,
+                crate::app::tasks::mutation(draft.base_revision),
+                None,
+            );
+            answer_commit(editor, result);
+        }
+        Round::Reapply => {
+            let draft_id = draft.draft_id.clone().expect("an open core draft");
+            let result = crate::app::tasks::draft_reapply_now(&owner, client, &draft_id);
+            let _ = editor.update(Message::Draft(DraftMessage::Reapplied {
+                gesture: draft.gesture,
+                draft: draft_id,
+                result: result.map(Box::new),
+            }));
+        }
+        Round::Cancel => {
+            let draft_id = draft.draft_id.clone().expect("a closing core draft");
+            let reseed = matches!(editor.gesture, Some(Gesture::Closing { reseed: true, .. }))
+                .then(|| editor.state.as_ref().map(|state| state.asset.id.clone()))
+                .flatten()
+                .map(|asset| (asset, editor.displayed_entry(), None));
+            let (cancelled, reseed) =
+                crate::app::tasks::draft_cancel_now(&owner, client, &draft_id, reseed);
+            let _ = editor.update(Message::Draft(DraftMessage::Cancelled {
+                draft: draft_id,
+                cancelled,
+                reseed,
+            }));
+        }
+        Round::Set => return None,
+    }
+    Some(round)
+}
+
+/// An owner that accepts every `draft.set`: the next draft revision, the fields merged, and a
+/// preview job for the current entry. Tests without a real photograph answer through it.
+pub(crate) fn accepted_set(
+    editor: &Editor,
+    draft_id: &DraftId,
+    fields: &Value,
+) -> Result<(Draft, PreviewJob, RoundTrip), String> {
+    let state = editor.state.as_ref().ok_or("no photograph is open")?;
+    let gesture = editor.core_gesture().ok_or("no gesture is open")?;
+    let action = match &gesture.kind {
+        Kind::Slider(slider) => slider.action.clone(),
+        Kind::Mask(mask) => mask.shape.method().unwrap_or_default().to_owned(),
+    };
+    let mut draft = editor
+        .session
+        .draft
+        .clone()
+        .filter(|held| &held.draft_id == draft_id)
+        .unwrap_or_else(|| {
+            let mut draft =
+                Draft::new(&action, state.asset.id.clone(), gesture.draft.base_revision);
+            draft.draft_id = draft_id.clone();
+            draft
+        });
+    draft.draft_revision += 1;
+    if let Some(fields) = fields.as_object() {
+        draft.fields.extend(fields.clone());
+    }
+    let current = &state.current_entry;
+    let job = refresh_for(&state.asset.id, current, Vec::new(), &[current], false).job;
+    let now = std::time::Instant::now();
+    Ok((
+        draft,
+        job,
+        RoundTrip {
+            queued: now,
+            started: now,
+            answered: now,
+            planned: now,
+        },
+    ))
 }
 
 /// The descriptors the desktop would fetch through `module.list` from the linked registry.

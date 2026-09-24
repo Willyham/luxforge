@@ -1,5 +1,9 @@
 //! Behavioral checks for generated gestures, independent of a production module's identity.
-use super::{Editor, message::Message, testing::*};
+use super::{
+    Editor,
+    message::{DraftMessage, Message},
+    testing::*,
+};
 use lightwell_core::{AssetId, Draft};
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Value, json};
@@ -39,7 +43,7 @@ fn discrete_controls_submit_one_typed_field_without_a_draft() {
             value: value.clone(),
         });
         assert!(editor.busy, "selection starts one ordinary mutation");
-        assert!(editor.slider_draft.is_none());
+        assert!(editor.slider_gesture().is_none());
         assert_eq!(field_request(&mut editor, parameter), value);
         finish(editor, catalog);
     }
@@ -78,7 +82,7 @@ fn typing_waits_for_enter_and_invalid_text_commits_nothing() {
         parameter: Some("count".into()),
     });
     assert!(editor.busy);
-    assert!(editor.slider_draft.is_none());
+    assert!(editor.slider_gesture().is_none());
     assert_eq!(field_request(&mut editor, "count"), json!(7));
     finish(editor, catalog);
 }
@@ -96,7 +100,7 @@ fn slider_fractions_use_soft_bounds_and_preserve_fine_step() {
         (value - 0.01).abs() < 1e-9,
         "fine step must not round back to zero: {value}"
     );
-    assert!(editor.slider_draft.is_some());
+    assert!(editor.slider_gesture().is_some());
     finish(editor, catalog);
 }
 
@@ -129,31 +133,10 @@ fn picker_and_curve_share_bounded_draft_and_commit_once() {
         let log = attach_log(&mut editor);
         for _ in 0..3 {
             let _ = editor.update(message.clone());
-            let _ = editor.update(Message::SliderDraftTick);
         }
         assert_eq!(field_request(&mut editor, parameter), expected);
-        let _ = editor.update(Message::SliderDraftBegun(Ok(Box::new(Draft::new(
-            ACTION,
-            asset.clone(),
-            4,
-        )))));
-        for _ in 0..3 {
-            let _ = editor.update(Message::SliderDraftTick);
-        }
-        let current = editor.state.as_ref().unwrap().current_entry.clone();
-        let mut draft = editor.session.draft.clone().unwrap();
-        draft.draft_revision += 1;
-        let job = refresh_for(&asset, &current, Vec::new(), &[&current], false).job;
-        let now = std::time::Instant::now();
-        let round_trip = crate::app::tasks::RoundTrip {
-            queued: now,
-            started: now,
-            answered: now,
-            planned: now,
-        };
-        let _ = editor.update(Message::SliderDraftSet(Ok(Box::new((
-            draft, job, round_trip,
-        )))));
+        editor.fake_sets = Some(Default::default());
+        answer_begin(&mut editor, Draft::new(ACTION, asset.clone(), 4));
         for _ in 0..2 {
             let _ = editor.update(Message::ControlReleased {
                 action: ACTION.into(),
@@ -190,7 +173,7 @@ fn picker_remembers_unrepresentable_gray_hue_without_a_noop_commit() {
         editor.control_field_value(ACTION, "rgb"),
         Some(json!([128, 128, 128]))
     );
-    assert!(editor.slider_draft.is_none());
+    assert!(editor.slider_gesture().is_none());
     let _ = editor.update(Message::ControlPicker {
         action: ACTION.into(),
         parameter: "rgb".into(),
@@ -204,7 +187,7 @@ fn picker_remembers_unrepresentable_gray_hue_without_a_noop_commit() {
     });
     let expected = lightwell_ui::hsv_to_rgb([f64::from(hue), 1.0, 0.5]);
     assert_eq!(field_request(&mut editor, "rgb"), json!(expected));
-    assert!(editor.slider_draft.is_some());
+    assert!(editor.slider_gesture().is_some());
     finish(editor, catalog);
 }
 
@@ -241,7 +224,7 @@ fn picker_keeps_black_saturation_until_value_becomes_visible() {
             event,
         });
     }
-    assert!(editor.slider_draft.is_none());
+    assert!(editor.slider_gesture().is_none());
     let _ = editor.update(Message::ControlPicker {
         action: ACTION.into(),
         parameter: "rgb".into(),
@@ -261,7 +244,7 @@ fn curve_channel_selection_changes_no_request_value_or_recipe() {
         event: CurveEditorEvent::Channel(1),
     });
     assert_eq!(editor.fields, fields);
-    assert!(editor.slider_draft.is_none());
+    assert!(editor.slider_gesture().is_none());
     assert!(!editor.busy);
     assert_eq!(editor.state.as_ref().unwrap().revision, 4);
     finish(editor, catalog);
@@ -287,11 +270,18 @@ fn escape_cancels_picker_and_curve_even_while_begin_is_in_flight() {
         let (mut editor, catalog, asset) = editor();
         let log = attach_log(&mut editor);
         let _ = editor.update(message);
-        let _ = editor.update(Message::SliderDraftCancel);
-        let _ = editor.update(Message::SliderDraftBegun(Ok(Box::new(Draft::new(
-            ACTION, asset, 4,
-        )))));
-        assert!(editor.slider_draft.is_none());
+        let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+        assert!(
+            editor.slider_gesture().is_none(),
+            "Discard ends the gesture"
+        );
+        answer_begin(&mut editor, Draft::new(ACTION, asset, 4));
+        assert!(editor.slider_gesture().is_none());
+        assert_eq!(
+            core_draft(&editor).and_then(|draft| draft.in_flight()),
+            Some(super::draft::Round::Cancel),
+            "the draft the begin opened is cancelled, and nothing is sent to it"
+        );
         let records = logged(&mut editor, &log);
         assert!(
             !records
@@ -318,8 +308,9 @@ fn stepper_button_is_one_complete_draft_gesture() {
     });
     assert_eq!(field_request(&mut editor, "count"), json!(3));
     assert_eq!(
-        editor.slider_draft.as_ref().unwrap().finish,
-        Some(super::slider::Finish::Commit)
+        editor.core_gesture().unwrap().draft.finishing(),
+        Some(super::draft::Finish::Commit),
+        "the step's release commits as soon as the draft is open"
     );
     finish(editor, catalog);
 }
@@ -335,7 +326,7 @@ fn field_arrow_nudge_stays_local_until_enter() {
         option: true,
     });
     assert!(!editor.busy);
-    assert!(editor.slider_draft.is_none());
+    assert!(editor.slider_gesture().is_none());
     assert_eq!(editor.editing, Some((ACTION.into(), "coordinate".into())));
     assert!((field_request(&mut editor, "coordinate").as_f64().unwrap() - 5.1).abs() < 1e-9);
     let _ = editor.update(Message::Submit {
@@ -343,7 +334,7 @@ fn field_arrow_nudge_stays_local_until_enter() {
         parameter: Some("coordinate".into()),
     });
     assert!(editor.busy);
-    assert!(editor.slider_draft.is_none());
+    assert!(editor.slider_gesture().is_none());
     finish(editor, catalog);
 }
 

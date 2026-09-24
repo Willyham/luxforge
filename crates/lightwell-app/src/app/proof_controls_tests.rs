@@ -184,7 +184,7 @@ impl Proof {
             independent,
         );
         self.sequence = self.sequence.max(sequence);
-        self.editor.slider_draft = None; // The ignored Iced task did not open a real draft.
+        self.editor.gesture = None; // The ignored Iced task did not open a real draft.
         self.editor.dragging = None;
         self.editor.editing = None;
         self.editor

@@ -1,7 +1,7 @@
 //! The keyboard table, as one pure function. Key codes never reach the update function: an event
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
-use crate::app::message::{BrushEdit, CropMessage, MaskMessage, Message, Panel};
+use crate::app::message::{BrushEdit, CropMessage, DraftMessage, MaskMessage, Message, Panel};
 use iced::{
     Event,
     event::Status,
@@ -156,7 +156,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     // rail captures the arrow keys that may be driving it, and a discarded gesture must never
     // depend on which widget last saw a key.
     if context.slider_drafting && matches!(key, Key::Named(Named::Escape)) {
-        return Some(Message::SliderDraftCancel);
+        return Some(Message::Draft(DraftMessage::Cancel));
     }
     if status != Status::Ignored {
         return None;
@@ -172,8 +172,8 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     // A mask shape gesture answers the same two keys, because it is the same kind of draft.
     if context.mask_drafting {
         match key {
-            Key::Named(Named::Enter) => return Some(Message::Mask(MaskMessage::Apply)),
-            Key::Named(Named::Escape) => return Some(Message::Mask(MaskMessage::Cancel)),
+            Key::Named(Named::Enter) => return Some(Message::Draft(DraftMessage::Commit)),
+            Key::Named(Named::Escape) => return Some(Message::Draft(DraftMessage::Cancel)),
             _ => {}
         }
     }

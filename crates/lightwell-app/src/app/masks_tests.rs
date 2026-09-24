@@ -7,8 +7,10 @@
 //! takes its answer up inside the update that produced the geometry.
 use super::{
     Boot, Editor,
-    message::{MaskMessage, MaskPointer, MenuTarget, Message, PaintTarget, RowEdit},
+    draft::Round,
+    message::{DraftMessage, MaskMessage, MaskPointer, MenuTarget, Message, PaintTarget, RowEdit},
     tasks::{self, call},
+    testing,
 };
 use crate::{
     Config,
@@ -262,26 +264,20 @@ impl Masking {
         result
     }
 
+    /// One decision about the open gesture's draft, as Apply, Cancel, Escape and the notice send it.
+    fn draft(&mut self, message: DraftMessage) {
+        let _ = self.editor.update(Message::Draft(message));
+    }
+
     /// Run the open gesture's `draft.begin` as the runtime's task does. Its answer sends the first
     /// `draft.set` itself, synchronously, in the same update.
     fn open_gesture(&mut self) {
-        let draft = self.editor.mask_draft.as_ref().expect("a gesture is open");
-        let method = draft.method().expect("a generated method");
-        let target = lightwell_core::mask::commands::MaskTarget {
-            mask: draft.mask.clone(),
-            component: draft.component.clone(),
-            ..Default::default()
-        };
-        let (begun, _) = call(
-            &self.owner(),
-            self.editor.client,
-            "draft.begin",
-            tasks::draft_begin_params(self.asset.clone(), method, target),
-        )
-        .unwrap();
-        let _ = self.editor.update(Message::MaskDraftBegun(Ok(Box::new(
-            serde_json::from_value(begun).unwrap(),
-        ))));
+        assert!(self.editor.mask_shape().is_some(), "a gesture is open");
+        assert_eq!(
+            testing::run_round(&mut self.editor),
+            Some(Round::Begin),
+            "the gesture was waiting for its draft.begin"
+        );
         // `render.transform` answers the affine the handles are mapped through.
         let (transform, _) = call(
             &self.owner(),
@@ -290,12 +286,11 @@ impl Masking {
             json!({"asset_id": self.asset}),
         )
         .unwrap();
-        let _ = self
-            .editor
-            .update(Message::MaskTransform(Ok(serde_json::from_value(
-                transform,
-            )
-            .unwrap())));
+        let gesture = testing::gesture_of(&self.editor);
+        let _ = self.editor.update(Message::MaskTransform(
+            gesture,
+            Ok(serde_json::from_value(transform).unwrap()),
+        ));
         self.assert_geometry_sent();
     }
 
@@ -307,15 +302,14 @@ impl Masking {
     /// deliver: asserting that the update already took it up is the whole of what a runtime task
     /// used to be simulated for.
     fn assert_geometry_sent(&self) {
+        let Some(gesture) = self.editor.core_gesture() else {
+            return;
+        };
         assert!(
-            !self.editor.mask_draft_in_flight,
-            "a draft.set is still in flight after the update that sent it"
+            gesture.draft.drained(),
+            "a draft.set is still in flight or queued after the update that sent it"
         );
-        assert!(
-            !self.editor.mask_draft_pending,
-            "geometry is still queued behind a round trip"
-        );
-        let Some(draft) = &self.editor.mask_draft else {
+        let Some(draft) = self.editor.mask_shape() else {
             return;
         };
         // An armed brush has painted nothing, so there is nothing to send and nothing was.
@@ -339,7 +333,7 @@ impl Masking {
 
     /// Commit the open gesture, as Apply does.
     fn apply(&mut self) {
-        self.message(MaskMessage::Apply);
+        self.draft(DraftMessage::Commit);
         self.commit_open_draft();
     }
 
@@ -361,42 +355,35 @@ impl Masking {
     }
 
     /// Answer the `draft.commit` the open gesture asked for, as its task does.
+    ///
+    /// The desktop reads the answer back, and a mask command answers with what it changed beside
+    /// the mutation envelope. Reading it as the bare envelope would refuse the extra fields by name
+    /// and turn every committed gesture into a failure, so the task's own reading is what runs here
+    /// and a committed entry is what it must find.
     fn commit_open_draft(&mut self) {
-        let draft_id = self
-            .editor
-            .mask_draft_id
+        let gesture = self.editor.core_gesture().expect("a gesture is open");
+        assert_eq!(
+            gesture.draft.in_flight(),
+            Some(Round::Commit),
+            "the gesture's commit is in flight"
+        );
+        let draft_id = gesture
+            .draft
+            .draft_id
             .clone()
             .expect("the core draft is open");
-        let revision = self.editor.state.as_ref().unwrap().revision;
-        let (committed, sequence) = call(
+        let revision = gesture.draft.base_revision;
+        let refreshed = tasks::draft_commit_now(
             &self.owner(),
             self.editor.client,
-            "draft.commit",
-            json!({"draft_id": draft_id, "mutation": tasks::mutation(revision)}),
-        )
-        .unwrap_or_else(|error| panic!("the gesture commits: {error}"));
-        assert_ne!(committed["outcome"], json!("no-op"), "{committed}");
-        // The desktop reads this answer back, and a mask command answers with what it changed
-        // beside the mutation envelope. Reading it as the bare envelope refuses the extra fields by
-        // name and turns every committed gesture into a failure, so the shape is pinned here.
-        serde_json::from_value::<lightwell_core::mask::commands::MaskCommandResult>(
-            committed.clone(),
-        )
-        .unwrap_or_else(|error| {
-            panic!("the desktop reads the commit's own answer: {error}: {committed}")
-        });
-        let refreshed = tasks::refresh(
-            &self.owner(),
-            self.editor.client,
+            &draft_id,
             self.asset.clone(),
-            true,
-            sequence,
+            tasks::mutation(revision),
             None,
         )
-        .unwrap();
-        let _ = self
-            .editor
-            .update(Message::MaskDraftCommitted(Ok(Some(Box::new(refreshed)))));
+        .unwrap_or_else(|error| panic!("the gesture commits: {error}"))
+        .expect("the gesture commits an entry, not a no-op");
+        testing::answer_commit(&mut self.editor, Ok(Some(refreshed)));
     }
 
     /// One whole shape drawn in a stroke, as a press and a drag on the photograph do.
@@ -457,7 +444,7 @@ impl Masking {
     /// Every declared field the panel shows for the open gesture is the value the draft holds, to
     /// the bit. That is what "the handles match their number fields" means.
     fn assert_fields_match_the_draft(&self, what: &str) {
-        let draft = self.editor.mask_draft.as_ref().expect("a gesture is open");
+        let draft = self.editor.mask_shape().expect("a gesture is open");
         let shown = self
             .editor
             .workspace
@@ -612,7 +599,7 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
         masking.editor.status
     );
     assert!(
-        masking.editor.mask_draft.is_some(),
+        masking.editor.mask_shape().is_some(),
         "the gesture was discarded by a refused mode change"
     );
     // Compare during a gesture is refused for the same reason.
@@ -622,10 +609,10 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
         "{}",
         masking.editor.status
     );
-    assert!(masking.editor.mask_draft.is_some());
+    assert!(masking.editor.mask_shape().is_some());
     // Cancel ends it, and then the mode can be left.
-    masking.message(MaskMessage::Cancel);
-    assert!(masking.editor.mask_draft.is_none());
+    masking.draft(DraftMessage::Cancel);
+    assert!(masking.editor.mask_shape().is_none());
     masking.set_mode(POINTER_MODE);
     assert!(!masking.editor.mask_mode_active());
 }
@@ -701,8 +688,7 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
     assert_eq!(
         masking
             .editor
-            .mask_draft
-            .as_ref()
+            .mask_shape()
             .expect("the gesture is open")
             .linear()
             .expect("a gradient")
@@ -716,8 +702,7 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
     assert_eq!(
         masking
             .editor
-            .mask_draft
-            .as_ref()
+            .mask_shape()
             .unwrap()
             .linear()
             .expect("a gradient")
@@ -869,14 +854,13 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
         target.component.is_none(),
         "a module edits through the whole mask"
     );
-    let (begun, _) = call(
-        &masking.owner(),
-        masking.editor.client,
-        "draft.begin",
-        tasks::draft_begin_params(masking.asset.clone(), "set-basic", target),
-    )
-    .unwrap_or_else(|error| panic!("a maskable action drafts through a mask: {error}"));
-    let draft: lightwell_core::Draft = serde_json::from_value(begun).unwrap();
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
+    let draft = masking.editor.session.draft.clone().unwrap_or_else(|| {
+        panic!(
+            "a maskable action drafts through a mask: {}",
+            masking.editor.status
+        )
+    });
     assert_eq!(
         draft
             .target
@@ -884,40 +868,23 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
             .and_then(|target| target.mask.as_ref()),
         Some(&mask)
     );
-    let _ = masking
-        .editor
-        .update(Message::SliderDraftBegun(Ok(Box::new(draft.clone()))));
+    assert_eq!(
+        draft.fields.get("exposure"),
+        Some(&json!(0.3)),
+        "the drafted preview is the masked stack at the dragged value"
+    );
 
-    // The drafted preview is the masked stack: committing it writes exactly one masked layer.
-    let (_, sequence) = call(
-        &masking.owner(),
-        masking.editor.client,
-        "draft.set",
-        json!({"draft_id": draft.draft_id, "fields": {"exposure": 0.3}}),
-    )
-    .unwrap();
-    let revision = masking.editor.state.as_ref().unwrap().revision;
-    let (committed, sequence) = call(
-        &masking.owner(),
-        masking.editor.client,
-        "draft.commit",
-        json!({"draft_id": draft.draft_id, "mutation": tasks::mutation(revision)}),
-    )
-    .map(|(value, seen)| (value, seen.max(sequence)))
-    .unwrap_or_else(|error| panic!("a masked gesture commits: {error}"));
-    assert_ne!(committed["outcome"], json!("no-op"), "{committed}");
-    let refreshed = tasks::refresh(
-        &masking.owner(),
-        masking.editor.client,
-        masking.asset.clone(),
-        true,
-        sequence,
-        None,
-    )
-    .unwrap();
-    let _ = masking
-        .editor
-        .update(Message::SliderDraftCommitted(Ok(Some(Box::new(refreshed)))));
+    // Committing it writes exactly one masked layer.
+    let _ = masking.editor.update(Message::SliderReleased {
+        action: "set-basic".into(),
+        parameter: "exposure".into(),
+    });
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Commit));
+    assert!(
+        masking.editor.gesture.is_none(),
+        "{}",
+        masking.editor.status
+    );
     assert_eq!(
         masking.editor.history.entries.len(),
         before + 1,
@@ -1489,7 +1456,7 @@ fn a_typed_kind_is_created_by_its_button_with_no_gesture() {
     let created = masking.run(MaskMessage::New("luminance-range".to_owned()));
     assert_eq!(created["label"], json!("Add luminance range"));
     assert!(
-        masking.editor.mask_draft.is_none(),
+        masking.editor.mask_shape().is_none(),
         "a typed kind opens no gesture"
     );
     // The request carried the envelope and nothing else: the four numbers came from the host's own
@@ -1516,7 +1483,7 @@ fn a_typed_kind_is_created_by_its_button_with_no_gesture() {
     )));
     let added = masking.run(MaskMessage::Add("colour-range".to_owned()));
     assert_eq!(added["label"], json!("Add intersect colour range"));
-    assert!(masking.editor.mask_draft.is_none());
+    assert!(masking.editor.mask_shape().is_none());
     let listing = masking.listing();
     let component = &listing.masks[0].components[1];
     assert_eq!(component.kind, "colour-range");
@@ -1622,8 +1589,7 @@ fn the_add_row_chooses_the_mode_before_the_gesture() {
         // The gesture already knows its mode: it is in the request the release will send.
         let fields = masking
             .editor
-            .mask_draft
-            .as_ref()
+            .mask_shape()
             .expect("a gesture is open")
             .fields();
         assert_eq!(fields["mode"], json!(mode.as_str()));
@@ -1648,22 +1614,12 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
     masking.open_gesture();
     // The gesture knows the content stage's aspect from `render.transform`, which is the only thing
     // it needs about the stage to place an ellipse.
-    let aspect = masking
-        .editor
-        .mask_draft
-        .as_ref()
-        .expect("a gesture")
-        .aspect();
+    let aspect = masking.editor.mask_shape().expect("a gesture").aspect();
     assert!(aspect > 0.0 && aspect.is_finite(), "{aspect}");
 
     masking.sweep((0.5, 0.5), (0.75, 0.8));
     // Every handle is where the panel's own fields say it is, at every step of the drag.
-    let handles: Vec<_> = masking
-        .editor
-        .mask_draft
-        .as_ref()
-        .expect("a gesture")
-        .handles();
+    let handles: Vec<_> = masking.editor.mask_shape().expect("a gesture").handles();
     assert_eq!(
         handles.len(),
         7,
@@ -1672,8 +1628,7 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
     for (handle, _) in &handles {
         let from = masking
             .editor
-            .mask_draft
-            .as_ref()
+            .mask_shape()
             .unwrap()
             .handles()
             .into_iter()
@@ -1699,8 +1654,7 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
     // One drag of seven handles is still one draft, and the commit is one entry.
     let drawn: Vec<(String, f64)> = masking
         .editor
-        .mask_draft
-        .as_ref()
+        .mask_shape()
         .unwrap()
         .values()
         .into_iter()
@@ -1752,11 +1706,11 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
         listed.components[0].id.as_str().to_owned(),
     ));
     masking.open_gesture();
-    let reopened = masking.editor.mask_draft.as_ref().expect("a gesture");
+    let reopened = masking.editor.mask_shape().expect("a gesture");
     for (name, value) in reopened.values() {
         assert_eq!(listed.components[0].payload[name], json!(value), "{name}");
     }
-    masking.message(MaskMessage::Cancel);
+    masking.draft(DraftMessage::Cancel);
 }
 
 /// The panel refuses rather than silently coercing, and says why each time: a first component that
@@ -1785,7 +1739,7 @@ fn the_panel_refuses_a_first_component_that_is_not_add_and_a_list_at_its_limit()
     );
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     assert!(
-        masking.editor.mask_draft.is_none(),
+        masking.editor.mask_shape().is_none(),
         "a gesture opened anyway"
     );
     assert_eq!(masking.editor.status, reason);
@@ -2163,11 +2117,7 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
     masking.message(MaskMessage::Paint(PaintTarget::NewMask));
     masking.open_gesture();
     assert_eq!(
-        masking
-            .editor
-            .mask_draft
-            .as_ref()
-            .and_then(MaskDraft::method),
+        masking.editor.mask_shape().and_then(MaskDraft::method),
         Some("mask.add-stroke"),
         "every stroke commits through the one command that carries a path"
     );
@@ -2195,8 +2145,7 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
     assert_eq!(
         masking
             .editor
-            .mask_draft
-            .as_ref()
+            .mask_shape()
             .and_then(|draft| draft.component.clone()),
         Some(component.id.clone()),
         "the brush is armed on the component the last stroke landed on"
@@ -2217,8 +2166,7 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
     assert!(
         masking
             .editor
-            .mask_draft
-            .as_ref()
+            .mask_shape()
             .and_then(MaskDraft::brush)
             .is_some_and(|stroke| stroke.brush.erase),
         "a stroke already down keeps the flag it started with"
@@ -2267,8 +2215,8 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
         y: 0.2,
     }));
     masking.assert_geometry_sent();
-    masking.message(MaskMessage::Cancel);
-    assert!(masking.editor.mask_draft.is_none(), "Escape ends it");
+    masking.draft(DraftMessage::Cancel);
+    assert!(masking.editor.mask_shape().is_none(), "Escape ends it");
     assert_eq!(
         masking.labels().len(),
         before,
@@ -2389,13 +2337,13 @@ fn a_release_commits_the_whole_path_the_pointer_drew() {
 
     // So the release commits at once, with no commit held back waiting for geometry.
     masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
-    assert!(
-        !masking.editor.mask_draft_finish,
-        "nothing was left to send, so no commit is held"
-    );
-    assert!(
-        masking.editor.mask_draft_in_flight,
-        "what is in flight is the commit"
+    assert_eq!(
+        masking
+            .editor
+            .core_gesture()
+            .and_then(|gesture| gesture.draft.in_flight()),
+        Some(Round::Commit),
+        "nothing was left to send, so what is in flight is the commit"
     );
     masking.commit_open_draft();
     let held = masking.listing().masks[0].components[0].payload["strokes"]
@@ -2454,14 +2402,14 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     );
     let draft_id = masking
         .editor
-        .mask_draft_id
-        .clone()
+        .core_gesture()
+        .and_then(|gesture| gesture.draft.draft_id.clone())
         .expect("the core draft is open");
 
     // Two answers the owner produces before Discard and the desktop receives after it: a
     // `draft.set` with its drafted preview job, exactly as the gesture's own helper returns them,
     // and the `draft.reapply` of a Reapply pressed just before Discard.
-    let fields = Value::Object(masking.editor.mask_draft.as_ref().unwrap().fields());
+    let fields = Value::Object(masking.editor.mask_shape().unwrap().fields());
     let late_set = tasks::draft_set_now(
         &masking.owner(),
         masking.editor.client,
@@ -2471,41 +2419,34 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
         None,
     );
     assert!(late_set.is_ok(), "the owner accepts the geometry");
-    masking.message(MaskMessage::Reapply);
-    assert!(
-        masking.editor.mask_draft_in_flight,
+    masking.draft(DraftMessage::Reapply);
+    assert_eq!(
+        testing::core_draft(&masking.editor).and_then(|draft| draft.in_flight()),
+        Some(Round::Reapply),
         "the reapply is in flight"
     );
-    let (rebased, _) = call(
-        &masking.owner(),
-        masking.editor.client,
-        "draft.reapply",
-        json!({"draft_id": draft_id}),
-    )
-    .unwrap();
-    let rebased: lightwell_core::Draft = serde_json::from_value(rebased).unwrap();
+    let rebased = tasks::draft_reapply_now(&masking.owner(), masking.editor.client, &draft_id);
 
-    // Discard, as Escape and the Changed elsewhere notice both send it, with the `draft.cancel` it
-    // queues run against the owner as the runtime runs it.
-    masking.message(MaskMessage::Cancel);
+    // Discard, as Escape and the Changed elsewhere notice both send it. The gesture leaves the
+    // screen at once; its draft closes once the reapply in flight has answered, so no cancel races
+    // it.
+    masking.draft(DraftMessage::Cancel);
     assert!(
-        masking.editor.mask_draft.is_none(),
+        masking.editor.mask_shape().is_none(),
         "Discard ends the gesture"
     );
-    call(
-        &masking.owner(),
-        masking.editor.client,
-        "draft.cancel",
-        json!({"draft_id": draft_id}),
-    )
-    .expect("the core draft ends");
+    assert!(masking.editor.gesture_closing(), "its draft is closing");
     let asked = masking.editor.preview_generation;
 
     // Both late answers arrive.
-    let _ = masking.editor.mask_draft_set(&draft_id, late_set);
+    let _ = masking.editor.draft_set(late_set);
     let _ = masking
         .editor
-        .update(Message::MaskDraftReapplied(Ok(Box::new(rebased))));
+        .update(Message::Draft(DraftMessage::Reapplied {
+            gesture: testing::gesture_of(&masking.editor),
+            draft: draft_id.clone(),
+            result: rebased.map(Box::new),
+        }));
     assert_eq!(
         masking.editor.preview_generation, asked,
         "a late answer asks for no frame"
@@ -2515,22 +2456,14 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
         "a late answer leaves no draft on the desktop"
     );
     assert_eq!(masking.editor.snapshot()["draft"], json!(null));
-    assert!(
-        !masking.editor.mask_draft_in_flight && !masking.editor.mask_draft_pending,
-        "and nothing is sent on its behalf"
+    assert_eq!(
+        testing::core_draft(&masking.editor).and_then(|draft| draft.in_flight()),
+        Some(Round::Cancel),
+        "the reapply's answer is followed by the cancel, and nothing else"
     );
-    let (session, _) = call(
-        &masking.owner(),
-        masking.editor.client,
-        "session.state",
-        json!({}),
-    )
-    .unwrap();
-    assert_eq!(session["draft"], json!(null), "nor in the owner");
 
     // The drag's drafted jobs run to their end through the editor's real queue and worker, and not
-    // one of their frames is presented: the next frame on screen is the committed one Discard
-    // asked for.
+    // one of their frames is presented.
     let deadline = Instant::now() + Duration::from_secs(60);
     while masking.editor.preview_queue.is_busy() {
         assert!(Instant::now() < deadline, "the drafted jobs never ended");
@@ -2542,6 +2475,19 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
         "no frame was presented after Discard"
     );
     assert_eq!(masking.editor.displayed_draft_revision, None);
+
+    // The cancel answers, with the committed frame read after it.
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Cancel));
+    assert!(masking.editor.gesture.is_none(), "the slot is free again");
+    let (session, _) = call(
+        &masking.owner(),
+        masking.editor.client,
+        "session.state",
+        json!({}),
+    )
+    .unwrap();
+    assert_eq!(session["draft"], json!(null), "nor in the owner");
+    assert!(masking.editor.session.draft.is_none());
 
     let records = logged(&mut masking.editor, &log);
     let events: Vec<&str> = records
@@ -2557,13 +2503,13 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
         "no drafted frame was queued after Discard: {events:?}"
     );
     assert!(
-        !events[cancelled..].contains(&"preview_displayed"),
-        "and none was displayed: {events:?}"
+        !events[cancelled..].contains(&"mask_draft_set"),
+        "and no geometry was sent to the discarded draft: {events:?}"
     );
     assert_eq!(
         events[cancelled..]
             .iter()
-            .filter(|event| **event == "mask_draft_set_dropped")
+            .filter(|event| **event == "draft_set_dropped")
             .count(),
         1,
         "the late set answer is dropped, and says so: {events:?}"
@@ -2596,12 +2542,12 @@ fn a_slider_gesture_takes_an_armed_brushs_draft() {
             .editor
             .control_moved("set-presence".to_owned(), "dehaze".to_owned(), json!(30.0));
     assert!(
-        masking.editor.slider_draft.is_some(),
+        masking.editor.slider_gesture().is_some(),
         "the slider gesture opened: {}",
         masking.editor.status
     );
     assert!(
-        masking.editor.mask_draft.is_none(),
+        masking.editor.mask_shape().is_none(),
         "the armed brush gave up the draft it was holding"
     );
 }
@@ -2615,7 +2561,7 @@ fn a_slider_gesture_is_refused_while_a_drawn_mask_gesture_is_open() {
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
     masking.sweep((0.2, 0.2), (0.8, 0.8));
-    let before = masking.editor.mask_draft.clone();
+    let before = masking.editor.mask_shape().cloned();
     assert!(before.is_some() && !masking.editor.armed_brush());
     let _ =
         masking
@@ -2630,7 +2576,386 @@ fn a_slider_gesture_is_refused_while_a_drawn_mask_gesture_is_open() {
         masking.editor.status
     );
     assert_eq!(
-        masking.editor.mask_draft, before,
+        masking.editor.mask_shape().cloned(),
+        before,
         "the refused slider left the drawn gesture exactly as it was"
+    );
+}
+
+// ---- The draft races the one driver closes. Each of these failed against the two drivers it
+// replaced; the base versions are recorded with the change that introduced the driver.
+
+fn event_names(records: &[Value]) -> Vec<String> {
+    records
+        .iter()
+        .filter_map(|record| record["event"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Wait for the preview queue to finish what it holds, taking each result up as the runtime does.
+fn drain_queue(masking: &mut Masking) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while masking.editor.preview_queue.is_busy() {
+        assert!(Instant::now() < deadline, "the preview queue never drained");
+        let _ = masking.editor.update(Message::Poll);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// (a) Apply pressed before `draft.begin` has answered is not lost: the draft commits, with every
+/// field the gesture drew, as soon as it exists.
+#[test]
+fn race_a_apply_before_the_draft_opens_still_commits() {
+    use crate::app::testing::{attach_log, logged};
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    let log = attach_log(&mut masking.editor);
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.message(MaskMessage::Handle(MaskPointer::Sweep {
+        from: (0.5, 0.2),
+        to: (0.5, 0.8),
+    }));
+    masking.message(MaskMessage::Handle(MaskPointer::End));
+    // Apply while `draft.begin` is still on its way.
+    masking.draft(DraftMessage::Commit);
+    assert_eq!(
+        testing::core_draft(&masking.editor).and_then(|draft| draft.in_flight()),
+        Some(Round::Begin)
+    );
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
+    let events = event_names(&logged(&mut masking.editor, &log));
+    let set = events.iter().position(|event| event == "mask_draft_set");
+    let commit = events.iter().position(|event| event == "mask_draft_commit");
+    assert!(
+        set.is_some() && commit > set,
+        "the geometry goes out first, then the commit: {events:?}"
+    );
+    masking.commit_open_draft();
+    let listing = masking.listing();
+    assert_eq!(listing.masks.len(), 1, "the Apply made its entry");
+    assert_eq!(
+        listing.masks[0].components[0].payload["y1"],
+        json!(0.8),
+        "with the geometry drawn before the draft opened"
+    );
+}
+
+/// (b) A `draft.begin` answer that arrives after Discard is never adopted by a newer gesture: the
+/// discarded gesture holds the slot until that answer names the draft to cancel, and an answer for
+/// a gesture that is gone is dropped, its draft cancelled. The begin is in flight from the moment
+/// the gesture opens.
+#[test]
+fn race_b_a_late_begin_answer_is_never_adopted_by_a_newer_gesture() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    let first = testing::gesture_of(&masking.editor);
+    assert_eq!(
+        testing::core_draft(&masking.editor).and_then(|draft| draft.in_flight()),
+        Some(Round::Begin),
+        "the opening gesture's draft.begin is in flight"
+    );
+    masking.draft(DraftMessage::Cancel);
+    assert!(
+        masking.editor.mask_shape().is_none(),
+        "Discard ends it on screen"
+    );
+
+    // A newer gesture cannot take the slot while the discarded one's draft may still open.
+    masking.message(MaskMessage::New(RADIAL.to_owned()));
+    assert!(masking.editor.mask_shape().is_none());
+    assert!(
+        masking
+            .editor
+            .status
+            .starts_with("Wait for the discarded draft to close"),
+        "{}",
+        masking.editor.status
+    );
+
+    // The first gesture's begin reaches the owner and answers: its draft is cancelled, not adopted.
+    let (begun, _) = call(
+        &masking.owner(),
+        masking.editor.client,
+        "draft.begin",
+        tasks::draft_begin_params(
+            masking.asset.clone(),
+            "mask.create-linear",
+            Default::default(),
+        ),
+    )
+    .unwrap();
+    let _ = masking.editor.update(Message::Draft(DraftMessage::Begun {
+        gesture: first,
+        result: Ok(Box::new(serde_json::from_value(begun).unwrap())),
+    }));
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Cancel));
+    assert!(masking.editor.gesture.is_none(), "the slot is free again");
+
+    // Now the newer gesture opens, and a stray answer naming the old one is dropped.
+    masking.message(MaskMessage::New(RADIAL.to_owned()));
+    assert!(
+        masking.editor.mask_shape().is_some(),
+        "{}",
+        masking.editor.status
+    );
+    let stray = lightwell_core::Draft::new("mask.create-linear", masking.asset.clone(), 0);
+    let _ = masking.editor.update(Message::Draft(DraftMessage::Begun {
+        gesture: first,
+        result: Ok(Box::new(stray.clone())),
+    }));
+    let newer = testing::core_draft(&masking.editor).expect("the newer gesture");
+    assert_ne!(newer.gesture, first);
+    assert_eq!(newer.draft_id, None, "the stray answer was not adopted");
+    assert_eq!(
+        newer.in_flight(),
+        Some(Round::Begin),
+        "its own begin is still awaited"
+    );
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
+    assert!(
+        testing::core_draft(&masking.editor)
+            .and_then(|draft| draft.draft_id.as_ref())
+            .is_some_and(|id| *id != stray.draft_id),
+        "{}",
+        masking.editor.status
+    );
+}
+
+/// (c) Discard during an in-flight commit sends no racing `draft.cancel`: the commit decides, and
+/// its entry is what the person sees, with no refusal in the status line.
+#[test]
+fn race_c_discard_during_a_commit_sends_no_racing_cancel() {
+    use crate::app::testing::{attach_log, logged};
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    let log = attach_log(&mut masking.editor);
+    masking.draft(DraftMessage::Commit);
+    // Discard while the commit is on its way.
+    masking.draft(DraftMessage::Cancel);
+    assert!(
+        masking.editor.mask_shape().is_some(),
+        "the gesture waits for its commit to decide"
+    );
+    masking.commit_open_draft();
+    assert!(masking.editor.gesture.is_none());
+    let events = event_names(&logged(&mut masking.editor, &log));
+    assert!(
+        events.iter().any(|event| event == "mask_draft_commit")
+            && !events.iter().any(|event| event == "mask_draft_cancelled"),
+        "Discard sent a draft.cancel racing the commit: {events:?}"
+    );
+    assert_eq!(masking.editor.status, "Mask committed");
+    assert_eq!(masking.listing().masks.len(), 1);
+}
+
+/// (d) Every answer names the gesture and the draft it belongs to, so a failed reapply answer for
+/// a discarded gesture never clears a newer gesture's commit in flight.
+#[test]
+fn race_d_a_late_failed_reapply_leaves_a_newer_commit_in_flight() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    let first = testing::core_draft(&masking.editor)
+        .cloned()
+        .expect("a gesture");
+    masking.editor.gesture_revision(first.base_revision + 1);
+    masking.draft(DraftMessage::Reapply);
+    masking.draft(DraftMessage::Cancel);
+    // The reapply answers, then the cancel it was waiting for goes out and answers.
+    assert_eq!(
+        testing::run_round(&mut masking.editor),
+        Some(Round::Reapply)
+    );
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Cancel));
+
+    // A newer gesture opens, drafts and commits; its commit is in flight.
+    masking.message(MaskMessage::New(RADIAL.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.3, 0.3), (0.6, 0.6));
+    masking.draft(DraftMessage::Commit);
+    assert_eq!(
+        testing::core_draft(&masking.editor).and_then(|draft| draft.in_flight()),
+        Some(Round::Commit),
+        "the newer commit is in flight"
+    );
+    // A second, late answer for the discarded gesture's reapply arrives, refused.
+    let _ = masking
+        .editor
+        .update(Message::Draft(DraftMessage::Reapplied {
+            gesture: first.gesture,
+            draft: first.draft_id.clone().expect("the first draft"),
+            result: Err("not-found: no such draft".into()),
+        }));
+    assert_eq!(
+        testing::core_draft(&masking.editor).and_then(|draft| draft.in_flight()),
+        Some(Round::Commit),
+        "the stale reapply answer left the newer gesture's commit in flight"
+    );
+    masking.commit_open_draft();
+    assert_eq!(masking.listing().masks.len(), 1);
+}
+
+/// (e) A slider's Discard holds back the drafted frames still queued, exactly as a mask gesture's
+/// does: one path for both.
+#[test]
+fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
+    let mut masking = Masking::opened();
+    drain_queue(&mut masking);
+    let presented = masking.editor.presented_generation;
+    let _ = masking.editor.update(Message::SliderMoved {
+        action: "set-basic".into(),
+        parameter: "exposure".into(),
+        value: 0.3,
+    });
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
+    assert!(
+        masking.editor.preview_queue.is_busy(),
+        "the drafted frame is queued"
+    );
+    masking.draft(DraftMessage::Cancel);
+    drain_queue(&mut masking);
+    assert_eq!(
+        masking.editor.presented_generation, presented,
+        "a drafted frame was presented after Discard"
+    );
+    // The committed frame the cancel reads back is the next one on screen.
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Cancel));
+    drain_queue(&mut masking);
+    assert_eq!(masking.editor.displayed_draft_revision, None);
+}
+
+/// (f) The session a Discard reads back is read after the cancel, in the same task, so the
+/// desktop never adopts one that still holds the ended draft.
+#[test]
+fn race_f_a_discard_never_adopts_a_session_that_still_holds_the_draft() {
+    let mut masking = Masking::opened();
+    let _ = masking.editor.update(Message::SliderMoved {
+        action: "set-basic".into(),
+        parameter: "exposure".into(),
+        value: 0.3,
+    });
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
+    masking.draft(DraftMessage::Cancel);
+    let draft_id = testing::core_draft(&masking.editor)
+        .and_then(|draft| draft.draft_id.clone())
+        .expect("the closing draft");
+    let reseed = (
+        masking.asset.clone(),
+        masking.editor.displayed_entry(),
+        None,
+    );
+    let (cancelled, reseed) = tasks::draft_cancel_now(
+        &masking.owner(),
+        masking.editor.client,
+        &draft_id,
+        Some(reseed),
+    );
+    assert!(cancelled.is_ok());
+    let payload = reseed
+        .expect("the committed frame is read back")
+        .expect("and answers");
+    assert!(
+        payload.session.draft.is_none(),
+        "the session read after the cancel holds no draft"
+    );
+    let _ = masking
+        .editor
+        .update(Message::Draft(DraftMessage::Cancelled {
+            draft: draft_id,
+            cancelled,
+            reseed: Some(Ok(payload)),
+        }));
+    assert!(masking.editor.gesture.is_none());
+    assert_eq!(
+        masking.editor.snapshot()["draft"],
+        json!(null),
+        "the desktop adopted a session that still holds the ended draft"
+    );
+}
+
+/// (g) The proxy refit waits for a mask gesture exactly as it waits for a slider gesture: the one
+/// refusal answers for both.
+#[test]
+fn race_g_a_proxy_refit_waits_for_a_mask_gesture() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    masking.editor.window = (1440.0, 900.0);
+    masking.editor.dimensions = Some((4000, 3000));
+    masking.editor.session.preview.view.zoom = lightwell_core::Zoom::Fit;
+    masking.editor.scale_factor = 1.0;
+    masking.editor.presented_generation = masking.editor.preview_generation;
+    masking.editor.presented_proxy = true;
+    masking.editor.presented_bounds = masking.editor.proxy_bounds();
+    masking.editor.refit_pending = false;
+    let _ = masking.editor.update(Message::ScaleFactor(2.0));
+    assert!(
+        !masking.editor.refit_pending,
+        "a refit displaced the mask gesture's drafted frame"
+    );
+}
+
+/// Every start the one-draft rule governs answers to the one refusal, with the open gesture's own
+/// reason: a slider, a crop, a pick, a mode change, Compare, a preset and the gallery.
+#[test]
+fn every_start_answers_to_the_one_refusal() {
+    use crate::app::gesture::Starting;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    let open = masking.editor.mask_shape().cloned();
+
+    let _ = masking
+        .editor
+        .control_moved("set-basic".to_owned(), "exposure".to_owned(), json!(0.2));
+    assert_eq!(
+        masking.editor.status,
+        "Apply or Cancel the mask gesture before editing a slider"
+    );
+    let _ = masking.editor.update(Message::CompareBegin);
+    assert_eq!(
+        masking.editor.status,
+        "Apply or Cancel the mask gesture before comparing with the original"
+    );
+    let _ = masking
+        .editor
+        .update(Message::SetMode(lightwell_core::POINTER_MODE.to_owned()));
+    assert_eq!(
+        masking.editor.status,
+        "Apply or Cancel the new mask gesture before leaving Mask mode"
+    );
+    let _ = masking
+        .editor
+        .update(Message::Crop(crate::app::message::CropMessage::Start));
+    assert_eq!(
+        masking.editor.status,
+        "Apply or Cancel the mask gesture before cropping"
+    );
+    assert_eq!(
+        masking.editor.pick_refusal().as_deref(),
+        Some("Apply or Cancel the mask gesture before picking from the photograph")
+    );
+    assert_eq!(
+        masking.editor.gesture_refusal(Starting::Preset).as_deref(),
+        Some("Apply or Cancel the mask gesture before applying a preset")
+    );
+    masking.editor.developer = true;
+    let _ = masking.editor.update(Message::Gallery(Some(0)));
+    assert!(!masking.editor.workspace.title.can_open_gallery);
+    assert!(masking.editor.gallery_page().is_none());
+    assert_eq!(
+        masking.editor.mask_shape().cloned(),
+        open,
+        "nothing displaced the open gesture"
     );
 }

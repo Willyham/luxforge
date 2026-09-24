@@ -8,8 +8,10 @@
 use crate::{
     app::{
         Editor,
+        draft::{Event, GestureId},
+        gesture::{Kind, MaskGesture, Starting},
         message::{MaskMessage, Message, PaintTarget, RowEdit},
-        tasks::mutation,
+        tasks::{Refresh, mutation},
     },
     mask_draft::{BRUSH, ContentMap, MaskDraft, MaskDraftOp, MaskShape},
 };
@@ -31,8 +33,9 @@ impl Editor {
     /// and no commit waiting on one. The frame on screen is therefore rendered from the geometry the
     /// gesture currently holds, which is what a captured frame has to be evidence of.
     pub(crate) fn mask_draft_drained(&self) -> bool {
-        self.mask_draft.is_none()
-            || !(self.mask_draft_in_flight || self.mask_draft_pending || self.mask_draft_finish)
+        self.core_gesture()
+            .filter(|gesture| gesture.mask().is_some())
+            .is_none_or(|gesture| gesture.draft.drained())
     }
 
     /// The mask the generated module sections are bound to.
@@ -239,55 +242,18 @@ impl Editor {
     /// A painted gesture stays open between strokes — one stroke is one entry, so the draft behind
     /// it re-opens as soon as the last one commits — which means "a draft is open" is not the same
     /// question as "there is something to answer". An armed brush has nothing to Apply and nothing
-    /// to lose, so it never refuses a mode change, another gesture or a refreshed overlay.
+    /// to lose, so [`Editor::gesture_refusal`] never refuses anything on its account: the gesture
+    /// that needs the slot takes it, and everything else goes ahead around it.
+    #[cfg(test)]
     pub(crate) fn armed_brush(&self) -> bool {
-        self.mask_draft
-            .as_ref()
-            .and_then(crate::mask_draft::MaskDraft::brush)
-            .is_some_and(|stroke| !stroke.drawn())
+        self.core_gesture()
+            .is_some_and(|gesture| gesture.kind.armed())
     }
 
-    /// Disarm a brush that has drawn nothing, so another gesture can open. It commits nothing,
-    /// because there is nothing painted to commit.
-    pub(crate) fn disarm_brush(&mut self) -> Option<Task<Message>> {
-        self.armed_brush().then(|| {
-            let draft_id = self.mask_draft_id.take();
-            self.mask_draft = None;
-            self.end_mask_draft();
-            match draft_id {
-                Some(draft_id) => {
-                    crate::app::tasks::draft_cancel_task(self.owner.clone(), self.client, draft_id)
-                }
-                None => Task::none(),
-            }
-        })
-    }
-
-    /// Why Mask mode cannot be left right now. A draft is never discarded by leaving a mode: the
-    /// gesture is answered first, with Apply or Cancel.
-    pub(crate) fn mask_mode_refusal(&self) -> Option<String> {
-        if self.armed_brush() {
-            return None;
-        }
-        self.mask_draft.as_ref().map(|draft| {
-            format!(
-                "Apply or Cancel the {} gesture before leaving Mask mode",
-                draft.op.label().to_lowercase()
-            )
-        })
-    }
-
-    /// Why a mask gesture cannot start. At most one draft exists per client, so the crop draft, a
-    /// slider gesture and a shape gesture exclude one another.
-    fn mask_draft_refusal(&self) -> Option<String> {
-        if self.crop.is_some() || self.crop_pending.is_some() {
-            return Some("Apply or Cancel the crop draft before editing a mask".into());
-        }
-        if self.slider_draft.is_some() {
-            return Some("Finish or discard the slider gesture before editing a mask".into());
-        }
-        if self.mask_draft.is_some() && !self.armed_brush() {
-            return Some("Apply or Cancel the open mask gesture first".into());
+    /// Why a mask gesture cannot start, in the words the status bar uses.
+    fn mask_refusal(&self) -> Option<String> {
+        if let Some(reason) = self.gesture_refusal(Starting::Mask) {
+            return Some(reason);
         }
         if !self.session.preview.can_edit() {
             return Some("Return to the current state before editing".into());
@@ -356,19 +322,19 @@ impl Editor {
         target: MaskTarget,
         fields: Map<String, Value>,
     ) -> Task<Message> {
-        if let Some(reason) = (self.mask_draft.is_some() && !self.armed_brush())
-            .then(|| "Apply or Cancel the open mask gesture first".to_owned())
+        if let Some(reason) = self
+            .gesture_refusal(Starting::MaskCommand)
             .or_else(|| (!self.editable()).then(|| self.edit_refusal()))
         {
             self.status = reason;
             return Task::none();
         }
-        // An armed brush holds a core draft this client has to give up before it mutates anything,
-        // and it has nothing painted to lose by giving it up.
-        let disarm = self.disarm_brush();
         let Some(request) = self.mask_request(&target, &fields) else {
-            return disarm.unwrap_or_else(Task::none);
+            return Task::none();
         };
+        // An armed brush holds a core draft the command would move out from under it, and it has
+        // nothing painted to lose by giving it up.
+        let disarm = self.disarm();
         self.event(
             "mask_command",
             json!({"method":method,"params":request.clone()}),
@@ -378,11 +344,7 @@ impl Editor {
         // `command` refuses while a request is in flight, but `mask_command` has already answered
         // that case above, so reaching here means this one went out and its answer is ours.
         self.mask_command_in_flight = true;
-        // The gesture's own geometry goes out ahead of the commit; batching keeps that order.
-        match disarm {
-            Some(disarm) => Task::batch([disarm, sent]),
-            None => sent,
-        }
+        Task::batch([disarm, sent])
     }
 
     /// Why an edit is refused right now, in the words the status bar uses.
@@ -491,16 +453,13 @@ impl Editor {
             MaskMessage::Brush(edit) => self.brush_edit(edit),
             MaskMessage::Handle(handle) => self.mask_handle(handle),
             MaskMessage::Field { name, value } => {
-                if let Some(draft) = &mut self.mask_draft
-                    && draft.set_field(&name, value)
+                if let Some(mask) = self.mask_gesture_mut()
+                    && mask.shape.set_field(&name, value)
                 {
-                    return self.set_mask_draft();
+                    return self.offer_mask();
                 }
                 Task::none()
             }
-            MaskMessage::Apply => self.mask_commit(),
-            MaskMessage::Cancel => self.mask_cancel(),
-            MaskMessage::Reapply => self.mask_reapply(),
             // A row edit and its Copy as JSON request go through one builder, so what is copied is
             // what is sent.
             MaskMessage::Row(edit) => match self.row_command(&edit) {
@@ -702,8 +661,8 @@ impl Editor {
             return Task::none();
         }
         let brush = self.painting_brush();
-        if let Some(draft) = &mut self.mask_draft
-            && draft.set_brush(brush)
+        if let Some(mask) = self.mask_gesture_mut()
+            && mask.shape.set_brush(brush)
         {
             self.status = format!(
                 "Brush {:.3} · feather {:.0} · flow {:.0}{}",
@@ -765,14 +724,11 @@ impl Editor {
         let Some(state) = &self.state else {
             return Task::none();
         };
-        // An armed brush has asked for no drafted frame, so the overlay's own request is the only
-        // one in flight and it is this one.
-        if (self.mask_draft.is_some() && !self.armed_brush())
-            || self.slider_draft.is_some()
-            || self.crop.is_some()
-        {
-            // A drafted frame is already in flight for the gesture; it carries the overlay request
-            // of its own accord and must not be displaced by a second job for the same pixels.
+        // A drafted frame is already in flight for an open gesture; it carries the overlay request of
+        // its own accord and must not be displaced by a second job for the same pixels. An armed
+        // brush has asked for no drafted frame, so the overlay's own request is the only one in
+        // flight and it is this one.
+        if self.gesture_refusal(Starting::Refit).is_some() {
             return Task::none();
         }
         let asset = state.asset.id.clone();
@@ -820,14 +776,10 @@ impl Editor {
         kind: String,
         mask: Option<MaskId>,
     ) -> Task<Message> {
-        if let Some(reason) = self.mask_draft_refusal() {
+        if let Some(reason) = self.mask_refusal() {
             self.status = reason;
             return Task::none();
         }
-        let Some(state) = &self.state else {
-            return Task::none();
-        };
-        let revision = state.revision;
         // A new mask's first component is always an add. Creating one while the Add row says
         // subtract would silently coerce the mode a person chose, so it is refused and says so.
         if op == MaskDraftOp::Create && self.mask_mode != lightwell_core::ComponentMode::Add {
@@ -850,10 +802,8 @@ impl Editor {
         }
         let brush = self.painting_brush();
         let draft = match (op, mask) {
-            (MaskDraftOp::Create, _) => MaskDraft::creating(kind, brush, revision),
-            (MaskDraftOp::Add(mode), Some(mask)) => {
-                MaskDraft::adding(mask, kind, mode, brush, revision)
-            }
+            (MaskDraftOp::Create, _) => MaskDraft::creating(kind, brush),
+            (MaskDraftOp::Add(mode), Some(mask)) => MaskDraft::adding(mask, kind, mode, brush),
             _ => return Task::none(),
         };
         self.open_shape(draft)
@@ -902,7 +852,7 @@ impl Editor {
 
     /// Open a gesture that patches one existing component's geometry.
     fn edit_shape(&mut self, component: String) -> Task<Message> {
-        if let Some(reason) = self.mask_draft_refusal() {
+        if let Some(reason) = self.mask_refusal() {
             self.status = reason;
             return Task::none();
         }
@@ -934,87 +884,87 @@ impl Editor {
             return Task::none();
         }
         let kind = found.kind.clone();
-        let revision = self.state.as_ref().map(|state| state.revision).unwrap_or(0);
         let brush = self.painting_brush();
         self.selected_component = Some(component_id.clone());
-        self.open_shape(MaskDraft::editing(
-            mask,
-            component_id,
-            kind,
-            shape,
-            brush,
-            revision,
-        ))
+        self.open_shape(MaskDraft::editing(mask, component_id, kind, shape, brush))
     }
 
-    /// Start the draft: read the geometry map once, then open the core draft the release commits.
-    fn open_shape(&mut self, draft: MaskDraft) -> Task<Message> {
-        let Some(method) = draft.method() else {
-            self.status = format!("This build cannot draw a {} component", draft.kind);
+    /// Start the gesture: read the geometry map once, then open the core draft the release commits.
+    fn open_shape(&mut self, shape: MaskDraft) -> Task<Message> {
+        let Some(method) = shape.method() else {
+            self.status = format!("This build cannot draw a {} component", shape.kind);
+            return Task::none();
+        };
+        let Some(asset) = self.state.as_ref().map(|state| state.asset.id.clone()) else {
             return Task::none();
         };
         // A brush left armed from an earlier gesture holds this client's one core draft and has
-        // painted nothing, so it gives it up here rather than refusing the gesture that wants it.
-        let disarm = self.disarm_brush();
-        let Some(state) = &self.state else {
-            return disarm.unwrap_or_else(Task::none);
-        };
-        let asset = state.asset.id.clone();
+        // painted nothing, so it gives it up here rather than refusing the gesture that wants it:
+        // the `draft.begin` below cancels it first.
+        let displaced = self.claim_slot();
         let entry = self.displayed_entry();
-        let target = MaskTarget {
-            mask: draft.mask.clone(),
-            component: draft.component.clone(),
-            ..MaskTarget::default()
-        };
         self.event(
             "mask_draft_begin",
-            json!({"method":method,"summary":draft.summary()}),
+            json!({"method":method,"summary":shape.summary()}),
         );
-        self.status = format!("{}…", draft.op.label());
-        self.mask_draft = Some(draft);
-        self.mask_map = None;
+        self.status = format!("{}…", shape.op.label());
         // The mode follows the gesture however it was started, so the strip shows Mask selected.
         if !self.mask_mode_active() {
             self.mode_sync = Some(MASK_MODE.to_owned());
         }
-        let mut tasks = Vec::with_capacity(3);
-        tasks.extend(disarm);
-        tasks.push(crate::app::tasks::transform_task(
-            self.owner.clone(),
-            self.client,
-            asset.clone(),
-            entry,
-        ));
-        tasks.push(crate::app::tasks::mask_draft_begin_task(
-            self.owner.clone(),
-            self.client,
-            asset,
-            method,
-            target,
-        ));
-        Task::batch(tasks)
+        let mask = MaskGesture { shape, map: None };
+        // A gesture opens with its shape already set, so its first frame shows what the release
+        // would commit rather than the unmasked picture. An armed brush has nothing to send yet.
+        let fields = mask.fields();
+        let begin = self.open_core(Kind::Mask(mask), fields, displaced);
+        let Some(gesture) = self.core_gesture().map(|gesture| gesture.draft.gesture) else {
+            return begin;
+        };
+        Task::batch([
+            crate::app::tasks::transform_task(
+                self.owner.clone(),
+                self.client,
+                gesture,
+                asset,
+                entry,
+            ),
+            begin,
+        ])
     }
 
-    /// `render.transform` answered: the gesture can map pointer positions from here on without a
-    /// host call per move.
+    /// `render.transform` answered: the gesture that asked can map pointer positions from here on
+    /// without a host call per move. A map for a gesture that has since ended is not given to the
+    /// next one, whose stack may differ.
     pub(crate) fn mask_transform(
         &mut self,
+        gesture: GestureId,
         result: Result<StageTransform, String>,
     ) -> Task<Message> {
+        if self
+            .core_gesture()
+            .is_none_or(|open| open.draft.gesture != gesture || open.mask().is_none())
+        {
+            return Task::none();
+        }
         match result {
             Ok(transform) => {
-                self.mask_map = ContentMap::new(&transform);
-                // Mask space is defined in terms of the content stage's aspect, so the gesture is
-                // told it from the same answer its handles are mapped through — once, not per move.
-                if let (Some(map), Some(draft)) = (self.mask_map, &mut self.mask_draft) {
-                    draft.set_aspect(map.aspect());
+                if let Some(mask) = self.mask_gesture_mut() {
+                    mask.map = ContentMap::new(&transform);
+                    // Mask space is defined in terms of the content stage's aspect, so the gesture
+                    // is told it from the same answer its handles are mapped through — once, not
+                    // per move.
+                    if let Some(map) = mask.map {
+                        mask.shape.set_aspect(map.aspect());
+                    }
                 }
             }
             Err(error) => {
                 // A stack with no output stage has no mapping, so the handles cannot be drawn and
                 // the gesture says so rather than drawing them somewhere invented.
                 self.status = format!("Handles unavailable: {error}");
-                self.mask_map = None;
+                if let Some(mask) = self.mask_gesture_mut() {
+                    mask.map = None;
+                }
             }
         }
         Task::none()
@@ -1024,228 +974,131 @@ impl Editor {
     /// the canvas.
     fn mask_handle(&mut self, handle: crate::app::message::MaskPointer) -> Task<Message> {
         use crate::app::message::MaskPointer;
-        let Some(draft) = &mut self.mask_draft else {
+        // A press starts the stroke at the brush being held, and the erase flag is frozen here for
+        // the stroke's whole life: letting the modifier go halfway along a path must not turn an
+        // erase into an add.
+        let brush = self.painting_brush();
+        let Some(mask) = self.mask_gesture_mut() else {
             return Task::none();
         };
+        let shape = &mut mask.shape;
         match handle {
             MaskPointer::Begin { handle, x, y } => {
-                draft.begin(handle, (x, y));
+                shape.begin(handle, (x, y));
                 Task::none()
             }
             MaskPointer::Sweep { from, to } => {
-                draft.sweep(from, to);
-                self.set_mask_draft()
+                shape.sweep(from, to);
+                self.offer_mask()
             }
             MaskPointer::Drag { x, y } => {
-                draft.drag((x, y));
-                self.set_mask_draft()
+                shape.drag((x, y));
+                self.offer_mask()
             }
             MaskPointer::End => {
-                draft.end();
-                self.set_mask_draft()
+                shape.end();
+                self.offer_mask()
             }
-            // A press starts the stroke at the brush being held, and the erase flag is frozen here
-            // for the stroke's whole life: letting the modifier go halfway along a path must not
-            // turn an erase into an add.
             MaskPointer::PaintBegin { x, y } => {
-                let brush = self.painting_brush();
-                let Some(draft) = &mut self.mask_draft else {
-                    return Task::none();
-                };
-                draft.set_brush(brush);
-                draft.paint_begin((x, y));
-                self.set_mask_draft()
+                shape.set_brush(brush);
+                shape.paint_begin((x, y));
+                self.offer_mask()
             }
             // The path is extended and the canvas redraws it immediately; the round trip below is
             // the drafted picture, which follows one frame behind exactly as a slider's does.
             MaskPointer::PaintTo { x, y } => {
-                if draft.paint_to((x, y)) {
-                    self.set_mask_draft()
+                if shape.paint_to((x, y)) {
+                    self.offer_mask()
                 } else {
                     Task::none()
                 }
             }
             // One stroke is one draft and therefore one history entry, so the release commits.
             MaskPointer::PaintEnd => {
-                draft.paint_end();
-                if draft.brush().is_some_and(|stroke| !stroke.drawn()) {
+                shape.paint_end();
+                if shape.brush().is_some_and(|stroke| !stroke.drawn()) {
                     // A press that painted no position is not an edit and writes no entry.
                     return Task::none();
                 }
-                self.mask_commit()
+                self.release()
             }
         }
     }
 
-    /// Send the gesture's current geometry to its core draft and show the frame it produces. The
-    /// same bound the slider gesture keeps: at most one round trip in flight, newest value wins.
+    /// Offer the gesture's current geometry to its core draft. The shared driver sends it with its
+    /// one preview job the moment nothing is in flight — synchronously, on this thread, in the
+    /// update that produced it, as a slider's value is — and keeps only the newest while a round
+    /// trip is in flight. The coverage grid the overlay draws rides that job, attached by
+    /// [`Editor::request_preview`] as it is to every job.
+    pub(crate) fn offer_mask(&mut self) -> Task<Message> {
+        match self.mask_gesture().and_then(MaskGesture::fields) {
+            Some(fields) => self.drive(Event::Offer(fields)),
+            None => Task::none(),
+        }
+    }
+
+    /// A mask gesture's commit landed: merge it, open what it created and put the brush back in the
+    /// hand that painted.
+    pub(crate) fn mask_committed(&mut self, shape: MaskDraft, refresh: Refresh) -> Task<Message> {
+        let created = refresh.masks.masks.last().map(|report| report.id.clone());
+        let was_create = shape.mask.is_none();
+        // A stroke committed: which component it landed on is what the next stroke appends to, so
+        // painting carries on without a second gesture.
+        let painted = shape
+            .brush()
+            .is_some()
+            .then(|| (shape.mask.clone(), shape.component.clone()));
+        self.accept(refresh);
+        // A gesture that created a mask opens it, so the adjustments below the list are already
+        // bound to what was just drawn.
+        if was_create && let Some(id) = created {
+            self.selected_mask = Some(id);
+            self.selected_component = None;
+            self.seed_values();
+        }
+        self.status = "Mask committed".into();
+        match painted {
+            Some(target) => self.rearm_brush(target),
+            None => Task::none(),
+        }
+    }
+
+    /// Arm the brush again on the component the stroke that just committed landed on.
     ///
-    /// The `draft.set` and its preview job run synchronously on this thread, through the helper the
-    /// slider uses, and the answer is taken up in the update that produced the geometry: handing it
-    /// back through the runtime would cost a display frame per position during a drag
-    /// ([performance rule 12](../../../../docs/engineering/performance-rules.md#rules)). The
-    /// coverage grid the overlay draws rides that job, attached by [`Editor::request_preview`] as
-    /// it is to every job.
-    pub(crate) fn set_mask_draft(&mut self) -> Task<Message> {
-        let (Some(draft), Some(draft_id)) = (&self.mask_draft, self.mask_draft_id.clone()) else {
+    /// One stroke is one entry, so the draft behind a stroke closes when that stroke commits; the
+    /// brush itself is still in the person's hand, and the next press must be the next stroke on the
+    /// same component rather than a second gesture they have to start. The component is resolved
+    /// from the refreshed listing, because a stroke that drew a mask or added a brush minted one.
+    fn rearm_brush(&mut self, target: (Option<MaskId>, Option<ComponentId>)) -> Task<Message> {
+        let (mask, component) = target;
+        let listing = self.masks.as_ref();
+        let report = match &mask {
+            Some(id) => {
+                listing.and_then(|listing| listing.masks.iter().find(|report| &report.id == id))
+            }
+            // A stroke that drew a mask made it the last one, exactly as `mask.create-<kind>` does.
+            None => listing.and_then(|listing| listing.masks.last()),
+        };
+        let Some(report) = report else {
             return Task::none();
         };
-        // An armed brush has no path yet, and a path is a required parameter: there is nothing to
-        // preview until something is painted, and asking for one would be a refusal on every
-        // re-arm rather than a drafted frame.
-        if draft.brush().is_some_and(|stroke| !stroke.drawn()) {
-            self.mask_draft_pending = false;
-            return Task::none();
-        }
-        if self.mask_draft_in_flight || draft.conflicted {
-            self.mask_draft_pending = true;
-            return Task::none();
-        }
-        let Some(state) = &self.state else {
-            return Task::none();
-        };
-        let fields = Value::Object(draft.fields());
-        let asset = state.asset.id.clone();
-        self.mask_draft_in_flight = true;
-        self.mask_draft_pending = false;
-        self.event(
-            "mask_draft_set",
-            json!({"draft_id":draft_id.as_str(),"fields":fields}),
-        );
-        let proxy = self.proxy_bounds();
-        let result = crate::app::tasks::draft_set_now(
-            &self.owner,
-            self.client,
-            draft_id.clone(),
-            asset,
-            fields,
-            proxy,
-        );
-        self.mask_draft_set(&draft_id, result)
-    }
-
-    /// Apply: commit the gesture as one history entry.
-    pub(crate) fn mask_commit(&mut self) -> Task<Message> {
-        let Some(draft) = &self.mask_draft else {
+        let mask = report.id.clone();
+        // The component the stroke named, or the one it minted, which is that mask's newest.
+        let component = component.or_else(|| {
+            report
+                .components
+                .iter()
+                .rev()
+                .find(|component| component.kind == BRUSH)
+                .map(|component| component.id.clone())
+        });
+        let Some(component) = component else {
             return Task::none();
         };
-        if draft.conflicted {
-            self.status = "Changed elsewhere: discard the mask gesture or reapply it".into();
-            return Task::none();
-        }
-        if draft.brush().is_some_and(|stroke| !stroke.drawn()) {
-            self.status = "Paint a stroke on the photograph first".into();
-            return Task::none();
-        }
-        let Some(draft_id) = self.mask_draft_id.clone() else {
-            // The core draft has not opened yet; the commit waits for it rather than being lost.
-            self.mask_draft_pending = true;
-            return Task::none();
-        };
-        // Geometry the gesture has produced but not sent yet goes out before the commit does,
-        // because the commit sends the core draft's fields and not this one's.
-        if self.mask_draft_in_flight || self.mask_draft_pending {
-            self.mask_draft_finish = true;
-            return self.set_mask_draft();
-        }
-        let base_revision = draft.base_revision;
-        let mutation = mutation(base_revision);
-        self.event(
-            "mask_draft_commit",
-            json!({"draft_id":draft_id.as_str(),"request_id":mutation.request_id,"expected_revision":base_revision}),
-        );
-        self.mask_draft_in_flight = true;
-        self.mask_draft_finish = false;
-        let proxy = self.proxy_bounds();
-        let Some(asset) = self.state.as_ref().map(|state| state.asset.id.clone()) else {
-            return Task::none();
-        };
-        crate::app::tasks::mask_draft_commit_task(
-            self.owner.clone(),
-            self.client,
-            draft_id,
-            asset,
-            mutation,
-            proxy,
-        )
-    }
-
-    /// Cancel: end the gesture and commit nothing.
-    ///
-    /// Nothing the gesture asked for reaches the screen after this. A core draft that took geometry
-    /// has drafted frames in the preview queue, and those are stopped and held below the delivery
-    /// floor, so the next frame presented is the committed one asked for here; the drafted pixels
-    /// already on screen stay until it lands. An armed brush asked for no drafted frame, and the
-    /// job behind it is the committed stroke's, so it is left to finish. A `draft.*` answer still
-    /// on its way finds no gesture and is dropped by its own handler.
-    pub(crate) fn mask_cancel(&mut self) -> Task<Message> {
-        let Some(draft) = self.mask_draft.take() else {
-            return Task::none();
-        };
-        let draft_id = self.mask_draft_id.take();
-        let drafted = self
-            .session
-            .draft
-            .as_ref()
-            .is_some_and(|held| held.draft_revision > 0);
-        self.end_mask_draft();
-        if drafted {
-            self.preview_generation = self.preview_queue.cancel();
-        }
-        self.status = format!("{} discarded", draft.op.label());
-        self.event("mask_draft_cancelled", json!({"op": draft.op.label()}));
-        let mut tasks = Vec::new();
-        if let Some(draft_id) = draft_id {
-            tasks.push(crate::app::tasks::draft_cancel_task(
-                self.owner.clone(),
-                self.client,
-                draft_id,
-            ));
-        }
-        // The drafted pixels are still on screen and are not the committed ones.
-        tasks.push(self.refresh_mask_overlay());
-        Task::batch(tasks)
-    }
-
-    /// The Changed elsewhere notice's Reapply: rebase the gesture and re-send its geometry.
-    pub(crate) fn mask_reapply(&mut self) -> Task<Message> {
-        let Some(draft_id) = self.mask_draft_id.clone() else {
-            return Task::none();
-        };
-        if self.mask_draft_in_flight {
-            return Task::none();
-        }
-        self.mask_draft_in_flight = true;
-        crate::app::tasks::mask_draft_reapply_task(self.owner.clone(), self.client, draft_id)
-    }
-
-    /// Drop the gesture's own bookkeeping. The core draft is ended by its own request.
-    pub(crate) fn end_mask_draft(&mut self) {
-        self.mask_draft = None;
-        self.mask_draft_id = None;
-        self.mask_map = None;
-        self.mask_draft_in_flight = false;
-        self.mask_draft_pending = false;
-        self.mask_draft_finish = false;
-        self.session.draft = None;
-    }
-
-    /// A new authoritative revision arrived while a shape gesture was open. The gesture is kept and
-    /// marked, exactly as the crop and slider drafts are, so nothing is discarded without a
-    /// decision.
-    pub(crate) fn settle_mask_draft(&mut self, revision: u64) {
-        let Some(draft) = &mut self.mask_draft else {
-            return;
-        };
-        if draft.base_revision == revision || draft.conflicted {
-            return;
-        }
-        draft.mark_conflicted();
-        if let Some(session) = &mut self.session.draft {
-            session.conflicted = true;
-        }
-        self.status = "Changed elsewhere: discard the mask gesture or reapply it".into();
-        self.event("mask_draft_conflicted", json!({ "revision": revision }));
+        let brush = self.painting_brush();
+        self.selected_mask = Some(mask.clone());
+        self.selected_component = Some(component.clone());
+        self.open_shape(MaskDraft::editing(mask, component, BRUSH, None, brush))
     }
 }
 
@@ -1282,264 +1135,6 @@ pub(crate) fn control_target(
             .then(|| component.cloned())
             .flatten(),
         ..MaskTarget::default()
-    }
-}
-
-impl Editor {
-    /// `draft.begin` answered: the core draft exists, so the gesture's geometry can go out.
-    pub(crate) fn mask_draft_begun(
-        &mut self,
-        result: Result<lightwell_core::Draft, String>,
-    ) -> Task<Message> {
-        self.mask_draft_in_flight = false;
-        match result {
-            Ok(opened) => {
-                if self.mask_draft.is_none() {
-                    // The gesture was cancelled while `draft.begin` was in flight; the core draft
-                    // it just opened is ended rather than left behind.
-                    return crate::app::tasks::draft_cancel_task(
-                        self.owner.clone(),
-                        self.client,
-                        opened.draft_id,
-                    );
-                }
-                self.mask_draft_id = Some(opened.draft_id.clone());
-                if let Some(draft) = &mut self.mask_draft {
-                    draft.base_revision = opened.base_revision;
-                    draft.conflicted = opened.conflicted;
-                }
-                self.session.draft = Some(opened);
-                // A gesture opens with a gradient already set, so its first frame shows what the
-                // release would commit rather than the unmasked picture.
-                self.mask_draft_pending = true;
-                self.after_mask_round_trip()
-            }
-            Err(error) => {
-                self.status = error;
-                self.end_mask_draft();
-                Task::none()
-            }
-        }
-    }
-
-    /// One `draft.set` answered with the preview of the geometry it accepted.
-    ///
-    /// Only the gesture that sent it takes an answer up. Once Discard has ended that gesture, or
-    /// another has replaced it, the answer describes geometry nobody holds: storing its draft would
-    /// leave one behind the discarded gesture, and queuing its preview would present a discarded
-    /// frame after the committed one was asked for. The set runs synchronously, so no answer
-    /// outlives its gesture today; this check keeps that true whatever path an answer takes.
-    pub(crate) fn mask_draft_set(
-        &mut self,
-        draft_id: &lightwell_core::DraftId,
-        result: Result<
-            (
-                lightwell_core::Draft,
-                lightwell_core::PreviewJob,
-                crate::app::tasks::RoundTrip,
-            ),
-            String,
-        >,
-    ) -> Task<Message> {
-        if self.mask_draft.is_none() || self.mask_draft_id.as_ref() != Some(draft_id) {
-            self.event(
-                "mask_draft_set_dropped",
-                json!({"draft_id":draft_id.as_str(),"accepted":result.is_ok()}),
-            );
-            return Task::none();
-        }
-        self.mask_draft_in_flight = false;
-        match result {
-            Ok((set, job, _)) => {
-                if let Some(draft) = &mut self.mask_draft {
-                    draft.conflicted = set.conflicted;
-                }
-                let draft_revision = set.draft_revision;
-                self.session.draft = Some(set);
-                self.preview_generation = self.request_preview(job);
-                // The one record that ties a painted input to the frame it will produce, and the
-                // reason a stroke's own end-to-end latency is measurable at all: the `draft.set`
-                // this answers carried the path so far, and the preview job just queued for it is
-                // `generation`, which the `preview_displayed` event of its upload repeats. It is the
-                // mask gesture's counterpart of `slider_draft_preview`, and it exists for the same
-                // reason — without it a measurement can only guess which frame belongs to which
-                // pointer position, and a stroke is a burst of positions rather than one value.
-                // `positions` is the path's length and not the path, because a measurement needs to
-                // know how much geometry the frame carries and a log is not where a stroke is
-                // stored.
-                let positions = self
-                    .mask_draft
-                    .as_ref()
-                    .and_then(MaskDraft::brush)
-                    .map(|stroke| stroke.captured().len());
-                self.event(
-                    "mask_draft_preview",
-                    json!({"generation":self.preview_generation,"draft_revision":draft_revision,
-                           "positions":positions}),
-                );
-                self.after_mask_round_trip()
-            }
-            Err(error) => {
-                self.status = error;
-                self.after_mask_round_trip()
-            }
-        }
-    }
-
-    /// Whatever the gesture asked for while a round trip was in flight happens now: the newest
-    /// geometry it produced, and then the commit it requested. A `draft.set` answers in the update
-    /// that sent it, so the round trip that holds geometry back is `draft.begin`, `draft.reapply`
-    /// or a commit.
-    ///
-    /// **The geometry goes first.** A commit sends the *core* draft's fields, not the desktop's, so
-    /// committing while geometry is still queued writes the geometry the gesture had before it. A
-    /// gradient loses the end of a drag that way, and a stroke most of its path. The commit is kept
-    /// and runs on the next answer instead.
-    fn after_mask_round_trip(&mut self) -> Task<Message> {
-        if self.mask_draft_pending {
-            return self.set_mask_draft();
-        }
-        if self.mask_draft_finish {
-            self.mask_draft_finish = false;
-            return self.mask_commit();
-        }
-        Task::none()
-    }
-
-    /// `draft.commit` answered. A real outcome merges into history like any other command; a no-op
-    /// ends the gesture with no entry.
-    pub(crate) fn mask_draft_committed(
-        &mut self,
-        result: Result<Option<crate::app::tasks::Refresh>, String>,
-    ) -> Task<Message> {
-        self.busy = false;
-        self.mask_draft_in_flight = false;
-        match result {
-            Ok(Some(refresh)) => {
-                let created = refresh.masks.masks.last().map(|report| report.id.clone());
-                let was_create = self
-                    .mask_draft
-                    .as_ref()
-                    .is_some_and(|draft| draft.mask.is_none());
-                // A stroke committed: which component it landed on is what the next stroke appends
-                // to, so painting carries on without a second gesture.
-                let painted = self
-                    .mask_draft
-                    .as_ref()
-                    .filter(|draft| draft.brush().is_some())
-                    .map(|draft| (draft.mask.clone(), draft.component.clone()));
-                self.end_mask_draft();
-                self.accept(refresh);
-                // A gesture that created a mask opens it, so the adjustments below the list are
-                // already bound to what was just drawn.
-                if was_create && let Some(id) = created {
-                    self.selected_mask = Some(id);
-                    self.selected_component = None;
-                    self.seed_values();
-                }
-                self.status = "Mask committed".into();
-                match painted {
-                    Some(target) => self.rearm_brush(target),
-                    None => Task::none(),
-                }
-            }
-            Ok(None) => {
-                self.end_mask_draft();
-                self.status = "The mask gesture changed nothing; nothing was committed".into();
-                self.refresh_mask_overlay()
-            }
-            Err(error) => {
-                // A refused commit keeps the gesture, so it can be discarded or reapplied
-                // deliberately; a stale revision is exactly the conflict the notice explains.
-                if error.starts_with(lightwell_core::ErrorKind::Conflict.code())
-                    && let Some(draft) = &mut self.mask_draft
-                {
-                    draft.mark_conflicted();
-                }
-                // A refusal belongs in the evidence log beside the commit it answers: a run that
-                // shows the request and not its outcome cannot be read afterwards.
-                self.event("mask_draft_refused", json!({ "reason": error }));
-                self.status = error;
-                Task::none()
-            }
-        }
-    }
-
-    /// Arm the brush again on the component the stroke that just committed landed on.
-    ///
-    /// One stroke is one entry, so the draft behind a stroke closes when that stroke commits; the
-    /// brush itself is still in the person's hand, and the next press must be the next stroke on the
-    /// same component rather than a second gesture they have to start. The component is resolved
-    /// from the refreshed listing, because a stroke that drew a mask or added a brush minted one.
-    fn rearm_brush(&mut self, target: (Option<MaskId>, Option<ComponentId>)) -> Task<Message> {
-        let (mask, component) = target;
-        let listing = self.masks.as_ref();
-        let report = match &mask {
-            Some(id) => {
-                listing.and_then(|listing| listing.masks.iter().find(|report| &report.id == id))
-            }
-            // A stroke that drew a mask made it the last one, exactly as `mask.create-<kind>` does.
-            None => listing.and_then(|listing| listing.masks.last()),
-        };
-        let Some(report) = report else {
-            return Task::none();
-        };
-        let mask = report.id.clone();
-        // The component the stroke named, or the one it minted, which is that mask's newest.
-        let component = component.or_else(|| {
-            report
-                .components
-                .iter()
-                .rev()
-                .find(|component| component.kind == BRUSH)
-                .map(|component| component.id.clone())
-        });
-        let (Some(component), Some(revision)) =
-            (component, self.state.as_ref().map(|state| state.revision))
-        else {
-            return Task::none();
-        };
-        let brush = self.painting_brush();
-        self.selected_mask = Some(mask.clone());
-        self.selected_component = Some(component.clone());
-        self.open_shape(MaskDraft::editing(
-            mask, component, BRUSH, None, brush, revision,
-        ))
-    }
-
-    /// `draft.reapply` answered: the gesture is based on the current revision again and its geometry
-    /// is re-sent, so the drafted preview returns.
-    ///
-    /// Reapply is still a runtime round trip, so Discard can end the gesture while it is in flight.
-    /// An answer that finds no gesture, or rebases a draft that is not the open gesture's, is
-    /// dropped: storing it would report a draft that nothing holds, and re-sending geometry would
-    /// draft the discarded gesture again.
-    pub(crate) fn mask_draft_reapplied(
-        &mut self,
-        result: Result<lightwell_core::Draft, String>,
-    ) -> Task<Message> {
-        let for_open = match &result {
-            Ok(rebased) => self.mask_draft_id.as_ref() == Some(&rebased.draft_id),
-            Err(_) => true,
-        };
-        if self.mask_draft.is_none() || !for_open {
-            return Task::none();
-        }
-        self.mask_draft_in_flight = false;
-        match result {
-            Ok(rebased) => {
-                if let Some(draft) = &mut self.mask_draft {
-                    draft.rebase(rebased.base_revision);
-                }
-                self.session.draft = Some(rebased);
-                self.mask_draft_pending = true;
-                self.after_mask_round_trip()
-            }
-            Err(error) => {
-                self.status = error;
-                Task::none()
-            }
-        }
     }
 }
 

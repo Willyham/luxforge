@@ -39,9 +39,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         developer: inputs.developer,
         can_open_gallery: inputs.developer
             && !inputs.busy
-            && inputs.draft.is_none()
-            && !inputs.draft_pending
-            && inputs.slider_draft.is_none()
+            && inputs.gallery_refusal.is_none()
             && !inputs.compare_held,
         file_name: inputs.state.and_then(|state| {
             state

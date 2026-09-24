@@ -1029,7 +1029,7 @@ fn kind_fields(inputs: &Inputs<'_>, kind: &str, enabled: bool) -> Vec<ControlMod
 
 fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
     let draft: &MaskDraft = inputs.mask_draft?;
-    let apply_reason = if draft.conflicted {
+    let apply_reason = if inputs.gesture_conflicted {
         Some("Changed elsewhere: discard the draft or reapply it".into())
     } else if !enabled {
         disabled_reason(inputs)
@@ -1084,7 +1084,7 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
             .into_iter()
             .map(|(name, value)| (name.to_owned(), format!("{value:.4}")))
             .collect(),
-        conflicted: draft.conflicted,
+        conflicted: inputs.gesture_conflicted,
         can_apply: apply_reason.is_none(),
         apply_reason,
         painted: draft.brush().is_some(),

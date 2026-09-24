@@ -80,12 +80,9 @@ pub(crate) enum NoticeTone {
 pub(crate) enum NoticeAction {
     DiscardDraft,
     ReapplyDraft,
-    /// The same two decisions for an open slider gesture's draft, which the core holds.
-    DiscardSliderDraft,
-    ReapplySliderDraft,
-    /// And the same two for an open mask shape gesture.
-    DiscardMaskDraft,
-    ReapplyMaskDraft,
+    /// The same two decisions for the open slider or mask gesture's core draft.
+    DiscardGesture,
+    ReapplyGesture,
     ReturnCurrent,
     /// Grant exactly the scope the open consent notice names, then retry what was refused.
     AllowConsent,
@@ -251,7 +248,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
             .map(|(name, value)| format!("{name} {value:.3}"))
             .collect::<Vec<_>>()
             .join(" · ");
-        let apply_reason = if draft.conflicted {
+        let apply_reason = if inputs.gesture_conflicted {
             Some("Changed elsewhere: discard the gesture or reapply it".to_owned())
         } else if !inputs.session.preview.can_edit() {
             Some("Return to the current state to apply".to_owned())
@@ -265,7 +262,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
             title: format!("{} · {}", draft.op.label(), draft.kind),
             readout,
             can_apply: apply_reason.is_none(),
-            conflicted: draft.conflicted,
+            conflicted: inputs.gesture_conflicted,
             apply_reason,
         });
     }
@@ -328,12 +325,12 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
                 None => "Another client committed while your slider draft was open. Your draft is kept.".into(),
             },
             actions: vec![
-                ("Discard".into(), NoticeAction::DiscardSliderDraft),
-                ("Reapply".into(), NoticeAction::ReapplySliderDraft),
+                ("Discard".into(), NoticeAction::DiscardGesture),
+                ("Reapply".into(), NoticeAction::ReapplyGesture),
             ],
         });
     }
-    if inputs.mask_draft.is_some_and(|draft| draft.conflicted) {
+    if inputs.mask_draft.is_some() && inputs.gesture_conflicted {
         let revision = inputs.state.map(|state| state.revision);
         notices.push(Notice {
             tone: NoticeTone::Warning,
@@ -345,8 +342,8 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
                 None => "Another client committed while your mask gesture was open. Your gesture is kept.".into(),
             },
             actions: vec![
-                ("Discard".into(), NoticeAction::DiscardMaskDraft),
-                ("Reapply".into(), NoticeAction::ReapplyMaskDraft),
+                ("Discard".into(), NoticeAction::DiscardGesture),
+                ("Reapply".into(), NoticeAction::ReapplyGesture),
             ],
         });
     }

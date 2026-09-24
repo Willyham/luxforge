@@ -564,7 +564,7 @@ mod tests {
     fn a_drawn_handle_is_where_a_press_on_it_is_answered() {
         let placement = placement((480, 320), Size::new(960.0, 640.0));
         for kind in [LINEAR, RADIAL] {
-            let mut draft = MaskDraft::creating(kind, NEUTRAL_BRUSH, 1);
+            let mut draft = MaskDraft::creating(kind, NEUTRAL_BRUSH);
             draft.set_aspect(placement.map.aspect());
             let canvas = MaskCanvas::new(&draft, placement);
             for (handle, (x, y)) in draft.handles() {
@@ -588,7 +588,7 @@ mod tests {
     fn a_press_on_a_handle_drags_it_and_a_press_on_the_photograph_sweeps() {
         use canvas::Program;
         let placement = placement((480, 320), Size::new(480.0, 320.0));
-        let draft = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 1);
+        let draft = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH);
         let program = MaskCanvas::new(&draft, placement);
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let mut state = Interaction::default();
@@ -672,7 +672,7 @@ mod tests {
     fn a_painted_gesture_paints_wherever_it_is_pressed_and_never_grabs_a_handle() {
         use canvas::Program;
         let placement = placement((480, 320), Size::new(480.0, 320.0));
-        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH, 1);
+        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH);
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let at = placement.canvas_point(0.5, 0.5);
 
@@ -728,7 +728,7 @@ mod tests {
     /// Fit, at 100% and under a rotated crop — and the painted line is drawn as wide as they say.
     #[test]
     fn the_brush_cursor_is_its_own_size_at_every_zoom_and_under_a_rotated_crop() {
-        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH, 1);
+        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH);
         draft.set_aspect(480.0 / 320.0);
         let radius = NEUTRAL_BRUSH.size;
         // One mask-space unit is the content stage's **height**, so a radius of `r` is `r · H`

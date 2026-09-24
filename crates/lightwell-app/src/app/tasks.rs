@@ -2,16 +2,19 @@
 //! JSON API dispatches; there is no desktop-only mutation path. Each task takes the narrowest
 //! completion path the performance rules allow.
 use crate::{
-    app::message::{Message, PresetMessage},
+    app::{
+        draft::GestureId,
+        message::{DraftMessage, Message, PresetMessage},
+    },
     state::histogram::Readout,
 };
 use iced::Task;
 use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
     EntryId, ErrorKind, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage,
-    MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest, MutationResult,
-    OwnerHandle, PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription,
-    StageTransform, Version,
+    MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest, OwnerHandle,
+    PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription, StageTransform,
+    Version,
     mask::commands::{MaskCommandResult, MaskListing, MaskTarget},
 };
 use serde_json::{Value, json};
@@ -572,14 +575,21 @@ pub(crate) struct RecipeRead {
 
 /// The crop draft's only preview job: the stack truncated to the layers before the crop layer, which
 /// is exactly that layer's input stage. Starting a draft and reapplying it are the only two requests.
+///
+/// A draft the crop displaced — an armed brush's — is cancelled first, in this same task, so the
+/// session read below can no longer hold it.
 pub(crate) fn crop_preview_task(
     owner: OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     layer_count: usize,
+    displaced: Option<DraftId>,
 ) -> Task<Message> {
     Task::perform(
         async move {
+            if let Some(draft_id) = displaced {
+                let _ = call(&owner, client, "draft.cancel", json!({"draft_id":draft_id}));
+            }
             let (session, _) = call(&owner, client, "session.state", json!({}))?;
             let session: ClientSession = parse(session)?;
             let (state, _) = call(&owner, client, "asset.state", json!({"asset_id":asset_id}))?;
@@ -603,23 +613,31 @@ pub(crate) fn crop_preview_task(
     )
 }
 
-/// Open this client's one draft of a patch action. The gesture sends nothing else until this
-/// answers, so the draft identity every later request needs is known before any of them.
-/// `draft.begin` for one generated control's gesture.
+/// Open this client's one draft for a gesture. The gesture sends nothing else until this answers,
+/// so the draft identity every later request needs is known before any of them; the answer names
+/// the gesture that asked, because the draft's own identity is what it brings.
 ///
 /// The target is the host's own envelope: for a module action it is the mask the panel's sections
 /// are bound to, so the drafted preview shows the masked layer the release will commit rather than
 /// the global one; for a `mask.*` command it is the mask and component the gesture edits, which no
 /// declared parameter kind could carry. A global gesture sends neither and drafts as it always has.
+///
+/// A draft the gesture displaced — an armed brush's — is cancelled first, in this same task, so the
+/// begin can never reach the owner while it still holds that draft.
 pub(crate) fn draft_begin_task(
     owner: OwnerHandle,
     client: ClientId,
+    gesture: GestureId,
     asset_id: AssetId,
     action: String,
     target: MaskTarget,
+    displaced: Option<DraftId>,
 ) -> Task<Message> {
     Task::perform(
         async move {
+            if let Some(draft_id) = displaced {
+                let _ = call(&owner, client, "draft.cancel", json!({"draft_id":draft_id}));
+            }
             let (draft, _) = call(
                 &owner,
                 client,
@@ -628,12 +646,17 @@ pub(crate) fn draft_begin_task(
             )?;
             parse::<Draft>(draft)
         },
-        |result| Message::SliderDraftBegun(result.map(Box::new)),
+        move |result| {
+            Message::Draft(DraftMessage::Begun {
+                gesture,
+                result: result.map(Box::new),
+            })
+        },
     )
 }
 
-/// The `draft.begin` request one action and target produce. One spelling, shared by the slider
-/// gesture and the mask shape gesture, so the two cannot disagree about where an identity goes.
+/// The `draft.begin` request one action and target produce. One spelling for every gesture, so no
+/// two can disagree about where an identity goes.
 pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: MaskTarget) -> Value {
     let mut params = json!({"asset_id":asset_id,"action":action});
     let object = params.as_object_mut().expect("the envelope is an object");
@@ -732,61 +755,127 @@ impl RoundTrip {
     }
 }
 
-/// Commit the draft once. A real outcome is read back exactly as any other command's is; a no-op
-/// outcome created no entry, so nothing is refreshed and the gesture simply ends.
+/// Commit the draft once, as the plain call its task runs. A real outcome is read back exactly as
+/// any other command's is; a no-op outcome created no entry, so nothing is refreshed and the gesture
+/// simply ends.
+///
+/// The answer is read as a `mask.*` command's, which is the mutation envelope and, for a drafted
+/// host command, what it changed — the history label, the mask, the component. A module action's
+/// answer is the envelope alone, which that shape reads too; reading a mask command's as the bare
+/// envelope would refuse its extra fields by name and lose a commit the core had already made.
+pub(crate) fn draft_commit_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    draft_id: &DraftId,
+    asset_id: AssetId,
+    mutation: Mutation,
+    proxy: Option<ProxyBounds>,
+) -> Result<Option<Refresh>, String> {
+    let (committed, sequence) = call(
+        owner,
+        client,
+        "draft.commit",
+        json!({"draft_id":draft_id,"mutation":mutation}),
+    )?;
+    let result = parse::<MaskCommandResult>(committed)?;
+    if result.mutation.outcome == MutationOutcome::NoOp {
+        return Ok(None);
+    }
+    refresh(owner, client, asset_id, false, sequence, proxy).map(Some)
+}
+
 pub(crate) fn draft_commit_task(
     owner: OwnerHandle,
     client: ClientId,
+    gesture: GestureId,
     draft_id: DraftId,
     asset_id: AssetId,
     mutation: Mutation,
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
+    let draft = draft_id.clone();
     Task::perform(
-        async move {
-            let (committed, sequence) = call(
-                &owner,
-                client,
-                "draft.commit",
-                json!({"draft_id":draft_id,"mutation":mutation}),
-            )?;
-            let result = parse::<MutationResult>(committed)?;
-            if result.outcome == MutationOutcome::NoOp {
-                return Ok(None);
-            }
-            refresh(&owner, client, asset_id, false, sequence, proxy).map(Some)
+        async move { draft_commit_now(&owner, client, &draft_id, asset_id, mutation, proxy) },
+        move |result| {
+            Message::Draft(DraftMessage::Committed {
+                gesture,
+                draft,
+                result: result.map(|refresh| refresh.map(Box::new)),
+            })
         },
-        |result| Message::SliderDraftCommitted(result.map(|refresh| refresh.map(Box::new))),
     )
+}
+
+/// What a cancel reads back after it: the displayed entry's own preview, at these bounds.
+pub(crate) type Reseed = (AssetId, Option<EntryId>, Option<ProxyBounds>);
+
+/// What a cancel answers: whether the owner ended the draft, and the frame read back after it.
+pub(crate) type Cancelled = (
+    Result<(), String>,
+    Option<Result<Box<PreviewPayload>, String>>,
+);
+
+/// End the draft, then read back what the screen needs, as the plain calls the task runs. The
+/// session is read **after** the cancel in the same task, so the one the desktop adopts can no
+/// longer hold the draft; a separate task could read it first and put the ended draft back.
+pub(crate) fn draft_cancel_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    draft_id: &DraftId,
+    reseed: Option<Reseed>,
+) -> Cancelled {
+    let cancelled = call(owner, client, "draft.cancel", json!({"draft_id":draft_id})).map(|_| ());
+    let reseed = reseed.map(|(asset_id, entry_id, proxy)| {
+        current_preview(owner, client, asset_id, entry_id, proxy).map(Box::new)
+    });
+    (cancelled, reseed)
 }
 
 pub(crate) fn draft_cancel_task(
     owner: OwnerHandle,
     client: ClientId,
     draft_id: DraftId,
+    reseed: Option<Reseed>,
 ) -> Task<Message> {
+    let draft = draft_id.clone();
     Task::perform(
-        async move { call(&owner, client, "draft.cancel", json!({"draft_id":draft_id})).map(|_| ()) },
-        Message::SliderDraftEnded,
+        async move { draft_cancel_now(&owner, client, &draft_id, reseed) },
+        move |(cancelled, reseed)| {
+            Message::Draft(DraftMessage::Cancelled {
+                draft,
+                cancelled,
+                reseed,
+            })
+        },
     )
+}
+
+/// Rebase the draft on the current revision, as the plain call its task runs.
+pub(crate) fn draft_reapply_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    draft_id: &DraftId,
+) -> Result<Draft, String> {
+    let (draft, _) = call(owner, client, "draft.reapply", json!({"draft_id":draft_id}))?;
+    parse::<Draft>(draft)
 }
 
 pub(crate) fn draft_reapply_task(
     owner: OwnerHandle,
     client: ClientId,
+    gesture: GestureId,
     draft_id: DraftId,
 ) -> Task<Message> {
+    let draft = draft_id.clone();
     Task::perform(
-        async move {
-            let (draft, _) = call(
-                &owner,
-                client,
-                "draft.reapply",
-                json!({"draft_id":draft_id}),
-            )?;
-            parse::<Draft>(draft)
+        async move { draft_reapply_now(&owner, client, &draft_id) },
+        move |result| {
+            Message::Draft(DraftMessage::Reapplied {
+                gesture,
+                draft,
+                result: result.map(Box::new),
+            })
         },
-        |result| Message::SliderDraftReapplied(result.map(Box::new)),
     )
 }
 
@@ -802,31 +891,42 @@ pub(crate) fn current_preview_task(
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
-        async move {
-            let job = owner
-                .preview_job(proxied(
-                    PreviewRequest::new(client, asset_id)
-                        .entry(entry_id)
-                        .analyse(),
-                    proxy,
-                ))
-                .map_err(|error| error.to_string())?;
-            let (session, sequence) = call(&owner, client, "session.state", json!({}))?;
-            Ok(PreviewPayload {
-                job,
-                session: parse::<ClientSession>(session)?,
-                sequence,
-            })
-        },
+        async move { current_preview(&owner, client, asset_id, entry_id, proxy) },
         |result| Message::PreviewLoaded(result.map(Box::new)),
     )
 }
 
+/// The plain calls [`current_preview_task`] runs.
+fn current_preview(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    proxy: Option<ProxyBounds>,
+) -> Result<PreviewPayload, String> {
+    let job = owner
+        .preview_job(proxied(
+            PreviewRequest::new(client, asset_id)
+                .entry(entry_id)
+                .analyse(),
+            proxy,
+        ))
+        .map_err(|error| error.to_string())?;
+    let (session, sequence) = call(owner, client, "session.state", json!({}))?;
+    Ok(PreviewPayload {
+        job,
+        session: parse::<ClientSession>(session)?,
+        sequence,
+    })
+}
+
 /// The geometry tail of the displayed stack as one affine, read once when a mask gesture opens.
 /// Every later pointer position is mapped from it locally, so a drag costs no host call per move.
+/// The answer names the gesture that asked, so a map is never given to another one.
 pub(crate) fn transform_task(
     owner: OwnerHandle,
     client: ClientId,
+    gesture: GestureId,
     asset_id: AssetId,
     entry_id: Option<EntryId>,
 ) -> Task<Message> {
@@ -840,80 +940,7 @@ pub(crate) fn transform_task(
             )?;
             parse::<StageTransform>(transform)
         },
-        Message::MaskTransform,
-    )
-}
-
-/// `draft.begin` for a `mask.*` gesture: the mask and the component it edits travel in the envelope
-/// beside `asset_id`, because no declared parameter kind can carry an identity.
-pub(crate) fn mask_draft_begin_task(
-    owner: OwnerHandle,
-    client: ClientId,
-    asset_id: AssetId,
-    action: &'static str,
-    target: MaskTarget,
-) -> Task<Message> {
-    Task::perform(
-        async move {
-            let (draft, _) = call(
-                &owner,
-                client,
-                "draft.begin",
-                draft_begin_params(asset_id, action, target),
-            )?;
-            parse::<Draft>(draft)
-        },
-        |result| Message::MaskDraftBegun(result.map(Box::new)),
-    )
-}
-
-pub(crate) fn mask_draft_commit_task(
-    owner: OwnerHandle,
-    client: ClientId,
-    draft_id: DraftId,
-    asset_id: AssetId,
-    mutation: Mutation,
-    proxy: Option<ProxyBounds>,
-) -> Task<Message> {
-    Task::perform(
-        async move {
-            let (committed, sequence) = call(
-                &owner,
-                client,
-                "draft.commit",
-                json!({"draft_id":draft_id,"mutation":mutation}),
-            )?;
-            // A mask gesture commits through the `mask.*` family, whose answer carries the
-            // mutation envelope **and** what it changed — the history label, the mask, the
-            // component, the layers a delete removed. Reading it as the bare envelope refuses
-            // those fields by name, turning every committed gesture into a failure and losing the
-            // commit the core had already made.
-            let result = parse::<MaskCommandResult>(committed)?;
-            if result.mutation.outcome == MutationOutcome::NoOp {
-                return Ok(None);
-            }
-            refresh(&owner, client, asset_id, true, sequence, proxy).map(Some)
-        },
-        |result| Message::MaskDraftCommitted(result.map(|refresh| refresh.map(Box::new))),
-    )
-}
-
-pub(crate) fn mask_draft_reapply_task(
-    owner: OwnerHandle,
-    client: ClientId,
-    draft_id: DraftId,
-) -> Task<Message> {
-    Task::perform(
-        async move {
-            let (draft, _) = call(
-                &owner,
-                client,
-                "draft.reapply",
-                json!({"draft_id":draft_id}),
-            )?;
-            parse::<Draft>(draft)
-        },
-        |result| Message::MaskDraftReapplied(result.map(Box::new)),
+        move |result| Message::MaskTransform(gesture, result),
     )
 }
 
