@@ -366,7 +366,7 @@
     {
       "id": "TASK-008",
       "description": "Make the desktop's capability journey test wait for the install to report progress instead of reading it at once.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "`the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere` asserts that the resource install's row already carries a progress fraction immediately after the grant retries the install. On 2026-09-23 it failed once during a full `cargo xtask check` at a load near 20 (`installing.progress` was `None`) and passed on seven reruns, alone and with the whole desktop suite: the install job had not yet reported progress when the row was read."

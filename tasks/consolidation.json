@@ -259,7 +259,7 @@
     {
       "id": "TASK-005",
       "description": "Remove `artifact.relocate`, the grant's last-use record and the `read-user-file` capability with the `file` setting kind, across the core, the desktop, the proof module, the capabilities smoke and the docs.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The owner decided these on 2026-09-24. `artifact.relocate` has no caller: the artifact directory moves with its catalog. Recording a grant's last use rewrites and syncs the grants file on the owner after every task and install, for a display field.",
@@ -327,7 +327,7 @@
     {
       "id": "TASK-006",
       "description": "Replace the hand-written HTTP/1.1 client in the module transport with a pinned, well-known and tested HTTP client behind the existing address policy.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The owner decided on 2026-09-24 to use a well-known client such as `ureq` instead of the project's own HTTP parser.",
