@@ -636,11 +636,13 @@ impl Plan {
             None => {}
         }
         for (module, open) in &expect.expanded {
+            // The section's own recorded state, not merely "not expanded": a section the frame
+            // does not list at all is neither.
+            let recorded = &frame.state()["expanded"][module];
             ensure(
-                frame.section_expanded(module) == *open,
+                recorded == &json!(open),
                 format!(
-                    "the {module} section is {}, expected {}",
-                    if *open { "collapsed" } else { "expanded" },
+                    "the {module} section records {recorded}, expected {}",
                     if *open { "expanded" } else { "collapsed" }
                 ),
             )?;

@@ -1,6 +1,6 @@
 //! Ten renderer captures of the full 78-state widget gallery in the real desktop.
 use crate::{
-    scenario::{Frame, pixels},
+    scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
 
@@ -8,15 +8,26 @@ pub const WINDOW: [&str; 2] = ["1440", "1000"];
 pub const PAGES: usize = 10;
 pub const STATES: usize = 78;
 
-pub fn script(scenario: &str) -> Option<Value> {
-    (scenario == "gallery").then(|| {
-        Value::Array(
-            (0..PAGES)
-                .map(|page| json!({"gallery":{"page":page}}))
-                .chain(std::iter::once(json!({"gallery":{"page":null}})))
-                .collect(),
-        )
-    })
+/// The step that shows gallery page `page`.
+fn page_step(page: usize) -> String {
+    format!("page-{page}")
+}
+
+/// The open, one frame per gallery page, and the return to the editor. Showing the gallery is view
+/// state: nothing is committed, and the return leaves the editor as it opened.
+pub fn plan(_: &[PathBuf]) -> Plan {
+    Plan::new(
+        std::iter::once(Step::opened("opened"))
+            .chain((0..PAGES).map(|page| {
+                Step::new(page_step(page), json!({"gallery":{"page":page}})).commits(0)
+            }))
+            .chain(std::iter::once(
+                Step::new("returned", json!({"gallery":{"page":null}}))
+                    .commits(0)
+                    .label("Original"),
+            ))
+            .collect(),
+    )
 }
 
 /// A small image-content check independent of the gallery's own state metadata. A valid renderer
@@ -63,29 +74,14 @@ fn board_content(frame: &Frame) -> Result<Value> {
     )
 }
 
-pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing gallery frames")?;
-    ensure(
-        frames.len() == PAGES + 2 && app["had_input_errors"] == false,
-        "Gallery run is incomplete or reported an input error",
-    )?;
-    let script = script("gallery").expect("static gallery script");
-    let steps = script.as_array().unwrap();
-    let logged: Vec<&Value> = events
-        .iter()
-        .filter(|event| event["event"] == "script_step")
-        .collect();
-    ensure(
-        logged.len() == PAGES + 1,
-        "A gallery script event is missing",
-    )?;
-    let initial = Frame::identified(evidence, app, &frames[0])?;
-    let original = pixels::identity_photo(&initial)?;
-    let mut checks = vec![json!({"frame":frames[0]["file"],"original_photo":original})];
+pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let initial = launch.at("opened")?;
+    let original = pixels::identity_photo(initial)?;
+    let mut checks = vec![json!({"frame":initial["file"],"original_photo":original})];
     let mut states = 0usize;
     for page in 0..PAGES {
-        let frame = &frames[page + 1];
-        let captured = Frame::identified(evidence, app, frame)?;
+        let frame = launch.at(&page_step(page))?;
         let info = &frame["state"]["gallery"];
         ensure(
             info["page"] == page
@@ -104,36 +100,27 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             format!("Gallery page {page} lacks named states"),
         )?;
         states += count;
-        ensure(
-            frame["step"]["step"] == page + 1
-                && frame["step"]["request"] == steps[page]
-                && logged[page]["detail"]["step"] == page + 1
-                && logged[page]["detail"]["request"] == steps[page],
-            format!("Gallery page {page} is not correlated to its script/log"),
-        )?;
-        let image = board_content(&captured)?;
+        let image = board_content(frame)?;
         checks.push(json!({"frame":frame["file"],"page":info,"board":image}));
     }
     ensure(
         states == STATES,
         format!("Gallery pages contain {states} states, expected all {STATES}"),
     )?;
-    let returned = frames.last().unwrap();
-    let returned_photo = pixels::identity_photo(&Frame::identified(evidence, app, returned)?)?;
+    let returned = launch.at("returned")?;
+    let returned_photo = pixels::identity_photo(returned)?;
     ensure(
         returned["state"]["gallery"].is_null()
-            && returned["state"]["workspace"] == frames[0]["state"]["workspace"]
-            && returned["state"]["stack"] == frames[0]["state"]["stack"]
+            && returned["state"]["workspace"] == initial["state"]["workspace"]
+            && returned["state"]["stack"] == initial["state"]["stack"]
             && returned["state"]["displayed_generation"]
-                == frames[0]["state"]["displayed_generation"]
-            && returned["step"]["request"] == steps[PAGES]
-            && logged[PAGES]["detail"]["request"] == steps[PAGES],
-        "Returning from gallery changed the editor or failed request/session correlation",
+                == initial["state"]["displayed_generation"],
+        "Returning from gallery changed the editor",
     )?;
     checks.push(
         json!({"frame":returned["file"],"returned_photo":returned_photo,
         "editor_preserved":true}),
     );
-    write_json(&evidence.join("gallery-checks.json"), &json!(checks))?;
+    write_json(&launch.evidence.join("gallery-checks.json"), &json!(checks))?;
     Ok(())
 }

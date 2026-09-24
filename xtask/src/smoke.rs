@@ -494,11 +494,11 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "gallery",
         about: "All 78 widget gallery states across ten pages",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, gallery::script("gallery")),
+            plan: gallery::plan,
             developer: true,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(gallery::verify, launches),
+        verify: gallery::verify,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(gallery::WINDOW),
         note: None,
@@ -508,11 +508,11 @@ pub static SCENARIOS: &[Scenario] = &[
         name: "controls",
         about: "The developer proof's generated controls and identity layer",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, controls::script("controls")),
+            plan: controls::plan,
             developer: true,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(controls::verify, launches),
+        verify: controls::verify,
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,

@@ -1,7 +1,6 @@
 //! Rendered evidence for the opt-in control vocabulary and its identity photo layer.
 use crate::{
-    scenario::plan::request_matches as script_request_matches,
-    scenario::{Frame, pixels},
+    scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
 
@@ -12,43 +11,127 @@ const EFFECT: &str = "lightwell.controls.identity";
 /// The developer pixel proof, whose section the script shows last: X and Y as px fields.
 const PIXEL_MODULE: &str = "lightwell.pixel";
 
-pub fn script(scenario: &str) -> Option<Value> {
-    (scenario == "controls").then(|| json!([
+/// The label a commit of the proof's own action earns, and the one its module reset earns.
+const SET: &str = "Set controls";
+const RESET: &str = "Reset controls";
+
+/// Every frame, in order: the open, then one per interaction. Opening, scrolling and drafting
+/// create no history; one release or one discrete event makes exactly one entry.
+pub fn plan(_: &[PathBuf]) -> Plan {
+    let step = |name: &str, script: Value| Step::new(name, script);
+    let set = |name: &str, script: Value| step(name, script).commits(1).label(SET);
+    let view = |name: &str, script: Value| step(name, script).commits(0);
+    Plan::new(vec![
+        Step::opened("opened").no_layer(EFFECT),
         // Expose the proof section, then capture both its beginning and end in the tools panel.
-        {"section":{"module":"lightwell.basic","expanded":false}},
-        {"section":{"module":"lightwell.crop","expanded":false}},
-        {"section":{"module":MODULE,"expanded":true}},
-        {"tools_scroll":0.5},
-        {"picker":{"action":ACTION,"parameter":"rgb","open":true,"finish":"open"}},
-        {"tools_scroll":1.0},
+        view(
+            "basic-collapsed",
+            json!({"section":{"module":"lightwell.basic","expanded":false}}),
+        )
+        .collapsed("lightwell.basic"),
+        view(
+            "crop-collapsed",
+            json!({"section":{"module":"lightwell.crop","expanded":false}}),
+        )
+        .collapsed("lightwell.crop"),
+        view(
+            "controls-expanded",
+            json!({"section":{"module":MODULE,"expanded":true}}),
+        )
+        .expanded(MODULE),
+        view("scroll-half", json!({"tools_scroll":0.5})),
+        view(
+            "picker-open",
+            json!({"picker":{"action":ACTION,"parameter":"rgb","open":true,"finish":"open"}}),
+        ),
+        view("scroll-end", json!({"tools_scroll":1.0})),
         // Continuous values are drafts until the release. The proof module is pixel identity.
-        {"controls":{"action":ACTION,"parameter":"amount","gesture":"slider","fractions":[0.25,0.75],"finish":"open"}},
-        {"controls":{"action":ACTION,"parameter":"amount","gesture":"slider","fractions":[0.75],"finish":"release"}},
+        view(
+            "slider-drag",
+            json!({"controls":{"action":ACTION,"parameter":"amount","gesture":"slider","fractions":[0.25,0.75],"finish":"open"}}),
+        ),
+        set(
+            "slider-release",
+            json!({"controls":{"action":ACTION,"parameter":"amount","gesture":"slider","fractions":[0.75],"finish":"release"}}),
+        ),
         // A cancelled picker leaves both history and the photograph unchanged; the next commits.
-        {"picker":{"action":ACTION,"parameter":"rgb","hue":0.125,"plane":[0.75,0.625],"finish":"open"}},
-        {"picker":{"action":ACTION,"parameter":"rgb","hue":0.125,"plane":[0.75,0.625],"finish":"cancel"}},
-        {"picker":{"action":ACTION,"parameter":"rgb","hue":0.875,"plane":[0.75,0.875],"finish":"release"}},
+        view(
+            "picker-drag",
+            json!({"picker":{"action":ACTION,"parameter":"rgb","hue":0.125,"plane":[0.75,0.625],"finish":"open"}}),
+        ),
+        view(
+            "picker-cancel",
+            json!({"picker":{"action":ACTION,"parameter":"rgb","hue":0.125,"plane":[0.75,0.625],"finish":"cancel"}}),
+        )
+        .no_draft(),
+        set(
+            "picker-release",
+            json!({"picker":{"action":ACTION,"parameter":"rgb","hue":0.875,"plane":[0.75,0.875],"finish":"release"}}),
+        ),
         // Master point add is discrete; moving the point drafts and commits once.
-        {"curve":{"action":ACTION,"parameter":"master","event":"add","point":[0.25,0.25]}},
-        {"curve":{"action":ACTION,"parameter":"master","event":"move","index":1,"points":[[0.375,0.375]],"finish":"open"}},
-        {"curve":{"action":ACTION,"parameter":"master","event":"move","index":1,"points":[[0.375,0.375]],"finish":"release"}},
-        {"curve":{"action":ACTION,"parameter":"master","event":"channel","index":1}},
-        {"curve":{"action":ACTION,"parameter":"red","event":"move","index":1,"points":[[0.5,0.75]],"finish":"release"}},
-        {"curve":{"action":ACTION,"parameter":"red","event":"remove","index":1}},
+        set(
+            "curve-add",
+            json!({"curve":{"action":ACTION,"parameter":"master","event":"add","point":[0.25,0.25]}}),
+        ),
+        view(
+            "curve-drag",
+            json!({"curve":{"action":ACTION,"parameter":"master","event":"move","index":1,"points":[[0.375,0.375]],"finish":"open"}}),
+        ),
+        set(
+            "curve-release",
+            json!({"curve":{"action":ACTION,"parameter":"master","event":"move","index":1,"points":[[0.375,0.375]],"finish":"release"}}),
+        ),
+        view(
+            "red-channel",
+            json!({"curve":{"action":ACTION,"parameter":"master","event":"channel","index":1}}),
+        ),
+        set(
+            "red-move",
+            json!({"curve":{"action":ACTION,"parameter":"red","event":"move","index":1,"points":[[0.5,0.75]],"finish":"release"}}),
+        ),
+        set(
+            "red-remove",
+            json!({"curve":{"action":ACTION,"parameter":"red","event":"remove","index":1}}),
+        ),
         // Discrete controls commit exactly once each.
-        {"controls":{"action":ACTION,"parameter":"enabled","gesture":"discrete","value":true}},
-        {"controls":{"action":ACTION,"parameter":"mode","gesture":"discrete","value":"two"}},
+        set(
+            "toggle",
+            json!({"controls":{"action":ACTION,"parameter":"enabled","gesture":"discrete","value":true}}),
+        ),
+        set(
+            "choice",
+            json!({"controls":{"action":ACTION,"parameter":"mode","gesture":"discrete","value":"two"}}),
+        ),
         // The proof's controls are its module's only group, which the panel draws without a
         // header and cannot collapse; group disclosure is a group of a module with several.
-        {"group":{"module":"lightwell.basic","path":[2],"expanded":false}},
-        {"group":{"module":"lightwell.basic","path":[2],"expanded":true}},
-        {"reset":{"module":MODULE}},
+        view(
+            "group-collapsed",
+            json!({"group":{"module":"lightwell.basic","path":[2],"expanded":false}}),
+        ),
+        view(
+            "group-expanded",
+            json!({"group":{"module":"lightwell.basic","path":[2],"expanded":true}}),
+        ),
+        step("reset", json!({"reset":{"module":MODULE}}))
+            .commits(1)
+            .label(RESET)
+            .payload(EFFECT, json!({})),
         // The pixel proof's section on its own: X and Y as labelled px fields, RGB, the picker
         // and Apply pixel.
-        {"section":{"module":MODULE,"expanded":false}},
-        {"section":{"module":PIXEL_MODULE,"expanded":true}},
-        {"tools_scroll":1.0}
-    ]))
+        view(
+            "controls-collapsed",
+            json!({"section":{"module":MODULE,"expanded":false}}),
+        )
+        .collapsed(MODULE),
+        view(
+            "pixel-expanded",
+            json!({"section":{"module":PIXEL_MODULE,"expanded":true}}),
+        )
+        .expanded(PIXEL_MODULE),
+        view("pixel-scrolled", json!({"tools_scroll":1.0}))
+            .expanded(PIXEL_MODULE)
+            .collapsed(MODULE),
+    ])
 }
 
 fn payload(frame: &Frame) -> Option<&Value> {
@@ -89,150 +172,98 @@ fn sidebar_difference(first: &Frame, second: &Frame) -> Result<u32> {
     Ok(changed)
 }
 
-/// Every step is backed by a renderer readback, state file and matching script event. The photo
-/// checker proves that all proof edits kept the original's exact displayed fixture colours.
-pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    let records = app["frames"].as_array().ok_or("Missing frames")?;
-    let script = script("controls").expect("static script");
-    let steps = script.as_array().unwrap();
-    ensure(
-        records.len() == steps.len() + 1,
-        "Wrong controls capture count",
-    )?;
-    ensure(
-        app["had_input_errors"] == false,
-        "Controls script reported an input error",
-    )?;
-    let proof = records[0]["state"]["modules"]
+/// Every step is backed by a renderer readback, state file and matching script event, which the
+/// plan checks. The photo checker proves that all proof edits kept the original's exact displayed
+/// fixture colours.
+pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let at = |step: &str| launch.at(step);
+    let opened = at("opened")?;
+    let proof = opened["state"]["modules"]
         .as_array()
         .ok_or("Missing modules")?
         .iter()
         .find(|module| module["id"] == MODULE)
         .ok_or("Proof module not discovered")?;
     ensure(
-        proof["available"] == true && records[0]["state"]["developer"] == true,
+        proof["available"] == true && opened["state"]["developer"] == true,
         "Controls module not available in developer mode",
     )?;
-    let opened = &Frame::state_only(&records[0]);
     ensure(
-        opened.revision()? == 0 && payload(opened).is_none(),
+        opened.revision()? == 0,
         "Controls import did not start with an empty recipe",
     )?;
 
-    let logged: Vec<&Value> = events
-        .iter()
-        .filter(|event| event["event"] == "script_step")
-        .collect();
-    ensure(
-        logged.len() == steps.len(),
-        "A controls script event is missing",
-    )?;
     let mut checks = Vec::new();
-    let mut frames = Vec::new();
-    for (index, frame) in records.iter().enumerate() {
-        let frame = Frame::identified(evidence, app, frame)?;
-        let photo = pixels::identity_photo(&frame)?;
+    for (name, frame) in launch.names().iter().zip(&launch.frames) {
+        let photo = pixels::identity_photo(frame)?;
         let image = frame.image()?;
         ensure(
             image.width() >= 1440 && image.height() >= 900,
-            format!("Controls capture {index} is too small to inspect"),
+            format!("Controls capture {name:?} is too small to inspect"),
         )?;
-        if index > 0 {
-            let step = &frame["step"];
-            ensure(
-                step["step"] == index
-                    && step["status"] == "sent"
-                    && script_request_matches(&step["request"], &steps[index - 1]),
-                format!("Controls frame {index} is not correlated with its scripted interaction"),
-            )?;
-            ensure(
-                logged[index - 1]["detail"]["step"] == index
-                    && script_request_matches(
-                        &logged[index - 1]["detail"]["request"],
-                        &steps[index - 1],
-                    ),
-                format!("Controls log step {index} disagrees with the capture"),
-            )?;
-        }
         checks.push(
-            json!({"frame":frame["file"],"step":index,"revision":frame.revision()?,
-            "payload":payload(&frame),"photo":photo}),
+            json!({"frame":frame["file"],"step":name,"revision":frame.revision()?,
+            "payload":payload(frame),"photo":photo}),
         );
-        frames.push(frame);
     }
 
-    // Opening, scrolling and drafting do not create history. One release or discrete event does.
-    let revisions = [
-        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 4, 4, 5, 6, 7, 8, 8, 8, 9, 9, 9, 9,
-    ];
-    for (index, expected) in revisions.into_iter().enumerate() {
-        ensure(
-            frames[index].revision()? == expected,
-            format!("Controls frame {index} revision differs from one-gesture/one-commit contract"),
-        )?;
-    }
     ensure(
-        frames[1]["state"]["expanded"]["lightwell.basic"] == false
-            && frames[2]["state"]["expanded"]["lightwell.crop"] == false
-            && frames[3]["state"]["expanded"][MODULE] == true,
-        "The proof panel was not exposed by the section steps",
-    )?;
-    ensure(
-        frames[4]["state"]["tools_scroll"] == json!(0.5)
-            && frames[6]["state"]["tools_scroll"] == json!(1.0),
+        at("scroll-half")?["state"]["tools_scroll"] == json!(0.5)
+            && at("scroll-end")?["state"]["tools_scroll"] == json!(1.0),
         "The tools panel did not retain its requested scroll fractions",
     )?;
     ensure(
-        sidebar_difference(&frames[4], &frames[6])? >= 100,
+        sidebar_difference(at("scroll-half")?, at("scroll-end")?)? >= 100,
         "The tools panel screenshots did not change when scrolled",
     )?;
     ensure(
-        control_model(&frames[5], "pickers", "rgb").is_some_and(|picker| picker["open"] == true),
+        control_model(at("picker-open")?, "pickers", "rgb")
+            .is_some_and(|picker| picker["open"] == true),
         "The picker popover was not open in its capture",
     )?;
     ensure(
-        frames[7]["state"]["draft"].is_object()
-            && frames[9]["state"]["draft"].is_object()
-            && frames[13]["state"]["draft"].is_object(),
+        at("slider-drag")?["state"]["draft"].is_object()
+            && at("picker-drag")?["state"]["draft"].is_object()
+            && at("curve-drag")?["state"]["draft"].is_object(),
         "The open slider, picker and curve captures lack draft state",
     )?;
     ensure(
-        frames[10]["state"]["draft"].is_null(),
-        "Picker cancellation left an open draft",
-    )?;
-    ensure(
-        payload(&frames[8]).is_some_and(|p| p["amount"] == json!(2.5)),
+        payload(at("slider-release")?).is_some_and(|p| p["amount"] == json!(2.5)),
         "Amount slider did not persist the soft-range value",
     )?;
     ensure(
-        payload(&frames[10]).is_some_and(|p| p.get("rgb").is_none()),
+        payload(at("picker-cancel")?).is_some_and(|p| p.get("rgb").is_none()),
         "Cancelled picker changed committed RGB",
     )?;
     ensure(
-        payload(&frames[11]).is_some_and(|p| p["rgb"].as_array().is_some()),
+        payload(at("picker-release")?).is_some_and(|p| p["rgb"].as_array().is_some()),
         "Released picker did not commit RGB",
     )?;
     ensure(
-        payload(&frames[12]).is_some_and(|p| p["master"].as_array().is_some_and(|v| v.len() == 4)),
+        payload(at("curve-add")?)
+            .is_some_and(|p| p["master"].as_array().is_some_and(|v| v.len() == 4)),
         "Curve add did not persist four master points",
     )?;
     ensure(
-        payload(&frames[14]).is_some_and(|p| p["master"][1][0] == json!(0.375)),
+        payload(at("curve-release")?).is_some_and(|p| p["master"][1][0] == json!(0.375)),
         "Curve point move did not commit",
     )?;
     ensure(
-        payload(&frames[17]).is_some_and(|p| p["red"].as_array().is_some_and(|v| v.len() == 2)),
+        payload(at("red-remove")?)
+            .is_some_and(|p| p["red"].as_array().is_some_and(|v| v.len() == 2)),
         "Red curve point removal did not persist",
     )?;
     ensure(
-        control_model(&frames[15], "curves", "red")
+        control_model(at("red-channel")?, "curves", "red")
             .is_some_and(|curve| curve["channel"] == 1 && curve["sample_count"] == 257),
         "The selected red channel lacks its declared query samples",
     )?;
+    let red_move = at("red-move")?;
     ensure(
-        control_model(&frames[16], "curves", "red").is_some_and(|curve| {
-            curve["sample_source"] == payload(&frames[16]).unwrap()["red"]
-                && curve["sample_source_entry"] == frames[16]["state"]["stack"]["entry"]
+        control_model(red_move, "curves", "red").is_some_and(|curve| {
+            payload(red_move).is_some_and(|payload| curve["sample_source"] == payload["red"])
+                && curve["sample_source_entry"] == red_move["state"]["stack"]["entry"]
                 && curve["sample_asset"]
                     .as_str()
                     .is_some_and(|id| !id.is_empty())
@@ -240,38 +271,35 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         "The sampled red curve is not correlated to its points, asset and committed entry",
     )?;
     ensure(
-        payload(&frames[18]).is_some_and(|p| p["enabled"] == true),
+        payload(at("toggle")?).is_some_and(|p| p["enabled"] == true),
         "Toggle did not commit",
     )?;
     ensure(
-        payload(&frames[19]).is_some_and(|p| p["mode"] == "two"),
+        payload(at("choice")?).is_some_and(|p| p["mode"] == "two"),
         "Choice did not commit",
     )?;
+    let groups = |step: &str| -> Result<Value> {
+        Ok(at(step)?["state"]["control_ui"]["group_expanded"].clone())
+    };
     ensure(
-        frames[20]["state"]["control_ui"]["group_expanded"]["lightwell.basic/2"] == false
-            && frames[21]["state"]["control_ui"]["group_expanded"]["lightwell.basic/2"] == true
-            && frames[21]["state"]["control_ui"]["group_expanded"]
+        groups("group-collapsed")?["lightwell.basic/2"] == false
+            && groups("group-expanded")?["lightwell.basic/2"] == true
+            && groups("group-expanded")?
                 .get("lightwell.controls/0")
                 .is_none(),
         "A group of a multi-group module did not collapse and expand",
     )?;
+    let scrolled = at("pixel-scrolled")?;
     ensure(
-        payload(&frames[22]).is_some_and(|p| p.as_object().is_some_and(|o| o.is_empty())),
-        "Module reset did not clear all proof values",
-    )?;
-    ensure(
-        frames[23]["state"]["expanded"][MODULE] == false
-            && frames[24]["state"]["expanded"][PIXEL_MODULE] == true
-            && frames[25]["state"]["expanded"][PIXEL_MODULE] == true
-            && frames[25]["state"]["expanded"][MODULE] == false
-            && frames[25]["state"]["tools_scroll"] == json!(1.0),
+        scrolled["state"]["tools_scroll"] == json!(1.0),
         "The pixel proof's section was not shown on its own at the panel's end",
     )?;
     ensure(
-        frames[25]["state"]["controls"]["set-pixel.x"].is_string()
-            && frames[25]["state"]["controls"]["set-pixel.y"].is_string(),
+        scrolled["state"]["controls"]["set-pixel.x"].is_string()
+            && scrolled["state"]["controls"]["set-pixel.y"].is_string(),
         "The pixel proof's X and Y fields are not in the captured state",
     )?;
+    let events = &launch.events;
     ensure(
         events
             .iter()
@@ -284,6 +312,9 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                 .any(|event| event["event"] == "preview_displayed"),
         "Control drafts or their displayed frames are not correlated in the log",
     )?;
-    write_json(&evidence.join("controls-checks.json"), &json!(checks))?;
+    write_json(
+        &launch.evidence.join("controls-checks.json"),
+        &json!(checks),
+    )?;
     Ok(())
 }
