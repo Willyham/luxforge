@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Make a deduplicated retry emit no event, refuse an unrouted method explicitly, give Restore the same admission checks as every commit, and plan each preset step against its own target so presets work on masked photos.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "A deduplicated mutation result keeps `outcome: applied`, and the owner's event check reads only the outcome, so a retried request records a second event.",
@@ -72,7 +72,7 @@
     {
       "id": "TASK-002",
       "description": "Send a mask gesture's `draft.set` synchronously on the desktop thread, as the slider gesture does, and stop a late answer from presenting a drafted frame after Discard.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The slider calls `tasks::draft_set_now` synchronously because a runtime hop costs one display frame during a drag (performance rule 12). The mask gesture sends the same request through `Task::perform` in `mask_draft_set_task`, and the measured paint latency misses its bound.",
@@ -129,7 +129,7 @@
     {
       "id": "TASK-003",
       "description": "Key a spatial unit's global estimate by what its preparation reads, reduce the stage only when a missing unit needs an estimate, describe units without rounding, decide proxy approximation from the compiled operations, and take test-only counters and estimate hooks out of the public API.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "`resolve_globals` keys each unit by its `describe()` string, which includes the amount, so every new Presence value misses and reduces the whole stage on both preview phases. Clarity and Texture prepare no estimate yet still trigger the reduction; Dehaze's estimate does not depend on its amount.",
@@ -194,7 +194,7 @@
     {
       "id": "TASK-004",
       "description": "Keep at most two spatial frames alive on the RAW path, stop copying every finished frame into a new allocation, allocate colour scratch once per worker, delete render code only tests use, and correct the RAW Planckian coefficient.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "`LinearEvaluation` keeps every spatial segment's full float frame for the whole evaluation, up to five at 60 MP, against the architecture's two-frame rule.",
@@ -259,7 +259,7 @@
     {
       "id": "TASK-005",
       "description": "Remove `artifact.relocate`, the grant's last-use record and the `read-user-file` capability with the `file` setting kind, across the core, the desktop, the proof module, the capabilities smoke and the docs.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "The owner decided these on 2026-09-24. `artifact.relocate` has no caller: the artifact directory moves with its catalog. Recording a grant's last use rewrites and syncs the grants file on the owner after every task and install, for a display field.",
@@ -327,7 +327,7 @@
     {
       "id": "TASK-006",
       "description": "Replace the hand-written HTTP/1.1 client in the module transport with a pinned, well-known and tested HTTP client behind the existing address policy.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "The owner decided on 2026-09-24 to use a well-known client such as `ureq` instead of the project's own HTTP parser.",
@@ -385,7 +385,7 @@
     {
       "id": "TASK-007",
       "description": "Delete `cargo xtask raw-reference` and the `probe` command with `probes/s0`, remove the duplicate 33 ms latency target, and run the `raw-panel` and RAW `performance` scenarios in the `full` tier when a manifest is given.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "`raw-reference` asserts values against literals in its own file and calls no production code; the production RAW tests cover what it claims.",
@@ -441,7 +441,7 @@
     {
       "id": "TASK-008",
       "description": "Cut the run-log prose from the masking design, the Masks row of feature status and the range study's P16, delete the completed masking and UI-components plans, replace the AGENTS.md current-state paragraph with a short pointer, and single-source the slider budget and the RAW admission limits.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "AGENTS.md forbids change logs, run logs and planning history in docs. The masking design's status line is one paragraph of about 2,600 words, the Masks feature row about 2,100 and the range study's P16 row about 1,000, mostly evidence narrative.",
@@ -693,6 +693,65 @@
           "Identical check results on the same artifacts."
         ]
       }
+    },
+    {
+      "id": "TASK-014",
+      "description": "Bound a point query through more than one spatial segment: each spatial tile is evaluated at most once per query, through one tile cache shared by the byte and RAW point paths, so a sample equals the rendered byte at a bounded cost.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "On the byte path a point sample through two spatial segments runs a whole inner tile for every pixel of the outer tile and for every pixel the global reduction reads, with no caching; measured in release, a centre sample on a 48×36 image goes from 0.1 ms with one spatial layer to 187 ms with two, and at the real 512 px tile it is effectively a hang. A global plus a masked Presence layer on a JPEG reaches it through `render.sample`, grid samples and the layer-input overlay, all on the catalog owner.",
+        "The RAW point path keeps up to four evaluated tiles for the rest of a request so a resample's four neighbours evaluate each tile once; the byte path has no such cache, so a sample through Presence and a straightened crop also runs the tile chain four or five times.",
+        "The fix is one cache for both paths, bounded by the spatial budget, not a second mechanism."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints."
+        },
+        {
+          "kind": "file",
+          "label": "Byte render path",
+          "target": "crates/lightwell-core/src/render.rs",
+          "relevance": "`Evaluation`, `spatial_pixel` and the point path."
+        },
+        {
+          "kind": "file",
+          "label": "RAW linear path",
+          "target": "crates/lightwell-core/src/render/linear.rs",
+          "relevance": "`PointSegment` and its tile cache."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "The point-query cost contract through a spatial segment."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each spatial segment's tile is evaluated at most once per point query on both paths, proved by counting tile evaluations in tests with two and three spatial segments and under a straightened crop.",
+        "A sample equals the rendered byte on both paths for those stacks.",
+        "One cache serves both paths.",
+        "The design and performance rules state the bounded cost of a point query through several spatial segments."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Count tile evaluations per query for multi-segment stacks on both paths.",
+          "Run the render, spatial, linear and masked-spatial tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Counts are bounded as stated; exactness tests pass unchanged."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -713,7 +772,8 @@
       "wave": 2,
       "task_ids": [
         "TASK-009",
-        "TASK-013"
+        "TASK-013",
+        "TASK-014"
       ]
     },
     {
