@@ -895,6 +895,123 @@
           "Identical decode results."
         ]
       }
+    },
+    {
+      "id": "TASK-017",
+      "description": "Cache the catalog owner's immutable history entries with their strokes resolved, share a recipe's stroke table instead of deep-copying it, give drafts a revision read that decodes nothing, and store the RAW interpretation typed instead of re-parsing JSON on every read.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Every `state()` and `entry()` decodes the entry's JSON and hydrates its strokes (a SQL lookup, a SHA-256 and a parse per referenced stroke); one slider tick reads the state three times, one only to compare the revision, and `render.sample` three times.",
+        "Entries are immutable, enforced by the catalog's trigger, and the owner is the only writer over an exclusive connection, so a small cache of entries keyed by entry id and a head per asset updated by every write is coherent by construction.",
+        "`StrokeTable` derives a deep `Clone` over a map of point vectors, so every recipe clone copies every stroke; it is immutable after hydration.",
+        "`SourceKind::Raw { metadata: Value }` is re-parsed on every state read and in every source-recipe validation, and compared through a JSON round trip to work around f32/f64 inequality."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Editor catalog",
+          "target": "crates/lightwell-core/src/editor/catalog.rs",
+          "relevance": "Entry decode and stroke hydration."
+        },
+        {
+          "kind": "file",
+          "label": "Editor reads",
+          "target": "crates/lightwell-core/src/editor/describe.rs",
+          "relevance": "`state` and `entry`."
+        },
+        {
+          "kind": "file",
+          "label": "Paths and strokes",
+          "target": "crates/lightwell-core/src/path.rs",
+          "relevance": "`StrokeTable`."
+        },
+        {
+          "kind": "file",
+          "label": "Editor source",
+          "target": "crates/lightwell-core/src/editor/source.rs",
+          "relevance": "RAW metadata and source-recipe validation."
+        }
+      ],
+      "acceptance_criteria": [
+        "A state or entry read after the first costs no JSON decode or stroke hash, proved by a test that counts them; every write keeps the cache coherent, proved by tests over commit, undo, redo, restore, import and reopen.",
+        "Cloning a recipe does not copy its strokes.",
+        "A draft's conflict check reads the revision without decoding an entry.",
+        "The RAW interpretation is typed and parsed once per asset row."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Counting tests for decodes and hashes; coherence tests per write path; the existing history, mask and RAW tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass; reads after the first decode nothing."
+        ]
+      }
+    },
+    {
+      "id": "TASK-018",
+      "description": "Give the smoke scenarios one shared library for the launch envelope, frame accessors and pixel readers, with every scenario's checks unchanged, proved by replaying the old and new verifiers over the same captured artifacts.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Nine runners hand-write the same launch envelope (output directory, hashes, spawn, wait, preamble, exit codes, source-unchanged check, result and reproduce files); `revision`, `label`, `entry`, `draft` and section accessors are copied across up to twelve files; the photograph's bounds are found six ways with three thresholds; patch readers are copied and re-decode the same capture several times per frame.",
+        "The result's fixed `launch1_exit_code`…`launch3_exit_code` keys are counted by verify and would miss a fourth launch; a launch list replaces them.",
+        "The wave 1 rendered run's artifacts are the replay input: the old and new verifiers must produce the same checks over the same output directories."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Smoke runner",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Scenario list, dispatch and shared preamble."
+        },
+        {
+          "kind": "file",
+          "label": "Development",
+          "target": "docs/engineering/development.md",
+          "relevance": "Smoke and verify docs."
+        }
+      ],
+      "acceptance_criteria": [
+        "One module holds the launch envelope, the frame accessors and the pixel readers, and no scenario file re-implements them.",
+        "Replaying every scenario's verifier over the same captured output directories gives identical check results before and after, and a deliberately corrupted state value or PNG fails both.",
+        "Results record their launches as a list and verify reads it."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "A `--verify-only DIR` replay over the wave 1 rendered artifacts with the old and new binaries, diffing every checks file."
+        ],
+        "commands": [
+          "cargo test -p xtask",
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "Identical checks; the rendered tier passes."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -918,7 +1035,8 @@
         "TASK-013",
         "TASK-014",
         "TASK-015",
-        "TASK-016"
+        "TASK-016",
+        "TASK-018"
       ]
     },
     {
@@ -926,7 +1044,8 @@
       "task_ids": [
         "TASK-010",
         "TASK-011",
-        "TASK-012"
+        "TASK-012",
+        "TASK-017"
       ]
     }
   ]
