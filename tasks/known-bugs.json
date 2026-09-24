@@ -73,7 +73,7 @@
         {
           "kind": "file",
           "label": "Sample planning",
-          "target": "crates/lightwell-core/src/editor.rs",
+          "target": "crates/lightwell-core/src/editor/evaluate.rs",
           "relevance": "`sample_entry`, `sample_draft` and `SamplePlan`, which binds a stack for sampling off the owner."
         },
         {

@@ -51,7 +51,7 @@ The source path is integrated into the existing M4/Develop editor. JPEG Basic, e
 | Component | Current responsibility |
 | --- | --- |
 | `lightwell-raw` | Private pinned LibRaw/librtprocess adapter; validated metadata, immutable u16 mosaic, float development and typed failures |
-| Core `source.rs` / `editor.rs` | Typed prepared sources, one signature-verified cache, source interpretation persistence and RAW development identity |
+| Core `source.rs` / `editor/source.rs` | Typed prepared sources, one signature-verified cache, source interpretation persistence and RAW development identity |
 | Core `api/owner.rs` | Bounded asynchronous source jobs; worker read/hash/unpack/develop, owner-only catalog transactions and client adoption |
 | Core `render/linear.rs` | Retained float32 linear sRGB, exact geometry and linear crop interpolation, bounded sampling and terminal display conversion |
 | Core `modules/raw.rs` | Required source-stage RAW layer, exposure/WB/neutral/reset actions, descriptor-generated controls with their field resets, the reported control values including the as-shot equivalent, and neutrality |
