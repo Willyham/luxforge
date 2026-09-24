@@ -1554,6 +1554,254 @@
           "All pass with the counted calls."
         ]
       }
+    },
+    {
+      "id": "TASK-027",
+      "description": "Plan every action, draft and query through one path over a lazy `StageContext`, so a draft equals its commit by construction: delete the unused point sampler and stage-insertion question, remove the host's RAW special case, build the RAW payload without throwaway layers, and carry preparation needs as a type instead of a string plus re-parsed parameters.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-019",
+        "TASK-022",
+        "TASK-024"
+      ],
+      "extra_context": [
+        "`apply_action` special-cases the RAW module and `pick-raw-neutral` with a second hand-built context, because `with_stage_context` computes RAW settings eagerly and strictly; `draft_recipe` re-implements planning, skips the availability check and never supplies `sensor_neutral`, so a draft equals its commit for RAW only by accident.",
+        "`StageContext::sampler` is read by no module, yet every plan compiles an `Evaluation` to back it; `insertion_index` by stage has one caller that can ask by effect.",
+        "The RAW module's validate, describe, values and compile each build a throwaway `Layer` with a fresh UUID and clone the payload, and compile re-solves the locus for a payload-independent identity.",
+        "A preparation-required error carries the job's detail as a string, the needed artifacts in-band as JSON, and the owner re-derives which entry to prepare from the request's parameters, so a sample of a historical RAW entry queues preparation of the current one."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Editor planning",
+          "target": "crates/lightwell-core/src/editor/plan.rs",
+          "relevance": "`apply_action`, `plan_input`, `with_stage_context`, `draft_recipe`, `run_query`."
+        },
+        {
+          "kind": "file",
+          "label": "Module trait",
+          "target": "crates/lightwell-core/src/modules/mod.rs",
+          "relevance": "`StageContext`."
+        },
+        {
+          "kind": "file",
+          "label": "RAW module",
+          "target": "crates/lightwell-core/src/modules/raw.rs",
+          "relevance": "Payload parsing."
+        },
+        {
+          "kind": "file",
+          "label": "Owner",
+          "target": "crates/lightwell-core/src/api/owner.rs",
+          "relevance": "Preparation interception."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "The plan and query contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "One function plans an action for a commit, a draft and a query; `draft_recipe` and `run_query` call it; the RAW special case and the unused sampler are gone.",
+        "A drafted RAW preview equals the committed render byte for byte, proved by a test.",
+        "The RAW payload parses from the stored value without building a layer.",
+        "Preparation needs are a typed value naming the entry, gains and artifacts; a sample of a historical RAW entry prepares that entry and converges after one job, proved by a test."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Draft-equals-commit tests for JPEG and RAW; the historical RAW sample test; existing module, draft, query and artifact tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-028",
+      "description": "Design how JPEG and RAW photos share one Exposure and one White balance (temperature and tint) control set that behaves as each source requires, as the owner decided, before any code changes.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-019"
+      ],
+      "extra_context": [
+        "Today a RAW photo shows the RAW module's Exposure and Kelvin/tint (source development against the camera matrix) and Basic's Exposure and relative temperature/tint; a JPEG shows only Basic's. The desktop hides the RAW module on JPEG by naming it.",
+        "The owner decided on 2026-09-24 that all source kinds show the same controls, behaving differently per kind, as Lightroom does (Kelvin on RAW, a relative scale on JPEG).",
+        "The design must cover the descriptor and API shape (how a parameter's range and unit differ by source kind, or how one action routes to source development on RAW), history and preset semantics (Lightroom import of RAW Kelvin and tint, which is refused today), the neutral picker and As shot, the draft and proxy paths, UI/API parity, and what happens to existing catalogs under current shapes only."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "Architecture review: controls are the same for every source kind."
+        },
+        {
+          "kind": "file",
+          "label": "Initial RAW design",
+          "target": "docs/design/initial-raw.md",
+          "relevance": "RAW source exposure and white balance."
+        },
+        {
+          "kind": "file",
+          "label": "Basic white balance",
+          "target": "docs/design/basic-white-balance.md",
+          "relevance": "The relative model."
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "Lightroom mapping."
+        }
+      ],
+      "acceptance_criteria": [
+        "A design document states the chosen shape, the alternatives weighed, the API and history consequences, the preset mapping, the tests and rendered evidence it will need, and any owner question left open.",
+        "No code changes."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Review against the decision and the modules contract."
+        ],
+        "commands": [
+          "cargo xtask check-repository"
+        ],
+        "expected_results": [
+          "The design is complete and links resolve."
+        ]
+      }
+    },
+    {
+      "id": "TASK-029",
+      "description": "Replace the per-module acceptance chapters and core tests that re-prove host behaviour with one registry-driven conformance suite that every field-patch module passes, keeping only module-specific numerics and placement per module.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-019"
+      ],
+      "extra_context": [
+        "The presence, mixer and vignette acceptance journeys are about 800 lines each with the same sections (discovery, commit, cancel, no-op, dedup, reset identity, undo/redo/preview/restore/reopen, two-client races, unavailable provider, reopen), and Basic's repeats them; core tests assert the same properties again per module (discovery, neutral shares the source buffer in six copies, one layer per effect, placement).",
+        "A new field-patch module should get these checks for free from the registry."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Acceptance",
+          "target": "xtask/src/presence_mixer_vignette_acceptance.rs",
+          "relevance": "The per-module journeys."
+        },
+        {
+          "kind": "file",
+          "label": "Basic acceptance",
+          "target": "xtask/src/basic_acceptance.rs",
+          "relevance": "Basic's journey."
+        },
+        {
+          "kind": "file",
+          "label": "Field-patch module",
+          "target": "crates/lightwell-core/src/modules/field_patch.rs",
+          "relevance": "What every such module shares."
+        }
+      ],
+      "acceptance_criteria": [
+        "One conformance test iterates the registry's field-patch modules and checks discovery, neutral compiles to nothing and shares the source, one layer per target, draft cancel, no-op, dedup, reset identity, sample equals render on both paths and after a resampling crop, unavailable provider and reopen.",
+        "`editor-acceptance` runs the same checks in release for its evidence.",
+        "Every check the removed journeys and tests made is mapped to a generic or a kept specific check, listed in the commit; breaking one module's draft cancel makes the suite name that module."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the suite; a deliberate break per property."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass; deliberate breaks are caught."
+        ]
+      }
+    },
+    {
+      "id": "TASK-030",
+      "description": "Give colour math one home, give parameter and control descriptors constructors, and emit every method schema through one function.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-019"
+      ],
+      "extra_context": [
+        "sRGB transfer, luminance weights, the Planckian locus and xy/uv conversion, 3×3 matrix products and inverse, and Oklab products are copied across Basic, RAW, the mixer, the vignette, Presence, masks, the renderers and the desktop's swatch; modules import `basic` as a colour library.",
+        "About 60 twelve-field `ParameterDescriptor` literals and about 15 local builder helpers exist; four near-identical schema emitters serve actions, queries, tasks and mask commands.",
+        "Moving an expression verbatim keeps bytes identical; any expression that changes arithmetic order is out of scope."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Basic colour",
+          "target": "crates/lightwell-core/src/modules/basic/colour.rs",
+          "relevance": "Colour math other modules import."
+        },
+        {
+          "kind": "file",
+          "label": "Descriptors",
+          "target": "crates/lightwell-core/src/modules/descriptor.rs",
+          "relevance": "Parameter and control types."
+        },
+        {
+          "kind": "file",
+          "label": "API methods",
+          "target": "crates/lightwell-core/src/api/methods.rs",
+          "relevance": "Schema emitters."
+        }
+      ],
+      "acceptance_criteria": [
+        "A `colour` module holds each equation once and every user imports it; renders and samples are byte-identical.",
+        "Descriptors are built with constructors and chained hints; `schema.list` and `module.list` output is identical.",
+        "One function emits every method schema."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Exact reference tests; descriptor and schema equality."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Identical descriptors, schemas and bytes."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1598,7 +1846,10 @@
     {
       "wave": 4,
       "task_ids": [
-        "TASK-022"
+        "TASK-022",
+        "TASK-028",
+        "TASK-029",
+        "TASK-030"
       ]
     },
     {
@@ -1610,7 +1861,8 @@
     {
       "wave": 6,
       "task_ids": [
-        "TASK-026"
+        "TASK-026",
+        "TASK-027"
       ]
     }
   ]
