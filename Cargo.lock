@@ -1925,6 +1925,7 @@ name = "lightwell-raw"
 version = "0.0.0"
 dependencies = [
  "cc",
+ "rayon",
  "serde",
  "serde_json",
  "sha2",

@@ -7,12 +7,48 @@
 //! signed/highlight camera values until its terminal display conversion.
 
 use crate::{PlanarRgb, RawError, RawRect, format::DngOpcode};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::{
     OnceLock,
     atomic::{AtomicBool, Ordering},
 };
+
+// Use the process's shared pool only for photo-sized active areas. A row owns
+// its output; stages and channels still join in order and reuse one warp plane.
+const PARALLEL_CORRECTION_PIXELS: u64 = 1_000_000;
+
+fn correction_rows(
+    pixels: &mut [f32],
+    width: usize,
+    parallel: bool,
+    cancel: &AtomicBool,
+    apply: impl Fn(usize, &mut [f32]) -> Result<(), RawError> + Sync + Send,
+) -> Result<(), RawError> {
+    let row = |(y, pixels): (usize, &mut [f32])| {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(RawError::Cancelled);
+        }
+        apply(y, pixels)
+    };
+    if parallel {
+        pixels
+            .par_chunks_exact_mut(width)
+            .enumerate()
+            .try_for_each(row)?;
+    } else {
+        pixels
+            .chunks_exact_mut(width)
+            .enumerate()
+            .try_for_each(row)?;
+    }
+    if cancel.load(Ordering::Relaxed) {
+        Err(RawError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -564,6 +600,17 @@ impl DngCorrection {
     }
 
     pub(crate) fn apply(&self, rgb: &mut PlanarRgb, cancel: &AtomicBool) -> Result<(), RawError> {
+        let parallel = u64::from(self.active.width) * u64::from(self.active.height)
+            >= PARALLEL_CORRECTION_PIXELS;
+        self.apply_rows(rgb, cancel, parallel)
+    }
+
+    fn apply_rows(
+        &self,
+        rgb: &mut PlanarRgb,
+        cancel: &AtomicBool,
+        parallel: bool,
+    ) -> Result<(), RawError> {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
@@ -580,12 +627,12 @@ impl DngCorrection {
                 let plane = &mut rgb.data[channel * n..(channel + 1) * n];
                 match stage {
                     Stage3::Gain(_) | Stage3::Vignette(_) => {
-                        for yy in 0..area_h {
-                            if yy & 63 == 0 && cancel.load(Ordering::Relaxed) {
-                                return Err(RawError::Cancelled);
-                            }
+                        let first = self.active.y as usize * width;
+                        let rows = &mut plane[first..first + area_h * width];
+                        correction_rows(rows, width, parallel, cancel, |yy, row| {
                             let y = self.active.y as usize + yy;
-                            for xx in 0..area_w {
+                            let left = self.active.x as usize;
+                            for (xx, pixel) in row[left..left + area_w].iter_mut().enumerate() {
                                 let x = self.active.x as usize + xx;
                                 let gain = match stage {
                                     Stage3::Gain(map) => {
@@ -596,14 +643,14 @@ impl DngCorrection {
                                         .map_err(opcode_error)?,
                                     Stage3::Warp(_) => unreachable!(),
                                 };
-                                let idx = y * width + x;
-                                let value = plane[idx] as f64 * gain;
+                                let value = *pixel as f64 * gain;
                                 if !value.is_finite() || value.abs() > f32::MAX as f64 {
                                     return Err(RawError::InvalidInput("DNG gain output overflow"));
                                 }
-                                plane[idx] = value as f32;
+                                *pixel = value as f32;
                             }
-                        }
+                            Ok(())
+                        })?;
                     }
                     Stage3::Warp(warp) => {
                         if warp.is_identity(channel) {
@@ -618,11 +665,8 @@ impl DngCorrection {
                             })?;
                             scratch.resize(len, 0.0_f32);
                         }
-                        for yy in 0..area_h {
-                            if yy & 63 == 0 && cancel.load(Ordering::Relaxed) {
-                                return Err(RawError::Cancelled);
-                            }
-                            for xx in 0..area_w {
+                        correction_rows(&mut scratch, area_w, parallel, cancel, |yy, row| {
+                            for (xx, pixel) in row.iter_mut().enumerate() {
                                 let x = self.active.x + xx as u32;
                                 let y = self.active.y + yy as u32;
                                 let (sx, sy) =
@@ -631,10 +675,14 @@ impl DngCorrection {
                                 if !value.is_finite() || value.abs() > f32::MAX as f64 {
                                     return Err(RawError::InvalidInput("DNG warp output overflow"));
                                 }
-                                scratch[yy * area_w + xx] = value as f32;
+                                *pixel = value as f32;
                             }
-                        }
+                            Ok(())
+                        })?;
                         for yy in 0..area_h {
+                            if cancel.load(Ordering::Relaxed) {
+                                return Err(RawError::Cancelled);
+                            }
                             let dst =
                                 (self.active.y as usize + yy) * width + self.active.x as usize;
                             plane[dst..dst + area_w]
@@ -709,6 +757,186 @@ mod tests {
     fn reference() -> Value {
         serde_json::from_str(include_str!("../../../probes/raw/dng_reference.json")).unwrap()
     }
+
+    fn row_fixture(width: u32, height: u32) -> (DngCorrection, PlanarRgb) {
+        let active = RawRect {
+            x: 3,
+            y: 5,
+            width,
+            height,
+        };
+        let gain = GainMap {
+            area: RawRect {
+                x: 1,
+                y: 2,
+                width: width - 2,
+                height: height - 4,
+            },
+            plane: 0,
+            planes: 3,
+            row_pitch: 2,
+            col_pitch: 3,
+            rows: 2,
+            cols: 2,
+            spacing: [0.5, 0.5],
+            origin: [0.0, 0.0],
+            map_planes: 3,
+            values: vec![1.0, 1.2, 0.9, 2.0, 1.5, 1.0, 1.25, 0.5, 1.5, 3.0, 2.0, 0.75],
+        };
+        let warp = Warp {
+            radial: [
+                [0.91, 0.05, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.03, 0.02, 0.01, 0.0],
+            ],
+            tangential: [[0.002, -0.001], [0.0, 0.0], [-0.003, 0.001]],
+            center_pixels: [width as f64 * 0.45, height as f64 * 0.53],
+            norm_radius: (width as f64).hypot(height as f64) / 2.0,
+        };
+        let correction = DngCorrection {
+            active,
+            metadata: DngCorrectionMetadata {
+                interpretation: "row-test".into(),
+                applied: vec![],
+                skipped_optional: vec![],
+                calibration: DngCalibrationMetadata {
+                    illuminants: [17, 21],
+                    color_matrix1_sha256: String::new(),
+                    color_matrix2_sha256: String::new(),
+                    selected: "test".into(),
+                },
+            },
+            sensor_repair: None,
+            stages: vec![
+                Stage3::Gain(gain),
+                Stage3::Warp(warp),
+                Stage3::Vignette(super::super::dng_ops::VignetteRadial {
+                    coefficients: [0.1, -0.02, 0.03, 0.0, 0.01],
+                    center: [0.45, 0.53],
+                }),
+            ],
+        };
+        let width = width + 9;
+        let height = height + 11;
+        let data = (0..width as usize * height as usize * 3)
+            .map(|i| ((i * 7919 % 65521) as f32 - 8192.0) / 16384.0)
+            .collect();
+        (
+            correction,
+            PlanarRgb {
+                width,
+                height,
+                data,
+            },
+        )
+    }
+
+    #[test]
+    fn correction_rows_match_serial_bits_and_preserve_sensor_borders() {
+        let cancel = AtomicBool::new(false);
+        for (width, height) in [(17, 13), (513, 257), (1001, 1003)] {
+            let (mut correction, original) = row_fixture(width, height);
+            // Exercise both sides of the stage-order boundary; each warp must
+            // read a completed channel, including its untouched sensor border.
+            for reverse in [false, true] {
+                if reverse {
+                    correction.stages.reverse();
+                }
+                let mut serial = PlanarRgb {
+                    width: original.width,
+                    height: original.height,
+                    data: original.data.clone(),
+                };
+                let mut parallel = PlanarRgb {
+                    width: original.width,
+                    height: original.height,
+                    data: original.data.clone(),
+                };
+                correction.apply_rows(&mut serial, &cancel, false).unwrap();
+                correction.apply_rows(&mut parallel, &cancel, true).unwrap();
+                for (i, (&a, &b)) in serial.data.iter().zip(&parallel.data).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "{width}x{height}, reverse={reverse}, value {i}"
+                    );
+                    let pixel = i % original.plane_len();
+                    let x = pixel % original.width as usize;
+                    let y = pixel / original.width as usize;
+                    let active = correction.active;
+                    if x < active.x as usize
+                        || x >= (active.x + active.width) as usize
+                        || y < active.y as usize
+                        || y >= (active.y + active.height) as usize
+                    {
+                        assert_eq!(a.to_bits(), original.data[i].to_bits());
+                    }
+                }
+                assert!(parallel.data.iter().any(|v| *v < 0.0));
+                assert!(parallel.data.iter().any(|v| *v > 1.0));
+            }
+        }
+    }
+
+    #[test]
+    fn correction_rows_report_cancellation_and_overflow() {
+        for parallel in [false, true] {
+            let cancel = AtomicBool::new(true);
+            let (correction, mut pixels) = row_fixture(33, 19);
+            let before = pixels.data.clone();
+            assert_eq!(
+                correction.apply_rows(&mut pixels, &cancel, parallel),
+                Err(RawError::Cancelled)
+            );
+            assert_eq!(pixels.data, before);
+
+            // A row that raises cancellation prevents later scheduled rows
+            // from entering their pixel loop. Partially produced data is never
+            // returned as a development.
+            cancel.store(false, Ordering::Relaxed);
+            let mut rows = vec![0.0; 1024];
+            let result = correction_rows(&mut rows, 16, parallel, &cancel, |_, _| {
+                cancel.store(true, Ordering::Relaxed);
+                Ok(())
+            });
+            assert_eq!(result, Err(RawError::Cancelled));
+
+            cancel.store(false, Ordering::Relaxed);
+            pixels.data.fill(f32::MAX);
+            assert_eq!(
+                correction.apply_rows(&mut pixels, &cancel, parallel),
+                Err(RawError::InvalidInput("DNG gain output overflow"))
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "photo-sized serial/pool timing; run alone in release"]
+    fn correction_row_parallel_threshold_timing() {
+        use std::{hint::black_box, time::Instant};
+        for (width, height) in [(128, 128), (512, 512), (1000, 1000), (2000, 1500)] {
+            let (correction, mut pixels) = row_fixture(width, height);
+            let original = pixels.data.clone();
+            let cancel = AtomicBool::new(false);
+            for parallel in [false, true, true, false] {
+                let mut timings = Vec::new();
+                for _ in 0..5 {
+                    pixels.data.copy_from_slice(&original);
+                    let start = Instant::now();
+                    correction
+                        .apply_rows(&mut pixels, &cancel, parallel)
+                        .unwrap();
+                    timings.push(start.elapsed().as_secs_f64() * 1000.0);
+                    black_box(&pixels);
+                }
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"width":width,"height":height,"parallel":parallel,"ms":timings})
+                );
+            }
+        }
+    }
+
     #[test]
     fn ordered_gain_and_warp_match_separate_stages_and_point_queries() {
         let active = RawRect {
