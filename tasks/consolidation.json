@@ -1304,7 +1304,7 @@
     {
       "id": "TASK-023",
       "description": "Register each smoke scenario once in a table and pair every scripted step with its expectations, so the runner derives the script and the frame count, applies the universal per-frame checks to every scenario, and leaves each scenario only its own pixel predicates.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-018"
       ],
