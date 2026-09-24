@@ -25,8 +25,8 @@ pub use linear::{
 };
 pub use spatial::SpatialBudget;
 use spatial::{
-    PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
-    run_tile,
+    PRODUCTION_TILE, PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals,
+    run_batches, run_tile,
 };
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
@@ -1218,12 +1218,18 @@ impl Compiled {
     /// Whether answering one pixel of this compilation evaluates a spatial segment.
     ///
     /// A spatial point query is the declared exception to [performance rule
-    /// 4](../../docs/engineering/performance-rules.md#rules): it evaluates one stage-aligned tile
-    /// plus the operation's halo, and nothing caches that tile, so a caller that asks per display
-    /// cell pays it per cell. The coverage overlay reads this to refuse rather than to pay it.
-    /// `O(segments)` and reads no pixels.
+    /// 4](../../docs/engineering/performance-rules.md#rules): it evaluates the stage-aligned tiles
+    /// its pixels need, each once per query, so a caller that asks per display cell over the whole
+    /// stage evaluates every tile of it. The coverage overlay reads this to refuse rather than to
+    /// pay it. `O(segments)` and reads no pixels.
     pub(crate) fn evaluates_spatial(&self) -> bool {
-        self.segments
+        self.spatial_before(self.segments.len())
+    }
+
+    /// Whether a spatial segment comes before segment `index`, so that, in a point query, the stage
+    /// `index` reads comes through [`PointTiles`] rather than from the source alone.
+    pub(crate) fn spatial_before(&self, index: usize) -> bool {
+        self.segments[..index]
             .iter()
             .any(|segment| matches!(segment.entry, Some(Entry::Spatial { .. })))
     }
@@ -1481,9 +1487,9 @@ impl Affine {
 pub(crate) struct Evaluation<'a> {
     source: &'a SourceImage,
     compiled: Compiled,
-    /// The output tile a spatial entry is evaluated in. It is [`PRODUCTION_TILE`] everywhere but
-    /// in the tests that prove the result does not depend on it.
-    tile: u32,
+    /// The spatial tiles this evaluation has evaluated, of every spatial segment, in tiles of
+    /// [`PRODUCTION_TILE`] everywhere but in the tests that prove the result does not depend on it.
+    tiles: PointTiles,
 }
 
 impl<'a> Evaluation<'a> {
@@ -1496,7 +1502,7 @@ impl<'a> Evaluation<'a> {
         Ok(Self {
             source,
             compiled: registry.compile(source.width, source.height, recipe)?,
-            tile: PRODUCTION_TILE,
+            tiles: PointTiles::new(PRODUCTION_TILE),
         })
     }
 
@@ -1504,7 +1510,7 @@ impl<'a> Evaluation<'a> {
     /// The same evaluation with another spatial tile size. A spatial unit's value at a pixel
     /// depends on that pixel's neighbourhood only, so this changes nothing but the schedule.
     pub(crate) fn with_tile(mut self, tile: u32) -> Self {
-        self.tile = tile;
+        self.tiles = PointTiles::new(tile);
         self
     }
 
@@ -1528,7 +1534,7 @@ impl<'a> Evaluation<'a> {
                 masks,
                 strokes,
             )?,
-            tile: PRODUCTION_TILE,
+            tiles: PointTiles::new(PRODUCTION_TILE),
         })
     }
 
@@ -1609,11 +1615,14 @@ impl<'a> Evaluation<'a> {
     /// The value at a pixel depends on a bounded neighbourhood of it, so there is no way to answer
     /// this in `O(layers)`: the sample evaluates the stage-aligned tile that contains the pixel,
     /// reading that tile plus the operation's summed halo through the compiled prefix, with exactly
-    /// the tile function the render uses. The sampled byte is therefore the byte a render of that
-    /// tile produces, by construction rather than by agreement. Its cost is
-    /// `O((tile + halo)² × layers)`, plus one bounded reduction of the stage when a unit's global
-    /// estimate is not already cached, and it allocates one tile working set from the spatial
-    /// budget and no frame. This is the declared exception to performance rule 4.
+    /// the tile function the render uses, and holds it in this evaluation's [`PointTiles`]. The
+    /// sampled byte is therefore the byte a render of that tile produces, by construction rather than
+    /// by agreement. When the prefix holds an earlier spatial segment, the halo reads that segment's
+    /// tiles from the same cache, so each (segment, tile) is evaluated once per query. Its cost is
+    /// `O((tile + halo)² × layers)` per evaluated tile, plus one bounded reduction of the stage when
+    /// a unit's global estimate is not already stored, and it allocates one tile working set at a
+    /// time from the spatial budget and no frame. This is the declared exception to performance
+    /// rule 4.
     fn spatial_pixel(
         &self,
         index: usize,
@@ -1636,32 +1645,65 @@ impl<'a> Evaluation<'a> {
             })?;
             Ok(decode_pixel([pixel[0], pixel[1], pixel[2]]))
         };
-        let plan = SpatialPlan::new(operation, stage, self.tile)?;
-        let globals = resolve_globals(
+        let rgb = self.tiles.pixel(
+            index,
             operation,
             stage,
-            &self.source.fingerprint,
-            prefix_hash,
-            || build_reduction(stage, read),
+            x,
+            y,
+            || {
+                resolve_globals(
+                    operation,
+                    stage,
+                    &self.source.fingerprint,
+                    prefix_hash,
+                    || {
+                        let through_tiles = self.compiled.spatial_before(index);
+                        self.tiles.reduce(stage, through_tiles, read)
+                    },
+                )
+            },
+            read,
         )?;
-        let tile = plan.tile_containing(x, y);
-        let _reservation = spatial::reserve_one(&plan);
-        // Serial on the calling thread: on the pool a sample would queue behind a render.
-        let (region, values) = run_tile(
-            &plan,
-            operation,
-            &globals,
-            tile,
-            Parallelism::Serial,
-            |region, planes| fill_planes(region, planes, Parallelism::Serial, read),
-        )?;
-        let rgb = quantize_pixel(spatial::plane_pixel(region, &values, x, y));
+        let rgb = quantize_pixel(rgb);
         // Alpha is never touched by a unit; it is the input frame's, exactly as the render copies
         // it.
-        let alpha = self
-            .pixel_in(index - 1, x, y)?
-            .map_or(255, |pixel| pixel[3]);
+        let alpha = self.alpha_in(index - 1, x, y)?.unwrap_or(255);
         Ok([rgb[0], rgb[1], rgb[2], alpha])
+    }
+
+    /// The alpha of one pixel of one segment's output stage, or `None` outside it. No unit, point
+    /// replacement or colour run writes alpha and a spatial boundary copies its input's, so this
+    /// walks the geometry alone, blending through a resample exactly as the frame does, and never
+    /// evaluates a colour run or a spatial tile.
+    fn alpha_in(&self, index: usize, x: u32, y: u32) -> Result<Option<u8>, Error> {
+        let segment = &self.compiled.segments[index];
+        let Some(resolved) = segment.resolve(x, y) else {
+            return Ok(None);
+        };
+        let (x, y) = (resolved.input_x, resolved.input_y);
+        match &segment.entry {
+            None => Ok(Some(source_pixel(self.source, x, y)[3])),
+            Some(Entry::Spatial { .. }) => self.alpha_in(index - 1, x, y),
+            Some(Entry::Resample(resample)) => {
+                let previous = &self.compiled.segments[index - 1];
+                let (u, v) = resample.input_at(x, y);
+                let failure: Cell<Option<Error>> = Cell::new(None);
+                let blended = bilinear(u, v, previous.width, previous.height, |x, y| {
+                    match self.alpha_in(index - 1, x, y) {
+                        Ok(alpha) => [0, 0, 0, alpha.expect("clamped indices stay inside")],
+                        Err(error) => {
+                            failure.set(Some(error));
+                            [0; 4]
+                        }
+                    }
+                });
+                match failure.take() {
+                    Some(error) => Err(error),
+                    None => Ok(Some(blended[3])),
+                }
+            }
+        }
     }
 }
 
@@ -1751,9 +1793,10 @@ pub(crate) fn grid_centres(side: u32, width: u32, height: u32) -> Vec<(u32, u32)
 
 /// Point samples of a recipe's output stage at the centres of a `side` × `side` grid, row by row
 /// from the top-left. One compiled evaluation answers every point, so the cost is
-/// `O(side² × layers)` — a point through a spatial layer evaluates its tile, as any sample does —
-/// and no frame is allocated; each sample is the byte the render holds there. `checkpoint` is asked
-/// before each point, so a caller can stop between them.
+/// `O(side² × layers)` — a point through a spatial layer evaluates its tile, as any sample does, and
+/// the points share the evaluation's tile cache — and no frame is allocated; each sample is the byte
+/// the render holds there. `checkpoint` is asked before each point, so a caller can stop between
+/// them.
 pub(crate) fn sample_grid(
     registry: &ModuleRegistry,
     source: &SourceImage,

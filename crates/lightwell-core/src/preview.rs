@@ -164,12 +164,12 @@ impl PreviewSource {
     ///
     /// **A prefix holding a spatial layer is refused by name, before anything is built.** One point
     /// query through such a layer is the declared exception to [performance rule
-    /// 4](../../docs/engineering/performance-rules.md#rules) — it evaluates a stage-aligned tile plus
-    /// the operation's halo, and nothing caches that tile — and the linear path pays for it earlier
-    /// still, materializing one float frame per spatial operation when the evaluation is built. The
-    /// caller here asks per display cell, so it is refused rather than paid: the check is the prefix's
-    /// own compilation, which is `O(layers)` and allocates no frame, and it happens before either
-    /// evaluation exists so neither path allocates anything to be told no.
+    /// 4](../../docs/engineering/performance-rules.md#rules) — it evaluates the stage-aligned tiles
+    /// its pixel needs, plus the operation's halo, each once per query. The caller here asks per
+    /// display cell over the whole stage, which would evaluate every tile of it on every overlay, so
+    /// it is refused rather than paid: the check is the prefix's own compilation, which is
+    /// `O(layers)` and allocates no frame, and it happens before either evaluation exists so neither
+    /// path allocates anything to be told no.
     ///
     /// Cost is therefore two `compile_layers` and no frame at all.
     pub(crate) fn layer_input<'a>(
@@ -2528,9 +2528,9 @@ mod tests {
     /// refusal names the cost rather than paying it.
     ///
     /// A point sample through a spatial segment is the declared exception to [performance rule
-    /// 4](../../docs/engineering/performance-rules.md#rules): it evaluates one stage-aligned tile plus
-    /// the operation's halo, and nothing caches that tile, so asking it once per display cell would
-    /// render a tile of the picture per cell — millions of them. That is not an overlay to ship
+    /// 4](../../docs/engineering/performance-rules.md#rules): it evaluates the stage-aligned tiles its
+    /// pixel needs plus the operation's halo, so asking it once per display cell over the whole stage
+    /// would evaluate every tile of the picture on every overlay. That is not an overlay to ship
     /// slowly, so the grid is refused here on exactly the rule the unbound mask is refused on, and the
     /// 100% view still reads such a selection. The **geometric** half of the same stack is unaffected,
     /// because a position-only mask needs no pixel at all.

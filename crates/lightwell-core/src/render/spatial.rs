@@ -3,8 +3,8 @@
 //!
 //! The contract a module writes against is in [`crate::modules::SpatialUnit`]. This module owns the
 //! other half: how much one tile costs, how many tiles may be in flight, where the intermediate
-//! planes come from and how a point sample re-runs exactly one tile so that a sampled byte is the
-//! byte a render of that tile produces.
+//! planes come from and how a point query evaluates only the tiles it needs, each once, so that a
+//! sampled byte is the byte a render of that tile produces.
 
 pub(crate) use super::Cancel;
 use crate::{
@@ -22,7 +22,7 @@ use std::{
     borrow::Cow,
     collections::VecDeque,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -603,9 +603,239 @@ pub(crate) fn tile_parallelism(large: bool, tiles: usize, workers: usize) -> Par
     }
 }
 
-/// Reserve the one working set a point sample needs.
-pub(crate) fn reserve_one(plan: &SpatialPlan) -> SpatialReservation<'static> {
-    SpatialBudget::default().reserve(plan.working_set, 1)
+// ---------------------------------------------------------------------------------------------
+// Point queries.
+// ---------------------------------------------------------------------------------------------
+
+/// The fewest tiles a point query holds whatever the target is. One row of a tile's input region,
+/// grown by at most one tile of halo, crosses at most four tiles of the stage below it, and a nested
+/// evaluation holds its own beside them; below this a lowered target could make every row of a fill
+/// miss the tiles the row before it read.
+const POINT_TILES_FLOOR: usize = 16;
+
+/// The spatial tiles one point query has evaluated, of every spatial segment it reads through: the
+/// one cache the byte and the linear point paths share.
+///
+/// A point through a spatial segment evaluates the stage-aligned tile that contains it with
+/// [`run_tile`], the plan, the global estimates and the input pulls the render uses, so the value is
+/// the rendered value by construction. That tile's input region is the tile grown by the summed halo,
+/// at most one tile on each side, so when the stage it reads comes through an earlier spatial
+/// segment the region covers at most 3 × 3 of that segment's tiles (in the host's stage order, where
+/// no geometry separates two spatial layers), and the fill reads them from here. Each tile is
+/// evaluated on its first read and held for the rest of the query, so the four neighbours a
+/// resample blends, the points of a grid and a reduction of a stage behind a spatial segment share
+/// them. Nothing is materialized.
+///
+/// **The bound.** The cache holds at most as many tiles as the spatial target has bytes for — 85
+/// production tiles of 3 MiB — and never fewer than [`POINT_TILES_FLOOR`]; each is charged to the
+/// budget while held, so a render running beside the query paces itself around it, and all of them
+/// are released with the query. Past that the least recently read tile is released, and a later
+/// read evaluates it again: slower, never refused. While what a query reads fits, each (segment,
+/// tile) is evaluated at most once. One point through `k` spatial segments reads at most
+/// `Σ (2d + 1)²` tiles over `d < k` — 10 for two, 35 for three, 84 for four — and `Σ (2d + 2)²`
+/// behind a resample — 4 for one, 20 for two, 56 for three.
+///
+/// A reduction of a stage behind a spatial segment ([`Self::reduce`]) reads it one tile at a time,
+/// each once and as a whole, so each of that segment's tiles is evaluated once. Two things can
+/// still be evaluated again once the stage has more tiles than the cap: the at most 3 × 3 tiles the
+/// point's own halo reads after the reduction, which it may have released by then, and, behind two
+/// spatial segments, the tiles of the earlier one, which a walk keeps reading across three of its
+/// tile rows and so holds only while those rows and the walked row fit the cap: on stages up to
+/// about 10,700 px wide, 60 MP included.
+///
+/// Evaluating a tile reserves one working set while it runs, released before the tile is held; a
+/// tile whose fill reads an earlier segment's missing tile holds its own reservation while that one
+/// is evaluated, so a point through `k` spatial segments holds at most `k`.
+///
+/// Every evaluation here runs serially on the calling thread: on the pool it would queue behind a
+/// render holding it. The lock is never held across an evaluation, because an evaluation reads
+/// through this cache itself and its global estimate may reduce a stage on the pool.
+pub(crate) struct PointTiles {
+    tile: u32,
+    capacity: usize,
+    state: Mutex<PointState>,
+    /// Every (segment, tile) this query evaluated, in order.
+    #[cfg(test)]
+    evaluated: Mutex<Vec<(usize, Region)>>,
+}
+
+#[derive(Default)]
+struct PointState {
+    prepared: Vec<Arc<Prepared>>,
+    /// The held tiles, most recently read first.
+    held: Vec<HeldTile>,
+}
+
+/// One spatial segment's plan and global estimates, resolved for its first tile.
+struct Prepared {
+    segment: usize,
+    plan: SpatialPlan,
+    globals: Vec<Option<Global>>,
+}
+
+/// One evaluated tile of one spatial segment: exactly the tile's three planes, cut from the last
+/// unit's rectangle, and the budget it is charged to.
+struct HeldTile {
+    segment: usize,
+    tile: Region,
+    values: Vec<f32>,
+    _reservation: SpatialReservation<'static>,
+}
+
+impl PointState {
+    fn read(&mut self, segment: usize, x: u32, y: u32) -> Option<[f32; 3]> {
+        let index = self
+            .held
+            .iter()
+            .position(|held| held.segment == segment && held.tile.contains(x, y))?;
+        self.held[..=index].rotate_right(1);
+        let held = &self.held[0];
+        Some(plane_pixel(held.tile, &held.values, x, y))
+    }
+}
+
+impl PointTiles {
+    /// An empty cache for one query evaluated in tiles of `tile` pixels.
+    pub(crate) fn new(tile: u32) -> Self {
+        let tile_bytes = Region {
+            x0: 0,
+            y0: 0,
+            width: tile.max(1),
+            height: tile.max(1),
+        }
+        .plane_bytes();
+        let capacity = usize::try_from(SpatialBudget::default().target() / tile_bytes)
+            .unwrap_or(usize::MAX)
+            .max(POINT_TILES_FLOOR);
+        Self {
+            tile,
+            capacity,
+            state: Mutex::default(),
+            #[cfg(test)]
+            evaluated: Mutex::default(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PointState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// One pixel of the output of spatial segment `segment`, whose operation reads and writes
+    /// `stage`: from the held tile that contains it, or else from that tile evaluated now. `globals`
+    /// resolves the operation's estimates once for the segment's first tile, and `read` pulls one
+    /// pixel of the stage the operation reads.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pixel(
+        &self,
+        segment: usize,
+        operation: &SpatialOperation,
+        stage: Stage,
+        x: u32,
+        y: u32,
+        globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
+        read: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+    ) -> Result<[f32; 3], Error> {
+        let prepared = {
+            let mut state = self.lock();
+            if let Some(value) = state.read(segment, x, y) {
+                return Ok(value);
+            }
+            state
+                .prepared
+                .iter()
+                .find(|prepared| prepared.segment == segment)
+                .cloned()
+        };
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => {
+                let prepared = Arc::new(Prepared {
+                    segment,
+                    plan: SpatialPlan::new(operation, stage, self.tile)?,
+                    globals: globals()?,
+                });
+                self.lock().prepared.push(prepared.clone());
+                prepared
+            }
+        };
+        let Prepared { plan, globals, .. } = &*prepared;
+        let tile = plan.tile_containing(x, y);
+        let (region, values) = {
+            let _reservation = SpatialBudget::default().reserve(plan.working_set, 1);
+            run_tile(
+                plan,
+                operation,
+                globals,
+                tile,
+                Parallelism::Serial,
+                |region, planes| fill_planes(region, planes, Parallelism::Serial, &read),
+            )?
+        };
+        let values = if region == tile {
+            values
+        } else {
+            cut_out(region, &values, tile)
+        };
+        let value = plane_pixel(tile, &values, x, y);
+        #[cfg(test)]
+        self.evaluated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((segment, tile));
+        let mut state = self.lock();
+        if !state
+            .held
+            .iter()
+            .any(|held| held.segment == segment && held.tile == tile)
+        {
+            state.held.truncate(self.capacity - 1);
+            let bytes = tile.plane_bytes();
+            state.held.insert(
+                0,
+                HeldTile {
+                    segment,
+                    tile,
+                    values,
+                    _reservation: SpatialBudget::default().reserve(bytes, 1),
+                },
+            );
+        }
+        Ok(value)
+    }
+
+    /// The reduction of `stage` a global estimate of this query is prepared from, on a store miss.
+    /// When the stage comes through an earlier spatial segment (`through_tiles`) it is read tile by
+    /// tile on this thread through this cache, so each of that segment's tiles is evaluated once;
+    /// otherwise it is read as a render reads it, on the pool above the parallel threshold.
+    pub(crate) fn reduce(
+        &self,
+        stage: Stage,
+        through_tiles: bool,
+        fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+    ) -> Result<Reduction, Error> {
+        if through_tiles {
+            build_reduction_by_tiles(stage, self.tile, fetch)
+        } else {
+            build_reduction(stage, fetch)
+        }
+    }
+
+    /// Every (segment, tile) this query evaluated, in order.
+    #[cfg(test)]
+    pub(crate) fn evaluated(&self) -> Vec<(usize, Region)> {
+        self.evaluated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// How many tiles the query holds right now.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        self.lock().held.len()
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -746,35 +976,10 @@ pub(crate) fn build_reduction(
     stage: Stage,
     fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
 ) -> Result<Reduction, Error> {
-    let factor = ESTIMATE_REDUCTION;
-    let (width, height) = Reduction::dimensions(stage, factor);
-    let pixels = u64::from(width) * u64::from(height);
-    if pixels > MAX_REDUCTION_PIXELS {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "a spatial reduction of {pixels} pixels exceeds the {MAX_REDUCTION_PIXELS} pixel bound"
-            ),
-        ));
-    }
-    let mut blocks = vec![[0.0_f32; 3]; pixels as usize];
+    let (width, mut blocks) = reduction_blocks(stage)?;
     let row = |j: usize, row: &mut [[f32; 3]]| -> Result<(), Error> {
-        let top = j as u32 * factor;
-        let bottom = (top + factor).min(stage.height);
         for (i, block) in row.iter_mut().enumerate() {
-            let left = i as u32 * factor;
-            let right = (left + factor).min(stage.width);
-            let mut sum = [0.0_f64; 3];
-            for y in top..bottom {
-                for x in left..right {
-                    let pixel = fetch(x, y)?;
-                    for channel in 0..3 {
-                        sum[channel] += f64::from(pixel[channel]);
-                    }
-                }
-            }
-            let count = f64::from(bottom - top) * f64::from(right - left);
-            *block = std::array::from_fn(|channel| (sum[channel] / count) as f32);
+            *block = block_mean(stage, i as u32, j as u32, &fetch)?;
         }
         Ok(())
     };
@@ -789,11 +994,81 @@ pub(crate) fn build_reduction(
             .enumerate()
             .try_for_each(|(j, values)| row(j, values))?;
     }
+    reduction_from(stage, &blocks)
+}
+
+/// [`build_reduction`] read one stage-aligned `tile` × `tile` square at a time, row-major, on the
+/// calling thread: what a point query does when the stage comes through an earlier spatial
+/// segment's tiles in its [`PointTiles`]. Each of those tiles is then read once, as a whole, so the
+/// walk holds the tile it reads and what that tile's own halo reads, rather than a whole row of
+/// tiles that a block-row walk reads again for every block row. Every block is summed in the same
+/// order either way, so the reduction is the same.
+fn build_reduction_by_tiles(
+    stage: Stage,
+    tile: u32,
+    fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error>,
+) -> Result<Reduction, Error> {
+    let (width, mut blocks) = reduction_blocks(stage)?;
+    let height = blocks.len() as u32 / width;
+    let side = (tile / ESTIMATE_REDUCTION).max(1) as usize;
+    for j0 in (0..height).step_by(side) {
+        for i0 in (0..width).step_by(side) {
+            for j in j0..(j0 + side as u32).min(height) {
+                for i in i0..(i0 + side as u32).min(width) {
+                    blocks[(j * width + i) as usize] = block_mean(stage, i, j, &fetch)?;
+                }
+            }
+        }
+    }
+    reduction_from(stage, &blocks)
+}
+
+/// The reduced frame's width and its zeroed blocks, or the bound it would exceed.
+fn reduction_blocks(stage: Stage) -> Result<(u32, Vec<[f32; 3]>), Error> {
+    let (width, height) = Reduction::dimensions(stage, ESTIMATE_REDUCTION);
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > MAX_REDUCTION_PIXELS {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            format!(
+                "a spatial reduction of {pixels} pixels exceeds the {MAX_REDUCTION_PIXELS} pixel bound"
+            ),
+        ));
+    }
+    Ok((width, vec![[0.0_f32; 3]; pixels as usize]))
+}
+
+/// The mean of reduced block `(i, j)`: its pixels summed in `f64`, row by row, over the part of the
+/// block inside the stage.
+fn block_mean(
+    stage: Stage,
+    i: u32,
+    j: u32,
+    fetch: &impl Fn(u32, u32) -> Result<[f32; 3], Error>,
+) -> Result<[f32; 3], Error> {
+    let factor = ESTIMATE_REDUCTION;
+    let (top, left) = (j * factor, i * factor);
+    let bottom = (top + factor).min(stage.height);
+    let right = (left + factor).min(stage.width);
+    let mut sum = [0.0_f64; 3];
+    for y in top..bottom {
+        for x in left..right {
+            let pixel = fetch(x, y)?;
+            for channel in 0..3 {
+                sum[channel] += f64::from(pixel[channel]);
+            }
+        }
+    }
+    let count = f64::from(bottom - top) * f64::from(right - left);
+    Ok(std::array::from_fn(|channel| (sum[channel] / count) as f32))
+}
+
+fn reduction_from(stage: Stage, blocks: &[[f32; 3]]) -> Result<Reduction, Error> {
     let mut planes = Vec::with_capacity(blocks.len() * 3);
     for channel in 0..3 {
         planes.extend(blocks.iter().map(|block| block[channel]));
     }
-    Reduction::new(stage, factor, planes)
+    Reduction::new(stage, ESTIMATE_REDUCTION, planes)
 }
 
 /// The SHA-256 of the canonical JSON of a layer prefix, hexadecimal: what the layers before a
@@ -2475,6 +2750,447 @@ pub(crate) mod tests {
         let warm = render(35.0);
         assert_ne!(cold, other, "the amount changes the frame");
         assert_eq!(cold, warm, "the stored estimate renders the cold frame");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Point queries through several spatial segments.
+    // -----------------------------------------------------------------------------------------
+
+    /// A stage of 6 × 5 tiles of [`POINT_TILE`] pixels. Presence's summed halo at this stage is
+    /// inside one tile, so one tile's input region covers at most 3 × 3 tiles of the stage below.
+    const POINT_STAGE: (u32, u32) = (384, 320);
+    const POINT_TILE: u32 = 64;
+
+    /// A mask of one horizontal linear gradient from `x0` to `x1`, as fractions of the width.
+    fn point_mask(name: &str, x0: f64, x1: f64) -> crate::Mask {
+        let mut mask = crate::Mask::new(name);
+        let component = mask.next_component_name("linear");
+        mask.components.push(crate::Component::new(
+            component,
+            crate::ComponentMode::Add,
+            "linear",
+            json!({"x0": x0, "y0": 0.5, "x1": x1, "y1": 0.5}),
+        ));
+        mask
+    }
+
+    fn presence(payload: Value, mask: Option<&crate::Mask>) -> Layer {
+        Layer {
+            id: LayerId::new(),
+            effect_id: crate::PRESENCE_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload,
+            mask: mask.map(|mask| mask.id.clone()),
+            artifacts: Vec::new(),
+        }
+    }
+
+    /// A global Presence layer followed by one masked Presence layer (two spatial segments), by
+    /// two (three), or by a straightened crop. Every layer declares Dehaze's estimate. The first
+    /// mask reaches every tile; the second only the stage's left part, so a point on the right
+    /// reads its tile as a copy.
+    fn point_stacks() -> [(&'static str, Recipe); 3] {
+        let everywhere = point_mask("Everywhere", -0.5, 1.5);
+        let left = point_mask("Left", 0.45, 0.2);
+        let global = || {
+            presence(
+                json!({"clarity": 40.0, "dehaze": 20.0, "texture": 30.0}),
+                None,
+            )
+        };
+        let first = || {
+            presence(
+                json!({"texture": 35.0, "clarity": -30.0, "dehaze": 25.0}),
+                Some(&everywhere),
+            )
+        };
+        let second = presence(json!({"clarity": 50.0, "dehaze": -20.0}), Some(&left));
+        let crop = fitted_crop(POINT_STAGE.0, POINT_STAGE.1, 6.0, [0.15, 0.2, 0.6, 0.55]);
+        let stack = |layers, masks| Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks,
+            ..Recipe::default()
+        };
+        [
+            (
+                "two spatial segments",
+                stack(vec![global(), first()], vec![everywhere.clone()]),
+            ),
+            (
+                "three spatial segments",
+                stack(
+                    vec![global(), first(), second],
+                    vec![everywhere.clone(), left.clone()],
+                ),
+            ),
+            (
+                "presence then a straightened crop",
+                stack(vec![global(), Layer::crop(crop)], Vec::new()),
+            ),
+        ]
+    }
+
+    /// The most tiles one point may evaluate of each spatial segment, by segment index: `(2d + 1)²`
+    /// for the segment `d` spatial segments below the last, `(2d + 2)²` when a resample after the
+    /// last blends four neighbours, and never more than its stage holds. It also checks the
+    /// premise: every summed halo is inside one tile.
+    fn point_bounds(compiled: &crate::render::Compiled) -> Vec<(usize, usize)> {
+        use crate::render::Entry;
+        let spatial: Vec<usize> = compiled
+            .segments
+            .iter()
+            .enumerate()
+            .filter(|(_, segment)| matches!(segment.entry, Some(Entry::Spatial { .. })))
+            .map(|(index, _)| index)
+            .collect();
+        let last = *spatial.last().expect("a spatial segment");
+        let resampled = compiled.segments[last + 1..]
+            .iter()
+            .any(|segment| matches!(segment.entry, Some(Entry::Resample(_))));
+        spatial
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(depth, &index)| {
+                let previous = &compiled.segments[index - 1];
+                let stage = Stage {
+                    width: previous.width,
+                    height: previous.height,
+                };
+                let Some(Entry::Spatial { operation, .. }) = &compiled.segments[index].entry else {
+                    unreachable!()
+                };
+                assert!(operation.summed_halo(stage) <= POINT_TILE, "the premise");
+                let side = 2 * depth + if resampled { 2 } else { 1 };
+                let tiles = stage.width.div_ceil(POINT_TILE) * stage.height.div_ceil(POINT_TILE);
+                (index, (side * side).min(tiles as usize))
+            })
+            .collect()
+    }
+
+    /// How many tiles of each spatial segment one query evaluated, asserting that none was
+    /// evaluated twice.
+    fn evaluations_per_segment(evaluated: &[(usize, Region)], case: &str) -> Vec<(usize, usize)> {
+        let mut seen = std::collections::HashSet::new();
+        for (segment, tile) in evaluated {
+            assert!(
+                seen.insert((*segment, tile.x0, tile.y0)),
+                "{case}: tile {tile:?} of segment {segment} evaluated twice"
+            );
+        }
+        let mut counts: Vec<(usize, usize)> = Vec::new();
+        for (segment, _) in evaluated {
+            match counts.iter_mut().find(|(index, _)| index == segment) {
+                Some((_, count)) => *count += 1,
+                None => counts.push((*segment, 1)),
+            }
+        }
+        counts.sort_unstable();
+        counts
+    }
+
+    fn assert_within(counts: &[(usize, usize)], bounds: &[(usize, usize)], case: &str) {
+        for (segment, count) in counts {
+            let bound = bounds
+                .iter()
+                .find(|(index, _)| index == segment)
+                .map(|(_, bound)| *bound)
+                .unwrap_or_else(|| panic!("{case}: segment {segment} is not spatial"));
+            assert!(
+                count <= &bound,
+                "{case}: {count} tiles of segment {segment}, more than {bound}"
+            );
+        }
+    }
+
+    /// Tile corners, tile edges, the stage's own corners and its interior.
+    fn point_query_points(width: u32, height: u32) -> Vec<(u32, u32)> {
+        let t = POINT_TILE;
+        [
+            (0, 0),
+            (t - 1, t - 1),
+            (t, t),
+            (t - 1, t),
+            (2 * t, 2 * t - 1),
+            (3 * t + 5, 2 * t + 9),
+            (width / 2, height / 2),
+            (width - 1, 0),
+            (0, height - 1),
+            (width - 1, height - 1),
+        ]
+        .into_iter()
+        .filter(|&(x, y)| x < width && y < height)
+        .collect()
+    }
+
+    /// Within one point query each spatial segment's tile is evaluated at most once, and no more of
+    /// them than the halo can reach; the sampled byte is the rendered byte. On both paths, through
+    /// two and three spatial segments and through Presence before a straightened crop, whose four
+    /// bilinear neighbours can straddle tiles. The estimate store is warm from the render, as a
+    /// preview leaves it, so each query counts the tiles its point needs; the store-miss case is
+    /// `a_reduction_behind_a_spatial_segment_evaluates_each_tile_once`.
+    #[test]
+    fn a_point_query_evaluates_each_spatial_tile_at_most_once_on_both_paths() {
+        use crate::render::linear::{LinearEvaluation, SpatialMode, terminal_pixel};
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        let (width, height) = POINT_STAGE;
+        let source = gradient(width, height);
+        let linear = linear_source(width, height);
+        let mut expected_bounds = [
+            vec![(2, 1), (1, 9)],
+            vec![(3, 1), (2, 9), (1, 25)],
+            // The crop is a resample, so its four neighbours can straddle 2 × 2 tiles.
+            vec![(1, 4)],
+        ]
+        .into_iter();
+        for (case, stack) in point_stacks() {
+            let bounds = point_bounds(&registry.compile(width, height, &stack).unwrap());
+            assert_eq!(Some(&bounds), expected_bounds.next().as_ref(), "{case}");
+            clear_estimates();
+            let rendered = render_tiled(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &stack,
+                &Cancel::new(),
+                POINT_TILE,
+            )
+            .unwrap();
+            for (x, y) in point_query_points(rendered.width, rendered.height) {
+                let case = format!("{case}, byte path at ({x}, {y})");
+                let evaluation = crate::render::Evaluation::new(&registry, &source, &stack)
+                    .unwrap()
+                    .with_tile(POINT_TILE);
+                assert_eq!(
+                    evaluation.pixel(x, y).unwrap(),
+                    rendered.pixel(x, y),
+                    "{case}"
+                );
+                let counts = evaluations_per_segment(&evaluation.tiles.evaluated(), &case);
+                assert_within(&counts, &bounds, &case);
+            }
+            clear_estimates();
+            let rendered = render_linear_tiled(
+                &registry,
+                &linear,
+                SnapshotId::new(),
+                &stack,
+                LinearSettings::default(),
+                &Cancel::new(),
+                POINT_TILE,
+            )
+            .unwrap();
+            for (x, y) in point_query_points(rendered.width, rendered.height) {
+                let case = format!("{case}, linear path at ({x}, {y})");
+                let evaluation = LinearEvaluation::new(
+                    &registry,
+                    &linear,
+                    &stack,
+                    LinearSettings::default(),
+                    &Cancel::new(),
+                    POINT_TILE,
+                    SpatialMode::Point,
+                )
+                .unwrap();
+                let sampled = evaluation.pixel(x, y).unwrap().map(terminal_pixel);
+                assert_eq!(sampled.transpose().unwrap(), rendered.pixel(x, y), "{case}");
+                let counts = evaluations_per_segment(&evaluation.point_tiles().evaluated(), &case);
+                assert_within(&counts, &bounds, &case);
+            }
+        }
+    }
+
+    /// The bound is reached, not just respected: an interior point through two spatial segments
+    /// reads 3 × 3 tiles of the first, and a point through three reads what the halos reach and no
+    /// more — through the second mask's copy path, one tile of the segment below.
+    #[test]
+    fn a_point_query_evaluates_exactly_the_tiles_its_halos_reach() {
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        let (width, height) = POINT_STAGE;
+        let source = gradient(width, height);
+        let [(_, two), (_, three), _] = point_stacks();
+        for (stack, (x, y), expected) in [
+            // Tile (3, 2): its region covers tile columns 2..=4 and rows 1..=3 of the first.
+            (&two, (192, 160), vec![(1, 9), (2, 1)]),
+            // Tile (1, 1), inside the second mask: 3 × 3 tiles of the middle segment, whose
+            // regions cover columns 0..=3 and rows 0..=3 of the first.
+            (&three, (64, 64), vec![(1, 16), (2, 9), (3, 1)]),
+            // Tile (5, 1), which the second mask cannot reach, is a copy of the one middle tile
+            // under it; that tile's region covers columns 4..=5 and rows 0..=2 of the first.
+            (&three, (352, 64), vec![(1, 6), (2, 1), (3, 1)]),
+        ] {
+            clear_estimates();
+            render_tiled(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                stack,
+                &Cancel::new(),
+                POINT_TILE,
+            )
+            .unwrap();
+            let evaluation = crate::render::Evaluation::new(&registry, &source, stack)
+                .unwrap()
+                .with_tile(POINT_TILE);
+            evaluation.pixel(x, y).unwrap();
+            let case = format!("({x}, {y})");
+            assert_eq!(
+                evaluations_per_segment(&evaluation.tiles.evaluated(), &case),
+                expected,
+                "{case}"
+            );
+        }
+    }
+
+    /// On a store miss, the reduction of a stage behind a spatial segment reads that segment's
+    /// tiles from the query's cache one at a time: each of its tiles is evaluated exactly once,
+    /// including the ones the point's own tile then reads, and the sample is still the rendered
+    /// byte, whose render prepared its estimates from a cold store of its own.
+    #[test]
+    fn a_reduction_behind_a_spatial_segment_evaluates_each_tile_once() {
+        use crate::render::linear::{LinearEvaluation, SpatialMode, terminal_pixel};
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        let (width, height) = POINT_STAGE;
+        let [(_, stack), ..] = point_stacks();
+        let every_tile = (width.div_ceil(POINT_TILE) * height.div_ceil(POINT_TILE)) as usize;
+        let (x, y) = (192, 160);
+
+        let source = gradient(width, height);
+        clear_estimates();
+        let evaluation = crate::render::Evaluation::new(&registry, &source, &stack)
+            .unwrap()
+            .with_tile(POINT_TILE);
+        let sampled = evaluation.pixel(x, y).unwrap();
+        assert_eq!(
+            evaluations_per_segment(&evaluation.tiles.evaluated(), "byte path"),
+            [(1, every_tile), (2, 1)]
+        );
+        clear_estimates();
+        let rendered = render_tiled(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &stack,
+            &Cancel::new(),
+            POINT_TILE,
+        )
+        .unwrap();
+        assert_eq!(sampled, rendered.pixel(x, y), "byte path");
+
+        let linear = linear_source(width, height);
+        clear_estimates();
+        let evaluation = LinearEvaluation::new(
+            &registry,
+            &linear,
+            &stack,
+            LinearSettings::default(),
+            &Cancel::new(),
+            POINT_TILE,
+            SpatialMode::Point,
+        )
+        .unwrap();
+        let sampled = evaluation.pixel(x, y).unwrap().map(terminal_pixel);
+        assert_eq!(
+            evaluations_per_segment(&evaluation.point_tiles().evaluated(), "linear path"),
+            [(1, every_tile), (2, 1)]
+        );
+        clear_estimates();
+        let rendered = render_linear_tiled(
+            &registry,
+            &linear,
+            SnapshotId::new(),
+            &stack,
+            LinearSettings::default(),
+            &Cancel::new(),
+            POINT_TILE,
+        )
+        .unwrap();
+        assert_eq!(
+            sampled.transpose().unwrap(),
+            rendered.pixel(x, y),
+            "linear path"
+        );
+    }
+
+    /// A point query's tile-by-tile reduction is the render's block-row reduction, value for value,
+    /// whatever the tile size — a multiple of the block, smaller than it or neither — and with
+    /// partial blocks and partial tiles at both edges.
+    #[test]
+    fn a_reduction_read_tile_by_tile_is_the_block_row_reduction() {
+        for (width, height) in [(1, 1), (37, 23), (200, 131), (384, 320)] {
+            let stage = Stage { width, height };
+            let fetch = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+                Ok([
+                    (x * 7 + y * 3) as f32 / 97.0,
+                    ((x ^ y) % 13) as f32 / 5.0,
+                    ((x * y) % 29) as f32 - 3.5,
+                ])
+            };
+            let rows = build_reduction(stage, fetch).unwrap();
+            for tile in [1, 16, 40, 64, 512] {
+                assert_eq!(
+                    build_reduction_by_tiles(stage, tile, fetch).unwrap(),
+                    rows,
+                    "{width}x{height}, tile {tile}"
+                );
+            }
+        }
+    }
+
+    /// Past its capacity a query releases the least recently read tile rather than growing: it
+    /// never holds more than its capacity, each held tile is charged to the spatial budget until
+    /// the query ends, and a tile read again after its release is evaluated again, so the sample is
+    /// still the rendered byte. A target too small for any tile still leaves the floor.
+    #[test]
+    fn a_point_query_holds_no_more_tiles_than_its_capacity() {
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        let (width, height) = POINT_STAGE;
+        let source = gradient(width, height);
+        let [_, (_, stack), _] = point_stacks();
+        clear_estimates();
+        let rendered = render_tiled(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &stack,
+            &Cancel::new(),
+            POINT_TILE,
+        )
+        .unwrap();
+        let budget = SpatialBudget::default();
+        assert_eq!(budget.in_use(), 0);
+        let previous = budget.set_target(0);
+        let evaluation = crate::render::Evaluation::new(&registry, &source, &stack)
+            .unwrap()
+            .with_tile(POINT_TILE);
+        budget.set_target(previous);
+        let (x, y) = (64, 64);
+        assert_eq!(evaluation.pixel(x, y).unwrap(), rendered.pixel(x, y));
+        let evaluated = evaluation.tiles.evaluated().len();
+        assert!(
+            evaluated > POINT_TILES_FLOOR,
+            "the point reads {evaluated} tiles, more than the floor holds"
+        );
+        assert_eq!(evaluation.tiles.held(), POINT_TILES_FLOOR);
+        let tile_bytes = Region {
+            x0: 0,
+            y0: 0,
+            width: POINT_TILE,
+            height: POINT_TILE,
+        }
+        .plane_bytes();
+        assert_eq!(
+            budget.in_use(),
+            POINT_TILES_FLOOR as u64 * tile_bytes,
+            "every held tile is charged while the query lasts"
+        );
+        drop(evaluation);
+        assert_eq!(budget.in_use(), 0, "and released with it");
     }
 
     // -----------------------------------------------------------------------------------------

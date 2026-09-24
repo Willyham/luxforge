@@ -8,17 +8,17 @@
 use super::{
     Cancel, Compiled, Entry, Raster,
     spatial::{
-        self, PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals,
-        run_batches, run_tile,
+        self, PRODUCTION_TILE, PointTiles, SpatialPlan, build_reduction, fill_planes,
+        resolve_globals, run_batches, run_tile,
     },
 };
 use crate::{
     Error, ErrorKind, Recipe, SnapshotId,
     mask_field::MaskSampling,
-    modules::{Global, ModuleRegistry, Parallelism, Region, SpatialOperation, Stage},
+    modules::{Global, ModuleRegistry, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 
 const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
 const MAX_SIDE: u32 = 16_384;
@@ -26,10 +26,6 @@ const MAX_SOURCE_BYTES: u64 = lightwell_raw::MAX_RGB_BYTES as u64;
 const MAX_RGBA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RESAMPLES: usize = 1;
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
-/// The tiles a point evaluation keeps for its spatial segment: a pixel after a resample blends four
-/// neighbours, which straddle at most a 2 × 2 block of tiles. Each holds one tile's output planes,
-/// 3 MiB at the production tile size.
-const POINT_TILES: usize = 4;
 
 fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
     if width == 0 || height == 0 {
@@ -674,11 +670,10 @@ pub(crate) enum SpatialMode {
     /// Materialize every spatial operation's output once over its whole stage, for a pass that
     /// reads every pixel.
     Frames,
-    /// Evaluate the last spatial segment only in the tiles the requested pixels fall in, for a
-    /// point query, which is the declared exception to performance rule 4. A spatial segment before
-    /// it is still materialized: the last one reads whole neighbourhoods of it, and a global
-    /// estimate reduces all of it. Only the latest of those frames is kept, which is the one the
-    /// last segment's tiles read.
+    /// Evaluate every spatial segment only in the tiles the requested pixels need, through one
+    /// [`PointTiles`] cache, for a point query, which is the declared exception to performance
+    /// rule 4. Nothing is materialized: a later segment's halo reads an earlier segment's tiles
+    /// from the same cache, and so does a reduction of a stage behind a spatial segment.
     Point,
 }
 
@@ -689,46 +684,30 @@ struct SpatialFrame {
     planes: Arc<Vec<f32>>,
 }
 
-/// The one spatial segment a [`SpatialMode::Point`] evaluation answers tile by tile.
-struct PointSegment {
-    index: usize,
-    state: Mutex<PointState>,
-}
-
-#[derive(Default)]
-struct PointState {
-    /// The segment's plan and global estimates, resolved for its first pixel.
-    prepared: Option<Arc<(SpatialPlan, Vec<Option<Global>>)>>,
-    /// The tiles evaluated so far, oldest first and at most [`POINT_TILES`]: each stage tile with
-    /// the rectangle and planar values its last unit wrote, which contain it.
-    tiles: Vec<(Region, Region, Vec<f32>)>,
-}
-
 pub(crate) struct LinearEvaluation<'a> {
     source: &'a LinearImage,
     compiled: Compiled,
     exposure_multiplier: f64,
     /// Applied to each source pixel before the exposure multiply, when the settings carry one.
     white_balance: Option<WhiteBalanceApproximation>,
-    /// The latest spatial frame. The linear path pulls single pixels through the compiled prefix,
-    /// and a neighbourhood cannot be pulled one pixel at a time, so for a pass over every pixel each
-    /// spatial operation's output is materialized once, in stage order, as three `f32` planes inside
-    /// the RAW planar limit. Nothing is quantized here: the values stay float until the terminal
-    /// boundary. The segment `point` names has none.
+    /// The latest spatial frame, in [`SpatialMode::Frames`]. The linear path pulls single pixels
+    /// through the compiled prefix, and a neighbourhood cannot be pulled one pixel at a time, so for
+    /// a pass over every pixel each spatial operation's output is materialized once, in stage order,
+    /// as three `f32` planes inside the RAW planar limit. Nothing is quantized here: the values stay
+    /// float until the terminal boundary.
     ///
     /// Only the latest is kept. A pull stops at the first spatial entry it meets walking back — a
     /// spatial entry reads its own frame and only a resample reads the segment before it — so a
     /// spatial segment's input pulls stop at the frame before it, and once its own frame exists
     /// nothing reads an earlier one. Building a frame therefore holds at most two, and the
-    /// evaluation keeps one. In [`SpatialMode::Point`] the one kept is the frame before the point
-    /// segment, which is what that segment's tiles and estimates read.
+    /// evaluation keeps one.
     frame: Option<SpatialFrame>,
     /// Every frame this evaluation built, in order, with how many of them were alive when it was
     /// finished and before the one it replaces was released, which is the peak.
     #[cfg(test)]
     built: Vec<(Weak<Vec<f32>>, usize)>,
-    /// In [`SpatialMode::Point`], the last spatial segment, answered from its tiles.
-    point: Option<PointSegment>,
+    /// In [`SpatialMode::Point`], the tiles of every spatial segment this query has evaluated.
+    tiles: Option<PointTiles>,
     /// The output tile a spatial entry is evaluated in; [`PRODUCTION_TILE`] outside the tests that
     /// prove the result does not depend on it.
     tile: u32,
@@ -785,18 +764,6 @@ impl<'a> LinearEvaluation<'a> {
                 "linear evaluation supports at most one resample stage",
             ));
         }
-        let point = match mode {
-            SpatialMode::Frames => None,
-            SpatialMode::Point => compiled
-                .segments
-                .iter()
-                .rposition(|segment| matches!(segment.entry, Some(Entry::Spatial { .. })))
-                .map(|index| PointSegment {
-                    index,
-                    state: Mutex::default(),
-                }),
-        };
-        let point_index = point.as_ref().map(|point| point.index);
         let mut evaluation = Self {
             source,
             compiled,
@@ -805,15 +772,15 @@ impl<'a> LinearEvaluation<'a> {
             frame: None,
             #[cfg(test)]
             built: Vec::new(),
-            point,
+            tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tile)),
             tile,
         };
+        if mode == SpatialMode::Point {
+            return Ok(evaluation);
+        }
         // In order, because a later spatial operation pulls its input through the earlier one, and
         // each frame replaces the one before it once it exists.
         for index in 0..evaluation.compiled.segments.len() {
-            if Some(index) == point_index {
-                continue;
-            }
             let Some(Entry::Spatial {
                 operation,
                 prefix_hash,
@@ -917,7 +884,8 @@ impl<'a> LinearEvaluation<'a> {
 
     /// The global estimates of spatial segment `index`, from the store or from one reduction of
     /// its input stage. A frame and a point evaluation of the same recipe ask with the same key, so
-    /// they use the same estimate.
+    /// they use the same estimate. A frame's reduction reads the frame before it; a point query's
+    /// reads through [`PointTiles::reduce`].
     fn spatial_globals(
         &self,
         index: usize,
@@ -935,24 +903,26 @@ impl<'a> LinearEvaluation<'a> {
                 balance.key()
             )
         });
+        let read = |x: u32, y: u32| self.spatial_read(index, x, y);
         resolve_globals(
             operation,
             stage,
             self.source.fingerprint(),
             approximate_prefix.as_deref().unwrap_or(prefix_hash),
-            || build_reduction(stage, |x, y| self.spatial_read(index, x, y)),
+            || match &self.tiles {
+                Some(tiles) => tiles.reduce(stage, self.compiled.spatial_before(index), read),
+                None => build_reduction(stage, read),
+            },
         )
     }
 
-    /// One pixel of the point segment's output without its frame: the stage-aligned tile that
-    /// contains it, run through [`run_tile`] with the plan, estimates and input pulls a frame would
-    /// use, so the value is the frame's value by construction rather than by agreement. It costs
-    /// `O((tile + halo)² × layers)` and one tile working set from the spatial budget, plus one
-    /// reduction of the stage when an estimate is not in the store. A tile evaluated once serves
-    /// every later pixel of this evaluation that falls in it.
-    ///
-    /// The input region is pulled serially. On the shared pool its rows would wait behind whatever
-    /// render already holds the pool, and a sample on the catalog owner would wait with them.
+    /// One pixel of spatial segment `index`'s output without its frame, from the query's
+    /// [`PointTiles`]: the stage-aligned tile that contains it, run through [`run_tile`] with the
+    /// plan, estimates and input pulls a frame would use, so the value is the frame's value by
+    /// construction rather than by agreement. An earlier spatial segment's pixels, which the halo
+    /// and a reduction pull, come from the same cache. Each evaluated tile costs
+    /// `O((tile + halo)² × layers)` and one working set from the spatial budget while it runs, plus
+    /// one reduction of the stage when an estimate is not in the store.
     fn point_pixel(
         &self,
         index: usize,
@@ -961,64 +931,27 @@ impl<'a> LinearEvaluation<'a> {
         x: u32,
         y: u32,
     ) -> Result<[f64; 3], Error> {
-        let point = self
-            .point
+        let tiles = self
+            .tiles
             .as_ref()
-            .filter(|point| point.index == index)
-            .expect("a pull meets only the latest frame or the point segment");
-        let lock = || {
-            point
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        };
-        // The lock is never held across evaluation: a reduction runs on the shared pool, and a job
-        // this thread picks up while it waits could ask for the same lock.
-        let prepared = {
-            let state = lock();
-            if let Some((_, region, values)) =
-                state.tiles.iter().find(|(tile, ..)| tile.contains(x, y))
-            {
-                return Ok(spatial::plane_pixel(*region, values, x, y).map(f64::from));
-            }
-            state.prepared.clone()
-        };
-        let prepared = match prepared {
-            Some(prepared) => prepared,
-            None => {
-                let stage = self.spatial_stage(index);
-                let prepared = Arc::new((
-                    SpatialPlan::new(operation, stage, self.tile)?,
-                    self.spatial_globals(index, operation, stage, prefix_hash)?,
-                ));
-                lock().prepared.get_or_insert(prepared).clone()
-            }
-        };
-        let (plan, globals) = &*prepared;
-        let tile = plan.tile_containing(x, y);
-        let (region, values) = {
-            let _reservation = spatial::reserve_one(plan);
-            // Serial: a tile's input pulled on the shared pool waited behind a render holding it.
-            run_tile(
-                plan,
-                operation,
-                globals,
-                tile,
-                Parallelism::Serial,
-                |region, planes| {
-                    fill_planes(region, planes, Parallelism::Serial, |x, y| {
-                        self.spatial_read(index, x, y)
-                    })
-                },
-            )?
-        };
-        let pixel = spatial::plane_pixel(region, &values, x, y).map(f64::from);
-        let mut state = lock();
-        if state.tiles.len() == POINT_TILES {
-            state.tiles.remove(0);
-        }
-        state.tiles.push((tile, region, values));
-        Ok(pixel)
+            .expect("a pull meets only the latest frame or a point query's tiles");
+        let stage = self.spatial_stage(index);
+        let pixel = tiles.pixel(
+            index,
+            operation,
+            stage,
+            x,
+            y,
+            || self.spatial_globals(index, operation, stage, prefix_hash),
+            |x, y| self.spatial_read(index, x, y),
+        )?;
+        Ok(pixel.map(f64::from))
+    }
+
+    /// The tiles this point evaluation has evaluated so far.
+    #[cfg(test)]
+    pub(crate) fn point_tiles(&self) -> &PointTiles {
+        self.tiles.as_ref().expect("a point evaluation holds tiles")
     }
 
     pub(crate) fn stage(&self) -> (u32, u32) {
@@ -1143,7 +1076,7 @@ impl<'a> LinearEvaluation<'a> {
     }
 }
 
-fn terminal_pixel(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
+pub(super) fn terminal_pixel(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
     Ok([
         terminal_srgb(pixel[0])?,
         terminal_srgb(pixel[1])?,
@@ -1312,9 +1245,9 @@ fn render_linear_sampled(
 }
 
 /// Evaluate one terminal output pixel, equal to the byte [`render_linear`] writes there. Through a
-/// spatial layer it evaluates the one tile that contains the pixel, as the byte path's sample does,
-/// which is the declared exception to performance rule 4; a stack with more than one spatial
-/// segment still materializes every one but the last, keeping only the latest.
+/// spatial layer it evaluates the tile that contains the pixel, and through several the tiles of the
+/// earlier ones that tile's halo reads, each once and none materialized, as the byte path's sample
+/// does; that is the declared exception to performance rule 4.
 pub fn sample_linear(
     registry: &ModuleRegistry,
     source: &LinearImage,
@@ -2148,7 +2081,7 @@ mod tests {
             .unwrap()
         };
         let frames = evaluate(SpatialMode::Frames);
-        assert!(frames.point.is_none());
+        assert!(frames.tiles.is_none());
         assert_eq!(
             frames.built.len(),
             1,
@@ -2163,9 +2096,8 @@ mod tests {
         for (x, y) in [(5, 7), (90, 60), (5, 7)] {
             assert_eq!(point.pixel(x, y).unwrap(), frames.pixel(x, y).unwrap());
         }
-        let state = point.point.as_ref().unwrap().state.lock().unwrap();
         assert_eq!(
-            state.tiles.len(),
+            point.tiles.as_ref().unwrap().evaluated().len(),
             1,
             "one tile answers every pixel inside it"
         );
@@ -2226,9 +2158,9 @@ mod tests {
     }
 
     /// Each spatial frame is built from the one before it and replaces it, so building one holds
-    /// two and the evaluation keeps one — the latest, or in point mode the one the point segment
-    /// reads. The counts are the frames' own reference counts, not bookkeeping: an earlier frame
-    /// anything still held would be counted alive.
+    /// two and the evaluation keeps one, the latest; a point evaluation builds none. The counts are
+    /// the frames' own reference counts, not bookkeeping: an earlier frame anything still held would
+    /// be counted alive.
     #[test]
     fn a_linear_evaluation_keeps_at_most_two_spatial_frames() {
         let _guard = crate::render::spatial::tests::spatial_guard();
@@ -2280,21 +2212,9 @@ mod tests {
             Some(spatial[3])
         );
 
-        // Point mode materializes every spatial segment but the last and keeps the one before it,
-        // which is what the last segment's tiles and estimates pull through.
+        // Point mode materializes no spatial segment: every one is answered from the query's tiles.
         let point = evaluate(SpatialMode::Point);
-        assert_eq!(
-            point.point.as_ref().map(|point| point.index),
-            Some(spatial[3])
-        );
-        assert_eq!(peaks(&point), [1, 2, 2]);
-        assert_eq!(alive(&point), [false, false, true]);
-        assert_eq!(
-            point.frame.as_ref().map(|frame| frame.index),
-            Some(spatial[2])
-        );
-        // A pull that reached a released frame would panic rather than answer, so equal pixels
-        // here are the pull path reading only the frame that was kept.
+        assert!(point.built.is_empty() && point.frame.is_none());
         for (x, y) in [(0, 0), (5, 7), (48, 32), (90, 60), (95, 63)] {
             assert_eq!(point.pixel(x, y).unwrap(), frames.pixel(x, y).unwrap());
         }
