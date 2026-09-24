@@ -164,7 +164,7 @@
       "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "xtask raw-reference provides independent f64 levels, exposure, color/output, Bayer/X-Trans and picker fixtures with bounded-invalid cases. Core linear renderer and WB/picker tests exercise exact coordinate behavior, signed/headroom preservation, buffer sharing and temperature/tint direction with actual camera calibration. Broad authentic quality acceptance belongs to TASK-005."
+        "Core linear renderer and WB/picker tests exercise exact coordinate behavior, signed/headroom preservation, buffer sharing and temperature/tint direction with actual camera calibration. Broad authentic quality acceptance belongs to TASK-005."
       ],
       "context_links": [
         {
