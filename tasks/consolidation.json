@@ -1360,6 +1360,126 @@
           "Same verdicts on replay; the rendered tier passes."
         ]
       }
+    },
+    {
+      "id": "TASK-024",
+      "description": "Carry a recipe's prepared artifacts on the recipe, as its strokes are, so compiling reads them from the recipe instead of a process-global weak index kept alive by pins that every caller must remember.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-022"
+      ],
+      "extra_context": [
+        "Compilation resolves a layer's artifacts through a process-global `Mutex<HashMap<ArtifactId, Weak<PreparedArtifact>>>`, so correctness depends on every caller holding strong references: a dozen `let _artifacts = self.require_artifacts(..)` pins in the editor plus artifact fields on preview jobs, analysis jobs and sample plans. Forgetting one is a runtime `artifact … is not prepared` error.",
+        "Strokes already solve the same problem: `Recipe.strokes` is `#[serde(skip)]`, filled when an entry is read, excluded from equality, and compilation refuses its recorded faults.",
+        "A binding step that finds an artifact not prepared still answers `preparation-required` exactly as today."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Artifacts",
+          "target": "crates/lightwell-core/src/artifacts/mod.rs",
+          "relevance": "The global index."
+        },
+        {
+          "kind": "file",
+          "label": "Model",
+          "target": "crates/lightwell-core/src/model.rs",
+          "relevance": "`Recipe` and its stroke table."
+        },
+        {
+          "kind": "file",
+          "label": "Registry",
+          "target": "crates/lightwell-core/src/modules/registry.rs",
+          "relevance": "Where compile resolves artifacts."
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities design",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "Derived artifacts."
+        }
+      ],
+      "acceptance_criteria": [
+        "A recipe carries its bound artifacts beside its strokes; compile reads them from the recipe.",
+        "The global index, the pins and the jobs' artifact fields are gone.",
+        "An unprepared artifact still answers `preparation-required`; the artifact, proof and capability tests pass unchanged, including the pixel-exact proof render."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Existing artifact, proof and preview tests; a test that a recipe missing its bound artifact refuses to compile by name."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-025",
+      "description": "Give every timing tool one distribution type with one percentile definition and one JSON shape, and one process sampler, so `verify` reads every timing report the same way.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Four percentile implementations write four shapes: `editor_latency` (`count/p50_ms/p95_ms/min/max`), `editor_performance` (`samples_ms/p50_ms/p95_ms`), `raw_editor` (`n/first/p50/p95/max`) and `diagnostics` (an interpolated median and a different p95 index); `verify`'s collector special-cases each.",
+        "The process-usage sampler is byte-identical in two files, there are four child-watch loops, RSS timestamps are in seconds in one tool and milliseconds in another, and the settle-then-idle window is written twice.",
+        "Past figures may shift slightly where the percentile definition changes; say so where figures are recorded."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "One of the timing tools."
+        },
+        {
+          "kind": "file",
+          "label": "Verify",
+          "target": "xtask/src/verify.rs",
+          "relevance": "The timing collector."
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where figures are recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "One `Distribution` type with a nearest-rank percentile serves every timing tool and writes one shape; `verify` collects with one loop.",
+        "One process sampler and one child-watch loop serve every tool.",
+        "Golden unit tests pin the percentile on known vectors."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Golden percentile tests; verify's collector tests."
+        ],
+        "commands": [
+          "cargo test -p xtask",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1384,7 +1504,8 @@
         "TASK-014",
         "TASK-015",
         "TASK-016",
-        "TASK-018"
+        "TASK-018",
+        "TASK-025"
       ]
     },
     {
@@ -1404,6 +1525,12 @@
       "wave": 4,
       "task_ids": [
         "TASK-022"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-024"
       ]
     }
   ]
