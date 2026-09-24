@@ -1693,7 +1693,7 @@
     {
       "id": "TASK-029",
       "description": "Replace the per-module acceptance chapters and core tests that re-prove host behaviour with one registry-driven conformance suite that every field-patch module passes, keeping only module-specific numerics and placement per module.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-019"
       ],
