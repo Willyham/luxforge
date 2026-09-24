@@ -288,13 +288,13 @@ impl PointwiseColor for ColourAdjust {
             && self.saturation_k.is_finite()
     }
 
-    /// Both stored values, at the parameter's declared display precision (0 decimals). The host
-    /// compares compiled operations by this string, so two units that describe themselves
-    /// identically process identically: the per-pixel factor is a pure function of the pixel and
-    /// `vibrance_gain`/`saturation_k`, themselves pure functions of `vibrance`/`saturation`.
+    /// Both stored values, exactly. The host compares compiled operations by this string, so two
+    /// units that describe themselves identically process identically: the per-pixel factor is a
+    /// pure function of the pixel and `vibrance_gain`/`saturation_k`, themselves pure functions of
+    /// `vibrance`/`saturation`.
     fn describe(&self) -> String {
         format!(
-            "colour-adjust(vibrance:{:+.0}, saturation:{:+.0})",
+            "colour-adjust(vibrance:{:+}, saturation:{:+})",
             self.vibrance, self.saturation
         )
     }
@@ -675,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn the_description_names_both_stored_values_at_zero_decimals() {
+    fn the_description_names_both_stored_values_exactly() {
         assert_eq!(
             ColourAdjust::new(30.0, -20.0).describe(),
             "colour-adjust(vibrance:+30, saturation:-20)"
@@ -683,6 +683,11 @@ mod tests {
         assert_eq!(
             ColourAdjust::new(-100.0, 0.0).describe(),
             "colour-adjust(vibrance:-100, saturation:+0)"
+        );
+        assert_eq!(
+            ColourAdjust::new(30.4, -0.25).describe(),
+            "colour-adjust(vibrance:+30.4, saturation:-0.25)",
+            "a fractional value is not rounded to the display precision"
         );
         assert_ne!(
             ColourAdjust::new(30.0, 0.0).describe(),

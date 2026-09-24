@@ -19,6 +19,7 @@ use crate::{
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     sync::{
         Mutex,
@@ -391,6 +392,7 @@ pub(crate) fn run_tile(
     if let Some(mask) = mask
         && !reaches(mask.bounds(), tile)
     {
+        #[cfg(test)]
         MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
         let mut values = vec![0.0_f32; (tile.pixels() * 3) as usize];
         fill(tile, &mut values)?;
@@ -403,6 +405,7 @@ pub(crate) fn run_tile(
     // the buffer it was read into. It is one tile and it is charged to the budget through
     // `worst_case_working_set`; nothing here scales with the frame.
     let input = if mask.is_some() {
+        #[cfg(test)]
         MASKED_TILES_EVALUATED.fetch_add(1, Ordering::Relaxed);
         Some(cut_out(regions[0], &values, tile))
     } else {
@@ -508,13 +511,21 @@ fn blend(mask: &MaskField, region: Region, tile: Region, input: &[f32], output: 
 
 /// How many tiles of a masked operation were copied because the mask could not reach them, and how
 /// many ran the unit chain. A masked layer is affordable exactly when the first number dominates
-/// for a small mask, so this is a counter and not a claim: a test reads it, and so does anyone
-/// measuring. An unmasked operation touches neither.
+/// for a small mask, so the release measurements below print it beside their timings. An unmasked
+/// operation touches neither.
+///
+/// Test builds only: process-wide counters bumped once per tile are shared state on the render's
+/// hot path, and nothing in production reads them. A test that asserts what a mask saves counts its
+/// own unit's evaluations instead (`a_tile_the_mask_cannot_reach_evaluates_no_unit`), because any
+/// other test rendering a masked spatial layer at the same time would move these.
+#[cfg(test)]
 static MASKED_TILES_COPIED: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
 static MASKED_TILES_EVALUATED: AtomicU64 = AtomicU64::new(0);
 
 /// `(copied, evaluated)` since the last [`reset_masked_tile_counts`].
-pub fn masked_tile_counts() -> (u64, u64) {
+#[cfg(test)]
+pub(crate) fn masked_tile_counts() -> (u64, u64) {
     (
         MASKED_TILES_COPIED.load(Ordering::Relaxed),
         MASKED_TILES_EVALUATED.load(Ordering::Relaxed),
@@ -522,7 +533,8 @@ pub fn masked_tile_counts() -> (u64, u64) {
 }
 
 /// Start counting masked tiles again from zero.
-pub fn reset_masked_tile_counts() {
+#[cfg(test)]
+pub(crate) fn reset_masked_tile_counts() {
     MASKED_TILES_COPIED.store(0, Ordering::Relaxed);
     MASKED_TILES_EVALUATED.store(0, Ordering::Relaxed);
 }
@@ -600,32 +612,31 @@ pub(crate) fn reserve_one(plan: &SpatialPlan) -> SpatialReservation<'static> {
 // Global estimates.
 // ---------------------------------------------------------------------------------------------
 
-/// What one cached global estimate belongs to. The stage is part of the key because a unit's
-/// estimate is computed from a reduction of that stage, and the prefix hash because the layers
-/// before the operation decide what the stage holds.
+/// What one cached global estimate belongs to: the source, the layers before the operation (which
+/// decide what its input stage holds), the stage the reduction was built from, and the unit's own
+/// [`SpatialUnit::estimate_key`](crate::modules::SpatialUnit::estimate_key), which names everything
+/// its preparation reads besides that reduction.
 ///
-/// The unit's own description is part of it too, not just its position. A module compiles its
-/// payload into whichever units that payload needs, so the same position of the same stack can hold
-/// a different unit from one evaluation to the next — the Presence module omits a unit whose amount
-/// is zero, which moves the others up — and a position alone would hand one unit the estimate
-/// another prepared, including the answer "this unit wants none". Two units that describe themselves
-/// identically process identically, which is the trait's own rule, so the description is exactly the
-/// identity this store needs. The cost is that a unit whose coefficients changed prepares again; for
-/// the one estimate in this design, an atmospheric light that does not depend on the amount, that is
-/// one bounded reduction of the stage per changed amount.
+/// Neither the unit's position nor its description is part of it. A module compiles whichever units
+/// its payload needs — the Presence module omits a unit whose amount is zero, which moves the others
+/// up — so a position alone could hand one unit the estimate another prepared; the key is the unit's
+/// own and does not move with it. The description names coefficients only `apply` reads, such as an
+/// amount, and keying by it would reduce the whole stage again for every new amount although the
+/// estimate is the same; two units that declare one key over one stage prepare one estimate by the
+/// trait's own rule, so they share it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EstimateKey {
     pub(crate) fingerprint: String,
     pub(crate) prefix_hash: String,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) unit: usize,
-    pub(crate) describe: String,
+    pub(crate) estimate: Cow<'static, str>,
 }
 
 /// The bounded store of prepared estimates: [`ESTIMATE_STORE_ENTRIES`] entries, oldest first, each
-/// at most [`crate::modules::MAX_GLOBAL_BYTES`]. A unit that wants no estimate is cached as such,
-/// so a second evaluation of the same stack costs no reduction at all.
+/// at most [`crate::modules::MAX_GLOBAL_BYTES`]. Only a unit that declares an estimate key has an
+/// entry, and an entry may hold `None` when its preparation yielded none, so a second evaluation of
+/// the same stack costs no reduction at all.
 static ESTIMATES: Mutex<VecDeque<(EstimateKey, Option<Global>)>> = Mutex::new(VecDeque::new());
 
 fn estimates() -> std::sync::MutexGuard<'static, VecDeque<(EstimateKey, Option<Global>)>> {
@@ -634,7 +645,8 @@ fn estimates() -> std::sync::MutexGuard<'static, VecDeque<(EstimateKey, Option<G
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `Some(estimate)` on a hit, where the estimate itself may be `None` for a unit that wants none.
+/// `Some(estimate)` on a hit, where the estimate itself may be `None` for a preparation that
+/// yielded none.
 fn cached(key: &EstimateKey) -> Option<Option<Global>> {
     estimates()
         .iter()
@@ -654,19 +666,23 @@ fn remember(key: EstimateKey, value: Option<Global>) {
 }
 
 /// Forget every cached estimate. Tests that count `prepare` calls start from here.
-pub fn clear_estimates() {
+#[cfg(test)]
+pub(crate) fn clear_estimates() {
     estimates().clear();
 }
 
 /// How many estimates are held right now.
-pub fn cached_estimates() -> usize {
+#[cfg(test)]
+pub(crate) fn cached_estimates() -> usize {
     estimates().len()
 }
 
-/// The global estimate of every unit of an operation, from the store where it is already there and
-/// from one reduction of the operation's input stage otherwise. The reduction is built at most
-/// once, and only when some unit is missing: a stack evaluated twice reduces nothing the second
-/// time.
+/// The global estimate of every unit of an operation, in unit order: `None` for a unit that
+/// declares no estimate key, which is never prepared and never reduces anything, and for every
+/// other unit the store's entry under its key, or else one preparation from one reduction of the
+/// operation's input stage. The reduction is built at most once, and only when a unit that declares
+/// a key is missing from the store: a stack evaluated twice reduces nothing the second time, and
+/// neither does one whose units changed only in coefficients their keys do not name.
 pub(crate) fn resolve_globals(
     operation: &SpatialOperation,
     stage: Stage,
@@ -674,35 +690,47 @@ pub(crate) fn resolve_globals(
     prefix_hash: &str,
     reduce: impl FnOnce() -> Result<Reduction, Error>,
 ) -> Result<Vec<Option<Global>>, Error> {
-    let keys: Vec<EstimateKey> = operation
-        .units()
+    let units = operation.units();
+    let keys: Vec<Option<EstimateKey>> = units
         .iter()
-        .enumerate()
-        .map(|(unit, declared)| EstimateKey {
-            fingerprint: fingerprint.to_owned(),
-            prefix_hash: prefix_hash.to_owned(),
-            width: stage.width,
-            height: stage.height,
-            unit,
-            describe: declared.describe(),
+        .map(|unit| {
+            unit.estimate_key().map(|estimate| EstimateKey {
+                fingerprint: fingerprint.to_owned(),
+                prefix_hash: prefix_hash.to_owned(),
+                width: stage.width,
+                height: stage.height,
+                estimate,
+            })
         })
         .collect();
-    let hits: Vec<Option<Option<Global>>> = keys.iter().map(cached).collect();
-    if hits.iter().all(Option::is_some) {
-        return Ok(hits.into_iter().map(Option::unwrap).collect());
+    let mut globals: Vec<Option<Global>> = vec![None; units.len()];
+    let mut missing: Vec<(usize, &EstimateKey)> = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        if let Some(key) = key {
+            match cached(key) {
+                Some(global) => globals[index] = global,
+                None => missing.push((index, key)),
+            }
+        }
+    }
+    if missing.is_empty() {
+        return Ok(globals);
     }
     let reduction = reduce()?;
-    let mut globals = Vec::with_capacity(operation.len());
-    for ((unit, key), hit) in operation.units().iter().zip(keys).zip(hits) {
-        let global = match hit {
-            Some(global) => global,
+    // Two units of one operation that declare the same key share one preparation, as they would
+    // share one stored entry.
+    let mut prepared: Vec<(&EstimateKey, Option<Global>)> = Vec::with_capacity(missing.len());
+    for (index, key) in missing {
+        let global = match prepared.iter().find(|(done, _)| *done == key) {
+            Some((_, global)) => global.clone(),
             None => {
-                let prepared = unit.prepare(&reduction);
-                remember(key, prepared.clone());
-                prepared
+                let global = units[index].prepare(&reduction);
+                remember(key.clone(), global.clone());
+                prepared.push((key, global.clone()));
+                global
             }
         };
-        globals.push(global);
+        globals[index] = global;
     }
     Ok(globals)
 }
@@ -858,8 +886,9 @@ pub(crate) mod tests {
     };
 
     /// The spatial budget and the estimate store are process-wide, so every test that reads either
-    /// holds this lock instead of racing. That is all of them: even an operation whose units want
-    /// no global estimate reads and writes the store.
+    /// holds this lock instead of racing. That is every test that renders a spatial layer: each one
+    /// takes working sets from the budget, and a unit that declares an estimate key reads and writes
+    /// the store.
     static SPATIAL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Held by every test that reads or writes either piece of process-wide state, including the
@@ -902,10 +931,6 @@ pub(crate) mod tests {
                 height: region.height,
             }
             .plane_bytes()
-        }
-
-        fn prepare(&self, _: &Reduction) -> Option<Global> {
-            None
         }
 
         fn apply(
@@ -979,6 +1004,10 @@ pub(crate) mod tests {
             0
         }
 
+        fn estimate_key(&self) -> Option<Cow<'static, str>> {
+            Some(Cow::Borrowed("test mean of the reduction"))
+        }
+
         fn prepare(&self, reduction: &Reduction) -> Option<Global> {
             PREPARED.fetch_add(1, AtomicOrdering::SeqCst);
             let mut sum = [0.0_f64; 3];
@@ -1030,6 +1059,53 @@ pub(crate) mod tests {
         }
     }
 
+    /// How many times any [`Counted`] unit has been applied, which is once per tile its operation
+    /// evaluated. Only `a_tile_the_mask_cannot_reach_evaluates_no_unit` compiles one, so no other
+    /// test moves it, whatever else renders a masked spatial layer at the same time.
+    static APPLIED: AtomicUsize = AtomicUsize::new(0);
+
+    /// A unit with no neighbourhood that lifts every value by a quarter and counts its own
+    /// evaluations, so what a mask saves is counted by the unit that would have done the work.
+    #[derive(Debug)]
+    struct Counted;
+
+    impl SpatialUnit for Counted {
+        fn halo(&self, _: Stage) -> u32 {
+            0
+        }
+
+        fn scratch_bytes(&self, _: Stage) -> u64 {
+            0
+        }
+
+        fn apply(
+            &self,
+            input: &Planes<'_>,
+            output: &mut PlanesMut<'_>,
+            _: Option<&Global>,
+            _: &mut [f32],
+            _: Parallelism,
+        ) -> Result<(), Error> {
+            APPLIED.fetch_add(1, AtomicOrdering::SeqCst);
+            let out = output.region();
+            for y in out.y0..out.y1() {
+                for x in out.x0..out.x1() {
+                    let pixel = input.sample(i64::from(x), i64::from(y));
+                    output.set(x, y, pixel.map(|value| value + 0.25));
+                }
+            }
+            Ok(())
+        }
+
+        fn is_finite(&self) -> bool {
+            true
+        }
+
+        fn describe(&self) -> String {
+            "counted lift".into()
+        }
+    }
+
     /// A unit whose coefficients are not finite, which compilation must refuse.
     #[derive(Debug)]
     struct NonFinite;
@@ -1040,9 +1116,6 @@ pub(crate) mod tests {
         }
         fn scratch_bytes(&self, _: Stage) -> u64 {
             0
-        }
-        fn prepare(&self, _: &Reduction) -> Option<Global> {
-            None
         }
         fn apply(
             &self,
@@ -1081,7 +1154,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Spatial,
                     order: 0,
-                    maskable: false,
+                    maskable: true,
                     artifacts: false,
                 }],
                 actions: Vec::new(),
@@ -1123,6 +1196,7 @@ pub(crate) mod tests {
                         radius: radius.parse().expect("a radius"),
                     }),
                     None if unit == "shift" => Arc::new(MeanShift),
+                    None if unit == "count" => Arc::new(Counted),
                     None if unit == "infinite" => Arc::new(NonFinite),
                     _ => panic!("unknown test unit {unit}"),
                 });
@@ -2169,18 +2243,18 @@ pub(crate) mod tests {
         );
     }
 
-    /// A stored estimate belongs to the unit that prepared it, not to its position alone. A module
+    /// A stored estimate belongs to the key of the unit that prepared it, not to a position. A module
     /// compiles whichever units its payload needs — the Presence module leaves out a unit whose
     /// amount is zero, which moves the others up — so the same position of the same source, prefix
-    /// and stage can hold a different unit from one render to the next, and the cached answer "this
-    /// unit wants none" must not be handed to a unit that wants one.
+    /// and stage can hold a different unit from one render to the next, and what one unit at that
+    /// position was given must not be handed to another that wants an estimate.
     #[test]
-    fn an_estimate_belongs_to_its_unit_and_not_to_its_position_alone() {
+    fn an_estimate_belongs_to_its_key_and_not_to_its_position() {
         let _guard = spatial_guard();
         clear_estimates();
         let registry = spatial_registry();
         let source = gradient(64, 48);
-        // A unit that wants no estimate at position 0, cached as such.
+        // A unit that declares no estimate at position 0, given none.
         crate::render(
             &registry,
             &source,
@@ -2204,6 +2278,271 @@ pub(crate) mod tests {
             &[RefUnit::Shift],
         );
         assert_frame(&shifted, &expected, "a shift after a blur at position 0");
+    }
+
+    /// An operation whose units declare no estimate key never reduces its stage and never touches
+    /// the store, on its first evaluation or any other, and hands every unit no global.
+    #[test]
+    fn an_operation_whose_units_declare_no_key_never_reduces() {
+        let _guard = spatial_guard();
+        let stage = Stage {
+            width: 64,
+            height: 48,
+        };
+        let operation = SpatialOperation::new(vec![
+            Arc::new(BoxBlur { radius: 2 }),
+            Arc::new(Counted),
+            Arc::new(BoxBlur { radius: 5 }),
+        ])
+        .unwrap();
+        for _ in 0..2 {
+            let globals = resolve_globals(
+                &operation,
+                stage,
+                "sha256:no-estimate-key",
+                "prefix",
+                || -> Result<Reduction, Error> {
+                    panic!("an operation that needs no estimate reduced its stage")
+                },
+            )
+            .unwrap();
+            assert_eq!(globals, vec![None, None, None]);
+        }
+        assert!(
+            estimates()
+                .iter()
+                .all(|(key, _)| key.fingerprint != "sha256:no-estimate-key"),
+            "and it stored nothing"
+        );
+
+        // Through a render as well: a blur-only layer prepares nothing and renders exactly.
+        PREPARED.store(0, AtomicOrdering::SeqCst);
+        let registry = spatial_registry();
+        let source = gradient(64, 48);
+        let raster = crate::render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &recipe(vec![spatial_layer(&["blur:2"])]),
+        )
+        .unwrap();
+        let expected = reference_chain(
+            64,
+            48,
+            decode_frame(source.rgba.as_ref()),
+            &[RefUnit::Blur(2)],
+        );
+        assert_frame(&raster, &expected, "a blur that needs no estimate");
+        assert_eq!(PREPARED.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    /// Two units of one operation that declare the same key over the same stage share one
+    /// preparation, whatever their positions.
+    #[test]
+    fn units_that_declare_one_key_share_one_preparation() {
+        let _guard = spatial_guard();
+        PREPARED.store(0, AtomicOrdering::SeqCst);
+        let stage = Stage {
+            width: 64,
+            height: 48,
+        };
+        let source = gradient(64, 48);
+        let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+            let offset = ((y * 64 + x) * 4) as usize;
+            Ok(crate::render::decode_pixel([
+                source.rgba[offset],
+                source.rgba[offset + 1],
+                source.rgba[offset + 2],
+            ]))
+        };
+        let operation = SpatialOperation::new(vec![
+            Arc::new(MeanShift),
+            Arc::new(BoxBlur { radius: 1 }),
+            Arc::new(MeanShift),
+        ])
+        .unwrap();
+        // A fingerprint no other test uses, so the first resolve is a miss.
+        let fingerprint = format!("sha256:one-key-{}", SnapshotId::new());
+        let mut reductions = 0;
+        let globals = resolve_globals(&operation, stage, &fingerprint, "prefix", || {
+            reductions += 1;
+            build_reduction(stage, read)
+        })
+        .unwrap();
+        assert_eq!(reductions, 1);
+        assert_eq!(PREPARED.load(AtomicOrdering::SeqCst), 1, "one preparation");
+        assert!(globals[0].is_some());
+        assert_eq!(globals[0], globals[2], "both units hold the one estimate");
+        assert_eq!(globals[1], None);
+    }
+
+    /// A Presence amount is a coefficient of its unit, not of its estimate: Dehaze's atmospheric
+    /// light reads the reduction and nothing else, so every other Dehaze amount, alone or beside
+    /// Texture and Clarity, prepares from the stored estimate without reducing the stage again, and
+    /// Texture and Clarity, which declare no estimate, never reduce at all.
+    #[test]
+    fn changing_only_a_presence_amount_prepares_nothing_new() {
+        let _guard = spatial_guard();
+        let (width, height) = (96_u32, 64_u32);
+        let stage = Stage { width, height };
+        let source = gradient(width, height);
+        let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+            let offset = ((y * width + x) * 4) as usize;
+            Ok(crate::render::decode_pixel([
+                source.rgba[offset],
+                source.rgba[offset + 1],
+                source.rgba[offset + 2],
+            ]))
+        };
+        let module = crate::PresenceModule::new();
+        let compile = |payload: &Value| -> SpatialOperation {
+            match module
+                .compile(crate::PRESENCE_EFFECT, EFFECT_FORMAT, payload, stage)
+                .unwrap()
+            {
+                Processing::Spatial(operation) => operation,
+                other => panic!("a spatial operation, not {other:?}"),
+            }
+        };
+        // A fingerprint no other test uses, so the first Dehaze resolve is a miss.
+        let fingerprint = format!("sha256:presence-amounts-{}", SnapshotId::new());
+        let reductions = AtomicUsize::new(0);
+        let resolve = |payload: &Value| {
+            resolve_globals(&compile(payload), stage, &fingerprint, "prefix", || {
+                reductions.fetch_add(1, AtomicOrdering::SeqCst);
+                build_reduction(stage, read)
+            })
+            .unwrap()
+        };
+
+        for payload in [
+            json!({"texture": 40.0}),
+            json!({"clarity": -20.0}),
+            json!({"texture": 40.0, "clarity": -20.0}),
+        ] {
+            assert!(resolve(&payload).iter().all(Option::is_none), "{payload}");
+        }
+        assert_eq!(
+            reductions.load(AtomicOrdering::SeqCst),
+            0,
+            "texture and clarity never reduce"
+        );
+
+        let first = resolve(&json!({"dehaze": 30.0}));
+        assert_eq!(reductions.load(AtomicOrdering::SeqCst), 1);
+        let atmosphere = first[0].clone().expect("dehaze's atmospheric light");
+        for payload in [
+            json!({"dehaze": 60.0}),
+            json!({"dehaze": 30.25}),
+            json!({"dehaze": -45.0, "texture": 10.0}),
+            json!({"dehaze": 100.0, "texture": 5.0, "clarity": -5.0}),
+        ] {
+            let globals = resolve(&payload);
+            assert_eq!(globals[0].as_ref(), Some(&atmosphere), "{payload}");
+            assert!(globals[1..].iter().all(Option::is_none), "{payload}");
+        }
+        assert_eq!(
+            reductions.load(AtomicOrdering::SeqCst),
+            1,
+            "a new amount prepares from the stored estimate"
+        );
+    }
+
+    /// The stored atmospheric light is the one a fresh preparation gives, so a frame rendered from
+    /// it after another amount's render is byte for byte the frame rendered from a cold store.
+    #[test]
+    fn a_stored_atmospheric_light_renders_every_dehaze_amount_as_a_cold_store_does() {
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        let source = gradient(96, 64);
+        let render = |dehaze: f64| {
+            let stack = recipe(vec![Layer {
+                id: LayerId::new(),
+                effect_id: crate::PRESENCE_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"dehaze": dehaze, "clarity": 25.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            }]);
+            crate::render(&registry, &source, SnapshotId::new(), &stack)
+                .unwrap()
+                .rgba
+        };
+        clear_estimates();
+        let cold = render(35.0);
+        clear_estimates();
+        let other = render(-60.0);
+        let warm = render(35.0);
+        assert_ne!(cold, other, "the amount changes the frame");
+        assert_eq!(cold, warm, "the stored estimate renders the cold frame");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Masked tiles.
+    // -----------------------------------------------------------------------------------------
+
+    /// A tile entirely outside a mask's bounds is copied, and no unit of the operation is evaluated
+    /// over it: the claim that makes a small masked Presence layer affordable on a 60 MP frame. The
+    /// unit counts its own evaluations, so this is a counted fact on both paths and not an argument;
+    /// `tests/masked_spatial.rs` shows through the public API that the copied tiles hold the
+    /// operation's input.
+    #[test]
+    fn a_tile_the_mask_cannot_reach_evaluates_no_unit() {
+        let _guard = spatial_guard();
+        let registry = spatial_registry();
+        // Two tile columns and two tile rows (512 + 88 by 512 + 38): the smallest frame that can
+        // show a tile being copied while another is evaluated.
+        let (width, height) = (600, 550);
+        let source = gradient(width, height);
+        let linear = linear_source(width, height);
+        // A gradient confined to the right edge: its support cannot reach the two tiles whose
+        // columns start at zero, so those two are copies and the two at column 512 run the chain.
+        let mut mask = crate::Mask::new("Mask 1");
+        let name = mask.next_component_name("linear");
+        mask.components.push(crate::Component::new(
+            name,
+            crate::ComponentMode::Add,
+            "linear",
+            json!({"x0": 0.90, "y0": 0.5, "x1": 0.97, "y1": 0.5}),
+        ));
+        let masked = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                mask: Some(mask.id.clone()),
+                ..spatial_layer(&["count"])
+            }],
+            masks: vec![mask],
+            ..Recipe::default()
+        };
+        let unmasked = recipe(vec![spatial_layer(&["count"])]);
+        let applied = |stack: &Recipe, linear_path: bool| {
+            APPLIED.store(0, AtomicOrdering::SeqCst);
+            if linear_path {
+                crate::render_linear(
+                    &registry,
+                    &linear,
+                    SnapshotId::new(),
+                    stack,
+                    LinearSettings::default(),
+                )
+                .unwrap();
+            } else {
+                crate::render(&registry, &source, SnapshotId::new(), stack).unwrap();
+            }
+            APPLIED.load(AtomicOrdering::SeqCst)
+        };
+        for (path, linear_path) in [("byte", false), ("linear", true)] {
+            assert_eq!(
+                applied(&unmasked, linear_path),
+                4,
+                "{path} path: an unmasked operation evaluates all four tiles"
+            );
+            assert_eq!(
+                applied(&masked, linear_path),
+                2,
+                "{path} path: the two left-hand tiles cost no unit evaluation"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------------------------

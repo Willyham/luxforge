@@ -378,10 +378,10 @@ impl PointwiseColor for Mixer {
         stored && derived
     }
 
-    /// The unit and its non-neutral sliders, at the parameters' declared display precision. The
-    /// host compares compiled operations by this string, so two units that describe themselves
-    /// identically must process identically: every coefficient is a pure function of the values
-    /// named here, and a slider left out is exactly zero.
+    /// The unit and its non-neutral sliders, exactly. The host compares compiled operations by this
+    /// string, so two units that describe themselves identically must process identically: every
+    /// coefficient is a pure function of the values named here, and a slider left out is exactly
+    /// zero.
     fn describe(&self) -> String {
         let mut fields = Vec::new();
         for (property, values) in [
@@ -391,7 +391,7 @@ impl PointwiseColor for Mixer {
         ] {
             for (range, value) in values.iter().enumerate() {
                 if *value != 0.0 {
-                    fields.push(format!("{}-{property}:{value:+.0}", RANGE_NAMES[range]));
+                    fields.push(format!("{}-{property}:{value:+}", RANGE_NAMES[range]));
                 }
             }
         }

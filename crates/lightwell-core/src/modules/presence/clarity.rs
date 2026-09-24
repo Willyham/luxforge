@@ -21,7 +21,7 @@ use super::filters::{
 };
 use crate::{
     Error,
-    modules::{Global, Parallelism, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
+    modules::{Global, Parallelism, Planes, PlanesMut, SpatialUnit, Stage},
 };
 
 /// The integer reduction factor per axis the base is computed on.
@@ -92,11 +92,6 @@ impl SpatialUnit for Clarity {
         let reduced = filters::reduced_values(region, REDUCTION as u32)
             .saturating_mul(2 + GUIDED_SELF_PLANES as u64);
         filters::scratch_bytes(full.saturating_add(reduced))
-    }
-
-    /// Clarity needs no global estimate.
-    fn prepare(&self, _: &Reduction) -> Option<Global> {
-        None
     }
 
     fn apply(
@@ -186,7 +181,7 @@ impl SpatialUnit for Clarity {
 
     fn describe(&self) -> String {
         format!(
-            "presence clarity(amount={:+.2}, long side {})",
+            "presence clarity(amount={:+}, long side {})",
             self.amount, self.long_side
         )
     }

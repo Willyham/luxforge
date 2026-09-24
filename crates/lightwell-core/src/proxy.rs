@@ -81,9 +81,10 @@ impl ProxyBounds {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProxyApproximation {
-    /// A spatial-stage layer is in the stack. Its neighbourhoods scale with the stage it is
-    /// rendered at, so a proxy frame is close to the exact render at display size rather than equal
-    /// to it.
+    /// The stack compiles to a spatial operation at the proxy stage. Its neighbourhoods scale with
+    /// the stage it is rendered at, so a proxy frame is close to the exact render at display size
+    /// rather than equal to it. A neutral spatial layer compiles to no operation and does not set
+    /// this.
     pub spatial: bool,
     /// A mask in the stack draws a feature narrower than two pixels of the proxy stage, so its
     /// field — never the effect — is evaluated with a 2 x 2 supersample per pixel
@@ -667,6 +668,17 @@ mod tests {
         Layer {
             id: LayerId::new(),
             effect_id: BASIC_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload,
+            mask: None,
+            artifacts: Vec::new(),
+        }
+    }
+
+    fn presence_layer(payload: serde_json::Value) -> Layer {
+        Layer {
+            id: LayerId::new(),
+            effect_id: crate::PRESENCE_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
             mask: None,
@@ -1267,26 +1279,76 @@ mod tests {
         registry
             .proxy_eligible(&finish)
             .expect("a vignette is resolution independent");
-        assert!(!registry.proxy_approximate(&finish));
+        assert!(!registry.proxy_approximation(&finish, 96, 64).spatial);
 
         let spatial = recipe(vec![
             basic_layer(json!({ "exposure": 0.5 })),
-            Layer {
-                id: LayerId::new(),
-                effect_id: crate::PRESENCE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: json!({ "clarity": 60 }),
-                mask: None,
-                artifacts: Vec::new(),
-            },
+            presence_layer(json!({ "clarity": 60 })),
         ]);
         registry
             .proxy_eligible(&spatial)
             .expect("a Presence stack renders through the proxy");
         assert!(
-            registry.proxy_approximate(&spatial),
+            registry.proxy_approximation(&spatial, 96, 64).spatial,
             "its neighbourhoods scale with the stage, so the proxy frame is approximate"
         );
+    }
+
+    /// A reset Presence layer is still a spatial-stage layer, but its neutral payload compiles to
+    /// no operation at all: the proxy frame is the exact recipe at proxy size, byte for byte with
+    /// the exact recipe over the exact downscale, and is not labelled approximate.
+    #[test]
+    fn a_neutral_spatial_layer_is_not_approximate_at_proxy_scale() {
+        let registry = ModuleRegistry::builtin();
+        for payload in [
+            json!({}),
+            json!({ "texture": 0, "clarity": 0, "dehaze": 0 }),
+        ] {
+            let reset = recipe(vec![
+                basic_layer(json!({ "exposure": 0.5 })),
+                presence_layer(payload.clone()),
+            ]);
+            registry
+                .proxy_eligible(&reset)
+                .expect("a Presence stack renders through the proxy");
+            let approximation = registry.proxy_approximation(&reset, 96, 64);
+            assert!(!approximation.spatial, "{payload}");
+            assert!(!approximation.is_approximate(), "{payload}");
+            assert_eq!(approximation.reason(), None, "{payload}");
+
+            // And the frame is what the label says: the stack without its neutral layer.
+            let pixels: Vec<[u8; 3]> = (0..96_u32 * 64)
+                .map(|index| {
+                    [
+                        (index % 251) as u8,
+                        (index * 7 % 253) as u8,
+                        (index * 13 % 241) as u8,
+                    ]
+                })
+                .collect();
+            let source = jpeg_source(96, 64, &pixels);
+            let bounds = ProxyBounds {
+                width: 48,
+                height: 32,
+            };
+            let plan = source
+                .proxy_plan(&registry, &reset, bounds)
+                .unwrap()
+                .expect("a proxy is worthwhile");
+            let proxy = source.proxy(plan).unwrap();
+            let without = recipe(vec![basic_layer(json!({ "exposure": 0.5 }))]);
+            assert_eq!(
+                proxy
+                    .render(&registry, SnapshotId::new(), &reset)
+                    .unwrap()
+                    .rgba,
+                proxy
+                    .render(&registry, SnapshotId::new(), &without)
+                    .unwrap()
+                    .rgba,
+                "{payload}: a neutral spatial layer changes no proxy byte"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------------------------

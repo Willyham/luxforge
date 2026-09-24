@@ -416,7 +416,7 @@ impl ModuleRegistry {
     /// the output stage, so the same recipe compiles unchanged against a smaller content stage and
     /// produces the same picture at display size. A spatial-stage effect is eligible too, but its
     /// neighbourhoods scale with the stage, so its proxy frame is an approximation of the exact
-    /// render at display size rather than the same picture; [`Self::proxy_approximate`] says when
+    /// render at display size rather than the same picture; [`Self::proxy_approximation`] says when
     /// a stack renders that way, and the exact phase still produces every number. A pixel-stage
     /// effect is not eligible: its payload addresses content pixels, which a rescaled stage no
     /// longer has. An effect no provider declares is ineligible too, because nothing can say what
@@ -454,42 +454,40 @@ impl ModuleRegistry {
         Ok(())
     }
 
-    /// Whether a proxy render of this stack is an approximation: a spatial-stage layer's
-    /// neighbourhoods scale with the stage it is rendered at, so its display-size frame is close to
-    /// the exact render but not the same picture. Cost is `O(layers)` and reads no pixels.
-    pub fn proxy_approximate(&self, recipe: &Recipe) -> bool {
-        recipe
-            .layers
-            .iter()
-            .any(|layer| self.effect_stage(&layer.effect_id) == Some(EffectStage::Spatial))
-    }
-
     /// Why a proxy render of this stack at this source size is an approximation, which is the
     /// answer a frame is reported with.
     ///
-    /// Two reasons, and the second is the only one that needs a size: a mask's geometry is
-    /// normalized, so whether it draws a feature the proxy's pixel grid can resolve is a fact about
-    /// that grid. The answer is read from a compilation at exactly the dimensions the proxy phase
-    /// renders — the same compilation, so what is reported and what is drawn cannot disagree —
-    /// which costs `O(layers + components)` and reads no pixels. A stack that does not compile at
-    /// that size has no proxy frame at all, and the caller has already declined it with its own
-    /// reason, so there is nothing here to add.
+    /// Two reasons, both read from a compilation at exactly the dimensions the proxy phase renders
+    /// — the same compilation, so what is reported and what is drawn cannot disagree:
+    ///
+    /// - **A spatial operation.** Its neighbourhoods scale with the stage it is rendered at, so its
+    ///   display-size frame is close to the exact render but not the same picture. It is what the
+    ///   stack compiles to that decides, not which stages its effects declare: a neutral spatial
+    ///   layer, such as a reset Presence layer, compiles to no operation at all, so its frame is the
+    ///   exact recipe at proxy size and is not labelled.
+    /// - **A thin mask.** A mask's geometry is normalized, so whether it draws a feature the proxy's
+    ///   pixel grid can resolve is a fact about that grid.
+    ///
+    /// It costs `O(layers + components)` and reads no pixels. A stack that does not compile at that
+    /// size has no proxy frame at all, and the caller has already declined it with its own reason,
+    /// so there is nothing here to add.
     pub fn proxy_approximation(
         &self,
         recipe: &Recipe,
         source_width: u32,
         source_height: u32,
     ) -> ProxyApproximation {
-        ProxyApproximation {
-            spatial: self.proxy_approximate(recipe),
-            mask: self
-                .compile_sampled(
-                    source_width,
-                    source_height,
-                    recipe,
-                    MaskSampling::ThinFeature,
-                )
-                .is_ok_and(|compiled| compiled.supersampled_masks()),
+        match self.compile_sampled(
+            source_width,
+            source_height,
+            recipe,
+            MaskSampling::ThinFeature,
+        ) {
+            Ok(compiled) => ProxyApproximation {
+                spatial: compiled.evaluates_spatial(),
+                mask: compiled.supersampled_masks(),
+            },
+            Err(_) => ProxyApproximation::default(),
         }
     }
 

@@ -296,11 +296,11 @@ impl PointwiseColor for WhiteBalance {
                 .all(|row| row.iter().all(|value| value.is_finite()))
     }
 
-    /// The stored values at their declared display precision. The host compares compiled operations
-    /// by this string, so two units that describe themselves identically must process identically:
-    /// the matrix is a pure function of the two values.
+    /// The stored values, exactly. The host compares compiled operations by this string, so two
+    /// units that describe themselves identically must process identically: the matrix is a pure
+    /// function of the two values.
     fn describe(&self) -> String {
-        format!("white-balance({:+.0}, {:+.0})", self.temperature, self.tint)
+        format!("white-balance({:+}, {:+})", self.temperature, self.tint)
     }
 }
 

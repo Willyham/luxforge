@@ -1175,7 +1175,7 @@ Exactness on the real files is the ignored core test, run in release with `LIGHT
 | Point sample | 20.1 · 35.4 | 18.7 · 36.3 | 15.1 · 27.9 |
 | The whole spatial frame the previous sample built | 261 · 550 | 460 · 1131 | 191 · 352 |
 
-The tile's input region is pulled serially. On the shared pool its rows halved an idle sample (Z6 Clarity, 10 against 19 ms) but waited behind a render that held the pool: p50 116 ms against 21 ms serially (15 samples, two alternations each, load 6 to 9), time the catalog owner would spend blocked. The first sample of a stack whose estimates are not yet in the store also reduces the whole stage once, which added 23 to 113 ms across the three files; the store does this even for Clarity alone, which wants no global estimate.
+The tile's input region is pulled serially. On the shared pool its rows halved an idle sample (Z6 Clarity, 10 against 19 ms) but waited behind a render that held the pool: p50 116 ms against 21 ms serially (15 samples, two alternations each, load 6 to 9), time the catalog owner would spend blocked. The first sample of a stack whose estimates are not yet in the store also reduced the whole stage once, which added 23 to 113 ms across the three files. That reduction is paid only for a unit that declares an estimate key: Clarity and Texture never pay it, and a new Dehaze amount prepares from the stored atmospheric light.
 
 A background evidence run over the Z6 (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner pixel) showed every readout in the status bar with no render error, each hover step settling within 75 ms of the one before it.
 

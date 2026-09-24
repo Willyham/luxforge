@@ -23,12 +23,10 @@ pub use linear::{
     LinearImage, LinearSettings, WhiteBalanceApproximation, render_linear,
     render_linear_cancellable, sample_linear,
 };
+pub use spatial::SpatialBudget;
 use spatial::{
     PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
     run_tile,
-};
-pub use spatial::{
-    SpatialBudget, cached_estimates, clear_estimates, masked_tile_counts, reset_masked_tile_counts,
 };
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
@@ -3792,7 +3790,7 @@ mod tests {
             self.ev.is_finite() && self.gain.is_finite()
         }
         fn describe(&self) -> String {
-            format!("exposure {:+.2} EV", self.ev)
+            format!("exposure {:+} EV", self.ev)
         }
     }
 

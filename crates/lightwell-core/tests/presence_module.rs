@@ -23,6 +23,7 @@ use reference::presence::{PresenceParams, Rgb, apply_presence};
 use serde_json::{Value, json};
 use std::{
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     path::PathBuf,
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
@@ -198,6 +199,15 @@ fn greys(width: i64, height: i64) -> Vec<[f64; 3]> {
     pixels
 }
 
+/// A fingerprint that names these exact contents, as a real source's does. The host keys what it
+/// caches for a source — Dehaze's stored atmospheric light among it — by the fingerprint, so two
+/// different pictures of one size must never share one.
+fn content_fingerprint(kind: &str, contents: impl Hash) -> String {
+    let mut hasher = DefaultHasher::new();
+    contents.hash(&mut hasher);
+    format!("sha256:presence-module-{kind}-{:016x}", hasher.finish())
+}
+
 /// One 8-bit source from linear pixels, and the linear values it actually decodes to, which is what
 /// the reference must be evaluated on for the byte path.
 fn byte_source(width: i64, height: i64, pixels: &[[f64; 3]]) -> (SourceImage, Vec<[f64; 3]>) {
@@ -209,12 +219,13 @@ fn byte_source(width: i64, height: i64, pixels: &[[f64; 3]]) -> (SourceImage, Ve
         rgba.push(255);
         decoded.push(codes.map(reference::srgb_to_linear));
     }
+    let fingerprint = content_fingerprint("fixture", (width, height, &rgba));
     (
         SourceImage {
             width: width as u32,
             height: height as u32,
             rgba: rgba.into(),
-            fingerprint: "sha256:presence-module-fixture".into(),
+            fingerprint,
             orientation: 1,
         },
         decoded,
@@ -231,14 +242,10 @@ fn linear_source(width: i64, height: i64, pixels: &[[f64; 3]]) -> (LinearImage, 
         .iter()
         .map(|pixel| pixel.map(|value| f64::from(value as f32)))
         .collect();
+    let bits: Vec<u32> = planes.iter().map(|value| value.to_bits()).collect();
+    let fingerprint = content_fingerprint("linear-fixture", (width, height, bits));
     (
-        LinearImage::with_fingerprint(
-            width as u32,
-            height as u32,
-            planes,
-            "sha256:presence-module-linear-fixture",
-        )
-        .unwrap(),
+        LinearImage::with_fingerprint(width as u32, height as u32, planes, fingerprint).unwrap(),
         rounded,
     )
 }

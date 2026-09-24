@@ -315,7 +315,7 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
         "white-balance(+60, -25)",
         "white balance is the first unit of the run"
     );
-    assert_eq!(operation.units()[1].describe(), "exposure(+2.00)");
+    assert_eq!(operation.units()[1].describe(), "exposure(+2)");
 
     // The rendered bytes against the reference composed in that order, including inputs the
     // exposure drives above 1.0 so the output boundary's clamp is exercised.

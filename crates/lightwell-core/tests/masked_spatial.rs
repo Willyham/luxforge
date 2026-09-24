@@ -10,8 +10,10 @@
 //!
 //! - **The two endpoints carry no tolerance at all.** `M = 0` renders the operation's input frame
 //!   byte for byte and `M = 1` renders the unmasked Presence frame byte for byte, on both paths.
-//! - **A tile the mask cannot reach is a copy**, counted rather than asserted, through the host's
-//!   own `masked_tile_counts`.
+//! - **A tile the mask cannot reach is a copy**: it holds the operation's input byte for byte. That
+//!   no unit is evaluated over it is counted inside the crate, by the unit itself
+//!   (`render::spatial`'s `a_tile_the_mask_cannot_reach_evaluates_no_unit`), because the count is
+//!   not public API.
 //! - **A sample equals the rendered byte** inside the mask, outside it and on the bounds edge, on
 //!   both paths, which is the delivered one-tile exception and not a second one.
 //! - A partially covered frame lies strictly between the two endpoint frames, which is what a
@@ -22,8 +24,8 @@ mod reference;
 
 use lightwell_core::{
     Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, Mask,
-    ModuleRegistry, PRESENCE_EFFECT, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
-    masked_tile_counts, render, render_linear, reset_masked_tile_counts, sample, sample_linear,
+    ModuleRegistry, PRESENCE_EFFECT, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render,
+    render_linear, sample, sample_linear,
 };
 use reference::mask::{
     Algebra, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, Stage as RefStage,
@@ -32,8 +34,8 @@ use reference::mask::{
 use reference::srgb_to_linear;
 use serde_json::json;
 
-/// The spatial budget, the estimate store and the masked-tile counters are all process-wide, so the
-/// tests in this binary run one at a time rather than racing each other for them.
+/// The spatial budget and the estimate store are process-wide, so the tests in this binary run one
+/// at a time rather than racing each other for them.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -232,15 +234,16 @@ fn the_mask_endpoints_are_byte_identical_to_the_unmasked_frames_on_both_paths() 
 }
 
 // ---------------------------------------------------------------------------------------------
-// A tile the mask cannot reach costs no unit evaluation
+// A tile the mask cannot reach is a copy
 // ---------------------------------------------------------------------------------------------
 
 /// The claim that makes a small masked Presence layer affordable on a 60 MP frame is that a tile
-/// entirely outside the mask's bounds rectangle is **copied**, not evaluated and blended away. It
-/// is a counter and not an assertion of intent: the host counts the tiles it copied and the tiles
-/// it ran the chain over, and this reads them.
+/// entirely outside the mask's bounds rectangle is **copied**, not evaluated and blended away. The
+/// crate counts the unit evaluations (`a_tile_the_mask_cannot_reach_evaluates_no_unit`); this shows
+/// through the public API what that leaves in the frame: the copied tiles hold the operation's
+/// input, and the tiles the mask reaches hold the effect.
 #[test]
-fn a_tile_the_mask_cannot_reach_evaluates_no_unit() {
+fn a_tile_the_mask_cannot_reach_holds_the_operation_input() {
     let _guard = serial();
     let registry = ModuleRegistry::builtin();
     let source = byte_source(TILED);
@@ -248,23 +251,7 @@ fn a_tile_the_mask_cannot_reach_evaluates_no_unit() {
     // start at zero, so those two are copies and the two starting at column 512 run the chain.
     let (mask, _) = gradient_mask(0.90, 0.5, 0.97, 0.5, 100.0);
     let stack = recipe(vec![masked(presence_layer(), &mask)], vec![mask.clone()]);
-
-    reset_masked_tile_counts();
     let masked_frame = render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-    let (copied, evaluated) = masked_tile_counts();
-    assert_eq!(
-        copied + evaluated,
-        4,
-        "a {}x{} stage is four production tiles",
-        TILED.0,
-        TILED.1
-    );
-    assert_eq!(copied, 2, "the two left-hand tiles cost no unit evaluation");
-    assert_eq!(evaluated, 2, "the two right-hand tiles ran the chain");
-
-    // An unmasked operation touches neither counter, so the counters measure masking and nothing
-    // else.
-    reset_masked_tile_counts();
     let unmasked_frame = render(
         &registry,
         &source,
@@ -272,10 +259,8 @@ fn a_tile_the_mask_cannot_reach_evaluates_no_unit() {
         &recipe(vec![presence_layer()], Vec::new()),
     )
     .unwrap();
-    assert_eq!(masked_tile_counts(), (0, 0));
 
-    // The copied tiles hold the operation's input, and the evaluated ones do not: the counter is
-    // reporting what the picture shows.
+    // The copied tiles hold the operation's input, and the evaluated ones do not.
     let source_frame = render(
         &registry,
         &source,

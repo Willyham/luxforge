@@ -22,7 +22,7 @@ use super::filters::{
 };
 use crate::{
     Error,
-    modules::{Global, Parallelism, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
+    modules::{Global, Parallelism, Planes, PlanesMut, SpatialUnit, Stage},
 };
 
 /// Texture: the fine and coarse guided-filter radii in pixels at the reference long side.
@@ -108,11 +108,6 @@ impl SpatialUnit for Texture {
         filters::scratch_bytes(values.saturating_mul(3 + GUIDED_SELF_PLANES as u64))
     }
 
-    /// Texture needs no global estimate.
-    fn prepare(&self, _: &Reduction) -> Option<Global> {
-        None
-    }
-
     fn apply(
         &self,
         input: &Planes<'_>,
@@ -191,7 +186,7 @@ impl SpatialUnit for Texture {
 
     fn describe(&self) -> String {
         format!(
-            "presence texture(amount={:+.2}, long side {})",
+            "presence texture(amount={:+}, long side {})",
             self.amount, self.long_side
         )
     }

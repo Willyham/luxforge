@@ -1838,7 +1838,7 @@ mod tests {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 1);
                 assert!(operation.is_finite());
-                assert_eq!(operation.units()[0].describe(), "exposure(+0.50)");
+                assert_eq!(operation.units()[0].describe(), "exposure(+0.5)");
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
@@ -1850,7 +1850,7 @@ mod tests {
                 assert!(operation.is_finite());
                 assert_eq!(
                     operation.units()[0].describe(),
-                    "tone(contrast=+20.00, highlights=+0.00, shadows=+0.00, whites=+0.00, blacks=+0.00)"
+                    "tone(contrast=+20, highlights=+0, shadows=+0, whites=+0, blacks=+0)"
                 );
             }
             other => panic!("expected a colour operation, got {other:?}"),
@@ -1897,7 +1897,7 @@ mod tests {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 2);
                 assert!(operation.is_finite());
-                assert_eq!(operation.units()[0].describe(), "exposure(+1.00)");
+                assert_eq!(operation.units()[0].describe(), "exposure(+1)");
                 assert!(operation.units()[1].describe().starts_with("tone("));
             }
             other => panic!("expected a colour operation, got {other:?}"),
@@ -1930,7 +1930,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 assert_eq!(described.len(), 4);
                 assert_eq!(described[0], "white-balance(+20, -5)");
-                assert_eq!(described[1], "exposure(+1.00)");
+                assert_eq!(described[1], "exposure(+1)");
                 assert!(described[2].starts_with("tone("));
                 assert_eq!(described[3], "colour-adjust(vibrance:+20, saturation:+10)");
             }

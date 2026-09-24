@@ -279,7 +279,7 @@ impl PointwiseColor for Tone {
     /// pure function of these five numbers.
     fn describe(&self) -> String {
         format!(
-            "tone(contrast={:+.2}, highlights={:+.2}, shadows={:+.2}, whites={:+.2}, blacks={:+.2})",
+            "tone(contrast={:+}, highlights={:+}, shadows={:+}, whites={:+}, blacks={:+})",
             self.contrast, self.highlights, self.shadows, self.whites, self.blacks
         )
     }
@@ -380,7 +380,12 @@ mod tests {
         let unit = Tone::new(20.0, -10.0, 5.0, 0.0, -100.0);
         assert_eq!(
             unit.describe(),
-            "tone(contrast=+20.00, highlights=-10.00, shadows=+5.00, whites=+0.00, blacks=-100.00)"
+            "tone(contrast=+20, highlights=-10, shadows=+5, whites=+0, blacks=-100)"
+        );
+        assert_ne!(
+            Tone::new(1.0, 0.0, 0.0, 0.0, 0.0).describe(),
+            Tone::new(1.001, 0.0, 0.0, 0.0, 0.0).describe(),
+            "a value below the display precision still describes itself apart"
         );
         assert_ne!(
             Tone::new(1.0, 0.0, 0.0, 0.0, 0.0).describe(),

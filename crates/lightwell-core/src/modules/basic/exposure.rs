@@ -38,11 +38,11 @@ impl PointwiseColor for Exposure {
         self.ev.is_finite() && self.gain.is_finite()
     }
 
-    /// The stored value, at the parameter's declared display precision. The host compares compiled
-    /// operations by this string, so two units that describe themselves identically process
-    /// identically: the gain is a pure function of `ev`.
+    /// The stored value, exactly. The host compares compiled operations by this string, so two units
+    /// that describe themselves identically process identically: the gain is a pure function of
+    /// `ev`.
     fn describe(&self) -> String {
-        format!("exposure({:+.2})", self.ev)
+        format!("exposure({:+})", self.ev)
     }
 }
 
@@ -91,7 +91,7 @@ mod tests {
         let mut row = [[0.0, 0.25, 1.0]];
         unit.apply_row(0, 0, &mut row);
         assert_eq!(row, [[0.0, 0.25, 1.0]]);
-        assert_eq!(unit.describe(), "exposure(+0.00)");
+        assert_eq!(unit.describe(), "exposure(+0)");
     }
 
     #[test]
@@ -107,12 +107,18 @@ mod tests {
 
     #[test]
     fn the_description_carries_the_stored_value_and_its_sign() {
-        assert_eq!(Exposure::new(0.5).describe(), "exposure(+0.50)");
+        assert_eq!(Exposure::new(0.5).describe(), "exposure(+0.5)");
         assert_eq!(Exposure::new(-1.25).describe(), "exposure(-1.25)");
         assert_ne!(
             Exposure::new(0.5).describe(),
             Exposure::new(0.51).describe(),
             "two different stored values never describe themselves the same way"
+        );
+        // Not even below the display precision: the description is an identity, not a label.
+        assert_ne!(
+            Exposure::new(0.5).describe(),
+            Exposure::new(0.501).describe(),
+            "a value that rounds to the same display string is still a different gain"
         );
     }
 }

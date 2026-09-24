@@ -217,12 +217,12 @@ impl PointwiseColor for Vignette {
             && self.rows.iter().all(|term| term.is_finite())
     }
 
-    /// The four stored values and the stage they were compiled against. The host compares compiled
-    /// operations by this string, and every table entry above is a pure function of exactly these
-    /// six numbers.
+    /// The four stored values, exactly, and the stage they were compiled against. The host compares
+    /// compiled operations by this string, and every table entry above is a pure function of
+    /// exactly these six numbers.
     fn describe(&self) -> String {
         format!(
-            "vignette(amount={:+.0}, midpoint={:.0}, roundness={:+.0}, feather={:.0}, stage={}x{})",
+            "vignette(amount={:+}, midpoint={}, roundness={:+}, feather={}, stage={}x{})",
             self.amount, self.midpoint, self.roundness, self.feather, self.width, self.height
         )
     }

@@ -28,6 +28,7 @@ use crate::{
     Error, ErrorKind,
     modules::{Global, Parallelism, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
 };
+use std::borrow::Cow;
 
 /// The integer reduction factor per axis the transmission map is computed on.
 pub(super) const REDUCTION: i64 = 4;
@@ -110,6 +111,13 @@ impl SpatialUnit for Dehaze {
         let reduced = filters::reduced_values(region, REDUCTION as u32)
             .saturating_mul(8 + GUIDED_PLANES as u64);
         filters::scratch_bytes(full.saturating_add(reduced))
+    }
+
+    /// The atmospheric light reads the reduction and nothing of this unit, so its identity is the
+    /// estimator alone: every Dehaze amount over the same stage prepares from one stored estimate,
+    /// and a new amount reduces nothing.
+    fn estimate_key(&self) -> Option<Cow<'static, str>> {
+        Some(Cow::Borrowed("presence dehaze atmospheric light"))
     }
 
     /// The atmospheric light: the pointwise channel minimum of the host's 1/16-per-side reduction,
@@ -342,7 +350,7 @@ impl SpatialUnit for Dehaze {
 
     fn describe(&self) -> String {
         format!(
-            "presence dehaze(amount={:+.2}, long side {})",
+            "presence dehaze(amount={:+}, long side {})",
             self.amount, self.long_side
         )
     }

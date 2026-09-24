@@ -454,7 +454,7 @@ fn presence_recipe(payload: Value) -> Recipe {
 #[test]
 fn a_render_at_tile_128_and_at_tile_512_agree_on_every_code() {
     let _guard = spatial_guard();
-    crate::render::clear_estimates();
+    crate::render::spatial::clear_estimates();
     let registry = ModuleRegistry::builtin();
     // Larger than one production tile on both sides of the 512 grid, so both tile sizes exercise
     // partial edge tiles and more than one batch.

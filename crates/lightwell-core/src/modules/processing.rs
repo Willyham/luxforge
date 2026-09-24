@@ -72,7 +72,9 @@ pub trait PointwiseColor: Send + Sync {
     /// so a non-finite parameter fails before a frame is touched.
     fn is_finite(&self) -> bool;
     /// A short, stable description of this unit and its coefficients. The host compares compiled
-    /// operations by it, so two units that describe themselves identically must process identically.
+    /// operations by it, so two units that describe themselves identically must process identically:
+    /// write every coefficient exactly, with the shortest round-trip form (`{}`), and never rounded
+    /// to a display precision.
     fn describe(&self) -> String;
 }
 

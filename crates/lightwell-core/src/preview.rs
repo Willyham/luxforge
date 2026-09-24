@@ -2686,7 +2686,7 @@ mod tests {
     fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
         use crate::{LinearImage, LinearSettings, PRESENCE_EFFECT, SpatialBudget};
         let _guard = crate::render::spatial::tests::spatial_guard();
-        crate::clear_estimates();
+        crate::render::spatial::clear_estimates();
         // More than one 512 px tile each way, so the spatial pass runs in batches.
         let (width, height) = (1100_u32, 700_u32);
         let planes: Vec<f32> = (0..3 * width * height)

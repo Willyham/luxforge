@@ -7,7 +7,7 @@
 //! Nothing here reads a frame or allocates one; the execution side lives in
 //! [`crate::render`](crate::render).
 use crate::{Error, ErrorKind, mask_field::MaskField, modules::Stage};
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 /// The side of one output tile the host streams. The stage is covered by tiles of this size
 /// anchored at the stage origin, with partial tiles at the right and bottom edges.
@@ -531,11 +531,29 @@ pub trait SpatialUnit: Send + Sync {
     /// slice as uninitialized and must not expect its own values back on the next tile.
     fn scratch_bytes(&self, region: Stage) -> u64;
 
-    /// The global estimate this unit wants, prepared once from a bounded reduction of the whole
-    /// operation input stage, or `None` when the unit needs none. The host caches the answer,
-    /// including `None`, keyed by the source, the layers before this operation, the stage and the
-    /// unit's position in the operation.
-    fn prepare(&self, reduction: &Reduction) -> Option<Global>;
+    /// The identity of this unit's global estimate, or `None`, the default, for a unit that needs
+    /// none: the host then never reduces the stage for it, never calls [`Self::prepare`] and hands
+    /// its [`Self::apply`] no global.
+    ///
+    /// **The key names everything [`Self::prepare`] reads besides the reduction**, and nothing else:
+    /// the unit and every coefficient its preparation depends on. The host caches a prepared
+    /// estimate keyed by the source, the layers before this operation, the stage and this key, so
+    /// two units that declare the same key over the same stage share one estimate, whatever their
+    /// position in the operation and whatever else they describe. A coefficient that only
+    /// [`Self::apply`] reads — an amount, for most units — belongs in [`Self::describe`] and not
+    /// here, which is what lets a new amount prepare from the stored estimate instead of reducing
+    /// the whole stage again.
+    fn estimate_key(&self) -> Option<Cow<'static, str>> {
+        None
+    }
+
+    /// The global estimate of a unit that declares an [`Self::estimate_key`], prepared once from a
+    /// bounded reduction of the whole operation input stage, or `None` when the reduction yields
+    /// none. It may read the reduction and the coefficients its key names, and nothing else. The
+    /// default answers `None`, which is what a unit without a key would be handed anyway.
+    fn prepare(&self, _reduction: &Reduction) -> Option<Global> {
+        None
+    }
 
     /// Fill `output.region()` from `input`, reading no further than [`Self::halo`] beyond it, with
     /// its loops scheduled as `parallelism` allows.
@@ -554,7 +572,8 @@ pub trait SpatialUnit: Send + Sync {
 
     /// A short, stable description of this unit and its coefficients. The host compares compiled
     /// operations by it, so two units that describe themselves identically must process
-    /// identically.
+    /// identically: write every coefficient exactly, with the shortest round-trip form (`{}`), and
+    /// never rounded to a display precision.
     fn describe(&self) -> String;
 }
 
