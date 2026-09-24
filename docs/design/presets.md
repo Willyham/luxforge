@@ -113,19 +113,19 @@ The imported file's text is kept in `source_text`, bounded by the request limit.
 
 ### Methods
 
-Every method is a host method listed by `schema.list`. Create, update and import take `actor`, which the record keeps as its last writer; the four mutating methods emit an event named after the method unless they are a no-op. None takes a `mutation` envelope: the library has no revision, and uniqueness makes a retried create fail visibly rather than duplicate a preset. Names are compared ignoring case across all of Unicode, not only ASCII.
+Every method is a host method listed by `schema.list`. The four mutating methods take the `{request_id, actor}` mutation envelope, and create, update and import record its `actor` as the record's last writer. The library has no revision, so the envelope carries none. A retry of the same request returns the first answer marked `deduplicated: true` from the owner's request table and changes nothing twice; the same `request_id` with other input is a `conflict` ([host dispatch](modules-and-api.md#host-dispatch)). Each mutating method emits an event named after the method unless it is a no-op or a retry. Names are compared ignoring case across all of Unicode, not only ASCII.
 
 | Method | Mutates | Parameters | Returns |
 | --- | --- | --- | --- |
 | `preset.list` | no | none | `{presets: [record without source_text, report reduced to counts]}` sorted by group, then name, ignoring case |
 | `preset.read` | no | `preset_id` | `{preset: record with the full report and source_text}` |
-| `preset.create` | yes | `name`, `settings`, `actor`; optional `group` | `{preset}` |
+| `preset.create` | yes | `name`, `settings`, `mutation`; optional `group` | `{preset, deduplicated}` |
 | `preset.capture` | no | `asset_id`, `fields`; optional `entry_id` (default: the session's selection) | `{settings}` read from that entry's stack |
-| `preset.update` | yes | `preset_id`, `actor`; optional `name`, `group`, `settings` | `{preset}`, or `outcome: no-op` when nothing changes |
-| `preset.delete` | yes | `preset_id` | `{deleted: true}`, or `outcome: no-op` when the preset is absent |
+| `preset.update` | yes | `preset_id`, `mutation`; optional `name`, `group`, `settings` | `{outcome, preset, deduplicated}`, with `outcome: no-op` when nothing changes |
+| `preset.delete` | yes | `preset_id`, `mutation` | `{outcome, deleted, deduplicated}`, with `outcome: no-op` and `deleted: false` when the preset is absent |
 | `preset.export` | no | `preset_id` | `{file_name, content}`, a Lightwell preset document |
 | `preset.inspect` | no | `content`; optional `file_name` | `{preset, report}` as an import would create them; nothing is stored |
-| `preset.import` | yes | `content`, `actor`; optional `file_name`, `name`, `group` | `{preset, report}` |
+| `preset.import` | yes | `content`, `mutation`; optional `file_name`, `name`, `group` | `{preset, report, deduplicated}` |
 
 `preset.create`, `preset.update` and `preset.import` validate every action and field of the set against the registry, without a stack. An empty set is refused. Applying a preset is `edit.apply-preset`; the library has no second apply path.
 

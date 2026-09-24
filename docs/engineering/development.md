@@ -388,13 +388,15 @@ parallel implementation. Parsing happens before the window opens; at most 64 ste
 
 Each step is an object with exactly one key.
 
-- `api` sends one owner request. For a method the method table lists without a `mutation` envelope,
-  such as `preset.list` or `session.state`, the request is sent as written, with the open asset's
-  `asset_id` only when the method names one, and its frame is captured when it answers; the
-  answer is recorded as the step's `result`, and after a `preset.*` method the library is listed
-  again before the frame is captured. For every other method the desktop fills `asset_id` and the `mutation` envelope itself —
-  the current state's revision and a fresh request id — and rejects a script that sets either, so any
-  asset mutation works, `history.undo` included. Its frame is captured when the resulting preview
+- `api` sends one owner request. For a method that is not an edit of the open asset, such as
+  `preset.list`, `session.state` or `preset.delete`, the request is sent as written, with the open
+  asset's `asset_id` only when the method names one and a fresh `{request_id, actor}` envelope when
+  `schema.list` says it carries one, and its frame is captured when it answers; the answer is
+  recorded as the step's `result`, and after a `preset.*` method the library is listed again before
+  the frame is captured. For an edit of the open asset — a method whose schema names the
+  `revision` envelope and an `asset_id` — the desktop fills `asset_id` and the `mutation` envelope
+  itself — the current state's revision and a fresh request id — and rejects a script that sets
+  either, so any asset mutation works, `history.undo` included. Its frame is captured when the resulting preview
   reaches the GPU: the same `render_ready` correlation an `--open` uses.
 - `draft` drives the crop draft: `start`, `reapply`, `angle`, `nudge`, `preset` (a declared aspect
   option, by name), `rect` (`[x, y, width, height]` in box pixels, applied as two corner gestures,

@@ -45,7 +45,7 @@ The same change moved client sessions into the catalog owner, keyed by a registe
 | `version.list` | Versions in creation order with their entry sequence |
 | `history.lineage` | Undo-parent chain from an entry, paged |
 
-The method table in the core carries each method's schema description, mutation flag and handler, and a test checks that the published schema, the event rule and dispatch agree.
+The one method table in the core carries each method's declared parameters, notes and handler; the schema and the parser are generated from the same declaration, a method mutates exactly when it carries a mutation envelope, and a generated test sends every listed method its declared fields and one undeclared one. `version.create {asset_id, name, mutation, entry_id?}` and `version.delete {asset_id, name, mutation}` take the `{request_id, actor}` envelope, and a version records its `actor`.
 
 ## Acceptance
 

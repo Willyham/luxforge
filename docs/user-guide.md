@@ -371,7 +371,7 @@ Keep the process and its input open while requests are in progress. For example,
 
 ```json
 {"id":"schema","method":"schema.list","params":{}}
-{"id":"import","method":"catalog.import","params":{"path":"/path/to/photo.jpg"}}
+{"id":"import","method":"catalog.import","params":{"path":"/path/to/photo.jpg","mutation":{"request_id":"import-1","actor":"my-client"}}}
 ```
 
 Import returns a job acknowledgment. Poll `job.status` with the returned `job_id` until it is `ready` or `failed`; a ready result includes the asset state. `job.adopt` adopts the client's latest ready import into its session. `job.cancel` removes that client's interest in a job; another client's use of the same source continues. Ending the connection cancels its pending work.
@@ -383,6 +383,8 @@ A request has `id`, `method` and `params`. A success carries the matching `id`, 
 ```json
 {"id":"rotate","method":"edit.transform","params":{"asset_id":"asset-…","mutation":{"expected_revision":0,"request_id":"rotate-1","actor":"my-client"},"transform":"rotate-right"}}
 ```
+
+Every method that changes anything carries a `mutation` envelope, and `schema.list` names which one in the method's `mutation` field. A change to something with a revision — an asset's edits, masks and history, a draft's commit, or a module's settings — carries `{expected_revision, request_id, actor}`, and a stale revision is a `conflict`. Every other change — the preset library, versions, `catalog.import`, `artifact.collect`, and module permissions, activation, resources and jobs — carries `{request_id, actor}` and no revision. Either way, sending the same request again with the same `request_id` returns the first answer marked `deduplicated: true` and changes nothing twice, so a client that lost an answer can simply retry; the same `request_id` with a different request is a `conflict`. Every method refuses a parameter it does not declare, including one that takes none.
 
 RAW actions use the same mutation envelope:
 
@@ -434,14 +436,14 @@ The host runs each named action exactly as that action would run alone without a
 | Method | Parameters | Does |
 | --- | --- | --- |
 | `preset.capture` | `asset_id`, `fields`, optional `entry_id` | Reads a settings set from an entry's stack (default: the displayed one). `fields` maps each action to an array of parameter names or `true` for all of them. Each action reads its global layer, never a masked one; without one, a field takes its default |
-| `preset.create` | `name`, `settings`, `actor`, optional `group` | Saves a preset; the group defaults to `User presets` |
-| `preset.update` | `preset_id`, `actor`, optional `name`, `group`, `settings` | Renames, regroups or replaces the settings |
-| `preset.delete` | `preset_id` | Removes it; a no-op when absent |
+| `preset.create` | `name`, `settings`, `mutation`, optional `group` | Saves a preset; the group defaults to `User presets` |
+| `preset.update` | `preset_id`, `mutation`, optional `name`, `group`, `settings` | Renames, regroups or replaces the settings |
+| `preset.delete` | `preset_id`, `mutation` | Removes it; a no-op when absent |
 | `preset.export` | `preset_id` | Returns `file_name` and `content`, a `.lwpreset` document |
 | `preset.inspect` | `content`, optional `file_name` | Returns the preset and report an import would produce, storing nothing |
-| `preset.import` | `content`, `actor`, optional `file_name`, `name`, `group` | Imports a Lightroom `.xmp` or `.lrtemplate` preset or a `.lwpreset` document from its text; `name` and `group` override the file's |
+| `preset.import` | `content`, `mutation`, optional `file_name`, `name`, `group` | Imports a Lightroom `.xmp` or `.lrtemplate` preset or a `.lwpreset` document from its text; `name` and `group` override the file's |
 
-A (group, name) pair is unique ignoring case, and a duplicate is a `conflict`. The library holds at most 1,000 presets. Create, update, delete and import emit events like every mutation, so another client's desktop refreshes its Presets section.
+A (group, name) pair is unique ignoring case, and a duplicate is a `conflict`. The library holds at most 1,000 presets. Create, update, delete and import take the `{request_id, actor}` envelope, and the preset records its `actor`. They emit events like every mutation, so another client's desktop refreshes its Presets section.
 
 ### The neutral picker
 
@@ -525,11 +527,11 @@ Modules can declare settings, provider profiles, secrets, resources to download,
 {"id":"key","method":"module.settings.set-secret","params":{"module_id":"lightwell.capabilities","profile_id":"profile-…","setting":"api-key","value":"…","mutation":{"expected_revision":3,"request_id":"key-1","actor":"my-client"}}}
 ```
 
-Downloading a resource and sending photo data need consent. A request that needs it fails with `consent-required`, and `error.data.consent` carries the module, the capability, the exact `scope` and a `disclosure` of what would be sent, where to, how many bytes, where a download is stored, its license, the adapter's retention note and whether it may cost money; `denied` is true when that scope was declined before. Only a client with permission authority may answer it with `module.permission.grant {module_id, capability, scope, request_id}`: the desktop, after you press Allow, or `lightwell-json --permission-authority`, which you pass yourself as an explicit setup step. A live-session client cannot grant, so an agent connected to the running editor can never give itself access. Consent to send photo data covers one photo: the next photo asks again. `module.permission.deny`, `module.permission.revoke {grant_id}` and `module.permission.list` are open to any client; revoking a grant cancels the jobs that depend on it and never changes a recipe, a history entry or an accepted result. Changing a profile's endpoint revokes the grants of the old one.
+Downloading a resource and sending photo data need consent. A request that needs it fails with `consent-required`, and `error.data.consent` carries the module, the capability, the exact `scope` and a `disclosure` of what would be sent, where to, how many bytes, where a download is stored, its license, the adapter's retention note and whether it may cost money; `denied` is true when that scope was declined before. Only a client with permission authority may answer it with `module.permission.grant {module_id, capability, scope, mutation}`: the desktop, after you press Allow, or `lightwell-json --permission-authority`, which you pass yourself as an explicit setup step. A live-session client cannot grant, so an agent connected to the running editor can never give itself access. Consent to send photo data covers one photo: the next photo asks again. `module.permission.deny {module_id, capability, scope, mutation}`, `module.permission.revoke {grant_id, mutation}` and `module.permission.list` are open to any client; revoking a grant cancels the jobs that depend on it and never changes a recipe, a history entry or an accepted result. Changing a profile's endpoint revokes the grants of the old one.
 
-`module.activate` and `module.deactivate` load and release what a module needs; `module.resource.install {module_id, resource_id, source?}` downloads a pinned resource, or copies `{"kind":"file","path":…}`, and installs it only after its length and SHA-256 match; `module.resource.list` and `module.resource.remove` report and delete installed resources; `module.status` summarises activation, settings, resources, grants and jobs. A task is generated like an action, as `task.<id>` with `asset_id` and `profile_id` when it declares them. Each of these answers promptly with a job, or with `not-ready` and `error.data.requirements` naming every missing setting, resource or activation. Read a job with `module.job.read {job_id}` until its `status` is `succeeded`, `failed`, `cancelled` or `superseded`, and stop one with `module.job.cancel`. A task that publishes a derived artifact returns its identity in `result.artifacts`; commit it with the action the task names, such as `edit.apply-proof-tint {artifact}`.
+`module.activate {module_id, mutation}` and `module.deactivate {module_id, mutation}` load and release what a module needs; `module.resource.install {module_id, resource_id, mutation, source?}` downloads a pinned resource, or copies `{"kind":"file","path":…}`, and installs it only after its length and SHA-256 match; `module.resource.list` and `module.resource.remove {module_id, resource_id, mutation}` report and delete installed resources; `module.status` summarises activation, settings, resources, grants and jobs. A task is generated like an action, as `task.<id>` with `asset_id` and `profile_id` when it declares them. Each of these answers promptly with a job, or with `not-ready` and `error.data.requirements` naming every missing setting, resource or activation. Read a job with `module.job.read {job_id}` until its `status` is `succeeded`, `failed`, `cancelled` or `superseded`, and stop one with `module.job.cancel {job_id, mutation}`. Each of these changes carries the `{request_id, actor}` envelope. A task that publishes a derived artifact returns its identity in `result.artifacts`; commit it with the action the task names, such as `edit.apply-proof-tint {artifact}`.
 
-Derived artifacts live beside the catalog in `CATALOG.artifacts/`; move that directory with the catalog. `artifact.status` reports it, `artifact.inspect {artifact_id}` one artifact, and `artifact.collect` removes artifacts no entry references. A missing or corrupt artifact makes rendering fail with `source-unavailable` naming it, while history keeps working.
+Derived artifacts live beside the catalog in `CATALOG.artifacts/`; move that directory with the catalog. `artifact.status` reports it, `artifact.inspect {artifact_id}` one artifact, and `artifact.collect {mutation}` removes artifacts no entry references. A missing or corrupt artifact makes rendering fail with `source-unavailable` naming it, while history keeps working.
 
 While the desktop owns a catalog it creates `CATALOG.live-session.json` beside it, recording a `127.0.0.1` address and a token. That session accepts the same newline-delimited requests with the token as the request's top-level `token`. The file is owner-readable on Unix and removed on orderly shutdown. Up to eight clients are accepted; requests are limited to 1 MiB and retained events to 256. Use `events.since`, and refresh with `asset.state` if it reports a gap.
 
