@@ -511,7 +511,7 @@
     {
       "id": "TASK-009",
       "description": "Split `editor.rs` into an `editor/` module along its seams — service and types, catalog storage, history transactions, source preparation, evaluation, planning, mask glue and describe — as a pure move with no behaviour change, so the rest of wave 2 edits separate files.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-003",

@@ -102,7 +102,7 @@
           "kind": "file",
           "label": "Catalog and source cache",
           "target": "crates/lightwell-core/src/editor/source.rs",
-          "locator": "EditorService::import, verified_source, CachedSource",
+          "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
         {
@@ -572,7 +572,7 @@
           "kind": "file",
           "label": "Catalog and source cache",
           "target": "crates/lightwell-core/src/editor/source.rs",
-          "locator": "EditorService::import, verified_source, CachedSource",
+          "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
         {
@@ -637,7 +637,7 @@
           "kind": "file",
           "label": "Catalog and source cache",
           "target": "crates/lightwell-core/src/editor/source.rs",
-          "locator": "EditorService::import, verified_source, CachedSource",
+          "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
         {
@@ -887,7 +887,7 @@
           "kind": "file",
           "label": "Catalog and source cache",
           "target": "crates/lightwell-core/src/editor/source.rs",
-          "locator": "EditorService::import, verified_source, CachedSource",
+          "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
         {
@@ -1133,7 +1133,7 @@
           "kind": "file",
           "label": "Catalog and source cache",
           "target": "crates/lightwell-core/src/editor/source.rs",
-          "locator": "EditorService::import, verified_source, CachedSource",
+          "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
         {
