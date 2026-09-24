@@ -9,7 +9,7 @@
 pub(crate) use super::Cancel;
 use crate::{
     Error, ErrorKind,
-    mask_field::MaskField,
+    mask_field::{MaskField, MaskSampling},
     modules::{
         ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO,
         Parallelism, Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE,
@@ -770,12 +770,27 @@ pub(crate) fn build_reduction(
     Reduction::new(stage, factor, planes)
 }
 
-/// The SHA-256 of the canonical JSON of a layer prefix, hexadecimal: what the layers before a
-/// spatial operation produced, hashed exactly as an analysis identity hashes a recipe. Two stacks
-/// with the same source, the same prefix and the same stage present the same pixels to the
-/// operation, so they may share a global estimate; a different prefix may not.
-pub(crate) fn prefix_hash(layers: &[crate::Layer]) -> Result<String, Error> {
-    let canonical = serde_json::to_vec(layers).map_err(|error| {
+/// The SHA-256 of the canonical JSON of a layer prefix and the masks it reads. A mask ID in a
+/// layer is not its value: editing that mask changes the operation's input without changing the
+/// layer. Mask sampling also belongs to the identity, because thin-feature proxy coverage may
+/// differ from point coverage over the same source and stage. The spatial operation's own mask
+/// and unrelated masks do not change its input and are excluded.
+pub(crate) fn prefix_hash(
+    layers: &[crate::Layer],
+    masks: &[crate::Mask],
+    sampling: MaskSampling,
+) -> Result<String, Error> {
+    let upstream_masks: Vec<_> = masks
+        .iter()
+        .filter(|mask| {
+            layers
+                .iter()
+                .any(|layer| layer.mask.as_ref() == Some(&mask.id))
+        })
+        .collect();
+    // Without an upstream mask, both sampling modes read identical input pixels.
+    let thin = !upstream_masks.is_empty() && sampling == MaskSampling::ThinFeature;
+    let canonical = serde_json::to_vec(&(layers, upstream_masks, thin)).map_err(|error| {
         Error::new(
             ErrorKind::Internal,
             format!("a layer prefix could not be serialized for hashing: {error}"),
@@ -1674,6 +1689,244 @@ pub(crate) mod tests {
                 cached_estimates(),
                 3,
                 "only amount changed: reuse the matching input"
+            );
+        }
+    }
+
+    fn masked_colour_before_dehaze() -> Recipe {
+        let mut mask = crate::Mask::new("Upstream mask");
+        mask.components.push(crate::Component::new(
+            "Radial 1",
+            crate::ComponentMode::Add,
+            "radial",
+            json!({"x":0.47,"y":0.53,"radius_x":0.31,"radius_y":0.27,"angle":0.0,"feather":0.0}),
+        ));
+        let mut stack = recipe(vec![
+            Layer {
+                id: LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"exposure": 1.0}),
+                mask: Some(mask.id.clone()),
+                artifacts: Vec::new(),
+            },
+            Layer {
+                id: LayerId::new(),
+                effect_id: crate::PRESENCE_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"dehaze": 60.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            },
+        ]);
+        stack.masks.push(mask);
+        stack
+    }
+
+    #[test]
+    fn estimate_identity_tracks_upstream_mask_values_on_both_paths() {
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        let byte = gradient(40, 30);
+        let linear = linear_source(40, 30);
+        let seed = masked_colour_before_dehaze();
+        let mut variants = vec![seed.clone(); 3];
+        variants[0].masks[0].amount = 25.0;
+        variants[1].masks[0].invert = true;
+        variants[2].masks[0].components[0].payload["radius_x"] = json!(0.12);
+        for linear_path in [false, true] {
+            let render = |stack: &Recipe| {
+                if linear_path {
+                    crate::render_linear(
+                        &registry,
+                        &linear,
+                        SnapshotId::new(),
+                        stack,
+                        LinearSettings::default(),
+                    )
+                    .unwrap()
+                } else {
+                    crate::render(&registry, &byte, SnapshotId::new(), stack).unwrap()
+                }
+            };
+            for changed in &variants {
+                clear_estimates();
+                let seed_frame = render(&seed);
+                let cached = render(changed);
+                assert_eq!(
+                    cached_estimates(),
+                    2,
+                    "same mask ID with different pixels must miss"
+                );
+                clear_estimates();
+                let fresh = render(changed);
+                assert_eq!(
+                    cached.rgba, fresh.rgba,
+                    "no old atmosphere after a mask edit"
+                );
+                assert_ne!(
+                    seed_frame.rgba, fresh.rgba,
+                    "the fixture makes this mask edit visible"
+                );
+                let sample = if linear_path {
+                    crate::sample_linear(
+                        &registry,
+                        &linear,
+                        changed,
+                        LinearSettings::default(),
+                        17,
+                        13,
+                    )
+                    .unwrap()
+                } else {
+                    crate::sample(&registry, &byte, changed, 17, 13).unwrap()
+                };
+                assert_eq!(sample.rgba, cached.pixel(17, 13));
+            }
+        }
+        let prefix = &seed.layers[..1];
+        let original = prefix_hash(prefix, &seed.masks, MaskSampling::Point).unwrap();
+        let mut unrelated = seed.masks.clone();
+        unrelated.push(crate::Mask::new("Unrelated mask"));
+        assert_eq!(
+            prefix_hash(prefix, &unrelated, MaskSampling::Point).unwrap(),
+            original
+        );
+        // The operation's own mask also cannot affect the pixels its estimate reads.
+        let mut own_mask = seed.clone();
+        own_mask.layers[1].mask = Some(unrelated[1].id.clone());
+        assert_eq!(
+            prefix_hash(&own_mask.layers[..1], &unrelated, MaskSampling::Point).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn estimate_identity_separates_point_and_thin_feature_mask_sampling() {
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        let byte = gradient(40, 30);
+        let linear = linear_source(40, 30);
+        let stack = masked_colour_before_dehaze();
+        assert!(
+            registry
+                .compile_sampled(40, 30, &stack, MaskSampling::ThinFeature)
+                .unwrap()
+                .supersampled_masks()
+        );
+        for linear_path in [false, true] {
+            let render = |proxy| {
+                let id = SnapshotId::new();
+                let cancel = Cancel::new();
+                match (linear_path, proxy) {
+                    (false, false) => crate::render(&registry, &byte, id, &stack),
+                    (false, true) => crate::render::render_proxy_cancellable(
+                        &registry, &byte, id, &stack, &cancel,
+                    ),
+                    (true, false) => crate::render_linear(
+                        &registry,
+                        &linear,
+                        id,
+                        &stack,
+                        LinearSettings::default(),
+                    ),
+                    (true, true) => crate::render::linear::render_linear_proxy_cancellable(
+                        &registry,
+                        &linear,
+                        id,
+                        &stack,
+                        LinearSettings::default(),
+                        &cancel,
+                    ),
+                }
+                .unwrap()
+                .rgba
+            };
+            let expected = [false, true].map(|proxy| {
+                clear_estimates();
+                render(proxy)
+            });
+            assert_ne!(
+                expected[0], expected[1],
+                "thin-feature sampling changes this fixture"
+            );
+            for order in [[false, true], [true, false]] {
+                clear_estimates();
+                for proxy in order {
+                    assert_eq!(render(proxy), expected[usize::from(proxy)]);
+                }
+                assert_eq!(
+                    cached_estimates(),
+                    2,
+                    "sampling modes own distinct atmospheres"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn linear_estimate_identity_tracks_development_view_and_direct_exposure() {
+        let _guard = spatial_guard();
+        let registry = spatial_registry();
+        let stack = recipe(vec![spatial_layer(&["shift"])]);
+        let planes: Vec<f32> = (0..3)
+            .flat_map(|channel| {
+                (0..32).flat_map(move |y| {
+                    (0..48).map(move |x| ((x * x + y * 17 + channel * 31) % 251) as f32 / 300.0)
+                })
+            })
+            .collect();
+        // Public new() legitimately supplies no fingerprint; development identity must suffice.
+        let first = LinearImage::new(48, 32, planes.clone()).unwrap();
+        let second = LinearImage::new(
+            48,
+            32,
+            planes.iter().map(|value| value * 0.6).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let default = LinearSettings::default();
+        let cases = [
+            (first.clone(), default),
+            (second, default),
+            (first.with_view([0, 0, 24, 24], 1).unwrap(), default),
+            (first.with_view([16, 0, 24, 24], 1).unwrap(), default),
+            (first.with_view([0, 0, 24, 24], 2).unwrap(), default),
+            (
+                first.clone(),
+                LinearSettings {
+                    exposure_ev: 0.7,
+                    ..default
+                },
+            ),
+        ];
+        let render = |source: &LinearImage, settings| {
+            crate::render_linear(&registry, source, SnapshotId::new(), &stack, settings).unwrap()
+        };
+        let expected: Vec<_> = cases
+            .iter()
+            .map(|(source, settings)| {
+                clear_estimates();
+                render(source, *settings).rgba
+            })
+            .collect();
+        clear_estimates();
+        PREPARED.store(0, AtomicOrdering::SeqCst);
+        for (index, ((source, settings), expected)) in cases.iter().zip(expected).enumerate() {
+            let cached = render(source, *settings);
+            assert_eq!(
+                cached.rgba, expected,
+                "input case {index} must not reuse another input"
+            );
+            assert_eq!(PREPARED.load(AtomicOrdering::SeqCst), index + 1);
+            assert_eq!(cached_estimates(), index + 1);
+            assert_eq!(render(&source.clone(), *settings).rgba, expected);
+            let sampled =
+                crate::sample_linear(&registry, source, &stack, *settings, 7, 11).unwrap();
+            assert_eq!(sampled.rgba, cached.pixel(7, 11));
+            assert_eq!(
+                PREPARED.load(AtomicOrdering::SeqCst),
+                index + 1,
+                "clones and samples reuse the matching estimate"
             );
         }
     }

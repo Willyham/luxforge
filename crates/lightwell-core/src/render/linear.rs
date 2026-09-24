@@ -935,13 +935,22 @@ impl<'a> LinearEvaluation<'a> {
         stage: Stage,
         prefix_hash: &str,
     ) -> Result<Vec<Option<Global>>, Error> {
+        // Fingerprint alone does not identify developed pixels: public callers may omit it, two
+        // developments of a file differ, and crop/orientation views share their source's identity.
+        // Direct settings can also change exposure without changing the recipe prefix.
+        let input_prefix = format!(
+            "{prefix_hash}+linear:{}:{:?}:{:016x}",
+            self.source.development(),
+            self.source.view(),
+            self.exposure_multiplier.to_bits()
+        );
         // The estimate store is keyed by the recipe prefix, which an approximate white balance
         // does not change: the drafted recipe names the target gains whichever planes it is
         // evaluated over. So an approximate evaluation keys its estimates apart, and a committed
         // render of the same recipe never takes one estimated from approximate pixels.
         let approximate_prefix = self.white_balance.map(|balance| {
             format!(
-                "{prefix_hash}+white-balance-approximation:{}",
+                "{input_prefix}+white-balance-approximation:{}",
                 balance.key()
             )
         });
@@ -949,7 +958,7 @@ impl<'a> LinearEvaluation<'a> {
             operation,
             stage,
             self.source.fingerprint(),
-            approximate_prefix.as_deref().unwrap_or(prefix_hash),
+            approximate_prefix.as_deref().unwrap_or(&input_prefix),
             || build_reduction(stage, |x, y| self.spatial_read(index, x, y)),
         )
     }
