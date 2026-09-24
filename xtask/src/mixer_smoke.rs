@@ -42,15 +42,6 @@ const CHANGED: f64 = 20.0;
 /// How close two mean channel readings must stay before this scenario calls a patch unaffected.
 const UNCHANGED: f64 = 10.0;
 
-/// One open frame plus one per script step.
-pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == "mixer").then_some(11)
-}
-
-pub fn source(scenario: &str) -> Option<&'static str> {
-    (scenario == "mixer").then_some(FIXTURE)
-}
-
 /// The evidence script. Each step is one gesture, one request or one decision; `verify` below
 /// checks exactly what each one is supposed to prove.
 pub fn script(scenario: &str) -> Option<Value> {

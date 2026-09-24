@@ -1,3 +1,8 @@
+//! The smoke runner: every scenario is one row of [`SCENARIOS`], and every row runs through
+//! [`launch_all`] unless its shape needs a function of its own. A row names the scenario, its
+//! launches — each with the [`Plan`] its script and frame count are derived from — the scenario's
+//! own checks, what it opens and the window it opens at. `smoke --list`, [`dispatch`], the replay
+//! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
     crop_smoke as crop, gallery_smoke as gallery, histogram_smoke as histogram,
@@ -5,120 +10,768 @@ use crate::{
     mask_range_smoke as mask_range, mask_smoke as mask, mixer_smoke as mixer,
     performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
     raw_panel_smoke as raw_panel,
-    scenario::{Expect, Frame, Launch, Run, preamble},
+    scenario::{Checked, Fixture, Launch, Plan, Run, Step, launch::Guard},
     vignette_smoke as vignette, workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
-use std::{borrow::Borrow, time::Duration};
-/// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
-/// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
-pub const SCENARIOS: [&str; 30] = [
-    "empty",
-    "load",
-    "replacement",
-    "invalid",
-    "repeated",
-    "alternating",
-    "large24",
-    "large60",
-    "zoom",
-    "crop",
-    "crop-draft",
-    "workspace",
-    "basic",
-    "basic-panel",
-    "basic-crop",
-    "basic-restart",
-    "histogram",
-    "presence",
-    "mixer",
-    "vignette",
-    "presets",
-    mask::SCENARIO,
-    mask_combine::SCENARIO,
-    mask_brush::SCENARIO,
-    mask_range::SCENARIO,
-    "performance",
-    "gallery",
-    "controls",
-    "capabilities",
-    "unavailable",
-];
+use std::{borrow::Borrow, process::ExitStatus, time::Duration};
 
-/// What one scenario runs: a scenario of its own shape, or one plain launch over its sources.
-enum Plan {
-    Own(fn(Run) -> Result),
-    Plain(Vec<PathBuf>),
+/// The window the design's layout constants are written against.
+pub const PANELLED: [&str; 2] = ["1440", "900"];
+const ORIENTATION_6: &str = "fixtures/s0/orientation-6.jpg";
+const ORIENTATION_1: &str = "fixtures/s0/orientation-1.jpg";
+const INVALID: &str = "fixtures/s0/invalid.jpg";
+
+/// What a scenario opens.
+#[derive(Clone, Copy, Debug)]
+pub enum Source {
+    /// These fixtures, in order, relative to the checkout; none opens nothing.
+    Fixtures(&'static [&'static str]),
+    /// These fixtures, unless `--source` names a photograph to open instead.
+    Default(&'static [&'static str]),
+    /// Only the photograph `--source` names: no checkout holds one, so the scenario is outside
+    /// `rendered`.
+    Supplied,
 }
 
-/// The plan for `scenario`, or the reason it has none. The scenarios that are not a single plain
-/// launch are named here: a module can only be disabled at startup, persistence across a restart
-/// and a mask reopened in a new process need a second launch, `zoom` runs its script over the 24 MP
-/// and the 60 MP photograph in turn, and the capability scenario runs its proof endpoint in this
-/// process. `sources`, when given, replaces a plain scenario's own fixtures.
-fn plan(root: &Path, scenario: &str, sources: Option<Vec<PathBuf>>) -> Result<Plan> {
-    Ok(match scenario {
-        "unavailable" => Plan::Own(workspace::unavailable),
-        "basic-restart" => Plan::Own(basic::restart),
-        zoom::SCENARIO => Plan::Own(zoom::run),
-        "capabilities" => Plan::Own(capabilities::run),
-        // Two launches over one catalog: the mask is drawn and edited in the first, reopened in
-        // the second.
-        mask::SCENARIO => Plan::Own(mask::run),
-        // Four components in three modes in one mask, its coverage read off the overlay.
-        mask_combine::SCENARIO => Plan::Own(mask_combine::run),
-        // Three launches: strokes painted, erased and deleted in the first, a subtracting brush in
-        // the second, and painting carried on in the third over the edge, at 100% and under a
-        // rotated crop.
-        mask_brush::SCENARIO => Plan::Own(mask_brush::run),
-        // Two launches over one catalog: the range selections typed, picked and combined in the
-        // first, and their own limits taken one at a time in the second.
-        mask_range::SCENARIO => Plan::Own(mask_range::run),
-        _ => Plan::Plain(match sources {
-            Some(sources) => sources,
-            None => sources_for(root, scenario)?,
-        }),
-    })
+/// Waits for a launched editor in place of the ordinary wait, and returns what it recorded.
+pub type Watch = fn(&mut Guard, Duration) -> Result<(ExitStatus, Value)>;
+
+/// One editor launch of a scenario.
+#[derive(Clone, Copy)]
+pub struct LaunchSpec {
+    /// Its evidence directory, `app` for a scenario's one launch, with its log beside it.
+    pub name: &'static str,
+    /// The file its script is kept in.
+    pub script: &'static str,
+    /// Every frame it captures and what each must show, over the sources the run opens.
+    pub plan: fn(&[PathBuf]) -> Plan,
+    /// The earlier launch whose catalog it reopens.
+    pub catalog: Option<&'static str>,
+    /// Built-in modules registered as unavailable.
+    pub disable: &'static [&'static str],
+    pub developer: bool,
+    /// A watcher to wait with, and the file what it records is kept in.
+    pub watch: Option<(&'static str, Watch)>,
 }
 
-fn execute(run: Run, plan: Plan) -> Result {
-    match plan {
-        Plan::Own(scenario) => scenario(run),
-        Plan::Plain(sources) => plain(run, sources),
+/// A scenario's one launch, as the rows spell it with `..APP`.
+pub const APP: LaunchSpec = LaunchSpec {
+    name: "app",
+    script: "script.json",
+    plan: |_| Plan::default(),
+    catalog: None,
+    disable: &[],
+    developer: false,
+    watch: None,
+};
+
+/// The scenario's own checks, over every launch's evidence once its plan has held, in launch order.
+pub type Verify = fn(&mut Run, &[Checked]) -> Result;
+
+/// One row of the table.
+pub struct Scenario {
+    pub name: &'static str,
+    /// What it proves, in a line, for `smoke --list`.
+    pub about: &'static str,
+    pub launches: &'static [LaunchSpec],
+    pub verify: Verify,
+    pub source: Source,
+    pub window: Option<[&'static str; 2]>,
+    /// A scenario whose shape a list of launches cannot say runs its own function instead, through
+    /// the same library and with the same launches and checks: `zoom` makes its launch once per
+    /// photograph, each a whole run of its own, and `capabilities` starts a proof endpoint in this
+    /// process for its launch to talk to and scans everything the run wrote for its secret.
+    pub own: Option<fn(Run, &'static Scenario, Vec<PathBuf>) -> Result>,
+}
+
+impl Scenario {
+    /// Whether `verify --tier rendered` runs it: everything a checkout can open.
+    pub fn rendered(&self) -> bool {
+        !matches!(self.source, Source::Supplied)
+    }
+
+    /// Whether `--source` may replace what it opens.
+    pub fn takes_source(&self) -> bool {
+        matches!(self.source, Source::Default(_) | Source::Supplied)
+    }
+
+    /// What it opens: `given` when `--source` named one, else its own fixtures.
+    fn sources(&self, root: &Path, given: Option<Vec<PathBuf>>) -> Result<Vec<PathBuf>> {
+        match (self.source, given) {
+            (_, Some(given)) => {
+                ensure(
+                    self.takes_source(),
+                    format!("--source is only for {}", sourced().join(" and ")),
+                )?;
+                Ok(given)
+            }
+            (Source::Fixtures(fixtures) | Source::Default(fixtures), None) => {
+                Ok(fixtures.iter().map(|fixture| root.join(fixture)).collect())
+            }
+            (Source::Supplied, None) => {
+                Err(format!("The {} scenario needs --source RAW_FILE", self.name).into())
+            }
+        }
     }
 }
 
-/// Run one scenario into `out`.
-pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
-    let plan = plan(root, scenario, None)?;
-    execute(Run::start(root, out, scenario, bin, timeout)?, plan)
+/// The scenarios `--source` may be given to.
+fn sourced() -> Vec<&'static str> {
+    SCENARIOS
+        .iter()
+        .filter(|scenario| scenario.takes_source())
+        .map(|scenario| scenario.name)
+        .collect()
 }
 
-/// Run one plain scenario over the given sources: a scenario whose photograph cannot be checked in
-/// (`raw-panel`) is handed its source instead.
-pub fn run_sources(
+/// Every scenario, in the order `verify --tier rendered` runs them.
+pub static SCENARIOS: &[Scenario] = &[
+    Scenario {
+        name: "empty",
+        about: "The editor with nothing open",
+        launches: &[LaunchSpec {
+            plan: |_| Plan::new(vec![Step::opened("empty")]),
+            ..APP
+        }],
+        verify: plain,
+        source: Source::Fixtures(&[]),
+        window: None,
+        own: None,
+    },
+    Scenario {
+        name: "load",
+        about: "One JPEG opened at Fit",
+        launches: &[LaunchSpec { plan: opens, ..APP }],
+        verify: plain,
+        source: Source::Fixtures(&[ORIENTATION_6]),
+        window: None,
+        own: None,
+    },
+    Scenario {
+        name: "replacement",
+        about: "A JPEG replaced by an invalid file, which fails with the photograph kept",
+        launches: &[LaunchSpec {
+            plan: |_| {
+                Plan::new(vec![
+                    Step::opened("opened"),
+                    Step::opened("replaced").refused("invalid-input"),
+                ])
+            },
+            ..APP
+        }],
+        verify: plain,
+        source: Source::Fixtures(&[ORIENTATION_6, INVALID]),
+        window: None,
+        own: None,
+    },
+    Scenario {
+        name: "invalid",
+        about: "An invalid file refused on open",
+        launches: &[LaunchSpec {
+            plan: |_| Plan::new(vec![Step::opened("refused").refused("invalid-input")]),
+            ..APP
+        }],
+        verify: plain,
+        source: Source::Fixtures(&[INVALID]),
+        window: None,
+        own: None,
+    },
+    Scenario {
+        name: "repeated",
+        about: "One JPEG opened eight times, each open displayed",
+        launches: &[LaunchSpec { plan: opens, ..APP }],
+        verify: plain,
+        source: Source::Fixtures(&[ORIENTATION_6; 8]),
+        window: None,
+        own: None,
+    },
+    Scenario {
+        name: "alternating",
+        about: "Two orientations opened in turn, four times each",
+        launches: &[LaunchSpec { plan: opens, ..APP }],
+        verify: plain,
+        source: Source::Fixtures(&[
+            ORIENTATION_6,
+            ORIENTATION_1,
+            ORIENTATION_6,
+            ORIENTATION_1,
+            ORIENTATION_6,
+            ORIENTATION_1,
+            ORIENTATION_6,
+            ORIENTATION_1,
+        ]),
+        window: None,
+        own: None,
+    },
+    Scenario {
+        name: "large24",
+        about: "The generated 24 MP JPEG at Fit, shown as its proxy",
+        launches: &[LaunchSpec { plan: opens, ..APP }],
+        verify: plain,
+        source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
+        window: None,
+        own: None,
+    },
+    Scenario {
+        name: "large60",
+        about: "The generated 60 MP JPEG at Fit, shown as its proxy",
+        launches: &[LaunchSpec { plan: opens, ..APP }],
+        verify: plain,
+        source: Source::Fixtures(&["fixtures/generated/60mp.jpg"]),
+        window: None,
+        own: None,
+    },
+    Scenario {
+        name: zoom::SCENARIO,
+        about: "Percentage zooms, pans and idle frames over the 24 MP and 60 MP JPEGs, one run each",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, zoom::script(zoom::SCENARIO)),
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(zoom::verify, launches),
+        source: Source::Fixtures(&["fixtures/generated/24mp.jpg", "fixtures/generated/60mp.jpg"]),
+        window: Some(PANELLED),
+        own: Some(|run, _, _| zoom::run(run)),
+    },
+    Scenario {
+        name: "crop",
+        about: "Crop actions, a draft cancelled and one applied",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, crop::script("crop").ok().flatten()),
+            ..APP
+        }],
+        verify: |run, launches| {
+            let scenario = run.scenario().to_owned();
+            legacy::verify(
+                |evidence, app, events| crop::verify(evidence, &scenario, app, events),
+                launches,
+            )
+        },
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(["1280", "800"]),
+        own: None,
+    },
+    Scenario {
+        name: "crop-draft",
+        about: "The crop draft's gestures and controls at Fit and 100%",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, crop::script("crop-draft").ok().flatten()),
+            ..APP
+        }],
+        verify: |run, launches| {
+            let scenario = run.scenario().to_owned();
+            legacy::verify(
+                |evidence, app, events| crop::verify(evidence, &scenario, app, events),
+                launches,
+            )
+        },
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(["1280", "800"]),
+        own: None,
+    },
+    Scenario {
+        name: "workspace",
+        about: "Panels, canvas mode, thirds, a historical preview, a conflict and the palette",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, workspace::script("workspace")),
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(workspace::verify, launches),
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "basic",
+        about: "The Exposure slider's whole gesture: draft, commit, typed value, undo, reset and conflict",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, basic::script("basic")),
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(basic::verify, launches),
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "basic-panel",
+        about: "The whole Basic section, historical values, a group reset and the neutral picker",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, basic::panel_script("basic-panel")),
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(basic::verify_panel, launches),
+        source: Source::Fixtures(&["fixtures/s0/greyscale.jpg"]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "basic-crop",
+        about: "Basic composed with a crop and a straighten",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, histogram::crop_script("basic-crop")),
+            ..APP
+        }],
+        verify: |run, launches| {
+            let root = run.root().to_owned();
+            legacy::verify(
+                |evidence, app, events| histogram::verify_crop(&root, evidence, app, events),
+                launches,
+            )
+        },
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "basic-restart",
+        about: "A Basic edit committed in one launch and reopened in the next",
+        launches: &[],
+        verify: |_, _| Ok(()),
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        own: Some(|run, _, _| basic::restart(run)),
+    },
+    Scenario {
+        name: "histogram",
+        about: "The histogram, its clipping overlays, the pointer readout and a drafted frame",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, histogram::script("histogram")),
+            ..APP
+        }],
+        verify: |run, launches| {
+            let root = run.root().to_owned();
+            legacy::verify(
+                |evidence, app, events| histogram::verify(&root, evidence, app, events),
+                launches,
+            )
+        },
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "presence",
+        about: "Texture, Clarity and Dehaze over a generated gradient, edge, texture and flat field",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, presence::script("presence")),
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(presence::verify, launches),
+        source: Source::Fixtures(&[presence::FIXTURE]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "mixer",
+        about: "The Colour mixer over a generated hue wheel",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, mixer::script("mixer")),
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(mixer::verify, launches),
+        source: Source::Fixtures(&[mixer::FIXTURE]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "vignette",
+        about: "Vignette amount, roundness and feather, a post-crop recentre and the reset",
+        launches: &[LaunchSpec {
+            plan: vignette::plan,
+            ..APP
+        }],
+        verify: vignette::verify,
+        source: Source::Fixtures(&[vignette::FIXTURE]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "presets",
+        about: "Presets imported, applied, undone, created, listed and deleted",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, presets::script("presets")),
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(presets::verify, launches),
+        source: Source::Fixtures(&[presets::FIXTURE]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: mask::SCENARIO,
+        about: "A linear mask drawn and edited through, then reopened in a second launch",
+        launches: &[],
+        verify: |_, _| Ok(()),
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        own: Some(|run, _, _| mask::run(run)),
+    },
+    Scenario {
+        name: mask_combine::SCENARIO,
+        about: "Four radial components in three modes in one mask, its coverage read off the overlay",
+        launches: &[],
+        verify: |_, _| Ok(()),
+        source: Source::Fixtures(&["fixtures/generated/presence.jpg"]),
+        window: Some(PANELLED),
+        own: Some(|run, _, _| mask_combine::run(run)),
+    },
+    Scenario {
+        name: mask_brush::SCENARIO,
+        about: "Brush strokes painted, erased and deleted, a subtracting brush, and painting over the edge, at 100% and under a rotated crop",
+        launches: &[],
+        verify: |_, _| Ok(()),
+        source: Source::Fixtures(&["fixtures/generated/presence.jpg"]),
+        window: Some(PANELLED),
+        own: Some(|run, _, _| mask_brush::run(run)),
+    },
+    Scenario {
+        name: mask_range::SCENARIO,
+        about: "Luminance and colour range selections typed, picked and combined, then their limits",
+        launches: &[],
+        verify: |_, _| Ok(()),
+        source: Source::Fixtures(&["fixtures/generated/range.jpg"]),
+        window: Some(PANELLED),
+        own: Some(|run, _, _| mask_range::run(run)),
+    },
+    Scenario {
+        name: performance::SCENARIO,
+        about: "The Performance section while a heavy edit renders, against the runner's own readings",
+        launches: &[LaunchSpec {
+            plan: |sources| {
+                legacy::numbered(1, performance::script(performance::SCENARIO, sources))
+            },
+            watch: Some((performance::READINGS, performance::watch)),
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(performance::verify, launches),
+        source: Source::Default(&[performance::FIXTURE]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "gallery",
+        about: "All 78 widget gallery states across ten pages",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, gallery::script("gallery")),
+            developer: true,
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(gallery::verify, launches),
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(gallery::WINDOW),
+        own: None,
+    },
+    Scenario {
+        name: "controls",
+        about: "The developer proof's generated controls and identity layer",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, controls::script("controls")),
+            developer: true,
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(controls::verify, launches),
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        own: None,
+    },
+    Scenario {
+        name: "capabilities",
+        about: "Module capabilities against a loopback proof endpoint in this process",
+        launches: &[],
+        verify: |_, _| Ok(()),
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        own: Some(|run, _, _| capabilities::run(run)),
+    },
+    Scenario {
+        name: "unavailable",
+        about: "A committed crop reopened with the crop module disabled: reported, never omitted",
+        launches: &[],
+        verify: |_, _| Ok(()),
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        own: Some(|run, _, _| workspace::unavailable(run)),
+    },
+    Scenario {
+        name: raw_panel::SCENARIO,
+        about: "The RAW section, double-click resets and a crop over a supplied RAW file",
+        launches: &[LaunchSpec {
+            plan: |_| legacy::numbered(1, raw_panel::script(raw_panel::SCENARIO)),
+            ..APP
+        }],
+        verify: |_, launches| legacy::verify(raw_panel::verify, launches),
+        source: Source::Supplied,
+        window: Some(PANELLED),
+        own: None,
+    },
+];
+
+/// The row named `name`.
+pub fn find(name: &str) -> Result<&'static Scenario> {
+    SCENARIOS
+        .iter()
+        .find(|scenario| scenario.name == name)
+        .ok_or_else(|| format!("Unknown smoke scenario {name:?}; `smoke --list` names them").into())
+}
+
+/// `smoke --list`: every row, in table order.
+pub fn list(root: &Path) -> String {
+    let mut text = String::new();
+    for scenario in SCENARIOS {
+        let sources = scenario.sources(root, None).unwrap_or_default();
+        let launches = if scenario.launches.is_empty() {
+            "its own".to_owned()
+        } else {
+            scenario
+                .launches
+                .iter()
+                .map(|launch| {
+                    let frames = (launch.plan)(&sources).len();
+                    format!(
+                        "{} ({frames} frame{})",
+                        launch.name,
+                        if frames == 1 { "" } else { "s" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let source = match scenario.source {
+            Source::Fixtures([]) => "nothing".to_owned(),
+            Source::Fixtures(fixtures) => fixtures.join(" "),
+            Source::Default(fixtures) => format!("{} or --source", fixtures.join(" ")),
+            Source::Supplied => "--source RAW (not in rendered)".to_owned(),
+        };
+        let window = scenario
+            .window
+            .map_or("default".to_owned(), |[width, height]| {
+                format!("{width}x{height}")
+            });
+        text.push_str(&format!(
+            "{}\n    {}\n    launches: {launches}; opens: {source}; window: {window}\n",
+            scenario.name, scenario.about
+        ));
+    }
+    text
+}
+
+fn execute(run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
+    match scenario.own {
+        Some(own) => own(run, scenario, sources),
+        None => launch_all(run, scenario, sources),
+    }
+}
+
+/// Run one scenario into `out`, over its own fixtures or, for a scenario that takes one, the
+/// photograph `--source` names.
+pub fn dispatch(
     root: &Path,
     out: &Path,
-    scenario: &str,
+    name: &str,
     bin: &Path,
     timeout: Duration,
-    sources: Vec<PathBuf>,
+    source: Option<Vec<PathBuf>>,
 ) -> Result {
-    let plan = plan(root, scenario, Some(sources))?;
-    execute(Run::start(root, out, scenario, bin, timeout)?, plan)
+    let scenario = find(name)?;
+    let sources = scenario.sources(root, source)?;
+    execute(
+        Run::start(root, out, name, bin, timeout)?,
+        scenario,
+        sources,
+    )
 }
 
 /// Rerun a recorded run's checks without launching: `recorded` is copied into `out` and the
-/// scenario's own code runs over the copy, each launch being the one recorded there. `sources`
+/// scenario's own code runs over the copy, each launch being the one recorded there. `source`
 /// names a `--source` run's source again.
 pub fn verify_only(
     root: &Path,
     recorded: &Path,
     out: &Path,
-    scenario: &str,
-    sources: Option<Vec<PathBuf>>,
+    name: &str,
+    source: Option<Vec<PathBuf>>,
 ) -> Result {
-    let plan = plan(root, scenario, sources)?;
-    execute(Run::replay(root, recorded, out, scenario)?, plan)
+    let scenario = find(name)?;
+    let sources = scenario.sources(root, source)?;
+    execute(Run::replay(root, recorded, out, name)?, scenario, sources)
+}
+
+/// Every launch of `scenario` over `sources`, in order, each checked against its plan as soon as
+/// it exits, then the scenario's own checks over all of them.
+pub fn launch_all(run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> Result {
+    run.check(|run| {
+        for source in &sources {
+            ensure(
+                source.is_file(),
+                if source.starts_with(run.root().join("fixtures/generated")) {
+                    format!(
+                        "{} is missing; run `cargo xtask generate-fixtures --output fixtures/generated`",
+                        source.display()
+                    )
+                } else {
+                    format!("{} is missing", source.display())
+                },
+            )?;
+        }
+        run.hash(&sources)?;
+        let mut checked = Vec::with_capacity(scenario.launches.len());
+        for spec in scenario.launches {
+            let plan = (spec.plan)(&sources);
+            let mut launch = if spec.name == APP.name {
+                Launch::app()
+            } else {
+                Launch::named(spec.name)
+            };
+            if let Some(earlier) = spec.catalog {
+                let catalog = run.out().join(earlier).join("catalog.sqlite");
+                ensure(catalog.is_file(), format!("Launch {earlier} wrote no catalog"))?;
+                launch = launch.catalog(&catalog);
+            }
+            for module in spec.disable {
+                launch = launch.disable(module);
+            }
+            if spec.developer {
+                launch = launch.developer();
+            }
+            launch = launch.open_all(&sources);
+            if plan.scripted() {
+                launch = launch.script(spec.script, plan.script());
+            }
+            if let Some(window) = scenario.window {
+                launch = launch.window(window);
+            }
+            if let Some((file, watch)) = spec.watch {
+                launch = launch.watch(file, Box::new(watch));
+            }
+            let evidence = run.launch(launch)?;
+            checked.push(plan.check(&evidence)?);
+        }
+        (scenario.verify)(run, &checked)?;
+        run.sources_unchanged()?;
+        run.record(
+            "backend",
+            checked
+                .last()
+                .and_then(|launch| launch.frames.last())
+                .map_or(Value::Null, |frame| frame.state()["backend"].clone()),
+        );
+        Ok(())
+    })
+}
+
+/// A launch that opens each source in turn, one frame per open.
+fn opens(sources: &[PathBuf]) -> Plan {
+    Plan::new(
+        (1..=sources.len())
+            .map(|number| Step::opened(format!("open-{number}")))
+            .collect(),
+    )
+}
+
+/// The checks of the scenarios that only open files: each frame is the open it follows, ready or
+/// failed as its plan says, the photograph the fixture at its own orientation and size, displayed
+/// and uploaded; the photo-sized ones report the proxy's own render time.
+fn plain(run: &mut Run, launches: &[Checked]) -> Result {
+    plain_checks(run.scenario(), &launches[0])
+}
+
+fn plain_checks(scenario: &str, launch: &Checked) -> Result {
+    let empty = scenario == "empty";
+    for (index, frame) in launch.frames.iter().enumerate() {
+        let state = frame.state();
+        let generation = if empty { 0 } else { index + 1 };
+        let orientation =
+            if scenario.starts_with("large") || (scenario == "alternating" && index % 2 == 1) {
+                1
+            } else {
+                6
+            };
+        ensure(
+            state["requested_generation"] == generation,
+            "Wrong requested generation",
+        )?;
+        if matches!(scenario, "empty" | "invalid") {
+            ensure(
+                state["phase"] == if empty { "empty" } else { "error" }
+                    && state["displayed_generation"] == 0,
+                "Wrong empty/error state",
+            )?;
+            let colors: std::collections::BTreeSet<_> = frame
+                .image()?
+                .pixels()
+                .map(|p| p.0)
+                .take(20_000_000)
+                .collect();
+            ensure(colors.len() > 10, "Blank empty UI")?;
+        } else {
+            let displayed = if matches!(scenario, "repeated" | "alternating") {
+                generation
+            } else {
+                1
+            };
+            ensure(
+                state["displayed_generation"] == displayed,
+                "Stale displayed image",
+            )?;
+            let dims = match scenario {
+                "large24" => [6000, 4000],
+                "large60" => [10000, 6000],
+                _ if orientation == 1 => [480, 320],
+                _ => [320, 480],
+            };
+            ensure(
+                state["source_dimensions"] == json!(dims),
+                "Wrong dimensions",
+            )?;
+            let failed = scenario == "replacement" && index == 1;
+            ensure(
+                state["phase"] == if failed { "error" } else { "ready" },
+                "Wrong phase",
+            )?;
+            frame.fixture(Fixture {
+                aspect: match scenario {
+                    "large24" => Some(1.5),
+                    "large60" => Some(5.0 / 3.0),
+                    _ => None,
+                },
+                ..Fixture::fit(orientation)
+            })?;
+            ensure(
+                launch.events.iter().any(|e| {
+                    e["event"] == "render_ready" && e["generation"] == state["displayed_generation"]
+                }),
+                "Missing upload readiness",
+            )?;
+        }
+    }
+    if scenario.starts_with("large") {
+        // A photo-sized source at Fit is shown as its display proxy, so the status bar's figure is
+        // the proxy phase's own render time and says so. A capture can land while a refit or the
+        // exact phase is still running, when the bar says "Rendering…"; the figure behind it is
+        // still recorded, and it must be the proxy's.
+        let record = expect_render_times(&launch.events, &launch.frames)?;
+        ensure(
+            launch.frames.iter().all(|frame| {
+                let bar = &frame.state()["status_bar"];
+                bar["render_proxy"] == json!(true)
+                    && bar["render"].as_str().is_some_and(|text| {
+                        text.ends_with("(proxy)") || text == "Rendering\u{2026}"
+                    })
+            }),
+            "A photo-sized frame at Fit does not report the proxy's render time",
+        )?;
+        write_json(&launch.evidence.join("render-times.json"), &record)?;
+    }
+    Ok(())
+}
+
+/// Check an `empty` launch's evidence made elsewhere, as `measure` does for its empty-shell
+/// launches.
+pub fn check_empty(evidence: &Path) -> Result {
+    let scenario = find("empty")?;
+    let launch = (scenario.launches[0].plan)(&[]).check(evidence)?;
+    plain_checks(scenario.name, &launch)
 }
 
 /// The longest plausible render of one preview phase on the fixtures a scenario opens, in
@@ -233,327 +886,39 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
     Ok(json!({"bound_ms":RENDER_MS_BOUND,"preview_displayed":displayed,"status_bar":shown}))
 }
 
-/// Evidence records the parser's explicit default `finish: open` on picker/curve steps. Match a
-/// script's shorter spelling to that same parsed request without weakening any other field.
-pub fn script_request_matches(recorded: &Value, scripted: &Value) -> bool {
-    let mut normalized = recorded.clone();
-    for kind in ["picker", "curve"] {
-        if scripted
-            .get(kind)
-            .is_some_and(|step| step.get("finish").is_none())
-            && let Some(object) = normalized.get_mut(kind).and_then(Value::as_object_mut)
-        {
-            object.remove("finish");
-        }
+/// Scaffolding while the scenarios move onto plans; removed once the last one has.
+mod legacy {
+    use super::*;
+
+    /// `opens` open frames, then one step per scripted step, each named by its frame's position.
+    pub fn numbered(opens: usize, script: Option<Value>) -> Plan {
+        let script = script.unwrap_or_else(|| json!([]));
+        Plan::new(
+            (0..opens)
+                .map(|index| Step::opened(format!("frame-{index}")))
+                .chain(
+                    script
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                        .map(|(index, step)| {
+                            Step::new(format!("frame-{}", opens + index), step.clone())
+                        }),
+                )
+                .collect(),
+        )
     }
-    normalized == *scripted
+
+    pub fn verify(
+        verify: impl FnOnce(&Path, &Value, &[Value]) -> Result,
+        launches: &[Checked],
+    ) -> Result {
+        let launch = &launches[0];
+        verify(&launch.evidence, &launch.app, &launch.events)
+    }
 }
 
-pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
-    if let Some(frames) = gallery::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        gallery::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = controls::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        controls::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = crop::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        crop::verify(evidence, scenario, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = workspace::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        workspace::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = basic::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        basic::verify_scenario(evidence, scenario, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = histogram::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        if scenario == "basic-crop" {
-            histogram::verify_crop(&root()?, evidence, &app, &events)?;
-        } else {
-            histogram::verify(&root()?, evidence, &app, &events)?;
-        }
-        return Ok(app);
-    }
-    if let Some(frames) = presence::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        presence::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = mixer::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        mixer::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = vignette::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        vignette::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = presets::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        presets::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = zoom::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        zoom::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = raw_panel::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        raw_panel::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    if let Some(frames) = performance::frames(scenario) {
-        let (app, events) = preamble(evidence, frames)?;
-        performance::verify(evidence, &app, &events)?;
-        return Ok(app);
-    }
-    let (app, events) = preamble(evidence, count.max(1))?;
-    let frames = app["frames"].as_array().ok_or("Missing frames")?;
-    for (index, frame) in frames.iter().enumerate() {
-        let state = &frame["state"];
-        let generation = if count == 0 { 0 } else { index + 1 };
-        let orientation =
-            if scenario.starts_with("large") || (scenario == "alternating" && index % 2 == 1) {
-                1
-            } else {
-                6
-            };
-        ensure(state["run_id"] == app["run_id"], "Wrong frame run identity")?;
-        ensure(
-            state["requested_generation"] == generation,
-            "Wrong requested generation",
-        )?;
-        let captured = Frame::identified(evidence, &app, frame)?;
-        if matches!(scenario, "empty" | "invalid") {
-            ensure(
-                state["phase"]
-                    == if scenario == "empty" {
-                        "empty"
-                    } else {
-                        "error"
-                    }
-                    && state["displayed_generation"] == 0,
-                "Wrong empty/error state",
-            )?;
-            if scenario == "invalid" {
-                ensure(state["error_code"] == "invalid-input", "Wrong error")?;
-            }
-            let img = captured.image()?;
-            let colors: std::collections::BTreeSet<_> =
-                img.pixels().map(|p| p.0).take(20_000_000).collect();
-            ensure(colors.len() > 10, "Blank empty UI")?;
-        } else {
-            let displayed = if matches!(scenario, "repeated" | "alternating") {
-                generation
-            } else {
-                1
-            };
-            ensure(
-                state["displayed_generation"] == displayed,
-                "Stale displayed image",
-            )?;
-            let dims = match scenario {
-                "large24" => [6000, 4000],
-                "large60" => [10000, 6000],
-                _ => {
-                    if orientation == 1 {
-                        [480, 320]
-                    } else {
-                        [320, 480]
-                    }
-                }
-            };
-            ensure(
-                state["source_dimensions"] == json!(dims),
-                "Wrong dimensions",
-            )?;
-            let failed = scenario == "replacement" && index == 1;
-            ensure(
-                state["phase"] == if failed { "error" } else { "ready" },
-                "Wrong phase",
-            )?;
-            if failed {
-                ensure(
-                    state["error_code"] == "invalid-input",
-                    "Wrong replacement error",
-                )?;
-            }
-            captured.fixture(Expect {
-                aspect: match scenario {
-                    "large24" => Some(1.5),
-                    "large60" => Some(5.0 / 3.0),
-                    _ => None,
-                },
-                ..Expect::fit(orientation)
-            })?;
-            ensure(
-                events.iter().any(|e| {
-                    e["event"] == "render_ready" && e["generation"] == state["displayed_generation"]
-                }),
-                "Missing upload readiness",
-            )?;
-        }
-    }
-    if scenario.starts_with("large") {
-        // A photo-sized source at Fit is shown as its display proxy, so the status bar's figure is
-        // the proxy phase's own render time and says so. A capture can land while a refit or the
-        // exact phase is still running, when the bar says "Rendering…"; the figure behind it is
-        // still recorded, and it must be the proxy's.
-        let record = expect_render_times(&events, frames)?;
-        ensure(
-            frames.iter().all(|frame| {
-                let bar = &frame["state"]["status_bar"];
-                bar["render_proxy"] == json!(true)
-                    && bar["render"].as_str().is_some_and(|text| {
-                        text.ends_with("(proxy)") || text == "Rendering\u{2026}"
-                    })
-            }),
-            "A photo-sized frame at Fit does not report the proxy's render time",
-        )?;
-        write_json(&evidence.join("render-times.json"), &record)?;
-    }
-    Ok(app)
-}
-
-/// The fixtures a plain scenario opens, in order.
-fn sources_for(root: &Path, scenario: &str) -> Result<Vec<PathBuf>> {
-    let fixture = root.join("fixtures/s0/orientation-6.jpg");
-    Ok(match scenario {
-        "empty" => vec![],
-        "load" => vec![fixture],
-        "replacement" => vec![fixture, root.join("fixtures/s0/invalid.jpg")],
-        "invalid" => vec![root.join("fixtures/s0/invalid.jpg")],
-        "repeated" => vec![fixture; 8],
-        "alternating" => (0..4)
-            .flat_map(|_| [fixture.clone(), root.join("fixtures/s0/orientation-1.jpg")])
-            .collect(),
-        "large24" => vec![root.join("fixtures/generated/24mp.jpg")],
-        "large60" => vec![root.join("fixtures/generated/60mp.jpg")],
-        // The crop scenarios drive the editor's crop workflow through an evidence script.
-        "crop" | "crop-draft" => vec![root.join("fixtures/s0/orientation-1.jpg")],
-        // `workspace` drives the panels, canvas mode, thirds, preview and palette; `basic` drives
-        // the generated Exposure slider's whole gesture. Both need the window size the design's
-        // layout constants are written against.
-        "workspace" | "basic" | "gallery" => {
-            vec![root.join("fixtures/s0/orientation-1.jpg")]
-        }
-        scenario if controls::source(scenario).is_some() => {
-            vec![root.join(controls::source(scenario).expect("controls fixture"))]
-        }
-        // `basic-panel` drives the rest of the Basic section and the neutral picker. It opens the
-        // greyscale fixture because the picker needs both a genuinely neutral patch to sample and
-        // a clipped one to be refused on, and that fixture has each: uniform grey quadrants and a
-        // white cross at code 255.
-        "basic-panel" => vec![root.join("fixtures/s0/greyscale.jpg")],
-        // `histogram` drives the inspector, the clipping overlays and the pointer readout over its
-        // own fixture, whose clipped pixels are known from the generator.
-        scenario if histogram::source(scenario).is_some() => {
-            vec![root.join(histogram::source(scenario).expect("the scenario's fixture"))]
-        }
-        // `presence` drives the section over a generated fixture holding a gradient, a step edge,
-        // a fine checker and a flat field, none of which the golden fixtures have on their own.
-        scenario if presence::source(scenario).is_some() => {
-            vec![root.join(presence::source(scenario).expect("the presence fixture"))]
-        }
-        // `mixer` drives the Colour mixer section over a generated hue wheel, so a hue rotation's
-        // continuity across the spectrum can be inspected; the golden fixtures hold only four flat
-        // quadrant colours.
-        scenario if mixer::source(scenario).is_some() => {
-            vec![root.join(mixer::source(scenario).expect("the mixer fixture"))]
-        }
-        // `vignette` drives the section over the ordinary quadrant fixture.
-        scenario if vignette::source(scenario).is_some() => {
-            vec![root.join(vignette::source(scenario).expect("the vignette fixture"))]
-        }
-        // `presets` imports, applies, creates and deletes library presets over the quadrant
-        // fixture, whose flat colours each preset moves.
-        scenario if presets::source(scenario).is_some() => {
-            vec![root.join(presets::source(scenario).expect("the presets fixture"))]
-        }
-        // `performance` samples the editor while a heavy edit renders, so it opens the generated
-        // 60 MP JPEG, whose exact render runs long enough to be listed as long work.
-        scenario if performance::source(scenario).is_some() => {
-            vec![root.join(performance::source(scenario).expect("the performance fixture"))]
-        }
-        raw_panel::SCENARIO => {
-            return Err("The raw-panel scenario needs --source RAW_FILE".into());
-        }
-        _ => return Err("Unknown smoke scenario".into()),
-    })
-}
-
-/// One plain launch of a scenario over `sources`, with its script and window, checked by
-/// [`verify`].
-pub fn plain(run: Run, sources: Vec<PathBuf>) -> Result {
-    let scenario = run.scenario().to_owned();
-    let mut launch = Launch::app();
-    if matches!(scenario.as_str(), "gallery" | "controls") {
-        launch = launch.developer();
-    }
-    launch = launch.open_all(&sources);
-    if let Some(script) = gallery::script(&scenario).or_else(|| controls::script(&scenario)) {
-        let window = if scenario == "gallery" {
-            gallery::WINDOW
-        } else {
-            controls::WINDOW
-        };
-        launch = launch.script("script.json", script).window(window);
-    } else if let Some(script) = crop::script(&scenario)? {
-        // The crop frames need room for the overlay at Fit and at 100%.
-        launch = launch.script("script.json", script).window(["1280", "800"]);
-    } else if let Some(script) = workspace::script(&scenario)
-        .or_else(|| basic::script(&scenario))
-        .or_else(|| basic::panel_script(&scenario))
-        .or_else(|| raw_panel::script(&scenario))
-        .or_else(|| performance::script(&scenario, &sources))
-    {
-        launch = launch
-            .script("script.json", script)
-            .window(workspace::WINDOW);
-    } else if let Some(script) = histogram::script(&scenario)
-        .or_else(|| histogram::crop_script(&scenario))
-        .or_else(|| presence::script(&scenario))
-        .or_else(|| mixer::script(&scenario))
-        .or_else(|| vignette::script(&scenario))
-        .or_else(|| presets::script(&scenario))
-        .or_else(|| zoom::script(&scenario))
-    {
-        launch = launch
-            .script("script.json", script)
-            .window(histogram::WINDOW);
-    }
-    // `performance` compares the memory the editor reports with readings the runner takes of the
-    // same process while it runs, so it waits by watching.
-    if performance::frames(&scenario).is_some() {
-        launch = launch.watch(performance::READINGS, Box::new(performance::watch));
-    }
-    run.check(|run| {
-        run.hash(&sources)?;
-        let evidence = run.launch(launch)?;
-        let app = verify(&evidence, &scenario, sources.len())?;
-        run.sources_unchanged()?;
-        run.record(
-            "backend",
-            app["frames"]
-                .as_array()
-                .and_then(|frames| frames.last())
-                .map_or(Value::Null, |frame| frame["state"]["backend"].clone()),
-        );
-        Ok(())
-    })
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,7 +988,8 @@ mod tests {
                 &out,
                 "load",
                 &tmp.path().join("absent"),
-                Duration::from_millis(100)
+                Duration::from_millis(100),
+                None,
             )
             .is_err()
         );
@@ -634,27 +1000,216 @@ mod tests {
         assert!(out.join("reproduce.md").is_file());
         assert!(!out.join("app/frame-1.png").exists());
     }
+
     #[test]
     fn missing_evidence_and_stale_generation_fail() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(verify(tmp.path(), "load", 1).is_err());
+        let load = || (find("load").unwrap().launches[0].plan)(&[PathBuf::from("x.jpg")]);
+        assert!(load().check(tmp.path()).is_err());
         fs::write(tmp.path().join("events.jsonl"),"{\"event\":\"startup\",\"run_id\":\"current\"}\n{\"event\":\"shutdown\",\"run_id\":\"current\"}\n").unwrap();
-        let mut app = json!({"status":"captured","run_id":"current","frames":[{"state":{"run_id":"old","requested_generation":1}}]});
-        write_json(&tmp.path().join("result.json"), &app).unwrap();
+        image::RgbImage::new(4, 4)
+            .save(tmp.path().join("frame-1.png"))
+            .unwrap();
+        let mut app = json!({"status":"captured","run_id":"current","had_input_errors":false,"frames":[{"file":"frame-1.png","capture_provenance":"window-renderer-readback","state":{"run_id":"old","requested_generation":1,"backend":{"backend":"metal","adapter":"a"}}}]});
+        let write = |app: &Value| {
+            write_json(&tmp.path().join("result.json"), app).unwrap();
+            write_json(&tmp.path().join("state-1.json"), &app["frames"][0]).unwrap();
+        };
+        write(&app);
         assert!(
-            verify(tmp.path(), "load", 1)
+            load()
+                .check(tmp.path())
                 .unwrap_err()
                 .to_string()
                 .contains("run identity")
         );
         app["frames"][0]["state"]["run_id"] = json!("current");
         app["frames"][0]["state"]["requested_generation"] = json!(0);
-        write_json(&tmp.path().join("result.json"), &app).unwrap();
+        write(&app);
+        let checked = load().check(tmp.path()).unwrap();
         assert!(
-            verify(tmp.path(), "load", 1)
+            plain_checks("load", &checked)
                 .unwrap_err()
                 .to_string()
                 .contains("generation")
         );
+    }
+
+    /// Every row's name is unique, every plan it can make is well formed, and every launch it
+    /// reopens a catalog from comes before it.
+    #[test]
+    fn every_row_is_well_formed() {
+        let root = root().unwrap();
+        let mut names = std::collections::BTreeSet::new();
+        for scenario in SCENARIOS {
+            assert!(
+                names.insert(scenario.name),
+                "{} is listed twice",
+                scenario.name
+            );
+            let sources = scenario
+                .sources(&root, None)
+                .unwrap_or_else(|_| vec![PathBuf::from("/raw/photo.nef")]);
+            for (index, spec) in scenario.launches.iter().enumerate() {
+                let plan = (spec.plan)(&sources);
+                assert!(
+                    plan.validate().is_ok(),
+                    "{}: {:?}",
+                    scenario.name,
+                    plan.validate()
+                );
+                assert!(!plan.is_empty(), "{} plans no frame", scenario.name);
+                if let Some(earlier) = spec.catalog {
+                    assert!(
+                        scenario.launches[..index]
+                            .iter()
+                            .any(|launch| launch.name == earlier),
+                        "{} reopens {earlier}'s catalog before it runs",
+                        scenario.name
+                    );
+                }
+            }
+            assert!(
+                !scenario.launches.is_empty() || scenario.own.is_some(),
+                "{} launches nothing",
+                scenario.name
+            );
+        }
+        assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
+        assert_eq!(sourced(), ["performance", "raw-panel"]);
+        assert!(find("nothing").is_err());
+    }
+
+    /// Every launch's script, written as a launch writes it, into `$SCRIPT_DUMP/<scenario>/`: the
+    /// proof that moving a scenario onto its plan left the script it runs byte for byte the same.
+    /// `performance` is written again over a RAW source as `performance-raw`.
+    #[test]
+    #[ignore]
+    fn dump_scripts() {
+        let dir =
+            PathBuf::from(std::env::var("SCRIPT_DUMP").expect("SCRIPT_DUMP names a directory"));
+        let root = root().unwrap();
+        let mut put = |scenario: &str, file: &str, script: Value| {
+            let dir = dir.join(scenario);
+            fs::create_dir_all(&dir).unwrap();
+            write_json(&dir.join(file), &script).unwrap();
+        };
+        for scenario in SCENARIOS {
+            let sources = scenario
+                .sources(&root, None)
+                .unwrap_or_else(|_| vec![PathBuf::from("/raw/photo.nef")]);
+            for spec in scenario.launches {
+                let plan = (spec.plan)(&sources);
+                if plan.scripted() {
+                    put(scenario.name, spec.script, plan.kept());
+                }
+            }
+        }
+        let raw = (find("performance").unwrap().launches[0].plan)(&[PathBuf::from("/x/photo.NEF")]);
+        put("performance-raw", "script.json", raw.kept());
+    }
+
+    /// The proof that each scenario is checked against its own plan: over recorded runs, in
+    /// `$SMOKE_RECORDED/smoke-<scenario>/run`, a replay with the plan's last step removed fails on the
+    /// frame count, and one with its first expected label changed fails on that step. Writes a
+    /// line per scenario to `$SMOKE_MUTATIONS`; `$SMOKE_ONLY` names the scenarios to take, space
+    /// separated, when not every recorded one.
+    #[test]
+    #[ignore]
+    fn mutations() {
+        use crate::scenario::plan::mutation::{self, Mutation};
+        let recorded = PathBuf::from(std::env::var("SMOKE_RECORDED").expect("SMOKE_RECORDED"));
+        let only = std::env::var("SMOKE_ONLY").unwrap_or_default();
+        let root = root().unwrap();
+        let mut lines = Vec::new();
+        let mut failures = Vec::new();
+        for scenario in SCENARIOS {
+            let run = recorded
+                .join(format!("smoke-{}", scenario.name))
+                .join("run");
+            if !run.is_dir()
+                || (!only.is_empty() && !only.split(' ').any(|name| name == scenario.name))
+            {
+                continue;
+            }
+            let replay = |mutated: Option<Mutation>| {
+                let out = tempfile::tempdir().unwrap();
+                mutation::set(mutated);
+                let outcome =
+                    verify_only(&root, &run, &out.path().join("replay"), scenario.name, None);
+                let changed = mutation::changed();
+                mutation::set(None);
+                (outcome.map_err(|error| error.to_string()), changed)
+            };
+            let (plain, _) = replay(None);
+            let (dropped, _) = replay(Some(Mutation::DropLast));
+            let (relabelled, changed) = replay(Some(Mutation::Relabel));
+            let count = dropped.as_ref().err().is_some_and(|error| {
+                error.contains("the plan has") && error.contains("frames, but the launch captured")
+            });
+            let label = match changed.first() {
+                None => "no label planned".to_owned(),
+                Some(step) => {
+                    let named = relabelled.as_ref().err().is_some_and(|error| {
+                        error.contains(&format!("Step {step:?}"))
+                            && error.contains("expected \"A label no step commits\"")
+                    });
+                    if !named {
+                        failures.push(format!("{}: relabel {relabelled:?}", scenario.name));
+                    }
+                    format!(
+                        "step {step:?} {}",
+                        if named { "fails" } else { "DOES NOT FAIL" }
+                    )
+                }
+            };
+            if plain.is_err() || !count {
+                failures.push(format!(
+                    "{}: replay {plain:?}, drop {dropped:?}",
+                    scenario.name
+                ));
+            }
+            let line = format!(
+                "{}: replay {}; last step removed: {}; label changed at {label}",
+                scenario.name,
+                if plain.is_ok() { "passes" } else { "FAILS" },
+                if count {
+                    "fails on the frame count"
+                } else {
+                    "DOES NOT FAIL on the count"
+                },
+            );
+            println!("{line}");
+            lines.push(line);
+        }
+        if let Ok(path) = std::env::var("SMOKE_MUTATIONS") {
+            fs::write(path, lines.join("\n") + "\n").unwrap();
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// The development guide's scenario commands name only scenarios the table has, and its
+    /// scenario list is the table's own, by pointing at `smoke --list` rather than restating it.
+    #[test]
+    fn the_docs_name_only_table_scenarios() {
+        let guide =
+            fs::read_to_string(root().unwrap().join("docs/engineering/development.md")).unwrap();
+        let mut named = 0;
+        for (index, _) in guide.match_indices("--scenario ") {
+            let name: String = guide[index + "--scenario ".len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if name == "NAME" {
+                continue;
+            }
+            assert!(
+                find(&name).is_ok(),
+                "development.md names {name:?}, which is no scenario"
+            );
+            named += 1;
+        }
+        assert!(named > 10);
+        assert!(guide.contains("smoke --list"));
     }
 }

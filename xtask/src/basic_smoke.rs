@@ -6,7 +6,7 @@
 //! brightness check reads a centred window of the canvas, which is inside the fitted photograph at
 //! every zoom this scenario uses and clear of the notices above it and the mode strip below it.
 use crate::{
-    scenario::{Expect, Frame, Launch, Run, pixels, preamble},
+    scenario::{Fixture, Frame, Launch, Run, pixels, preamble},
     *,
 };
 
@@ -23,23 +23,6 @@ const BRIGHTER: f64 = 10.0;
 /// How close two means must be before this scenario calls them the same picture. Both frames are
 /// the same render of the same stack, so this is JPEG-free readback noise only.
 const SAME: f64 = 2.0;
-
-/// One open frame plus one per script step.
-pub fn frames(scenario: &str) -> Option<usize> {
-    match scenario {
-        "basic" => Some(11),
-        "basic-panel" => Some(9),
-        _ => None,
-    }
-}
-
-/// Which of this file's two verifiers a scenario uses.
-pub fn verify_scenario(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) -> Result {
-    match scenario {
-        "basic-panel" => verify_panel(evidence, app, events),
-        _ => verify(evidence, app, events),
-    }
-}
 
 /// The evidence script. Each step is one gesture, one request or one decision; `verify` below
 /// checks exactly what each one is supposed to prove.
@@ -136,7 +119,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         &frames[0],
         "the default panel with the Basic section, Exposure at 0",
         json!({
-            "pixels": frames[0].fixture(Expect::fit(1))?,
+            "pixels": frames[0].fixture(Fixture::fit(1))?,
             "mean_luminance": luminance[0],
         }),
     );

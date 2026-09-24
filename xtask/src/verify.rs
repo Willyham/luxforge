@@ -219,15 +219,18 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         ..spec("editor-acceptance", "quick", &["editor-acceptance"])
     });
     if tier.rendered() {
-        for scenario in smoke::SCENARIOS {
+        for scenario in smoke::SCENARIOS
+            .iter()
+            .filter(|scenario| scenario.rendered())
+        {
             specs.push(Spec {
                 result: Some("result.json"),
                 launches: Launches::Smoke,
                 binary: true,
                 ..spec(
-                    &format!("smoke-{scenario}"),
+                    &format!("smoke-{}", scenario.name),
                     "rendered",
-                    &["smoke", "--scenario", scenario],
+                    &["smoke", "--scenario", scenario.name],
                 )
             });
         }
@@ -1437,7 +1440,10 @@ mod tests {
         );
         let rendered = names(Tier::Rendered, None, true);
         assert_eq!(&rendered[..2], ["check", "editor-acceptance"]);
-        assert_eq!(rendered.len(), 2 + smoke::SCENARIOS.len());
+        assert_eq!(
+            rendered.len(),
+            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count()
+        );
         assert_eq!(rendered[2], "smoke-empty");
         assert_eq!(rendered.last().unwrap(), "smoke-unavailable");
         assert_eq!(
@@ -1466,7 +1472,10 @@ mod tests {
                 "measure"
             ]
         );
-        assert_eq!(full.len(), 2 + smoke::SCENARIOS.len() + 5);
+        assert_eq!(
+            full.len(),
+            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 5
+        );
         // Missing generated fixtures are produced first, and only where a tier needs them.
         assert_eq!(names(Tier::Quick, None, false)[0], "check");
         assert_eq!(names(Tier::Rendered, None, false)[0], "generate-fixtures");
@@ -1941,7 +1950,7 @@ mod tests {
                 .iter()
                 .filter(|o| o.to_string_lossy().contains("/smoke-"))
                 .count(),
-            smoke::SCENARIOS.len()
+            smoke::SCENARIOS.iter().filter(|s| s.rendered()).count()
         );
     }
 

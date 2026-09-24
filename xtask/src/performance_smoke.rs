@@ -80,14 +80,6 @@ const BRACKET_MS: u64 = 1_000;
 /// 16 KiB, covers small movements of that kind; `performance-checks.json` records the differences.
 const MEMORY_SLACK: u64 = 8 << 20;
 
-pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == SCENARIO).then_some(FRAMES)
-}
-
-pub fn source(scenario: &str) -> Option<&'static str> {
-    (scenario == SCENARIO).then_some(FIXTURE)
-}
-
 /// A RAW source is anything the editor opens that is not a JPEG.
 fn is_raw(sources: &[PathBuf]) -> bool {
     sources.first().is_some_and(|source| {

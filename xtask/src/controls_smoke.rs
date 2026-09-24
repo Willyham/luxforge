@@ -1,27 +1,16 @@
 //! Rendered evidence for the opt-in control vocabulary and its identity photo layer.
 use crate::{
+    scenario::plan::request_matches as script_request_matches,
     scenario::{Frame, pixels},
-    smoke::script_request_matches,
     *,
 };
 
 const MODULE: &str = "lightwell.controls";
 const ACTION: &str = "set-controls";
 const EFFECT: &str = "lightwell.controls.identity";
-const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
-pub const WINDOW: [&str; 2] = ["1440", "900"];
-
-/// One import frame and one frame for each of the 25 real editor interactions.
-pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == "controls").then_some(26)
-}
 
 /// The developer pixel proof, whose section the script shows last: X and Y as px fields.
 const PIXEL_MODULE: &str = "lightwell.pixel";
-
-pub fn source(scenario: &str) -> Option<&'static str> {
-    (scenario == "controls").then_some(FIXTURE)
-}
 
 pub fn script(scenario: &str) -> Option<Value> {
     (scenario == "controls").then(|| json!([

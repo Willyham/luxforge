@@ -7,7 +7,7 @@
 //! output it claims.
 use crate::{
     fixtures::COLORS,
-    scenario::{Expect, Frame},
+    scenario::{Fixture, Frame},
     *,
 };
 use lightwell_core::{BoxRect, CROP_EFFECT, CropPayload, CropStage};
@@ -176,14 +176,14 @@ fn committed(frame: &Value) -> Result<(String, CropPayload, [u32; 2])> {
 fn shows_committed(frame: &Frame, quadrants: bool) -> Result<Value> {
     let (_, _, output) = committed(frame)?;
     let aspect = f64::from(output[0]) / f64::from(output[1]);
-    let measured = frame.fixture(Expect {
+    let measured = frame.fixture(Fixture {
         aspect: Some(aspect),
         // One displayed pixel of slack on the shorter axis, plus the detector's own four-pixel
         // step.
         tolerance: 0.02,
         min_height: 0.25,
         quadrants,
-        ..Expect::fit(1)
+        ..Fixture::fit(1)
     })?;
     Ok(json!({"output_dimensions":output,"displayed":measured}))
 }
@@ -505,7 +505,7 @@ pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) ->
         "The fixture did not open",
     )?;
     let mut checks = vec![
-        json!({"frame":frames[0]["file"],"shows":"the fixture at Fit","pixels":frames[0].fixture(Expect::fit(1))?}),
+        json!({"frame":frames[0]["file"],"shows":"the fixture at Fit","pixels":frames[0].fixture(Fixture::fit(1))?}),
     ];
     let mut record = |frame: &Value, shows: &str, detail: Value| {
         checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));

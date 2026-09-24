@@ -15,7 +15,7 @@
 //! shorter wait that lets the launch's own refit to the display scale land first. A wgpu
 //! validation error or a panic in either launch fails the run.
 use crate::{
-    scenario::{Expect, Frame, Run},
+    scenario::{Fixture, Frame, Run},
     *,
 };
 
@@ -81,10 +81,6 @@ const PLAN: [(Kind, Zoom); 13] = [
     (Kind::View, Zoom::Fit),
 ];
 
-pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == SCENARIO).then_some(PLAN.len())
-}
-
 /// The step each planned frame after the open one is captured for, as the script writes it and as
 /// the editor records it back.
 fn request(kind: Kind, zoom: Zoom) -> Option<Value> {
@@ -118,9 +114,13 @@ pub fn run(mut run: Run) -> Result {
     );
     let mut failures = Vec::new();
     for (name, fixture) in FIXTURES {
-        let outcome = run
-            .child(name)
-            .and_then(|child| smoke::plain(child, vec![run.root().join(fixture)]));
+        let outcome = run.child(name).and_then(|child| {
+            smoke::launch_all(
+                child,
+                smoke::find(SCENARIO)?,
+                vec![run.root().join(fixture)],
+            )
+        });
         run.record_launches(&run.out().join(name), json!({"fixture": fixture}))?;
         if let Err(error) = outcome {
             failures.push(format!("{name}: {error}"));
@@ -517,9 +517,9 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
 
         let pixels = match zoom {
             Zoom::Fit => frame
-                .fixture(Expect {
+                .fixture(Fixture {
                     aspect: Some(f64::from(stage.0) / f64::from(stage.1)),
-                    ..Expect::fit(1)
+                    ..Fixture::fit(1)
                 })
                 .map_err(|error| format!("{what}: {error}"))?,
             Zoom::Percent(value) => check_mapping(image, &frame, *value, stage)

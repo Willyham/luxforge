@@ -10,8 +10,8 @@
 //! the RAW's whole input stage, straightened by 7°, applied at Fit, read at 100% and replaced through
 //! the API's `crop-fit`, each commit checked to be the picture on screen.
 //!
-//! No RAW photograph is checked in (see `fixtures/README.md`), so this scenario is not in
-//! [`crate::smoke::SCENARIOS`] and takes its source from `--source`: an owner or raw.pixls.us file
+//! No RAW photograph is checked in (see `fixtures/README.md`), so this scenario is outside the
+//! rendered tier of [`crate::smoke::SCENARIOS`] and takes its source from `--source`: an owner or raw.pixls.us file
 //! the editor supports. It proves what the panel shows, what its double-click does and that a RAW
 //! crop is drawn and shown, not RAW decoding, which `raw-editor` covers.
 use crate::{scenario::Frame, *};
@@ -1068,7 +1068,7 @@ mod tests {
             frames(SCENARIO).expect("a frame count")
         );
         assert!(script("load").is_none() && frames("load").is_none());
-        assert!(!crate::smoke::SCENARIOS.contains(&SCENARIO));
+        assert!(!crate::smoke::find(SCENARIO).unwrap().rendered());
     }
 
     /// The reset a number control declares for its own field, found the way `module.list` lists it.

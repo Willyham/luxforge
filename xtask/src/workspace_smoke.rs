@@ -6,7 +6,7 @@
 //! sharing one catalog, the second with the crop module disabled, so it is a run of its own rather
 //! than one plain launch.
 use crate::{
-    scenario::{Expect, Frame, Launch, Run},
+    scenario::{Fixture, Frame, Launch, Run},
     *,
 };
 
@@ -24,14 +24,6 @@ const CROP_MODULE: &str = "lightwell.crop";
 const BASIC_MODULE: &str = "lightwell.basic";
 const TRANSFORM_MODULE: &str = "lightwell.transform";
 const POINTER_MODE: &str = "pointer";
-
-/// How many frames the `workspace` scenario captures: one open frame plus one per script step.
-pub fn frames(scenario: &str) -> Option<usize> {
-    match scenario {
-        "workspace" => Some(13),
-        _ => None,
-    }
-}
 
 /// The evidence script for `workspace`. Comments in the acceptance criteria name what each step
 /// proves; `verify` below checks exactly those things against the frame each step produces.
@@ -89,7 +81,7 @@ fn expect_workspace(
 /// column against its neighbours: the thirds overlay is a 30%-white guide line, which raises
 /// whatever it is drawn over, so a real line reads brighter than the plain photo beside it.
 fn thirds_overlay_present(frame: &Frame) -> Result<Value> {
-    let measured = frame.fixture(Expect::fit(ROTATED))?;
+    let measured = frame.fixture(Fixture::fit(ROTATED))?;
     let bounds: [u32; 4] = serde_json::from_value(measured["image_bounds"].clone())?;
     let [left, top, right, bottom] = bounds;
     ensure(
@@ -152,7 +144,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
 
     // Frame 0: the fixture opens with both panels shown, pointer mode, no thirds.
     expect_workspace(&frames[0], true, true, POINTER_MODE, false)?;
-    let opened = frames[0].fixture(Expect::fit(1))?;
+    let opened = frames[0].fixture(Fixture::fit(1))?;
     record(&frames[0], "the fixture at Fit, both panels open", opened);
 
     // Frame 1: `edit.transform rotate-right` committed revision 1; the panels are untouched.
@@ -161,7 +153,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         frames[1]["state"]["stack"]["revision"] == json!(1),
         "rotate-right did not commit revision 1",
     )?;
-    let rotated = frames[1].fixture(Expect::fit(ROTATED))?;
+    let rotated = frames[1].fixture(Fixture::fit(ROTATED))?;
     record(
         &frames[1],
         "rotated right, committed as revision 1",
@@ -173,20 +165,20 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[2],
         "the state panel collapsed",
-        frames[2].fixture(Expect::fit(ROTATED))?,
+        frames[2].fixture(Fixture::fit(ROTATED))?,
     );
     expect_workspace(&frames[3], true, false, POINTER_MODE, false)?;
     record(
         &frames[3],
         "the state panel back, the tools panel collapsed",
-        frames[3].fixture(Expect::fit(ROTATED))?,
+        frames[3].fixture(Fixture::fit(ROTATED))?,
     );
     expect_workspace(&frames[4], true, true, POINTER_MODE, true)?;
     let thirds = thirds_overlay_present(&frames[4])?;
     record(
         &frames[4],
         "both panels open again, thirds overlay on",
-        json!({"fit":frames[4].fixture(Expect::fit(ROTATED))?, "thirds":thirds}),
+        json!({"fit":frames[4].fixture(Fixture::fit(ROTATED))?, "thirds":thirds}),
     );
 
     // Frame 5: previewing entry 0, the Original, unrotated at 480x320.
@@ -200,7 +192,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ),
     )?;
     expect_workspace(&frames[5], true, true, POINTER_MODE, true)?;
-    let preview = frames[5].fixture(Expect::fit(1))?;
+    let preview = frames[5].fixture(Fixture::fit(1))?;
     record(
         &frames[5],
         "a historical preview of entry 0, the Original",
@@ -222,7 +214,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[6],
         "returned to the current, rotated state",
-        frames[6].fixture(Expect::fit(ROTATED))?,
+        frames[6].fixture(Fixture::fit(ROTATED))?,
     );
 
     // Frames 7 and 8: Basic collapsed, then Transforms expanded, both view state alone.

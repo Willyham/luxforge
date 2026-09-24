@@ -445,6 +445,11 @@ fn main_result() -> Result {
             )?;
         }
         "smoke" => {
+            if a.flag("--list") {
+                a.done()?;
+                print!("{}", smoke::list(&root));
+                return Ok(());
+            }
             let out = absolute(&root, &a.path("--output")?);
             let scenario = a
                 .value("--scenario")?
@@ -474,21 +479,18 @@ fn main_result() -> Result {
             let scenario = scenario.unwrap_or_else(|| "load".into());
             a.done()?;
             let timeout = std::time::Duration::from_secs(35);
-            match source {
-                Some(source) => {
-                    ensure(
-                        scenario == raw_panel_smoke::SCENARIO
-                            || scenario == performance_smoke::SCENARIO,
-                        "--source is only for the raw-panel and performance scenarios",
-                    )?;
-                    let bin = bin.map_or_else(|| binary(&root), Ok)?;
-                    smoke::run_sources(&root, &out, &scenario, &bin, timeout, vec![source])?;
-                }
-                None => {
-                    let bin = bin.map_or_else(|| binary(&root), Ok)?;
-                    smoke::dispatch(&root, &out, &scenario, &bin, timeout)?
-                }
-            }
+            // The row is found before anything is built, so an unknown name or a `--source` the
+            // scenario does not take fails at once.
+            smoke::find(&scenario)?;
+            let bin = bin.map_or_else(|| binary(&root), Ok)?;
+            smoke::dispatch(
+                &root,
+                &out,
+                &scenario,
+                &bin,
+                timeout,
+                source.map(|source| vec![source]),
+            )?;
         }
         "verify" => {
             let out = absolute(&root, &a.path("--output")?);
@@ -537,10 +539,10 @@ fn main_result() -> Result {
                 "{}",
                 scenario::pixels::fixture(
                     &image::open(&path)?.to_rgb8(),
-                    &scenario::Expect {
+                    &scenario::Fixture {
                         aspect,
                         columns,
-                        ..scenario::Expect::fit(orientation)
+                        ..scenario::Fixture::fit(orientation)
                     }
                 )?
             );
@@ -560,7 +562,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (raw-panel and performance only)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

@@ -276,10 +276,10 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                                 evidence.join(frame["file"].as_str().ok_or("Missing frame")?),
                             )?
                             .to_rgb8(),
-                            &scenario::Expect {
+                            &scenario::Fixture {
                                 aspect: Some(if name == "24mp" { 1.5 } else { 5.0 / 3.0 }),
                                 columns,
-                                ..scenario::Expect::fit(1)
+                                ..scenario::Fixture::fit(1)
                             },
                         )?);
                     }
@@ -287,7 +287,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                 if count > 0 {
                     ensure(before == hash(&source)?, "Source modified")?;
                 } else {
-                    smoke::verify(&evidence, "empty", 0)?;
+                    smoke::check_empty(&evidence)?;
                 }
                 row["pixel_checks"] = json!(pixel_checks);
                 let last = frames.last().unwrap();

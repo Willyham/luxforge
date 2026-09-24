@@ -62,15 +62,6 @@ const RANGE_WIDER: f64 = 4.0;
 /// grey point staying grey, whatever its brightness does under Dehaze).
 const UNCHANGED: f64 = 3.0;
 
-/// One open frame plus one per script step.
-pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == "presence").then_some(15)
-}
-
-pub fn source(scenario: &str) -> Option<&'static str> {
-    (scenario == "presence").then_some(FIXTURE)
-}
-
 /// The evidence script. Each step is one gesture, one request or one decision; `verify` below
 /// checks exactly what each one is supposed to prove.
 pub fn script(scenario: &str) -> Option<Value> {

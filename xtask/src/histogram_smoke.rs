@@ -15,7 +15,7 @@
 //! status bar. The hover frame is compared with the frame before it pixel for pixel: the tools
 //! panel is identical, and the status bar changes only inside the readout's own slot.
 use crate::{
-    scenario::{Expect, Frame, pixels},
+    scenario::{Fixture, Frame, pixels},
     *,
 };
 use lightwell_core::{
@@ -26,7 +26,6 @@ use lightwell_core::{
 /// The fixture: 480x320, orientation 1, the quadrant pattern with the white centre line and the
 /// black dash band.
 const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
-pub const WINDOW: [&str; 2] = ["1440", "900"];
 const SOURCE: (u32, u32) = (480, 320);
 
 /// The content-stage pixel the scenario sets to a both-endpoint colour, in the middle of the gold
@@ -60,20 +59,6 @@ const DASH: (u32, u32) = (60, 160);
 const LINE: (u32, u32) = (240, 200);
 /// Quadrant interiors with no channel at either endpoint, so no overlay may appear on them.
 const CLEAN: [(u32, u32); 4] = [(120, 60), (400, 60), (120, 270), (420, 285)];
-
-/// How many frames each scenario captures: one for the open, then one per script step.
-pub fn frames(scenario: &str) -> Option<usize> {
-    match scenario {
-        "histogram" => Some(12),
-        "basic-crop" => Some(4),
-        _ => None,
-    }
-}
-
-/// The scenario's own fixture, so `smoke::plain` opens the one the checks below are written against.
-pub fn source(scenario: &str) -> Option<&'static str> {
-    matches!(scenario, "histogram" | "basic-crop").then_some(FIXTURE)
-}
 
 pub fn script(scenario: &str) -> Option<Value> {
     (scenario == "histogram").then(|| {
@@ -592,7 +577,7 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     record(
         &frames[0],
         "the default screen with the histogram ready, counts equal to an independent reduction",
-        json!({"histogram":opened,"pixels":frames[0].fixture(Expect::fit(1))?}),
+        json!({"histogram":opened,"pixels":frames[0].fixture(Fixture::fit(1))?}),
     );
 
     // Frame 1: one both-endpoint pixel committed. The counts follow the new stack exactly.

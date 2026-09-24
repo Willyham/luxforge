@@ -13,7 +13,7 @@ pub fn luminance(pixel: [u8; 3]) -> f64 {
 
 /// What a captured frame must show. Defaults describe the fixture at Fit; a crop changes the ratio
 /// the displayed image has and, when it is straightened, where its quadrants land.
-pub struct Expect {
+pub struct Fixture {
     /// Which EXIF orientation's quadrant order the fixture was saved with.
     pub orientation: u8,
     /// The displayed ratio, or the fixture's own when `None`.
@@ -32,7 +32,7 @@ pub struct Expect {
     pub quadrants: bool,
 }
 
-impl Expect {
+impl Fixture {
     pub fn fit(orientation: u8) -> Self {
         Self {
             orientation,
@@ -48,7 +48,7 @@ impl Expect {
 
 /// Check a capture shows the golden quadrant fixture, at Fit unless the expectation says
 /// otherwise.
-pub fn fixture(img: &RgbImage, expect: &Expect) -> Result<Value> {
+pub fn fixture(img: &RgbImage, expect: &Fixture) -> Result<Value> {
     ensure(
         (1..=8).contains(&expect.orientation),
         "Orientation must be 1..8",
@@ -137,9 +137,9 @@ pub fn fixture(img: &RgbImage, expect: &Expect) -> Result<Value> {
 
 impl Frame {
     /// [`fixture`] over this frame's capture, inside the photo surface it records.
-    pub fn fixture(&self, expect: Expect) -> Result<Value> {
+    pub fn fixture(&self, expect: Fixture) -> Result<Value> {
         let columns = self.columns()?;
-        fixture(self.image()?, &Expect { columns, ..expect })
+        fixture(self.image()?, &Fixture { columns, ..expect })
     }
 }
 
@@ -410,6 +410,36 @@ pub fn band_bounds(frame: &Frame, threshold: u32) -> Result<[u32; 4]> {
     Ok([left, top, right, bottom])
 }
 
+/// How two readings of a capture must relate, with the threshold the scenario states for it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Tolerance {
+    /// Within this much of each other, inclusive: the same picture, or a patch left where it was.
+    Within(f64),
+    /// At least this far apart, either way: a patch that moved.
+    Apart(f64),
+    /// The first above the second by more than this: brighter, lifted.
+    Above(f64),
+}
+
+/// Reading `a` against reading `b` under `tolerance`; the error names `what`, both readings and the
+/// threshold. The one comparison every scenario's pixel claims go through.
+pub fn compare(what: &str, a: f64, b: f64, tolerance: Tolerance) -> Result {
+    match tolerance {
+        Tolerance::Within(most) => ensure(
+            (a - b).abs() <= most,
+            format!("{what}: {a:.2} and {b:.2} differ by more than {most}"),
+        ),
+        Tolerance::Apart(least) => ensure(
+            (a - b).abs() >= least,
+            format!("{what}: {a:.2} and {b:.2} differ by less than {least}"),
+        ),
+        Tolerance::Above(margin) => ensure(
+            a > b + margin,
+            format!("{what}: {a:.2} is not above {b:.2} by more than {margin}"),
+        ),
+    }
+}
+
 /// The capture position at fractions `at` of `bounds`.
 pub fn at(bounds: [u32; 4], at: [f64; 2]) -> (f64, f64) {
     let [left, top, right, bottom] = bounds;
@@ -548,7 +578,7 @@ mod tests {
     fn a_blank_capture_and_a_bad_surface_fail_the_fixture_check() {
         let blank = RgbImage::new(960, 640);
         assert!(
-            fixture(&blank, &Expect::fit(6))
+            fixture(&blank, &Fixture::fit(6))
                 .unwrap_err()
                 .to_string()
                 .contains("blank")
@@ -556,15 +586,32 @@ mod tests {
         assert!(
             fixture(
                 &blank,
-                &Expect {
+                &Fixture {
                     columns: Some([10, 5]),
-                    ..Expect::fit(6)
+                    ..Fixture::fit(6)
                 }
             )
             .unwrap_err()
             .to_string()
             .contains("surface columns")
         );
+    }
+
+    #[test]
+    fn a_comparison_holds_its_threshold_at_the_boundary() {
+        assert!(compare("same", 10.0, 11.0, Tolerance::Within(1.0)).is_ok());
+        assert!(compare("same", 10.0, 11.5, Tolerance::Within(1.0)).is_err());
+        assert!(compare("moved", 10.0, 2.0, Tolerance::Apart(8.0)).is_ok());
+        assert!(compare("moved", 2.0, 10.0, Tolerance::Apart(8.0)).is_ok());
+        assert!(compare("moved", 10.0, 3.0, Tolerance::Apart(8.0)).is_err());
+        assert!(compare("lifted", 23.0, 10.0, Tolerance::Above(12.0)).is_ok());
+        // Above is strict, and one-sided.
+        assert!(compare("lifted", 22.0, 10.0, Tolerance::Above(12.0)).is_err());
+        assert!(compare("lifted", 10.0, 23.0, Tolerance::Above(12.0)).is_err());
+        let error = compare("the drag", 5.0, 7.25, Tolerance::Within(1.5))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "the drag: 5.00 and 7.25 differ by more than 1.5");
     }
 
     #[test]

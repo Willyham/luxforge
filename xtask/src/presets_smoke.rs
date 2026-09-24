@@ -57,15 +57,6 @@ const PATCHES: [(&str, f64, f64); 4] = [
 ];
 const PATCH_HALF: i64 = 6;
 
-/// One open frame plus one per script step.
-pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == "presets").then_some(14)
-}
-
-pub fn source(scenario: &str) -> Option<&'static str> {
-    (scenario == "presets").then_some(FIXTURE)
-}
-
 pub fn script(scenario: &str) -> Option<Value> {
     (scenario == "presets").then(|| {
         json!([
