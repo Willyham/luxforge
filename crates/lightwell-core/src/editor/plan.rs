@@ -5,7 +5,7 @@ use super::{
     source::{RawSettingsMode, raw_settings, validate_source_recipe},
 };
 use crate::{
-    AssetId, Draft, EntryId, Error, ErrorKind, Layer, MaskId, Mutation, Recipe, Transform,
+    AssetId, Draft, EntryId, Error, ErrorKind, Layer, LayerId, MaskId, Mutation, Recipe, Transform,
     mask::commands::MaskOutcome,
     modules::{
         ActionInput, ActionPlan, EffectStage, LayerEdit, MAX_COMPOSE_STEPS, Stage, StageContext,
@@ -152,7 +152,9 @@ impl EditorService {
                 ActionPlan::NoOp => {
                     return Ok(Change::NoOp);
                 }
-                ActionPlan::Update(layer) => recipe.with_layer_replaced(layer)?,
+                ActionPlan::Update(update) => {
+                    edited(&registry, recipe, LayerEdit::Update(update), None)?
+                }
                 ActionPlan::Commit(_) | ActionPlan::Edits(_) | ActionPlan::Compose(_) => {
                     return Err(Error::new(
                         ErrorKind::Validation,
@@ -545,14 +547,16 @@ impl EditorService {
     ) -> Result<Option<Recipe>, Error> {
         match plan {
             ActionPlan::NoOp => Ok(None),
-            ActionPlan::Commit(layer) => Ok(Some(self.apply_edit(
+            ActionPlan::Commit(layer) => Ok(Some(edited(
+                &self.registry,
                 recipe,
                 LayerEdit::Commit(layer),
                 mask,
             )?)),
-            ActionPlan::Update(layer) => Ok(Some(self.apply_edit(
+            ActionPlan::Update(update) => Ok(Some(edited(
+                &self.registry,
                 recipe,
-                LayerEdit::Update(layer),
+                LayerEdit::Update(update),
                 mask,
             )?)),
             ActionPlan::Edits(edits) => {
@@ -562,46 +566,16 @@ impl EditorService {
                         "a plan of layer edits holds none",
                     ));
                 }
-                let mut edited = recipe.clone();
+                let mut stack = recipe.clone();
                 for edit in edits {
-                    edited = self.apply_edit(&edited, edit, mask)?;
+                    stack = edited(&self.registry, &stack, edit, mask)?;
                 }
-                Ok(Some(edited))
+                Ok(Some(stack))
             }
             ActionPlan::Compose(_) => Err(Error::new(
                 ErrorKind::Validation,
                 "composite actions do not nest",
             )),
-        }
-    }
-
-    /// One layer change: a commit placed by its effect's declared stage and order, or an update
-    /// in place by identity.
-    fn apply_edit(
-        &self,
-        recipe: &Recipe,
-        edit: LayerEdit,
-        mask: Option<&MaskId>,
-    ) -> Result<Recipe, Error> {
-        match edit {
-            // Within the region the effect's stage and order choose, a masked layer follows the
-            // global layer of its effect and the masked layers of earlier masks, so overlapping
-            // masks apply in the order the mask list shows. The target is the host's to write: a
-            // module returns a layer without one, because it never saw the field.
-            LayerEdit::Commit(layer) => {
-                let index = self.registry.insertion_index_for_target(
-                    &recipe.layers,
-                    &layer.effect_id,
-                    mask,
-                    &recipe.masks,
-                );
-                let layer = Layer {
-                    mask: mask.cloned(),
-                    ..layer
-                };
-                recipe.with_layer_inserted(index, layer)
-            }
-            LayerEdit::Update(layer) => recipe.with_layer_replaced(layer),
         }
     }
 
@@ -633,6 +607,73 @@ impl EditorService {
             "transform",
             json!({"transform":transform}),
         )
+    }
+}
+
+/// One layer change of a plan, applied by the host: the half of a layer's identity a module never
+/// chooses.
+///
+/// A commit gets a new identity, the format its effect declares and the request's mask target, and
+/// is placed by its effect's declared stage and order: within that region, a masked layer follows
+/// the global layer of its effect and the masked layers of earlier masks, so overlapping masks apply
+/// in the order the mask list shows. An update replaces the payload and artifacts of the layer with
+/// that identity, where it is, and keeps its effect and its mask: the mask is the host's, so an
+/// update can neither drop nor move it. An effect no provider declares, and an identity that is not
+/// in the stack, are refused before anything is written. `O(layers)`; reads no pixels.
+pub(super) fn edited(
+    registry: &crate::ModuleRegistry,
+    recipe: &Recipe,
+    edit: LayerEdit,
+    mask: Option<&MaskId>,
+) -> Result<Recipe, Error> {
+    let format = |effect_id: &str| {
+        registry
+            .effect(effect_id)
+            .map(|(_, effect)| effect.format)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Incompatible,
+                    format!("unavailable effect {effect_id}"),
+                )
+            })
+    };
+    match edit {
+        LayerEdit::Commit(new) => {
+            let index = registry.insertion_index_for_target(
+                &recipe.layers,
+                &new.effect_id,
+                mask,
+                &recipe.masks,
+            );
+            let layer = Layer {
+                id: LayerId::new(),
+                effect_format: format(&new.effect_id)?,
+                effect_id: new.effect_id,
+                payload: new.payload,
+                mask: mask.cloned(),
+                artifacts: new.artifacts,
+            };
+            recipe.with_layer_inserted(index, layer)
+        }
+        LayerEdit::Update(update) => {
+            let existing = recipe
+                .layers
+                .iter()
+                .find(|layer| layer.id == update.id)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Validation,
+                        "plan updates a layer that is not in the stack",
+                    )
+                })?;
+            let layer = Layer {
+                effect_format: format(&existing.effect_id)?,
+                payload: update.payload,
+                artifacts: update.artifacts,
+                ..existing.clone()
+            };
+            recipe.with_layer_replaced(layer)
+        }
     }
 }
 
@@ -1530,6 +1571,72 @@ mod tests {
         assert_eq!(service.history(&asset, None, 10).unwrap().entries.len(), 1);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A plan names an effect and a payload, or an identity and a payload; the host owns the rest.
+    /// A commit gets a new identity, its effect's declared format and the request's mask target; an
+    /// update keeps the layer's identity, effect, position and mask whatever the module sends, so no
+    /// module can drop or move a mask. An effect nobody provides is refused before anything is
+    /// written.
+    #[test]
+    fn the_host_owns_a_planned_layers_identity_format_and_mask() {
+        let registry = ModuleRegistry::builtin();
+        let mask = crate::Mask::new("Mask 1");
+        let recipe = Recipe {
+            layers: vec![Layer::pixel(0, 0, [1, 2, 3])],
+            masks: vec![mask.clone()],
+            ..Recipe::default()
+        };
+        let committed = edited(
+            &registry,
+            &recipe,
+            LayerEdit::Commit(crate::NewLayer::new(
+                crate::BASIC_EFFECT,
+                json!({"exposure": 1.0}),
+            )),
+            Some(&mask.id),
+        )
+        .unwrap();
+        let layer = &committed.layers[1];
+        assert_eq!(layer.effect_id, crate::BASIC_EFFECT);
+        assert_eq!(layer.effect_format, crate::EFFECT_FORMAT);
+        assert_eq!(
+            layer.mask.as_ref(),
+            Some(&mask.id),
+            "the target is the host's"
+        );
+        assert!(layer.artifacts.is_empty());
+        assert_ne!(layer.id, recipe.layers[0].id);
+
+        let updated = edited(
+            &registry,
+            &committed,
+            LayerEdit::Update(crate::LayerUpdate::new(
+                layer.id.clone(),
+                json!({"exposure": -1.0}),
+            )),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            updated.layers[1],
+            Layer {
+                payload: json!({"exposure": -1.0}),
+                ..layer.clone()
+            },
+            "an update keeps the identity, effect, position and mask"
+        );
+        assert_eq!(updated.layers[0], recipe.layers[0]);
+
+        let unknown = edited(
+            &registry,
+            &recipe,
+            LayerEdit::Commit(crate::NewLayer::new("test.nobody", json!({}))),
+            None,
+        )
+        .expect_err("no provider declares the effect");
+        assert_eq!(unknown.kind, ErrorKind::Incompatible);
+        assert_eq!(unknown.detail, "unavailable effect test.nobody");
     }
 
     /// The 480x320 fixture's crop journey: an exact copy at angle zero, in-place updates that keep

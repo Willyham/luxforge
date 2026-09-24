@@ -6,15 +6,26 @@
 //! photograph.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, EffectDescriptor,
-    EffectStage, ExactGeometry, LayerEdit, ModuleDescriptor, ParameterDescriptor, ParameterKind,
-    Processing, Stage, StageContext, ToolModule, crop::stored_payload,
+    EffectStage, ExactGeometry, LayerEdit, LayerUpdate, ModuleDescriptor, NewLayer,
+    ParameterDescriptor, ParameterKind, Processing, Stage, StageContext, ToolModule,
+    crop::stored_payload,
 };
-use crate::{
-    CROP_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer, ORIENTATION_EFFECT, Orientation, Transform,
-};
+use crate::{CROP_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer, Orientation, Transform};
 use serde_json::{Map, Value};
 
+/// The transform module's one geometry effect: the composed exact orientation of the stage ahead of
+/// the crop.
+pub const ORIENTATION_EFFECT: &str = "lightwell.geometry.orientation";
+
 pub(super) const TRANSFORM_ACTION: &str = "transform";
+
+impl Layer {
+    /// The one orientation layer of a stage: the composed quarter turns and reflections that every
+    /// exact transform action applied there reaches. For a stack assembled directly.
+    pub fn orientation(orientation: Orientation) -> Self {
+        Self::new(ORIENTATION_EFFECT, orientation_value(orientation))
+    }
+}
 
 fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
@@ -299,10 +310,10 @@ fn edits(transform: Transform, context: &StageContext<'_>) -> Result<Vec<LayerEd
             let trailing = payload(&layer.effect_id, layer.effect_format, &layer.payload)?;
             folded = folded.followed_by(trailing);
             if trailing != Orientation::NEUTRAL {
-                edits.push(LayerEdit::Update(Layer {
-                    payload: orientation_value(Orientation::NEUTRAL),
-                    ..layer.clone()
-                }));
+                edits.push(LayerEdit::Update(LayerUpdate::new(
+                    layer.id.clone(),
+                    orientation_value(Orientation::NEUTRAL),
+                )));
             }
         }
     }
@@ -312,10 +323,10 @@ fn edits(transform: Transform, context: &StageContext<'_>) -> Result<Vec<LayerEd
         let input = (context.stage_before)(index)?;
         let carried = stored.carried((input.width, input.height), turned)?;
         if carried != stored {
-            edits.push(LayerEdit::Update(Layer {
-                payload: serde_json::to_value(carried).expect("a crop payload is serializable"),
-                ..layer.clone()
-            }));
+            edits.push(LayerEdit::Update(LayerUpdate::new(
+                layer.id.clone(),
+                serde_json::to_value(carried).expect("a crop payload is serializable"),
+            )));
         }
     }
     let ahead = at
@@ -331,15 +342,18 @@ fn edits(transform: Transform, context: &StageContext<'_>) -> Result<Vec<LayerEd
             if composed != current {
                 edits.insert(
                     0,
-                    LayerEdit::Update(Layer {
-                        payload: orientation_value(composed),
-                        ..layer.clone()
-                    }),
+                    LayerEdit::Update(LayerUpdate::new(
+                        layer.id.clone(),
+                        orientation_value(composed),
+                    )),
                 );
             }
         }
         None if turned != Orientation::NEUTRAL => {
-            edits.insert(0, LayerEdit::Commit(Layer::orientation(turned)));
+            edits.insert(
+                0,
+                LayerEdit::Commit(NewLayer::new(ORIENTATION_EFFECT, orientation_value(turned))),
+            );
         }
         None => {}
     }
@@ -513,9 +527,15 @@ mod tests {
             .expect("a transform always plans")
     }
 
-    fn layer_of(plan: &ActionPlan) -> &Layer {
+    /// The orientation layer the host stores for a one-layer plan: a commit's payload under a new
+    /// identity, or the updated layer's identity with its new payload.
+    fn layer_of(plan: &ActionPlan) -> Layer {
         match plan {
-            ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
+            ActionPlan::Commit(new) => Layer::new(new.effect_id.clone(), new.payload.clone()),
+            ActionPlan::Update(update) => Layer {
+                id: update.id.clone(),
+                ..Layer::new(ORIENTATION_EFFECT, update.payload.clone())
+            },
             ActionPlan::NoOp => panic!("a transform is never a no-op"),
             ActionPlan::Edits(edits) => panic!("expected one layer, not {edits:?}"),
             ActionPlan::Compose(_) => panic!("a transform is never a composite"),
@@ -893,7 +913,7 @@ mod tests {
         for step in 1..4 {
             let plan = planned(Transform::RotateRight, &layers);
             assert_eq!(layer_of(&plan).id, layers[0].id, "turn {step}");
-            layers = vec![layer_of(&plan).clone()];
+            layers = vec![layer_of(&plan)];
         }
         assert_eq!(
             serde_json::from_value::<Orientation>(layers[0].payload.clone()).unwrap(),

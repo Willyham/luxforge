@@ -1924,8 +1924,8 @@ mod tests {
     use crate::api::ApiResponse;
     use crate::{
         ActionInput, ActionPlan, Availability, EFFECT_FORMAT, EffectDescriptor, EffectStage,
-        ExactGeometry, Layer, LayerId, ModuleDescriptor, ParameterDescriptor, ParameterKind,
-        Processing, Stage, StageContext, ToolModule,
+        ExactGeometry, ModuleDescriptor, ParameterDescriptor, ParameterKind, Processing, Stage,
+        StageContext, ToolModule,
         modules::{PATCH_ACTION, PATCH_MODULE, PatchModule},
     };
     use std::{
@@ -2858,14 +2858,10 @@ mod tests {
             })
         }
         fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
-            Ok(ActionPlan::Commit(Layer {
-                id: LayerId::new(),
-                effect_id: MARK_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: json!({}),
-                mask: None,
-                artifacts: Vec::new(),
-            }))
+            Ok(ActionPlan::Commit(crate::NewLayer::new(
+                MARK_EFFECT,
+                json!({}),
+            )))
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
             Ok(())

@@ -38,13 +38,17 @@ use super::{
         ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values, own_layer,
     },
 };
-use crate::{BASIC_EFFECT, EFFECT_FORMAT, Error, ErrorKind};
+use crate::{EFFECT_FORMAT, Error, ErrorKind};
 use colour::ColourAdjust;
 use exposure::Exposure;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use tone::Tone;
 use white_balance::{PARAMETER_RANGE, WhiteBalance};
+
+/// The one colour-stage effect of the Basic module: every implemented Basic parameter of a stack
+/// lives in one layer of this effect.
+pub const BASIC_EFFECT: &str = "lightwell.basic.adjust";
 
 pub(super) const SET_BASIC: &str = "set-basic";
 pub(super) const RESET_BASIC: &str = "reset-basic";
@@ -460,7 +464,13 @@ mod tests {
 
     fn committed(plan: ActionPlan) -> Layer {
         match plan {
-            ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
+            // The layer the host stores for the plan: a commit's effect and payload, or the
+            // updated layer's identity with its new payload.
+            ActionPlan::Commit(new) => Layer::new(new.effect_id, new.payload),
+            ActionPlan::Update(update) => Layer {
+                id: update.id,
+                ..Layer::new(BASIC_EFFECT, update.payload)
+            },
             ActionPlan::NoOp => panic!("expected a layer, not a no-op"),
             ActionPlan::Compose(_) => panic!("expected a layer, not a composite"),
             ActionPlan::Edits(_) => panic!("expected a layer, not several edits"),

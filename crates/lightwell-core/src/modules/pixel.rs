@@ -3,11 +3,25 @@
 //! quarter-turns, reflections and crop after it carry the edit instead of moving it.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
-    EffectDescriptor, EffectStage, ModuleDescriptor, ParameterDescriptor, ParameterKind,
+    EffectDescriptor, EffectStage, ModuleDescriptor, NewLayer, ParameterDescriptor, ParameterKind,
     Processing, Stage, StageContext, ToolModule,
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, PIXEL_EFFECT, PixelReplace};
-use serde_json::{Map, Value};
+use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, PixelReplace};
+use serde_json::{Map, Value, json};
+
+/// The pixel module's one effect: one replaced 8-bit sRGB pixel of the content stage.
+pub const PIXEL_EFFECT: &str = "lightwell.pixel.replace";
+
+impl Layer {
+    /// A stored pixel replacement, for a stack assembled directly.
+    pub fn pixel(x: u32, y: u32, rgb: [u8; 3]) -> Self {
+        Self::new(PIXEL_EFFECT, pixel_payload(x, y, rgb))
+    }
+}
+
+fn pixel_payload(x: u32, y: u32, rgb: [u8; 3]) -> Value {
+    json!({"x": x, "y": y, "rgb": rgb})
+}
 
 /// The decoder accepts at most 16384 pixels per side, so no stage addresses a larger coordinate.
 const MAX_COORDINATE: i64 = 16383;
@@ -245,7 +259,10 @@ impl ToolModule for PixelModule {
         if current[..3] == rgb {
             return Ok(ActionPlan::NoOp);
         }
-        Ok(ActionPlan::Commit(Layer::pixel(x, y, rgb)))
+        Ok(ActionPlan::Commit(NewLayer::new(
+            PIXEL_EFFECT,
+            pixel_payload(x, y, rgb),
+        )))
     }
 
     fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {

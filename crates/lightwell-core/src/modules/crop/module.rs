@@ -5,14 +5,30 @@
 //! is pure geometry over one immutable stage: it never rasterizes and never samples a pixel.
 use super::geometry::{BoxRect, CropPayload, CropStage, MAX_ANGLE, MIN_ANGLE};
 use crate::{
-    CROP_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer,
+    EFFECT_FORMAT, Error, ErrorKind, Layer,
     modules::{
         ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction,
-        EffectDescriptor, EffectStage, ExactGeometry, ModuleDescriptor, ParameterDescriptor,
-        ParameterKind, Processing, Resample, ResetAction, Stage, StageContext, ToolModule,
+        EffectDescriptor, EffectStage, ExactGeometry, LayerUpdate, ModuleDescriptor, NewLayer,
+        ParameterDescriptor, ParameterKind, Processing, Resample, ResetAction, Stage, StageContext,
+        ToolModule,
     },
 };
 use serde_json::{Map, Value};
+
+/// The crop module's one geometry effect: straightening and a rectangle over the crop layer's own
+/// input stage.
+pub const CROP_EFFECT: &str = "lightwell.geometry.crop";
+
+impl Layer {
+    /// The one crop layer of a stack, for a stack assembled directly.
+    pub fn crop(payload: CropPayload) -> Self {
+        Self::new(CROP_EFFECT, crop_value(payload))
+    }
+}
+
+fn crop_value(payload: CropPayload) -> Value {
+    serde_json::to_value(payload).expect("crop payload is serializable")
+}
 
 pub(super) const CROP_ACTION: &str = "crop";
 pub(super) const CROP_FIT_ACTION: &str = "crop-fit";
@@ -489,12 +505,15 @@ fn commit(
     new.output_rect(stage)?;
     match existing {
         Some((_, current)) if current == new => Ok(ActionPlan::NoOp),
-        Some((layer, _)) => Ok(ActionPlan::Update(Layer {
-            id: layer.id.clone(),
-            ..Layer::crop(new)
-        })),
+        Some((layer, _)) => Ok(ActionPlan::Update(LayerUpdate::new(
+            layer.id.clone(),
+            crop_value(new),
+        ))),
         None if new.is_neutral() => Ok(ActionPlan::NoOp),
-        None => Ok(ActionPlan::Commit(Layer::crop(new))),
+        None => Ok(ActionPlan::Commit(NewLayer::new(
+            CROP_EFFECT,
+            crop_value(new),
+        ))),
     }
 }
 
@@ -573,10 +592,10 @@ impl ToolModule for CropModule {
             }
             CROP_RESET_ACTION => match existing {
                 Some((_, current)) if current.is_neutral() => Ok(ActionPlan::NoOp),
-                Some((layer, _)) => Ok(ActionPlan::Update(Layer {
-                    id: layer.id.clone(),
-                    ..Layer::crop(CropPayload::NEUTRAL)
-                })),
+                Some((layer, _)) => Ok(ActionPlan::Update(LayerUpdate::new(
+                    layer.id.clone(),
+                    crop_value(CropPayload::NEUTRAL),
+                ))),
                 None => Ok(ActionPlan::NoOp),
             },
             action_id => Err(validation(format!("unknown action {action_id}"))),
@@ -714,15 +733,17 @@ mod tests {
     }
 
     fn committed(plan: ActionPlan) -> CropPayload {
-        let layer = match plan {
-            ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
+        let payload = match plan {
+            ActionPlan::Commit(layer) => {
+                assert_eq!(layer.effect_id, CROP_EFFECT);
+                layer.payload
+            }
+            ActionPlan::Update(update) => update.payload,
             ActionPlan::NoOp => panic!("expected a committed layer, not a no-op"),
             ActionPlan::Compose(_) => panic!("expected a committed layer, not a composite"),
             ActionPlan::Edits(_) => panic!("expected a committed layer, not several edits"),
         };
-        assert_eq!(layer.effect_id, CROP_EFFECT);
-        assert_eq!(layer.effect_format, EFFECT_FORMAT);
-        serde_json::from_value(layer.payload).expect("a crop payload")
+        serde_json::from_value(payload).expect("a crop payload")
     }
 
     fn close(actual: f64, expected: f64, what: &str) {

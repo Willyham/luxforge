@@ -1230,19 +1230,15 @@ pub(crate) mod tests {
                 {
                     Ok(ActionPlan::NoOp)
                 }
-                (Some(layer), _) => Ok(ActionPlan::Update(Layer {
+                (Some(layer), _) => Ok(ActionPlan::Update(crate::LayerUpdate::new(
+                    layer.id.clone(),
                     payload,
-                    ..layer.clone()
-                })),
+                ))),
                 (None, _) if Self::channels(&payload) == [0.0, 0.0] => Ok(ActionPlan::NoOp),
-                (None, _) => Ok(ActionPlan::Commit(Layer {
-                    id: LayerId::new(),
-                    effect_id: PATCH_EFFECT.into(),
-                    effect_format: EFFECT_FORMAT,
+                (None, _) => Ok(ActionPlan::Commit(crate::NewLayer::new(
+                    PATCH_EFFECT,
                     payload,
-                    mask: None,
-                    artifacts: Vec::new(),
-                })),
+                ))),
             }
         }
         /// One changed field names itself, so a slider's history row says what moved.
@@ -1357,14 +1353,10 @@ pub(crate) mod tests {
             })
         }
         fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
-            Ok(ActionPlan::Commit(Layer {
-                id: LayerId::new(),
-                effect_id: self.0.effects[0].id.clone(),
-                effect_format: EFFECT_FORMAT,
-                payload: json!({}),
-                mask: None,
-                artifacts: Vec::new(),
-            }))
+            Ok(ActionPlan::Commit(crate::NewLayer::new(
+                self.0.effects[0].id.clone(),
+                json!({}),
+            )))
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
             Ok(())
@@ -1489,7 +1481,10 @@ pub(crate) mod tests {
             })
         }
         fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
-            Ok(ActionPlan::Commit(test_layer(HELD_EFFECT)))
+            Ok(ActionPlan::Commit(crate::NewLayer::new(
+                HELD_EFFECT,
+                json!({}),
+            )))
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
             Ok(())

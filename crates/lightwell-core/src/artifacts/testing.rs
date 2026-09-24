@@ -4,8 +4,9 @@
 //! of it that lists one proves the host refuses it.
 use super::{ArtifactMeta, PreparedArtifact};
 use crate::{
-    ActionInput, ActionPlan, ColorOperation, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId,
-    ModuleDescriptor, ModuleRegistry, PointwiseColor, Processing, Stage, StageContext, ToolModule,
+    ActionInput, ActionPlan, ColorOperation, EFFECT_FORMAT, Error, ErrorKind, LayerUpdate,
+    ModuleDescriptor, ModuleRegistry, NewLayer, PointwiseColor, Processing, Stage, StageContext,
+    ToolModule,
 };
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -120,14 +121,9 @@ impl ToolModule for TintModule {
     fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
         let artifact = Self::artifact(&input.parameters)?;
         if input.action_id == APPLY_PLAIN {
-            return Ok(ActionPlan::Commit(Layer {
-                id: LayerId::new(),
-                effect_id: PLAIN_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: json!({}),
-                artifacts: vec![artifact],
-                mask: None,
-            }));
+            return Ok(ActionPlan::Commit(
+                NewLayer::new(PLAIN_EFFECT, json!({})).with_artifacts(vec![artifact]),
+            ));
         }
         match context
             .layers
@@ -135,18 +131,13 @@ impl ToolModule for TintModule {
             .find(|layer| layer.effect_id == TINT_EFFECT)
         {
             Some(layer) if layer.artifacts == [artifact.clone()] => Ok(ActionPlan::NoOp),
-            Some(layer) => Ok(ActionPlan::Update(Layer {
-                artifacts: vec![artifact],
-                ..layer.clone()
-            })),
-            None => Ok(ActionPlan::Commit(Layer {
-                id: LayerId::new(),
-                effect_id: TINT_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: json!({}),
-                artifacts: vec![artifact],
-                mask: None,
-            })),
+            Some(layer) => Ok(ActionPlan::Update(
+                LayerUpdate::new(layer.id.clone(), layer.payload.clone())
+                    .with_artifacts(vec![artifact]),
+            )),
+            None => Ok(ActionPlan::Commit(
+                NewLayer::new(TINT_EFFECT, json!({})).with_artifacts(vec![artifact]),
+            )),
         }
     }
     fn validate_payload(&self, _: &str, format: u32, payload: &Value) -> Result<(), Error> {

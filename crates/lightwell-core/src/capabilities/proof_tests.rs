@@ -16,9 +16,9 @@ use super::{
 };
 use crate::{
     ApiFailure, ApiRequest, ApiResponse, ArtifactId, AssetId, CapabilitiesProofModule,
-    ClientAuthority, ClientId, EditorService, EntryId, Error, ErrorKind, Layer, ModuleDescriptor,
-    ModuleRegistry, OwnerHandle, PROOF_PALETTE_GAINS, PROOF_TASK, Processing, ProofEndpoint, Stage,
-    StageContext, ToolModule,
+    ClientAuthority, ClientId, EditorService, EntryId, Error, ErrorKind, Layer, LayerUpdate,
+    ModuleDescriptor, ModuleRegistry, OwnerHandle, PROOF_PALETTE_GAINS, PROOF_TASK, Processing,
+    ProofEndpoint, Stage, StageContext, ToolModule,
     capabilities::context::ModuleContext,
     modules::{ActionInput, ActionPlan},
     redact_request,
@@ -1155,11 +1155,21 @@ fn apply_commits_then_updates_in_place_and_reset_neutralises_the_same_layer() {
         };
         module.plan(&input, &context).unwrap()
     };
-    let ActionPlan::Commit(layer) = plan("apply-proof-tint", Some(&first), &[]) else {
+    let ActionPlan::Commit(new) = plan("apply-proof-tint", Some(&first), &[]) else {
         panic!("the first apply commits");
     };
-    assert_eq!(layer.payload, json!({"artifact": first.as_str()}));
-    assert_eq!(layer.artifacts, std::slice::from_ref(&first));
+    assert_eq!(new.payload, json!({"artifact": first.as_str()}));
+    assert_eq!(new.artifacts, std::slice::from_ref(&first));
+    // The layer the host would store for that commit, and for each update after it.
+    let layer = Layer {
+        artifacts: new.artifacts,
+        ..Layer::new(new.effect_id, new.payload)
+    };
+    let stored = |layer: &Layer, update: LayerUpdate| Layer {
+        payload: update.payload,
+        artifacts: update.artifacts,
+        ..layer.clone()
+    };
     assert_eq!(
         plan(
             "apply-proof-tint",
@@ -1177,6 +1187,7 @@ fn apply_commits_then_updates_in_place_and_reset_neutralises_the_same_layer() {
     };
     assert_eq!(updated.id, layer.id);
     assert_eq!(updated.artifacts, [second]);
+    let updated = stored(&layer, updated);
     let ActionPlan::Update(neutral) =
         plan("reset-proof-tint", None, std::slice::from_ref(&updated))
     else {
@@ -1186,6 +1197,7 @@ fn apply_commits_then_updates_in_place_and_reset_neutralises_the_same_layer() {
         (neutral.payload.clone(), neutral.artifacts.len()),
         (json!({}), 0)
     );
+    let neutral = stored(&updated, neutral);
     assert_eq!(
         plan("reset-proof-tint", None, std::slice::from_ref(&neutral)),
         ActionPlan::NoOp

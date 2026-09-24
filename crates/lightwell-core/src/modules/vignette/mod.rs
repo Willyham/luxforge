@@ -23,8 +23,16 @@ use super::{
     ColorOperation, EffectDescriptor, EffectStage, PointwiseColor, Processing, Stage,
     field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error, VIGNETTE_EFFECT};
+use crate::{EFFECT_FORMAT, Error};
 use std::sync::Arc;
+
+/// The one finish-stage effect of the Vignette module: every implemented Vignette parameter of a
+/// stack lives in one layer of this effect, evaluated after the geometry tail in output-stage
+/// pixel coordinates. Named `postcrop` rather than `post-crop`: `valid_identity` forbids a hyphen
+/// inside a dot-separated identity segment (every other built-in effect follows the same rule,
+/// e.g. `lightwell.basic.adjust`), so the closest one-word form of the design's "post-crop
+/// vignette" name is used instead of a literal hyphen.
+pub const VIGNETTE_EFFECT: &str = "lightwell.vignette.postcrop";
 
 pub(super) const SET_VIGNETTE: &str = "set-vignette";
 pub(super) const RESET_VIGNETTE: &str = "reset-vignette";
@@ -240,7 +248,13 @@ mod tests {
 
     fn committed(plan: ActionPlan) -> Layer {
         match plan {
-            ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
+            // The layer the host stores for the plan: a commit's effect and payload, or the
+            // updated layer's identity with its new payload.
+            ActionPlan::Commit(new) => Layer::new(new.effect_id, new.payload),
+            ActionPlan::Update(update) => Layer {
+                id: update.id,
+                ..Layer::new(VIGNETTE_EFFECT, update.payload)
+            },
             ActionPlan::NoOp => panic!("expected a layer, not a no-op"),
             ActionPlan::Compose(_) => panic!("expected a layer, not a composite"),
             ActionPlan::Edits(_) => panic!("expected a layer, not several edits"),

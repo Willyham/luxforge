@@ -18,7 +18,7 @@ mod spatial;
 mod transform;
 mod vignette;
 
-pub use basic::BasicModule;
+pub use basic::{BASIC_EFFECT, BasicModule};
 pub use capabilities_proof::{
     APPLY_PROOF_TINT, CapabilitiesProofModule, PROOF_ADAPTER, PROOF_EFFECT, PROOF_GENERATE_PATH,
     PROOF_MODULE, PROOF_PALETTE, PROOF_PALETTE_GAINS, PROOF_PALETTE_PATH, PROOF_PALETTE_SHA256,
@@ -28,11 +28,11 @@ pub use capabilities_proof::{
 pub use controls::{
     CONTROLS_EFFECT, ControlsModule, RESET_CONTROLS, SAMPLE_CONTROLS_CURVE, SET_CONTROLS,
 };
-pub use crop::CropModule;
 pub use crop::geometry::{
     BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
     guide_angle, largest_with_ratio_inside,
 };
+pub use crop::{CROP_EFFECT, CropModule};
 pub(crate) use descriptor::title_case;
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
@@ -42,16 +42,16 @@ pub use descriptor::{
     render_summary, valid_identity, valid_name,
 };
 pub(crate) use descriptor::{check_declared_values, check_parameter_declarations};
-pub use mixer::MixerModule;
-pub use pixel::PixelModule;
-pub use presence::PresenceModule;
+pub use mixer::{MIXER_EFFECT, MixerModule};
+pub use pixel::{PIXEL_EFFECT, PixelModule};
+pub use presence::{PRESENCE_EFFECT, PresenceModule};
 pub use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
 };
 pub use raw::neutral::{SensorMosaic, sensor_neutral_gains, sensor_neutral_gains_mapped};
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
-pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
+pub use raw::{RAW_EFFECT, RawModule, RawPayload, WhiteBalanceMode};
 #[cfg(test)]
 pub(crate) use registry::tests::{
     HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate,
@@ -64,10 +64,13 @@ pub use spatial::{
     Parallelism, Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE,
     SpatialOperation, SpatialUnit,
 };
-pub use transform::TransformModule;
-pub use vignette::VignetteModule;
+pub use transform::{ORIENTATION_EFFECT, TransformModule};
+pub use vignette::{VIGNETTE_EFFECT, VignetteModule};
 
-use crate::{Error, Layer, artifacts::PreparedArtifact, capabilities::context::ModuleContext};
+use crate::{
+    ArtifactId, Error, Layer, LayerId, artifacts::PreparedArtifact,
+    capabilities::context::ModuleContext,
+};
 use serde_json::{Map, Value};
 use std::{path::Path, sync::Arc};
 
@@ -79,6 +82,58 @@ pub struct ActionInput {
     pub parameters: Map<String, Value>,
 }
 
+/// A layer a plan adds: which effect, and what its payload holds. Everything else about the layer is
+/// the host's: it gives the layer a new identity, the format its effect declares and the mask target
+/// the request named, and places it by the effect's declared stage and order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewLayer {
+    pub effect_id: String,
+    pub payload: Value,
+    /// The derived artifacts the payload is evaluated with, only for an effect that declares
+    /// `artifacts`; empty otherwise.
+    pub artifacts: Vec<ArtifactId>,
+}
+
+impl NewLayer {
+    pub fn new(effect_id: impl Into<String>, payload: Value) -> Self {
+        Self {
+            effect_id: effect_id.into(),
+            payload,
+            artifacts: Vec::new(),
+        }
+    }
+
+    pub fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
+        Self { artifacts, ..self }
+    }
+}
+
+/// A change a plan makes to a layer already in the stack: which layer, and its new payload. The
+/// layer keeps its identity, effect, position and mask; the host writes its effect's declared
+/// format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayerUpdate {
+    pub id: LayerId,
+    pub payload: Value,
+    /// The layer's derived artifacts after the change, only for an effect that declares
+    /// `artifacts`; empty otherwise, which also clears any the layer listed.
+    pub artifacts: Vec<ArtifactId>,
+}
+
+impl LayerUpdate {
+    pub fn new(id: LayerId, payload: Value) -> Self {
+        Self {
+            id,
+            payload,
+            artifacts: Vec::new(),
+        }
+    }
+
+    pub fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
+        Self { artifacts, ..self }
+    }
+}
+
 /// What an action does to the current stack. A no-op records the request without a history row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionPlan {
@@ -87,11 +142,12 @@ pub enum ActionPlan {
     /// effect's declared stage and order: a pixel-stage or colour-stage layer joins the stack
     /// before the geometry tail, a spatial layer after the pointwise work, a geometry layer before
     /// any finish layer and a finish layer at the end.
-    /// [`StageContext::insertion_index_for`] answers where.
-    Commit(Layer),
-    /// Replace the layer with the same identity in place, keeping its position and every other
-    /// layer. The host rejects an identity that is not in the stack.
-    Update(Layer),
+    /// [`StageContext::insertion_index_for`] answers where. The host also gives it its identity,
+    /// its effect's format and the request's mask target.
+    Commit(NewLayer),
+    /// Replace the payload of the layer with this identity in place, keeping its position, effect
+    /// and mask and every other layer. The host rejects an identity that is not in the stack.
+    Update(LayerUpdate),
     /// Change several layers as this one action, in order, each by the rule of the single-layer
     /// plan it names, and commit the final stack once. A transform over a crop is one: its
     /// orientation goes ahead of the crop, and the crop is re-expressed through it in the same
@@ -109,8 +165,8 @@ pub enum ActionPlan {
 /// [`ActionPlan::Update`], with the same placement and identity rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LayerEdit {
-    Commit(Layer),
-    Update(Layer),
+    Commit(NewLayer),
+    Update(LayerUpdate),
 }
 
 /// The most steps one [`ActionPlan::Compose`] may hold, which is the most actions a settings set

@@ -11,11 +11,11 @@ mod endpoint;
 pub use endpoint::{ProofEndpoint, ProofRequest};
 
 use super::{
-    ActionInput, ActionPlan, ColorOperation, ModuleDescriptor, PointwiseColor, Processing, Stage,
-    StageContext, ToolModule,
+    ActionInput, ActionPlan, ColorOperation, LayerUpdate, ModuleDescriptor, NewLayer,
+    PointwiseColor, Processing, Stage, StageContext, ToolModule,
 };
 use crate::{
-    ArtifactId, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId,
+    ArtifactId, EFFECT_FORMAT, Error, ErrorKind,
     artifacts::{ArtifactMeta, PreparedArtifact},
     capabilities::context::ModuleContext,
 };
@@ -416,28 +416,17 @@ impl ToolModule for CapabilitiesProofModule {
                     {
                         ActionPlan::NoOp
                     }
-                    Some(layer) => ActionPlan::Update(Layer {
-                        payload,
-                        artifacts: vec![artifact],
-                        ..layer.clone()
-                    }),
-                    None => ActionPlan::Commit(Layer {
-                        id: LayerId::new(),
-                        effect_id: PROOF_EFFECT.into(),
-                        effect_format: EFFECT_FORMAT,
-                        payload,
-                        mask: None,
-                        artifacts: vec![artifact],
-                    }),
+                    Some(layer) => ActionPlan::Update(
+                        LayerUpdate::new(layer.id.clone(), payload).with_artifacts(vec![artifact]),
+                    ),
+                    None => ActionPlan::Commit(
+                        NewLayer::new(PROOF_EFFECT, payload).with_artifacts(vec![artifact]),
+                    ),
                 })
             }
             RESET_PROOF_TINT => Ok(match existing {
                 Some(layer) if layer.payload != json!({}) || !layer.artifacts.is_empty() => {
-                    ActionPlan::Update(Layer {
-                        payload: json!({}),
-                        artifacts: Vec::new(),
-                        ..layer.clone()
-                    })
+                    ActionPlan::Update(LayerUpdate::new(layer.id.clone(), json!({})))
                 }
                 _ => ActionPlan::NoOp,
             }),

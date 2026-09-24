@@ -1,10 +1,6 @@
-use crate::{
-    ArtifactId, Error, ErrorKind,
-    artifacts::MAX_LAYER_ARTIFACTS,
-    modules::{CropPayload, valid_name},
-};
+use crate::{ArtifactId, Error, ErrorKind, artifacts::MAX_LAYER_ARTIFACTS, modules::valid_name};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
 /// Format 2 adds the mask table a recipe carries and the optional mask reference a layer carries;
@@ -12,29 +8,8 @@ use std::collections::{BTreeMap, HashSet};
 /// deserialization rather than defaulted, because a stack whose masks are unknown is not the stack
 /// that was stored.
 pub const RECIPE_FORMAT: u32 = 2;
-pub const PIXEL_EFFECT: &str = "lightwell.pixel.replace";
-pub const RAW_EFFECT: &str = "lightwell.raw";
-pub const ORIENTATION_EFFECT: &str = "lightwell.geometry.orientation";
-pub const CROP_EFFECT: &str = "lightwell.geometry.crop";
-/// The one colour-stage effect of the Basic module: every implemented Basic parameter of a stack
-/// lives in one layer of this effect.
-pub const BASIC_EFFECT: &str = "lightwell.basic.adjust";
-/// The colour mixer's one pointwise unit: hue, saturation and luminance for the eight colour
-/// ranges, declared order 10 so a mixer layer always follows the Basic layer in the colour run.
-pub const MIXER_EFFECT: &str = "lightwell.mixer.hsl";
-
-/// The one spatial-stage effect of the Presence module: Texture, Clarity and Dehaze of a stack live
-/// in one layer of this effect, evaluated after the pointwise colour run and before the geometry
-/// tail as one tiled neighbourhood pass.
-pub const PRESENCE_EFFECT: &str = "lightwell.presence.adjust";
-
-/// The one finish-stage effect of the Vignette module: every implemented Vignette parameter of a
-/// stack lives in one layer of this effect, evaluated after the geometry tail in output-stage
-/// pixel coordinates. Named `postcrop` rather than `post-crop`: `valid_identity` forbids a hyphen
-/// inside a dot-separated identity segment (every other built-in effect follows the same rule,
-/// e.g. `lightwell.basic.adjust`), so the closest one-word form of the design's "post-crop
-/// vignette" name is used instead of a literal hyphen.
-pub const VIGNETTE_EFFECT: &str = "lightwell.vignette.postcrop";
+/// The payload format every delivered effect declares. A module's descriptor names its effects'
+/// formats; the host writes that format on every layer a plan commits or updates.
 pub const EFFECT_FORMAT: u32 = 1;
 
 fn valid_id(value: &str, prefix: &str) -> bool {
@@ -180,35 +155,16 @@ pub struct Layer {
 }
 
 impl Layer {
-    pub fn pixel(x: u32, y: u32, rgb: [u8; 3]) -> Self {
+    /// A layer of `effect_id` holding `payload` at [`EFFECT_FORMAT`], with a new identity, no mask
+    /// and no artifacts. The host builds the layers a plan commits itself, from the effect's
+    /// declared format and the request's target; this is for a stack assembled directly, such as a
+    /// fixture or a module's own constructor.
+    pub fn new(effect_id: impl Into<String>, payload: Value) -> Self {
         Self {
             id: LayerId::new(),
-            effect_id: PIXEL_EFFECT.into(),
+            effect_id: effect_id.into(),
             effect_format: EFFECT_FORMAT,
-            payload: json!({"x": x, "y": y, "rgb": rgb}),
-            mask: None,
-            artifacts: Vec::new(),
-        }
-    }
-    /// The one orientation layer of a stage: the composed quarter turns and reflections that every
-    /// exact transform action applied there reaches.
-    pub fn orientation(orientation: Orientation) -> Self {
-        Self {
-            id: LayerId::new(),
-            effect_id: ORIENTATION_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
-            payload: serde_json::to_value(orientation).expect("orientation is serializable"),
-            mask: None,
-            artifacts: Vec::new(),
-        }
-    }
-    /// The one crop layer of a stack: straightening and a rectangle over its own input stage.
-    pub fn crop(payload: CropPayload) -> Self {
-        Self {
-            id: LayerId::new(),
-            effect_id: CROP_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
-            payload: serde_json::to_value(payload).expect("crop payload is serializable"),
+            payload,
             mask: None,
             artifacts: Vec::new(),
         }
@@ -892,6 +848,7 @@ fn validate_request(request_id: &str, actor: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// A mask with one component of a kind this build knows nothing about, which is the case the
     /// model has to carry: a well-formed kind token and a payload nothing here reads.

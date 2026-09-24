@@ -3,12 +3,16 @@ pub mod neutral;
 pub mod white_balance;
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
-    EffectDescriptor, EffectStage, ExactGeometry, ModuleDescriptor, ParameterDescriptor,
-    ParameterKind, Processing, ResetAction, Stage, StageContext, ToolModule,
+    EffectDescriptor, EffectStage, ExactGeometry, LayerUpdate, ModuleDescriptor,
+    ParameterDescriptor, ParameterKind, Processing, ResetAction, Stage, StageContext, ToolModule,
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId, RAW_EFFECT};
+use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+/// The RAW module's one source-stage effect: the development of the RAW original, always the
+/// first layer of a RAW asset's stack.
+pub const RAW_EFFECT: &str = "lightwell.raw";
 
 const SET_EXPOSURE: &str = "set-raw-exposure";
 const SET_RED: &str = "set-raw-red-gain";
@@ -143,12 +147,17 @@ impl RawPayload {
         Ok(payload)
     }
 
+    /// This development as a stored payload.
+    pub fn value(&self) -> Value {
+        serde_json::to_value(self).expect("validated RAW payload serializes")
+    }
+
     pub fn layer(&self, id: LayerId) -> Layer {
         Layer {
             id,
             effect_id: RAW_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
-            payload: serde_json::to_value(self).expect("validated RAW payload serializes"),
+            payload: self.value(),
             // Source development is the whole content stage: a mask has no stage to read here.
             mask: None,
             artifacts: Vec::new(),
@@ -519,7 +528,10 @@ impl ToolModule for RawModule {
         if payload == RawPayload::from_layer(layer)? {
             return Ok(ActionPlan::NoOp);
         }
-        Ok(ActionPlan::Update(payload.layer(layer.id.clone())))
+        Ok(ActionPlan::Update(LayerUpdate::new(
+            layer.id.clone(),
+            payload.value(),
+        )))
     }
     fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
         RawPayload::from_layer(&Layer {
@@ -631,7 +643,10 @@ mod tests {
         };
         let input = module.parse(action, params.as_object().unwrap())?;
         match module.plan(&input, &context)? {
-            ActionPlan::Update(next) => RawPayload::from_layer(&next),
+            ActionPlan::Update(next) => RawPayload::from_layer(&Layer {
+                payload: next.payload,
+                ..layer.clone()
+            }),
             _ => Err(validation("expected RAW update")),
         }
     }

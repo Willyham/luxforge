@@ -1,10 +1,10 @@
 //! Developer proof for the complete first-slice control vocabulary. Its stored layer describes
 //! control values but compiles to an identity colour operation, so it cannot change photo pixels.
 use super::{
-    ActionInput, ActionPlan, ColorOperation, ModuleDescriptor, Processing, Stage, StageContext,
-    ToolModule, check_parameters,
+    ActionInput, ActionPlan, ColorOperation, LayerUpdate, ModuleDescriptor, NewLayer, Processing,
+    Stage, StageContext, ToolModule, check_parameters,
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId};
+use crate::{EFFECT_FORMAT, Error, ErrorKind};
 use serde_json::{Map, Value, json};
 
 pub const CONTROLS_EFFECT: &str = "lightwell.controls.identity";
@@ -198,21 +198,10 @@ impl ToolModule for ControlsModule {
         {
             return Ok(ActionPlan::NoOp);
         }
-        let layer = Layer {
-            id: old
-                .map(|layer| layer.id.clone())
-                .unwrap_or_else(LayerId::new),
-            effect_id: CONTROLS_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
-            payload: Value::Object(merged),
-            // The mask is the host's: an update keeps whatever this layer already carries.
-            mask: old.and_then(|layer| layer.mask.clone()),
-            artifacts: Vec::new(),
-        };
-        Ok(if old.is_some() {
-            ActionPlan::Update(layer)
-        } else {
-            ActionPlan::Commit(layer)
+        let payload = Value::Object(merged);
+        Ok(match old {
+            Some(layer) => ActionPlan::Update(LayerUpdate::new(layer.id.clone(), payload)),
+            None => ActionPlan::Commit(NewLayer::new(CONTROLS_EFFECT, payload)),
         })
     }
 

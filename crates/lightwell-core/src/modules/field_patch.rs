@@ -19,10 +19,11 @@
 
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
-    EffectDescriptor, ModuleDescriptor, ModuleLayout, NumberStyle, ParameterDescriptor,
-    ParameterKind, Processing, RailDecoration, ResetAction, Stage, StageContext, ToolModule,
+    EffectDescriptor, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer, NumberStyle,
+    ParameterDescriptor, ParameterKind, Processing, RailDecoration, ResetAction, Stage,
+    StageContext, ToolModule,
 };
-use crate::{Error, ErrorKind, Layer, LayerId};
+use crate::{Error, ErrorKind, Layer};
 use serde_json::{Map, Number, Value};
 
 fn validation(detail: impl Into<String>) -> Error {
@@ -514,28 +515,19 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
             // Canonical comparison, so writing a field's default on a layer that stores no key at
             // all is the no-op it looks like.
             Some(_) if current == merged => Ok(ActionPlan::NoOp),
-            Some(layer) => Ok(ActionPlan::Update(Layer {
-                id: layer.id.clone(),
-                effect_id: spec.effect.id.clone(),
-                effect_format: spec.effect.format,
-                payload: self.payload(&merged),
-                // The mask is the host's: an update keeps whatever this layer already carries.
-                mask: layer.mask.clone(),
-                artifacts: Vec::new(),
-            })),
+            Some(layer) => Ok(ActionPlan::Update(LayerUpdate::new(
+                layer.id.clone(),
+                self.payload(&merged),
+            ))),
             None => {
                 let merged = self.values(merged);
                 if self.module.is_neutral(&merged) {
                     return Ok(ActionPlan::NoOp);
                 }
-                Ok(ActionPlan::Commit(Layer {
-                    id: LayerId::new(),
-                    effect_id: spec.effect.id.clone(),
-                    effect_format: spec.effect.format,
-                    payload: self.payload(merged.as_slice()),
-                    mask: None,
-                    artifacts: Vec::new(),
-                }))
+                Ok(ActionPlan::Commit(NewLayer::new(
+                    spec.effect.id.clone(),
+                    self.payload(merged.as_slice()),
+                )))
             }
         }
     }

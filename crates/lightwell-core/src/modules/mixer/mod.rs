@@ -16,8 +16,12 @@ use super::{
     Stage,
     field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error, MIXER_EFFECT};
+use crate::{EFFECT_FORMAT, Error};
 use std::sync::Arc;
+
+/// The colour mixer's one pointwise unit: hue, saturation and luminance for the eight colour
+/// ranges, declared order 10 so a mixer layer always follows the Basic layer in the colour run.
+pub const MIXER_EFFECT: &str = "lightwell.mixer.hsl";
 
 pub(super) const SET_MIXER: &str = "set-mixer";
 pub(super) const RESET_MIXER: &str = "reset-mixer";
@@ -316,7 +320,13 @@ mod tests {
 
     fn committed(plan: ActionPlan) -> Layer {
         match plan {
-            ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
+            // The layer the host stores for the plan: a commit's effect and payload, or the
+            // updated layer's identity with its new payload.
+            ActionPlan::Commit(new) => Layer::new(new.effect_id, new.payload),
+            ActionPlan::Update(update) => Layer {
+                id: update.id,
+                ..Layer::new(MIXER_EFFECT, update.payload)
+            },
             ActionPlan::NoOp => panic!("expected a layer, not a no-op"),
             ActionPlan::Compose(_) => panic!("expected a layer, not a composite"),
             ActionPlan::Edits(_) => panic!("expected a layer, not several edits"),

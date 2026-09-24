@@ -6,10 +6,10 @@ use super::{
 };
 use crate::{
     ActionDescriptor, Availability, Component, ComponentMode, EFFECT_FORMAT, EffectDescriptor,
-    EffectStage, EntryId, Error, ErrorKind, ExactGeometry, HistoryEntry, Layer, LayerId, Mask,
+    EffectStage, EntryId, Error, ErrorKind, ExactGeometry, HistoryEntry, LayerId, Mask,
     ModuleDescriptor, ModuleRegistry, Mutation, ParameterDescriptor, ParameterKind, Processing,
     Recipe, Snapshot, SnapshotId, Stage, ToolModule,
-    modules::{ActionInput, ActionPlan, StageContext},
+    modules::{ActionInput, ActionPlan, LayerUpdate, NewLayer, StageContext},
 };
 use rusqlite::{Connection, params};
 use serde_json::{Map, Value, json};
@@ -199,21 +199,6 @@ impl ShrinkModule {
         })
     }
 
-    fn layer(id: LayerId, width: u32, height: u32) -> Layer {
-        Self::layer_of(SHRINK_EFFECT, id, width, height)
-    }
-
-    fn layer_of(effect_id: &str, id: LayerId, width: u32, height: u32) -> Layer {
-        Layer {
-            id,
-            effect_id: effect_id.into(),
-            effect_format: EFFECT_FORMAT,
-            payload: json!({"width": width, "height": height}),
-            mask: None,
-            artifacts: Vec::new(),
-        }
-    }
-
     fn extents(value: &Value) -> Result<(u32, u32), Error> {
         let read = |name: &str| {
             value
@@ -262,18 +247,15 @@ impl ToolModule for ShrinkModule {
     fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> Result<ActionPlan, Error> {
         let (width, height) = Self::extents(&Value::Object(input.parameters.clone()))?;
         if input.action_id == MISSING_ACTION {
-            return Ok(ActionPlan::Update(Self::layer(
+            return Ok(ActionPlan::Update(LayerUpdate::new(
                 LayerId::new(),
-                width,
-                height,
+                shrink(width, height),
             )));
         }
         if input.action_id == TAIL_ACTION {
-            return Ok(ActionPlan::Commit(Self::layer_of(
+            return Ok(ActionPlan::Commit(NewLayer::new(
                 SHRINK_TAIL_EFFECT,
-                LayerId::new(),
-                width,
-                height,
+                shrink(width, height),
             )));
         }
         match stage
@@ -281,15 +263,13 @@ impl ToolModule for ShrinkModule {
             .iter()
             .find(|layer| layer.effect_id == SHRINK_EFFECT)
         {
-            Some(existing) => Ok(ActionPlan::Update(Self::layer(
+            Some(existing) => Ok(ActionPlan::Update(LayerUpdate::new(
                 existing.id.clone(),
-                width,
-                height,
+                shrink(width, height),
             ))),
-            None => Ok(ActionPlan::Commit(Self::layer(
-                LayerId::new(),
-                width,
-                height,
+            None => Ok(ActionPlan::Commit(NewLayer::new(
+                SHRINK_EFFECT,
+                shrink(width, height),
             ))),
         }
     }

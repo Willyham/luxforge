@@ -28,8 +28,13 @@ use super::{
     EffectDescriptor, EffectStage, Processing, SpatialOperation, SpatialUnit, Stage,
     field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error, PRESENCE_EFFECT};
+use crate::{EFFECT_FORMAT, Error};
 use std::sync::Arc;
+
+/// The one spatial-stage effect of the Presence module: Texture, Clarity and Dehaze of a stack live
+/// in one layer of this effect, evaluated after the pointwise colour run and before the geometry
+/// tail as one tiled neighbourhood pass.
+pub const PRESENCE_EFFECT: &str = "lightwell.presence.adjust";
 
 pub(super) const SET_PRESENCE: &str = "set-presence";
 pub(super) const RESET_PRESENCE: &str = "reset-presence";
@@ -223,7 +228,13 @@ mod tests {
 
     fn committed(plan: ActionPlan) -> Layer {
         match plan {
-            ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
+            // The layer the host stores for the plan: a commit's effect and payload, or the
+            // updated layer's identity with its new payload.
+            ActionPlan::Commit(new) => Layer::new(new.effect_id, new.payload),
+            ActionPlan::Update(update) => Layer {
+                id: update.id,
+                ..Layer::new(PRESENCE_EFFECT, update.payload)
+            },
             ActionPlan::NoOp => panic!("expected a layer, not a no-op"),
             ActionPlan::Compose(_) => panic!("expected a layer, not a composite"),
             ActionPlan::Edits(_) => panic!("expected a layer, not several edits"),
