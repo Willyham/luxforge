@@ -190,6 +190,7 @@ fn masked_stack(mask: Mask, strokes: StrokeTable) -> Recipe {
         }],
         masks: vec![mask],
         strokes,
+        artifacts: Default::default(),
     }
 }
 

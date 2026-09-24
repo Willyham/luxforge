@@ -4,7 +4,7 @@
 //! catalog owner only stats files and reads the small manifest.
 use super::{
     ArtifactId, ArtifactMeta, ArtifactRecord, LiveArtifacts, MAX_ARTIFACT_BYTES, PreparedArtifact,
-    lock, register_prepared,
+    lock,
 };
 use crate::{
     Error, ErrorKind,
@@ -272,11 +272,7 @@ impl ArtifactWriter {
         // there is nothing left to remove.
         let _ = fs::remove_file(&staged);
         decided?;
-        let prepared = register_prepared(Arc::new(PreparedArtifact::new(
-            id.clone(),
-            &meta,
-            Arc::from(bytes),
-        )));
+        let prepared = Arc::new(PreparedArtifact::new(id.clone(), &meta, Arc::from(bytes)));
         Ok((
             ArtifactRecord {
                 id,
@@ -554,7 +550,6 @@ pub(crate) fn collect_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::artifacts::prepared;
     use std::sync::atomic::AtomicU64;
 
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -595,7 +590,7 @@ mod tests {
         assert_eq!(record.bytes, bytes.len() as u64);
         assert_eq!(&*prepared_bytes.bytes, bytes);
         assert_eq!(prepared_bytes.colour.as_deref(), Some("linear-srgb"));
-        assert!(Arc::ptr_eq(&prepared(&record.id).unwrap(), &prepared_bytes));
+        assert_eq!(prepared_bytes.id, record.id);
         assert_eq!(
             root_state(&root, "catalog-a").unwrap(),
             RootState::Ready,

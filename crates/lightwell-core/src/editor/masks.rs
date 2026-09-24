@@ -143,7 +143,9 @@ impl EditorService {
             return Ok(None);
         };
         let source = self.verified_prepared(&state.asset)?;
-        self.with_stage_context(&source, recipe, |context| {
+        // Reading the pixel compiles the stack, so its artifacts are bound first.
+        let recipe = self.bound(recipe)?;
+        self.with_stage_context(&source, &recipe, |context| {
             let stage = (context.stage_before)(request.layer)?;
             // The stroke's positions are normalized against the stage its mask is compiled against,
             // which is the stage this layer receives, so the pixel is that stage's own. A stroke that
@@ -192,11 +194,12 @@ impl EditorService {
         y: u32,
     ) -> Result<PixelInput, Error> {
         let state = self.state(asset_id)?;
-        let entry = self.entry(asset_id, entry_id)?;
+        let mut entry = self.entry(asset_id, entry_id)?;
         let asset = &state.asset;
+        validate_source_recipe(asset, &entry.snapshot.recipe)?;
+        let layer = crate::mask::commands::input_layer_index(&entry.snapshot.recipe, mask)?;
+        self.bind_artifacts(&mut entry.snapshot.recipe)?;
         let recipe = &entry.snapshot.recipe;
-        validate_source_recipe(asset, recipe)?;
-        let layer = crate::mask::commands::input_layer_index(recipe, mask)?;
         let source = self.verified_prepared(asset)?;
         self.with_stage_context(&source, recipe, |context| {
             let stage = (context.stage_before)(layer)?;
@@ -342,6 +345,7 @@ pub(super) fn recipe_for_target<'a>(
             .collect(),
         masks: recipe.masks.clone(),
         strokes: recipe.strokes.clone(),
+        artifacts: recipe.artifacts.clone(),
     })
 }
 

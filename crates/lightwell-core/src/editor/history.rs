@@ -10,11 +10,10 @@ use super::{
 };
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, MaskId, Mutation, Recipe, Snapshot,
-    SnapshotId, artifacts::PreparedArtifact, modules::ActionInput,
+    SnapshotId, modules::ActionInput,
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
-use std::sync::Arc;
 
 const MAX_HISTORY_PAGE: usize = 100;
 const MAX_VERSION_NAME: usize = 64;
@@ -61,23 +60,19 @@ impl EditorService {
     ///
     /// The stack is validated against the registry (an unavailable provider, a refused payload or a
     /// mask on a stage that cannot carry one is refused by name) and against the asset's source
-    /// kind. Every artifact it lists must be recorded with a present file, and is then bound; the
-    /// bound bytes are returned for the caller to hold until the write, whose transaction checks
-    /// the references again and records them. Last, the stack is compiled against the asset's
-    /// dimensions, which resolves every stroke it references, so a later layer addressing a stage
-    /// that no longer exists or a stroke the store has lost is refused with the compile error and
-    /// nothing is written. `O(layers)`; it rasterizes nothing.
-    pub(super) fn admit(
-        &self,
-        asset: &AssetRecord,
-        recipe: &Recipe,
-    ) -> Result<Vec<Arc<PreparedArtifact>>, Error> {
+    /// kind. Every artifact it lists must be recorded with a present file, and is then bound into
+    /// the recipe, which carries the bytes until the write, whose transaction checks the references
+    /// again and records them. Last, the stack is compiled against the asset's dimensions, which
+    /// resolves every stroke it references, so a later layer addressing a stage that no longer
+    /// exists or a stroke the store has lost is refused with the compile error and nothing is
+    /// written. `O(layers)`; it rasterizes nothing.
+    pub(super) fn admit(&self, asset: &AssetRecord, recipe: &mut Recipe) -> Result<(), Error> {
         self.registry.validate_recipe(recipe)?;
         validate_source_recipe(asset, recipe)?;
         artifact_store::recorded_artifacts(&self.connection, &self.artifact_root, recipe)?;
-        let artifacts = self.require_artifacts(recipe)?;
+        self.bind_artifacts(recipe)?;
         self.registry.compile(asset.width, asset.height, recipe)?;
-        Ok(artifacts)
+        Ok(())
     }
 
     /// The one path every change to an asset's history takes: an action, a composite, a `mask.*`
@@ -107,12 +102,10 @@ impl EditorService {
         }
         let state = self.state(asset_id)?;
         ensure_revision(&state, mutation.expected_revision)?;
-        let change = plan(self, &state)?;
-        // Held until the write, whose transaction checks the references again and records them.
-        let _artifacts = match &change {
-            Change::Append { recipe, .. } => self.admit(&state.asset, recipe)?,
-            Change::Navigate { .. } | Change::NoOp => Vec::new(),
-        };
+        let mut change = plan(self, &state)?;
+        if let Change::Append { recipe, .. } = &mut change {
+            self.admit(&state.asset, recipe)?;
+        }
         let next = state.revision + 1;
         let (outcome, revision, current_entry_id, created_entry_id) = match &change {
             Change::Append { .. } => {

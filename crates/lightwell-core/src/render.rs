@@ -1523,6 +1523,7 @@ impl<'a> Evaluation<'a> {
         layers: &[Layer],
         masks: &[crate::Mask],
         strokes: &crate::path::StrokeTable,
+        artifacts: &crate::artifacts::ArtifactTable,
     ) -> Result<Self, Error> {
         check_source(source)?;
         Ok(Self {
@@ -1533,6 +1534,7 @@ impl<'a> Evaluation<'a> {
                 layers,
                 masks,
                 strokes,
+                artifacts,
             )?,
             tiles: PointTiles::new(PRODUCTION_TILE),
         })
@@ -5375,6 +5377,7 @@ mod tests {
                     layers: vec![masked(exposure_layer(&[1.0]), &mask)],
                     masks: vec![mask.clone()],
                     strokes: table.clone(),
+                    artifacts: Default::default(),
                 };
                 measure(&format!("{count}-stroke brush mask"), &recipe);
 

@@ -10,7 +10,7 @@ use crate::{
     AssetId, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, MaskId,
     ModuleRegistry, PreviewSource, Recipe, SnapshotId,
     analysis::AnalysisIdentity,
-    artifacts::{ArtifactId, LiveArtifacts, PreparedArtifact, PreparedArtifacts},
+    artifacts::{ArtifactId, LiveArtifacts, PreparedArtifacts},
     source::PreparedSource,
 };
 use catalog::{CATALOG_FORMAT, default_artifact_root};
@@ -199,21 +199,19 @@ pub struct AnalysisPlan {
     /// at all: there is nothing to render, so the original is never prepared for it.
     pub source: Option<PreviewSource>,
     pub registry: Arc<ModuleRegistry>,
+    /// The effective recipe, bound with the verified bytes of every artifact it references, which
+    /// the job holds while it runs.
     pub recipe: Recipe,
     pub failure: Option<Error>,
-    /// The verified bytes of every artifact `recipe` references, which the job holds while it runs.
-    pub artifacts: Vec<Arc<PreparedArtifact>>,
 }
 
 /// One asset's current entry bound for point sampling on a worker, as the catalog owner found it
-/// at request time: the samples describe that entry whatever is committed meanwhile. Holding it
-/// pins the artifacts its stack binds and shares the source's allocation.
+/// at request time: the samples describe that entry whatever is committed meanwhile. Its recipe
+/// carries the artifacts its stack binds, and it shares the source's allocation.
 pub(crate) struct SamplePlan {
     source: PreviewSource,
     registry: Arc<ModuleRegistry>,
     recipe: Recipe,
-    /// Held, never read: compilation finds the verified bytes while the plan is sampled.
-    _artifacts: Vec<Arc<PreparedArtifact>>,
 }
 
 impl SamplePlan {

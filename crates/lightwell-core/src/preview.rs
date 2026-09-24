@@ -5,7 +5,6 @@ use crate::{
     ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, MaskOverlay, MaskPixels, Report},
-    artifacts::PreparedArtifact,
     mask::CompiledMask,
     modules::Stage,
     render, render_cancellable, render_linear, render_linear_cancellable, stage_transform,
@@ -181,7 +180,14 @@ impl PreviewSource {
         let layers = crate::editor::prefix(&recipe.layers, layer)?;
         let (width, height) = self.dimensions();
         if registry
-            .compile_layers(width, height, layers, &recipe.masks, &recipe.strokes)?
+            .compile_layers(
+                width,
+                height,
+                layers,
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )?
             .evaluates_spatial()
         {
             return Err(Error::new(
@@ -201,6 +207,7 @@ impl PreviewSource {
                     layers,
                     &recipe.masks,
                     &recipe.strokes,
+                    &recipe.artifacts,
                 )?,
             )),
             Self::Raw { image, settings } => {
@@ -209,6 +216,7 @@ impl PreviewSource {
                     layers: layers.to_vec(),
                     masks: recipe.masks.clone(),
                     strokes: recipe.strokes.clone(),
+                    artifacts: recipe.artifacts.clone(),
                 };
                 Ok(crate::render::LayerInput::Linear(
                     crate::render::linear::LinearEvaluation::new(
@@ -384,7 +392,9 @@ pub struct PreviewJob {
     pub entry: HistoryEntry,
     /// The providers the worker evaluates this stack with; shared, never rebuilt per job.
     pub registry: Arc<ModuleRegistry>,
-    /// The stack to render: the entry's own recipe, or an open draft's effective recipe.
+    /// The stack to render: the entry's own recipe, or an open draft's effective recipe, bound
+    /// with the verified bytes of every artifact it lists, so the worker compiles it whatever the
+    /// owner's cache evicts meanwhile.
     pub recipe: Recipe,
     /// `Some(n)` renders only the first `n` layers of that recipe, which is how the desktop shows
     /// the input stage of the layer it is drafting. `None` renders the whole stack.
@@ -410,10 +420,6 @@ pub struct PreviewJob {
     /// or rendering the proxy declines it in [`PreviewResult::proxy_declined`] and the exact phase
     /// runs unchanged.
     pub proxy: Option<ProxyBounds>,
-    /// The verified bytes of every derived artifact [`PreviewJob::recipe`] references. The job
-    /// holds them for as long as it lives, so the worker compiles the stack whatever the owner's
-    /// cache evicts meanwhile.
-    pub artifacts: Vec<Arc<PreparedArtifact>>,
     /// Fill one mask's coverage grid beside the frame and return it with it, exactly as
     /// [`PreviewJob::analyse`] returns a [`Report`]. Set through
     /// [`PreviewJob::with_mask_overlay`], which is what validates it against this job's own stack.
@@ -876,6 +882,7 @@ fn run(
         // masked layer inside the prefix still finds the mask it names.
         masks: job.recipe.masks.clone(),
         strokes: job.recipe.strokes.clone(),
+        artifacts: job.recipe.artifacts.clone(),
     });
     let recipe = prefix.as_ref().unwrap_or(&job.recipe);
 
@@ -1221,7 +1228,6 @@ mod tests {
             proxy: None,
             mask_overlay: None,
             entry,
-            artifacts: Vec::new(),
         }
     }
 
@@ -1505,7 +1511,6 @@ mod tests {
             proxy,
             mask_overlay: None,
             entry,
-            artifacts: Vec::new(),
         }
     }
 

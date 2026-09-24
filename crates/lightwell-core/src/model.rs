@@ -535,13 +535,24 @@ pub struct Recipe {
     /// every recipe without a painted edit.
     #[serde(skip)]
     pub strokes: crate::path::StrokeTable,
+    /// The verified bytes of the derived artifacts this recipe's layers list, which compilation
+    /// hands each layer's module ([`crate::artifacts`]).
+    ///
+    /// **Never serialized.** A stored recipe holds artifact identities in its layers and never
+    /// their bytes. It is filled by the catalog owner's binding step,
+    /// [`crate::EditorService::bind_artifacts`], where a recipe enters evaluation or admission, and
+    /// it is empty on a recipe that lists no artifact and on every recipe read out of a catalog.
+    /// Compiling a layer whose artifact is not in it is refused by name.
+    #[serde(skip)]
+    pub artifacts: crate::artifacts::ArtifactTable,
 }
 
 /// Equality on the stored recipe, which is what two recipes being the same means: the format, the
-/// layers and the mask table. The resolved stroke table is excluded because it is not stored — it
-/// is what the addresses in those payloads resolved to, so two recipes that compare equal reference
-/// the same strokes by construction, and a hydrated recipe must not compare unequal to the recipe
-/// it was hydrated from.
+/// layers and the mask table. The resolved stroke table and the bound artifacts are excluded
+/// because they are not stored — they are what the addresses and identities in those layers
+/// resolved to, so two recipes that compare equal reference the same strokes and artifacts by
+/// construction, and a hydrated or bound recipe must not compare unequal to the recipe it was
+/// hydrated or bound from.
 impl PartialEq for Recipe {
     fn eq(&self, other: &Self) -> bool {
         self.format == other.format && self.layers == other.layers && self.masks == other.masks
@@ -557,6 +568,7 @@ impl Default for Recipe {
             layers: Vec::new(),
             masks: Vec::new(),
             strokes: crate::path::StrokeTable::default(),
+            artifacts: crate::artifacts::ArtifactTable::default(),
         }
     }
 }

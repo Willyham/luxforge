@@ -8,7 +8,8 @@ use super::{
     TransformModule, VignetteModule,
 };
 use crate::{
-    Error, ErrorKind, Layer, Mask, MaskId, ProxyApproximation, Recipe, artifacts,
+    Error, ErrorKind, Layer, Mask, MaskId, ProxyApproximation, Recipe,
+    artifacts::ArtifactTable,
     capabilities::descriptor::TaskDescriptor,
     mask_field::{MaskField, MaskSampling},
     render::{
@@ -711,6 +712,7 @@ impl ModuleRegistry {
             &recipe.layers,
             &recipe.masks,
             &recipe.strokes,
+            &recipe.artifacts,
             sampling,
         )
     }
@@ -718,7 +720,8 @@ impl ModuleRegistry {
     /// Compile an ordered layer slice whose recipe format is already known good, against the mask
     /// table its layers reference. Asking for the stage one layer receives compiles the prefix
     /// before it through here, so it copies no part of the stack; a prefix carries the whole mask
-    /// table, because the masks a prefix layer names are the recipe's and not the prefix's.
+    /// table, because the masks a prefix layer names are the recipe's and not the prefix's, and
+    /// the recipe's bound artifacts for the same reason.
     pub(crate) fn compile_layers(
         &self,
         source_width: u32,
@@ -726,6 +729,7 @@ impl ModuleRegistry {
         layers: &[Layer],
         masks: &[Mask],
         strokes: &crate::path::StrokeTable,
+        artifacts: &ArtifactTable,
     ) -> Result<Compiled, Error> {
         self.compile_layers_sampled(
             source_width,
@@ -733,11 +737,13 @@ impl ModuleRegistry {
             layers,
             masks,
             strokes,
+            artifacts,
             MaskSampling::Point,
         )
     }
 
     /// [`Self::compile_layers`] with the mask sampling of the render being compiled.
+    #[allow(clippy::too_many_arguments)]
     fn compile_layers_sampled(
         &self,
         source_width: u32,
@@ -745,6 +751,7 @@ impl ModuleRegistry {
         layers: &[Layer],
         masks: &[Mask],
         strokes: &crate::path::StrokeTable,
+        artifacts: &ArtifactTable,
         sampling: MaskSampling,
     ) -> Result<Compiled, Error> {
         let mut layer_ids = HashSet::with_capacity(layers.len());
@@ -800,17 +807,20 @@ impl ModuleRegistry {
             let processing = if layer.artifacts.is_empty() {
                 module.compile(&layer.effect_id, layer.effect_format, &layer.payload, stage)?
             } else {
-                // The caller that planned this evaluation holds the verified bytes, so resolving
-                // them is a lookup; an artifact nobody prepared is refused, never skipped.
+                // The recipe carries the verified bytes it was bound with, so resolving them is a
+                // lookup; an artifact the recipe was not bound with is refused, never skipped.
                 self.check_artifacts(layer)?;
                 let bound = layer
                     .artifacts
                     .iter()
                     .map(|id| {
-                        artifacts::prepared(id).ok_or_else(|| {
+                        artifacts.get(id).cloned().ok_or_else(|| {
                             Error::new(
                                 ErrorKind::SourceUnavailable,
-                                format!("artifact {id} is not prepared"),
+                                format!(
+                                    "artifact {id} of layer {} is not bound to this recipe",
+                                    layer.id
+                                ),
                             )
                         })
                     })
@@ -3007,7 +3017,14 @@ pub(crate) mod tests {
         });
         let refused = vec![finish.clone(), turn.clone()];
         let error = registry
-            .compile_layers(2, 1, &refused, &[], &crate::path::StrokeTable::default())
+            .compile_layers(
+                2,
+                1,
+                &refused,
+                &[],
+                &crate::path::StrokeTable::default(),
+                &ArtifactTable::default(),
+            )
             .err()
             .expect("a finish layer before geometry never compiles");
         assert_eq!(error.kind, ErrorKind::Validation);
@@ -3027,13 +3044,21 @@ pub(crate) mod tests {
                     1,
                     &[turn, finish.clone()],
                     &[],
-                    &crate::path::StrokeTable::default()
+                    &crate::path::StrokeTable::default(),
+                    &ArtifactTable::default(),
                 )
                 .is_ok()
         );
         assert!(
             registry
-                .compile_layers(2, 1, &[finish], &[], &crate::path::StrokeTable::default())
+                .compile_layers(
+                    2,
+                    1,
+                    &[finish],
+                    &[],
+                    &crate::path::StrokeTable::default(),
+                    &ArtifactTable::default(),
+                )
                 .is_ok()
         );
     }
@@ -3098,8 +3123,8 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn compile_binds_artifacts_in_listed_order_and_refuses_unprepared_ones() {
+    /// The built-in providers and [`BoundModule`].
+    fn bound_registry() -> ModuleRegistry {
         let descriptor = ModuleDescriptor::parse(&json!({
             "id": "test.bound",
             "title": "Bound",
@@ -3113,27 +3138,43 @@ pub(crate) mod tests {
         registry
             .register(Arc::new(BoundModule(descriptor)))
             .unwrap();
-        let artifact = |digit: &str| {
-            let id = crate::ArtifactId::for_hash(&format!("{digit}{}", "d".repeat(63))).unwrap();
-            let meta = crate::artifacts::ArtifactMeta {
-                kind: "test".into(),
-                width: None,
-                height: None,
-                colour: None,
-            };
-            crate::artifacts::register_prepared(Arc::new(crate::artifacts::PreparedArtifact::new(
-                id,
-                &meta,
-                vec![0].into(),
-            )))
+        registry
+    }
+
+    /// One byte of verified artifact under an identity that starts with `digit`.
+    fn bound_artifact(digit: &str) -> Arc<crate::artifacts::PreparedArtifact> {
+        let id = crate::ArtifactId::for_hash(&format!("{digit}{}", "d".repeat(63))).unwrap();
+        let meta = crate::artifacts::ArtifactMeta {
+            kind: "test".into(),
+            width: None,
+            height: None,
+            colour: None,
         };
-        let (first, second) = (artifact("1"), artifact("2"));
+        Arc::new(crate::artifacts::PreparedArtifact::new(
+            id,
+            &meta,
+            vec![0].into(),
+        ))
+    }
+
+    #[test]
+    fn compile_binds_artifacts_in_listed_order_and_refuses_unbound_ones() {
+        let registry = bound_registry();
+        let (first, second) = (bound_artifact("1"), bound_artifact("2"));
+        let bound: ArtifactTable = [first.clone(), second.clone()].into_iter().collect();
         let layer = Layer {
             artifacts: vec![second.id.clone(), first.id.clone()],
             ..test_layer(BOUND_EFFECT)
         };
         let compiled = registry
-            .compile_layers(2, 1, std::slice::from_ref(&layer), &[], &Default::default())
+            .compile_layers(
+                2,
+                1,
+                std::slice::from_ref(&layer),
+                &[],
+                &Default::default(),
+                &bound,
+            )
             .unwrap();
         let Processing::Color(operation) = &compiled.segments[0].operations[0] else {
             panic!("a colour operation");
@@ -3150,29 +3191,100 @@ pub(crate) mod tests {
         );
         // A layer without artifacts is compiled exactly as before, through `compile`.
         let plain = registry
-            .compile_layers(2, 1, &[test_layer(BOUND_EFFECT)], &[], &Default::default())
+            .compile_layers(
+                2,
+                1,
+                &[test_layer(BOUND_EFFECT)],
+                &[],
+                &Default::default(),
+                &Default::default(),
+            )
             .unwrap();
         assert!(plain.segments[0].operations.is_empty());
-        // Bytes nobody holds are not prepared, and the stack is refused rather than evaluated
-        // without them.
-        let missing = second.id.clone();
-        drop(second);
+        // Bytes the table was not bound with are refused rather than evaluated without them,
+        // whatever else in the process holds them.
+        let partial: ArtifactTable = std::iter::once(first.clone()).collect();
         let error = registry
-            .compile_layers(2, 1, std::slice::from_ref(&layer), &[], &Default::default())
+            .compile_layers(
+                2,
+                1,
+                std::slice::from_ref(&layer),
+                &[],
+                &Default::default(),
+                &partial,
+            )
             .err()
-            .expect("an unprepared artifact never compiles");
+            .expect("an unbound artifact never compiles");
         assert_eq!(error.kind, ErrorKind::SourceUnavailable);
-        assert_eq!(error.detail, format!("artifact {missing} is not prepared"));
+        assert_eq!(
+            error.detail,
+            format!(
+                "artifact {} of layer {} is not bound to this recipe",
+                second.id, layer.id
+            )
+        );
         // An effect that does not declare artifacts cannot be compiled with any.
         let pixel = Layer {
             artifacts: vec![first.id.clone()],
             ..Layer::pixel(0, 0, [1, 2, 3])
         };
         let error = registry
-            .compile_layers(2, 1, &[pixel], &[], &Default::default())
+            .compile_layers(2, 1, &[pixel], &[], &Default::default(), &bound)
             .err()
             .expect("a pixel layer never binds an artifact");
         assert_eq!(error.kind, ErrorKind::Validation);
         assert!(error.detail.contains("which its effect does not declare"));
+    }
+
+    /// Compiling a recipe reads its artifacts from the table the recipe carries and nowhere else:
+    /// a listed artifact the table lacks refuses the whole recipe by name, even while the bytes
+    /// are alive elsewhere, and the table is neither stored nor part of the recipe's equality.
+    #[test]
+    fn a_recipe_whose_bound_table_lacks_a_listed_artifact_refuses_to_compile_naming_it() {
+        let registry = bound_registry();
+        let (first, second) = (bound_artifact("3"), bound_artifact("4"));
+        let layer = Layer {
+            artifacts: vec![first.id.clone(), second.id.clone()],
+            ..test_layer(BOUND_EFFECT)
+        };
+        let unbound = Recipe {
+            layers: vec![layer.clone()],
+            ..Recipe::default()
+        };
+        let partly = Recipe {
+            artifacts: std::iter::once(first.clone()).collect(),
+            ..unbound.clone()
+        };
+        for (recipe, missing) in [(&unbound, &first), (&partly, &second)] {
+            let error = registry
+                .compile(2, 1, recipe)
+                .err()
+                .expect("a recipe missing a bound artifact never compiles");
+            assert_eq!(error.kind, ErrorKind::SourceUnavailable);
+            assert_eq!(
+                error.detail,
+                format!(
+                    "artifact {} of layer {} is not bound to this recipe",
+                    missing.id, layer.id
+                )
+            );
+        }
+        // Bound with both, the same recipe compiles, and a clone shares the one table.
+        let bound = Recipe {
+            artifacts: [first.clone(), second.clone()].into_iter().collect(),
+            ..unbound.clone()
+        };
+        assert!(registry.compile(2, 1, &bound).is_ok());
+        let clone = bound.clone();
+        assert!(clone.artifacts.shares(&bound.artifacts));
+        assert!(registry.compile(2, 1, &clone).is_ok());
+        // The bytes are never stored and never make two recipes differ.
+        assert_eq!(bound, unbound);
+        assert_eq!(
+            serde_json::to_value(&bound).unwrap(),
+            serde_json::to_value(&unbound).unwrap()
+        );
+        let read: Recipe = serde_json::from_value(serde_json::to_value(&bound).unwrap()).unwrap();
+        assert!(read.artifacts.is_empty());
     }
 }

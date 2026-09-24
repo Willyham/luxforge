@@ -441,7 +441,7 @@ impl EditorService {
                 .layer(LayerId::new()),
             )?;
         }
-        let entry = HistoryEntry {
+        let mut entry = HistoryEntry {
             id: EntryId::new(),
             asset_id: asset.id.clone(),
             sequence: 0,
@@ -459,7 +459,7 @@ impl EditorService {
         };
         // An import is its own write, because it creates the asset a head would name, but it admits
         // its Original exactly as a commit admits the stack it writes.
-        let _artifacts = self.admit(&asset, &entry.snapshot.recipe)?;
+        self.admit(&asset, &mut entry.snapshot.recipe)?;
         let byte_len = i64::try_from(asset.byte_len).map_err(|_| {
             Error::new(
                 ErrorKind::ResourceLimit,

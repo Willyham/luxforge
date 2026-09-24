@@ -2,7 +2,7 @@
 //! collection, missing and corrupt bytes, crash points, moving the catalog and binding.
 use super::*;
 use crate::artifacts::{
-    ArtifactId, collect_files, object_path, prepared,
+    ArtifactId, collect_files, object_path,
     testing::{APPLY_PLAIN, APPLY_TINT, TINT_EFFECT, TINT_MODULE, TintModule},
 };
 use crate::{Layer, Mutation};
@@ -213,7 +213,8 @@ fn branches_versions_previews_and_restores_keep_their_artifacts() {
         .preview_job(&asset, Some(&second), None, None, None)
         .unwrap();
     assert_eq!(
-        job.artifacts
+        job.recipe
+            .artifacts
             .iter()
             .map(|artifact| artifact.id.clone())
             .collect::<Vec<_>>(),
@@ -677,18 +678,20 @@ fn jobs_pin_their_artifacts_and_an_unprepared_one_needs_preparation() {
     let plan = service
         .analysis_plan(&asset, AnalysisSelection::Current)
         .unwrap();
-    assert_eq!(plan.artifacts.len(), 1);
+    assert_eq!(plan.recipe.artifacts.len(), 1);
     drop(plan);
-    // Evicting everything the owner kept ready leaves the job's own pin: it still compiles.
+    // Evicting everything the owner kept ready leaves the job's own recipe holding the bytes: it
+    // still compiles.
+    let held = Arc::downgrade(job.recipe.artifacts.get(&artifact).unwrap());
     service.clear_prepared_artifacts();
-    assert!(prepared(&artifact).is_some(), "the job holds it");
+    assert!(held.upgrade().is_some(), "the job holds it");
     let rendered = job
         .source
         .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
         .unwrap();
     assert_eq!(rendered.rgba, expected.rgba);
     drop(job);
-    assert!(prepared(&artifact).is_none(), "nothing else held it");
+    assert!(held.upgrade().is_none(), "nothing else held it");
     // The catalog owner never reads on a miss: it names what a source job must prepare.
     service.disable_sync_source();
     let error = service.render_current(&asset).unwrap_err();
@@ -729,7 +732,7 @@ fn a_stack_that_cannot_be_held_ready_at_once_is_a_resource_limit() {
             )
             .unwrap();
     }
-    let recipe = Recipe {
+    let mut recipe = Recipe {
         format: crate::RECIPE_FORMAT,
         layers: vec![Layer {
             id: LayerId::new(),
@@ -741,8 +744,9 @@ fn a_stack_that_cannot_be_held_ready_at_once_is_a_resource_limit() {
         }],
         masks: Vec::new(),
         strokes: Default::default(),
+        artifacts: Default::default(),
     };
-    let error = service.require_artifacts(&recipe).unwrap_err();
+    let error = service.bind_artifacts(&mut recipe).unwrap_err();
     assert_eq!(error.kind, ErrorKind::ResourceLimit);
     assert!(
         error

@@ -1,20 +1,22 @@
 //! The catalog side of derived artifacts: their rows, the references each entry holds, the root
-//! they live in, the verified bytes kept ready and the check every evaluation of a stack passes
-//! before anything compiles it. Reading and hashing artifact bytes belongs to
-//! [`crate::artifacts`] on a worker; the owner only stats files and reads the small manifest, so
-//! binding a stack costs `O(references)` lookups and stats (performance rule 5).
+//! they live in, the verified bytes kept ready and the binding step every evaluation or admission
+//! of a stack passes before anything compiles it, which fills the recipe's own artifact table.
+//! Reading and hashing artifact bytes belongs to [`crate::artifacts`] on a worker; the owner only
+//! stats files and reads the small manifest, so binding a stack costs `O(references)` lookups and
+//! stats (performance rule 5).
 use super::{EditorService, SourceSignature, source_signature, write};
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, Recipe,
     artifacts::{
-        self, ArtifactId, ArtifactMeta, ArtifactRead, ArtifactRecord, ArtifactWriter, Collection,
-        LiveArtifacts, MANIFEST, PREPARED_ARTIFACT_BYTES, PREPARED_ARTIFACT_ENTRIES,
-        PreparedArtifact, RootState, VerifiedArtifact,
+        self, ArtifactId, ArtifactMeta, ArtifactRead, ArtifactRecord, ArtifactTable,
+        ArtifactWriter, Collection, LiveArtifacts, MANIFEST, PREPARED_ARTIFACT_BYTES,
+        PREPARED_ARTIFACT_ENTRIES, PreparedArtifact, RootState, VerifiedArtifact,
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::{
+    borrow::Cow,
     collections::HashSet,
     io,
     path::Path,
@@ -203,27 +205,30 @@ impl EditorService {
         if live {
             self.live_artifacts.mark(&record.id);
         }
-        self.prepared_artifacts
-            .borrow_mut()
-            .insert(signature, artifacts::register_prepared(prepared));
+        self.adopt(signature, prepared);
         Ok(())
     }
 
-    /// Bind every artifact a stack references before anything compiles it, and return their
-    /// verified bytes for the caller to hold while it evaluates.
+    /// Bind every artifact a stack references into the recipe's own [`Recipe::artifacts`] table,
+    /// which is what compilation reads them from. Every path that evaluates or admits a stack
+    /// binds it first, where the recipe enters that path: a preview, analysis or sample job's
+    /// recipe carries the bytes to its worker, so an eviction from the owner's cache never breaks
+    /// it, and nothing else has to hold them.
     ///
     /// Each artifact needs a catalog row (else `source-unavailable: artifact <id> is not in this
     /// catalog`), a usable root (a missing directory is `source-unavailable` naming it; a manifest
     /// naming another catalog is `incompatible`) and a present object file of the recorded length.
     /// Everything one stack binds must fit the prepared cache at once, or it is a `resource-limit`.
-    /// Bytes kept ready under the file's current signature
-    /// are a hit. On a miss a direct service reads and hashes synchronously; the catalog owner
-    /// instead answers `preparation-required` with the missing identities in `data.artifacts`, so a
-    /// source job reads them on the worker. A stack without artifacts costs nothing.
-    pub fn require_artifacts(&self, recipe: &Recipe) -> Result<Vec<Arc<PreparedArtifact>>, Error> {
+    /// Bytes kept ready under the file's current signature are a hit. On a miss a direct service
+    /// reads and hashes synchronously; the catalog owner instead answers `preparation-required`
+    /// with the missing identities in `data.artifacts`, so a source job reads them on the worker.
+    /// The table is replaced by exactly what the stack lists, and only when all of it is bound; a
+    /// stack without artifacts costs one walk of its layers and allocates nothing.
+    pub fn bind_artifacts(&self, recipe: &mut Recipe) -> Result<(), Error> {
         let ids = referenced(recipe);
         if ids.is_empty() {
-            return Ok(Vec::new());
+            recipe.artifacts = ArtifactTable::default();
+            return Ok(());
         }
         let mut bound = Vec::with_capacity(ids.len());
         let mut unprepared = Vec::new();
@@ -233,10 +238,7 @@ impl EditorService {
                 Binding::Unprepared(read) => unprepared.push(read),
             }
         }
-        if unprepared.is_empty() {
-            return Ok(bound);
-        }
-        if !self.allow_sync_source {
+        if !unprepared.is_empty() && !self.allow_sync_source {
             let missing: Vec<&ArtifactId> = unprepared.iter().map(|read| &read.id).collect();
             return Err(Error::new(
                 ErrorKind::PreparationRequired,
@@ -249,12 +251,31 @@ impl EditorService {
             let verified = artifacts::read_verified(read, &never)?;
             bound.extend(self.adopt_artifacts(vec![verified]));
         }
-        Ok(bound)
+        recipe.artifacts = bound.into_iter().collect();
+        Ok(())
+    }
+
+    /// [`Self::bind_artifacts`] for a recipe the caller only borrows: the recipe itself when its
+    /// table already holds everything it lists — which every recipe without a module-published
+    /// layer does, and so does one this call has bound — and otherwise a bound copy. Fails exactly
+    /// as binding does. `O(references)` lookups before any copy.
+    pub(super) fn bound<'r>(&self, recipe: &'r Recipe) -> Result<Cow<'r, Recipe>, Error> {
+        let held = recipe
+            .layers
+            .iter()
+            .flat_map(|layer| &layer.artifacts)
+            .all(|id| recipe.artifacts.get(id).is_some());
+        if held {
+            return Ok(Cow::Borrowed(recipe));
+        }
+        let mut bound = recipe.clone();
+        self.bind_artifacts(&mut bound)?;
+        Ok(Cow::Owned(bound))
     }
 
     /// The artifacts a source job must read and verify so that an entry's stack, plus any
     /// identities a refused request named, can be evaluated: everything not already kept ready.
-    /// Fails like [`Self::require_artifacts`] when one cannot be prepared at all.
+    /// Fails like [`Self::bind_artifacts`] when one cannot be prepared at all.
     pub(crate) fn artifact_preparation(
         &self,
         asset_id: &AssetId,
@@ -284,30 +305,41 @@ impl EditorService {
             .collect())
     }
 
-    /// Keep bytes a worker verified ready under the signature they were read with, sharing the
-    /// process's one allocation of each, and return what was kept.
+    /// Keep bytes a worker verified ready under the signature they were read with, and return what
+    /// was kept.
     pub(crate) fn adopt_artifacts(
         &self,
         verified: Vec<VerifiedArtifact>,
     ) -> Vec<Arc<PreparedArtifact>> {
-        let mut cache = self.prepared_artifacts.borrow_mut();
         verified
             .into_iter()
             .map(
                 |VerifiedArtifact {
                      artifact,
                      signature,
-                 }| {
-                    let artifact = artifacts::register_prepared(artifact);
-                    cache.insert(signature, artifact.clone());
-                    artifact
-                },
+                 }| self.adopt(signature, artifact),
             )
             .collect()
     }
 
-    /// Forget every verified artifact kept ready. Jobs keep what they hold. Production code has no
-    /// caller; kept for tests that simulate an eviction.
+    /// Keep one artifact's verified bytes ready. When the cache already holds bytes of the same
+    /// identity verified against the same file, those are kept and returned instead, so recipes
+    /// bound before and after share one allocation rather than two equal ones.
+    fn adopt(
+        &self,
+        signature: SourceSignature,
+        artifact: Arc<PreparedArtifact>,
+    ) -> Arc<PreparedArtifact> {
+        let mut cache = self.prepared_artifacts.borrow_mut();
+        if let Some(kept) = cache.get(&artifact.id, &signature) {
+            return kept;
+        }
+        cache.insert(signature, artifact.clone());
+        artifact
+    }
+
+    /// Forget every verified artifact kept ready. Bound recipes keep what they hold. Production
+    /// code has no caller; kept for tests that simulate an eviction.
     #[cfg(test)]
     pub(crate) fn clear_prepared_artifacts(&self) {
         self.prepared_artifacts.borrow_mut().clear();

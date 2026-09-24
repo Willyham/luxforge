@@ -70,10 +70,10 @@ impl EditorService {
         mask: Option<MaskId>,
     ) -> Result<Change, Error> {
         let registry = &self.registry;
-        let recipe = &state.current_entry.snapshot.recipe;
-        validate_source_recipe(&state.asset, recipe)?;
+        validate_source_recipe(&state.asset, &state.current_entry.snapshot.recipe)?;
         // Both planning paths compile the current stack, so its artifacts are bound first.
-        let _artifacts = self.require_artifacts(recipe)?;
+        let bound = self.bound(&state.current_entry.snapshot.recipe)?;
+        let recipe: &Recipe = &bound;
         // A target the stack does not hold is refused here, before a module plans anything.
         resolve_mask_target(recipe, mask.as_ref())?;
         // A masked module edit always names its mask, where a `mask.*` command names one only once
@@ -105,6 +105,7 @@ impl EditorService {
                         prefix(&recipe.layers, index)?,
                         &recipe.masks,
                         &recipe.strokes,
+                        &recipe.artifacts,
                     )?
                     .stage())
             };
@@ -163,7 +164,7 @@ impl EditorService {
         }
         let source = self.verified_prepared(&state.asset)?;
         let plan = self.plan_input(
-            state,
+            recipe,
             &source,
             module,
             &input,
@@ -176,13 +177,14 @@ impl EditorService {
         Ok(Change::append(recipe, CommittedAction { input, label }))
     }
 
-    /// Ask a module what one parsed request would do to this stack. The stack is compiled once and
-    /// every question the module may ask is a point query or a prefix compile, so planning costs
-    /// `O(layers)` and rasterizes nothing. Shared by a commit and by a draft's effective recipe, so
-    /// a drafted preview evaluates exactly what committing that draft would produce.
+    /// Ask a module what one parsed request would do to the current stack, `recipe`, bound. The
+    /// stack is compiled once and every question the module may ask is a point query or a prefix
+    /// compile, so planning costs `O(layers)` and rasterizes nothing. Shared by a commit and by a
+    /// draft's effective recipe, so a drafted preview evaluates exactly what committing that draft
+    /// would produce.
     fn plan_input(
         &self,
-        state: &EditorState,
+        recipe: &Recipe,
         source: &PreparedSource,
         module: &dyn crate::ToolModule,
         input: &ActionInput,
@@ -192,12 +194,7 @@ impl EditorService {
         // The module plans against the stack of one target: the global layer and each mask are
         // distinct targets, so a module that owns one layer still owns one per target and finds it by
         // the same scan it has always made.
-        let recipe = recipe_for_target(
-            &self.registry,
-            &state.current_entry.snapshot.recipe,
-            accepts_mask,
-            mask,
-        );
+        let recipe = recipe_for_target(&self.registry, recipe, accepts_mask, mask);
         self.with_stage_context(source, &recipe, |context| module.plan(input, context))
     }
 
@@ -263,6 +260,7 @@ impl EditorService {
                     prefix(&recipe.layers, index)?,
                     &recipe.masks,
                     &recipe.strokes,
+                    &recipe.artifacts,
                 )?
                 .stage())
         };
@@ -278,6 +276,7 @@ impl EditorService {
                     layers,
                     &recipe.masks,
                     &recipe.strokes,
+                    &recipe.artifacts,
                 )?
                 .pixel(x, y),
                 PreparedSource::Raw(_) => {
@@ -288,8 +287,10 @@ impl EditorService {
                         // are the recipe's, not the prefix's, and dropping them would make a valid
                         // stack look as if it named a mask that does not exist.
                         masks: recipe.masks.clone(),
-                        // And the strokes those masks resolved to, for the same reason.
+                        // And the strokes those masks resolved to, and the artifacts the recipe was
+                        // bound with, for the same reason.
                         strokes: recipe.strokes.clone(),
+                        artifacts: recipe.artifacts.clone(),
                     };
                     Ok(sample_linear(
                         registry,
@@ -350,9 +351,9 @@ impl EditorService {
         }
         let checked = check_parameters(query, &parameters)?;
         let state = self.state(asset_id)?;
-        let entry = self.entry(asset_id, entry_id)?;
+        let mut entry = self.entry(asset_id, entry_id)?;
         validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
-        let _artifacts = self.require_artifacts(&entry.snapshot.recipe)?;
+        self.bind_artifacts(&mut entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
         // A query carries no mask target, so it asks about the global layer, and the target view hides
         // the masked layers of the module's own effect. Without it a module that owns one layer would
@@ -417,11 +418,12 @@ impl EditorService {
         })?;
         let checked = check_parameters(action, &Value::Object(draft.fields.clone()))?;
         let input = module.parse(&draft.action, &checked)?;
-        let state = self.state(asset_id)?;
+        let mut state = self.state(asset_id)?;
         validate_source_recipe(&state.asset, &state.current_entry.snapshot.recipe)?;
-        // Planning compiles the current stack. The effective recipe may reference an artifact the
-        // current one does not, so each caller binds that recipe's artifacts before evaluating it.
-        let _artifacts = self.require_artifacts(&state.current_entry.snapshot.recipe)?;
+        // Planning compiles the current stack, so it is bound first. The effective recipe may
+        // reference an artifact the current one does not, so each caller binds that recipe before
+        // evaluating it.
+        self.bind_artifacts(&mut state.current_entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
         // The draft's target is the one the commit will carry: none for a global gesture, and the
         // mask a masked slider was opened on. The target view hides the layers of the drafted
@@ -433,7 +435,7 @@ impl EditorService {
             .as_ref()
             .and_then(|target| target.mask.as_ref());
         let plan = self.plan_input(
-            &state,
+            current,
             &source,
             module,
             &input,

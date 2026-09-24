@@ -1587,7 +1587,6 @@ pub(super) fn analysis_request(
         registry,
         recipe,
         failure,
-        artifacts,
     } = match plan {
         Err(error) if error.kind == ErrorKind::PreparationRequired => {
             let entry_id = match &params.target {
@@ -1614,7 +1613,6 @@ pub(super) fn analysis_request(
                     source,
                     registry,
                     recipe,
-                    artifacts,
                 }) {
                     owner.analyses.supersede(&displaced);
                 }

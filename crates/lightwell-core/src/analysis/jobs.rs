@@ -16,7 +16,6 @@ use crate::{
     AssetId, ClientId, DraftStamp, EntryId, Error, ErrorKind, HistoryEntry, JobId, JobStatus,
     ModuleRegistry, PreviewSource, Recipe, SnapshotId,
     activity::{ActivityBoard, ActivitySpec, Outcome},
-    artifacts::PreparedArtifact,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -135,16 +134,15 @@ impl AnalysisIdentity {
     }
 }
 
-/// What one job needs to run: the immutable source buffer, the shared registry, the effective
-/// recipe and the verified bytes of the artifacts it references, which the job holds until the
-/// worker is done with them. The worker holds no catalog handle and no session.
+/// What one job needs to run: the immutable source buffer, the shared registry and the effective
+/// recipe, bound with the verified bytes of the artifacts it references, which the job holds until
+/// the worker is done with them. The worker holds no catalog handle and no session.
 pub struct AnalysisJob {
     pub job_id: JobId,
     pub identity: AnalysisIdentity,
     pub source: PreviewSource,
     pub registry: Arc<ModuleRegistry>,
     pub recipe: Recipe,
-    pub artifacts: Vec<Arc<PreparedArtifact>>,
 }
 
 impl std::fmt::Debug for AnalysisJob {
@@ -237,7 +235,6 @@ impl AnalysisQueue {
                 source,
                 registry,
                 recipe,
-                artifacts,
             } = job;
             let activity = board.map(|board| {
                 board.begin(ActivitySpec {
@@ -257,8 +254,8 @@ impl AnalysisQueue {
                     drop(raster);
                     report
                 });
-            // The render has compiled the stack; the artifacts it bound are released with it.
-            drop(artifacts);
+            // The render has compiled the stack; the artifacts it was bound with go with it.
+            drop(recipe);
             // The activity ends before the result is posted, so a client that reads the job as
             // finished never still finds it listed as running.
             if let Some(activity) = activity {

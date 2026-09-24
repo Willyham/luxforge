@@ -8641,7 +8641,6 @@ mod tests {
             proxy: None,
             mask_overlay: None,
             entry,
-            artifacts: Vec::new(),
         }
     }
 

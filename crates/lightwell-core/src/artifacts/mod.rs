@@ -2,9 +2,9 @@
 //! opaque identity, stored beside the catalog. See `docs/design/module-capabilities.md`.
 //!
 //! This module owns what needs no catalog: the identity, the metadata a module declares, the
-//! verified bytes evaluation binds, the process-wide index compilation resolves them through, the
-//! bounded cache the catalog owner keeps them in and the on-disk store (`store.rs`). The catalog
-//! rows, references and root live with the editor service.
+//! verified bytes evaluation binds, the table a recipe carries them in, the bounded cache the
+//! catalog owner keeps them in and the on-disk store (`store.rs`). The catalog rows, references,
+//! root and the binding step live with the editor service.
 mod store;
 
 pub use store::ArtifactWriter;
@@ -19,7 +19,7 @@ use crate::{Error, ErrorKind, editor::SourceSignature, modules::valid_identity};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 const PREFIX: &str = "artifact-";
@@ -186,8 +186,9 @@ impl ArtifactRecord {
 }
 
 /// An artifact's verified bytes with the metadata its row records: what
-/// [`crate::ToolModule::compile_bound`] receives. Immutable and shared; a job that evaluates a
-/// stack holds the ones it uses, so an eviction from the owner's cache never breaks it.
+/// [`crate::ToolModule::compile_bound`] receives. Immutable and shared: a recipe bound with it
+/// holds it in its [`ArtifactTable`], so an eviction from the owner's cache never breaks an
+/// evaluation of that recipe.
 pub struct PreparedArtifact {
     pub id: ArtifactId,
     pub kind: String,
@@ -229,33 +230,57 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Every prepared artifact alive anywhere in this process, by identity. Content addressing makes
-/// the key global: equal identities are equal bytes, whichever catalog verified them. The index
-/// holds nothing alive itself; strong references live in jobs and in the owner's bounded cache.
-fn index() -> MutexGuard<'static, HashMap<ArtifactId, Weak<PreparedArtifact>>> {
-    static INDEX: OnceLock<Mutex<HashMap<ArtifactId, Weak<PreparedArtifact>>>> = OnceLock::new();
-    lock(INDEX.get_or_init(Mutex::default))
-}
+/// The verified bytes of the artifacts one recipe's layers list, by identity: what compilation
+/// hands [`crate::ToolModule::compile_bound`]. It is [`crate::Recipe::artifacts`], filled by the
+/// catalog owner's binding step ([`crate::EditorService::bind_artifacts`]) where a recipe enters
+/// evaluation or admission. It is never stored, and a recipe that lists no artifact — every recipe
+/// without a module-published layer — carries an empty one, which costs eight bytes and no
+/// allocation.
+///
+/// **Shared, never copied.** Cloning a recipe, which every plan, draft, preview and job does,
+/// clones one pointer. The bytes live as long as some recipe bound with them, so a job owns what it
+/// evaluates by owning its recipe, and an eviction from the owner's cache never breaks it.
+#[derive(Clone, Debug, Default)]
+pub struct ArtifactTable(Option<Arc<BTreeMap<ArtifactId, Arc<PreparedArtifact>>>>);
 
-/// The verified bytes of this artifact, when anything in the process still holds them.
-/// Compilation resolves a layer's artifacts here, so the caller that planned the evaluation must
-/// hold them: the owner's cache for a synchronous call, a job's pins for a worker.
-pub(crate) fn prepared(id: &ArtifactId) -> Option<Arc<PreparedArtifact>> {
-    index().get(id).and_then(Weak::upgrade)
-}
-
-/// Make these verified bytes resolvable, pruning entries nothing holds any more. When the index
-/// already holds a live allocation of the same identity, that one is returned and the argument is
-/// dropped, so every holder shares one allocation and the index entry lives exactly as long as
-/// its longest holder.
-pub(crate) fn register_prepared(artifact: Arc<PreparedArtifact>) -> Arc<PreparedArtifact> {
-    let mut index = index();
-    index.retain(|_, weak| weak.strong_count() > 0);
-    if let Some(existing) = index.get(&artifact.id).and_then(Weak::upgrade) {
-        return existing;
+impl ArtifactTable {
+    /// The verified bytes bound under this identity, if the recipe was bound with them.
+    pub fn get(&self, id: &ArtifactId) -> Option<&Arc<PreparedArtifact>> {
+        self.0.as_ref().and_then(|held| held.get(id))
     }
-    index.insert(artifact.id.clone(), Arc::downgrade(&artifact));
-    artifact
+
+    pub fn is_empty(&self) -> bool {
+        self.0.as_ref().is_none_or(|held| held.is_empty())
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |held| held.len())
+    }
+
+    /// Every bound artifact, in identity order.
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<PreparedArtifact>> {
+        self.0.iter().flat_map(|held| held.values())
+    }
+
+    /// Whether two tables are one shared table rather than two copies.
+    #[cfg(test)]
+    pub(crate) fn shares(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(held), Some(other)) => Arc::ptr_eq(held, other),
+            _ => false,
+        }
+    }
+}
+
+/// A table of exactly these artifacts, each under its own identity.
+impl FromIterator<Arc<PreparedArtifact>> for ArtifactTable {
+    fn from_iter<I: IntoIterator<Item = Arc<PreparedArtifact>>>(artifacts: I) -> Self {
+        let held: BTreeMap<_, _> = artifacts
+            .into_iter()
+            .map(|artifact| (artifact.id.clone(), artifact))
+            .collect();
+        Self((!held.is_empty()).then(|| Arc::new(held)))
+    }
 }
 
 /// The artifacts published while one editor service is open: by its writers, from any thread, and
@@ -402,17 +427,27 @@ mod tests {
     }
 
     #[test]
-    fn the_index_resolves_only_what_something_holds_and_shares_one_allocation() {
-        let first = register_prepared(artifact(0xa1, 4));
-        let id = first.id.clone();
-        assert!(Arc::ptr_eq(&prepared(&id).unwrap(), &first));
-        // A second allocation of the same identity resolves to the one already alive.
-        let second = register_prepared(artifact(0xa1, 4));
-        assert!(Arc::ptr_eq(&second, &first));
-        drop((first, second));
-        assert!(prepared(&id).is_none(), "the index keeps nothing alive");
-        let third = register_prepared(artifact(0xa1, 4));
-        assert!(Arc::ptr_eq(&prepared(&id).unwrap(), &third));
+    fn a_table_holds_exactly_what_it_was_bound_with_and_its_clones_share_it() {
+        let [first, second] = [0xa1, 0xa2].map(|tag| artifact(tag, 4));
+        let table: ArtifactTable = [second.clone(), first.clone()].into_iter().collect();
+        assert_eq!(table.len(), 2);
+        assert!(Arc::ptr_eq(table.get(&first.id).unwrap(), &first));
+        assert!(Arc::ptr_eq(table.get(&second.id).unwrap(), &second));
+        assert!(table.get(&artifact(0xa3, 4).id).is_none());
+        let ids: Vec<&ArtifactId> = table.iter().map(|artifact| &artifact.id).collect();
+        assert_eq!(ids, [&first.id, &second.id], "identity order");
+        // A clone is the one table, and it keeps the bytes alive on its own.
+        let clone = table.clone();
+        assert!(clone.shares(&table));
+        let weak = Arc::downgrade(&first);
+        drop((table, first));
+        assert!(weak.upgrade().is_some(), "the clone holds it");
+        drop(clone);
+        assert!(weak.upgrade().is_none(), "nothing else held it");
+        // An empty table allocates nothing.
+        let empty: ArtifactTable = std::iter::empty().collect();
+        assert!(empty.is_empty() && empty.0.is_none());
+        assert!(ArtifactTable::default().is_empty());
     }
 
     #[test]

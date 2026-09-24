@@ -2058,6 +2058,7 @@ mod tests {
             }],
             masks: Vec::new(),
             strokes: Default::default(),
+            artifacts: Default::default(),
         }
     }
 

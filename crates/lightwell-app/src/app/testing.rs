@@ -360,7 +360,6 @@ pub(crate) fn refresh_for(
             analyse: false,
             proxy: None,
             mask_overlay: None,
-            artifacts: Vec::new(),
         },
         session: ClientSession::default(),
         sequence: 7,

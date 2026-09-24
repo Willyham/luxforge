@@ -45,7 +45,7 @@ impl EditorService {
             None => state.current_entry.clone(),
         };
         // The draft's effective recipe is planned, not persisted, and costs point queries only.
-        let (recipe, draft_revision) = match draft {
+        let (mut recipe, draft_revision) = match draft {
             Some(draft) => {
                 let (recipe, _) = self.draft_recipe(asset_id, draft)?;
                 (recipe, Some(draft.draft_revision))
@@ -59,9 +59,10 @@ impl EditorService {
                 format!("preview layer count {count} exceeds the {layers} layers of this entry"),
             ));
         }
-        // The artifacts the rendered stack references are bound before anything compiles it, and
-        // the job holds their verified bytes, so a cache eviction never breaks it on the worker.
-        let artifacts = self.require_artifacts(&recipe)?;
+        // The artifacts the rendered stack references are bound into it before anything compiles
+        // it, so the job's recipe carries their verified bytes to the worker and a cache eviction
+        // never breaks it there.
+        self.bind_artifacts(&mut recipe)?;
         // A draft's effective recipe decides the RAW development settings too, so a drafted
         // exposure previews the value the gesture holds rather than the committed one. A drafted
         // temperature or tint the developed planes do not hold is approximated on them, and only
@@ -104,7 +105,6 @@ impl EditorService {
             // A coverage grid is asked for by the client that will draw it, through
             // `PreviewJob::with_mask_overlay`, which validates it against this stack.
             mask_overlay: None,
-            artifacts,
         })
     }
 
@@ -113,7 +113,7 @@ impl EditorService {
     /// dimensions and hashes the recipe, and it reads no pixels and rasterizes nothing, so the
     /// catalog owner may call it while building a job. A stack whose artifacts are missing or not
     /// prepared is an error rather than a stack without an output stage: it is not unevaluable,
-    /// only not evaluable yet.
+    /// only not evaluable yet. A recipe its caller already bound is compiled as it is.
     pub fn analysis_identity(
         &self,
         asset_id: &AssetId,
@@ -123,10 +123,10 @@ impl EditorService {
         recipe: &Recipe,
         draft: Option<DraftStamp>,
     ) -> Result<(AnalysisIdentity, Option<Error>), Error> {
-        let _artifacts = self.require_artifacts(recipe)?;
+        let bound = self.bound(recipe)?;
         let stage = self
             .registry
-            .compile(source_dimensions.0, source_dimensions.1, recipe)
+            .compile(source_dimensions.0, source_dimensions.1, &bound)
             .map(|compiled| {
                 let stage = compiled.stage();
                 (stage.width, stage.height)
@@ -182,7 +182,7 @@ impl EditorService {
         selection: AnalysisSelection<'_>,
     ) -> Result<AnalysisPlan, Error> {
         let state = self.state(asset_id)?;
-        let (entry, recipe, draft) = match selection {
+        let (entry, mut recipe, draft) = match selection {
             AnalysisSelection::Current => {
                 let entry = state.current_entry.clone();
                 let recipe = entry.snapshot.recipe.clone();
@@ -206,9 +206,9 @@ impl EditorService {
                 (drafted.current_entry, recipe, Some(stamp))
             }
         };
-        // The job holds the verified bytes of every artifact its stack references, so a cache
+        // The job's recipe carries the verified bytes of every artifact it references, so a cache
         // eviction never breaks it on the worker.
-        let artifacts = self.require_artifacts(&recipe)?;
+        self.bind_artifacts(&mut recipe)?;
         // The identity and the output stage come from the asset record, so a stack the host cannot
         // evaluate at all is reported failed without decoding or developing the original: there is
         // no frame for that job to render. Only an evaluable stack asks for the prepared source.
@@ -231,14 +231,13 @@ impl EditorService {
             registry: self.registry.clone(),
             recipe,
             failure,
-            artifacts,
         })
     }
 
     pub fn render_entry(&self, asset_id: &AssetId, entry_id: &EntryId) -> Result<Raster, Error> {
         let state = self.state(asset_id)?;
-        let entry = self.entry(asset_id, entry_id)?;
-        let _artifacts = self.require_artifacts(&entry.snapshot.recipe)?;
+        let mut entry = self.entry(asset_id, entry_id)?;
+        self.bind_artifacts(&mut entry.snapshot.recipe)?;
         match self.verified_prepared(&state.asset)? {
             PreparedSource::Jpeg(source) => {
                 validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
@@ -273,8 +272,8 @@ impl EditorService {
         y: u32,
     ) -> Result<PixelSample, Error> {
         let state = self.state(asset_id)?;
-        let entry = self.entry(asset_id, entry_id)?;
-        let _artifacts = self.require_artifacts(&entry.snapshot.recipe)?;
+        let mut entry = self.entry(asset_id, entry_id)?;
+        self.bind_artifacts(&mut entry.snapshot.recipe)?;
         let source = self.preview_source(
             &state.asset,
             &entry.snapshot.recipe,
@@ -284,15 +283,15 @@ impl EditorService {
         pixel_sample(entry, &state.asset.fingerprint, sampled, x, y, None)
     }
 
-    /// Bind the asset's current entry for sampling off the catalog owner: its verified source, its
-    /// recipe, compiled once here so a stack the host cannot evaluate is refused now, and the
-    /// verified bytes of every artifact it references. It binds the stack like
+    /// Bind the asset's current entry for sampling off the catalog owner: its verified source and
+    /// its recipe, bound with the verified bytes of every artifact it references and compiled once
+    /// here so a stack the host cannot evaluate is refused now. It binds the stack like
     /// [`Self::sample_entry`], so an unprepared source or artifact is `preparation-required`. A
     /// state read, a cached source verification and an `O(layers)` compile; no pixel is read.
     pub(crate) fn sample_plan(&self, asset_id: &AssetId) -> Result<SamplePlan, Error> {
         let state = self.state(asset_id)?;
-        let recipe = state.current_entry.snapshot.recipe;
-        let artifacts = self.require_artifacts(&recipe)?;
+        let mut recipe = state.current_entry.snapshot.recipe;
+        self.bind_artifacts(&mut recipe)?;
         // Samples are numbers sent to a provider, so a white balance the planes do not hold is
         // `preparation-required` here, as it is for `render.sample`.
         let source = self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict)?;
@@ -302,7 +301,6 @@ impl EditorService {
             source,
             registry: self.registry.clone(),
             recipe,
-            _artifacts: artifacts,
         })
     }
 
@@ -316,8 +314,8 @@ impl EditorService {
         x: u32,
         y: u32,
     ) -> Result<PixelSample, Error> {
-        let (recipe, state) = self.draft_recipe(asset_id, draft)?;
-        let _artifacts = self.require_artifacts(&recipe)?;
+        let (mut recipe, state) = self.draft_recipe(asset_id, draft)?;
+        self.bind_artifacts(&mut recipe)?;
         // A sampled code is a number, so a drafted white balance the planes do not hold is
         // `preparation-required` here even while the draft's preview approximates it.
         let source = self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict)?;
@@ -347,9 +345,9 @@ impl EditorService {
         y: u32,
     ) -> Result<ContentPoint, Error> {
         let state = self.state(asset_id)?;
-        let entry = self.entry(asset_id, entry_id)?;
+        let mut entry = self.entry(asset_id, entry_id)?;
         validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
-        let _artifacts = self.require_artifacts(&entry.snapshot.recipe)?;
+        self.bind_artifacts(&mut entry.snapshot.recipe)?;
         locate_dimensions(
             &self.registry,
             state.asset.width,
@@ -370,8 +368,9 @@ impl EditorService {
         entry_id: &EntryId,
     ) -> Result<StageTransform, Error> {
         let state = self.state(asset_id)?;
-        let entry = self.entry(asset_id, entry_id)?;
+        let mut entry = self.entry(asset_id, entry_id)?;
         validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        self.bind_artifacts(&mut entry.snapshot.recipe)?;
         stage_transform(
             &self.registry,
             state.asset.width,

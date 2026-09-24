@@ -996,6 +996,7 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
         }],
         masks: vec![mask],
         strokes: table,
+        artifacts: Default::default(),
     };
     let rendered = render(&registry, &source, SnapshotId::new(), &stack).expect("a frame");
 
