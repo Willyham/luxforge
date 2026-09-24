@@ -228,11 +228,9 @@ are quotable as the cost of a masked Presence layer, with that spread stated.
   fresh tile-sized allocations per tile, not from arithmetic. That spelling is not what shipped, and
   it is recorded because it is the trap: the blend is cheap and the allocations were not.
 
-One further cost is arithmetic from the delivered retained-frame rule rather than a measurement, and
-is a finding for the owner: on the **RAW linear path** each spatial operation materializes one `f32`
-frame and every one of them is retained for the whole render, so four masked spatial layers at 60 MP
-retain about 2.9 GB of float frames. The byte path has no equivalent cost because its frames are
-sequential and dropped.
+On the **RAW linear path** each spatial operation materializes one `f32` frame, and each frame
+replaces the one before it, so at most two exist at once whatever the number of masked spatial
+layers, as on the byte path.
 
 ### The masked spatial primitive, a mask of many components
 

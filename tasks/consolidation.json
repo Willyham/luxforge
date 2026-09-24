@@ -710,7 +710,7 @@
     {
       "id": "TASK-014",
       "description": "Bound a point query through more than one spatial segment: each spatial tile is evaluated at most once per query, through one tile cache shared by the byte and RAW point paths, so a sample equals the rendered byte at a bounded cost.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
