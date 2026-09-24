@@ -1,46 +1,45 @@
 //! The capability host the catalog owner holds: where settings, grants and resources live, which
 //! secret store holds credentials, the capability worker's lanes and jobs, each module's
 //! activation, and the operations the owner-answered `module.*` methods call over all of them. The
-//! method table in `api::methods` names each method, parses its parameters, declared here, and calls
-//! one of these operations; nothing here dispatches by method name. Every call is a short file, stat
-//! or secret-store attribute call; nothing hashes, downloads, loads module state or reads a secret's
-//! data on the owner. That work is queued on a lane, whose result comes back into the owner's
-//! channel. See `docs/design/module-capabilities.md`.
+//! method table in `api::methods` names each method, parses its parameters, declared beside the
+//! operation, and calls one of these operations; nothing here dispatches by method name. Every call
+//! is a short file, stat or secret-store attribute call; nothing hashes, downloads, loads module
+//! state or reads a secret's data on the owner. That work is queued on a lane, whose result comes
+//! back into the owner's channel. See `docs/design/module-capabilities.md`.
+//!
+//! This file holds the host itself, the settings methods, the capability jobs and `module.status`;
+//! [`activation`], [`permissions`], [`resources`] and [`tasks`] hold the other methods over the
+//! same [`CapabilityHost`].
 use super::{
-    consent::{consent_required, download_disclosure},
-    context::ModuleContext,
-    descriptor::{CapabilityDescriptor, CapabilityKind, ResourceDescriptor, SettingKind},
-    grants::{DownloadScope, Grant, GrantKind, GrantScope, GrantsStore, MAX_REASON, NewGrant},
-    jobs::{
-        Admission, Cancelled, Deliver, JobControl, JobError, JobKind, JobRecord, JobStatus, Jobs,
-        NewJob, Origin, PERMISSION_REVOKED, Work,
-    },
-    resources::{
-        self, DEFAULT_RESOURCE_QUOTA_BYTES, Fetch, InstallJob, InstallSource, ResourceRow,
-        ResourceState, ResourceStore, SharedTransport,
-    },
+    descriptor::SettingKind,
+    grants::{Grant, GrantKind, GrantScope, GrantsStore},
+    jobs::{Cancelled, Deliver, JobError, JobKind, JobRecord, JobStatus, Jobs, Origin},
+    resources::{DEFAULT_RESOURCE_QUOTA_BYTES, ResourceStore, SharedTransport},
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
     settings::{
         CLEAR_SECRET, CREATE_PROFILE, FieldRead, REMOVE_PROFILE, RESET, SET, SET_SECRET,
         SettingsRead, SettingsState, SettingsStore, SettingsWrite, WriteOutcome,
     },
-    transport::{Endpoint, EndpointClass, TransportConfig, parse_endpoint},
+    transport::{Endpoint, TransportConfig, parse_endpoint},
 };
 use crate::{
-    AssetId, Availability, ClientAuthority, EditorService, Error, ErrorKind, JobId,
-    ModuleDescriptor, ModuleRegistry, activity::ActivityBoard, api::params::host_params,
+    AssetId, EditorService, Error, ErrorKind, JobId, ModuleDescriptor, ModuleRegistry,
+    activity::ActivityBoard, api::params::host_params,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::{
-    collections::HashMap,
-    panic::{self, AssertUnwindSafe},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+mod activation;
+mod permissions;
+mod resources;
 mod tasks;
 
+use activation::Activation;
+pub(crate) use activation::ModuleChange;
+pub use activation::{ActivationRead, ActivationState};
+pub(crate) use permissions::{DenyParams, GrantParams, PermissionList, RevokeParams};
+pub(crate) use resources::{InstallParams, ResourceParams};
 pub use tasks::TASK_PREFIX;
 
 /// The lifecycle methods.
@@ -124,21 +123,6 @@ host_params! {
 }
 
 host_params! {
-    /// `module.permission.list`.
-    pub(crate) struct PermissionList {
-        module_id: Option<String> = "one module's grants and denials; default all",
-    }
-}
-
-host_params! {
-    /// `module.activate` and `module.deactivate`.
-    pub(crate) struct ModuleChange {
-        module_id: String,
-        mutation: MutationRequest,
-    }
-}
-
-host_params! {
     pub(crate) struct SetParams {
         module_id: String,
         values: Map<String, Value>,
@@ -192,32 +176,6 @@ host_params! {
 }
 
 host_params! {
-    pub(crate) struct GrantParams {
-        module_id: String,
-        capability: String,
-        scope: Value,
-        mutation: MutationRequest,
-    }
-}
-
-host_params! {
-    pub(crate) struct DenyParams {
-        module_id: String,
-        capability: String,
-        scope: Value,
-        mutation: MutationRequest,
-    }
-}
-
-host_params! {
-    pub(crate) struct RevokeParams {
-        grant_id: String,
-        mutation: MutationRequest,
-        reason: Option<String> = "1..256 characters; default revoked",
-    }
-}
-
-host_params! {
     /// `module.job.read`.
     pub(crate) struct JobParams {
         job_id: JobId,
@@ -229,24 +187,6 @@ host_params! {
     pub(crate) struct JobCancelParams {
         job_id: JobId,
         mutation: MutationRequest,
-    }
-}
-
-host_params! {
-    /// `module.resource.remove`.
-    pub(crate) struct ResourceParams {
-        module_id: String,
-        resource_id: String,
-        mutation: MutationRequest,
-    }
-}
-
-host_params! {
-    pub(crate) struct InstallParams {
-        module_id: String,
-        resource_id: String,
-        mutation: MutationRequest,
-        source: Option<InstallSource> = "{kind: download} (default), which needs the download-artifact grant, or {kind: file, path} to copy a local file, which needs none because only the pinned bytes are accepted",
     }
 }
 
@@ -306,44 +246,6 @@ impl<'de> Deserialize<'de> for SecretParam {
     }
 }
 
-/// A module's activation state. Nothing activates it but `module.activate`; a new owner starts
-/// every module inactive.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ActivationState {
-    #[default]
-    Inactive,
-    Activating,
-    Active,
-    Failed,
-}
-
-impl ActivationState {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Inactive => "inactive",
-            Self::Activating => "activating",
-            Self::Active => "active",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-/// A module's activation as `module.status` reports it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ActivationRead {
-    pub state: ActivationState,
-    /// Why the module is inactive, when something other than a client deactivated it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    /// The activation job while activating, or the job releasing a deactivated module.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<JobId>,
-    /// Why the last activation failed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<JobError>,
-}
-
 /// One unmet requirement of an activation or a task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Requirement {
@@ -354,59 +256,6 @@ pub struct Requirement {
     /// `missing`, `invalid`, `incompatible` or `unavailable` for a setting; a resource state for a
     /// resource; the module's activation state for an activation; a profile status for a profile.
     pub state: String,
-}
-
-#[derive(Default)]
-struct Activation {
-    state: ActivationState,
-    reason: Option<String>,
-    error: Option<JobError>,
-    /// The activation job while activating; the release job of a deactivation while it runs.
-    job: Option<JobId>,
-    /// A deactivation asked for while the activation job ran, with its reason: whatever the job
-    /// does, the module ends inactive and anything it loaded is released.
-    pending: Option<Option<String>>,
-}
-
-impl Activation {
-    fn read(&self) -> ActivationRead {
-        ActivationRead {
-            state: self.state,
-            reason: self.reason.clone(),
-            job_id: self.job.clone(),
-            error: self.error.clone(),
-        }
-    }
-
-    fn set_inactive(&mut self, reason: Option<String>) {
-        self.state = ActivationState::Inactive;
-        self.reason = reason;
-        self.error = None;
-    }
-}
-
-/// `{module_id, activation, job_id?, status?}`: what a lifecycle request changed.
-fn activation_answer(module_id: &str, state: ActivationState, job: Option<&JobRecord>) -> Value {
-    let mut value = json!({"module_id": module_id, "activation": state.name()});
-    if let Some(job) = job {
-        value["job_id"] = json!(job.job_id);
-        value["status"] = json!(job.status);
-    }
-    value
-}
-
-/// The `download-artifact` scope of a declared resource: its identity, version and the origin of
-/// its pinned URL.
-fn download_scope(resource: &ResourceDescriptor) -> Result<DownloadScope, Error> {
-    let endpoint = parse_endpoint(
-        &resource.url,
-        &[EndpointClass::Remote, EndpointClass::Loopback],
-    )?;
-    Ok(DownloadScope {
-        resource: resource.id.clone(),
-        version: resource.version.clone(),
-        origin: endpoint.origin(),
-    })
 }
 
 /// The owner's capability state: the configuration, the stores over its directories, the lanes
@@ -768,186 +617,6 @@ impl CapabilityHost {
         Ok(revoked)
     }
 
-    // Permissions.
-
-    /// `module.permission.grant`: only a client with permission authority, only for a scope the
-    /// module can use now. The grant records the envelope's actor and request identity; a retry of
-    /// the request is answered by the owner's request table before it reaches here.
-    pub(crate) fn grant(
-        &mut self,
-        service: &EditorService,
-        authority: ClientAuthority,
-        request: GrantParams,
-        origin: &Origin,
-        announce: &mut Vec<Origin>,
-    ) -> Result<Value, Error> {
-        if authority != ClientAuthority::Permissions {
-            return Err(Error::new(
-                ErrorKind::Forbidden,
-                "granting a permission needs permission authority",
-            ));
-        }
-        request.mutation.validate()?;
-        let registry = service.registry();
-        let descriptor = registered(registry, &request.module_id)?;
-        let capability = declared_capability(descriptor, &request.capability)?;
-        let scope = GrantScope::parse(GrantKind::of(&capability.kind), &request.scope)?;
-        self.check_usable(service, descriptor, capability, &scope)?;
-        let outcome = self.grants()?.grant(NewGrant {
-            module_id: &descriptor.id,
-            capability: &capability.id,
-            scope,
-            actor: &request.mutation.actor,
-            request_id: &request.mutation.request_id,
-        })?;
-        if outcome.outcome == WriteOutcome::Committed {
-            announce_once(announce, origin);
-        }
-        encode(outcome)
-    }
-
-    /// Whether the module can use `scope` now: the resource version it declares from its pinned
-    /// origin, or a profile of the capability's adapter whose endpoint has that origin, the
-    /// capability's data class and an asset of this catalog.
-    fn check_usable(
-        &self,
-        service: &EditorService,
-        descriptor: &ModuleDescriptor,
-        capability: &CapabilityDescriptor,
-        scope: &GrantScope,
-    ) -> Result<(), Error> {
-        match (&capability.kind, scope) {
-            (CapabilityKind::DownloadArtifact { resource }, GrantScope::Download(scope)) => {
-                let declared = descriptor.resource(resource).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        format!("capability {} names an undeclared resource", capability.id),
-                    )
-                })?;
-                if *scope != download_scope(declared)? {
-                    return Err(validation(format!(
-                        "the scope must name resource {resource} version {} from the origin of its pinned URL",
-                        declared.version
-                    )));
-                }
-            }
-            (CapabilityKind::RemoteImageRequest { adapter, data }, GrantScope::Remote(scope)) => {
-                if scope.adapter != *adapter || scope.data != *data {
-                    return Err(validation(format!(
-                        "capability {} sends {} through adapter {adapter}",
-                        capability.id,
-                        data.name()
-                    )));
-                }
-                let read = self.settings()?.read(descriptor, self.secrets())?;
-                let profile = read
-                    .profile(&scope.profile_id)
-                    .ok_or_else(|| validation(format!("unknown profile {}", scope.profile_id)))?;
-                if profile.adapter != *adapter {
-                    return Err(validation(format!(
-                        "profile {} uses adapter {}, not {adapter}",
-                        profile.id, profile.adapter
-                    )));
-                }
-                let origin = profile_origin(descriptor, &profile.fields).ok_or_else(|| {
-                    validation(format!("profile {} has no valid endpoint", profile.id))
-                })?;
-                if origin != scope.origin {
-                    return Err(validation(format!(
-                        "profile {} sends to {origin}, not {}",
-                        profile.id, scope.origin
-                    )));
-                }
-                asset_exists(service, &scope.asset_id)?;
-            }
-            _ => {
-                return Err(Error::new(
-                    ErrorKind::Internal,
-                    "a scope was parsed as another capability kind",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// `module.permission.deny`: record a "Don't allow" for one exact scope, with the envelope's
-    /// actor. Any client may.
-    pub(crate) fn deny(
-        &mut self,
-        registry: &ModuleRegistry,
-        request: DenyParams,
-        origin: &Origin,
-        announce: &mut Vec<Origin>,
-    ) -> Result<Value, Error> {
-        request.mutation.validate()?;
-        let descriptor = registered(registry, &request.module_id)?;
-        let capability = declared_capability(descriptor, &request.capability)?;
-        let scope = GrantScope::parse(GrantKind::of(&capability.kind), &request.scope)?;
-        let denial = self.grants()?.deny(
-            &descriptor.id,
-            &capability.id,
-            scope,
-            &request.mutation.actor,
-        )?;
-        announce_once(announce, origin);
-        Ok(json!({"denial": denial}))
-    }
-
-    /// `module.permission.revoke`: mark the grant revoked and cancel the jobs running under it.
-    /// Any client may. Recipes, history and accepted artifacts are never touched.
-    pub(crate) fn revoke(
-        &mut self,
-        request: RevokeParams,
-        origin: &Origin,
-        announce: &mut Vec<Origin>,
-    ) -> Result<Value, Error> {
-        request.mutation.validate()?;
-        let reason = request.reason.unwrap_or_else(|| "revoked".to_owned());
-        if reason.trim().is_empty() || reason.chars().count() > MAX_REASON {
-            return Err(validation(format!(
-                "a revocation reason is 1..={MAX_REASON} characters"
-            )));
-        }
-        let (grant, changed) = self.grants()?.revoke(&request.grant_id, &reason)?;
-        let cancelled = if changed {
-            announce_once(announce, origin);
-            self.cancel_dependents_of(&grant.grant_id, origin, announce)
-        } else {
-            Vec::new()
-        };
-        Ok(json!({
-            "outcome": if changed { WriteOutcome::Committed } else { WriteOutcome::NoOp },
-            "grant": grant,
-            "cancelled_jobs": cancelled,
-        }))
-    }
-
-    /// `module.permission.list`: grants, revoked ones included, and denials.
-    pub(crate) fn list_permissions(
-        &self,
-        registry: &ModuleRegistry,
-        request: PermissionList,
-    ) -> Result<Value, Error> {
-        if let Some(module_id) = &request.module_id {
-            registered(registry, module_id)?;
-        }
-        encode(self.grants()?.list(request.module_id.as_deref())?)
-    }
-
-    /// Cancel the live jobs running under this grant, as `permission revoked`.
-    fn cancel_dependents_of(
-        &mut self,
-        grant_id: &str,
-        origin: &Origin,
-        announce: &mut Vec<Origin>,
-    ) -> Vec<JobId> {
-        let dependents = self.jobs.depending_on(grant_id);
-        for job_id in &dependents {
-            self.cancel_job(job_id, PERMISSION_REVOKED, origin, announce);
-        }
-        dependents
-    }
-
     // Jobs.
 
     /// `module.job.read`.
@@ -1025,318 +694,6 @@ impl CapabilityHost {
         }
     }
 
-    // Activation.
-
-    /// `module.activate`: check every declared requirement and queue the activation on the module
-    /// lane, or join the one already queued or running. An active module answers at once.
-    pub(crate) fn activate(
-        &mut self,
-        registry: &Arc<ModuleRegistry>,
-        request: ModuleChange,
-        origin: &Origin,
-    ) -> Result<Value, Error> {
-        request.mutation.validate()?;
-        let descriptor = registered(registry, &request.module_id)?;
-        if let Availability::Unavailable { reason } = &descriptor.availability {
-            return Err(validation(format!(
-                "module {} is unavailable: {reason}",
-                descriptor.id
-            )));
-        }
-        let declared = descriptor.activation.as_ref().ok_or_else(|| {
-            validation(format!("module {} declares no activation", descriptor.id))
-        })?;
-        let module_id = descriptor.id.as_str();
-        if let Some(activation) = self.activations.get(module_id) {
-            match activation.state {
-                ActivationState::Active => {
-                    return Ok(activation_answer(module_id, ActivationState::Active, None));
-                }
-                ActivationState::Activating if activation.pending.is_none() => {
-                    let job = activation.job.as_ref().and_then(|job| self.jobs.read(job));
-                    return Ok(activation_answer(
-                        module_id,
-                        ActivationState::Activating,
-                        job.as_ref(),
-                    ));
-                }
-                // The running activation was asked to stop, so a new one is queued behind it; the
-                // lane runs them in order, and the stopped one's result is no longer the module's.
-                ActivationState::Activating
-                | ActivationState::Inactive
-                | ActivationState::Failed => {}
-            }
-        }
-        let settings = match &descriptor.settings {
-            Some(_) => match self
-                .settings()
-                .and_then(|store| store.read(descriptor, self.secrets()))
-            {
-                Ok(read) => Some(read),
-                Err(error) if !declared.requires_settings.is_empty() => return Err(error),
-                Err(_) => None,
-            },
-            None => None,
-        };
-        let mut missing = Vec::new();
-        for id in &declared.requires_settings {
-            if let Some(state) = setting_requirement(settings.as_ref(), id) {
-                missing.push(Requirement {
-                    kind: "setting".into(),
-                    id: id.clone(),
-                    state: state.into(),
-                });
-            }
-        }
-        let rows = self.resource_rows(descriptor);
-        for id in &declared.requires_resources {
-            let state = rows
-                .iter()
-                .find(|row| &row.id == id)
-                .map_or(ResourceState::NotInstalled, |row| row.state);
-            if state != ResourceState::Installed {
-                missing.push(Requirement {
-                    kind: "resource".into(),
-                    id: id.clone(),
-                    state: state.name().to_owned(),
-                });
-            }
-        }
-        if !missing.is_empty() {
-            let list = missing
-                .iter()
-                .map(|requirement| {
-                    format!(
-                        "{} {} is {}",
-                        requirement.kind, requirement.id, requirement.state
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(Error::new(
-                ErrorKind::NotReady,
-                format!("module {module_id} is not ready to activate: {list}"),
-            )
-            .with_data(json!({"requirements": missing})));
-        }
-        let control = JobControl::new();
-        let mut context =
-            ModuleContext::new(module_id, self.config.secrets.clone(), control.clone())
-                .with_settings(
-                    effective_values(descriptor, settings.as_ref()),
-                    secret_fields(descriptor),
-                );
-        for row in &rows {
-            if let (ResourceState::Installed, Some(path)) = (row.state, &row.path) {
-                context = context.with_resource(&row.id, path.clone());
-            }
-        }
-        let work: Work = {
-            let registry = registry.clone();
-            let module_id = module_id.to_owned();
-            let control = control.clone();
-            Box::new(move || {
-                let module = registry.module(&module_id).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        format!("module {module_id} is not registered"),
-                    )
-                })?;
-                let outcome = panic::catch_unwind(AssertUnwindSafe(|| module.activate(&context)))
-                    .unwrap_or_else(|_| {
-                        Err(Error::new(
-                            ErrorKind::Internal,
-                            format!("the activation of module {module_id} stopped unexpectedly"),
-                        ))
-                    });
-                // An activation asked to stop as it finished counts as cancelled.
-                let outcome = match outcome {
-                    Ok(()) if control.is_cancelled() => Err(control.cancelled_error()),
-                    other => other,
-                };
-                if outcome.is_err() {
-                    module.deactivate();
-                }
-                outcome.map(|()| json!({"activation": ActivationState::Active.name()}))
-            })
-        };
-        let job = self.jobs.submit(
-            NewJob {
-                job_id: JobId::new(),
-                kind: JobKind::Activate,
-                module_id: module_id.to_owned(),
-                resource_id: None,
-                origin: Some(origin.clone()),
-                grants: Vec::new(),
-                admission: Admission::Bounded,
-            },
-            control,
-            work,
-        )?;
-        let activation = self.activations.entry(module_id.to_owned()).or_default();
-        activation.state = ActivationState::Activating;
-        activation.reason = None;
-        activation.error = None;
-        activation.pending = None;
-        activation.job = Some(job.job_id.clone());
-        Ok(activation_answer(
-            module_id,
-            ActivationState::Activating,
-            Some(&job),
-        ))
-    }
-
-    /// `module.deactivate`: a client's explicit deactivation, which records no reason.
-    pub(crate) fn deactivate_request(
-        &mut self,
-        registry: &Arc<ModuleRegistry>,
-        request: ModuleChange,
-        origin: &Origin,
-        announce: &mut Vec<Origin>,
-    ) -> Result<Value, Error> {
-        request.mutation.validate()?;
-        let descriptor = registered(registry, &request.module_id)?;
-        let job = self.deactivate(registry, &descriptor.id, None, Some(origin), announce)?;
-        let state = self
-            .activations
-            .get(&descriptor.id)
-            .map_or(ActivationState::Inactive, |activation| activation.state);
-        Ok(activation_answer(&descriptor.id, state, job.as_ref()))
-    }
-
-    /// Deactivate a module: a waiting activation is superseded and the module reads inactive; a
-    /// running one is cancelled and the module ends inactive when it stops; an active module reads
-    /// inactive at once and a release job calls its `deactivate` on the module lane, after the work
-    /// queued before it. Nothing is deleted. Returns the job the change concerns.
-    fn deactivate(
-        &mut self,
-        registry: &Arc<ModuleRegistry>,
-        module_id: &str,
-        reason: Option<String>,
-        origin: Option<&Origin>,
-        announce: &mut Vec<Origin>,
-    ) -> Result<Option<JobRecord>, Error> {
-        let Some(activation) = self.activations.get(module_id) else {
-            return Ok(None);
-        };
-        let announced = |announce: &mut Vec<Origin>| {
-            if let Some(origin) = origin {
-                announce_once(announce, origin);
-            }
-        };
-        match activation.state {
-            ActivationState::Inactive => Ok(None),
-            ActivationState::Failed => {
-                self.activation(module_id).set_inactive(reason);
-                announced(announce);
-                Ok(None)
-            }
-            ActivationState::Activating => {
-                let job_id = activation
-                    .job
-                    .clone()
-                    .expect("an activating module has its job");
-                if let Some(record) = self.jobs.supersede(&job_id) {
-                    let activation = self.activation(module_id);
-                    activation.job = None;
-                    activation.set_inactive(reason);
-                    announced(announce);
-                    return Ok(Some(record));
-                }
-                let cancel = reason.as_deref().unwrap_or("the module was deactivated");
-                let record = match self.jobs.cancel(&job_id, cancel) {
-                    Some(Cancelled::Requested(record) | Cancelled::Finished(record)) => record,
-                    Some(Cancelled::Removed(record)) => record,
-                    None => return Ok(None),
-                };
-                self.activation(module_id).pending = Some(reason);
-                Ok(Some(record))
-            }
-            ActivationState::Active => {
-                let record = self.release(registry, module_id, reason, origin.cloned())?;
-                announced(announce);
-                Ok(Some(record))
-            }
-        }
-    }
-
-    fn activation(&mut self, module_id: &str) -> &mut Activation {
-        self.activations.entry(module_id.to_owned()).or_default()
-    }
-
-    /// Queue the release of what an active module loaded, which is always admitted, and mark the
-    /// module inactive.
-    fn release(
-        &mut self,
-        registry: &Arc<ModuleRegistry>,
-        module_id: &str,
-        reason: Option<String>,
-        origin: Option<Origin>,
-    ) -> Result<JobRecord, Error> {
-        let registry = registry.clone();
-        let owned = module_id.to_owned();
-        let work: Work = Box::new(move || {
-            if let Some(module) = registry.module(&owned) {
-                module.deactivate();
-            }
-            Ok(json!({"activation": ActivationState::Inactive.name()}))
-        });
-        let record = self.jobs.submit(
-            NewJob {
-                job_id: JobId::new(),
-                kind: JobKind::Deactivate,
-                module_id: module_id.to_owned(),
-                resource_id: None,
-                origin,
-                grants: Vec::new(),
-                admission: Admission::Always,
-            },
-            JobControl::new(),
-            work,
-        )?;
-        let activation = self.activation(module_id);
-        activation.set_inactive(reason);
-        activation.pending = None;
-        activation.job = Some(record.job_id.clone());
-        Ok(record)
-    }
-
-    /// An activation job finished. Returns whether the module's state changed.
-    fn activation_finished(&mut self, registry: &Arc<ModuleRegistry>, record: &JobRecord) -> bool {
-        let Some(activation) = self.activations.get_mut(&record.module_id) else {
-            return false;
-        };
-        if activation.job.as_ref() != Some(&record.job_id) {
-            return false;
-        }
-        activation.job = None;
-        let pending = activation.pending.take();
-        match (record.status, pending) {
-            (JobStatus::Ready, None) => {
-                activation.state = ActivationState::Active;
-                activation.reason = None;
-                activation.error = None;
-            }
-            // It finished loading just as it was asked to stop: release what it loaded.
-            (JobStatus::Ready, Some(reason)) => {
-                let origin = None;
-                if self
-                    .release(registry, &record.module_id, reason.clone(), origin)
-                    .is_err()
-                {
-                    self.activation(&record.module_id).set_inactive(reason);
-                }
-            }
-            (JobStatus::Failed, None) => {
-                activation.state = ActivationState::Failed;
-                activation.reason = None;
-                activation.error = record.error.clone();
-            }
-            (_, pending) => activation.set_inactive(pending.flatten()),
-        }
-        true
-    }
-
     // Status.
 
     /// `module.status`: activation, settings validity, resources, grants and this module's jobs.
@@ -1384,266 +741,6 @@ impl CapabilityHost {
             "permissions": permissions,
             "jobs": self.jobs.of_module(&descriptor.id),
         }))
-    }
-
-    // Resources.
-
-    /// Every declared resource of a module with its state: installed by its marker, installing or
-    /// failed by its jobs, otherwise not installed.
-    fn resource_rows(&self, descriptor: &ModuleDescriptor) -> Vec<ResourceRow> {
-        descriptor
-            .resources
-            .iter()
-            .map(|resource| {
-                let mut row = ResourceRow {
-                    id: resource.id.clone(),
-                    title: resource.title.clone(),
-                    version: resource.version.clone(),
-                    bytes: resource.bytes,
-                    sha256: resource.sha256.clone(),
-                    license: resource.license.clone(),
-                    provenance: resource.provenance.clone(),
-                    url: resource.url.clone(),
-                    state: ResourceState::NotInstalled,
-                    path: None,
-                    installed_ms: None,
-                    job_id: None,
-                    error: None,
-                };
-                let installed = self.resources.as_ref().and_then(|store| {
-                    store
-                        .installed(&descriptor.id, resource)
-                        .map(|marker| (store, marker))
-                });
-                if let Some((store, marker)) = installed {
-                    row.state = ResourceState::Installed;
-                    row.path = Some(store.file_path(&descriptor.id, resource));
-                    row.installed_ms = Some(marker.installed_ms);
-                } else if let Some(job) =
-                    self.jobs
-                        .live(JobKind::Install, &descriptor.id, Some(&resource.id))
-                {
-                    row.state = ResourceState::Installing;
-                    row.job_id = Some(job.job_id);
-                } else if let Some(job) = self
-                    .jobs
-                    .last_finished(JobKind::Install, &descriptor.id, Some(&resource.id))
-                    .filter(|job| job.status == JobStatus::Failed)
-                {
-                    row.state = ResourceState::Failed;
-                    row.job_id = Some(job.job_id);
-                    row.error = job.error;
-                }
-                row
-            })
-            .collect()
-    }
-
-    /// `module.resource.list`: the declared resources and the storage they share.
-    pub(crate) fn resource_list(
-        &self,
-        registry: &ModuleRegistry,
-        request: ModuleParams,
-    ) -> Result<Value, Error> {
-        let descriptor = registered(registry, &request.module_id)?;
-        let storage = self.resources.as_ref().map(|store| {
-            json!({
-                "root": store.root(),
-                "used_bytes": store.used_bytes(),
-                "quota_bytes": self.config.resource_quota_bytes,
-            })
-        });
-        Ok(json!({
-            "module_id": descriptor.id,
-            "resources": self.resource_rows(descriptor),
-            "storage": storage,
-        }))
-    }
-
-    /// `module.resource.install`: from the pinned URL under a `download-artifact` grant, or from a
-    /// local file whose bytes must match the pinned hash. Consent, the quota and the lane bound
-    /// are checked before anything is queued; a second request joins the queued or running
-    /// install, and an installed resource answers at once.
-    pub(crate) fn install(
-        &mut self,
-        registry: &Arc<ModuleRegistry>,
-        request: InstallParams,
-        origin: &Origin,
-    ) -> Result<Value, Error> {
-        request.mutation.validate()?;
-        let descriptor = registered(registry, &request.module_id)?;
-        let resource = declared_resource(descriptor, &request.resource_id)?;
-        let store = self.resources()?;
-        let answer = |state: ResourceState, job: Option<&JobRecord>| {
-            let mut value = json!({
-                "module_id": descriptor.id,
-                "resource_id": resource.id,
-                "state": state,
-            });
-            if let Some(job) = job {
-                value["job_id"] = json!(job.job_id);
-                value["status"] = json!(job.status);
-            }
-            value
-        };
-        if store.installed(&descriptor.id, resource).is_some() {
-            return Ok(answer(ResourceState::Installed, None));
-        }
-        if let Some(job) = self
-            .jobs
-            .live(JobKind::Install, &descriptor.id, Some(&resource.id))
-        {
-            return Ok(answer(ResourceState::Installing, Some(&job)));
-        }
-        let (fetch, grants) = match request.source.unwrap_or_default() {
-            InstallSource::Download => {
-                let capability = descriptor
-                    .capabilities
-                    .iter()
-                    .find(|capability| {
-                        matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id } if *id == resource.id)
-                    })
-                    .ok_or_else(|| {
-                        validation(format!(
-                            "module {} declares no download-artifact capability for resource {}",
-                            descriptor.id, resource.id
-                        ))
-                    })?;
-                let scope = GrantScope::Download(download_scope(resource)?);
-                let (grant, denied) =
-                    self.grants()?
-                        .consent(&descriptor.id, &capability.id, &scope)?;
-                let Some(grant) = grant else {
-                    let install_dir = store.version_dir(&descriptor.id, resource);
-                    return Err(consent_required(
-                        descriptor,
-                        capability,
-                        &scope,
-                        download_disclosure(descriptor, capability, resource, &install_dir),
-                        denied,
-                    ));
-                };
-                (
-                    Fetch::Download(self.transport.clone()),
-                    vec![grant.grant_id],
-                )
-            }
-            InstallSource::File { path } => {
-                let is_file = std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file());
-                if !is_file {
-                    return Err(validation(format!(
-                        "{} is not a readable file",
-                        path.display()
-                    )));
-                }
-                (Fetch::File(path), Vec::new())
-            }
-        };
-        resources::check_quota(store, resource, self.config.resource_quota_bytes)?;
-        let job_id = JobId::new();
-        let control = JobControl::new();
-        let job = InstallJob {
-            store: store.clone(),
-            job_id: job_id.clone(),
-            module_id: descriptor.id.clone(),
-            resource: resource.clone(),
-            fetch,
-            registry: registry.clone(),
-            quota: self.config.resource_quota_bytes,
-            actor: request.mutation.actor.clone(),
-            control: control.clone(),
-        };
-        let record = self.jobs.submit(
-            NewJob {
-                job_id,
-                kind: JobKind::Install,
-                module_id: descriptor.id.clone(),
-                resource_id: Some(resource.id.clone()),
-                origin: Some(origin.clone()),
-                grants,
-                admission: Admission::Bounded,
-            },
-            control,
-            Box::new(move || resources::install(job)),
-        )?;
-        Ok(answer(ResourceState::Installing, Some(&record)))
-    }
-
-    /// `module.resource.remove`: queue the removal of the installed version, joining one already
-    /// queued. A module that is active or activating and requires the resource is deactivated first.
-    pub(crate) fn remove(
-        &mut self,
-        registry: &Arc<ModuleRegistry>,
-        request: ResourceParams,
-        origin: &Origin,
-        announce: &mut Vec<Origin>,
-    ) -> Result<Value, Error> {
-        request.mutation.validate()?;
-        let descriptor = registered(registry, &request.module_id)?;
-        let resource = declared_resource(descriptor, &request.resource_id)?;
-        let store = self.resources()?.clone();
-        let answer = |job: Option<&JobRecord>, state: ResourceState| {
-            let mut value = json!({
-                "module_id": descriptor.id,
-                "resource_id": resource.id,
-                "state": state,
-            });
-            if let Some(job) = job {
-                value["job_id"] = json!(job.job_id);
-                value["status"] = json!(job.status);
-            }
-            value
-        };
-        let state = self
-            .resource_rows(descriptor)
-            .into_iter()
-            .find(|row| row.id == resource.id)
-            .map_or(ResourceState::NotInstalled, |row| row.state);
-        if let Some(job) = self
-            .jobs
-            .live(JobKind::Remove, &descriptor.id, Some(&resource.id))
-        {
-            return Ok(answer(Some(&job), state));
-        }
-        if !store.version_dir(&descriptor.id, resource).exists()
-            && state != ResourceState::Installing
-        {
-            return Ok(answer(None, ResourceState::NotInstalled));
-        }
-        let control = JobControl::new();
-        let work: Work = {
-            let control = control.clone();
-            let module_id = descriptor.id.clone();
-            let resource = resource.clone();
-            Box::new(move || resources::remove(&store, &module_id, &resource, &control))
-        };
-        let record = self.jobs.submit(
-            NewJob {
-                job_id: JobId::new(),
-                kind: JobKind::Remove,
-                module_id: descriptor.id.clone(),
-                resource_id: Some(resource.id.clone()),
-                origin: Some(origin.clone()),
-                grants: Vec::new(),
-                admission: Admission::Bounded,
-            },
-            control,
-            work,
-        )?;
-        let required = descriptor
-            .activation
-            .as_ref()
-            .is_some_and(|activation| activation.requires_resources.contains(&resource.id));
-        if required {
-            self.deactivate(
-                registry,
-                &descriptor.id,
-                Some(RESOURCE_REMOVED.to_owned()),
-                Some(origin),
-                announce,
-            )?;
-        }
-        Ok(answer(Some(&record), state))
     }
 }
 
@@ -1768,30 +865,6 @@ fn module<'a>(registry: &'a ModuleRegistry, id: &str) -> Result<&'a ModuleDescri
         return Err(validation(format!("module {id} declares no settings")));
     }
     Ok(descriptor)
-}
-
-fn declared_capability<'a>(
-    descriptor: &'a ModuleDescriptor,
-    id: &str,
-) -> Result<&'a CapabilityDescriptor, Error> {
-    descriptor.capability(id).ok_or_else(|| {
-        validation(format!(
-            "module {} declares no capability {id}",
-            descriptor.id
-        ))
-    })
-}
-
-fn declared_resource<'a>(
-    descriptor: &'a ModuleDescriptor,
-    id: &str,
-) -> Result<&'a ResourceDescriptor, Error> {
-    descriptor.resource(id).ok_or_else(|| {
-        validation(format!(
-            "module {} declares no resource {id}",
-            descriptor.id
-        ))
-    })
 }
 
 #[cfg(test)]
