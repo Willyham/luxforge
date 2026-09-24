@@ -508,13 +508,11 @@ pub static SCENARIOS: &[Scenario] = &[
         name: performance::SCENARIO,
         about: "The Performance section while a heavy edit renders, against the runner's own readings",
         launches: &[LaunchSpec {
-            plan: |sources| {
-                legacy::numbered(1, performance::script(performance::SCENARIO, sources))
-            },
+            plan: performance::plan,
             watch: Some((performance::READINGS, performance::watch)),
             ..APP
         }],
-        verify: |_, launches| legacy::verify(performance::verify, launches),
+        verify: performance::verify,
         source: Source::Default(&[performance::FIXTURE]),
         window: Some(PANELLED),
         note: None,
@@ -587,10 +585,10 @@ pub static SCENARIOS: &[Scenario] = &[
         name: raw_panel::SCENARIO,
         about: "The RAW section, double-click resets and a crop over a supplied RAW file",
         launches: &[LaunchSpec {
-            plan: |_| legacy::numbered(1, raw_panel::script(raw_panel::SCENARIO)),
+            plan: raw_panel::plan,
             ..APP
         }],
-        verify: |_, launches| legacy::verify(raw_panel::verify, launches),
+        verify: raw_panel::verify,
         source: Source::Supplied,
         window: Some(PANELLED),
         note: None,

@@ -14,7 +14,11 @@
 //! rendered tier of [`crate::smoke::SCENARIOS`] and takes its source from `--source`: an owner or raw.pixls.us file
 //! the editor supports. It proves what the panel shows, what its double-click does and that a RAW
 //! crop is drawn and shown, not RAW decoding, which `raw-editor` covers.
-use crate::{scenario::Frame, *};
+use crate::{
+    scenario::{Checked, Frame, Plan, Run, Step, plan::only},
+    *,
+};
+use lightwell_core::CROP_EFFECT;
 
 pub const SCENARIO: &str = "raw-panel";
 const RAW_MODULE: &str = "lightwell.raw";
@@ -22,11 +26,27 @@ const RAW_EFFECT: &str = "lightwell.raw";
 const BASIC_MODULE: &str = "lightwell.basic";
 const SET_TEMPERATURE: &str = "set-raw-temperature";
 
-/// One scripted temperature drag: the step that leaves it open, the value it stops on, and whether
-/// the view is at Fit, where the drafted frame is the display proxy, or at 100%, where it is the
-/// full-size frame with no proxy phase. Its release is the step after it, at the same value.
+/// The steps the checks read by name, apart from the drags, double-clicks and readouts, whose
+/// tables carry their own. The plan and the checks share each name, so a misspelt one does not
+/// build: no RAW is checked in, so no recorded run would catch it.
+mod names {
+    pub const OPENED: &str = "opened";
+    pub const BASIC_COLLAPSED: &str = "basic-collapsed";
+    pub const CROP_STARTED: &str = "crop-started";
+    pub const CROP_STRAIGHTENED: &str = "crop-straightened";
+    pub const CROP_APPLIED: &str = "crop-applied";
+    pub const CROP_AT_100: &str = "crop-at-100";
+    pub const CROP_FITTED: &str = "crop-fitted";
+    pub const FITTED_READOUT: &str = "fitted-readout";
+    pub const FITTED_AT_FIT: &str = "fitted-at-fit";
+}
+
+/// One scripted temperature drag: the step that leaves it open, the step after it that releases it
+/// at the same value, the value it stops on, and whether the view is at Fit, where the drafted
+/// frame is the display proxy, or at 100%, where it is the full-size frame with no proxy phase.
 struct Drag {
-    step: usize,
+    drag: &'static str,
+    release: &'static str,
     kelvin: f64,
     fit: bool,
 }
@@ -35,26 +55,26 @@ struct Drag {
 /// at 100%, far from that committed 3500 K. Both inside 2000..12000 K on the 10 K step.
 const DRAGS: [Drag; 2] = [
     Drag {
-        step: 2,
+        drag: "drag-at-fit",
+        release: "release-at-fit",
         kelvin: 3500.0,
         fit: true,
     },
     Drag {
-        step: 5,
+        drag: "drag-at-100",
+        release: "release-at-100",
         kelvin: 2500.0,
         fit: false,
     },
 ];
-/// Steps 2–3 drag and release at Fit, 4 zooms to 100%, 5–6 drag and release there and 7 returns
-/// to Fit; the double-clicks follow from step 8.
-const FIRST_CLICK_STEP: usize = 8;
 /// Between a double-click's release and its second press: a person's ordinary double-click, well
 /// inside the 300 ms iced gives the two presses.
 const GAP_MS: u64 = 120;
 
-/// One double-click the script makes: the field, where its first press lands, the action its
-/// reset runs, and what the field shows once that has run.
+/// One double-click the script makes: its step, the field, where its first press lands, the action
+/// its reset runs, and what the field shows once that has run.
 struct DoubleClick {
+    step: &'static str,
     action: &'static str,
     parameter: &'static str,
     value: f64,
@@ -62,15 +82,17 @@ struct DoubleClick {
     /// control declares.
     reset: &'static str,
     /// The text the field shows after its reset: its declared default, or `None` for As shot,
-    /// whose temperature and tint are the camera's as-shot equivalent, computed from the frame's
-    /// own RAW layer by the check.
+    /// whose entry is labelled [`AS_SHOT_LABEL`] and whose temperature and tint are the camera's
+    /// as-shot equivalent, computed from the frame's own RAW layer by the check.
     shows: Option<&'static str>,
 }
 
 const AS_SHOT: &str = "use-as-shot-wb";
+const AS_SHOT_LABEL: &str = "As shot white balance";
 
 const DOUBLE_CLICKS: [DoubleClick; 4] = [
     DoubleClick {
+        step: "raw-exposure-reset",
         action: "set-raw-exposure",
         parameter: "ev",
         value: 0.35,
@@ -80,6 +102,7 @@ const DOUBLE_CLICKS: [DoubleClick; 4] = [
     // Custom temperature and tint reset to the camera's own white balance, as Lightroom's Temp and
     // Tint do.
     DoubleClick {
+        step: "raw-temperature-reset",
         action: "set-raw-temperature",
         parameter: "kelvin",
         value: 5000.0,
@@ -87,6 +110,7 @@ const DOUBLE_CLICKS: [DoubleClick; 4] = [
         shows: None,
     },
     DoubleClick {
+        step: "raw-tint-reset",
         action: "set-raw-tint",
         parameter: "tint",
         value: 12.0,
@@ -96,6 +120,7 @@ const DOUBLE_CLICKS: [DoubleClick; 4] = [
     // Basic's own Exposure on the same photograph, for comparison: its commit does not wait for a
     // redevelopment.
     DoubleClick {
+        step: "basic-exposure-reset",
         action: "set-basic",
         parameter: "exposure",
         value: 0.4,
@@ -104,70 +129,113 @@ const DOUBLE_CLICKS: [DoubleClick; 4] = [
     },
 ];
 
-/// The crop steps follow the double-clicks: a draft opened on the RAW's whole input stage, given
-/// a 16:9 ratio and straightened, applied at Fit, inspected at 100% through two pointer readouts,
-/// replaced by a `crop-fit` through the API at 100% and read again, then Fit.
-const FIRST_CROP_STEP: usize = FIRST_CLICK_STEP + DOUBLE_CLICKS.len();
 /// The draft's straightening angle, and the angle the API's `crop-fit` then commits.
 const CROP_ANGLE: f64 = 7.0;
 const FIT_ANGLE: f64 = -12.0;
-/// Where the pointer readouts sample the committed crops at 100%: stage pixels inside the corner of
-/// the crop the canvas shows at a zero pan, clear of the scroll bars and the mode strip, for any
-/// supplied RAW (the smallest crop, the Z6's, is over 2000 px each way).
-const READOUTS: [(u32, u32); 2] = [(300, 200), (1100, 700)];
+/// Where the pointer readouts sample the committed crop at 100%, and the steps that hover there:
+/// stage pixels inside the corner of the crop the canvas shows at a zero pan, clear of the scroll
+/// bars and the mode strip, for any supplied RAW (the smallest crop, the Z6's, is over 2000 px each
+/// way). The API's crop is read again at the second.
+const READOUTS: [(&str, (u32, u32)); 2] = [
+    ("crop-readout-near", (300, 200)),
+    ("crop-readout-far", (1100, 700)),
+];
 
-fn crop_steps() -> Vec<Value> {
+fn hover((x, y): (u32, u32)) -> Value {
+    json!({"hover":{"x":x,"y":y}})
+}
+
+/// The crop steps follow the double-clicks: a draft opened on the RAW's whole input stage, given
+/// a 16:9 ratio and straightened, applied at Fit, inspected at 100% through two pointer readouts,
+/// replaced by a `crop-fit` through the API at 100% and read again, then Fit.
+fn crop_steps() -> Vec<Step> {
     vec![
-        json!({"draft":{"start":true}}),
-        json!({"draft":{"preset":"16:9"}}),
-        json!({"draft":{"angle":CROP_ANGLE}}),
-        json!({"draft":{"apply":true}}),
-        json!({"view":{"zoom":100.0}}),
-        json!({"hover":{"x":READOUTS[0].0,"y":READOUTS[0].1}}),
-        json!({"hover":{"x":READOUTS[1].0,"y":READOUTS[1].1}}),
-        json!({"api":{"method":"edit.crop-fit","params":{"aspect":"3:2","angle":FIT_ANGLE}}}),
-        json!({"hover":{"x":READOUTS[1].0,"y":READOUTS[1].1}}),
-        json!({"view":{"zoom":"fit"}}),
+        Step::new(names::CROP_STARTED, json!({"draft":{"start":true}})),
+        Step::new("crop-ratio", json!({"draft":{"preset":"16:9"}})),
+        Step::new(
+            names::CROP_STRAIGHTENED,
+            json!({"draft":{"angle":CROP_ANGLE}}),
+        ),
+        // Apply commits one entry.
+        Step::new(names::CROP_APPLIED, json!({"draft":{"apply":true}})).commits(1),
+        Step::new(names::CROP_AT_100, json!({"view":{"zoom":100.0}})),
+        Step::new(READOUTS[0].0, hover(READOUTS[0].1)),
+        Step::new(READOUTS[1].0, hover(READOUTS[1].1)),
+        // The API's `crop-fit` updates the applied crop's own layer in one entry.
+        Step::new(
+            names::CROP_FITTED,
+            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"3:2","angle":FIT_ANGLE}}}),
+        )
+        .commits(1)
+        .same_layer(CROP_EFFECT, names::CROP_APPLIED),
+        Step::new(names::FITTED_READOUT, hover(READOUTS[1].1)),
+        Step::new(names::FITTED_AT_FIT, json!({"view":{"zoom":"fit"}})),
     ]
 }
 
-/// One open frame plus one per script step.
-pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == SCENARIO).then_some(FIRST_CROP_STEP + crop_steps().len())
-}
-
-pub fn script(scenario: &str) -> Option<Value> {
-    (scenario == SCENARIO).then(|| {
-        let mut steps = vec![
-            // 1: collapse Basic, expanded by its own default, so the RAW section above it and the
-            // collapsed bands under it are on screen together.
+/// Every frame, in order: the open, then one per step. The expectations here are what each step
+/// commits, what its fields and label show and that the RAW section is on screen; `verify` checks
+/// the rest.
+pub fn plan(_: &[PathBuf]) -> Plan {
+    let mut steps = vec![
+        Step::opened(names::OPENED),
+        // Collapse Basic, expanded by its own default, so the RAW section above it and the
+        // collapsed bands under it are on screen together.
+        Step::new(
+            names::BASIC_COLLAPSED,
             json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
-        ];
-        for drag in &DRAGS {
-            if !drag.fit {
-                // 4: 100%, where a frame shows a stage pixel per display pixel and has no proxy.
-                steps.push(json!({"view":{"zoom":100.0}}));
-            }
-            // 2 and 5: a Custom temperature drag left open. Its frame is the drafted value
-            // approximated on the planes developed at the committed white balance.
-            steps.push(json!({"slider":{"action":SET_TEMPERATURE,"parameter":"kelvin","values":[drag.kelvin]}}));
-            // 3 and 6: its release at the same value, which commits it and redevelops the mosaic.
-            steps.push(json!({"slider":{"action":SET_TEMPERATURE,"parameter":"kelvin","values":[drag.kelvin],"release":true}}));
-            if !drag.fit {
-                // 7: back to Fit for the double-clicks.
-                steps.push(json!({"view":{"zoom":"fit"}}));
-            }
+        )
+        .collapsed(BASIC_MODULE),
+    ];
+    for drag in &DRAGS {
+        if !drag.fit {
+            // 100%, where a frame shows a stage pixel per display pixel and has no proxy.
+            steps.push(Step::new("zoom-100", json!({"view":{"zoom":100.0}})));
         }
-        // 8–11: a double-click on each RAW slider's rail, then on Basic's Exposure. The first press
-        // moves the value, which commits on release; the second press resets the field.
-        steps.extend(DOUBLE_CLICKS.iter().map(|click| {
+        // A Custom temperature drag left open. Its frame is the drafted value approximated on the
+        // planes developed at the committed white balance.
+        steps.push(Step::new(
+            drag.drag,
+            json!({"slider":{"action":SET_TEMPERATURE,"parameter":"kelvin","values":[drag.kelvin]}}),
+        ));
+        // Its release at the same value, which commits it and redevelops the mosaic.
+        steps.push(
+            Step::new(
+                drag.release,
+                json!({"slider":{"action":SET_TEMPERATURE,"parameter":"kelvin","values":[drag.kelvin],"release":true}}),
+            )
+            .commits(1)
+            .no_draft(),
+        );
+        if !drag.fit {
+            // Back to Fit for the double-clicks.
+            steps.push(Step::new("zoom-fit", json!({"view":{"zoom":"fit"}})));
+        }
+    }
+    // A double-click on each RAW slider's rail, then on Basic's Exposure. The first press moves the
+    // value, which commits on release; the second press resets the field: two entries.
+    steps.extend(DOUBLE_CLICKS.iter().map(|click| {
+        let step = Step::new(
+            click.step,
             json!({"double_click":{"action":click.action,"parameter":click.parameter,
-                "value":click.value,"gap_ms":GAP_MS}})
-        }));
-        // 12–21: a straightened crop drafted, applied and inspected; see `crop_steps`.
-        steps.extend(crop_steps());
-        Value::Array(steps)
-    })
+                "value":click.value,"gap_ms":GAP_MS}}),
+        )
+        .commits(2);
+        match click.shows {
+            Some(default) => step.field(click.action, click.parameter, default),
+            None => step.label(AS_SHOT_LABEL),
+        }
+    }));
+    // A straightened crop drafted, applied and inspected; see `crop_steps`.
+    steps.extend(crop_steps());
+    // The tools panel lists the RAW section only for a RAW source, so its section expanded in every
+    // frame is the proof that the source opened as RAW.
+    Plan::new(
+        steps
+            .into_iter()
+            .map(|step| step.expanded(RAW_MODULE))
+            .collect(),
+    )
 }
 
 fn raw_payload(frame: &Value) -> Result<&Value> {
@@ -227,30 +295,38 @@ fn step_events(events: &[Value], step: usize) -> Vec<&Value> {
         .collect()
 }
 
-pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    let records = app["frames"].as_array().ok_or("Missing frames")?;
+/// The events the named step logged. Its number in the script is the one its frame records, which
+/// the plan's check has held to the step's own place in the script.
+fn step_log<'a>(launch: &'a Checked, step: &str) -> Result<Vec<&'a Value>> {
+    let number = launch.at(step)?["step"]["step"]
+        .as_u64()
+        .ok_or_else(|| format!("Step {step:?} records no script step number"))?;
+    Ok(step_events(&launch.events, number as usize))
+}
+
+/// The frame captured just before the named step's.
+fn frame_before<'a>(launch: &'a Checked, step: &str) -> Result<&'a Frame> {
+    launch
+        .index(step)?
+        .checked_sub(1)
+        .map(|before| &launch.frames[before])
+        .ok_or_else(|| format!("No frame comes before step {step:?}").into())
+}
+
+/// What each frame shows beyond its plan, once the plan has held: every frame ready, the drags'
+/// drafted and committed frames, each double-click's events and As shot fields, the RAW band's dot
+/// and the crop on screen.
+pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
     let mut checks = Vec::new();
-    let mut frames = Vec::new();
-    for (index, frame) in records.iter().enumerate() {
-        let state = &frame["state"];
-        frames.push(Frame::identified(evidence, app, frame)?);
+    for (step, frame) in launch.names().iter().zip(&launch.frames) {
+        let state = frame.state();
         ensure(
             state["phase"] == "ready",
-            format!("RAW panel frame {index} is not ready: {}", state["phase"]),
+            format!("RAW panel step {step:?} is not ready: {}", state["phase"]),
         )?;
-        // The tools panel lists the RAW section only for a RAW source, so its presence in the
-        // expanded map is the proof that the source opened as RAW.
-        ensure(
-            state["expanded"][RAW_MODULE] == json!(true),
-            format!("RAW panel frame {index} has no expanded RAW section"),
-        )?;
-        if index > 0 {
-            ensure(
-                frame["step"]["step"] == json!(index) && frame["step"]["status"] == "sent",
-                format!("RAW panel frame {index} is not its scripted step, sent"),
-            )?;
-        }
         checks.push(json!({
+            "step": step,
             "frame": frame["file"],
             "expanded": state["expanded"],
             "source_dimensions": state["source_dimensions"],
@@ -258,22 +334,23 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             "controls": state["controls"],
         }));
     }
+    // The plan holds Basic collapsed, which a section the frame does not list at all would pass;
+    // that the section is listed, and listed collapsed, is this check's.
     ensure(
-        frames[1]["state"]["expanded"][BASIC_MODULE] == json!(false)
-            && frames[1]["step"]["step"] == json!(1),
-        "The second RAW panel frame is not Basic collapsed by step 1",
+        launch.at(names::BASIC_COLLAPSED)?.state()["expanded"][BASIC_MODULE] == json!(false),
+        "The Basic section is not listed collapsed once its step has collapsed it",
     )?;
     for drag in &DRAGS {
-        checks.push(white_balance_drag(events, &frames, drag)?);
+        checks.push(white_balance_drag(launch, drag)?);
     }
 
-    // Each double-click is two history entries: the first press's committed jump, then the
-    // reset, sent against the revision that commit produced and never refused as stale.
-    for (offset, click) in DOUBLE_CLICKS.iter().enumerate() {
-        let step = offset + FIRST_CLICK_STEP;
-        let (before, after) = (&frames[step - 1], &frames[step]);
+    // Each double-click is two history entries, which the plan counts: the first press's committed
+    // jump, then the reset, sent against the revision that commit produced and never refused as
+    // stale. The plan also holds the field's default, or As shot's label, once the reset has run.
+    for click in &DOUBLE_CLICKS {
+        let (before, after) = (frame_before(launch, click.step)?, launch.at(click.step)?);
         let field = format!("{}.{}", click.action, click.parameter);
-        let logged = step_events(events, step);
+        let logged = step_log(launch, click.step)?;
         let named = |name: &str| -> Vec<&&Value> {
             logged
                 .iter()
@@ -303,39 +380,18 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             named("slider_draft_commit").len() == 1,
             format!("{field}: the first press did not commit its jump once"),
         )?;
-        ensure(
-            after.revision()? == before.revision()? + 2,
-            format!(
-                "{field}: revision {} after {}, not the jump and the reset",
-                after.revision()?,
-                before.revision()?
-            ),
-        )?;
         let mut shown = json!({"field": after["state"]["controls"][&field]});
-        match click.shows {
-            Some(default) => ensure(
-                after["state"]["controls"][&field] == json!(default),
-                format!(
-                    "{field} shows {} after its reset, not its default {default}",
-                    after["state"]["controls"][&field]
-                ),
-            )?,
-            None => {
-                // As shot: the entry is labelled so, the development is the camera's own white
-                // balance, and both white-balance fields show its equivalent.
-                let label = &after["state"]["stack"]["label"];
-                ensure(
-                    label == "As shot white balance" && raw_payload(after)?["wb_mode"] == "as-shot",
-                    format!(
-                        "{field}: the reset left {label} with {}",
-                        raw_payload(after)?
-                    ),
-                )?;
-                shown = shows_as_shot_equivalent(after, &field)?;
-            }
+        if click.shows.is_none() {
+            // As shot: the development is the camera's own white balance, and both white-balance
+            // fields show its equivalent.
+            ensure(
+                raw_payload(after)?["wb_mode"] == "as-shot",
+                format!("{field}: the reset left {}", raw_payload(after)?),
+            )?;
+            shown = shows_as_shot_equivalent(after, &field)?;
         }
         checks.push(json!({
-            "step": step,
+            "step": click.step,
             "field": field,
             "reset": click.reset,
             "label": after["state"]["stack"]["label"],
@@ -346,9 +402,14 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             "shown": shown,
         }));
     }
-    // The RAW development the resets leave: exposure back at 0 EV and the camera's own white
-    // balance, which is the Original's development, so the band carries no dot again.
-    let reset = &frames[FIRST_CLICK_STEP + 2];
+    // The RAW development the resets leave, once the last RAW double-click has run: exposure back
+    // at 0 EV and the camera's own white balance, which is the Original's development, so the band
+    // carries no dot again.
+    let last = DOUBLE_CLICKS
+        .iter()
+        .rfind(|click| click.action.starts_with("set-raw-"))
+        .ok_or("No double-click resets a RAW field")?;
+    let reset = launch.at(last.step)?;
     let raw = raw_payload(reset)?;
     ensure(
         raw["exposure_ev"] == json!(0.0) && raw["wb_mode"] == "as-shot",
@@ -357,9 +418,9 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     // The band's dot: none on the untouched photograph, one once a drag has committed a custom
     // white balance, and none again once the resets leave As shot at 0 EV.
     for (frame, dotted, when) in [
-        (&frames[0], false, "untouched"),
+        (launch.at(names::OPENED)?, false, "untouched"),
         (
-            &frames[DRAGS[0].step + 1],
+            launch.at(DRAGS[0].release)?,
             true,
             "after a committed custom temperature",
         ),
@@ -377,8 +438,11 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             "revision": frame["state"]["stack"]["revision"]}),
         );
     }
-    checks.push(raw_crop(events, &frames)?);
-    write_json(&evidence.join("raw-panel-checks.json"), &json!(checks))?;
+    checks.push(raw_crop(launch)?);
+    write_json(
+        &launch.evidence.join("raw-panel-checks.json"),
+        &json!(checks),
+    )?;
     Ok(())
 }
 
@@ -430,8 +494,8 @@ fn shows_as_shot_equivalent(frame: &Value, field: &str) -> Result<Value> {
 
 /// The step's events that would mean a commit's picture never reached the canvas: a refused
 /// request, a failed render, a picture withdrawn for a failure, or a draft that could not open.
-fn expect_no_failure(events: &[Value], step: usize, what: &str) -> Result {
-    let failures: Vec<&Value> = step_events(events, step)
+fn expect_no_failure(launch: &Checked, step: &str, what: &str) -> Result {
+    let failures: Vec<&Value> = step_log(launch, step)?
         .into_iter()
         .filter(|event| {
             [
@@ -449,22 +513,20 @@ fn expect_no_failure(events: &[Value], step: usize, what: &str) -> Result {
     )
 }
 
-/// The one crop layer of a frame's current stack: its identity and payload.
-fn crop_layer(frame: &Value) -> Result<(String, lightwell_core::CropPayload)> {
+/// The one crop layer of a frame's current stack: its payload. That a later commit updates this
+/// same layer is the plan's.
+fn crop_layer(frame: &Value) -> Result<lightwell_core::CropPayload> {
     let layers: Vec<&Value> = frame["state"]["stack"]["layers"]
         .as_array()
         .ok_or("The frame records no stack")?
         .iter()
-        .filter(|layer| layer["effect"] == lightwell_core::CROP_EFFECT)
+        .filter(|layer| layer["effect"] == CROP_EFFECT)
         .collect();
     ensure(
         layers.len() == 1,
         format!("Expected one crop layer, found {}", layers.len()),
     )?;
-    Ok((
-        layers[0]["id"].as_str().unwrap_or_default().to_owned(),
-        serde_json::from_value(layers[0]["payload"].clone())?,
-    ))
+    Ok(serde_json::from_value(layers[0]["payload"].clone())?)
 }
 
 /// A committed crop frame shows that crop: the entry on the surface is the current one, its
@@ -472,7 +534,7 @@ fn crop_layer(frame: &Value) -> Result<(String, lightwell_core::CropPayload)> {
 /// stands in for it. This is the check a picture left over from before the commit fails.
 fn shows_crop(frame: &Value, source: [u32; 2], angle: f64, what: &str) -> Result<[u32; 2]> {
     let state = &frame["state"];
-    let (_, payload) = crop_layer(frame)?;
+    let payload = crop_layer(frame)?;
     ensure(
         payload.angle == angle,
         format!("{what}: the crop layer's angle is {}", payload.angle),
@@ -708,16 +770,17 @@ fn readout_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Resu
 /// The straightened crop drafted, applied and inspected on the RAW itself: the draft draws its
 /// whole input stage, Apply commits one entry whose picture is the one on screen at Fit and at
 /// 100%, where the pointer readout's codes are the canvas's own, and a `crop-fit` through the API
-/// at 100% updates the same layer and is shown the same way.
-fn raw_crop(events: &[Value], frames: &[Frame]) -> Result<Value> {
-    let at = |offset: usize| &frames[FIRST_CROP_STEP + offset];
-    let source: [u32; 2] = serde_json::from_value(frames[0]["state"]["source_dimensions"].clone())
-        .map_err(|_| "The open frame records no source dimensions")?;
+/// at 100% updates the same layer and is shown the same way. The entries each commit makes, and
+/// that the `crop-fit` keeps the applied crop's layer, are the plan's.
+fn raw_crop(launch: &Checked) -> Result<Value> {
+    let source: [u32; 2] =
+        serde_json::from_value(launch.at(names::OPENED)?["state"]["source_dimensions"].clone())
+            .map_err(|_| "The open frame records no source dimensions")?;
     let tiles = source[0].div_ceil(2048) * source[1].div_ceil(2048);
 
-    let opened = at(0);
-    expect_no_failure(events, FIRST_CROP_STEP, "The draft's start")?;
-    let draft = &opened["state"]["crop"];
+    let started = launch.at(names::CROP_STARTED)?;
+    expect_no_failure(launch, names::CROP_STARTED, "The draft's start")?;
+    let draft = &started["state"]["crop"];
     ensure(
         draft["drafting"] == json!(true)
             && draft["input_stage"] == json!(source)
@@ -725,24 +788,23 @@ fn raw_crop(events: &[Value], frames: &[Frame]) -> Result<Value> {
             && tiles > 1,
         format!("The draft did not open on the {source:?} stage in {tiles} tiles: {draft}"),
     )?;
-    let straightened = at(2);
+    let straightened = launch.at(names::CROP_STRAIGHTENED)?;
     ensure(
         straightened["state"]["crop"]["angle"] == json!(CROP_ANGLE),
         "The draft was not straightened",
     )?;
     let whole = draft_is_whole(straightened, source)?;
 
-    let applied = at(3);
-    expect_no_failure(events, FIRST_CROP_STEP + 3, "Apply")?;
+    let applied = launch.at(names::CROP_APPLIED)?;
+    expect_no_failure(launch, names::CROP_APPLIED, "Apply")?;
     ensure(
-        step_events(events, FIRST_CROP_STEP + 3)
+        step_log(launch, names::CROP_APPLIED)?
             .iter()
             .filter(|event| event["event"] == "crop_draft_applied")
             .count()
             == 1
-            && applied.revision()? == straightened.revision()? + 1
             && applied["state"]["crop"]["drafting"] == json!(false),
-        "Apply did not commit exactly one entry and end the draft",
+        "Apply did not apply the draft once and end it",
     )?;
     let output = shows_crop(applied, source, CROP_ANGLE, "The applied crop at Fit")?;
     ensure(
@@ -751,22 +813,17 @@ fn raw_crop(events: &[Value], frames: &[Frame]) -> Result<Value> {
     )?;
     let placement = fit_placement(applied, output)?;
 
-    let exact = at(4);
+    let exact = launch.at(names::CROP_AT_100)?;
     shows_crop(exact, source, CROP_ANGLE, "The applied crop at 100%")?;
     let mut readouts = Vec::new();
-    for (offset, point) in [(5, READOUTS[0]), (6, READOUTS[1])] {
-        let frame = at(offset);
+    for (step, point) in READOUTS {
+        let frame = launch.at(step)?;
         shows_crop(frame, source, CROP_ANGLE, "A readout over the applied crop")?;
         readouts.push(readout_on_screen(frame, point, output)?);
     }
 
-    let fitted = at(7);
-    expect_no_failure(events, FIRST_CROP_STEP + 7, "The API's crop-fit")?;
-    ensure(
-        fitted.revision()? == at(6).revision()? + 1
-            && crop_layer(fitted)?.0 == crop_layer(applied)?.0,
-        "The API's crop-fit did not update the same crop layer in one entry",
-    )?;
+    let fitted = launch.at(names::CROP_FITTED)?;
+    expect_no_failure(launch, names::CROP_FITTED, "The API's crop-fit")?;
     let refitted = shows_crop(fitted, source, FIT_ANGLE, "The API's crop at 100%")?;
     ensure(
         fitted["state"]["surface"]["raster"] == json!(refitted),
@@ -775,10 +832,10 @@ fn raw_crop(events: &[Value], frames: &[Frame]) -> Result<Value> {
             fitted["state"]["surface"]["raster"]
         ),
     )?;
-    let frame = at(8);
+    let frame = launch.at(names::FITTED_READOUT)?;
     shows_crop(frame, source, FIT_ANGLE, "A readout over the API's crop")?;
-    readouts.push(readout_on_screen(frame, READOUTS[1], refitted)?);
-    let back = at(9);
+    readouts.push(readout_on_screen(frame, READOUTS[1].1, refitted)?);
+    let back = launch.at(names::FITTED_AT_FIT)?;
     shows_crop(back, source, FIT_ANGLE, "The API's crop back at Fit")?;
     let back_placement = fit_placement(back, refitted)?;
     Ok(json!({
@@ -804,13 +861,13 @@ fn raw_crop(events: &[Value], frames: &[Frame]) -> Result<Value> {
 /// Released, the commit redevelops the mosaic and lands the exact frame: unlabelled, its report
 /// adopted, and the first frame handed to the surface after the commit — so the approximate frame
 /// stayed on screen until it was replaced, with nothing drawn in between. On average it is within
-/// a code of the approximate one.
-fn white_balance_drag(events: &[Value], frames: &[Frame], drag: &Drag) -> Result<Value> {
-    let (drag_step, release_step, kelvin) = (drag.step, drag.step + 1, drag.kelvin);
+/// a code of the approximate one. That the release closes the draft in one entry is the plan's.
+fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
+    let kelvin = drag.kelvin;
     let (before, drafted, released) = (
-        &frames[drag_step - 1],
-        &frames[drag_step],
-        &frames[release_step],
+        frame_before(launch, drag.drag)?,
+        launch.at(drag.drag)?,
+        launch.at(drag.release)?,
     );
     let state = &drafted["state"];
     let generation = state["surface"]["generation"].clone();
@@ -855,7 +912,7 @@ fn white_balance_drag(events: &[Value], frames: &[Frame], drag: &Drag) -> Result
             && histogram["identity"]["draft_revision"].is_null(),
         format!("The histogram was adopted from the approximate frame: {histogram}"),
     )?;
-    let drag_events = step_events(events, drag_step);
+    let drag_events = step_log(launch, drag.drag)?;
     let displayed: Vec<&&Value> = drag_events
         .iter()
         .filter(|event| {
@@ -896,13 +953,11 @@ fn white_balance_drag(events: &[Value], frames: &[Frame], drag: &Drag) -> Result
     let generation = state["surface"]["generation"].clone();
     ensure(
         state["approximate_white_balance"] == json!(false)
-            && state["draft"].is_null()
             && raw_payload(released)?["temperature_kelvin"] == json!(kelvin)
             && raw_payload(released)?["wb_mode"] == "custom",
         format!(
-            "The release did not land the exact committed frame: approximate {}, draft {}, RAW {}",
+            "The release did not land the exact committed frame: approximate {}, RAW {}",
             state["approximate_white_balance"],
-            state["draft"],
             raw_payload(released)?
         ),
     )?;
@@ -913,11 +968,7 @@ fn white_balance_drag(events: &[Value], frames: &[Frame], drag: &Drag) -> Result
             && histogram["identity"]["draft_revision"].is_null(),
         format!("The committed frame's own report is not plotted: {histogram}"),
     )?;
-    ensure(
-        released.revision()? == drafted.revision()? + 1,
-        "The release did not commit exactly one entry",
-    )?;
-    let release_events = step_events(events, release_step);
+    let release_events = step_log(launch, drag.release)?;
     let commit = release_events
         .iter()
         .position(|event| event["event"] == "slider_draft_commit")
@@ -970,7 +1021,7 @@ fn white_balance_drag(events: &[Value], frames: &[Frame], drag: &Drag) -> Result
     )?;
     let tint = keeps_the_tint_in_force(before, drafted, released, drag)?;
     Ok(json!({
-        "step": drag_step,
+        "step": drag.drag,
         "kelvin": kelvin,
         "tint": tint,
         "view": if drag.fit { "fit" } else { "100%" },
@@ -997,7 +1048,7 @@ fn keeps_the_tint_in_force(
     drag: &Drag,
 ) -> Result<Value> {
     let prior: lightwell_core::RawPayload = serde_json::from_value(raw_payload(before)?.clone())?;
-    if drag.step == DRAGS[0].step {
+    if drag.drag == DRAGS[0].drag {
         ensure(
             prior.wb_mode == lightwell_core::WhiteBalanceMode::AsShot,
             "The first temperature drag does not start from As shot",
@@ -1031,8 +1082,19 @@ fn keeps_the_tint_in_force(
 mod tests {
     use super::*;
 
-    /// Each drag stops on a value the temperature control declares, on its step, and the script
-    /// holds each drag, its release and the zoom around the 100% one where the checks look.
+    /// What the plan scripts at the named step.
+    fn scripted(plan: &Plan, step: &str) -> Value {
+        let at = plan
+            .index(step)
+            .unwrap_or_else(|| panic!("{step:?} is not planned"));
+        plan.steps()[at]
+            .script()
+            .cloned()
+            .unwrap_or_else(|| panic!("{step:?} scripts nothing"))
+    }
+
+    /// Each drag stops on a value the temperature control declares, on its step, and its release is
+    /// the step after it at the same value, with the zoom around the 100% one where the checks look.
     #[test]
     fn each_drag_is_a_declared_temperature_on_its_step_where_the_checks_look() {
         let registry = lightwell_core::ModuleRegistry::builtin();
@@ -1042,33 +1104,86 @@ mod tests {
             panic!("kelvin is a number");
         };
         let step = parameter.step.unwrap_or(1.0);
-        let steps = script(SCENARIO).unwrap();
+        let plan = plan(&[]);
         for drag in &DRAGS {
             assert!((min..=max).contains(&drag.kelvin));
             assert_eq!((drag.kelvin / step).round() * step, drag.kelvin);
-            let open = &steps[drag.step - 1]["slider"];
-            let release = &steps[drag.step]["slider"];
+            let at = plan.index(drag.drag).expect("a planned drag");
+            assert_eq!(plan.index(drag.release), Some(at + 1), "{}", drag.release);
+            let open = &scripted(&plan, drag.drag)["slider"];
+            let release = &scripted(&plan, drag.release)["slider"];
             assert_eq!(open["values"], json!([drag.kelvin]));
             assert_eq!(open["release"], Value::Null);
             assert_eq!(release["values"], json!([drag.kelvin]));
             assert_eq!(release["release"], json!(true));
             if !drag.fit {
-                assert_eq!(steps[drag.step - 2], json!({"view":{"zoom":100.0}}));
-                assert_eq!(steps[drag.step + 1], json!({"view":{"zoom":"fit"}}));
+                assert_eq!(
+                    plan.steps()[at - 1].script(),
+                    Some(&json!({"view":{"zoom":100.0}}))
+                );
+                assert_eq!(
+                    plan.steps()[at + 2].script(),
+                    Some(&json!({"view":{"zoom":"fit"}}))
+                );
             }
         }
-        assert!(steps[FIRST_CLICK_STEP - 1]["double_click"].is_object());
     }
 
+    /// One frame for the open and one per script step, each step named for what it scripts and
+    /// every frame held to the RAW section expanded; and the table's row runs this plan, outside
+    /// `rendered`. No RAW run can be replayed, so this is what ties the names the checks read to
+    /// the steps they mean.
     #[test]
-    fn the_scenario_declares_one_frame_per_step_and_one_for_the_open() {
-        let steps = script(SCENARIO).expect("a script");
+    fn the_plan_is_the_open_and_one_frame_per_step_each_named_for_what_it_scripts() {
+        let raw = [PathBuf::from("/raw/photo.nef")];
+        let plan = plan(&raw);
+        assert!(plan.validate().is_ok(), "{:?}", plan.validate());
+        let script = plan.script();
         assert_eq!(
-            steps.as_array().expect("an array").len() + 1,
-            frames(SCENARIO).expect("a frame count")
+            script.as_array().map(|steps| steps.len() + 1),
+            Some(plan.len())
         );
-        assert!(script("load").is_none() && frames("load").is_none());
-        assert!(!crate::smoke::find(SCENARIO).unwrap().rendered());
+        let (open, steps) = plan.steps().split_first().expect("a planned open");
+        assert_eq!(open.name(), names::OPENED);
+        assert!(open.script().is_none() && steps.iter().all(|step| step.script().is_some()));
+        assert!(plan.steps().iter().all(|step| {
+            step.expect()
+                .expanded
+                .contains(&(RAW_MODULE.to_owned(), true))
+        }));
+        assert_eq!(
+            scripted(&plan, names::BASIC_COLLAPSED),
+            json!({"section":{"module":BASIC_MODULE,"expanded":false}})
+        );
+        for click in &DOUBLE_CLICKS {
+            assert_eq!(
+                scripted(&plan, click.step),
+                json!({"double_click":{"action":click.action,"parameter":click.parameter,
+                    "value":click.value,"gap_ms":GAP_MS}})
+            );
+        }
+        for (step, request) in [
+            (names::CROP_STARTED, json!({"draft":{"start":true}})),
+            (
+                names::CROP_STRAIGHTENED,
+                json!({"draft":{"angle":CROP_ANGLE}}),
+            ),
+            (names::CROP_APPLIED, json!({"draft":{"apply":true}})),
+            (names::CROP_AT_100, json!({"view":{"zoom":100.0}})),
+            (READOUTS[0].0, hover(READOUTS[0].1)),
+            (READOUTS[1].0, hover(READOUTS[1].1)),
+            (
+                names::CROP_FITTED,
+                json!({"api":{"method":"edit.crop-fit","params":{"aspect":"3:2","angle":FIT_ANGLE}}}),
+            ),
+            (names::FITTED_READOUT, hover(READOUTS[1].1)),
+            (names::FITTED_AT_FIT, json!({"view":{"zoom":"fit"}})),
+        ] {
+            assert_eq!(scripted(&plan, step), request, "{step}");
+        }
+        let row = crate::smoke::find(SCENARIO).unwrap();
+        assert_eq!((row.launches[0].plan)(&raw).script(), script);
+        assert!(!row.rendered());
     }
 
     /// The reset a number control declares for its own field, found the way `module.list` lists it.

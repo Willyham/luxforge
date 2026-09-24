@@ -1,12 +1,12 @@
 //! The `performance` smoke scenario: the state panel's Performance section on the real editor, over
 //! the generated 60 MP JPEG at 1440 × 900.
 //!
-//! Eight frames: the photograph opened with the section open, as every launch starts it, and
-//! sampling; a 3.6 s wait, by which the one-second sampler has read at least four times; a 3°
-//! straighten; a Presence Clarity commit over it, whose exact render at 60 MP runs long enough to be
-//! listed as long work; a wait after which that render is listed as finished; the section
-//! collapsed; a 2.5 s wait in which nothing more is read; and the section opened again, captured on
-//! its first read of a fresh window.
+//! Its frames, in [`plan`] order: the photograph opened with the section open, as every launch
+//! starts it, and sampling; a 3.6 s wait, by which the one-second sampler has read at least four
+//! times; a 3° straighten; a Presence Clarity commit over it, whose exact render at 60 MP runs long
+//! enough to be listed as long work; a wait after which that render is listed as finished; the
+//! section collapsed; a 2.5 s wait in which nothing more is read; and the section opened again,
+//! captured on its first read of a fresh window.
 //!
 //! Each frame is checked against its own recorded answers, re-derived here without the editor's
 //! code: the memory figure against the recorded `resources.read`, the CPU and GPU figures against a
@@ -22,7 +22,7 @@
 //! With `--source RAW` the heavy step is a RAW temperature commit instead, which redevelops the
 //! mosaic; that run is not part of `rendered`, because no RAW photograph is checked in.
 use crate::{
-    scenario::{Frame, launch::Guard},
+    scenario::{Checked, Plan, Run, Step, launch::Guard, plan::only},
     *,
 };
 use std::{
@@ -34,16 +34,6 @@ pub const SCENARIO: &str = "performance";
 pub const FIXTURE: &str = "fixtures/generated/60mp.jpg";
 /// Where the runner's own readings of the editor's memory are written, beside `app/`.
 pub const READINGS: &str = "process-readings.json";
-/// The frames, by what each shows.
-const OPENED: usize = 0;
-const FILLED: usize = 1;
-const STRAIGHTENED: usize = 2;
-const HEAVY: usize = 3;
-const FINISHED: usize = 4;
-const COLLAPSED: usize = 5;
-const ASLEEP: usize = 6;
-const REOPENED: usize = 7;
-const FRAMES: usize = 8;
 /// Long enough for three more ticks of the one-second timer after the photograph opens.
 const FILL_WAIT_MS: u64 = 3_600;
 /// Long enough for the heavy render's exact phase to end and a read to see it in `recent`.
@@ -101,23 +91,29 @@ fn heavy_step(raw: bool) -> Value {
     }
 }
 
-pub fn script(scenario: &str, sources: &[PathBuf]) -> Option<Value> {
-    (scenario == SCENARIO).then(|| {
-        json!([
-            // 1: the window fills; the section has sampled since the photograph opened.
-            {"wait":{"ms":FILL_WAIT_MS}},
-            // 2-3: the straighten, then the heavy edit over it, each captured on its exact frame.
-            {"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":ANGLE}}},
-            heavy_step(is_raw(sources)),
-            // 4: its render listed as finished.
-            {"wait":{"ms":FINISHED_WAIT_MS}},
-            // 5-6: collapsed, then asleep.
-            {"performance":{"expanded":false}},
-            {"wait":{"ms":ASLEEP_WAIT_MS}},
-            // 7: opened again, captured on the first read of a fresh window.
-            {"performance":{"expanded":true}}
-        ])
-    })
+/// Every frame, in order, over the source the run opens. What each step commits is planned here:
+/// nothing but the two edits commits anything. What the section shows, `verify` checks.
+pub fn plan(sources: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        // The photograph opened with the section open and sampling, as every launch starts it.
+        Step::opened("opened"),
+        // The window fills; the section has sampled since the photograph opened.
+        Step::new("filled", json!({"wait":{"ms":FILL_WAIT_MS}})).commits(0),
+        // The straighten, then the heavy edit over it, each one entry, captured on its exact frame.
+        Step::new(
+            "straightened",
+            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":ANGLE}}}),
+        )
+        .commits(1),
+        Step::new("heavy", heavy_step(is_raw(sources))).commits(1),
+        // Its render listed as finished.
+        Step::new("finished", json!({"wait":{"ms":FINISHED_WAIT_MS}})).commits(0),
+        // Collapsed, then asleep.
+        Step::new("collapsed", json!({"performance":{"expanded":false}})).commits(0),
+        Step::new("asleep", json!({"wait":{"ms":ASLEEP_WAIT_MS}})).commits(0),
+        // Opened again, captured on the first read of a fresh window.
+        Step::new("reopened", json!({"performance":{"expanded":true}})).commits(0),
+    ])
 }
 
 fn wall_ms() -> u64 {
@@ -374,7 +370,7 @@ fn count(frame: &Value, key: &str) -> Result<u64> {
 }
 
 /// A frame whose section is collapsed: the heading alone, no caption, nothing sampling.
-fn expect_collapsed(index: usize, frame: &Value) -> Result {
+fn expect_collapsed(step: &str, frame: &Value) -> Result {
     let section = performance(frame);
     ensure(
         section["expanded"] == json!(false)
@@ -382,60 +378,60 @@ fn expect_collapsed(index: usize, frame: &Value) -> Result {
             && section["caption"].is_null()
             && section["rows"].as_array().is_some_and(Vec::is_empty)
             && section["jobs"].as_array().is_some_and(Vec::is_empty),
-        format!("Frame {index}: the section is not collapsed to its heading: {section}"),
+        format!("Step {step:?}: the section is not collapsed to its heading: {section}"),
     )
 }
 
 /// Check one expanded frame's rows against its own recorded answers, and return what was compared.
-fn expect_expanded(index: usize, frame: &Value) -> Result<Value> {
+fn expect_expanded(step: &str, frame: &Value) -> Result<Value> {
     let section = performance(frame);
     ensure(
         section["expanded"] == json!(true) && section["sampling"] == json!(true),
-        format!("Frame {index}: the section is not expanded and sampling: {section}"),
+        format!("Step {step:?}: the section is not expanded and sampling: {section}"),
     )?;
     ensure(
         section["error"].is_null(),
-        format!("Frame {index}: the last read failed: {}", section["error"]),
+        format!("Step {step:?}: the last read failed: {}", section["error"]),
     )?;
     let samples = count(frame, "samples")?;
     ensure(
         samples >= 1,
-        format!("Frame {index}: no sample was adopted"),
+        format!("Step {step:?}: no sample was adopted"),
     )?;
     ensure(
         count(frame, "reads_requested")? >= samples,
-        format!("Frame {index}: more samples than reads requested"),
+        format!("Step {step:?}: more samples than reads requested"),
     )?;
     let latest = &section["resources"];
     let rows = section["rows"]
         .as_array()
-        .ok_or_else(|| format!("Frame {index}: no rows"))?;
+        .ok_or_else(|| format!("Step {step:?}: no rows"))?;
     ensure(
         rows.iter()
             .map(|row| row["label"].clone())
             .collect::<Vec<_>>()
             == [json!("Memory"), json!("CPU"), json!("GPU")],
-        format!("Frame {index}: the rows are not Memory, CPU and GPU: {rows:?}"),
+        format!("Step {step:?}: the rows are not Memory, CPU and GPU: {rows:?}"),
     )?;
 
     // Memory: the figure is the recorded footprint in Activity Monitor's units.
     let bytes = latest["memory"]["bytes"]
         .as_u64()
-        .ok_or_else(|| format!("Frame {index}: the read has no memory figure"))?;
+        .ok_or_else(|| format!("Step {step:?}: the read has no memory figure"))?;
     let (value, unit) = bytes_text(bytes);
     ensure(
         rows[0]["value"] == json!(value)
             && rows[0]["unit"] == json!(unit)
             && rows[0]["available"] == json!(true),
         format!(
-            "Frame {index}: memory shows {} {} for {bytes} bytes, expected {value} {unit}",
+            "Step {step:?}: memory shows {} {} for {bytes} bytes, expected {value} {unit}",
             rows[0]["value"], rows[0]["unit"]
         ),
     )?;
     ensure(
         rows[0]["series_len"] == json!(samples.min(WINDOW)),
         format!(
-            "Frame {index}: memory series {} for {samples} samples",
+            "Step {step:?}: memory series {} for {samples} samples",
             rows[0]["series_len"]
         ),
     )?;
@@ -449,7 +445,7 @@ fn expect_expanded(index: usize, frame: &Value) -> Result<Value> {
                 && latest["gpu"]["allocated_bytes"].is_u64()
                 && latest["gpu"]["unified_memory"] == json!(true),
             format!(
-                "Frame {index}: the M4 read lacks footprint, GPU time or GPU allocations: {latest}"
+                "Step {step:?}: the M4 read lacks footprint, GPU time or GPU allocations: {latest}"
             ),
         )?;
         ensure(
@@ -457,7 +453,7 @@ fn expect_expanded(index: usize, frame: &Value) -> Result<Value> {
                 tooltip.starts_with("Memory footprint, as Activity Monitor's Memory column")
                     && tooltip.contains("of GPU allocations")
             }),
-            format!("Frame {index}: memory tooltip {}", rows[0]["tooltip"]),
+            format!("Step {step:?}: memory tooltip {}", rows[0]["tooltip"]),
         )?;
     }
     let cores = latest["cpu"]["logical_cpus"].as_u64().unwrap_or_default();
@@ -466,7 +462,7 @@ fn expect_expanded(index: usize, frame: &Value) -> Result<Value> {
             .as_str()
             .is_some_and(|tooltip| tooltip.contains(&format!("{cores} cores: {}%", cores * 100))),
         format!(
-            "Frame {index}: CPU tooltip {} for {cores} cores",
+            "Step {step:?}: CPU tooltip {} for {cores} cores",
             rows[1]["tooltip"]
         ),
     )?;
@@ -483,7 +479,7 @@ fn expect_expanded(index: usize, frame: &Value) -> Result<Value> {
                     && row["unit"] == json!("")
                     && row["series_len"] == json!(0),
                 format!(
-                    "Frame {index}: {name} shows {} before a second sample",
+                    "Step {step:?}: {name} shows {} before a second sample",
                     row["value"]
                 ),
             )?;
@@ -491,19 +487,19 @@ fn expect_expanded(index: usize, frame: &Value) -> Result<Value> {
         }
         let previous = &section["previous_resources"];
         let computed = rate(previous, latest, pointer)
-            .ok_or_else(|| format!("Frame {index}: no {name} rate from the recorded reads"))?;
+            .ok_or_else(|| format!("Step {step:?}: no {name} rate from the recorded reads"))?;
         let text = row["value"].as_str().unwrap_or_default();
         ensure(
             shows_rate(text, computed) && row["unit"] == json!("%"),
             format!(
-                "Frame {index}: {name} shows {text} {}, the recorded counters give {computed}",
+                "Step {step:?}: {name} shows {text} {}, the recorded counters give {computed}",
                 row["unit"]
             ),
         )?;
         ensure(
             row["series_len"] == json!((samples - 1).min(WINDOW)),
             format!(
-                "Frame {index}: {name} series {} for {samples} samples",
+                "Step {step:?}: {name} series {} for {samples} samples",
                 row["series_len"]
             ),
         )?;
@@ -518,7 +514,7 @@ fn expect_expanded(index: usize, frame: &Value) -> Result<Value> {
             && section["more"] == more
             && section["caption"] == caption,
         format!(
-            "Frame {index}: jobs {} more {} caption {}; the recorded board gives {} more {more} caption {caption}",
+            "Step {step:?}: jobs {} more {} caption {}; the recorded board gives {} more {more} caption {caption}",
             section["jobs"],
             section["more"],
             section["caption"],
@@ -529,7 +525,7 @@ fn expect_expanded(index: usize, frame: &Value) -> Result<Value> {
     ensure(
         section["reserve_detail"] == json!(reserve),
         format!(
-            "Frame {index}: reserve_detail is {}, expected {reserve}",
+            "Step {step:?}: reserve_detail is {}, expected {reserve}",
             section["reserve_detail"]
         ),
     )?;
@@ -547,7 +543,7 @@ fn expect_expanded(index: usize, frame: &Value) -> Result<Value> {
 /// must lie between the two, widened by [`MEMORY_SLACK`], and both must be within
 /// [`BRACKET_MS`] of that moment.
 fn compare_memory(
-    index: usize,
+    step: &str,
     what: &str,
     recorded: u64,
     at: u64,
@@ -564,14 +560,14 @@ fn compare_memory(
     let after = of_tool.iter().find(|(ms, _)| *ms >= at).copied();
     let (Some(before), Some(after)) = (before, after) else {
         return Err(format!(
-            "Frame {index}: the runner has no {tool} reading on both sides of the sample"
+            "Step {step:?}: the runner has no {tool} reading on both sides of the sample"
         )
         .into());
     };
     ensure(
         at - before.0 <= BRACKET_MS && after.0 - at <= BRACKET_MS,
         format!(
-            "Frame {index}: the runner's {tool} readings are {} ms before and {} ms after the sample",
+            "Step {step:?}: the runner's {tool} readings are {} ms before and {} ms after the sample",
             at - before.0,
             after.0 - at
         ),
@@ -581,7 +577,7 @@ fn compare_memory(
     ensure(
         (low..=high).contains(&recorded),
         format!(
-            "Frame {index}: recorded {what} {recorded} is outside the runner's {tool} readings {}..={} around it, even with {MEMORY_SLACK} bytes of slack",
+            "Step {step:?}: recorded {what} {recorded} is outside the runner's {tool} readings {}..={} around it, even with {MEMORY_SLACK} bytes of slack",
             before.1, after.1
         ),
     )?;
@@ -599,20 +595,14 @@ fn compare_memory(
     }))
 }
 
-pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
+/// What the section shows at each step, against its own recorded answers and the runner's readings,
+/// once the plan has held.
+pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let evidence = &launch.evidence;
     ensure(
-        app["had_input_errors"] == json!(false),
-        "The run recorded an input error",
-    )?;
-    let frames = Frame::all(evidence, app)?;
-    for (index, frame) in frames.iter().enumerate().skip(1) {
-        ensure(
-            frame["step"]["status"] == json!("sent"),
-            format!("Step {index} did not run: {}", frame["step"]),
-        )?;
-    }
-    ensure(
-        !events
+        !launch
+            .events
             .iter()
             .any(|event| event["event"] == "performance_read_failed"),
         "A sampler read failed",
@@ -629,23 +619,23 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         .ok_or("The runner recorded no pid")?;
     let mut checks = Vec::new();
 
-    for (index, frame) in frames.iter().enumerate() {
+    for (step, frame) in launch.names().iter().zip(&launch.frames) {
         ensure(
             frame["state"]["workspace"]["state_panel"] == json!(true),
-            format!("Frame {index}: the state panel is hidden"),
+            format!("Step {step:?}: the state panel is hidden"),
         )?;
         ensure(
             performance(frame)["pid"].as_u64() == Some(pid),
-            format!("Frame {index}: the frame's pid is not the process the runner watched"),
+            format!("Step {step:?}: the frame's pid is not the process the runner watched"),
         )?;
     }
 
     // Opened: the section open and sampling from the launch, its figures from its own answers. Its
     // first reads may land before the runner's first reading of the new process, so its memory is
     // compared from the next frame on.
-    let opened = frames[OPENED].revision()?;
-    let compared = expect_expanded(OPENED, &frames[OPENED])?;
-    checks.push(json!({"frame":frames[OPENED]["file"],"shows":"the photograph opened with the Performance section open and sampling","compared":compared}));
+    let opened = launch.at("opened")?;
+    let compared = expect_expanded("opened", opened)?;
+    checks.push(json!({"frame":opened["file"],"shows":"the photograph opened with the Performance section open and sampling","compared":compared}));
 
     // Filled through finished, and reopened: each frame against its own answers, and, except the
     // reopened frame, against the runner's readings. The reopened frame is captured on its first
@@ -653,13 +643,11 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     // 20 MB at 2880 × 1800, allocated and freed between two of the runner's polls), which is the
     // harness's memory, not the section's.
     let mut gpu_times = Vec::new();
-    for (index, frame) in frames
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| (FILLED..=FINISHED).contains(index) || *index == REOPENED)
-    {
-        let mut compared = expect_expanded(index, frame)?;
-        if index == REOPENED {
+    let reopened = launch.index("reopened")?;
+    for index in (launch.index("filled")?..=launch.index("finished")?).chain([reopened]) {
+        let (step, frame) = (launch.names()[index].as_str(), &launch.frames[index]);
+        let mut compared = expect_expanded(step, frame)?;
+        if index == reopened {
             if let Some(time) = performance(frame)["resources"]["gpu"]["time_ns"].as_u64() {
                 gpu_times.push(time);
             }
@@ -669,12 +657,12 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         let section = performance(frame);
         let at = section["wall_ms"]
             .as_u64()
-            .ok_or_else(|| format!("Frame {index}: no wall-clock time for the sample"))?;
+            .ok_or_else(|| format!("Step {step:?}: no wall-clock time for the sample"))?;
         let resident = section["resources"]["memory"]["resident_bytes"]
             .as_u64()
-            .ok_or_else(|| format!("Frame {index}: no resident memory"))?;
+            .ok_or_else(|| format!("Step {step:?}: no resident memory"))?;
         compared["resident"] = compare_memory(
-            index,
+            step,
             "resident memory",
             resident,
             at,
@@ -687,7 +675,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                 .as_u64()
                 .unwrap_or_default();
             compared["footprint"] = compare_memory(
-                index,
+                step,
                 "footprint",
                 bytes,
                 at,
@@ -701,45 +689,24 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         }
         checks.push(json!({"frame":frame["file"],"compared":compared}));
     }
+    let filled = count(launch.at("filled")?, "samples")?;
     ensure(
-        count(&frames[FILLED], "samples")? >= 4,
-        format!(
-            "Frame {FILLED}: {} samples after {FILL_WAIT_MS} ms",
-            count(&frames[FILLED], "samples")?
-        ),
+        filled >= 4,
+        format!("Step \"filled\": {filled} samples after {FILL_WAIT_MS} ms"),
     )?;
     ensure(
         gpu_times.windows(2).all(|pair| pair[0] <= pair[1]),
         format!("GPU time decreased across frames: {gpu_times:?}"),
     )?;
 
-    // The revisions: nothing but the two edits commits anything.
-    for (index, expected) in [
-        (FILLED, opened),
-        (STRAIGHTENED, opened + 1),
-        (HEAVY, opened + 2),
-        (FINISHED, opened + 2),
-        (COLLAPSED, opened + 2),
-        (ASLEEP, opened + 2),
-        (REOPENED, opened + 2),
-    ] {
-        ensure(
-            frames[index].revision()? == expected,
-            format!(
-                "Frame {index}: revision {}, expected {expected}",
-                frames[index].revision()?
-            ),
-        )?;
-    }
-
     // Finished: the heavy edit's long work is listed as finished — its render for Clarity, and
     // whichever of the redevelopment and its render ended last for a RAW temperature.
-    let jobs = performance(&frames[FINISHED])["jobs"]
+    let (heavy, finished) = (launch.at("heavy")?, launch.at("finished")?);
+    let jobs = performance(finished)["jobs"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let raw =
-        frames[HEAVY]["step"]["request"]["api"]["method"] == json!("edit.set-raw-temperature");
+    let raw = heavy["step"]["request"]["api"]["method"] == json!("edit.set-raw-temperature");
     ensure(
         jobs.len() == 1
             && jobs[0]["running"] == json!(false)
@@ -747,9 +714,9 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                 .as_str()
                 .is_some_and(|detail| detail.starts_with("Finished "))
             && (raw || jobs[0]["label"] == json!("Rendering preview")),
-        format!("Frame {FINISHED}: the heavy edit's work is not listed as finished: {jobs:?}"),
+        format!("Step \"finished\": the heavy edit's work is not listed as finished: {jobs:?}"),
     )?;
-    let finished = performance(&frames[FINISHED])["activity"]["recent"]
+    let listed = performance(finished)["activity"]["recent"]
         .as_array()
         .and_then(|recent| {
             recent.iter().find(|job| {
@@ -765,38 +732,37 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         .unwrap_or(Value::Null);
 
     // Collapsed, then asleep: nothing more is read or adopted.
-    for index in [COLLAPSED, ASLEEP] {
-        expect_collapsed(index, &frames[index])?;
-    }
-    let asked = count(&frames[COLLAPSED], "reads_requested")?;
-    let held = count(&frames[COLLAPSED], "samples")?;
+    let (collapsed, asleep) = (launch.at("collapsed")?, launch.at("asleep")?);
+    expect_collapsed("collapsed", collapsed)?;
+    expect_collapsed("asleep", asleep)?;
+    let asked = count(collapsed, "reads_requested")?;
+    let held = count(collapsed, "samples")?;
     ensure(
-        count(&frames[ASLEEP], "reads_requested")? == asked
-            && count(&frames[ASLEEP], "samples")? == held,
+        count(asleep, "reads_requested")? == asked && count(asleep, "samples")? == held,
         format!(
-            "Frame {ASLEEP}: the collapsed section read again: {} reads and {} samples, against {asked} and {held}",
-            count(&frames[ASLEEP], "reads_requested")?,
-            count(&frames[ASLEEP], "samples")?
+            "Step \"asleep\": the collapsed section read again: {} reads and {} samples, against {asked} and {held}",
+            count(asleep, "reads_requested")?,
+            count(asleep, "samples")?
         ),
     )?;
     ensure(
-        performance(&frames[ASLEEP])["in_flight"] == json!(false),
-        format!("Frame {ASLEEP}: a read is still in flight while collapsed"),
+        performance(asleep)["in_flight"] == json!(false),
+        "Step \"asleep\": a read is still in flight while collapsed",
     )?;
-    checks.push(json!({"frames":[frames[COLLAPSED]["file"],frames[ASLEEP]["file"]],"shows":"collapsed, then asleep","reads_requested":asked,"samples":held,"asleep_ms":ASLEEP_WAIT_MS}));
+    checks.push(json!({"frames":[collapsed["file"],asleep["file"]],"shows":"collapsed, then asleep","reads_requested":asked,"samples":held,"asleep_ms":ASLEEP_WAIT_MS}));
 
     // Reopened: a fresh window, read at once. The frame is captured on that first read, so it holds
     // exactly one sample and one read more than the collapsed section had asked for.
+    let reopened = launch.at("reopened")?;
     ensure(
-        count(&frames[REOPENED], "samples")? == 1
-            && count(&frames[REOPENED], "reads_requested")? == asked + 1,
+        count(reopened, "samples")? == 1 && count(reopened, "reads_requested")? == asked + 1,
         format!(
-            "Frame {REOPENED}: reopening did not start a fresh window with one read: {} samples and {} reads, after {asked}",
-            count(&frames[REOPENED], "samples")?,
-            count(&frames[REOPENED], "reads_requested")?
+            "Step \"reopened\": reopening did not start a fresh window with one read: {} samples and {} reads, after {asked}",
+            count(reopened, "samples")?,
+            count(reopened, "reads_requested")?
         ),
     )?;
-    checks.push(json!({"frame":frames[REOPENED]["file"],"shows":"opened again: a fresh window, read at once","reads_requested":asked + 1,"samples":1}));
+    checks.push(json!({"frame":reopened["file"],"shows":"opened again: a fresh window, read at once","reads_requested":asked + 1,"samples":1}));
 
     let ps_count = readings
         .iter()
@@ -810,8 +776,8 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         &evidence.join("performance-checks.json"),
         &json!({
             "checks": checks,
-            "edits": [frames[STRAIGHTENED]["step"]["request"], frames[HEAVY]["step"]["request"]],
-            "heavy_work_listed": finished,
+            "edits": [launch.at("straightened")?["step"]["request"], heavy["step"]["request"]],
+            "heavy_work_listed": listed,
             "gpu_time_ns": gpu_times,
             "runner": {
                 "pid": pid,
@@ -882,20 +848,20 @@ mod tests {
         assert_eq!(rows[0]["label"], json!("No background work"));
     }
 
+    /// The plan scripts one step per frame after the open, and its heavy step is Clarity on the
+    /// JPEG and a temperature commit on a RAW, over the straighten either way.
     #[test]
-    fn the_script_picks_the_heavy_step_by_its_source() {
-        let jpeg = script(SCENARIO, &[PathBuf::from("a/60mp.jpg")]).unwrap();
-        assert_eq!(jpeg.as_array().map(Vec::len), Some(FRAMES - 1));
-        assert_eq!(
-            jpeg[STRAIGHTENED - 1]["api"]["method"],
-            json!("edit.crop-fit")
-        );
-        assert_eq!(jpeg[HEAVY - 1]["api"]["method"], json!("edit.set-presence"));
-        let raw = script(SCENARIO, &[PathBuf::from("a/x.RAF")]).unwrap();
-        assert_eq!(
-            raw[HEAVY - 1]["api"]["method"],
-            json!("edit.set-raw-temperature")
-        );
-        assert!(script("workspace", &[]).is_none());
+    fn the_plan_picks_the_heavy_step_by_its_source() {
+        let method = |plan: &Plan, step: &str| {
+            let at = plan.index(step).expect("a planned step");
+            plan.steps()[at].script().expect("a scripted step")["api"]["method"].clone()
+        };
+        let jpeg = plan(&[PathBuf::from("a/60mp.jpg")]);
+        assert_eq!(jpeg.script().as_array().map(Vec::len), Some(jpeg.len() - 1));
+        assert_eq!(method(&jpeg, "straightened"), json!("edit.crop-fit"));
+        assert_eq!(method(&jpeg, "heavy"), json!("edit.set-presence"));
+        let raw = plan(&[PathBuf::from("a/x.RAF")]);
+        assert_eq!(method(&raw, "straightened"), json!("edit.crop-fit"));
+        assert_eq!(method(&raw, "heavy"), json!("edit.set-raw-temperature"));
     }
 }
