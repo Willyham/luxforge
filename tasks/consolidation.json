@@ -1632,7 +1632,7 @@
     {
       "id": "TASK-028",
       "description": "Design how JPEG and RAW photos share one Exposure and one White balance (temperature and tint) control set that behaves as each source requires, as the owner decided, before any code changes.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-019"
       ],
@@ -1802,6 +1802,42 @@
           "Identical descriptors, schemas and bytes."
         ]
       }
+    },
+    {
+      "id": "TASK-031",
+      "description": "Implement the shared Exposure and White balance control set for JPEG and RAW photos per the source-controls design, once the owner has answered its open questions.",
+      "status": "blocked",
+      "dependencies": [
+        "TASK-027",
+        "TASK-028"
+      ],
+      "extra_context": [
+        "Blocked on the owner's answers to the design's open questions: where Exposure lives on RAW, masked white balance on RAW, the JPEG and RAW scales and ranges, Lightroom RAW temperature and tint import, presets across source kinds, and whether Reset Basic returns RAW white balance to As shot."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Source controls design",
+          "target": "docs/design/source-controls.md",
+          "relevance": "The shape to implement and its open questions."
+        }
+      ],
+      "acceptance_criteria": [
+        "The design's verification section is met: exact tests, the source-kind refusals, drafts and presets, identical JPEG and RAW Basic sections, updated basic-panel and raw-panel scenarios, and a before/after exposure drag timing on RAW."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "As the design's verification section lists."
+        ],
+        "commands": [
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "All pass with the design's evidence."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1863,6 +1899,12 @@
       "task_ids": [
         "TASK-026",
         "TASK-027"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-031"
       ]
     }
   ]
