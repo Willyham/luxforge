@@ -42,7 +42,7 @@ pub use preview::*;
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
 pub use render::{
     Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget,
-    SpatialBudget, StageSize, StageTransform, WhiteBalanceApproximation, extents, locate, render,
+    SpatialBudget, StageSize, StageTransform, WhiteBalanceApproximation, extents, render,
     render_cancellable, render_linear, render_linear_cancellable, sample, sample_linear,
     stage_transform,
 };

@@ -14,7 +14,7 @@
 
 use crate::{
     Error, ErrorKind, LinearImage, ModuleRegistry, PreviewSource, Raster, Recipe, SourceImage,
-    render::{decode_pixel, quantize_channel},
+    render::{decode_pixel, frame_mut, quantize_channel, zeroed_frame},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -183,11 +183,6 @@ impl ProxyCache {
     /// Hold this source under this key, replacing whatever was held before.
     pub fn insert(&mut self, key: ProxyKey, source: PreviewSource) {
         self.entry = Some((key, source));
-    }
-
-    /// Whether anything is held. One entry or none; there is no other state.
-    pub fn is_empty(&self) -> bool {
-        self.entry.is_none()
     }
 }
 
@@ -452,8 +447,10 @@ fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<Sourc
         }
     }
 
-    let mut output = vec![0u8; output_len];
+    // Written in place and returned as the proxy's pixels, with no copy.
+    let mut frame = zeroed_frame(output_len);
     {
+        let output = frame_mut(&mut frame);
         let rows = &rows;
         let pass = |(y, row): (usize, &mut [u8])| {
             let (first, weights) = vertical.span(y);
@@ -489,7 +486,7 @@ fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<Sourc
     Ok(SourceImage {
         width,
         height,
-        rgba: output.into(),
+        rgba: frame,
         fingerprint: source.fingerprint.clone(),
         orientation: source.orientation,
     })
@@ -1366,10 +1363,8 @@ mod tests {
         let proxy = source.proxy(first.plan).expect("a proxy");
 
         let mut cache = ProxyCache::default();
-        assert!(cache.is_empty());
         assert!(cache.get(&first).is_none(), "an empty cache never hits");
         cache.insert(first.clone(), proxy);
-        assert!(!cache.is_empty());
         assert!(cache.get(&first).is_some(), "the same key hits");
 
         // A resized window is a miss even at the same rounded dimensions.
@@ -1396,6 +1391,30 @@ mod tests {
         cache.insert(second.clone(), source.proxy(second.plan).expect("a proxy"));
         assert!(cache.get(&second).is_some());
         assert!(cache.get(&first).is_none(), "the cache holds one entry");
+    }
+
+    /// A JPEG proxy's pixels are written in the allocation the proxy source holds, with no copy
+    /// after the pass, and an identity stack rendered over it returns that allocation itself.
+    #[test]
+    fn a_jpeg_proxy_holds_the_frame_its_pass_wrote() {
+        let codes: Vec<[u8; 3]> = (0..48u32)
+            .map(|index| [(index * 5) as u8, (index * 3 + 7) as u8, 200])
+            .collect();
+        let source = jpeg_source(8, 6, &codes);
+        let (proxy, written) = crate::render::frame_writes::record(|| {
+            source.proxy(plan(4, 3, (4, 3))).expect("a proxy")
+        });
+        let image = jpeg_of(&proxy);
+        assert_eq!(written, [image.rgba.as_ptr() as usize]);
+        let frame = proxy
+            .render_proxy_cancellable(
+                &ModuleRegistry::builtin(),
+                SnapshotId::new(),
+                &recipe(Vec::new()),
+                &Cancel::never(),
+            )
+            .expect("a frame");
+        assert!(std::sync::Arc::ptr_eq(&frame.rgba, &image.rgba));
     }
 
     /// A RAW identity follows the developed planes: redeveloping them misses, and a view change

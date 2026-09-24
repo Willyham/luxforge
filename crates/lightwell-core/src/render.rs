@@ -535,7 +535,8 @@ fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>, x: u32, y: u32) -> Result<[u8; 
 
 /// One streamed colour pass over a frame, in place: bounded row chunks on the shared Rayon pool
 /// above the same one-megapixel threshold the other passes use, serial below it. No full-frame
-/// float buffer exists at any point; each chunk reserves its own scratch before allocating it.
+/// float buffer exists at any point; each chunk reserves its scratch before it uses it, in a
+/// buffer its worker allocates once and reuses for every chunk it takes.
 fn apply_color_run(
     pixels: &mut [u8],
     width: u32,
@@ -559,51 +560,71 @@ fn apply_color_run(
     // A chunk is a whole number of rows, so the row a pixel belongs to is the band's first row
     // plus the chunk's offset inside it: every unit is handed one row at a time, at the
     // coordinates of the stage this segment produces.
-    let process = |chunk_index: usize, chunk: &mut [u8]| -> Result<(), Error> {
-        // Before the reservation, so a cancelled pass never takes scratch it will not use.
-        cancel.check()?;
-        let count = chunk.len() / 4;
-        let _reservation =
-            ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>());
-        // One row of snapshot scratch for a masked operation's own input, reserved before it
-        // allocates and released with the chunk. It is a row and not a chunk because `apply_units`
-        // is handed one row at a time; nothing here scales with the frame, and an unmasked run takes
-        // none of it.
-        let (_snapshot_reservation, mut snapshot) = if masked {
-            let pixels = width as usize;
-            (
-                Some(ScratchBudget::default().reserve(pixels * std::mem::size_of::<[f32; 3]>())),
-                vec![[0.0f32; 3]; pixels],
-            )
-        } else {
-            (None, Vec::new())
+    let process =
+        |scratch: &mut ColorScratch, chunk_index: usize, chunk: &mut [u8]| -> Result<(), Error> {
+            // Before the reservation, so a cancelled pass never takes scratch it will not use.
+            cancel.check()?;
+            let count = chunk.len() / 4;
+            let _reservation =
+                ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>());
+            // One row of snapshot scratch for a masked operation's own input, reserved before it is
+            // used and released with the chunk. It is a row and not a chunk because `apply_units` is
+            // handed one row at a time; nothing here scales with the frame, and an unmasked run takes
+            // none of it.
+            let _snapshot_reservation = masked.then(|| {
+                ScratchBudget::default().reserve(width as usize * std::mem::size_of::<[f32; 3]>())
+            });
+            let ColorScratch { linear, snapshot } = scratch;
+            let mut unused = [[0.0f32; 3]; 1];
+            let snapshot: &mut [[f32; 3]] = if masked {
+                // Allocated by the worker's first chunk and exactly one row long from then on; a
+                // masked operation overwrites what it reads, so an earlier chunk's values never show.
+                snapshot.resize(width as usize, [0.0; 3]);
+                snapshot
+            } else {
+                &mut unused
+            };
+            linear.clear();
+            linear.extend(
+                chunk
+                    .chunks_exact(4)
+                    .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]])),
+            );
+            let first_row = (rows.start + chunk_index * chunk_rows) as u32;
+            for (offset, row) in linear.chunks_mut(width as usize).enumerate() {
+                apply_units(run, first_row + offset as u32, 0, row, snapshot)?;
+            }
+            for (pixel, value) in chunk.chunks_exact_mut(4).zip(linear.iter()) {
+                pixel[..3].copy_from_slice(&quantize_pixel(*value));
+            }
+            Ok(())
         };
-        let mut unused = [[0.0f32; 3]; 1];
-        let scratch: &mut [[f32; 3]] = if masked { &mut snapshot } else { &mut unused };
-        let mut linear: Vec<[f32; 3]> = chunk
-            .chunks_exact(4)
-            .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]]))
-            .collect();
-        let first_row = (rows.start + chunk_index * chunk_rows) as u32;
-        for (offset, row) in linear.chunks_mut(width as usize).enumerate() {
-            apply_units(run, first_row + offset as u32, 0, row, scratch)?;
-        }
-        for (pixel, value) in chunk.chunks_exact_mut(4).zip(&linear) {
-            pixel[..3].copy_from_slice(&quantize_pixel(*value));
-        }
-        Ok(())
-    };
     if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
         pixels
             .par_chunks_mut(chunk_bytes)
             .enumerate()
-            .try_for_each(|(index, chunk)| process(index, chunk))
+            .try_for_each_init(ColorScratch::default, |scratch, (index, chunk)| {
+                process(scratch, index, chunk)
+            })
     } else {
+        let mut scratch = ColorScratch::default();
         pixels
             .chunks_mut(chunk_bytes)
             .enumerate()
-            .try_for_each(|(index, chunk)| process(index, chunk))
+            .try_for_each(|(index, chunk)| process(&mut scratch, index, chunk))
     }
+}
+
+/// The float scratch one worker streams its colour chunks through, allocated by its first chunk
+/// and reused by every later one it takes, instead of one allocation per chunk. The budget still
+/// sees each chunk: a chunk reserves what it uses before it touches these buffers and releases it
+/// when it is done, exactly as when every chunk allocated its own.
+#[derive(Default)]
+struct ColorScratch {
+    /// The chunk's pixels, decoded to linear light: at most [`COLOR_CHUNK_SCRATCH_BYTES`].
+    linear: Vec<[f32; 3]>,
+    /// One row of a masked operation's own input; empty for an unmasked run.
+    snapshot: Vec<[f32; 3]>,
 }
 
 /// One bilinear sample of a frame in linear light, with indices clamped to the frame's edge.
@@ -714,6 +735,51 @@ impl Raster {
         self.rgba
             .get(offset..offset + 4)
             .map(|p| [p[0], p[1], p[2], p[3]])
+    }
+}
+
+/// A zeroed byte frame of `len` bytes, allocated as the `Arc<[u8]>` a [`Raster`] holds so that the
+/// frame a pass writes is the frame the render returns. Converting a finished `Vec<u8>` instead
+/// allocates a second frame and copies the first into it. A `TrustedLen` iterator collects into one
+/// allocation of exactly this length, where the pass then writes in place through [`frame_mut`].
+pub(crate) fn zeroed_frame(len: usize) -> Arc<[u8]> {
+    std::iter::repeat_n(0, len).collect()
+}
+
+/// The bytes of a frame a pass is still writing. A frame is not shared until the render returns
+/// it, so this never fails.
+pub(crate) fn frame_mut(frame: &mut Arc<[u8]>) -> &mut [u8] {
+    #[cfg(test)]
+    frame_writes::note(frame);
+    Arc::get_mut(frame).expect("a frame is not shared until its render returns it")
+}
+
+/// Which frames the passes on this thread were handed to write, for the tests that prove a render
+/// returns the frame its last pass wrote rather than a copy of it.
+#[cfg(test)]
+pub(crate) mod frame_writes {
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// The data address of every frame handed out while [`record`] runs, oldest first.
+        static WRITTEN: RefCell<Option<Vec<usize>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn note(frame: &[u8]) {
+        WRITTEN.with_borrow_mut(|written| {
+            if let Some(written) = written {
+                written.push(frame.as_ptr() as usize);
+            }
+        });
+    }
+
+    /// `work`'s result, with the address of every frame a pass on this thread was handed to write
+    /// while it ran, oldest first.
+    pub(crate) fn record<T>(work: impl FnOnce() -> T) -> (T, Vec<usize>) {
+        WRITTEN.with_borrow_mut(|written| *written = Some(Vec::new()));
+        let result = work();
+        let written = WRITTEN.with_borrow_mut(Option::take).unwrap_or_default();
+        (result, written)
     }
 }
 
@@ -897,11 +963,12 @@ fn copy_transformed(
     input_width: u32,
     geometry: ExactGeometry,
     cancel: &Cancel,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Arc<[u8]>, Error> {
     let width = geometry.output_width;
     let height = geometry.output_height;
     cancel.check()?;
-    let mut output = vec![0; Raster::expected_len(width, height)?];
+    let mut frame = zeroed_frame(Raster::expected_len(width, height)?);
+    let output = frame_mut(&mut frame);
     let row_bytes = usize::try_from(u64::from(width) * 4)
         .map_err(|_| Error::new(ErrorKind::ResourceLimit, "image row is not addressable"))?;
     // One relaxed load per output row, ahead of that row's copies; the arithmetic below is
@@ -928,7 +995,7 @@ fn copy_transformed(
             .enumerate()
             .try_for_each(|(out_y, row)| copy_row(out_y, row))?;
     }
-    Ok(output)
+    Ok(frame)
 }
 
 /// One interpolating pass: the resample reads the frame it was given and writes the next one.
@@ -938,11 +1005,12 @@ fn resample_frame(
     input_height: u32,
     resample: Resample,
     cancel: &Cancel,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Arc<[u8]>, Error> {
     let width = resample.output_width;
     let height = resample.output_height;
     cancel.check()?;
-    let mut output = vec![0; Raster::expected_len(width, height)?];
+    let mut frame = zeroed_frame(Raster::expected_len(width, height)?);
+    let output = frame_mut(&mut frame);
     let row_bytes = usize::try_from(u64::from(width) * 4)
         .map_err(|_| Error::new(ErrorKind::ResourceLimit, "image row is not addressable"))?;
     let fetch = |x: u32, y: u32| -> [u8; 4] {
@@ -973,7 +1041,7 @@ fn resample_frame(
             .enumerate()
             .try_for_each(|(out_y, row)| sample_row(out_y, row))?;
     }
-    Ok(output)
+    Ok(frame)
 }
 
 /// What produces one segment's input frame, and therefore what separates it from the segment
@@ -1016,7 +1084,7 @@ fn spatial_frame(
     fingerprint: &str,
     cancel: &Cancel,
     tile_size: u32,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Arc<[u8]>, Error> {
     let plan = SpatialPlan::new(operation, stage, tile_size)?;
     let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
         let offset = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
@@ -1029,7 +1097,8 @@ fn spatial_frame(
     let globals = resolve_globals(operation, stage, fingerprint, prefix_hash, || {
         build_reduction(stage, read)
     })?;
-    let mut output = vec![0; Raster::expected_len(stage.width, stage.height)?];
+    let mut frame = zeroed_frame(Raster::expected_len(stage.width, stage.height)?);
+    let output = frame_mut(&mut frame);
     run_batches(
         &plan,
         cancel,
@@ -1069,7 +1138,7 @@ fn spatial_frame(
             Ok(())
         },
     )?;
-    Ok(output)
+    Ok(frame)
 }
 
 /// One rasterizing pass: the exact operations that share an input frame, their composed geometry and
@@ -1594,40 +1663,6 @@ impl<'a> Evaluation<'a> {
             .map_or(255, |pixel| pixel[3]);
         Ok([rgb[0], rgb[1], rgb[2], alpha])
     }
-
-    /// The content-stage pixel one output-stage pixel shows. `None` when the coordinate lies outside
-    /// the output stage.
-    pub(crate) fn locate(&self, x: u32, y: u32) -> Option<(u32, u32)> {
-        self.locate_in(self.compiled.segments.len() - 1, x, y)
-    }
-
-    /// Walk one segment backwards, the same walk `pixel_in` makes to fetch a color: the composed
-    /// exact geometry unmaps to the segment's input frame by its integer inverse, and a resample
-    /// takes the nearest pixel of the previous stage to the input coordinate its output pixel center
-    /// samples. Cost is linear in the segment count and no frame is allocated.
-    fn locate_in(&self, index: usize, x: u32, y: u32) -> Option<(u32, u32)> {
-        let segment = &self.compiled.segments[index];
-        if x >= segment.width || y >= segment.height {
-            return None;
-        }
-        let (input_x, input_y) = segment.geometry.unmap(x, y);
-        let Some(entry) = &segment.entry else {
-            // The first segment reads the source, which is the content stage.
-            return Some((input_x, input_y));
-        };
-        let Some(resample) = entry.resample() else {
-            // A spatial entry keeps the stage and every coordinate in it: the pixel a spatial
-            // output shows is the pixel of its input at the same place.
-            return self.locate_in(index - 1, input_x, input_y);
-        };
-        let previous = &self.compiled.segments[index - 1];
-        let (u, v) = resample.input_at(input_x, input_y);
-        self.locate_in(
-            index - 1,
-            nearest_index(u, previous.width),
-            nearest_index(v, previous.height),
-        )
-    }
 }
 
 /// The input of one layer of a recipe, as a point query over the stage that layer receives: one
@@ -1752,6 +1787,10 @@ pub(crate) fn locate_dimensions(
     x: u32,
     y: u32,
 ) -> Result<ContentPoint, Error> {
+    /// Walk one segment backwards, the same walk `pixel_in` makes to fetch a colour: the composed
+    /// exact geometry unmaps to the segment's input frame by its integer inverse, and a resample
+    /// takes the nearest pixel of the previous stage to the input coordinate its output pixel
+    /// centre samples.
     fn walk(compiled: &Compiled, index: usize, x: u32, y: u32) -> Option<(u32, u32)> {
         let segment = &compiled.segments[index];
         if x >= segment.width || y >= segment.height {
@@ -1759,9 +1798,12 @@ pub(crate) fn locate_dimensions(
         }
         let (input_x, input_y) = segment.geometry.unmap(x, y);
         let Some(entry) = &segment.entry else {
+            // The first segment reads the source, which is the content stage.
             return Some((input_x, input_y));
         };
         let Some(resample) = entry.resample() else {
+            // A spatial entry keeps the stage and every coordinate in it: the pixel a spatial
+            // output shows is the pixel of its input at the same place.
             return walk(compiled, index - 1, input_x, input_y);
         };
         let previous = &compiled.segments[index - 1];
@@ -1793,32 +1835,6 @@ pub(crate) fn locate_dimensions(
     })
 }
 
-pub fn locate(
-    registry: &ModuleRegistry,
-    source: &SourceImage,
-    recipe: &Recipe,
-    x: u32,
-    y: u32,
-) -> Result<ContentPoint, Error> {
-    let evaluation = Evaluation::new(registry, source, recipe)?;
-    let stage = evaluation.stage();
-    let (content_x, content_y) = evaluation.locate(x, y).ok_or_else(|| {
-        Error::new(
-            ErrorKind::Validation,
-            format!(
-                "point ({x}, {y}) is outside the {}x{} rendered image",
-                stage.width, stage.height
-            ),
-        )
-    })?;
-    Ok(ContentPoint {
-        content_x,
-        content_y,
-        width: source.width,
-        height: source.height,
-    })
-}
-
 /// The output stage one recipe produces over this source: the dimensions an analysis job, a
 /// preview or an export of it will have. Cost is linear in the layer count — it compiles the stack
 /// and allocates only the per-segment operation lists — and it reads no pixels and rasterizes
@@ -1838,12 +1854,12 @@ pub fn extents(
 /// The whole geometry tail of one recipe as one affine map between the content stage and the output
 /// stage, in both directions.
 ///
-/// This is `locate` in closed form. `locate` walks a point back through the compiled segments, which
-/// is right for a pick and wrong for a gesture that follows the pointer, so the composition happens
-/// once here and the caller maps positions itself. Every step of the tail composes: an exact step is
-/// an integer signed permutation with an integer translation, a spatial boundary keeps every
-/// coordinate of the stage it receives, and the one crop resample declares its output-to-input
-/// mapping, which inverts. Nothing else can appear in the tail.
+/// This is [`locate_dimensions`] in closed form. That walks a point back through the compiled
+/// segments, which is right for a pick and wrong for a gesture that follows the pointer, so the
+/// composition happens once here and the caller maps positions itself. Every step of the tail
+/// composes: an exact step is an integer signed permutation with an integer translation, a spatial
+/// boundary keeps every coordinate of the stage it receives, and the one crop resample declares its
+/// output-to-input mapping, which inverts. Nothing else can appear in the tail.
 ///
 /// The dimensions are the whole input, not a source: no pixel is read on any path here, so there is
 /// none to pass. Cost is one matrix multiply per layer on top of compiling the stack, and like
@@ -1981,8 +1997,11 @@ fn render_sampled(
     let mut width = first.width;
     let mut height = first.height;
     // An identity pass with nothing to write shares the source allocation instead of copying it.
+    // Every frame is an `Arc<[u8]>` from the start, so the last one written is the one returned.
     let mut frame = if first.geometry.is_identity(source.width, source.height) {
-        first.writes_pixels().then(|| source.rgba.as_ref().to_vec())
+        first
+            .writes_pixels()
+            .then(|| Arc::<[u8]>::from(source.rgba.as_ref()))
     } else {
         Some(copy_transformed(
             source.rgba.as_ref(),
@@ -2005,7 +2024,7 @@ fn render_sampled(
         }
     };
     if let Some(pixels) = frame.as_mut() {
-        apply_operations(pixels, first, band(0, height), cancel)?;
+        apply_operations(frame_mut(pixels), first, band(0, height), cancel)?;
     }
 
     for (index, segment) in compiled.segments.iter().enumerate().skip(1) {
@@ -2043,14 +2062,14 @@ fn render_sampled(
             width = segment.width;
             height = segment.height;
         }
-        apply_operations(&mut next, segment, band(index, height), cancel)?;
+        apply_operations(frame_mut(&mut next), segment, band(index, height), cancel)?;
         frame = Some(next);
     }
 
     Ok(Raster {
         width,
         height,
-        rgba: frame.map_or_else(|| source.rgba.clone(), Into::into),
+        rgba: frame.unwrap_or_else(|| source.rgba.clone()),
         source_fingerprint: source.fingerprint.clone(),
         snapshot_id,
     })
@@ -2261,8 +2280,8 @@ mod tests {
     }
 
     /// Where one pixel of a stage lands after the exact layers that follow it, evaluated one layer
-    /// at a time and independently of the renderer: the direction `locate` walks backwards. `None`
-    /// when a crop discards it. Pixel layers move nothing, so they are skipped.
+    /// at a time and independently of the renderer: the direction `locate_dimensions` walks
+    /// backwards. `None` when a crop discards it. Pixel layers move nothing, so they are skipped.
     fn forward(width: u32, height: u32, layers: &[Layer], x: u32, y: u32) -> Option<(u32, u32)> {
         let (mut width, mut height, mut x, mut y) = (width, height, x, y);
         for layer in layers {
@@ -2861,11 +2880,14 @@ mod tests {
                         ..Recipe::default()
                     };
                     let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+                    let locate = |x, y| {
+                        locate_dimensions(&registry, source.width, source.height, &recipe, x, y)
+                    };
                     // Every output pixel names a content pixel that the stepwise forward map puts
                     // back where it was found, and the rendered bytes are that content pixel's.
                     for y in 0..raster.height {
                         for x in 0..raster.width {
-                            let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                            let located = locate(x, y).unwrap();
                             let content = (located.content_x, located.content_y);
                             assert_eq!(
                                 (located.width, located.height),
@@ -2892,8 +2914,7 @@ mod tests {
                             else {
                                 continue;
                             };
-                            let located =
-                                locate(&registry, &source, &recipe, out_x, out_y).unwrap();
+                            let located = locate(out_x, out_y).unwrap();
                             assert_eq!(
                                 (located.content_x, located.content_y),
                                 (x, y),
@@ -2903,8 +2924,8 @@ mod tests {
                     }
                     // A point outside the output stage is refused, not clamped.
                     for (x, y) in [(raster.width, 0), (0, raster.height)] {
-                        let error = locate(&registry, &source, &recipe, x, y)
-                            .expect_err(&format!("({x}, {y}) is outside {layers:?}"));
+                        let error =
+                            locate(x, y).expect_err(&format!("({x}, {y}) is outside {layers:?}"));
                         assert_eq!(error.kind, ErrorKind::Validation);
                         assert!(
                             error
@@ -2962,7 +2983,9 @@ mod tests {
                 for i in 0..reference.width {
                     let (x, y) = forward(reference.width, reference.height, &tail, i, j)
                         .expect("exact transforms keep every pixel");
-                    let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                    let located =
+                        locate_dimensions(&registry, source.width, source.height, &recipe, x, y)
+                            .unwrap();
                     let (u, v) = reference.position(&source, i, j);
                     assert_eq!(
                         (located.content_x, located.content_y),
@@ -3088,14 +3111,15 @@ mod tests {
         tails
     }
 
-    /// `stage_transform` is `locate` in closed form, so the two must name the same content pixel.
+    /// `stage_transform` is `locate_dimensions` in closed form, so the two must name the same
+    /// content pixel.
     ///
     /// The strong direction is `inverse`: rounding the continuous content coordinate it gives for an
-    /// output pixel center to the pixel that contains it must be, exactly, the pixel `locate` walks
-    /// to. That is not the same arithmetic — `locate` rounds at the resample and then applies the
-    /// exact steps before it as integers, while this composes everything continuously and rounds
-    /// once at the end — so the agreement is a real check on the half-pixel convention and on the
-    /// composition order, not a re-run of the walk.
+    /// output pixel center to the pixel that contains it must be, exactly, the pixel
+    /// `locate_dimensions` walks to. That is not the same arithmetic — `locate_dimensions` rounds at
+    /// the resample and then applies the exact steps before it as integers, while this composes
+    /// everything continuously and rounds once at the end — so the agreement is a real check on the
+    /// half-pixel convention and on the composition order, not a re-run of the walk.
     ///
     /// The two orders can disagree in exactly one place: a position that lands *on* a content pixel
     /// boundary, where `nearest_index`'s floor takes the lower index in the resample's own frame and
@@ -3136,7 +3160,9 @@ mod tests {
                     "{case}: ({x}, {y}) maps onto a content pixel boundary at ({u}, {v}), \
                      where the two rounding orders are allowed to differ"
                 );
-                let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                let located =
+                    locate_dimensions(&registry, source.width, source.height, &recipe, x, y)
+                        .unwrap();
                 assert_eq!(
                     (located.content_x, located.content_y),
                     (nearest_index(u, width), nearest_index(v, height)),
@@ -3156,7 +3182,7 @@ mod tests {
     ///
     /// For every exact tail this is exact. `forward` is then a signed permutation of continuous
     /// coordinates, so it carries the pixel containing the content point onto the pixel containing
-    /// its image, and `locate` walks straight back to it.
+    /// its image, and `locate_dimensions` walks straight back to it.
     ///
     /// A straightened crop cannot be exact in the index domain, and the reason is arithmetic rather
     /// than approximate: taking the output *pixel* the projection lands in discards up to half a
@@ -3196,7 +3222,9 @@ mod tests {
                 }
                 located_points += 1;
                 let (x, y) = (qx.floor() as u32, qy.floor() as u32);
-                let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                let located =
+                    locate_dimensions(&registry, source.width, source.height, &recipe, x, y)
+                        .unwrap();
                 let (content_x, content_y) = (px.floor() as u32, py.floor() as u32);
                 if !resamples {
                     assert_eq!(
@@ -3277,7 +3305,7 @@ mod tests {
         let registry = geometry_registry();
         let (width, height) = (32, 24);
 
-        // An effect no module provides: `extents` and `locate` report it this way too.
+        // An effect no module provides: `extents` and `locate_dimensions` report it this way too.
         let recipe = Recipe {
             format: crate::RECIPE_FORMAT,
             layers: vec![Layer {
@@ -4141,6 +4169,82 @@ mod tests {
             .unwrap();
         assert!(compiled.segments[0].operations.is_empty());
         assert!(!compiled.segments[0].has_color);
+    }
+
+    /// Every frame a pass writes is allocated as the raster's own `Arc<[u8]>`, so whatever pass
+    /// wrote last is what the render returns, with no copy after it, on each kind of stack: a
+    /// colour pass over a copy of the source, an exact transform, a resample and a spatial
+    /// boundary. The bytes are the ones a point sample reads, and a stack that writes nothing
+    /// still returns the source allocation itself.
+    #[test]
+    fn a_render_returns_the_frame_its_last_pass_wrote() {
+        let _guard = spatial::tests::spatial_guard();
+        let registry = registry();
+        let (width, height) = (48, 36);
+        let source = gradient(width, height);
+        let layer = |effect: &str, payload: Value| Layer {
+            id: LayerId::new(),
+            effect_id: effect.into(),
+            effect_format: EFFECT_FORMAT,
+            payload,
+            mask: None,
+            artifacts: Vec::new(),
+        };
+        let colour = layer(
+            crate::BASIC_EFFECT,
+            json!({"exposure": 0.4, "contrast": 20.0}),
+        );
+        let turn = Layer::orientation(Orientation {
+            mirror: true,
+            turns: 1,
+        });
+        let crop = Layer::crop(fitted_crop(width, height, 6.0, [0.1, 0.1, 0.8, 0.8]));
+        let presence = layer(crate::PRESENCE_EFFECT, json!({"clarity": 40.0}));
+        for (case, layers) in [
+            (
+                "a colour pass over a copy of the source",
+                vec![colour.clone()],
+            ),
+            ("an exact transform", vec![turn.clone(), colour.clone()]),
+            (
+                "a resample",
+                vec![colour.clone(), crop, Layer::pixel(3, 4, [250, 1, 2])],
+            ),
+            ("a spatial boundary", vec![presence, turn]),
+        ] {
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+                ..Recipe::default()
+            };
+            let (raster, written) = frame_writes::record(|| {
+                render(&registry, &source, SnapshotId::new(), &recipe).unwrap()
+            });
+            assert_eq!(
+                written.last(),
+                Some(&(raster.rgba.as_ptr() as usize)),
+                "{case}: the raster is the frame written last, not a copy of it"
+            );
+            let grid = sample_grid(&registry, &source, &recipe, 6, &|| Ok(())).unwrap();
+            for ((x, y), sampled) in grid_centres(6, raster.width, raster.height)
+                .into_iter()
+                .zip(grid)
+            {
+                assert_eq!(raster.pixel(x, y), Some(sampled), "{case} at ({x}, {y})");
+            }
+        }
+        let identity = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: Vec::new(),
+            masks: Vec::new(),
+            ..Recipe::default()
+        };
+        let (raster, written) = frame_writes::record(|| {
+            render(&registry, &source, SnapshotId::new(), &identity).unwrap()
+        });
+        assert!(written.is_empty(), "an identity stack writes no frame");
+        assert!(Arc::ptr_eq(&raster.rgba, &source.rgba));
     }
 
     #[test]
