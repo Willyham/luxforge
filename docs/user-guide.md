@@ -14,7 +14,7 @@ After [developer setup](engineering/development.md), start an optimized build wi
 cargo xtask develop --catalog /path/to/catalog.sqlite --open /path/to/photo.jpg
 ```
 
-Omit `--catalog` to use the platform configuration directory. `--data-root DIRECTORY` isolates config, cache and log paths. `cargo xtask develop --debug` is an unoptimized build for debugging and is unsuitable for timing.
+Omit `--catalog` to use the platform configuration directory. `--data-root DIRECTORY` isolates config, cache and log paths. `cargo xtask develop --debug` is a lightly optimized build with debug assertions, for debugging, and is unsuitable for timing.
 
 `--developer` shows the pixel and controls proof modules under Developer. It also registers `lightwell.controls` and its API methods; without the flag that module is absent from both discovery and the workspace. The pixel proof remains discoverable through the API either way. `--disable-module lightwell.crop` (or another built-in id) registers that module as unavailable, which keeps its stored layers readable and reports them instead of rendering without them.
 

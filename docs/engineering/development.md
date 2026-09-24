@@ -24,7 +24,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--jobs N] [--binary PATH] [--manifest FILE]` |
 | Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test`, `build [--release]` |
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
-| Run an unoptimized build, debugging only | `cargo xtask develop --debug ...` |
+| Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
@@ -55,7 +55,47 @@ Doctor reports missing tools and the graphics environment without installing any
 | License, source and advisory policy | `cargo xtask audit`, see [dependencies](dependencies.md) |
 | Isolated UI probes | `cargo xtask probe --candidate iced|egui --output NEW_DIR` |
 
-Every evidence command refuses an existing output directory: use a fresh `artifacts/<run-id>/`. Default sample counts are functional runs: they prove the journey and give one launch count to quote, not a distribution. A p50/p95 claim needs the explicit counts stated in the [performance plan](../specs/performance.md#sample-counts-for-a-p50p95-claim). Timing commands must use release builds. A debug build makes image work roughly thirty times slower (a 10 MB JPEG took ten seconds to open), which is why `develop` defaults to release. `check` never implies graphical or dependency-audit acceptance.
+Every evidence command refuses an existing output directory: use a fresh `artifacts/<run-id>/`. Default sample counts are functional runs: they prove the journey and give one launch count to quote, not a distribution. A p50/p95 claim needs the explicit counts stated in the [performance plan](../specs/performance.md#sample-counts-for-a-p50p95-claim). Timing commands must use release builds. A [debug build](#test-and-debug-builds) is only lightly optimized, which is why `develop` defaults to release. `check` never implies graphical or dependency-audit acceptance.
+
+### When to verify
+
+Verification is for finished work. Several agent sessions share the owner's M4, and a whole-workspace
+test run, a rendered tier or a timing run occupies most of its cores while it runs and skews any
+timing run elsewhere on the host. Run each check where its answer can change what happens next:
+
+| Stage | Run |
+| --- | --- |
+| Editing | The tests for the code you are changing: `cargo test -p CRATE FILTER`, narrowed to one binary with `--lib` or `--test NAME`. For a rendered change, the one smoke scenario that covers it, against a current release build. Nothing whole-suite and nothing timed. |
+| Change complete: code, tests and docs | `verify --tier quick`, once, before handing off. After a failure, fix it and rerun only what failed (the named test or the one scenario), then `quick` once more. |
+| Integration point | `rendered` for a change touching rendering or the UI; `timing` for a change under `crates/` that can affect cost. |
+| Milestone claim | `full`, with `--manifest`. |
+
+Timing runs wait until feature work is complete: the `timing` tier, `editor-performance`,
+`editor-latency`, `measure`, `raw-editor` and every `--samples 30` distribution. A figure taken
+mid-implementation measures code that is about to change, on a host loaded by builds and tests. The
+exception is work whose subject is performance (a budget, a regression, an optimization), where
+measurement is the feedback: iterate with the one targeted command at its default sample count, and
+take the claimed distribution and the before/after once, at the end.
+
+When work is split across agents, each agent runs targeted tests while working and `quick` at
+hand-off; the integrator runs `rendered`, `timing` and `full` once, on the integrated branch.
+
+### Test and debug builds
+
+The `dev` profile, which `cargo test`, `cargo xtask` and `develop --debug` build with, compiles at
+opt-level 1 with debug assertions and overflow checks on, and builds dependencies without debug
+info. The pixel tests are the reason. Back to back on the owner's M4, the five slowest test binaries
+took 139 to 150 s at opt-level 0 and 17 s at opt-level 1. A new worktree's first test build grew
+from 56 s to 97 s, and a rebuild after a one-function edit in `lightwell-core` by one to five
+seconds. Building dependencies at opt-level 3 saved no test time and cost another 21 to 23 s of
+first build. To step through code in a debugger, build that once with `--config profile.dev.opt-level=0`.
+A dev build is not a timing build; timing uses release.
+
+Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
+itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a
+build inheriting them would rebuild `ring`, `rustls`, `lightwell-core` and everything above them
+after any build started from a shell, and the next shell build would rebuild them back. Without
+them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
 
 ### Verification tiers
 
@@ -68,9 +108,8 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
 
-The local default is `quick` per change; run `rendered` and `timing` at integration points and `full`
-before a milestone claim. Without a manifest, `full` lists `raw-editor` as `skipped` with the reason
-`no --manifest`: a skip is never a pass.
+When to run each tier is in [when to verify](#when-to-verify). Without a manifest, `full` lists
+`raw-editor` as `skipped` with the reason `no --manifest`: a skip is never a pass.
 
 The command builds `lightwell-app` and `xtask` once in release, then runs each component as a child
 process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
@@ -121,8 +160,8 @@ The command never opens a frame. Read a capture as an image only for a failed sc
 review.
 
 Wall-clock on the owner's M4 Pro, release build already current and the Cargo cache warm, on a host
-shared with other work at one-minute load averages between 4 and 13: `quick` 9 s, of which `check`
-is 8 s and varies with how much Cargo has to redo; `rendered` 18 s, a measured 17-scenario workload with 19 editor
+shared with other work at one-minute load averages between 4 and 13: `quick` 28 s, of which `check`
+is 27 s, mostly the workspace tests, and varies with how much Cargo has to redo; `rendered` 18 s, a measured 17-scenario workload with 19 editor
 launches taking 9 s of wall clock through the pool against 26 s of their own summed elapsed time, or
 23 s serially with `--jobs 1`; `timing` 70 s with the default sample counts, of which `measure` is
 48 s and 17 launches, `editor-performance` 4 s and `editor-latency` 5 s; `full` with the owner's three-source
@@ -658,11 +697,12 @@ Rules for any UI or image check:
 ## Agent loop
 
 1. Read the applicable spec and task, including any owner-decision gates.
-2. Run `doctor`, then pick the [verify tier](#verification-tiers) the change needs: `quick` for any change, including a docs-only one; `rendered` for a change touching rendering or the UI, at an integration point; `timing` alongside it for a change under `crates/` at an integration point; `full` before a milestone claim.
-3. For UI or image changes, run a smoke scenario, the `rendered` tier, or the acceptance journey and inspect the capture as an image.
+2. Run `doctor` once in a new checkout or worktree.
+3. While implementing, run the tests for the code you are changing and nothing whole-suite or timed, as [when to verify](#when-to-verify) sets out.
+4. When the change is complete, run `verify --tier quick` once. For UI or image changes, also run the smoke scenarios the change touches or the `rendered` tier, and inspect the captures as images.
    On macOS, use the background harness or `develop --background` for every automated GUI launch; use the live API and renderer readbacks to drive and inspect it. Only perform foreground interaction checks when the owner explicitly requests them.
-4. For changes under `crates/`, answer the [performance rules](performance-rules.md) checklist and run `editor-performance` on a generated 24 MP input in release, or the `timing` tier.
-5. Report exact commands, artifact paths, results and unsupported cases. Update task and feature status only when acceptance is met.
+5. For changes under `crates/`, answer the [performance rules](performance-rules.md) checklist and, once the feature is complete, run `editor-performance` on a generated 24 MP input in release, or the `timing` tier.
+6. Report exact commands, artifact paths, results and unsupported cases. Update task and feature status only when acceptance is met.
 
 ## Packaging
 

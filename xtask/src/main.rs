@@ -136,6 +136,26 @@ fn host(root: &Path) -> Result<String> {
         .find_map(|l| l.strip_prefix("host: ").map(str::to_owned))
         .ok_or_else(|| "Missing rustc host".into())
 }
+/// A `cargo` command without the package variables `cargo run` set for this process. `ring`'s build
+/// script declares `rerun-if-env-changed` on `CARGO_MANIFEST_DIR`, `CARGO_PKG_NAME` and the version
+/// parts, so a Cargo that inherited them from `cargo xtask` would rebuild `ring`, and every crate
+/// above it, after a build started from a shell, and the next shell build would rebuild it back.
+fn cargo_command() -> Command {
+    let mut command = Command::new("cargo");
+    for (key, _) in std::env::vars_os() {
+        if key.to_str().is_some_and(|key| {
+            key.starts_with("CARGO_PKG_")
+                || key.starts_with("CARGO_MANIFEST_")
+                || matches!(
+                    key,
+                    "CARGO_CRATE_NAME" | "CARGO_BIN_NAME" | "CARGO_PRIMARY_PACKAGE"
+                )
+        }) {
+            command.env_remove(key);
+        }
+    }
+    command
+}
 fn cargo(root: &Path, op: &str, release: bool) -> Result {
     let mut args = match op {
         "build" => vec!["build", "--locked", "--package", "lightwell-app"],
@@ -155,7 +175,11 @@ fn cargo(root: &Path, op: &str, release: bool) -> Result {
     if release {
         args.push("--release")
     }
-    run(root, "cargo", &args)
+    let status = cargo_command().args(&args).current_dir(root).status()?;
+    ensure(
+        status.success(),
+        format!("Command {args:?} failed: {status}"),
+    )
 }
 struct Args(Vec<OsString>);
 impl Args {
@@ -239,7 +263,7 @@ fn main_result() -> Result {
                 )?;
                 return Ok(());
             }
-            let mut cmd = Command::new("cargo");
+            let mut cmd = cargo_command();
             cmd.current_dir(&root).args(["run", "--locked"]);
             if !debug {
                 cmd.arg("--release");
@@ -528,4 +552,32 @@ fn main_result() -> Result {
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_spawned_cargo_inherits_none_of_the_package_variables_cargo_sets() {
+        let removed: Vec<OsString> = cargo_command()
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_owned())
+            .collect();
+        // `cargo test` sets the same package variables for this process as `cargo run` sets for
+        // `xtask`, so every one of them present here must be removed.
+        for (key, _) in std::env::vars_os() {
+            let name = key.to_string_lossy();
+            if name.starts_with("CARGO_PKG_") || name.starts_with("CARGO_MANIFEST_") {
+                assert!(
+                    removed.contains(&key),
+                    "{name} would reach the spawned Cargo"
+                );
+            }
+        }
+        assert!(
+            !removed.iter().any(|key| key == "CARGO"),
+            "the path to Cargo is kept"
+        );
+    }
 }
