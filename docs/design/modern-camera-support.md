@@ -24,12 +24,7 @@ source preservation, mosaic/float correctness, calibrated dimensions and crop,
 then representative background editor/history/reopen workflows. Separate each
 mode's demonstrated evidence from outstanding controlled color/scene coverage.
 
-The owner-approved RAW resource contract is separate from JPEG: encoded RAW up
-to 512 MiB, 128 million sensor pixels, 16384 px per side, and one 1.5 GiB
-planar RGB float buffer. The per-buffer value is not a process RSS budget;
-native LibRaw scratch remains capped at 512 MiB and concurrent mosaics, previews,
-display/GPU resources and editor liveness remain separately bounded. JPEG limits
-are unchanged. High-resolution models, container compression, missing crop
+The [owner-approved RAW resource contract](architecture.md#rendering-and-limits) is separate from JPEG, whose limits are unchanged. High-resolution models, container compression, missing crop
 metadata, per-green black levels and DNG correction layouts may require shared
 capabilities before a profile can be enabled. Never inflate the support count
 with guessed entries or bypass required corrections to admit a model.
@@ -88,7 +83,7 @@ cargo run --release --locked -p lightwell-raw --example qualify_profiles -- \
 
 The qualifier runs sources sequentially, refuses an existing output file, and
 returns failure if any source changes, metadata is unsupported, or development
-fails. Its maximum source read is the RAW adapter's 512 MiB bound. Public
+fails. Its maximum source read is the RAW adapter's [encoded-source bound](architecture.md#rendering-and-limits). Public
 fixture redistributions and source photographs are not committed.
 
 OM-3 calibration comes from the exact model entry in pinned RawSpeed camera
@@ -116,8 +111,7 @@ metadata, corrections, source preservation and history remain regressions.
 - Exact model set follows the agreed broadly used modern mix and available
   decoder evidence; selection must not hide popular high-resolution models simply
   because they require more memory.
-- The approved RAW-specific allocation budget is 512 MiB encoded, 128 MP sensor,
-  and 1.5 GiB per planar RGB float buffer. JPEG limits stay independent. A
+- The [approved RAW-specific allocation budget](architecture.md#rendering-and-limits) applies; JPEG limits stay independent. A
   process-wide RSS claim still requires measured editor liveness evidence.
 
 ## Performance checklist
@@ -130,8 +124,7 @@ metadata, corrections, source preservation and history remain regressions.
   binary search; constant-marker scans are linear in the bounded sensor size.
   No new full RGB copy is introduced. Ordered DNG warps reuse one active-area
   float plane after native demosaic scratch is released, as in the original
-  Air 2S path. The approved RAW limits are 512 MiB encoded, 128 MP sensor and
-  1.5 GiB per planar RGB buffer; aggregate editor RSS is measured separately and
+  Air 2S path, within the [approved RAW limits](architecture.md#rendering-and-limits); aggregate editor RSS is measured separately and
   high-resolution editor evidence is recorded in the resource ledger.
 - The neutral picker checks at most 65,536 sparse replacements and samples its
   fixed patch with binary-search lookup. It does not develop or rasterize a
