@@ -105,8 +105,8 @@ impl Status {
 /// component itself recorded, so a run that stopped early reports the launches it actually made.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Launches {
-    /// No editor process at all: `check`, the core acceptance journey, core timing diagnostics,
-    /// the numerical RAW reference and fixture generation.
+    /// No editor process at all: `check`, the core acceptance journey, core timing diagnostics
+    /// and fixture generation.
     None,
     Smoke,
     Measure,
@@ -184,11 +184,35 @@ fn spec(name: &str, tier: &'static str, args: &[&str]) -> Spec {
     }
 }
 
+/// The manifest's own sources, `(id, absolute path)`, so `plan` can build one `raw-panel` component
+/// per source without repeating `raw-editor`'s own full validation, which stays the authority when
+/// `raw-editor` itself runs. `path` resolves the same way every other manifest-relative path here
+/// does: as given when absolute, otherwise joined to the manifest's own directory.
+fn manifest_sources(path: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let manifest: Value = read_json(path)?;
+    let base = path.parent().ok_or("Manifest has no parent")?;
+    manifest["sources"]
+        .as_array()
+        .ok_or("RAW manifest needs a sources array")?
+        .iter()
+        .map(|source| -> Result<(String, PathBuf)> {
+            let id = source["id"].as_str().ok_or("RAW source needs an id")?;
+            let raw_path = source["path"].as_str().ok_or("RAW source needs a path")?;
+            Ok((id.to_owned(), absolute(base, Path::new(raw_path))))
+        })
+        .collect()
+}
+
 /// What each tier runs, in order. Every tier includes the ones below it. The rendered scenarios are
 /// the one block that runs through a pool; the timing components run strictly serially, in this
 /// order, after everything else in the tier and behind the host-wide timing lock, so nothing else
 /// on the machine is competing with them from this command.
-fn plan(tier: Tier, manifest: bool, fixtures: bool) -> Vec<Spec> {
+///
+/// `manifest` is the manifest's own sources, `(id, absolute path)`, read once by the caller; `None`
+/// when `--manifest` was not given. Building one `raw-panel` component per source and one RAW
+/// `performance` component needs the source list itself, not just whether a manifest was given, so
+/// this differs from `raw-editor`'s own `--manifest` forwarding, which the subprocess reads itself.
+fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> Vec<Spec> {
     let mut specs = Vec::new();
     if !fixtures && tier != Tier::Quick {
         specs.push(Spec {
@@ -221,16 +245,39 @@ fn plan(tier: Tier, manifest: bool, fixtures: bool) -> Vec<Spec> {
     if tier == Tier::Full {
         specs.push(Spec {
             result: Some("result.json"),
-            ..spec("raw-reference", "full", &["raw-reference"])
-        });
-        specs.push(Spec {
-            result: Some("result.json"),
             launches: Launches::RawEditor,
             binary: true,
             manifest: true,
-            skip: (!manifest).then_some("no --manifest"),
+            skip: manifest.is_none().then_some("no --manifest"),
             ..spec("raw-editor", "full", &["raw-editor"])
         });
+        let sources = manifest.unwrap_or(&[]);
+        for (id, path) in sources {
+            let path = path.to_string_lossy().into_owned();
+            specs.push(Spec {
+                result: Some("result.json"),
+                launches: Launches::Smoke,
+                binary: true,
+                ..spec(
+                    &format!("raw-panel-{id}"),
+                    "full",
+                    &["smoke", "--scenario", "raw-panel", "--source", &path],
+                )
+            });
+        }
+        if let Some((_, path)) = sources.first() {
+            let path = path.to_string_lossy().into_owned();
+            specs.push(Spec {
+                result: Some("result.json"),
+                launches: Launches::Smoke,
+                binary: true,
+                ..spec(
+                    "raw-performance",
+                    "full",
+                    &["smoke", "--scenario", "performance", "--source", &path],
+                )
+            });
+        }
     }
     if tier.timing() {
         specs.push(Spec {
@@ -503,7 +550,7 @@ struct Target {
     note: &'static str,
 }
 
-const TARGETS: [Target; 11] = [
+const TARGETS: [Target; 10] = [
     Target {
         text: "Warm 24 MP slider-to-presented-frame p95 < 16 ms, acceptable below 32 ms",
         from: From::Latency,
@@ -608,22 +655,10 @@ const TARGETS: [Target; 11] = [
         scale: 1.0,
         note: "Warm filesystem cache, CPU raster; import, refresh and render",
     },
-    // The instant-preview design's provisional targets (docs/design/instant-preview.md, "Goal"):
-    // the drained-drag bound tightens from the row above as the proxy phase lands, and burst is a
-    // wild, undrained drag the drag report cannot answer at all.
-    Target {
-        text: "Instant preview: drained drag input-to-presented-frame p95 <= 33 ms, 24 MP",
-        from: From::Latency,
-        path: "/timings_ms/input_to_presented_frame/p95_ms",
-        count: Some("/timings_ms/input_to_presented_frame/count"),
-        unit: "ms",
-        limit: 33.0,
-        acceptable: None,
-        direction: Direction::AtMost,
-        strict: false,
-        scale: 1.0,
-        note: "Same drag report and path as the warm 24 MP row above; this is the design's own, tighter provisional threshold",
-    },
+    // The instant-preview design's provisional burst target (docs/design/instant-preview.md,
+    // "Goal"): a wild, undrained drag the drained-drag report above cannot answer at all. The
+    // design's own drained-drag figure read the same drag report and JSON path as the warm 24 MP
+    // row above, so it never had a target of its own here; only the owner's 16/32 ms row does.
     Target {
         text: "Instant preview: burst presented frames per second >= 30",
         from: From::Burst,
@@ -1232,7 +1267,17 @@ pub fn run(
     let started = Instant::now();
 
     let fixtures = GENERATED.iter().all(|p| root.join(p).is_file());
-    let specs = plan(tier, manifest.is_some(), fixtures);
+    let manifest = manifest.map(|path| absolute(root, &path));
+    let raw_sources = manifest
+        .as_deref()
+        .map(manifest_sources)
+        .transpose()?
+        .unwrap_or_default();
+    let specs = plan(
+        tier,
+        manifest.is_some().then_some(raw_sources.as_slice()),
+        fixtures,
+    );
 
     // A timing tier that cannot have the host to itself is refused before it spends minutes on the
     // rest of the tier. The lock is still taken for real before the first timing component, because
@@ -1270,7 +1315,6 @@ pub fn run(
     let bin = selected_binary
         .map(|path| absolute(root, &path))
         .unwrap_or_else(|| release.clone());
-    let manifest = manifest.map(|path| absolute(root, &path));
 
     let header = json!({
         "format":1,
@@ -1400,7 +1444,7 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn names(tier: Tier, manifest: bool, fixtures: bool) -> Vec<String> {
+    fn names(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> Vec<String> {
         plan(tier, manifest, fixtures)
             .into_iter()
             .map(|s| s.name)
@@ -1409,16 +1453,16 @@ mod tests {
     #[test]
     fn tiers_compose_in_order() {
         assert_eq!(
-            names(Tier::Quick, false, true),
+            names(Tier::Quick, None, true),
             ["check", "editor-acceptance"]
         );
-        let rendered = names(Tier::Rendered, false, true);
+        let rendered = names(Tier::Rendered, None, true);
         assert_eq!(&rendered[..2], ["check", "editor-acceptance"]);
         assert_eq!(rendered.len(), 2 + smoke::SCENARIOS.len());
         assert_eq!(rendered[2], "smoke-empty");
         assert_eq!(rendered.last().unwrap(), "smoke-unavailable");
         assert_eq!(
-            names(Tier::Timing, false, true),
+            names(Tier::Timing, None, true),
             [
                 "check",
                 "editor-acceptance",
@@ -1428,13 +1472,14 @@ mod tests {
                 "measure"
             ]
         );
-        let full = names(Tier::Full, true, true);
+        // A manifest with no sources is `full`'s minimal manifest case: `raw-editor` runs, but there
+        // is nothing to build a `raw-panel` or RAW `performance` component from.
+        let full = names(Tier::Full, Some(&[]), true);
         assert_eq!(&full[..2], ["check", "editor-acceptance"]);
         // Every rendered scenario, then the RAW components, then the timing components last.
         assert_eq!(
-            &full[full.len() - 6..],
+            &full[full.len() - 5..],
             [
-                "raw-reference",
                 "raw-editor",
                 "editor-performance",
                 "editor-latency",
@@ -1442,18 +1487,67 @@ mod tests {
                 "measure"
             ]
         );
-        assert_eq!(full.len(), 2 + smoke::SCENARIOS.len() + 6);
+        assert_eq!(full.len(), 2 + smoke::SCENARIOS.len() + 5);
         // Missing generated fixtures are produced first, and only where a tier needs them.
-        assert_eq!(names(Tier::Quick, false, false)[0], "check");
-        assert_eq!(names(Tier::Rendered, false, false)[0], "generate-fixtures");
-        assert_eq!(names(Tier::Timing, false, false)[0], "generate-fixtures");
+        assert_eq!(names(Tier::Quick, None, false)[0], "check");
+        assert_eq!(names(Tier::Rendered, None, false)[0], "generate-fixtures");
+        assert_eq!(names(Tier::Timing, None, false)[0], "generate-fixtures");
+    }
+    #[test]
+    fn full_adds_one_raw_panel_component_per_source_and_one_raw_performance_run() {
+        let sources = [
+            ("z6".to_owned(), PathBuf::from("/tmp/z6.nef")),
+            ("x100vi".to_owned(), PathBuf::from("/tmp/x100vi.raf")),
+        ];
+        let full = plan(Tier::Full, Some(&sources), true);
+        let names: Vec<&str> = full.iter().map(|s| s.name.as_str()).collect();
+        // One `raw-panel` component per manifest source, named by source id, and one RAW
+        // `performance` run over the first source, all between `raw-editor` and the timing tier.
+        assert_eq!(
+            &names[names.len() - 8..],
+            [
+                "raw-editor",
+                "raw-panel-z6",
+                "raw-panel-x100vi",
+                "raw-performance",
+                "editor-performance",
+                "editor-latency",
+                "editor-latency-burst",
+                "measure",
+            ]
+        );
+        let panel_z6 = full.iter().find(|s| s.name == "raw-panel-z6").unwrap();
+        assert_eq!(
+            panel_z6.args,
+            ["smoke", "--scenario", "raw-panel", "--source", "/tmp/z6.nef"]
+        );
+        assert!(panel_z6.binary && panel_z6.output && !panel_z6.manifest);
+        assert_eq!(panel_z6.skip, None);
+        let performance = full.iter().find(|s| s.name == "raw-performance").unwrap();
+        assert_eq!(
+            performance.args,
+            [
+                "smoke",
+                "--scenario",
+                "performance",
+                "--source",
+                "/tmp/z6.nef"
+            ]
+        );
+        // Without a manifest there is no source to run either component over.
+        let without = plan(Tier::Full, None, true);
+        assert!(
+            without
+                .iter()
+                .all(|s| !s.name.starts_with("raw-panel") && s.name != "raw-performance")
+        );
     }
     #[test]
     fn a_missing_manifest_skips_raw_editor_instead_of_passing_it() {
-        let without = plan(Tier::Full, false, true);
+        let without = plan(Tier::Full, None, true);
         let raw = without.iter().find(|s| s.name == "raw-editor").unwrap();
         assert_eq!(raw.skip, Some("no --manifest"));
-        let with = plan(Tier::Full, true, true);
+        let with = plan(Tier::Full, Some(&[]), true);
         assert!(
             with.iter()
                 .find(|s| s.name == "raw-editor")
@@ -1555,19 +1649,14 @@ mod tests {
             verdicts[3]["reason"],
             "measure/run/measurements.json was not written"
         );
-        // The instant-preview design's drained-drag row reads the same drag report and path as the
-        // warm-24MP row above, but its tighter 33 ms threshold misses the same 83.4 ms figure.
-        assert_eq!(verdicts[8]["target"], TARGETS[8].text);
-        assert_eq!(verdicts[8]["verdict"], "miss");
-        assert_eq!(verdicts[8]["measured"], 83.4);
         // The burst targets read a different file, never written in this test, so they too are
         // unmeasured rather than failed.
-        assert_eq!(verdicts[9]["verdict"], "not_measured");
+        assert_eq!(verdicts[8]["verdict"], "not_measured");
         assert_eq!(
-            verdicts[9]["reason"],
+            verdicts[8]["reason"],
             "editor-latency-burst/run/latency.json was not written"
         );
-        assert_eq!(verdicts[10]["verdict"], "not_measured");
+        assert_eq!(verdicts[9]["verdict"], "not_measured");
         // A file that exists but holds no such path is also unmeasured, with the path named.
         let empty = json!({"timings_ms":{}});
         let missing = TARGETS[0].verdict(Some(&empty), true, None);
@@ -1621,14 +1710,14 @@ mod tests {
             |index: usize, result: &Value| TARGETS[index].verdict(Some(result), true, Some(2.5));
         // 42 fps clears the >= 30 lower bound; a figure below it misses instead of passing, which
         // proves the direction is not silently inverted into an upper bound.
+        assert_eq!(verdict(8, &passing)["verdict"], "pass");
+        assert_eq!(verdict(8, &passing)["measured"], 42.0);
         assert_eq!(verdict(9, &passing)["verdict"], "pass");
-        assert_eq!(verdict(9, &passing)["measured"], 42.0);
-        assert_eq!(verdict(10, &passing)["verdict"], "pass");
-        assert_eq!(verdict(10, &passing)["samples"], 300);
+        assert_eq!(verdict(9, &passing)["samples"], 300);
         let failing =
             json!({"burst":{"presented_fps":18.0,"staleness_ms":{"count":300,"p95_ms":61.0}}});
+        assert_eq!(verdict(8, &failing)["verdict"], "miss");
         assert_eq!(verdict(9, &failing)["verdict"], "miss");
-        assert_eq!(verdict(10, &failing)["verdict"], "miss");
     }
     #[test]
     fn launch_counts_come_from_what_each_component_recorded() {
@@ -1827,7 +1916,11 @@ mod tests {
         let out = Path::new("/tmp/verify");
         let bin = Path::new("/tmp/lightwell");
         let manifest = PathBuf::from("/tmp/raw.json");
-        let specs = plan(Tier::Full, true, true);
+        let sources = [
+            ("z6".to_owned(), PathBuf::from("/tmp/z6.nef")),
+            ("x100vi".to_owned(), PathBuf::from("/tmp/x100vi.raf")),
+        ];
+        let specs = plan(Tier::Full, Some(&sources), true);
 
         let dirs = directories(&specs, out);
         let mut distinct = dirs.clone();

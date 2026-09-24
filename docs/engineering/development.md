@@ -30,7 +30,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
 | Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other slider that drafts — a field-patch slider (presence, mixer, vignette, ...) or a RAW slider, whose action declares that one parameter, over a RAW `--source` — in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP and the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
-| RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
+| RAW corpus integrity | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
@@ -53,7 +53,6 @@ Doctor reports missing tools and the graphics environment without installing any
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
 | License, source and advisory policy | `cargo xtask audit`, see [dependencies](dependencies.md) |
-| Isolated UI probes | `cargo xtask probe --candidate iced|egui --output NEW_DIR` |
 
 Every evidence command refuses an existing output directory: use a fresh `artifacts/<run-id>/`. Default sample counts are functional runs: they prove the journey and give one launch count to quote, not a distribution. A p50/p95 claim needs the explicit counts stated in the [performance plan](../specs/performance.md#sample-counts-for-a-p50p95-claim). Timing commands must use release builds. A [debug build](#test-and-debug-builds) is only lightly optimized, which is why `develop` defaults to release. `check` never implies graphical or dependency-audit acceptance.
 
@@ -106,10 +105,11 @@ them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
 | `quick` | `check` and `editor-acceptance` |
 | `rendered` | quick plus all 30 smoke scenarios, including `zoom`, `presets`, `gallery`, `controls`, `capabilities`, `performance` and the four `mask-*` ones, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
-| `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
+| `full` | rendered plus timing plus, with `--manifest FILE`, `raw-editor`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
 When to run each tier is in [when to verify](#when-to-verify). Without a manifest, `full` lists
-`raw-editor` as `skipped` with the reason `no --manifest`: a skip is never a pass.
+`raw-editor` as `skipped` with the reason `no --manifest`, and adds no `raw-panel` or RAW
+`performance` components at all, since there is no source to run them over: a skip is never a pass.
 
 The command builds `lightwell-app` and `xtask` once in release, then runs each component as a child
 process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
@@ -165,8 +165,9 @@ is 27 s, mostly the workspace tests, and varies with how much Cargo has to redo;
 through the pool against 82 s of their own summed elapsed time, the four `mask-*` scenarios the
 longest of them at 4 to 12 s each; `timing` 70 s with the default sample counts, of which `measure` is
 48 s and 17 launches, `editor-performance` 4 s and `editor-latency` 5 s; `full` with the owner's three-source
-manifest adds `raw-reference` and `raw-editor`, whose default three trials per source cost about 8 s
-each for the Z6, 19 s for the X100VI and 18 s for the Air 2S, two launches per trial. On a run whose
+manifest adds `raw-editor`, whose default three trials per source cost about 8 s
+each for the Z6, 19 s for the X100VI and 18 s for the Air 2S, two launches per trial, plus one `raw-panel`
+smoke run per manifest source and one RAW `performance` smoke run over the first source. On a run whose
 `measure` started at a load average of 8.33, that component's rows and target verdicts came back
 `unreliable` while the two components below the threshold still gave verdicts.
 
@@ -176,8 +177,9 @@ Per-scenario elapsed time comes from each run's own `summary.json`. Back to back
 host, one-minute load averages of 12.96 (`--jobs 1`) and 13.24 (the default pool of three), a 17-scenario workload (excluding the gallery and controls boards) cost 24.40 s serially and 30.00 s summed inside the pool, whose own wall clock was 10.30 s.
 Every scenario costs one to two seconds either way, and none exceeds 2.3 s; against a rendered tier
 whose own total stays under two minutes, no single scenario is a material share of it. Every scenario
-therefore stays in `rendered`; `full` adds only the RAW components (`raw-reference` and, with
-`--manifest`, `raw-editor`), which is already the tier's composition. `zoom`, which is not in that
+therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, `raw-editor`, a
+`raw-panel` run per manifest source and one RAW `performance` run), which is already the tier's
+composition. `zoom`, which is not in that
 workload, is two launches with three one-second idle waits each and took 13.5 s inside the default
 pool at a one-minute load average near 20; it stays in `rendered` as the only rendered check of the
 percentage zooms. `performance` is one launch with 8.6 s of waits — the sampler needs real seconds
@@ -728,7 +730,7 @@ the path, the distribution and the one-minute load average, and marks itself `pr
 colour layers, three of whose masks bind the whole stage, and is therefore not a baseline for the
 gesture; the pairing itself is one function shared with that scenario so the two cannot drift.
 
-On macOS, smoke, hardening, measurement, latency, RAW editor and probe subprocesses always use the same background bundle as `develop --background`, and every one of them that launches the editor passes `--hidden-window`, so the run has neither an activated process nor a window on screen. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation, and with an invisible window they do not include the cost of compositing a visible one either.
+On macOS, smoke, hardening, measurement, latency and RAW editor subprocesses always use the same background bundle as `develop --background`, and every one of them that launches the editor passes `--hidden-window`, so the run has neither an activated process nor a window on screen. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation, and with an invisible window they do not include the cost of compositing a visible one either.
 
 That an automated launch never takes the desktop is proven once, not per run: `hardening` reads the frontmost application's pid through LaunchServices (`lsappinfo`, no Automation permission needed) while its abrupt-termination child is running and fails if that pid is the editor's, recording it as `frontmost_pid_while_running`. Every other run relies on the bundle and the hidden window and does not re-measure the desktop, so switching applications or locking the screen during a run does not affect it.
 
