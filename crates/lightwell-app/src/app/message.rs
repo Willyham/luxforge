@@ -578,8 +578,6 @@ pub(crate) enum Message {
     MaskTransform(Result<StageTransform, String>),
     /// `draft.begin` answered for a mask gesture.
     MaskDraftBegun(Result<Box<Draft>, String>),
-    /// One `draft.set` and the preview job for the geometry it accepted.
-    MaskDraftSet(Result<Box<(Draft, PreviewJob)>, String>),
     /// `draft.commit` answered. `None` is a no-op: the gesture returned to its start.
     MaskDraftCommitted(Result<Option<Box<Refresh>>, String>),
     /// `draft.reapply` answered.

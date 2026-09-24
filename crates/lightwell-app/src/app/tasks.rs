@@ -9,9 +9,9 @@ use iced::Task;
 use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
     EntryId, ErrorKind, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage,
-    MAX_PRESET_BYTES, MaskOverlayRequest, ModuleDescriptor, Mutation, MutationOutcome,
-    MutationResult, OwnerHandle, PresetSummary, PreviewJob, PreviewRequest, ProxyBounds,
-    RecipeDescription, StageTransform, Version,
+    MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationResult, OwnerHandle,
+    PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription, StageTransform,
+    Version,
     mask::commands::{MaskCommandResult, MaskListing, MaskTarget},
 };
 use serde_json::{Value, json};
@@ -642,6 +642,11 @@ pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: MaskTa
 /// that measure well under a millisecond, while handing the answer back through the runtime costs
 /// a whole display frame whenever a redraw is in flight, which during a drag is always. A gesture
 /// therefore pays the round trip where it is cheapest instead of waiting a frame for its result.
+///
+/// Both drafting gestures send through here: a slider's and a mask shape's. The mask overlay's
+/// coverage grid is not asked for here, because [`crate::app::Editor::request_preview`] attaches
+/// it to every job it queues, this one included — one rule for every preview path, so the grid is
+/// requested once.
 pub(crate) fn draft_set_now(
     owner: &OwnerHandle,
     client: ClientId,
@@ -841,41 +846,6 @@ pub(crate) fn mask_draft_begin_task(
             parse::<Draft>(draft)
         },
         |result| Message::MaskDraftBegun(result.map(Box::new)),
-    )
-}
-
-/// One `draft.set` of a mask gesture and the one preview job for the geometry it accepted, with the
-/// coverage grid the overlay draws filled beside that frame rather than by a second render.
-pub(crate) fn mask_draft_set_task(
-    owner: OwnerHandle,
-    client: ClientId,
-    draft_id: DraftId,
-    asset_id: AssetId,
-    fields: Value,
-    proxy: Option<ProxyBounds>,
-    overlay: Option<MaskOverlayRequest>,
-) -> Task<Message> {
-    Task::perform(
-        async move {
-            let (draft, _) = call(
-                &owner,
-                client,
-                "draft.set",
-                json!({"draft_id":draft_id,"fields":fields}),
-            )?;
-            let draft = parse::<Draft>(draft)?;
-            let mut request = PreviewRequest::new(client, asset_id)
-                .draft(draft_id)
-                .analyse();
-            if let Some(overlay) = overlay {
-                request = request.mask_overlay(overlay);
-            }
-            let job = owner
-                .preview_job(proxied(request, proxy))
-                .map_err(|error| error.to_string())?;
-            Ok((draft, job))
-        },
-        |result| Message::MaskDraftSet(result.map(Box::new)),
     )
 }
 

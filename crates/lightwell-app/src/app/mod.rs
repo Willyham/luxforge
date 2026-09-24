@@ -437,7 +437,8 @@ pub(crate) struct Editor {
     /// is presented when it is not older than this. Under a sustained drag a render almost always
     /// finishes after a newer job was requested, so rejecting everything but the newest generation
     /// presents no frames at all. What makes work in flight stale is `preview_queue.cancel()`,
-    /// which an asset or selection change calls; nothing else has to.
+    /// which an asset or selection change calls, and so does a discarded mask gesture whose drafted
+    /// frames must not reach the screen; nothing else has to.
     pub(crate) presented_generation: u64,
     /// The texture on screen is the display proxy rather than the exact render.
     pub(crate) presented_proxy: bool,
@@ -3129,7 +3130,6 @@ impl Editor {
             Message::MaskDraftBegun(result) => {
                 return self.mask_draft_begun(result.map(|draft| *draft));
             }
-            Message::MaskDraftSet(result) => return self.mask_draft_set(result.map(|both| *both)),
             Message::MaskDraftCommitted(result) => {
                 return self
                     .mask_draft_committed(result.map(|refresh| refresh.map(|boxed| *boxed)));

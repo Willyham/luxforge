@@ -1079,6 +1079,13 @@ impl Editor {
 
     /// Send the gesture's current geometry to its core draft and show the frame it produces. The
     /// same bound the slider gesture keeps: at most one round trip in flight, newest value wins.
+    ///
+    /// The `draft.set` and its preview job run synchronously on this thread, through the helper the
+    /// slider uses, and the answer is taken up in the update that produced the geometry: handing it
+    /// back through the runtime would cost a display frame per position during a drag
+    /// ([performance rule 12](../../../../docs/engineering/performance-rules.md#rules)). The
+    /// coverage grid the overlay draws rides that job, attached by [`Editor::request_preview`] as
+    /// it is to every job.
     pub(crate) fn set_mask_draft(&mut self) -> Task<Message> {
         let (Some(draft), Some(draft_id)) = (&self.mask_draft, self.mask_draft_id.clone()) else {
             return Task::none();
@@ -1106,16 +1113,15 @@ impl Editor {
             json!({"draft_id":draft_id.as_str(),"fields":fields}),
         );
         let proxy = self.proxy_bounds();
-        let overlay = self.mask_overlay_request();
-        crate::app::tasks::mask_draft_set_task(
-            self.owner.clone(),
+        let result = crate::app::tasks::draft_set_now(
+            &self.owner,
             self.client,
-            draft_id,
+            draft_id.clone(),
             asset,
             fields,
             proxy,
-            overlay,
-        )
+        );
+        self.mask_draft_set(&draft_id, result)
     }
 
     /// Apply: commit the gesture as one history entry.
@@ -1165,12 +1171,27 @@ impl Editor {
     }
 
     /// Cancel: end the gesture and commit nothing.
+    ///
+    /// Nothing the gesture asked for reaches the screen after this. A core draft that took geometry
+    /// has drafted frames in the preview queue, and those are stopped and held below the delivery
+    /// floor, so the next frame presented is the committed one asked for here; the drafted pixels
+    /// already on screen stay until it lands. An armed brush asked for no drafted frame, and the
+    /// job behind it is the committed stroke's, so it is left to finish. A `draft.*` answer still
+    /// on its way finds no gesture and is dropped by its own handler.
     pub(crate) fn mask_cancel(&mut self) -> Task<Message> {
         let Some(draft) = self.mask_draft.take() else {
             return Task::none();
         };
         let draft_id = self.mask_draft_id.take();
+        let drafted = self
+            .session
+            .draft
+            .as_ref()
+            .is_some_and(|held| held.draft_revision > 0);
         self.end_mask_draft();
+        if drafted {
+            self.preview_generation = self.preview_queue.cancel();
+        }
         self.status = format!("{} discarded", draft.op.label());
         self.event("mask_draft_cancelled", json!({"op": draft.op.label()}));
         let mut tasks = Vec::new();
@@ -1302,13 +1323,34 @@ impl Editor {
     }
 
     /// One `draft.set` answered with the preview of the geometry it accepted.
+    ///
+    /// Only the gesture that sent it takes an answer up. Once Discard has ended that gesture, or
+    /// another has replaced it, the answer describes geometry nobody holds: storing its draft would
+    /// leave one behind the discarded gesture, and queuing its preview would present a discarded
+    /// frame after the committed one was asked for. The set runs synchronously, so no answer
+    /// outlives its gesture today; this check keeps that true whatever path an answer takes.
     pub(crate) fn mask_draft_set(
         &mut self,
-        result: Result<(lightwell_core::Draft, lightwell_core::PreviewJob), String>,
+        draft_id: &lightwell_core::DraftId,
+        result: Result<
+            (
+                lightwell_core::Draft,
+                lightwell_core::PreviewJob,
+                crate::app::tasks::RoundTrip,
+            ),
+            String,
+        >,
     ) -> Task<Message> {
+        if self.mask_draft.is_none() || self.mask_draft_id.as_ref() != Some(draft_id) {
+            self.event(
+                "mask_draft_set_dropped",
+                json!({"draft_id":draft_id.as_str(),"accepted":result.is_ok()}),
+            );
+            return Task::none();
+        }
         self.mask_draft_in_flight = false;
         match result {
-            Ok((set, job)) => {
+            Ok((set, job, _)) => {
                 if let Some(draft) = &mut self.mask_draft {
                     draft.conflicted = set.conflicted;
                 }
@@ -1344,16 +1386,15 @@ impl Editor {
         }
     }
 
-    /// Whatever the gesture asked for while a round trip was in flight happens now: the commit it
-    /// requested, else the newest geometry it produced.
     /// Whatever the gesture asked for while a round trip was in flight happens now: the newest
-    /// geometry it produced, and then the commit it requested.
+    /// geometry it produced, and then the commit it requested. A `draft.set` answers in the update
+    /// that sent it, so the round trip that holds geometry back is `draft.begin`, `draft.reapply`
+    /// or a commit.
     ///
     /// **The geometry goes first.** A commit sends the *core* draft's fields, not the desktop's, so
-    /// committing while a `draft.set` is still queued writes the geometry the gesture had one step
-    /// ago. A gradient loses the last few pixels of a drag that way; a stroke loses most of its path,
-    /// because every position after the one in flight is still waiting. The commit is kept and runs
-    /// on the next answer instead.
+    /// committing while geometry is still queued writes the geometry the gesture had before it. A
+    /// gradient loses the end of a drag that way, and a stroke most of its path. The commit is kept
+    /// and runs on the next answer instead.
     fn after_mask_round_trip(&mut self) -> Task<Message> {
         if self.mask_draft_pending {
             return self.set_mask_draft();
@@ -1468,10 +1509,22 @@ impl Editor {
 
     /// `draft.reapply` answered: the gesture is based on the current revision again and its geometry
     /// is re-sent, so the drafted preview returns.
+    ///
+    /// Reapply is still a runtime round trip, so Discard can end the gesture while it is in flight.
+    /// An answer that finds no gesture, or rebases a draft that is not the open gesture's, is
+    /// dropped: storing it would report a draft that nothing holds, and re-sending geometry would
+    /// draft the discarded gesture again.
     pub(crate) fn mask_draft_reapplied(
         &mut self,
         result: Result<lightwell_core::Draft, String>,
     ) -> Task<Message> {
+        let for_open = match &result {
+            Ok(rebased) => self.mask_draft_id.as_ref() == Some(&rebased.draft_id),
+            Err(_) => true,
+        };
+        if self.mask_draft.is_none() || !for_open {
+            return Task::none();
+        }
         self.mask_draft_in_flight = false;
         match result {
             Ok(rebased) => {
@@ -1594,12 +1647,14 @@ impl Editor {
     ///
     /// The last grid is dropped rather than left over a frame it does not describe, the host's own
     /// reason is logged, and a scripted step waiting for the overlay's own texture is ended with it.
-    /// A mask whose coverage depends on the pixel it reads is the case this exists for: it has no
-    /// grid at all, by [proposal P16](../../../../docs/design/range-study.md#proposals), which is
-    /// open — and what such a mask shows a person instead is that proposal's to settle, not this
-    /// function's. The reason deliberately does not go to the status line: the frame this arrives
-    /// with writes its own status in the same update, so a line written here would be replaced
-    /// before it was ever drawn.
+    /// A mask whose coverage depends on the pixel it reads is the case this exists for. Its grid
+    /// reads the input of the mask's first bound layer
+    /// ([proposal P16](../../../../docs/design/range-study.md#proposals), decided and built), and
+    /// the host refuses it by name when it has no such input, or cannot afford to read it: no layer
+    /// is bound to the mask, or its first bound layer sits behind a spatial layer. The reason
+    /// deliberately does not go to the status line: the frame this arrives with writes its own
+    /// status in the same update, so a line written here would be replaced before it was ever
+    /// drawn.
     pub(crate) fn mask_overlay_unavailable(&mut self, generation: u64, reason: &str) {
         self.mask_overlay_pending = None;
         self.mask_overlay_photo = None;

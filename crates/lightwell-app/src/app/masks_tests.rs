@@ -3,7 +3,8 @@
 //! Every request these gestures build is compared with the one an independent JSON client sends for
 //! the same edit, and every refusal the command family makes is asserted where the panel surfaces
 //! it. Tasks are run here as the plain functions they wrap, so the answers reach the editor as the
-//! same messages the runtime delivers.
+//! same messages the runtime delivers. A gesture's `draft.set` is no task: the editor sends it and
+//! takes its answer up inside the update that produced the geometry.
 use super::{
     Boot, Editor,
     message::{MaskMessage, MaskPointer, MenuTarget, Message, PaintTarget, RowEdit},
@@ -261,7 +262,8 @@ impl Masking {
         result
     }
 
-    /// Run the open gesture's `draft.begin`, then its `draft.set`, as the runtime's tasks do.
+    /// Run the open gesture's `draft.begin` as the runtime's task does. Its answer sends the first
+    /// `draft.set` itself, synchronously, in the same update.
     fn open_gesture(&mut self) {
         let draft = self.editor.mask_draft.as_ref().expect("a gesture is open");
         let method = draft.method().expect("a generated method");
@@ -294,65 +296,45 @@ impl Masking {
                 transform,
             )
             .unwrap())));
-        self.drain_draft_set();
+        self.assert_geometry_sent();
     }
 
-    /// Answer whatever `draft.set` the gesture has outstanding, as its task does.
+    /// The gesture's newest geometry is already in its core draft.
     ///
-    /// It answers only what the gesture actually asked for. Once an answer makes the gesture commit
-    /// rather than set again, this stops: sending a `draft.set` the desktop never requested would
-    /// repair a commit that went out before the geometry did, which is exactly the ordering these
-    /// tests exist to hold.
-    fn drain_draft_set(&mut self) {
-        for _ in 0..16 {
-            let committing = self.editor.mask_draft_finish;
-            if !self.answer_one_draft_set() {
-                break;
-            }
-            if committing && !self.editor.mask_draft_finish {
-                break;
-            }
+    /// A mask gesture's `draft.set` runs synchronously on the desktop thread, in the update that
+    /// produced the geometry, so nothing is left in flight or queued behind it and the draft the
+    /// session reports holds every field the gesture would commit. There is no answer for a test to
+    /// deliver: asserting that the update already took it up is the whole of what a runtime task
+    /// used to be simulated for.
+    fn assert_geometry_sent(&self) {
+        assert!(
+            !self.editor.mask_draft_in_flight,
+            "a draft.set is still in flight after the update that sent it"
+        );
+        assert!(
+            !self.editor.mask_draft_pending,
+            "geometry is still queued behind a round trip"
+        );
+        let Some(draft) = &self.editor.mask_draft else {
+            return;
+        };
+        // An armed brush has painted nothing, so there is nothing to send and nothing was.
+        if draft.brush().is_some_and(|stroke| !stroke.drawn()) {
+            return;
         }
-    }
-
-    /// Answer the one `draft.set` that is outstanding, and say whether there was one.
-    ///
-    /// One at a time, because what the gesture does with each answer is what a commit racing a
-    /// queued position depends on.
-    fn answer_one_draft_set(&mut self) -> bool {
-        if !self.editor.mask_draft_in_flight {
-            return false;
+        let held = self
+            .editor
+            .session
+            .draft
+            .as_ref()
+            .expect("the core draft the gesture set");
+        for (name, value) in draft.fields() {
+            assert_eq!(
+                held.fields.get(&name),
+                Some(&value),
+                "the core draft holds the gesture's {name}"
+            );
         }
-        {
-            let (draft_id, fields) = {
-                let id = self
-                    .editor
-                    .mask_draft_id
-                    .clone()
-                    .expect("the core draft is open");
-                let draft = self.editor.mask_draft.as_ref().expect("a gesture");
-                (id, Value::Object(draft.fields()))
-            };
-            let (set, _) = call(
-                &self.owner(),
-                self.editor.client,
-                "draft.set",
-                json!({"draft_id": draft_id, "fields": fields}),
-            )
-            .unwrap();
-            let job = self
-                .owner()
-                .preview_job(
-                    lightwell_core::PreviewRequest::new(self.editor.client, self.asset.clone())
-                        .draft(draft_id),
-                )
-                .unwrap();
-            let _ = self.editor.update(Message::MaskDraftSet(Ok(Box::new((
-                serde_json::from_value(set).unwrap(),
-                job,
-            )))));
-        }
-        true
     }
 
     /// Commit the open gesture, as Apply does.
@@ -369,10 +351,10 @@ impl Masking {
     fn paint(&mut self, points: &[(f64, f64)]) {
         let (x, y) = points[0];
         self.message(MaskMessage::Handle(MaskPointer::PaintBegin { x, y }));
-        self.drain_draft_set();
+        self.assert_geometry_sent();
         for &(x, y) in &points[1..] {
             self.message(MaskMessage::Handle(MaskPointer::PaintTo { x, y }));
-            self.drain_draft_set();
+            self.assert_geometry_sent();
         }
         self.message(MaskMessage::Handle(MaskPointer::PaintEnd));
         self.commit_open_draft();
@@ -420,9 +402,9 @@ impl Masking {
     /// One whole shape drawn in a stroke, as a press and a drag on the photograph do.
     fn sweep(&mut self, from: (f64, f64), to: (f64, f64)) {
         self.message(MaskMessage::Handle(MaskPointer::Sweep { from, to }));
-        self.drain_draft_set();
+        self.assert_geometry_sent();
         self.message(MaskMessage::Handle(MaskPointer::End));
-        self.drain_draft_set();
+        self.assert_geometry_sent();
     }
 
     /// Draw one whole gradient and commit it, which is what New mask does end to end.
@@ -666,10 +648,10 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
     }));
     for y in [0.6, 0.7, 0.9] {
         masking.message(MaskMessage::Handle(MaskPointer::Drag { x: 0.5, y }));
-        masking.drain_draft_set();
+        masking.assert_geometry_sent();
     }
     masking.message(MaskMessage::Handle(MaskPointer::End));
-    masking.drain_draft_set();
+    masking.assert_geometry_sent();
     assert_eq!(
         masking.editor.history.entries.len(),
         before,
@@ -715,7 +697,7 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
         name: "y1".into(),
         value: 0.5,
     });
-    masking.drain_draft_set();
+    masking.assert_geometry_sent();
     assert_eq!(
         masking
             .editor
@@ -1002,9 +984,9 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
         from: (0.2, 0.5),
         to: (0.8, 0.5),
     }));
-    masking.drain_draft_set();
+    masking.assert_geometry_sent();
     masking.message(MaskMessage::Handle(MaskPointer::End));
-    masking.drain_draft_set();
+    masking.assert_geometry_sent();
     masking.apply();
     let panel = &masking.editor.workspace.masks;
     assert_eq!(panel.components.len(), 2);
@@ -1708,11 +1690,11 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
                 x: from.0 + step.0,
                 y: from.1 + step.1,
             }));
-            masking.drain_draft_set();
+            masking.assert_geometry_sent();
             masking.assert_fields_match_the_draft(&format!("{handle:?} {step:?}"));
         }
         masking.message(MaskMessage::Handle(MaskPointer::End));
-        masking.drain_draft_set();
+        masking.assert_geometry_sent();
     }
     // One drag of seven handles is still one draft, and the commit is one entry.
     let drawn: Vec<(String, f64)> = masking
@@ -2230,7 +2212,7 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
         x: 0.4,
         y: 0.45,
     }));
-    masking.drain_draft_set();
+    masking.assert_geometry_sent();
     masking.modifiers(Modifiers::default());
     assert!(
         masking
@@ -2242,7 +2224,7 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
         "a stroke already down keeps the flag it started with"
     );
     masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.5, y: 0.5 }));
-    masking.drain_draft_set();
+    masking.assert_geometry_sent();
     masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
     masking.commit_open_draft();
 
@@ -2284,7 +2266,7 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
         x: 0.2,
         y: 0.2,
     }));
-    masking.drain_draft_set();
+    masking.assert_geometry_sent();
     masking.message(MaskMessage::Cancel);
     assert!(masking.editor.mask_draft.is_none(), "Escape ends it");
     assert_eq!(
@@ -2376,63 +2358,44 @@ fn deleting_a_stroke_is_a_forward_edit_the_panel_names_as_its_own() {
     );
 }
 
-/// A commit sends the **core** draft's fields, so geometry the gesture has produced but not sent yet
-/// must go out before it.
+/// A commit sends the **core** draft's fields, so every position the gesture has produced must be
+/// in that draft before the commit goes out.
 ///
-/// A hand moving faster than the round trip leaves positions queued; committing there wrote the path
-/// as it was one step ago, which on a brush is most of the stroke. A background capture found it
-/// storing a six-position stroke as one position. The ordering is pinned here rather than left to
-/// the timing that exposed it.
+/// When the gesture's `draft.set` was a runtime task, a hand moving faster than its round trip left
+/// positions queued, and committing there wrote the path as it was one step ago: a background
+/// capture found a six-position stroke stored as one position. The set runs synchronously in the
+/// update that produced each position, so a release finds nothing queued and can only commit the
+/// whole path. That is pinned here rather than left to timing.
 #[test]
-fn a_commit_waits_for_the_geometry_the_gesture_has_not_sent_yet() {
+fn a_release_commits_the_whole_path_the_pointer_drew() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.message(MaskMessage::Paint(PaintTarget::NewMask));
     masking.open_gesture();
     let brush = masking.editor.brush;
 
-    // The press sends its first position and the round trip is in flight.
-    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
-        x: 0.3,
-        y: 0.3,
-    }));
-    assert!(masking.editor.mask_draft_in_flight, "the press sent a set");
-    // Every position after it is queued behind that round trip, which is what a fast hand produces.
+    // Every position reaches the core draft before the next one is handled, however fast they come:
+    // nothing is ever in flight or queued between two messages.
     let drawn = [[0.3, 0.3], [0.4, 0.35], [0.5, 0.4], [0.6, 0.42]];
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: drawn[0][0],
+        y: drawn[0][1],
+    }));
+    masking.assert_geometry_sent();
     for [x, y] in drawn[1..].iter().copied() {
         masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x, y }));
+        masking.assert_geometry_sent();
     }
-    assert!(masking.editor.mask_draft_pending, "positions are queued");
 
-    // The release asks to commit. It must not commit yet: the queued positions are not in the core
-    // draft, and a commit would write the path without them.
+    // So the release commits at once, with no commit held back waiting for geometry.
     masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
     assert!(
-        masking.editor.mask_draft_finish,
-        "the commit is held until the geometry is sent"
-    );
-
-    // Answering the outstanding round trip must send the **queued geometry**, not the commit. This
-    // is the whole of the ordering: a commit here writes the path as it was at the press.
-    assert!(masking.answer_one_draft_set(), "a set was outstanding");
-    assert!(
-        masking.editor.mask_draft_finish,
-        "the commit is still waiting: the queued positions go first"
+        !masking.editor.mask_draft_finish,
+        "nothing was left to send, so no commit is held"
     );
     assert!(
         masking.editor.mask_draft_in_flight,
-        "and what went out is the geometry"
-    );
-    assert!(
-        !masking.editor.mask_draft_pending,
-        "with nothing left queued behind it"
-    );
-
-    // Only once that is answered does the commit run, and what it writes is one whole stroke.
-    assert!(masking.answer_one_draft_set(), "the geometry is answered");
-    assert!(
-        !masking.editor.mask_draft_finish,
-        "the commit has gone out now"
+        "what is in flight is the commit"
     );
     masking.commit_open_draft();
     let held = masking.listing().masks[0].components[0].payload["strokes"]
@@ -2449,6 +2412,161 @@ fn a_commit_waits_for_the_geometry_the_gesture_has_not_sent_yet() {
         held[0].as_str(),
         Some(expected.as_str()),
         "the committed stroke is the whole path the pointer drew"
+    );
+}
+
+/// Discard ends a mask gesture on screen and in the owner, whatever is still on its way back.
+///
+/// The gesture's `draft.set` is synchronous, so no set is in flight when Discard runs, but the
+/// drafted frames it queued can be, and so can a `draft.reapply`. Here the queue is still rendering
+/// the drag when Discard comes, and a `draft.set` answer and a `draft.reapply` answer, both
+/// produced by the owner before it, arrive after it. None of them may present a frame, and none may
+/// leave a draft on the desktop or in the owner.
+#[test]
+fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() {
+    use crate::app::testing::{attach_log, logged};
+
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    // The committed frame is on screen and nothing else is queued, so every frame the queue holds
+    // from here on is one the gesture asked for.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while masking.editor.preview_queue.is_busy() {
+        assert!(Instant::now() < deadline, "the opening frame never arrived");
+        let _ = masking.editor.update(Message::Poll);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let presented = masking.editor.presented_generation;
+    assert_eq!(masking.editor.displayed_draft_revision, None);
+    let log = attach_log(&mut masking.editor);
+
+    // A drag whose drafted frames are still being rendered: nothing polls the queue until Discard.
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.message(MaskMessage::Handle(MaskPointer::Sweep {
+        from: (0.5, 0.2),
+        to: (0.5, 0.8),
+    }));
+    masking.assert_geometry_sent();
+    assert!(
+        masking.editor.preview_queue.is_busy(),
+        "the drag's drafted frames are queued"
+    );
+    let draft_id = masking
+        .editor
+        .mask_draft_id
+        .clone()
+        .expect("the core draft is open");
+
+    // Two answers the owner produces before Discard and the desktop receives after it: a
+    // `draft.set` with its drafted preview job, exactly as the gesture's own helper returns them,
+    // and the `draft.reapply` of a Reapply pressed just before Discard.
+    let fields = Value::Object(masking.editor.mask_draft.as_ref().unwrap().fields());
+    let late_set = tasks::draft_set_now(
+        &masking.owner(),
+        masking.editor.client,
+        draft_id.clone(),
+        masking.asset.clone(),
+        fields,
+        None,
+    );
+    assert!(late_set.is_ok(), "the owner accepts the geometry");
+    masking.message(MaskMessage::Reapply);
+    assert!(
+        masking.editor.mask_draft_in_flight,
+        "the reapply is in flight"
+    );
+    let (rebased, _) = call(
+        &masking.owner(),
+        masking.editor.client,
+        "draft.reapply",
+        json!({"draft_id": draft_id}),
+    )
+    .unwrap();
+    let rebased: lightwell_core::Draft = serde_json::from_value(rebased).unwrap();
+
+    // Discard, as Escape and the Changed elsewhere notice both send it, with the `draft.cancel` it
+    // queues run against the owner as the runtime runs it.
+    masking.message(MaskMessage::Cancel);
+    assert!(
+        masking.editor.mask_draft.is_none(),
+        "Discard ends the gesture"
+    );
+    call(
+        &masking.owner(),
+        masking.editor.client,
+        "draft.cancel",
+        json!({"draft_id": draft_id}),
+    )
+    .expect("the core draft ends");
+    let asked = masking.editor.preview_generation;
+
+    // Both late answers arrive.
+    let _ = masking.editor.mask_draft_set(&draft_id, late_set);
+    let _ = masking
+        .editor
+        .update(Message::MaskDraftReapplied(Ok(Box::new(rebased))));
+    assert_eq!(
+        masking.editor.preview_generation, asked,
+        "a late answer asks for no frame"
+    );
+    assert!(
+        masking.editor.session.draft.is_none(),
+        "a late answer leaves no draft on the desktop"
+    );
+    assert_eq!(masking.editor.snapshot()["draft"], json!(null));
+    assert!(
+        !masking.editor.mask_draft_in_flight && !masking.editor.mask_draft_pending,
+        "and nothing is sent on its behalf"
+    );
+    let (session, _) = call(
+        &masking.owner(),
+        masking.editor.client,
+        "session.state",
+        json!({}),
+    )
+    .unwrap();
+    assert_eq!(session["draft"], json!(null), "nor in the owner");
+
+    // The drag's drafted jobs run to their end through the editor's real queue and worker, and not
+    // one of their frames is presented: the next frame on screen is the committed one Discard
+    // asked for.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while masking.editor.preview_queue.is_busy() {
+        assert!(Instant::now() < deadline, "the drafted jobs never ended");
+        let _ = masking.editor.update(Message::Poll);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        masking.editor.presented_generation, presented,
+        "no frame was presented after Discard"
+    );
+    assert_eq!(masking.editor.displayed_draft_revision, None);
+
+    let records = logged(&mut masking.editor, &log);
+    let events: Vec<&str> = records
+        .iter()
+        .filter_map(|record| record["event"].as_str())
+        .collect();
+    let cancelled = events
+        .iter()
+        .position(|event| *event == "mask_draft_cancelled")
+        .expect("Discard is recorded");
+    assert!(
+        !events[cancelled..].contains(&"mask_draft_preview"),
+        "no drafted frame was queued after Discard: {events:?}"
+    );
+    assert!(
+        !events[cancelled..].contains(&"preview_displayed"),
+        "and none was displayed: {events:?}"
+    );
+    assert_eq!(
+        events[cancelled..]
+            .iter()
+            .filter(|event| **event == "mask_draft_set_dropped")
+            .count(),
+        1,
+        "the late set answer is dropped, and says so: {events:?}"
     );
 }
 
