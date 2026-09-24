@@ -8,8 +8,7 @@
 //! output directory and removed after the run; the copy kept beside the evidence is redacted.
 //! Every file under the output directory is scanned for the sentinel afterwards.
 use crate::{
-    controls_smoke::identity_photo,
-    smoke::{columns, frame_identity, preamble, spawn, wait},
+    scenario::{Frame, Launch, Run, pixels, preamble},
     *,
 };
 use lightwell_core::{
@@ -128,111 +127,71 @@ fn holding(dir: &Path, needles: &[&str]) -> Result<(usize, Vec<String>)> {
     Ok((scanned, found))
 }
 
-pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
-    ensure(!out.exists(), "Smoke output must be new")?;
-    fs::create_dir_all(out)?;
+pub fn run(mut run: Run) -> Result {
     let key = sentinel("sentinel");
     let wrong = sentinel("wrong");
     let endpoint = ProofEndpoint::start(&key)?;
     endpoint.set_delay(DELAY);
     endpoint.set_palette_delay(DELAY);
-    let fixture = root.join(FIXTURE);
+    let fixture = run.root().join(FIXTURE);
     let script = script(&endpoint.generate_url(), &key, &wrong);
-    // The script with the key lives outside the output directory and goes with this function.
-    let scratch = tempfile::tempdir()?;
-    let script_file = scratch.path().join("script.json");
-    write_json(&script_file, &script)?;
-    write_json(&out.join("script.json"), &redacted(&script))?;
-    let evidence = out.join("app");
-    let args: Vec<OsString> = vec![
-        "--evidence-dir".into(),
-        evidence.clone().into_os_string(),
-        "--developer".into(),
-        "--proof-endpoint".into(),
-        endpoint.base_url().into(),
-        "--open".into(),
-        fixture.clone().into_os_string(),
-        "--evidence-script".into(),
-        script_file.clone().into_os_string(),
-        "--window-size".into(),
-        WINDOW[0].into(),
-        WINDOW[1].into(),
-    ];
-    let args = launch::editor_args(&args);
-    let command = std::iter::once(bin.as_os_str())
-        .chain(args.iter().map(OsString::as_os_str))
-        .map(|s| s.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let mut result = json!({"scenario":"capabilities","status":"failed","command":command,"launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"endpoint":endpoint.base_url()});
-    let check = (|| -> Result {
-        let fixture_hash = hash(&fixture)?;
-        result["fixture_hashes"] = json!({"orientation-1.jpg": fixture_hash});
-        result["binary_sha256"] = json!(hash(bin)?);
-        result["lockfile_sha256"] = json!(hash(&root.join("Cargo.lock"))?);
-        let mut child = spawn(root, bin, &args, &out.join("subprocess.log"))?;
-        let status = wait(&mut child, timeout)?;
-        result["exit_code"] = json!(status.code());
-        ensure(status.success(), format!("Application exit {status}"))?;
-        let steps = script.as_array().expect("a script").len();
+    let steps = script.as_array().expect("a script").len();
+    run.record("endpoint", json!(endpoint.base_url()));
+    run.note(
+        "The runner starts a loopback proof endpoint in its own process, writes the script (whose secret steps carry a sentinel key) outside the output directory and keeps a redacted copy as `script.json`, so the script path in the argument array below was a temporary file. A replay reruns every check over the recorded frames and catalog but carries the endpoint's own record and the secret scan from the recorded checks: they are what the endpoint in the runner's process saw and what the run's own sentinel found, and neither is in the evidence.",
+    );
+    let launch = Launch::app()
+        .developer()
+        .proof_endpoint(&endpoint.base_url())
+        .open(&fixture)
+        .secret_script(script.clone(), redacted(&script))
+        .window(WINDOW);
+    let outcome = (|| -> Result {
+        run.hash(std::slice::from_ref(&fixture))?;
+        let evidence = run.launch(launch)?;
         let (app, events) = preamble(&evidence, steps + 1)?;
+        // A replay has no endpoint and no sentinel of the recorded run's: those two checks are
+        // what the recorded run found.
+        let recorded = run
+            .recorded(&evidence.join("capabilities-checks.json"))
+            .map(|path| {
+                read_json(&path).map_err(|error| {
+                    format!("The recorded run's checks, which a replay carries the endpoint's record and the secret scan from, cannot be read: {error}")
+                })
+            })
+            .transpose()?;
         let mut checks = verify(&evidence, &app, &events, steps)?;
-        checks["endpoint"] = endpoint_checks(&endpoint)?;
+        checks["endpoint"] = match &recorded {
+            Some(recorded) => recorded["endpoint"].clone(),
+            None => endpoint_checks(&endpoint)?,
+        };
         checks["render"] = render_checks(&evidence, &app, &endpoint.base_url())?;
         // Everything the run wrote so far, before this runner adds its own summary.
-        let (scanned, found) = holding(out, &[&key, &wrong])?;
-        checks["secret_scan"] = json!({
-            "files_scanned": scanned,
-            "files_holding_a_sentinel": found,
-            "sentinels": 2,
-            "scope": "Every file under the output directory, as bytes",
-        });
+        let (scanned, found) = holding(run.out(), &[&key, &wrong])?;
+        checks["secret_scan"] = match &recorded {
+            Some(recorded) => recorded["secret_scan"].clone(),
+            None => json!({
+                "files_scanned": scanned,
+                "files_holding_a_sentinel": found,
+                "sentinels": 2,
+                "scope": "Every file under the output directory, as bytes",
+            }),
+        };
         write_json(&evidence.join("capabilities-checks.json"), &checks)?;
         ensure(found.is_empty(), format!("A secret reached {found:?}"))?;
-        ensure(hash(&fixture)? == fixture_hash, "Source changed")?;
-        result["backend"] = app["frames"][0]["state"]["backend"].clone();
+        run.sources_unchanged()?;
+        run.record("backend", app["frames"][0]["state"]["backend"].clone());
         Ok(())
     })();
-    drop(scratch);
-    match &check {
-        Ok(()) => result["status"] = json!("passed"),
-        Err(e) => result["error"] = json!(e.to_string()),
-    };
-    write_json(&out.join("result.json"), &result)?;
-    fs::write(
-        out.join("reproduce.md"),
-        format!(
-            "# Smoke run\n\nScenario: capabilities. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask smoke --scenario capabilities --output NEW_DIR --binary PATH`: the runner starts a loopback proof endpoint in its own process, writes the script (whose secret steps carry a sentinel key) outside the output directory and keeps a redacted copy as `script.json`. On macOS the editor runs from a temporary background-only bundle with `--hidden-window`.\n\nArgument array (the script path was a temporary file):\n\n```json\n{}\n```\n\nActual renderer readback. Synthetic fixtures only.\n",
-            result["status"],
-            launch::MODE,
-            serde_json::to_string_pretty(&command)?
-        ),
-    )?;
     // The runner's own files are scanned too: nothing it wrote may hold the key either.
-    let (_, found) = holding(out, &[&key, &wrong])?;
-    if !found.is_empty() {
-        result["status"] = json!("failed");
-        result["error"] = json!(format!("A secret reached {found:?}"));
-        write_json(&out.join("result.json"), &result)?;
-        return Err(format!("A secret reached {found:?}").into());
-    }
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    check
+    run.finish(outcome, |out| {
+        let (_, found) = holding(out, &[&key, &wrong])?;
+        ensure(found.is_empty(), format!("A secret reached {found:?}"))
+    })
 }
 
 fn capability(frame: &Value) -> &Value {
     &frame["state"]["capabilities"][MODULE]
-}
-
-fn notices(frame: &Value) -> Vec<String> {
-    frame["state"]["notices"]
-        .as_array()
-        .map(|notices| {
-            notices
-                .iter()
-                .filter_map(|notice| notice.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn consent<'a>(frame: &'a Value, kind: &str) -> Result<&'a Value> {
@@ -295,10 +254,11 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         }
     }
     let mut per_frame = Vec::new();
+    let mut captured = Vec::new();
     for frame in frames {
-        frame_identity(evidence, app, frame)?;
+        let frame = Frame::identified(evidence, app, frame)?;
         // A secret is only ever set or not set, in every frame.
-        for profile in capability(frame)["settings"]["profiles"]
+        for profile in capability(&frame)["settings"]["profiles"]
             .as_array()
             .into_iter()
             .flatten()
@@ -311,11 +271,12 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         }
         per_frame.push(json!({
             "frame": frame["file"],
-            "view": capability(frame)["view"],
-            "notices": notices(frame),
+            "view": capability(&frame)["view"],
+            "notices": frame.notices(),
         }));
+        captured.push(frame);
     }
-    let frame = |step: usize| &frames[LAYOUT + step];
+    let frame = |step: usize| &captured[LAYOUT + step];
     let settings = |step: usize| &capability(frame(step))["settings"];
     // 0 (the scrolled layout frame): the section expanded; 1: its settings.
     ensure(
@@ -364,7 +325,9 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("Wrong download consent {asked}"),
     )?;
     ensure(
-        notices(frame(7)).contains(&"Allow Capabilities proof to download a resource?".into()),
+        frame(7)
+            .notices()
+            .contains(&"Allow Capabilities proof to download a resource?".into()),
         "The download consent notice is not shown",
     )?;
     ensure(
@@ -415,7 +378,9 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("Wrong photo-data consent {asked}"),
     )?;
     ensure(
-        notices(frame(13)).contains(&"Allow Capabilities proof to send photo data?".into()),
+        frame(13)
+            .notices()
+            .contains(&"Allow Capabilities proof to send photo data?".into()),
         "The photo-data consent notice is not shown",
     )?;
     let running = &capability(frame(14))["tasks"][TASK];
@@ -568,23 +533,22 @@ fn window_mean(
 fn render_checks(evidence: &Path, app: &Value, base: &str) -> Result<Value> {
     const WINDOW_FRACTIONS: [f64; 2] = [0.25, 0.75];
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
-    let (before, after) = (&frames[LAYOUT + 15], &frames[LAYOUT + 16]);
-    let before_path = frame_identity(evidence, app, before)?;
-    let after_path = frame_identity(evidence, app, after)?;
+    let before = &Frame::identified(evidence, app, &frames[LAYOUT + 15])?;
+    let after = &Frame::identified(evidence, app, &frames[LAYOUT + 16])?;
     // The untinted frame still shows the fixture's exact colours, which locate the photograph; a
     // tint changes no geometry, so the tinted frame's photograph is in the same place.
-    let placed = identity_photo(&before_path, before)?;
+    let placed = pixels::identity_photo(before)?;
     let bounds: [f64; 4] = serde_json::from_value(placed["bounds"].clone())?;
     ensure(
-        columns(after)? == columns(before)?,
+        after.columns()? == before.columns()?,
         "The photo surface moved between the frames",
     )?;
-    let capture_mean = |path: &Path| -> Result<[f64; 3]> {
-        let image = image::open(path)?.to_rgb8();
+    let capture_mean = |frame: &Frame| -> Result<[f64; 3]> {
+        let image = frame.image()?;
         window_mean(|x, y| image.get_pixel(x, y).0, bounds, WINDOW_FRACTIONS)
     };
-    let untinted = capture_mean(&before_path)?;
-    let tinted = capture_mean(&after_path)?;
+    let untinted = capture_mean(before)?;
+    let tinted = capture_mean(after)?;
     let gains: Vec<f64> =
         serde_json::from_value(capability(before)["tasks"][TASK]["result"]["gains"].clone())?;
     ensure(gains.len() == 3, "The task published no gains")?;

@@ -6,7 +6,7 @@
 //! brightness check reads a centred window of the canvas, which is inside the fitted photograph at
 //! every zoom this scenario uses and clear of the notices above it and the mode strip below it.
 use crate::{
-    smoke::{Expect, columns, frame_identity, pixels},
+    scenario::{Expect, Frame, Launch, Run, pixels, preamble},
     *,
 };
 
@@ -69,91 +69,14 @@ pub fn script(scenario: &str) -> Option<Value> {
     }
 }
 
-/// The mean Rec. 709 luminance of a centred window of the photo surface. The window is 40% of the
-/// surface's width and 30% of the capture's height about its centre, which lies inside the fitted
-/// photograph at both orientations this scenario shows and touches neither the notice cards at the
-/// top of the canvas nor the mode strip at its bottom.
-fn photo_luminance(path: &Path, frame: &Value) -> Result<f64> {
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [left, right] = columns(frame)?.unwrap_or([0, width]);
-    ensure(left < right && right <= width, "Invalid surface columns")?;
-    let surface = right - left;
-    let (cx, cy) = ((left + right) / 2, height / 2);
-    let (half_w, half_h) = (surface / 5, height * 3 / 20);
-    ensure(
-        half_w > 10 && half_h > 10 && cx > half_w && cy > half_h,
-        "Photo surface too small to sample",
-    )?;
-    let mut total = 0.0;
-    let mut count = 0u32;
-    for y in (cy - half_h)..(cy + half_h) {
-        for x in (cx - half_w)..(cx + half_w) {
-            let p = image.get_pixel(x, y).0;
-            total += 0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]);
-            count += 1;
-        }
-    }
-    ensure(count > 0, "Sampled no pixels")?;
-    Ok(total / f64::from(count))
-}
-
-fn revision(frame: &Value) -> Result<u64> {
-    frame["state"]["stack"]["revision"]
-        .as_u64()
-        .ok_or_else(|| "Frame records no revision".into())
-}
-
-fn entry(frame: &Value) -> Result<&str> {
-    frame["state"]["stack"]["entry"]
-        .as_str()
-        .ok_or_else(|| "Frame records no current entry".into())
-}
-
-fn label(frame: &Value) -> Result<&str> {
-    frame["state"]["stack"]["label"]
-        .as_str()
-        .ok_or_else(|| "Frame records no history label".into())
-}
-
 /// What the Exposure field showed when the frame was captured.
-fn exposure_field(frame: &Value) -> Result<&str> {
-    frame["state"]["controls"][format!("{SET_BASIC}.{EXPOSURE}")]
-        .as_str()
-        .ok_or_else(|| "Frame records no Exposure field".into())
-}
-
-fn notices(frame: &Value) -> Vec<String> {
-    frame["state"]["notices"]
-        .as_array()
-        .map(|notices| {
-            notices
-                .iter()
-                .filter_map(|notice| notice.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// The draft the frame's session reported, or `Null` when the client held none.
-fn draft(frame: &Value) -> &Value {
-    &frame["state"]["draft"]
+fn exposure_field(frame: &Frame) -> Result<&str> {
+    frame.field(SET_BASIC, EXPOSURE)
 }
 
 /// The one Basic layer's stored payload, or `None` when the stack holds no Basic layer.
-fn basic_payload(frame: &Value) -> Option<&Value> {
-    frame["state"]["stack"]["layers"]
-        .as_array()?
-        .iter()
-        .find(|layer| layer["effect"] == json!(lightwell_core::BASIC_EFFECT))
-        .map(|layer| &layer["payload"])
-}
-
-fn expect_no_draft(frame: &Value, what: &str) -> Result {
-    ensure(
-        draft(frame) == &Value::Null,
-        format!("{what}: a draft is still open: {}", draft(frame)),
-    )
+fn basic_payload(frame: &Frame) -> Option<&Value> {
+    frame.payload(lightwell_core::BASIC_EFFECT)
 }
 
 fn brighter(what: &str, more: f64, less: f64) -> Result {
@@ -171,19 +94,14 @@ fn same(what: &str, a: f64, b: f64) -> Result {
 }
 
 pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
     ensure(
         app["had_input_errors"] == json!(false),
         "The run recorded an input error",
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
+    let frames = Frame::all(evidence, app)?;
     let luminance: Vec<f64> = frames
         .iter()
-        .zip(&paths)
-        .map(|(frame, path)| photo_luminance(path, frame))
+        .map(pixels::window_luminance)
         .collect::<Result<Vec<_>>>()?;
     let mut checks = Vec::new();
     let mut record = |frame: &Value, shows: &str, detail: Value| {
@@ -209,7 +127,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             exposure_field(&frames[0])?
         ),
     )?;
-    expect_no_draft(&frames[0], "Frame 0")?;
+    frames[0].expect_no_draft("Frame 0")?;
     ensure(
         basic_payload(&frames[0]).is_none(),
         "The opened stack already holds a Basic layer",
@@ -218,14 +136,14 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         &frames[0],
         "the default panel with the Basic section, Exposure at 0",
         json!({
-            "pixels": pixels(&paths[0], &Expect { columns: columns(&frames[0])?, ..Expect::fit(1) })?,
+            "pixels": frames[0].fixture(Expect::fit(1))?,
             "mean_luminance": luminance[0],
         }),
     );
 
     // Frame 1: mid-gesture at +1.00 EV. The draft is open, nothing is committed, and the
     // photograph on screen is the drafted render, which is brighter.
-    let drafted = draft(&frames[1]);
+    let drafted = frames[1].draft();
     ensure(
         drafted["action"] == json!(SET_BASIC)
             && drafted["fields"] == json!({ EXPOSURE: 1.0 })
@@ -246,7 +164,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         ),
     )?;
     ensure(
-        revision(&frames[1])? == revision(&frames[0])? && basic_payload(&frames[1]).is_none(),
+        frames[1].revision()? == frames[0].revision()? && basic_payload(&frames[1]).is_none(),
         "A drag committed something",
     )?;
     ensure(
@@ -268,22 +186,22 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     );
 
     // Frame 2: the release. One entry, labelled by the module, and the revision advanced by one.
-    expect_no_draft(&frames[2], "Frame 2")?;
+    frames[2].expect_no_draft("Frame 2")?;
     ensure(
-        revision(&frames[2])? == revision(&frames[1])? + 1,
+        frames[2].revision()? == frames[1].revision()? + 1,
         format!(
             "The release advanced the revision from {} to {}, expected one step",
-            revision(&frames[1])?,
-            revision(&frames[2])?
+            frames[1].revision()?,
+            frames[2].revision()?
         ),
     )?;
     ensure(
-        entry(&frames[2])? != entry(&frames[1])?,
+        frames[2].entry()? != frames[1].entry()?,
         "The release created no new history entry",
     )?;
     ensure(
-        label(&frames[2])? == "Exposure +1.00 EV",
-        format!("The committed entry is labelled {:?}", label(&frames[2])?),
+        frames[2].label()? == "Exposure +1.00 EV",
+        format!("The committed entry is labelled {:?}", frames[2].label()?),
     )?;
     ensure(
         basic_payload(&frames[2]) == Some(&json!({ EXPOSURE: 1.0 })),
@@ -300,36 +218,37 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     record(
         &frames[2],
         "released: one entry \"Exposure +1.00 EV\", the revision advanced by one",
-        json!({"revision": revision(&frames[2])?, "label": label(&frames[2])?, "mean_luminance": luminance[2]}),
+        json!({"revision": frames[2].revision()?, "label": frames[2].label()?, "mean_luminance": luminance[2]}),
     );
 
     // Frame 3: a second drag that returned to +1.00 and released. Nothing at all was committed.
-    expect_no_draft(&frames[3], "Frame 3")?;
+    frames[3].expect_no_draft("Frame 3")?;
     ensure(
-        revision(&frames[3])? == revision(&frames[2])? && entry(&frames[3])? == entry(&frames[2])?,
+        frames[3].revision()? == frames[2].revision()?
+            && frames[3].entry()? == frames[2].entry()?,
         format!(
             "A return-to-start gesture created an entry: revision {} entry {}",
-            revision(&frames[3])?,
-            entry(&frames[3])?
+            frames[3].revision()?,
+            frames[3].entry()?
         ),
     )?;
     same("the return-to-start render", luminance[3], luminance[2])?;
     record(
         &frames[3],
         "a drag back to +1.00 EV and released: no entry, no revision",
-        json!({"revision": revision(&frames[3])?, "entry": entry(&frames[3])?}),
+        json!({"revision": frames[3].revision()?, "entry": frames[3].entry()?}),
     );
 
     // Frame 4: -0.50 EV typed into the value field and submitted with Enter. One entry, and the
     // photograph is darker than it was at neutral.
-    expect_no_draft(&frames[4], "Frame 4")?;
+    frames[4].expect_no_draft("Frame 4")?;
     ensure(
-        revision(&frames[4])? == revision(&frames[3])? + 1,
+        frames[4].revision()? == frames[3].revision()? + 1,
         "Enter in the value field did not commit exactly one revision",
     )?;
     ensure(
-        label(&frames[4])? == "Exposure -0.50 EV",
-        format!("The typed entry is labelled {:?}", label(&frames[4])?),
+        frames[4].label()? == "Exposure -0.50 EV",
+        format!("The typed entry is labelled {:?}", frames[4].label()?),
     )?;
     ensure(
         basic_payload(&frames[4]) == Some(&json!({ EXPOSURE: -0.5 })),
@@ -343,12 +262,12 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     record(
         &frames[4],
         "-0.50 EV typed and submitted with Enter: one entry",
-        json!({"label": label(&frames[4])?, "mean_luminance": luminance[4]}),
+        json!({"label": frames[4].label()?, "mean_luminance": luminance[4]}),
     );
 
     // Frame 5: undo. The current entry is the +1.00 one again and the slider re-seeds from it.
     ensure(
-        entry(&frames[5])? == entry(&frames[2])?,
+        frames[5].entry()? == frames[2].entry()?,
         "Undo did not return to the +1.00 EV entry",
     )?;
     ensure(
@@ -371,14 +290,14 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     record(
         &frames[5],
         "history.undo: the values re-seed to +1.00 and the pixels follow",
-        json!({"entry": entry(&frames[5])?, "exposure": exposure_field(&frames[5])?, "mean_luminance": luminance[5]}),
+        json!({"entry": frames[5].entry()?, "exposure": exposure_field(&frames[5])?, "mean_luminance": luminance[5]}),
     );
 
     // Frame 6: the Tone group's reset. One entry labelled by the module, the slider at 0, the
     // layer kept with its neutral payload and the photograph back to the opened one.
     ensure(
-        label(&frames[6])? == "Reset Tone",
-        format!("The group reset is labelled {:?}", label(&frames[6])?),
+        frames[6].label()? == "Reset Tone",
+        format!("The group reset is labelled {:?}", frames[6].label()?),
     )?;
     ensure(
         exposure_field(&frames[6])? == "0.00",
@@ -402,16 +321,16 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     record(
         &frames[6],
         "the Tone group reset: entry \"Reset Tone\", the slider at 0, the layer kept and neutral",
-        json!({"label": label(&frames[6])?, "payload": basic_payload(&frames[6]), "mean_luminance": luminance[6]}),
+        json!({"label": frames[6].label()?, "payload": basic_payload(&frames[6]), "mean_luminance": luminance[6]}),
     );
 
     // Frame 7: a drag to +2.00 EV, left open.
     ensure(
-        draft(&frames[7])["fields"] == json!({ EXPOSURE: 2.0 })
-            && draft(&frames[7])["conflicted"] == json!(false),
+        frames[7].draft()["fields"] == json!({ EXPOSURE: 2.0 })
+            && frames[7].draft()["conflicted"] == json!(false),
         format!(
             "Frame 7's draft is not the open gesture: {}",
-            draft(&frames[7])
+            frames[7].draft()
         ),
     )?;
     brighter(
@@ -422,12 +341,12 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     record(
         &frames[7],
         "a drag to +2.00 EV, left open",
-        json!({"draft": draft(&frames[7]), "mean_luminance": luminance[7]}),
+        json!({"draft": frames[7].draft(), "mean_luminance": luminance[7]}),
     );
 
     // Frame 8: a commit by another route while that gesture is open. The draft is kept, marked
     // conflicted, and the Changed elsewhere notice offers the two decisions.
-    let conflict_notices = notices(&frames[8]);
+    let conflict_notices = frames[8].notices();
     ensure(
         conflict_notices
             .iter()
@@ -435,18 +354,18 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         format!("Frame 8's notices do not include the conflict: {conflict_notices:?}"),
     )?;
     ensure(
-        draft(&frames[8])["conflicted"] == json!(true),
+        frames[8].draft()["conflicted"] == json!(true),
         format!(
             "The gesture was not marked conflicted: {}",
-            draft(&frames[8])
+            frames[8].draft()
         ),
     )?;
     ensure(
-        draft(&frames[8])["fields"] == json!({ EXPOSURE: 2.0 }),
+        frames[8].draft()["fields"] == json!({ EXPOSURE: 2.0 }),
         "The conflicted draft lost the value the gesture set",
     )?;
     ensure(
-        revision(&frames[8])? == revision(&frames[7])? + 1,
+        frames[8].revision()? == frames[7].revision()? + 1,
         "The external commit did not advance the revision by one",
     )?;
     ensure(
@@ -459,22 +378,22 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     record(
         &frames[8],
         "a commit during the gesture: Changed elsewhere, the draft kept and conflicted",
-        json!({"notices": conflict_notices, "draft": draft(&frames[8]), "revision": revision(&frames[8])?}),
+        json!({"notices": conflict_notices, "draft": frames[8].draft(), "revision": frames[8].revision()?}),
     );
 
     // Frame 9: Reapply. The draft is rebased on the new revision, its value is re-sent and the
     // drafted preview returns over the committed stack.
-    let reapplied = draft(&frames[9]);
+    let reapplied = frames[9].draft();
     ensure(
         reapplied["conflicted"] == json!(false),
         format!("Reapply did not clear the conflict: {reapplied}"),
     )?;
     ensure(
-        reapplied["base_revision"].as_u64() == Some(revision(&frames[9])?),
+        reapplied["base_revision"].as_u64() == Some(frames[9].revision()?),
         format!(
             "The reapplied draft is based on {} while the asset is at {}",
             reapplied["base_revision"],
-            revision(&frames[9])?
+            frames[9].revision()?
         ),
     )?;
     ensure(
@@ -482,8 +401,8 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         "Reapply lost the field this client set",
     )?;
     ensure(
-        notices(&frames[9]).is_empty(),
-        format!("Frame 9 still shows a notice: {:?}", notices(&frames[9])),
+        frames[9].notices().is_empty(),
+        format!("Frame 9 still shows a notice: {:?}", frames[9].notices()),
     )?;
     brighter(
         "the reapplied +2.00 EV against the committed stack",
@@ -498,10 +417,10 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
 
     // Frame 10: Discard. The gesture is over, nothing was committed for it, and the canvas is the
     // committed stack again.
-    expect_no_draft(&frames[10], "Frame 10")?;
+    frames[10].expect_no_draft("Frame 10")?;
     ensure(
-        revision(&frames[10])? == revision(&frames[9])?
-            && entry(&frames[10])? == entry(&frames[9])?,
+        frames[10].revision()? == frames[9].revision()?
+            && frames[10].entry()? == frames[9].entry()?,
         "Discarding the draft committed something",
     )?;
     ensure(
@@ -519,7 +438,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     record(
         &frames[10],
         "Discard: the gesture ends, nothing is committed and the committed pixels return",
-        json!({"revision": revision(&frames[10])?, "mean_luminance": luminance[10]}),
+        json!({"revision": frames[10].revision()?, "mean_luminance": luminance[10]}),
     );
 
     // Every drafted and committed frame the gesture presented reports its own render time, and the
@@ -555,54 +474,37 @@ const RESTART_TEMPERATURE: f64 = 25.0;
 /// Two launches, because a restart cannot be simulated inside one process: the first commits a
 /// Basic edit into its own evidence catalog, the second reopens that catalog and the same file and
 /// must show the same values, the same layer and the same brighter photograph.
-pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Duration) -> Result {
-    ensure(!out.exists(), "Smoke output must be new")?;
-    fs::create_dir_all(out)?;
-    let fixture = root.join(RESTART_FIXTURE);
-    let launch1 = out.join("launch1");
-    let launch2 = out.join("launch2");
-    let mut result = json!({"scenario":"basic-restart","status":"failed","launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
-    let check = (|| -> Result {
-        result["fixture_hash"] = json!(hash(&fixture)?);
-        result["binary_sha256"] = json!(hash(bin)?);
-        result["lockfile_sha256"] = json!(hash(&root.join("Cargo.lock"))?);
+pub fn restart(mut run: Run) -> Result {
+    let fixture = run.root().join(RESTART_FIXTURE);
+    run.note(
+        "Two launches, because a restart cannot be simulated inside one process: the first opens the fixture and commits one `edit.set-basic` patch of exposure and temperature; the second reuses that launch's own catalog (`--catalog <dir1>/catalog.sqlite`) and reopens the same file, which the catalog dedupes to the same asset, so the saved Basic layer, its identity, the slider values, the history label and the rendered brightness all come back.",
+    );
+    run.check(|run| {
+        run.hash(std::slice::from_ref(&fixture))?;
 
         // Launch 1: open the fixture, commit one Basic patch through the ordinary edit path.
-        let script = out.join("script1.json");
-        write_json(
-            &script,
-            &json!([{"api":{"method":"edit.set-basic","params":{"exposure":RESTART_EXPOSURE,"temperature":RESTART_TEMPERATURE}}}]),
+        let launch1 = run.launch(
+            Launch::named("launch1")
+                .open(&fixture)
+                .script(
+                    "script1.json",
+                    json!([{"api":{"method":"edit.set-basic","params":{"exposure":RESTART_EXPOSURE,"temperature":RESTART_TEMPERATURE}}}]),
+                )
+                .window(workspace_smoke::WINDOW),
         )?;
-        let args1: Vec<OsString> = vec![
-            "--evidence-dir".into(),
-            launch1.clone().into_os_string(),
-            "--open".into(),
-            fixture.clone().into_os_string(),
-            "--evidence-script".into(),
-            script.into_os_string(),
-            "--window-size".into(),
-            workspace_smoke::WINDOW[0].into(),
-            workspace_smoke::WINDOW[1].into(),
-        ];
-        let mut child1 = smoke::spawn_editor(root, bin, &args1, &out.join("launch1.log"))?;
-        let status1 = smoke::wait(&mut child1, timeout)?;
-        result["launch1_exit_code"] = json!(status1.code());
-        ensure(status1.success(), format!("Launch 1 exit {status1}"))?;
-        let (app1, _) = smoke::preamble(&launch1, 2)?;
+        let (app1, _) = preamble(&launch1, 2)?;
         let frames1 = app1["frames"]
             .as_array()
             .ok_or("Launch 1 wrote no frames")?;
-        let opened = &frames1[0];
-        let committed = &frames1[1];
-        let opened_path = smoke::frame_identity(&launch1, &app1, opened)?;
-        let committed_path = smoke::frame_identity(&launch1, &app1, committed)?;
+        let opened = &Frame::identified(&launch1, &app1, &frames1[0])?;
+        let committed = &Frame::identified(&launch1, &app1, &frames1[1])?;
         ensure(
             basic_payload(opened).is_none(),
             "Launch 1 opened with a Basic layer already in the stack",
         )?;
         ensure(
-            revision(committed)? == 1,
-            format!("Launch 1 committed revision {}", revision(committed)?),
+            committed.revision()? == 1,
+            format!("Launch 1 committed revision {}", committed.revision()?),
         )?;
         let stored = basic_payload(committed)
             .ok_or("Launch 1 committed no Basic layer")?
@@ -614,8 +516,8 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
         let layer = basic_layer_id(committed)
             .ok_or("Launch 1's Basic layer has no identity")?
             .to_owned();
-        let neutral_luminance = photo_luminance(&opened_path, opened)?;
-        let edited_luminance = photo_luminance(&committed_path, committed)?;
+        let neutral_luminance = pixels::window_luminance(opened)?;
+        let edited_luminance = pixels::window_luminance(committed)?;
         brighter(
             "launch 1's committed edit against its own neutral open",
             edited_luminance,
@@ -626,32 +528,26 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
         // reopened file to the same asset by file identity, so its saved stack comes back.
         let catalog = launch1.join("catalog.sqlite");
         ensure(catalog.is_file(), "Launch 1 wrote no catalog")?;
-        let args2: Vec<OsString> = vec![
-            "--catalog".into(),
-            catalog.into_os_string(),
-            "--evidence-dir".into(),
-            launch2.clone().into_os_string(),
-            "--open".into(),
-            fixture.clone().into_os_string(),
-            "--window-size".into(),
-            workspace_smoke::WINDOW[0].into(),
-            workspace_smoke::WINDOW[1].into(),
-        ];
-        let mut child2 = smoke::spawn_editor(root, bin, &args2, &out.join("launch2.log"))?;
-        let status2 = smoke::wait(&mut child2, timeout)?;
-        result["launch2_exit_code"] = json!(status2.code());
-        ensure(status2.success(), format!("Launch 2 exit {status2}"))?;
-        let (app2, _) = smoke::preamble(&launch2, 1)?;
-        let reopened = &app2["frames"]
-            .as_array()
-            .ok_or("Launch 2 wrote no frames")?[0];
-        let reopened_path = smoke::frame_identity(&launch2, &app2, reopened)?;
+        let launch2 = run.launch(
+            Launch::named("launch2")
+                .catalog(&catalog)
+                .open(&fixture)
+                .window(workspace_smoke::WINDOW),
+        )?;
+        let (app2, _) = preamble(&launch2, 1)?;
+        let reopened = &Frame::identified(
+            &launch2,
+            &app2,
+            &app2["frames"]
+                .as_array()
+                .ok_or("Launch 2 wrote no frames")?[0],
+        )?;
         ensure(
-            revision(reopened)? == revision(committed)? && entry(reopened)? == entry(committed)?,
+            reopened.revision()? == committed.revision()? && reopened.entry()? == committed.entry()?,
             format!(
                 "Launch 2 reopened at revision {} entry {}",
-                revision(reopened)?,
-                entry(reopened)?
+                reopened.revision()?,
+                reopened.entry()?
             ),
         )?;
         ensure(
@@ -676,15 +572,15 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
             ),
         )?;
         ensure(
-            label(reopened)? == label(committed)?,
+            reopened.label()? == committed.label()?,
             format!(
                 "Launch 2's history label is {:?}, launch 1 committed {:?}",
-                label(reopened)?,
-                label(committed)?
+                reopened.label()?,
+                committed.label()?
             ),
         )?;
         // The photograph itself is the edited one again, to the same measured brightness.
-        let reopened_luminance = photo_luminance(&reopened_path, reopened)?;
+        let reopened_luminance = pixels::window_luminance(reopened)?;
         same(
             "the reopened render against the render launch 1 committed",
             reopened_luminance,
@@ -695,16 +591,13 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
             reopened_luminance,
             neutral_luminance,
         )?;
-        ensure(
-            json!(hash(&fixture)?) == result["fixture_hash"],
-            "Source changed",
-        )?;
+        run.sources_unchanged()?;
         write_json(
-            &out.join("basic-restart-checks.json"),
+            &run.out().join("basic-restart-checks.json"),
             &json!({
                 "stored_payload": stored,
                 "basic_layer": layer,
-                "label": label(reopened)?,
+                "label": reopened.label()?,
                 "fields_after_restart": {
                     EXPOSURE: basic_field(reopened, EXPOSURE)?,
                     TEMPERATURE: basic_field(reopened, TEMPERATURE)?,
@@ -720,21 +613,7 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
             }),
         )?;
         Ok(())
-    })();
-    match &check {
-        Ok(()) => result["status"] = json!("passed"),
-        Err(e) => result["error"] = json!(e.to_string()),
-    };
-    write_json(&out.join("result.json"), &result)?;
-    fs::write(
-        out.join("reproduce.md"),
-        format!(
-            "# Smoke run\n\nScenario: basic-restart. Status: {}.\n\nTwo launches, because a restart cannot be simulated inside one process: the first opens the fixture and commits one `edit.set-basic` patch of exposure and temperature; the second reuses that launch's own catalog (`--catalog <dir1>/catalog.sqlite`) and reopens the same file, which the catalog dedupes to the same asset, so the saved Basic layer, its identity, the slider values, the history label and the rendered brightness all come back.\n\nReproduce with `cargo xtask smoke --scenario basic-restart --output NEW_DIR --binary PATH`.\n",
-            result["status"],
-        ),
-    )?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    check
+    })
 }
 
 // -------------------------------------------------------------------------------------------
@@ -781,43 +660,15 @@ const WARMER: f64 = 8.0;
 const NEUTRAL: f64 = 1.5;
 
 /// Where the photograph is drawn in a captured frame, for a fixture with no coloured quadrants to
-/// match on. Inside the photo surface, between the notices at the top of the canvas and the
-/// floating mode strip at its bottom, the only thing brighter than the canvas surface (`#19191b`)
-/// and the bars over it (`#232326`) is the photograph itself, so its bounding box is the bright
-/// pixels of that band. The scenario draws no notice, which `verify_panel` checks per frame.
-fn photo_bounds(path: &Path, frame: &Value) -> Result<Value> {
-    /// Well above the brightest chrome in the band and well below the fixture's darkest grey.
+/// match on: the bright pixels of the band between the notices at the top of the canvas and the
+/// floating mode strip at its bottom, which `verify_panel` checks no frame draws a notice into. The
+/// threshold is well above the brightest chrome in the band and well below the fixture's darkest
+/// grey. The photograph must be the fixture's 3:2, centred, and fill the surface at Fit.
+fn placement(frame: &Frame) -> Result<Value> {
     const BRIGHT: u32 = 60;
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [surface_left, surface_right] = columns(frame)?.unwrap_or([0, width]);
-    ensure(
-        surface_left < surface_right && surface_right <= width,
-        "Invalid surface columns",
-    )?;
-    let (band_top, band_bottom) = (height * 3 / 20, height * 22 / 25);
-    // The 1 px dividers at the surface's own edges are 6% white over the panel, which is as bright
-    // as this fixture's darkest grey, so the scan starts inside them.
-    const INSET: u32 = 4;
-    let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
-    let mut found = 0u32;
-    for y in band_top..band_bottom {
-        for x in (surface_left + INSET)..(surface_right - INSET) {
-            let pixel = image.get_pixel(x, y).0;
-            let mean = (u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2])) / 3;
-            if mean >= BRIGHT {
-                found += 1;
-                left = left.min(x);
-                top = top.min(y);
-                right = right.max(x + 1);
-                bottom = bottom.max(y + 1);
-            }
-        }
-    }
-    ensure(
-        found > 0,
-        "No photograph in the frame: blank or wrong render",
-    )?;
+    let [left, top, right, bottom] = pixels::band_bounds(frame, BRIGHT)?;
+    let (width, height) = frame.image()?.dimensions();
+    let [surface_left, surface_right] = frame.columns()?.unwrap_or([0, width]);
     let (drawn_width, drawn_height) = (right - left, bottom - top);
     let measured = f64::from(drawn_width) / f64::from(drawn_height);
     let expected = 3.0 / 2.0;
@@ -846,34 +697,6 @@ fn photo_bounds(path: &Path, frame: &Value) -> Result<Value> {
     }))
 }
 
-/// The mean per-channel value of the same centred window [`photo_luminance`] reads.
-fn photo_channels(path: &Path, frame: &Value) -> Result<[f64; 3]> {
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [left, right] = columns(frame)?.unwrap_or([0, width]);
-    ensure(left < right && right <= width, "Invalid surface columns")?;
-    let surface = right - left;
-    let (cx, cy) = ((left + right) / 2, height / 2);
-    let (half_w, half_h) = (surface / 5, height * 3 / 20);
-    ensure(
-        half_w > 10 && half_h > 10 && cx > half_w && cy > half_h,
-        "Photo surface too small to sample",
-    )?;
-    let mut totals = [0.0; 3];
-    let mut count = 0u32;
-    for y in (cy - half_h)..(cy + half_h) {
-        for x in (cx - half_w)..(cx + half_w) {
-            let p = image.get_pixel(x, y).0;
-            for channel in 0..3 {
-                totals[channel] += f64::from(p[channel]);
-            }
-            count += 1;
-        }
-    }
-    ensure(count > 0, "Sampled no pixels")?;
-    Ok(totals.map(|total| total / f64::from(count)))
-}
-
 /// Mean red minus mean blue: the honest measure of a warm/cool shift on a neutral fixture, where
 /// luminance barely moves because the white-balance transform preserves it by construction.
 fn balance(channels: [f64; 3]) -> f64 {
@@ -898,25 +721,13 @@ fn neutral_text(name: &str) -> Result<String> {
 }
 
 /// What one generated Basic field showed when the frame was captured.
-fn basic_field<'a>(frame: &'a Value, name: &str) -> Result<&'a str> {
-    frame["state"]["controls"][format!("{SET_BASIC}.{name}")]
-        .as_str()
-        .ok_or_else(|| format!("Frame records no {name} field").into())
+fn basic_field<'a>(frame: &'a Frame, name: &str) -> Result<&'a str> {
+    frame.field(SET_BASIC, name)
 }
 
 /// The one Basic layer's identity, so evidence can prove an edit updated it in place.
-fn basic_layer_id(frame: &Value) -> Option<&str> {
-    frame["state"]["stack"]["layers"]
-        .as_array()?
-        .iter()
-        .find(|layer| layer["effect"] == json!(lightwell_core::BASIC_EFFECT))
-        .and_then(|layer| layer["id"].as_str())
-}
-
-fn status(frame: &Value) -> Result<&str> {
-    frame["state"]["status"]
-        .as_str()
-        .ok_or_else(|| "Frame records no status".into())
+fn basic_layer_id(frame: &Frame) -> Option<&str> {
+    frame.layer_id(lightwell_core::BASIC_EFFECT)
 }
 
 /// The evidence script. Each step is one gesture, one request or one decision; `verify_panel`
@@ -945,24 +756,18 @@ pub fn panel_script(scenario: &str) -> Option<Value> {
 }
 
 pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
     ensure(
         app["had_input_errors"] == json!(false),
         "The run recorded an input error",
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
+    let frames = Frame::all(evidence, app)?;
     let channels: Vec<[f64; 3]> = frames
         .iter()
-        .zip(&paths)
-        .map(|(frame, path)| photo_channels(path, frame))
+        .map(pixels::window_rgb)
         .collect::<Result<Vec<_>>>()?;
     let luminance: Vec<f64> = frames
         .iter()
-        .zip(&paths)
-        .map(|(frame, path)| photo_luminance(path, frame))
+        .map(pixels::window_luminance)
         .collect::<Result<Vec<_>>>()?;
     let mut checks = Vec::new();
     let mut record = |frame: &Value, shows: &str, detail: Value| {
@@ -997,7 +802,7 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             balance(channels[0])
         ),
     )?;
-    // No frame in this scenario draws a notice, which is what lets `photo_bounds` read the band
+    // No frame in this scenario draws a notice, which is what lets `placement` read the band
     // between the notices and the mode strip as photograph and canvas surface only.
     for (index, frame) in frames.iter().enumerate() {
         ensure(
@@ -1012,7 +817,7 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         &frames[0],
         "the Basic section with White balance, Tone and Colour, every field at its default",
         json!({
-            "placement": photo_bounds(&paths[0], &frames[0])?,
+            "placement": placement(&frames[0])?,
             "fields": listed,
             "red_minus_blue": balance(channels[0]),
         }),
@@ -1020,14 +825,14 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
 
     // Frame 1: a Temperature drag to +40, released. One entry, one revision, and the neutral
     // fixture is visibly warmer.
-    expect_no_draft(&frames[1], "Frame 1")?;
+    frames[1].expect_no_draft("Frame 1")?;
     ensure(
-        revision(&frames[1])? == revision(&frames[0])? + 1,
+        frames[1].revision()? == frames[0].revision()? + 1,
         "The released drag did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[1])? == "Temperature +40",
-        format!("The committed entry is labelled {:?}", label(&frames[1])?),
+        frames[1].label()? == "Temperature +40",
+        format!("The committed entry is labelled {:?}", frames[1].label()?),
     )?;
     ensure(
         basic_payload(&frames[1]) == Some(&json!({ TEMPERATURE: 40.0 })),
@@ -1054,17 +859,17 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[1],
         "Temperature dragged to +40 and released: one entry, the photograph warmer",
-        json!({"label": label(&frames[1])?, "red_minus_blue": balance(channels[1]), "layer": identity}),
+        json!({"label": frames[1].label()?, "red_minus_blue": balance(channels[1]), "layer": identity}),
     );
 
     // Frame 2: Vibrance typed and committed with Enter. The patch merges into the same layer.
     ensure(
-        revision(&frames[2])? == revision(&frames[1])? + 1,
+        frames[2].revision()? == frames[1].revision()? + 1,
         "Enter in the value field did not commit exactly one revision",
     )?;
     ensure(
-        label(&frames[2])? == "Vibrance +25",
-        format!("The typed entry is labelled {:?}", label(&frames[2])?),
+        frames[2].label()? == "Vibrance +25",
+        format!("The typed entry is labelled {:?}", frames[2].label()?),
     )?;
     ensure(
         basic_payload(&frames[2]) == Some(&json!({ TEMPERATURE: 40.0, VIBRANCE: 25.0 })),
@@ -1080,16 +885,16 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[2],
         "Vibrance typed as 25 and committed with Enter: the same layer, both fields",
-        json!({"label": label(&frames[2])?, "payload": basic_payload(&frames[2])}),
+        json!({"label": frames[2].label()?, "payload": basic_payload(&frames[2])}),
     );
 
     // Frame 3: the Temperature entry previewed. The sliders show that entry's own saved values,
     // which are not the current ones, and nothing is committed.
     ensure(
-        status(&frames[3])?.starts_with("Previewing entry 1"),
+        frames[3].status()?.starts_with("Previewing entry 1"),
         format!(
             "Frame 3 is not previewing entry 1: {:?}",
-            status(&frames[3])?
+            frames[3].status()?
         ),
     )?;
     ensure(
@@ -1101,13 +906,13 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ),
     )?;
     ensure(
-        revision(&frames[3])? == revision(&frames[2])?,
+        frames[3].revision()? == frames[2].revision()?,
         "Selecting a history entry committed something",
     )?;
     record(
         &frames[3],
         "the Temperature entry previewed: its own saved values in the disabled sliders",
-        json!({"status": status(&frames[3])?, "temperature": basic_field(&frames[3], TEMPERATURE)?, "vibrance": basic_field(&frames[3], VIBRANCE)?}),
+        json!({"status": frames[3].status()?, "temperature": basic_field(&frames[3], TEMPERATURE)?, "vibrance": basic_field(&frames[3], VIBRANCE)?}),
     );
 
     // Frame 4: Return to current. The current entry's values come back.
@@ -1119,20 +924,20 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ),
     )?;
     ensure(
-        revision(&frames[4])? == revision(&frames[2])?,
+        frames[4].revision()? == frames[2].revision()?,
         "Return to current changed the revision",
     )?;
     record(
         &frames[4],
         "Return to current: the current entry's values are shown again",
-        json!({"vibrance": basic_field(&frames[4], VIBRANCE)?, "status": status(&frames[4])?}),
+        json!({"vibrance": basic_field(&frames[4], VIBRANCE)?, "status": frames[4].status()?}),
     );
 
     // Frame 5: the Colour group's reset. One entry labelled by the module, the group's own fields
     // neutral, every other field untouched and the layer kept.
     ensure(
-        label(&frames[5])? == format!("Reset {COLOUR_GROUP}"),
-        format!("The group reset is labelled {:?}", label(&frames[5])?),
+        frames[5].label()? == format!("Reset {COLOUR_GROUP}"),
+        format!("The group reset is labelled {:?}", frames[5].label()?),
     )?;
     ensure(
         basic_payload(&frames[5]) == Some(&json!({ TEMPERATURE: 40.0 })),
@@ -1152,7 +957,7 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[5],
         "the Colour group reset: one entry, that group neutral, White balance untouched",
-        json!({"label": label(&frames[5])?, "payload": basic_payload(&frames[5]), "layer": identity}),
+        json!({"label": frames[5].label()?, "payload": basic_payload(&frames[5]), "layer": identity}),
     );
 
     // Frame 6: the neutral picker's canvas mode.
@@ -1164,11 +969,11 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ),
     )?;
     ensure(
-        status(&frames[6])?.starts_with("Neutral picker"),
-        format!("The picker mode says {:?}", status(&frames[6])?),
+        frames[6].status()?.starts_with("Neutral picker"),
+        format!("The picker mode says {:?}", frames[6].status()?),
     )?;
     ensure(
-        revision(&frames[6])? == revision(&frames[5])?,
+        frames[6].revision()? == frames[5].revision()?,
         "Entering the picker mode committed something",
     )?;
     // The picker lives in the White balance group, beside the two fields a pick sets, and reads
@@ -1196,7 +1001,7 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
          button do; that button reads selected inside the White balance group",
         json!({
             "mode": frames[6]["state"]["workspace"]["mode"],
-            "status": status(&frames[6])?,
+            "status": frames[6].status()?,
             "picker": picker(&frames[6]),
         }),
     );
@@ -1205,7 +1010,7 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     // and that patch is committed once through the ordinary action path, so the warm cast the
     // drag left is gone and the photograph is the opened one again.
     ensure(
-        revision(&frames[7])? == revision(&frames[6])? + 1,
+        frames[7].revision()? == frames[6].revision()? + 1,
         "The pick did not commit exactly one revision",
     )?;
     ensure(
@@ -1230,8 +1035,8 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     // The module labels a patch that returns exactly one group to neutral by that group's name,
     // whatever route sent it, and a pick of a neutral patch is exactly such a patch.
     ensure(
-        label(&frames[7])? == format!("Reset {WHITE_BALANCE_GROUP}"),
-        format!("The pick's entry is labelled {:?}", label(&frames[7])?),
+        frames[7].label()? == format!("Reset {WHITE_BALANCE_GROUP}"),
+        format!("The pick's entry is labelled {:?}", frames[7].label()?),
     )?;
     ensure(
         (balance(channels[7]) - balance(channels[0])).abs() <= NEUTRAL,
@@ -1248,20 +1053,21 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[7],
         "a pick on a neutral grey patch: temperature and tint 0, committed once, the mode kept",
-        json!({"label": label(&frames[7])?, "payload": basic_payload(&frames[7]), "red_minus_blue": balance(channels[7]), "mean_luminance": luminance[7]}),
+        json!({"label": frames[7].label()?, "payload": basic_payload(&frames[7]), "red_minus_blue": balance(channels[7]), "mean_luminance": luminance[7]}),
     );
 
     // Frame 8: a pick on a clipped patch. The core's own reason leads the status bar and nothing
     // at all is committed.
     ensure(
-        status(&frames[8])?.starts_with("clipped:"),
+        frames[8].status()?.starts_with("clipped:"),
         format!(
             "The refused pick does not lead with its reason: {:?}",
-            status(&frames[8])?
+            frames[8].status()?
         ),
     )?;
     ensure(
-        revision(&frames[8])? == revision(&frames[7])? && entry(&frames[8])? == entry(&frames[7])?,
+        frames[8].revision()? == frames[7].revision()?
+            && frames[8].entry()? == frames[7].entry()?,
         "A refused pick committed something",
     )?;
     same(
@@ -1272,7 +1078,7 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[8],
         "a pick on a clipped patch: refused with its reason, nothing committed",
-        json!({"status": status(&frames[8])?, "revision": revision(&frames[8])?}),
+        json!({"status": frames[8].status()?, "revision": frames[8].revision()?}),
     );
 
     // Frame 0 is also the default screen the Module panels density is accepted on: Basic expanded

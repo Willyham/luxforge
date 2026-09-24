@@ -1,6 +1,7 @@
 //! Rendered evidence for the opt-in control vocabulary and its identity photo layer.
 use crate::{
-    smoke::{columns, frame_identity, script_request_matches},
+    scenario::{Frame, pixels},
+    smoke::script_request_matches,
     *,
 };
 
@@ -61,18 +62,8 @@ pub fn script(scenario: &str) -> Option<Value> {
     ]))
 }
 
-fn payload(frame: &Value) -> Option<&Value> {
-    frame["state"]["stack"]["layers"]
-        .as_array()?
-        .iter()
-        .find(|layer| layer["effect"] == EFFECT)
-        .map(|layer| &layer["payload"])
-}
-
-fn revision(frame: &Value) -> Result<u64> {
-    frame["state"]["stack"]["revision"]
-        .as_u64()
-        .ok_or_else(|| "Missing stack revision".into())
+fn payload(frame: &Frame) -> Option<&Value> {
+    frame.payload(EFFECT)
 }
 
 fn control_model<'a>(frame: &'a Value, kind: &str, parameter: &str) -> Option<&'a Value> {
@@ -82,15 +73,16 @@ fn control_model<'a>(frame: &'a Value, kind: &str, parameter: &str) -> Option<&'
         .find(|model| model["action"] == ACTION && model["parameter"] == parameter)
 }
 
-fn sidebar_difference(first: &Path, second: &Path, frame: &Value) -> Result<u32> {
-    let first = image::open(first)?.to_rgb8();
-    let second = image::open(second)?.to_rgb8();
+fn sidebar_difference(first: &Frame, second: &Frame) -> Result<u32> {
+    let frame = second;
+    let first = first.image()?;
+    let second = second.image()?;
     ensure(
         first.dimensions() == second.dimensions(),
         "Tools captures have different sizes",
     )?;
     let (width, height) = first.dimensions();
-    let [_, surface_right] = columns(frame)?.unwrap_or([0, width]);
+    let [_, surface_right] = frame.columns()?.unwrap_or([0, width]);
     ensure(
         surface_right + 40 < width,
         "Controls capture has no tools sidebar",
@@ -108,92 +100,33 @@ fn sidebar_difference(first: &Path, second: &Path, frame: &Value) -> Result<u32>
     Ok(changed)
 }
 
-/// The control rail and picker can contain the fixture's quadrant colours in the sidebar. Scan
-/// only the photo surface, then compare four interior points to the unedited orientation-1 image.
-pub fn identity_photo(path: &Path, frame: &Value) -> Result<Value> {
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [surface_left, surface_right] = columns(frame)?.unwrap_or([0, width]);
-    ensure(
-        surface_left < surface_right && surface_right <= width,
-        "Invalid photo surface",
-    )?;
-    let colours = fixtures::COLORS;
-    let matches =
-        |pixel: [u8; 3], colour: [u8; 3]| pixel.iter().zip(colour).all(|(a, b)| a.abs_diff(b) <= 8);
-    let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
-    for y in (0..height).step_by(4) {
-        for x in (surface_left..surface_right).step_by(4) {
-            if colours
-                .iter()
-                .any(|colour| matches(image.get_pixel(x, y).0, *colour))
-            {
-                left = left.min(x);
-                top = top.min(y);
-                right = right.max(x + 4);
-                bottom = bottom.max(y + 4);
-            }
-        }
-    }
-    ensure(
-        right > left + 120 && bottom > top + 80,
-        "Identity photo is absent or too small",
-    )?;
-    let aspect = f64::from(right - left) / f64::from(bottom - top);
-    ensure(
-        (aspect - 1.5).abs() < 0.02,
-        format!("Identity photo aspect is {aspect}"),
-    )?;
-    let mut samples = Vec::new();
-    for ((fx, fy), colour) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
-        .into_iter()
-        .zip(colours)
-    {
-        let x = (f64::from(left) + fx * f64::from(right - left)).round() as u32;
-        let y = (f64::from(top) + fy * f64::from(bottom - top)).round() as u32;
-        ensure(
-            x < width && y < height,
-            "Identity photo sample outside capture",
-        )?;
-        let pixel = image.get_pixel(x, y).0;
-        ensure(
-            matches(pixel, colour),
-            format!("Identity photo colour changed at {x},{y}"),
-        )?;
-        samples.push(pixel);
-    }
-    Ok(
-        json!({"bounds":[left,top,right,bottom],"aspect":aspect,"corner_rgb":samples,
-        "tolerance_per_channel":8,"scope":"Displayed photo surface; control sidebar excluded"}),
-    )
-}
-
 /// Every step is backed by a renderer readback, state file and matching script event. The photo
 /// checker proves that all proof edits kept the original's exact displayed fixture colours.
 pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    let records = app["frames"].as_array().ok_or("Missing frames")?;
     let script = script("controls").expect("static script");
     let steps = script.as_array().unwrap();
     ensure(
-        frames.len() == steps.len() + 1,
+        records.len() == steps.len() + 1,
         "Wrong controls capture count",
     )?;
     ensure(
         app["had_input_errors"] == false,
         "Controls script reported an input error",
     )?;
-    let proof = frames[0]["state"]["modules"]
+    let proof = records[0]["state"]["modules"]
         .as_array()
         .ok_or("Missing modules")?
         .iter()
         .find(|module| module["id"] == MODULE)
         .ok_or("Proof module not discovered")?;
     ensure(
-        proof["available"] == true && frames[0]["state"]["developer"] == true,
+        proof["available"] == true && records[0]["state"]["developer"] == true,
         "Controls module not available in developer mode",
     )?;
+    let opened = &Frame::state_only(&records[0]);
     ensure(
-        revision(&frames[0])? == 0 && payload(&frames[0]).is_none(),
+        opened.revision()? == 0 && payload(opened).is_none(),
         "Controls import did not start with an empty recipe",
     )?;
 
@@ -206,10 +139,11 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         "A controls script event is missing",
     )?;
     let mut checks = Vec::new();
-    for (index, frame) in frames.iter().enumerate() {
-        let path = frame_identity(evidence, app, frame)?;
-        let photo = identity_photo(&path, frame)?;
-        let image = image::open(&path)?;
+    let mut frames = Vec::new();
+    for (index, frame) in records.iter().enumerate() {
+        let frame = Frame::identified(evidence, app, frame)?;
+        let photo = pixels::identity_photo(&frame)?;
+        let image = frame.image()?;
         ensure(
             image.width() >= 1440 && image.height() >= 900,
             format!("Controls capture {index} is too small to inspect"),
@@ -232,9 +166,10 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             )?;
         }
         checks.push(
-            json!({"frame":frame["file"],"step":index,"revision":revision(frame)?,
-            "payload":payload(frame),"photo":photo}),
+            json!({"frame":frame["file"],"step":index,"revision":frame.revision()?,
+            "payload":payload(&frame),"photo":photo}),
         );
+        frames.push(frame);
     }
 
     // Opening, scrolling and drafting do not create history. One release or discrete event does.
@@ -243,7 +178,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     ];
     for (index, expected) in revisions.into_iter().enumerate() {
         ensure(
-            revision(&frames[index])? == expected,
+            frames[index].revision()? == expected,
             format!("Controls frame {index} revision differs from one-gesture/one-commit contract"),
         )?;
     }
@@ -258,10 +193,8 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             && frames[6]["state"]["tools_scroll"] == json!(1.0),
         "The tools panel did not retain its requested scroll fractions",
     )?;
-    let upper = frame_identity(evidence, app, &frames[4])?;
-    let lower = frame_identity(evidence, app, &frames[6])?;
     ensure(
-        sidebar_difference(&upper, &lower, &frames[6])? >= 100,
+        sidebar_difference(&frames[4], &frames[6])? >= 100,
         "The tools panel screenshots did not change when scrolled",
     )?;
     ensure(

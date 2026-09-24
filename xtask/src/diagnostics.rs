@@ -1,7 +1,7 @@
 use crate::*;
 use std::time::{Duration, Instant};
 fn await_log(
-    child: &mut smoke::Guard,
+    child: &mut scenario::launch::Guard,
     path: &Path,
     needle: &str,
     timeout: Duration,
@@ -32,21 +32,21 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
         let before = hash(&fixture)?;
         {
             // Not the editor: xtask's own hanging child, so it carries no editor arguments.
-            let mut child = smoke::spawn(
+            let mut child = scenario::launch::spawn(
                 root,
                 &std::env::current_exe()?,
                 &["__hang".into()],
                 &out.join("hung.log"),
             )?;
             ensure(
-                smoke::wait(&mut child, Duration::from_millis(200)).is_err(),
+                scenario::launch::wait(&mut child, Duration::from_millis(200)).is_err(),
                 "Hung child accepted",
             )?;
         }
         let obstacle = out.join("not-a-directory");
         fs::write(&obstacle, "preserve")?;
         {
-            let mut child = smoke::spawn_editor(
+            let mut child = scenario::launch::spawn_editor(
                 root,
                 bin,
                 &[
@@ -55,7 +55,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
                 ],
                 &out.join("initialization.log"),
             )?;
-            let status = smoke::wait(&mut child, Duration::from_secs(5))?;
+            let status = scenario::launch::wait(&mut child, Duration::from_secs(5))?;
             ensure(status.code() == Some(2), "Wrong initialization failure")?;
             ensure(
                 fs::read_to_string(out.join("initialization.log"))?
@@ -71,7 +71,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
             // The data root is a plain file, so its log path cannot be created; the editor must
             // still import and render with an explicit catalog elsewhere.
             let log = out.join("diagnostics-unavailable.log");
-            let mut child = smoke::spawn_editor(
+            let mut child = scenario::launch::spawn_editor(
                 root,
                 bin,
                 &[
@@ -98,7 +98,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
         let isolated = out.join("abrupt");
         let events = isolated.join("logs/events.jsonl");
         {
-            let mut child = smoke::spawn_editor(
+            let mut child = scenario::launch::spawn_editor(
                 root,
                 bin,
                 &[
@@ -223,7 +223,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                     args.extend(["--open".into(), source.clone().into_os_string()]);
                 }
                 let start = Instant::now();
-                let mut child = smoke::spawn_editor(
+                let mut child = scenario::launch::spawn_editor(
                     root,
                     bin,
                     &args,
@@ -256,7 +256,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                 write_json(&out.join("measurements.json"), &report)?;
                 ensure(status.success(), "Measurement child failed")?;
                 let app = read_json(&evidence.join("result.json"))?;
-                let events = smoke::events(&evidence.join("events.jsonl"))?;
+                let events = scenario::events(&evidence.join("events.jsonl"))?;
                 ensure(
                     app["status"] == "captured"
                         && app["run_id"].as_str().is_some_and(|s| !s.is_empty()),
@@ -287,12 +287,16 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                             state["phase"] == "ready" && state["displayed_generation"] == i + 1,
                             "Stale displayed measurement",
                         )?;
-                        pixel_checks.push(smoke::pixels(
-                            &evidence.join(frame["file"].as_str().ok_or("Missing frame")?),
-                            &smoke::Expect {
+                        let columns = scenario::columns(frame)?;
+                        pixel_checks.push(scenario::pixels::fixture(
+                            &image::open(
+                                evidence.join(frame["file"].as_str().ok_or("Missing frame")?),
+                            )?
+                            .to_rgb8(),
+                            &scenario::Expect {
                                 aspect: Some(if name == "24mp" { 1.5 } else { 5.0 / 3.0 }),
-                                columns: smoke::columns(frame)?,
-                                ..smoke::Expect::fit(1)
+                                columns,
+                                ..scenario::Expect::fit(1)
                             },
                         )?);
                     }
@@ -327,7 +331,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
             }
         }
         let data = out.join("idle-data");
-        let mut child = smoke::spawn_editor(
+        let mut child = scenario::launch::spawn_editor(
             root,
             bin,
             &[

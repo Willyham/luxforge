@@ -15,7 +15,7 @@
 //! shorter wait that lets the launch's own refit to the display scale land first. A wgpu
 //! validation error or a panic in either launch fails the run.
 use crate::{
-    smoke::{self, Expect, columns, frame_identity},
+    scenario::{Expect, Frame, Run},
     *,
 };
 
@@ -112,33 +112,26 @@ pub fn script(scenario: &str) -> Option<Value> {
 
 /// Two launches, one per fixture, each an ordinary smoke run in its own directory; the scenario
 /// passes when both do. Both always run, so one failing launch never hides the other's evidence.
-pub fn run(root: &Path, out: &Path, bin: &Path, timeout: std::time::Duration) -> Result {
-    ensure(!out.exists(), "Smoke output must be new")?;
-    fs::create_dir_all(out)?;
-    let mut result = json!({"scenario":SCENARIO,"status":"failed","launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"launches":{}});
+pub fn run(mut run: Run) -> Result {
+    run.note(
+        "Two launches, one per fixture, each an ordinary smoke run with its own `result.json` in its own directory: `24mp/` over the generated 24 MP JPEG and `60mp/` over the generated 60 MP one. Generate them first with `cargo xtask generate-fixtures --output fixtures/generated`.",
+    );
     let mut failures = Vec::new();
-    for (index, (name, fixture)) in FIXTURES.iter().enumerate() {
-        let dir = out.join(name);
-        let outcome =
-            smoke::run_sources(root, &dir, SCENARIO, bin, timeout, vec![root.join(fixture)]);
-        let launch = read_json(&dir.join("result.json")).unwrap_or(Value::Null);
-        result[format!("launch{}_exit_code", index + 1)] = launch["exit_code"].clone();
-        result["launches"][name] = json!({"fixture":fixture,"directory":name,"status":launch["status"],"error":launch["error"],"exit_code":launch["exit_code"]});
+    for (name, fixture) in FIXTURES {
+        let outcome = run
+            .child(name)
+            .and_then(|child| smoke::plain(child, vec![run.root().join(fixture)]));
+        run.record_launches(&run.out().join(name), json!({"fixture": fixture}))?;
         if let Err(error) = outcome {
             failures.push(format!("{name}: {error}"));
         }
     }
-    let check: Result = if failures.is_empty() {
+    let outcome: Result = if failures.is_empty() {
         Ok(())
     } else {
         Err(failures.join("; ").into())
     };
-    match &check {
-        Ok(()) => result["status"] = json!("passed"),
-        Err(error) => result["error"] = json!(error.to_string()),
-    }
-    write_json(&out.join("result.json"), &result)?;
-    check
+    run.finish(outcome, |_| Ok(()))
 }
 
 /// The fixture's colour at source pixel `(x, y)` when that pixel is a flat quadrant interior, or
@@ -433,13 +426,13 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                 .map_err(|_| "The opened frame records no source dimensions")?;
         (dims[0], dims[1])
     };
-    let mut images = Vec::new();
+    let mut captured: Vec<Frame> = Vec::new();
     let mut checks = Vec::new();
     for (index, ((kind, zoom), frame)) in PLAN.iter().zip(frames).enumerate() {
         let what = format!("frame {index} ({kind:?} at {zoom:?})");
         let state = &frame["state"];
-        let path = frame_identity(evidence, app, frame)?;
-        let image = image::open(&path)?.to_rgb8();
+        let frame = Frame::identified(evidence, app, frame)?;
+        let image = frame.image()?;
         if let Some(request) = request(*kind, *zoom) {
             ensure(
                 frame["step"]["request"] == request && frame["step"]["status"] != json!("failed"),
@@ -523,16 +516,13 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         )?;
 
         let pixels = match zoom {
-            Zoom::Fit => smoke::pixels(
-                &path,
-                &Expect {
+            Zoom::Fit => frame
+                .fixture(Expect {
                     aspect: Some(f64::from(stage.0) / f64::from(stage.1)),
-                    columns: columns(frame)?,
                     ..Expect::fit(1)
-                },
-            )
-            .map_err(|error| format!("{what}: {error}"))?,
-            Zoom::Percent(value) => check_mapping(&image, frame, *value, stage)
+                })
+                .map_err(|error| format!("{what}: {error}"))?,
+            Zoom::Percent(value) => check_mapping(image, &frame, *value, stage)
                 .map_err(|error| format!("{what}: {error}"))?,
         };
 
@@ -593,9 +583,9 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                         views - previous_views
                     ),
                 )?;
-                let rect = canvas_rect(frame)?;
+                let rect = canvas_rect(&frame)?;
                 ensure(
-                    same_canvas(&images[index - 1], &image, rect)?,
+                    same_canvas(captured[index - 1].image()?, image, rect)?,
                     format!("{what}: the canvas changed while idling"),
                 )?;
                 idle = json!({"views_rebuilt":views - previous_views,"canvas_identical":true,"events_between":between.len()});
@@ -615,7 +605,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             "pixels": pixels,
             "idle": idle,
         }));
-        images.push(image);
+        captured.push(frame);
     }
     write_json(
         &evidence.join("zoom-checks.json"),

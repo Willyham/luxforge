@@ -15,8 +15,7 @@
 //! quadrant reads a colour a preset moves without the white labels, the centre line or the dash
 //! band in it.
 use crate::{
-    smoke::{columns, frame_identity},
-    vignette_smoke::bright_bounds,
+    scenario::{Frame, pixels},
     *,
 };
 use std::collections::BTreeMap;
@@ -98,30 +97,12 @@ pub fn script(scenario: &str) -> Option<Value> {
     })
 }
 
-fn revision(frame: &Value) -> Result<u64> {
-    frame["state"]["stack"]["revision"]
-        .as_u64()
-        .ok_or_else(|| "Frame records no revision".into())
-}
-
-fn entry(frame: &Value) -> Result<&str> {
-    frame["state"]["stack"]["entry"]
-        .as_str()
-        .ok_or_else(|| "Frame records no current entry".into())
-}
-
-fn label(frame: &Value) -> Result<&str> {
-    frame["state"]["stack"]["label"]
-        .as_str()
-        .ok_or_else(|| "Frame records no history label".into())
-}
-
-fn presets(frame: &Value) -> &Value {
+fn presets(frame: &Frame) -> &Value {
     &frame["state"]["presets"]
 }
 
 /// The section's rows as (name, group, partial), in listed order.
-fn rows(frame: &Value) -> Result<Vec<(String, String, bool)>> {
+fn rows(frame: &Frame) -> Result<Vec<(String, String, bool)>> {
     presets(frame)["rows"]
         .as_array()
         .ok_or("Frame records no preset rows")?
@@ -141,7 +122,7 @@ fn rows(frame: &Value) -> Result<Vec<(String, String, bool)>> {
         .collect()
 }
 
-fn expect_rows(frame: &Value, what: &str, expected: &[(&str, &str, bool)]) -> Result {
+fn expect_rows(frame: &Frame, what: &str, expected: &[(&str, &str, bool)]) -> Result {
     let found = rows(frame)?;
     let expected: Vec<(String, String, bool)> = expected
         .iter()
@@ -154,7 +135,7 @@ fn expect_rows(frame: &Value, what: &str, expected: &[(&str, &str, bool)]) -> Re
 }
 
 /// The committed stack's layers, by effect. A preset's modules each hold one layer.
-fn layers(frame: &Value) -> Result<BTreeMap<String, Value>> {
+fn layers(frame: &Frame) -> Result<BTreeMap<String, Value>> {
     let mut layers = BTreeMap::new();
     for layer in frame["state"]["stack"]["layers"]
         .as_array()
@@ -259,7 +240,7 @@ fn same_layers(a: &BTreeMap<String, Value>, b: &BTreeMap<String, Value>) -> bool
         })
 }
 
-fn expect_layers(frame: &Value, what: &str, expected: &BTreeMap<String, Value>) -> Result {
+fn expect_layers(frame: &Frame, what: &str, expected: &BTreeMap<String, Value>) -> Result {
     let found = layers(frame)?;
     ensure(
         same_layers(&found, expected),
@@ -283,32 +264,13 @@ fn fixture_settings(root: &Path, path: &str) -> Result<serde_json::Map<String, V
     .map_err(|error| format!("{path}: {error}").into())
 }
 
-/// The mean RGB of one quadrant's patch of the photograph.
-fn patches(path: &Path, frame: &Value) -> Result<Vec<[f64; 3]>> {
-    let bounds = bright_bounds(path, frame)?;
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [left, top, right, bottom] = bounds;
+/// The mean RGB of one patch per quadrant of the photograph, found the way `vignette` finds it.
+fn patches(frame: &Frame) -> Result<Vec<[f64; 3]>> {
+    let bounds = pixels::bright_bounds(frame, vignette_smoke::BOUNDS)?;
+    let image = frame.image()?;
     PATCHES
         .iter()
-        .map(|(_, fx, fy)| {
-            let px = f64::from(left) + fx * f64::from(right - left);
-            let py = f64::from(top) + fy * f64::from(bottom - top);
-            let mut sum = [0.0; 3];
-            let mut count = 0.0;
-            for dy in -PATCH_HALF..=PATCH_HALF {
-                for dx in -PATCH_HALF..=PATCH_HALF {
-                    let x = (px as i64 + dx).clamp(0, i64::from(width) - 1) as u32;
-                    let y = (py as i64 + dy).clamp(0, i64::from(height) - 1) as u32;
-                    let pixel = image.get_pixel(x, y).0;
-                    for channel in 0..3 {
-                        sum[channel] += f64::from(pixel[channel]);
-                    }
-                    count += 1.0;
-                }
-            }
-            Ok(sum.map(|value| value / count))
-        })
+        .map(|(_, fx, fy)| pixels::mean_rgb(image, pixels::at(bounds, [*fx, *fy]), PATCH_HALF))
         .collect()
 }
 
@@ -351,26 +313,22 @@ fn step_status(frame: &Value) -> &Value {
 
 pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     let root = root()?;
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
     ensure(
         app["had_input_errors"] == json!(false),
         "The run recorded an input error",
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
+    let frames = Frame::all(evidence, app)?;
     for (index, frame) in frames.iter().enumerate().skip(1) {
         ensure(
             step_status(frame) == &json!("sent"),
             format!("Step {index} did not run: {}", frame["step"]),
         )?;
         ensure(
-            columns(frame)?.is_some(),
+            frame.columns()?.is_some(),
             format!("Frame {index} records no photo surface"),
         )?;
     }
-    let patches_of = |index: usize| patches(&paths[index], &frames[index]);
+    let patches_of = |index: usize| patches(&frames[index]);
     let registry = Patches::load()?;
     let document = fixture_settings(&root, DOCUMENT)?;
     let xmp = fixture_settings(&root, XMP)?;
@@ -380,7 +338,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     };
 
     // Frame 0: the photograph opens with the library listed and empty, the section collapsed.
-    let opened = revision(&frames[0])?;
+    let opened = frames[0].revision()?;
     ensure(
         presets(&frames[0])["expanded"] == json!(false)
             && presets(&frames[0])["empty"] == json!(true)
@@ -413,7 +371,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     )?;
     for (index, frame) in frames.iter().enumerate().take(3).skip(1) {
         ensure(
-            revision(frame)? == opened,
+            frame.revision()? == opened,
             format!("Frame {index}: a section toggle committed something"),
         )?;
     }
@@ -439,7 +397,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         format!("Frame 3: the status line reads {status:?}"),
     )?;
     ensure(
-        revision(&frames[3])? == opened,
+        frames[3].revision()? == opened,
         "Frame 3: an import committed an edit",
     )?;
     record(
@@ -466,12 +424,12 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
 
     // Frame 5: the document's preset applied from its row: one entry, exactly its settings.
     ensure(
-        revision(&frames[5])? == opened + 1,
+        frames[5].revision()? == opened + 1,
         "Frame 5: applying the preset did not commit exactly one revision",
     )?;
     ensure(
-        label(&frames[5])? == "Preset: Soft film",
-        format!("Frame 5 is labelled {:?}", label(&frames[5])?),
+        frames[5].label()? == "Preset: Soft film",
+        format!("Frame 5 is labelled {:?}", frames[5].label()?),
     )?;
     let soft = registry.applied(&BTreeMap::new(), &document)?;
     expect_layers(&frames[5], "Frame 5", &soft)?;
@@ -487,17 +445,17 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         5,
         "Soft film applied from its row: one entry \"Preset: Soft film\", its settings exactly, and a brighter photograph",
-        json!({"revision":revision(&frames[5])?,"label":label(&frames[5])?,"layers":layers(&frames[5])?,"patches":patch_record(&soft_patches)}),
+        json!({"revision":frames[5].revision()?,"label":frames[5].label()?,"layers":layers(&frames[5])?,"patches":patch_record(&soft_patches)}),
     );
 
     // Frame 6: the XMP's preset over it: one more entry, its fields merged over the stack.
     ensure(
-        revision(&frames[6])? == opened + 2,
+        frames[6].revision()? == opened + 2,
         "Frame 6: applying the second preset did not commit exactly one revision",
     )?;
     ensure(
-        label(&frames[6])? == "Preset: Soft Film",
-        format!("Frame 6 is labelled {:?}", label(&frames[6])?),
+        frames[6].label()? == "Preset: Soft Film",
+        format!("Frame 6 is labelled {:?}", frames[6].label()?),
     )?;
     let merged = registry.applied(&soft, &xmp)?;
     expect_layers(&frames[6], "Frame 6", &merged)?;
@@ -534,12 +492,12 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         6,
         "Soft Film applied over it: one more entry, the XMP's fields merged over the stack, the green quadrant darker and the red one turned toward orange",
-        json!({"revision":revision(&frames[6])?,"label":label(&frames[6])?,"layers":layers(&frames[6])?,"patches":patch_record(&merged_patches),"change":change(&merged_patches, &soft_patches)}),
+        json!({"revision":frames[6].revision()?,"label":frames[6].label()?,"layers":layers(&frames[6])?,"patches":patch_record(&merged_patches),"change":change(&merged_patches, &soft_patches)}),
     );
 
     // Frame 7: undo returns to the document's preset, its stack and its pixels.
     ensure(
-        entry(&frames[7])? == entry(&frames[5])? && label(&frames[7])? == "Preset: Soft film",
+        frames[7].entry()? == frames[5].entry()? && frames[7].label()? == "Preset: Soft film",
         "Frame 7: undo did not return to the Soft film entry",
     )?;
     expect_layers(&frames[7], "Frame 7", &soft)?;
@@ -554,7 +512,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         7,
         "undo: the Soft film entry, its stack and its pixels again",
-        json!({"entry":entry(&frames[7])?,"patches":patch_record(&undone)}),
+        json!({"entry":frames[7].entry()?,"patches":patch_record(&undone)}),
     );
 
     // Frame 8: the create form filled but not submitted: the name, the default group and the Tone
@@ -601,7 +559,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "Frame 9: the step did not keep the Tone group alone",
     )?;
     ensure(
-        revision(&frames[9])? == revision(&frames[8])?,
+        frames[9].revision()? == frames[8].revision()?,
         "Frame 9: creating a preset committed an edit",
     )?;
     record(
@@ -626,18 +584,18 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         10,
         "undo to the Original: an empty stack and the opened pixels",
-        json!({"label":label(&frames[10])?,"patches":patch_record(&at_original)}),
+        json!({"label":frames[10].label()?,"patches":patch_record(&at_original)}),
     );
 
     // Frame 11: the native preset on the Original: one entry, a Basic layer holding exactly the
     // Tone fields the Soft film entry held, and nothing else.
     ensure(
-        revision(&frames[11])? == revision(&frames[10])? + 1,
+        frames[11].revision()? == frames[10].revision()? + 1,
         "Frame 11: applying the native preset did not commit exactly one revision",
     )?;
     ensure(
-        label(&frames[11])? == format!("Preset: {NATIVE}"),
-        format!("Frame 11 is labelled {:?}", label(&frames[11])?),
+        frames[11].label()? == format!("Preset: {NATIVE}"),
+        format!("Frame 11 is labelled {:?}", frames[11].label()?),
     )?;
     let basic = lightwell_core::BASIC_EFFECT.to_owned();
     let captured: serde_json::Map<String, Value> = soft
@@ -669,7 +627,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         11,
         "the native preset on the Original: one entry, exactly the captured Tone fields, a brighter photograph",
-        json!({"label":label(&frames[11])?,"layers":layers(&frames[11])?,"patches":patch_record(&native_patches)}),
+        json!({"label":frames[11].label()?,"layers":layers(&frames[11])?,"patches":patch_record(&native_patches)}),
     );
 
     // Frame 12: `preset.list` through the generic api step answers with the whole library and
@@ -682,7 +640,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         format!("Frame 12: preset.list answered {} presets", listed.len()),
     )?;
     ensure(
-        revision(&frames[12])? == revision(&frames[11])?,
+        frames[12].revision()? == frames[11].revision()?,
         "Frame 12: listing committed something",
     )?;
     record(
@@ -701,8 +659,8 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ],
     )?;
     ensure(
-        revision(&frames[13])? == revision(&frames[11])?
-            && label(&frames[13])? == format!("Preset: {NATIVE}"),
+        frames[13].revision()? == frames[11].revision()?
+            && frames[13].label()? == format!("Preset: {NATIVE}"),
         "Frame 13: deleting the preset changed the photograph's history",
     )?;
     record(

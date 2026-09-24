@@ -204,7 +204,7 @@ fn run_app(
     }
     let log = evidence.with_extension("log");
     let started = Instant::now();
-    let mut child = smoke::spawn_editor(root, binary, &args, &log)?;
+    let mut child = scenario::launch::spawn_editor(root, binary, &args, &log)?;
     let mut rss = Vec::new();
     let status = loop {
         if let Some(status) = child.child.try_wait()? {
@@ -239,7 +239,7 @@ fn run_app(
 fn photo_samples(path: &Path, frame: &Value) -> Result<Vec<[u8; 3]>> {
     let image = image::open(path)?.to_rgb8();
     let (width, height) = image.dimensions();
-    let columns = smoke::columns(frame)?.ok_or("Missing photo surface columns")?;
+    let columns = scenario::columns(frame)?.ok_or("Missing photo surface columns")?;
     ensure(
         columns[1] <= width && columns[0] < columns[1],
         "Invalid photo surface",
@@ -349,12 +349,12 @@ fn verify_displayed_raw_controls(frame: &Value) -> Result {
 }
 
 fn verify_frames(evidence: &Path, expected_frames: usize) -> Result<VerifiedFrames> {
-    let (app, events) = smoke::preamble(evidence, expected_frames)?;
+    let (app, events) = scenario::preamble(evidence, expected_frames)?;
     ensure(app["had_input_errors"] == false, "RAW script input failed")?;
     let frames = app["frames"].as_array().ok_or("Missing captured frames")?;
     let mut pixels = Vec::new();
     for (index, frame) in frames.iter().enumerate() {
-        let file = smoke::frame_identity(evidence, &app, frame)?;
+        let file = scenario::identity(evidence, &app, frame)?;
         let state = &frame["state"];
         ensure(
             state["phase"] == "ready"
@@ -703,7 +703,7 @@ fn one_trial(
         "RAW reopen displayed a stale entry",
     )?;
     let first_app = read_json(&first.join("result.json"))?;
-    let last_file = smoke::frame_identity(&first, &first_app, &first_app["frames"][FINAL_FRAME])?;
+    let last_file = scenario::identity(&first, &first_app, &first_app["frames"][FINAL_FRAME])?;
     let final_pixels = photo_samples(&last_file, &first_app["frames"][FINAL_FRAME])?;
     let reopened_difference = pixel_difference(&final_pixels, &reopened_pixels[0])?;
     ensure(

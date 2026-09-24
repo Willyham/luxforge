@@ -14,7 +14,7 @@
 //! side), and a flat mid-grey deep enough in from every edge to clear Clarity's own reduced-grid base
 //! radius, which the "flat field stays flat" and "grey stays grey" checks below read.
 use crate::{
-    smoke::{columns, frame_identity, longest_run},
+    scenario::{Bright, Frame, Scan, pixels},
     *,
 };
 
@@ -112,163 +112,47 @@ pub fn script(scenario: &str) -> Option<Value> {
     })
 }
 
-fn revision(frame: &Value) -> Result<u64> {
-    frame["state"]["stack"]["revision"]
-        .as_u64()
-        .ok_or_else(|| "Frame records no revision".into())
+/// Every section this scenario toggles, for the correlation every recorded frame carries alongside
+/// its revision, entry and draft.
+const SECTIONS: [&str; 2] = [BASIC_MODULE, PRESENCE_MODULE];
+
+fn presence_payload(frame: &Frame) -> Option<&Value> {
+    frame.payload(lightwell_core::PRESENCE_EFFECT)
 }
 
-fn entry(frame: &Value) -> Result<&str> {
-    frame["state"]["stack"]["entry"]
-        .as_str()
-        .ok_or_else(|| "Frame records no current entry".into())
+fn presence_layer_id(frame: &Frame) -> Option<&str> {
+    frame.layer_id(lightwell_core::PRESENCE_EFFECT)
 }
 
-fn label(frame: &Value) -> Result<&str> {
-    frame["state"]["stack"]["label"]
-        .as_str()
-        .ok_or_else(|| "Frame records no history label".into())
-}
-
-fn draft(frame: &Value) -> &Value {
-    &frame["state"]["draft"]
-}
-
-fn expect_no_draft(frame: &Value, what: &str) -> Result {
-    ensure(
-        draft(frame) == &Value::Null,
-        format!("{what}: a draft is still open: {}", draft(frame)),
-    )
-}
-
-fn section_expanded(frame: &Value, module: &str) -> bool {
-    frame["state"]["expanded"][module] == json!(true)
-}
-
-/// The expanded state of every section this scenario toggles, for the correlation every recorded
-/// frame carries alongside its revision, entry and draft.
-fn expanded_sections(frame: &Value) -> Value {
-    json!({
-        BASIC_MODULE: section_expanded(frame, BASIC_MODULE),
-        PRESENCE_MODULE: section_expanded(frame, PRESENCE_MODULE),
-    })
-}
-
-fn presence_payload(frame: &Value) -> Option<&Value> {
-    frame["state"]["stack"]["layers"]
-        .as_array()?
-        .iter()
-        .find(|layer| layer["effect"] == json!(lightwell_core::PRESENCE_EFFECT))
-        .map(|layer| &layer["payload"])
-}
-
-fn presence_layer_id(frame: &Value) -> Option<&str> {
-    frame["state"]["stack"]["layers"]
-        .as_array()?
-        .iter()
-        .find(|layer| layer["effect"] == json!(lightwell_core::PRESENCE_EFFECT))
-        .and_then(|layer| layer["id"].as_str())
-}
-
-fn presence_field<'a>(frame: &'a Value, name: &str) -> Result<&'a str> {
-    frame["state"]["controls"][format!("{SET_PRESENCE}.{name}")]
-        .as_str()
-        .ok_or_else(|| format!("Frame records no {name} field").into())
+fn presence_field<'a>(frame: &'a Frame, name: &str) -> Result<&'a str> {
+    frame.field(SET_PRESENCE, name)
 }
 
 /// Where the photograph is drawn: found by the row with the widest run of bright pixels and the
 /// column with the tallest, both inset from the surface's own edge dividers and clear of the title
-/// bar and mode strip / status line, the same way `vignette_smoke::bright_bounds` does. Every level
-/// this fixture draws is kept at 40 or above, so a low threshold finds the whole rectangle without
-/// mistaking the dark canvas background around it for content.
-fn photo_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
-    const BRIGHT: u32 = 32;
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [surface_left, surface_right] = columns(frame)?.unwrap_or([0, width]);
-    ensure(
-        surface_left < surface_right && surface_right <= width,
-        "Invalid surface columns",
-    )?;
-    ensure(
-        surface_right - surface_left > 20,
-        "Photo surface too narrow to inset from its own edge dividers",
-    )?;
-    let bright = |p: [u8; 3]| (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3 >= BRIGHT;
-    let top_margin = (height / 20).max(20);
-    let bottom_margin = height - top_margin;
-    let side_inset = 10;
-    let (inset_left, inset_right) = (surface_left + side_inset, surface_right - side_inset);
-    let mut widest: Option<(u32, u32, u32)> = None;
-    for y in top_margin..bottom_margin {
-        let run =
-            longest_run((inset_left..inset_right).map(|x| (x, bright(image.get_pixel(x, y).0))));
-        if let Some((left, right)) = run
-            && widest.is_none_or(|(w, ..)| right - left > w)
-        {
-            widest = Some((right - left, left, right));
-        }
-    }
-    let (_, left, right) = widest.ok_or("No photograph in the frame: blank or wrong render")?;
-    let mut tallest: Option<(u32, u32, u32)> = None;
-    for x in inset_left..inset_right {
-        let run =
-            longest_run((top_margin..bottom_margin).map(|y| (y, bright(image.get_pixel(x, y).0))));
-        if let Some((top, bottom)) = run
-            && tallest.is_none_or(|(h, ..)| bottom - top > h)
-        {
-            tallest = Some((bottom - top, top, bottom));
-        }
-    }
-    let (_, top, bottom) = tallest.ok_or("No photograph in the frame: blank or wrong render")?;
-    Ok([left, top, right, bottom])
-}
+/// bar and mode strip / status line. Every level this fixture draws is kept at 40 or above, so a low
+/// threshold finds the whole rectangle without mistaking the dark canvas background around it for
+/// content. The row is measured first, a scan [`Scan::Widest`] records the mode strip can fool.
+const BOUNDS: Bright = Bright {
+    threshold: 32,
+    scan: Scan::Widest,
+    least: None,
+};
 
 /// The mean RGB of a small patch at fraction `(fx, fy)` of `bounds`.
-fn patch_mean(path: &Path, bounds: [u32; 4], fx: f64, fy: f64) -> Result<[f64; 3]> {
-    let image = image::open(path)?.to_rgb8();
-    let [left, top, right, bottom] = bounds;
-    let px = f64::from(left) + fx * f64::from(right - left);
-    let py = f64::from(top) + fy * f64::from(bottom - top);
-    let (width, height) = image.dimensions();
-    let mut totals = [0.0; 3];
-    let mut count = 0u32;
-    for dy in -PATCH_HALF..=PATCH_HALF {
-        for dx in -PATCH_HALF..=PATCH_HALF {
-            let x = (px as i64 + dx).clamp(0, i64::from(width) - 1) as u32;
-            let y = (py as i64 + dy).clamp(0, i64::from(height) - 1) as u32;
-            let p = image.get_pixel(x, y).0;
-            for (total, channel) in totals.iter_mut().zip(p) {
-                *total += f64::from(channel);
-            }
-            count += 1;
-        }
-    }
-    ensure(count > 0, "Sampled no pixels")?;
-    Ok(totals.map(|total| total / f64::from(count)))
+fn patch_mean(frame: &Frame, bounds: [u32; 4], fx: f64, fy: f64) -> Result<[f64; 3]> {
+    pixels::mean_rgb(frame.image()?, pixels::at(bounds, [fx, fy]), PATCH_HALF)
 }
 
 /// The min and max pixel value in the same patch `patch_mean` reads, over all three channels
 /// together (every sample here is neutral grey, so the three channels agree): the range a texture
 /// or contrast gain widens.
-fn patch_range(path: &Path, bounds: [u32; 4], fx: f64, fy: f64) -> Result<(f64, f64)> {
-    let image = image::open(path)?.to_rgb8();
-    let [left, top, right, bottom] = bounds;
-    let px = f64::from(left) + fx * f64::from(right - left);
-    let py = f64::from(top) + fy * f64::from(bottom - top);
-    let (width, height) = image.dimensions();
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for dy in -PATCH_HALF..=PATCH_HALF {
-        for dx in -PATCH_HALF..=PATCH_HALF {
-            let x = (px as i64 + dx).clamp(0, i64::from(width) - 1) as u32;
-            let y = (py as i64 + dy).clamp(0, i64::from(height) - 1) as u32;
-            let p = image.get_pixel(x, y).0;
-            let mean = (f64::from(p[0]) + f64::from(p[1]) + f64::from(p[2])) / 3.0;
-            lo = lo.min(mean);
-            hi = hi.max(mean);
-        }
-    }
-    Ok((lo, hi))
+fn patch_range(frame: &Frame, bounds: [u32; 4], fx: f64, fy: f64) -> Result<(f64, f64)> {
+    Ok(pixels::grey_range(
+        frame.image()?,
+        pixels::at(bounds, [fx, fy]),
+        PATCH_HALF,
+    ))
 }
 
 fn channel_spread(rgb: [f64; 3]) -> f64 {
@@ -282,15 +166,11 @@ fn mean(rgb: [f64; 3]) -> f64 {
 }
 
 pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
     ensure(
         app["had_input_errors"] == json!(false),
         "The run recorded an input error",
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
+    let frames = Frame::all(evidence, app)?;
     let mut checks = Vec::new();
     let mut record = |frame: &Value, shows: &str, detail: Value| {
         checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
@@ -309,7 +189,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The Presence module is not available",
     )?;
     ensure(
-        !section_expanded(&frames[0], PRESENCE_MODULE),
+        !frames[0].section_expanded(PRESENCE_MODULE),
         "The Presence section is not collapsed as launched",
     )?;
     ensure(
@@ -319,19 +199,19 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             presence_field(&frames[0], CLARITY)?
         ),
     )?;
-    expect_no_draft(&frames[0], "Frame 0")?;
+    frames[0].expect_no_draft("Frame 0")?;
     ensure(
         presence_payload(&frames[0]).is_none(),
         "The opened stack already holds a Presence layer",
     )?;
-    let opened_bounds = photo_bounds(&paths[0], &frames[0])?;
-    let opened_edge_low = patch_mean(&paths[0], opened_bounds, EDGE_LOW_X, EDGE_Y)?;
-    let opened_edge_high = patch_mean(&paths[0], opened_bounds, EDGE_HIGH_X, EDGE_Y)?;
+    let opened_bounds = pixels::bright_bounds(&frames[0], BOUNDS)?;
+    let opened_edge_low = patch_mean(&frames[0], opened_bounds, EDGE_LOW_X, EDGE_Y)?;
+    let opened_edge_high = patch_mean(&frames[0], opened_bounds, EDGE_HIGH_X, EDGE_Y)?;
     let opened_contrast = mean(opened_edge_high) - mean(opened_edge_low);
     let (opened_texture_lo, opened_texture_hi) =
-        patch_range(&paths[0], opened_bounds, TEXTURE_X, TEXTURE_Y)?;
+        patch_range(&frames[0], opened_bounds, TEXTURE_X, TEXTURE_Y)?;
     let opened_texture_range = opened_texture_hi - opened_texture_lo;
-    let opened_flat = patch_mean(&paths[0], opened_bounds, FLAT_X, FLAT_Y)?;
+    let opened_flat = patch_mean(&frames[0], opened_bounds, FLAT_X, FLAT_Y)?;
     ensure(
         channel_spread(opened_flat) < UNCHANGED,
         format!("The flat quadrant does not open grey: {opened_flat:?}"),
@@ -343,47 +223,46 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             "edge_contrast": opened_contrast,
             "texture_range": opened_texture_range,
             "flat_mean": mean(opened_flat),
-            "expanded": expanded_sections(&frames[0]),
+            "expanded": frames[0].expanded_sections(&SECTIONS),
         }),
     );
 
     // Frame 1: Basic collapsed, so nothing above Presence is expanded once it opens.
     ensure(
-        !section_expanded(&frames[1], BASIC_MODULE),
+        !frames[1].section_expanded(BASIC_MODULE),
         "The section step did not collapse Basic",
     )?;
     ensure(
-        revision(&frames[1])? == revision(&frames[0])?,
+        frames[1].revision()? == frames[0].revision()?,
         "Collapsing Basic committed something",
     )?;
     record(
         &frames[1],
         "the Basic section collapsed, above Presence in the registry order",
-        json!({"expanded": expanded_sections(&frames[1])}),
+        json!({"expanded": frames[1].expanded_sections(&SECTIONS)}),
     );
 
     // Frame 2: the section expanded, with Basic still collapsed above it: Texture, Clarity and
     // Dehaze on screen without scrolling.
     ensure(
-        section_expanded(&frames[2], PRESENCE_MODULE)
-            && !section_expanded(&frames[2], BASIC_MODULE),
+        frames[2].section_expanded(PRESENCE_MODULE) && !frames[2].section_expanded(BASIC_MODULE),
         format!(
             "The section step did not expand Presence alone: {}",
-            expanded_sections(&frames[2])
+            frames[2].expanded_sections(&SECTIONS)
         ),
     )?;
     ensure(
-        revision(&frames[2])? == revision(&frames[1])?,
+        frames[2].revision()? == frames[1].revision()?,
         "Expanding the section committed something",
     )?;
     record(
         &frames[2],
         "the Presence section expanded: Texture, Clarity and Dehaze, on screen with nothing above it expanded",
-        json!({"expanded": expanded_sections(&frames[2])}),
+        json!({"expanded": frames[2].expanded_sections(&SECTIONS)}),
     );
 
     // Frame 3: mid-gesture at Clarity +90. The draft is open, nothing is committed.
-    let drafted = draft(&frames[3]);
+    let drafted = frames[3].draft();
     ensure(
         drafted["action"] == json!(SET_PRESENCE)
             && drafted["fields"] == json!({ CLARITY: 90.0 })
@@ -391,7 +270,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         format!("Frame 3's draft is not the open Clarity gesture: {drafted}"),
     )?;
     ensure(
-        revision(&frames[3])? == revision(&frames[2])? && presence_payload(&frames[3]).is_none(),
+        frames[3].revision()? == frames[2].revision()? && presence_payload(&frames[3]).is_none(),
         "A drag committed something",
     )?;
     ensure(
@@ -404,14 +283,15 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[3],
         "a drag to Clarity +90, mid-gesture: the drafted preview",
-        json!({"draft": drafted, "expanded": expanded_sections(&frames[3])}),
+        json!({"draft": drafted, "expanded": frames[3].expanded_sections(&SECTIONS)}),
     );
 
     // Frame 4: Escape. The gesture ends with nothing committed, and the field returns to what the
     // stack (still empty) actually holds.
-    expect_no_draft(&frames[4], "Frame 4")?;
+    frames[4].expect_no_draft("Frame 4")?;
     ensure(
-        revision(&frames[4])? == revision(&frames[3])? && entry(&frames[4])? == entry(&frames[2])?,
+        frames[4].revision()? == frames[3].revision()?
+            && frames[4].entry()? == frames[2].entry()?,
         "Cancelling the gesture committed something",
     )?;
     ensure(
@@ -424,17 +304,17 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[4],
         "Escape cancels the Clarity gesture: nothing committed",
-        json!({"revision": revision(&frames[4])?}),
+        json!({"revision": frames[4].revision()?}),
     );
 
     // Frame 5: Texture +100, committed at Fit.
     ensure(
-        revision(&frames[5])? == revision(&frames[4])? + 1,
+        frames[5].revision()? == frames[4].revision()? + 1,
         "The Texture commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[5])? == "Texture +100",
-        format!("Frame 5 is labelled {:?}", label(&frames[5])?),
+        frames[5].label()? == "Texture +100",
+        format!("Frame 5 is labelled {:?}", frames[5].label()?),
     )?;
     ensure(
         presence_payload(&frames[5]) == Some(&json!({ TEXTURE: 100.0 })),
@@ -446,8 +326,8 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     let layer = presence_layer_id(&frames[5])
         .ok_or("The committed stack holds no Presence layer")?
         .to_owned();
-    let fit5_bounds = photo_bounds(&paths[5], &frames[5])?;
-    let fit5_flat = patch_mean(&paths[5], fit5_bounds, FLAT_X, FLAT_Y)?;
+    let fit5_bounds = pixels::bright_bounds(&frames[5], BOUNDS)?;
+    let fit5_flat = patch_mean(&frames[5], fit5_bounds, FLAT_X, FLAT_Y)?;
     ensure(
         (mean(fit5_flat) - mean(opened_flat)).abs() < UNCHANGED,
         format!(
@@ -463,14 +343,15 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[5],
         "Texture +100 committed at Fit: one entry, the flat quadrant unaffected",
-        json!({"label": label(&frames[5])?, "flat_mean": mean(fit5_flat), "layer": layer, "expanded": expanded_sections(&frames[5])}),
+        json!({"label": frames[5].label()?, "flat_mean": mean(fit5_flat), "layer": layer, "expanded": frames[5].expanded_sections(&SECTIONS)}),
     );
 
     // Frame 6: the same committed state at 100%, where the checker's own fine detail — the gap
     // between its light and dark cells, widened by Texture's own gain — can be inspected.
-    expect_no_draft(&frames[6], "Frame 6")?;
+    frames[6].expect_no_draft("Frame 6")?;
     ensure(
-        revision(&frames[6])? == revision(&frames[5])? && entry(&frames[6])? == entry(&frames[5])?,
+        frames[6].revision()? == frames[5].revision()?
+            && frames[6].entry()? == frames[5].entry()?,
         "Changing zoom committed something",
     )?;
     ensure(
@@ -480,8 +361,9 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             frames[6]["step"]["request"]
         ),
     )?;
-    let percent6_bounds = photo_bounds(&paths[6], &frames[6])?;
-    let (percent6_lo, percent6_hi) = patch_range(&paths[6], percent6_bounds, TEXTURE_X, TEXTURE_Y)?;
+    let percent6_bounds = pixels::bright_bounds(&frames[6], BOUNDS)?;
+    let (percent6_lo, percent6_hi) =
+        patch_range(&frames[6], percent6_bounds, TEXTURE_X, TEXTURE_Y)?;
     let percent6_range = percent6_hi - percent6_lo;
     ensure(
         percent6_range - opened_texture_range > RANGE_WIDER,
@@ -496,9 +378,9 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     );
 
     // Frame 7: back to Fit, unchanged, ready for the Clarity commit below.
-    expect_no_draft(&frames[7], "Frame 7")?;
+    frames[7].expect_no_draft("Frame 7")?;
     ensure(
-        revision(&frames[7])? == revision(&frames[6])?,
+        frames[7].revision()? == frames[6].revision()?,
         "Returning to Fit committed something",
     )?;
     ensure(
@@ -518,12 +400,12 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     // (the gap between a point just before it and just after) widens, and the flat quadrant stays
     // unaffected exactly as it did under Texture.
     ensure(
-        revision(&frames[8])? == revision(&frames[7])? + 1,
+        frames[8].revision()? == frames[7].revision()? + 1,
         "The Clarity commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[8])? == "Clarity +100",
-        format!("Frame 8 is labelled {:?}", label(&frames[8])?),
+        frames[8].label()? == "Clarity +100",
+        format!("Frame 8 is labelled {:?}", frames[8].label()?),
     )?;
     ensure(
         presence_payload(&frames[8]) == Some(&json!({ TEXTURE: 100.0, CLARITY: 100.0 })),
@@ -536,9 +418,9 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         presence_layer_id(&frames[8]) == Some(layer.as_str()),
         "Clarity replaced the Presence layer instead of updating it",
     )?;
-    let fit8_bounds = photo_bounds(&paths[8], &frames[8])?;
-    let fit8_edge_low = patch_mean(&paths[8], fit8_bounds, EDGE_LOW_X, EDGE_Y)?;
-    let fit8_edge_high = patch_mean(&paths[8], fit8_bounds, EDGE_HIGH_X, EDGE_Y)?;
+    let fit8_bounds = pixels::bright_bounds(&frames[8], BOUNDS)?;
+    let fit8_edge_low = patch_mean(&frames[8], fit8_bounds, EDGE_LOW_X, EDGE_Y)?;
+    let fit8_edge_high = patch_mean(&frames[8], fit8_bounds, EDGE_HIGH_X, EDGE_Y)?;
     let fit8_contrast = mean(fit8_edge_high) - mean(fit8_edge_low);
     ensure(
         fit8_contrast - opened_contrast > CONTRAST_WIDER,
@@ -546,7 +428,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             "Clarity +100 did not widen the step edge's own contrast: {fit8_contrast} against {opened_contrast}"
         ),
     )?;
-    let fit8_flat = patch_mean(&paths[8], fit8_bounds, FLAT_X, FLAT_Y)?;
+    let fit8_flat = patch_mean(&frames[8], fit8_bounds, FLAT_X, FLAT_Y)?;
     ensure(
         (mean(fit8_flat) - mean(opened_flat)).abs() < UNCHANGED,
         format!(
@@ -562,14 +444,15 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[8],
         "Clarity +100 committed at Fit, merged with Texture: the step edge's own contrast widened, the flat quadrant unaffected",
-        json!({"label": label(&frames[8])?, "edge_contrast": fit8_contrast, "flat_mean": mean(fit8_flat), "layer": layer, "expanded": expanded_sections(&frames[8])}),
+        json!({"label": frames[8].label()?, "edge_contrast": fit8_contrast, "flat_mean": mean(fit8_flat), "layer": layer, "expanded": frames[8].expanded_sections(&SECTIONS)}),
     );
 
     // Frame 9: the same committed state at 100%, where the halo either side of the step edge that
     // a local-contrast gain leaves can be inspected.
-    expect_no_draft(&frames[9], "Frame 9")?;
+    frames[9].expect_no_draft("Frame 9")?;
     ensure(
-        revision(&frames[9])? == revision(&frames[8])? && entry(&frames[9])? == entry(&frames[8])?,
+        frames[9].revision()? == frames[8].revision()?
+            && frames[9].entry()? == frames[8].entry()?,
         "Changing zoom committed something",
     )?;
     ensure(
@@ -579,9 +462,9 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             frames[9]["step"]["request"]
         ),
     )?;
-    let percent9_bounds = photo_bounds(&paths[9], &frames[9])?;
-    let percent9_edge_low = patch_mean(&paths[9], percent9_bounds, EDGE_LOW_X, EDGE_Y)?;
-    let percent9_edge_high = patch_mean(&paths[9], percent9_bounds, EDGE_HIGH_X, EDGE_Y)?;
+    let percent9_bounds = pixels::bright_bounds(&frames[9], BOUNDS)?;
+    let percent9_edge_low = patch_mean(&frames[9], percent9_bounds, EDGE_LOW_X, EDGE_Y)?;
+    let percent9_edge_high = patch_mean(&frames[9], percent9_bounds, EDGE_HIGH_X, EDGE_Y)?;
     let percent9_contrast = mean(percent9_edge_high) - mean(percent9_edge_low);
     record(
         &frames[9],
@@ -590,9 +473,9 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     );
 
     // Frame 10: back to Fit, unchanged, ready for the Dehaze commits below.
-    expect_no_draft(&frames[10], "Frame 10")?;
+    frames[10].expect_no_draft("Frame 10")?;
     ensure(
-        revision(&frames[10])? == revision(&frames[9])?,
+        frames[10].revision()? == frames[9].revision()?,
         "Returning to Fit committed something",
     )?;
     ensure(
@@ -614,12 +497,12 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     // solves for cannot be anything but neutral either, so the flat quadrant's own grey is asked
     // to stay grey, whatever its brightness does.
     ensure(
-        revision(&frames[11])? == revision(&frames[10])? + 1,
+        frames[11].revision()? == frames[10].revision()? + 1,
         "The Dehaze +100 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[11])? == "Dehaze +100",
-        format!("Frame 11 is labelled {:?}", label(&frames[11])?),
+        frames[11].label()? == "Dehaze +100",
+        format!("Frame 11 is labelled {:?}", frames[11].label()?),
     )?;
     ensure(
         presence_payload(&frames[11])
@@ -629,8 +512,8 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             presence_payload(&frames[11])
         ),
     )?;
-    let fit11_bounds = photo_bounds(&paths[11], &frames[11])?;
-    let fit11_flat = patch_mean(&paths[11], fit11_bounds, FLAT_X, FLAT_Y)?;
+    let fit11_bounds = pixels::bright_bounds(&frames[11], BOUNDS)?;
+    let fit11_flat = patch_mean(&frames[11], fit11_bounds, FLAT_X, FLAT_Y)?;
     ensure(
         channel_spread(fit11_flat) < UNCHANGED,
         format!("Dehaze +100 tinted the flat grey quadrant: {fit11_flat:?}"),
@@ -638,18 +521,18 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[11],
         "Dehaze +100 committed at Fit, merged with Texture and Clarity: the flat quadrant stays grey",
-        json!({"label": label(&frames[11])?, "flat_mean": mean(fit11_flat), "layer": layer, "expanded": expanded_sections(&frames[11])}),
+        json!({"label": frames[11].label()?, "flat_mean": mean(fit11_flat), "layer": layer, "expanded": frames[11].expanded_sections(&SECTIONS)}),
     );
 
     // Frame 12: Dehaze -100, committed at Fit: the same one field flips sign, adding a veil through
     // the same forward model instead of removing one.
     ensure(
-        revision(&frames[12])? == revision(&frames[11])? + 1,
+        frames[12].revision()? == frames[11].revision()? + 1,
         "The Dehaze -100 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[12])? == "Dehaze -100",
-        format!("Frame 12 is labelled {:?}", label(&frames[12])?),
+        frames[12].label()? == "Dehaze -100",
+        format!("Frame 12 is labelled {:?}", frames[12].label()?),
     )?;
     ensure(
         presence_payload(&frames[12])
@@ -659,8 +542,8 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             presence_payload(&frames[12])
         ),
     )?;
-    let fit12_bounds = photo_bounds(&paths[12], &frames[12])?;
-    let fit12_flat = patch_mean(&paths[12], fit12_bounds, FLAT_X, FLAT_Y)?;
+    let fit12_bounds = pixels::bright_bounds(&frames[12], BOUNDS)?;
+    let fit12_flat = patch_mean(&frames[12], fit12_bounds, FLAT_X, FLAT_Y)?;
     ensure(
         channel_spread(fit12_flat) < UNCHANGED,
         format!("Dehaze -100 tinted the flat grey quadrant: {fit12_flat:?}"),
@@ -668,19 +551,19 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[12],
         "Dehaze -100 committed at Fit: the flat quadrant still grey",
-        json!({"label": label(&frames[12])?, "flat_mean": mean(fit12_flat), "layer": layer}),
+        json!({"label": frames[12].label()?, "flat_mean": mean(fit12_flat), "layer": layer}),
     );
 
     // Frame 13: all three at +100 through the raw API, the request a generated slider cannot send
     // itself (each submits only its own one field): Texture and Clarity are already +100 and
     // Dehaze flips back, so the merged payload is a genuine change, not a no-op.
     ensure(
-        revision(&frames[13])? == revision(&frames[12])? + 1,
+        frames[13].revision()? == frames[12].revision()? + 1,
         "The multi-field commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[13])? == "Presence (3 fields)",
-        format!("Frame 13 is labelled {:?}", label(&frames[13])?),
+        frames[13].label()? == "Presence (3 fields)",
+        format!("Frame 13 is labelled {:?}", frames[13].label()?),
     )?;
     ensure(
         presence_payload(&frames[13])
@@ -694,8 +577,8 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         presence_layer_id(&frames[13]) == Some(layer.as_str()),
         "The multi-field commit replaced the Presence layer instead of updating it",
     )?;
-    let fit13_bounds = photo_bounds(&paths[13], &frames[13])?;
-    let fit13_flat = patch_mean(&paths[13], fit13_bounds, FLAT_X, FLAT_Y)?;
+    let fit13_bounds = pixels::bright_bounds(&frames[13], BOUNDS)?;
+    let fit13_flat = patch_mean(&frames[13], fit13_bounds, FLAT_X, FLAT_Y)?;
     ensure(
         channel_spread(fit13_flat) < UNCHANGED,
         format!("The multi-field commit tinted the flat grey quadrant: {fit13_flat:?}"),
@@ -703,18 +586,18 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[13],
         "all three fields at +100, committed in one request through the raw API",
-        json!({"label": label(&frames[13])?, "payload": presence_payload(&frames[13]), "layer": layer}),
+        json!({"label": frames[13].label()?, "payload": presence_payload(&frames[13]), "layer": layer}),
     );
 
     // Frame 14: the module's own header reset. One entry labelled "Reset Presence"; the layer is
     // kept at its neutral payload, and the fixture reads as it opened.
     ensure(
-        revision(&frames[14])? == revision(&frames[13])? + 1,
+        frames[14].revision()? == frames[13].revision()? + 1,
         "The module reset did not commit exactly one revision",
     )?;
     ensure(
-        label(&frames[14])? == "Reset Presence",
-        format!("The module reset is labelled {:?}", label(&frames[14])?),
+        frames[14].label()? == "Reset Presence",
+        format!("The module reset is labelled {:?}", frames[14].label()?),
     )?;
     ensure(
         presence_payload(&frames[14]) == Some(&json!({})),
@@ -727,9 +610,9 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         presence_layer_id(&frames[14]) == Some(layer.as_str()),
         "The module reset replaced the Presence layer instead of keeping it",
     )?;
-    let reset_bounds = photo_bounds(&paths[14], &frames[14])?;
-    let reset_edge_low = patch_mean(&paths[14], reset_bounds, EDGE_LOW_X, EDGE_Y)?;
-    let reset_edge_high = patch_mean(&paths[14], reset_bounds, EDGE_HIGH_X, EDGE_Y)?;
+    let reset_bounds = pixels::bright_bounds(&frames[14], BOUNDS)?;
+    let reset_edge_low = patch_mean(&frames[14], reset_bounds, EDGE_LOW_X, EDGE_Y)?;
+    let reset_edge_high = patch_mean(&frames[14], reset_bounds, EDGE_HIGH_X, EDGE_Y)?;
     let reset_contrast = mean(reset_edge_high) - mean(reset_edge_low);
     ensure(
         (reset_contrast - opened_contrast).abs() < CONTRAST_WIDER,
@@ -740,7 +623,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[14],
         "the module's own header reset: entry \"Reset Presence\", the layer kept and neutral, the edge back to its opened contrast",
-        json!({"label": label(&frames[14])?, "payload": presence_payload(&frames[14]), "layer": layer, "expanded": expanded_sections(&frames[14])}),
+        json!({"label": frames[14].label()?, "payload": presence_payload(&frames[14]), "layer": layer, "expanded": frames[14].expanded_sections(&SECTIONS)}),
     );
 
     write_json(

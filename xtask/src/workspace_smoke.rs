@@ -3,13 +3,12 @@
 //! `workspace` drives the panels, canvas mode, thirds overlay, historical preview, a live conflict
 //! and the command palette through one evidence script, exactly as `crop` and `crop-draft` drive
 //! the crop workflow. `unavailable` is not scriptable at all: it needs two separate launches
-//! sharing one catalog, the second with the crop module disabled, so it is orchestrated directly
-//! rather than through `smoke::run`.
+//! sharing one catalog, the second with the crop module disabled, so it is a run of its own rather
+//! than one plain launch.
 use crate::{
-    smoke::{Expect, columns, frame_identity, pixels, spawn_editor, wait},
+    scenario::{Expect, Frame, Launch, Run},
     *,
 };
-use std::time::Duration;
 
 /// The fixture both scenarios open: the same landscape, orientation-1 pattern the crop scenarios
 /// use, at 480x320.
@@ -89,21 +88,15 @@ fn expect_workspace(
 /// The fitted photograph's own bounding box, then a horizontal brightness scan at its one-third
 /// column against its neighbours: the thirds overlay is a 30%-white guide line, which raises
 /// whatever it is drawn over, so a real line reads brighter than the plain photo beside it.
-fn thirds_overlay_present(path: &Path, frame: &Value) -> Result<Value> {
-    let measured = pixels(
-        path,
-        &Expect {
-            columns: columns(frame)?,
-            ..Expect::fit(ROTATED)
-        },
-    )?;
+fn thirds_overlay_present(frame: &Frame) -> Result<Value> {
+    let measured = frame.fixture(Expect::fit(ROTATED))?;
     let bounds: [u32; 4] = serde_json::from_value(measured["image_bounds"].clone())?;
     let [left, top, right, bottom] = bounds;
     ensure(
         right > left + 30 && bottom > top + 30,
         "Image too small to sample thirds",
     )?;
-    let image = image::open(path)?.to_rgb8();
+    let image = frame.image()?;
     let third_x = left + (right - left) / 3;
     let (y0, y1) = (top + (bottom - top) / 4, top + 3 * (bottom - top) / 4);
     let brightness = |x: u32| -> f64 {
@@ -147,15 +140,11 @@ fn thirds_overlay_present(path: &Path, frame: &Value) -> Result<Value> {
 }
 
 pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
     ensure(
         app["had_input_errors"] == json!(false),
         "The run recorded an input error",
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
+    let frames = Frame::all(evidence, app)?;
     let mut checks = Vec::new();
     let mut record = |frame: &Value, shows: &str, detail: Value| {
         checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
@@ -163,13 +152,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
 
     // Frame 0: the fixture opens with both panels shown, pointer mode, no thirds.
     expect_workspace(&frames[0], true, true, POINTER_MODE, false)?;
-    let opened = pixels(
-        &paths[0],
-        &Expect {
-            columns: columns(&frames[0])?,
-            ..Expect::fit(1)
-        },
-    )?;
+    let opened = frames[0].fixture(Expect::fit(1))?;
     record(&frames[0], "the fixture at Fit, both panels open", opened);
 
     // Frame 1: `edit.transform rotate-right` committed revision 1; the panels are untouched.
@@ -178,13 +161,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         frames[1]["state"]["stack"]["revision"] == json!(1),
         "rotate-right did not commit revision 1",
     )?;
-    let rotated = pixels(
-        &paths[1],
-        &Expect {
-            columns: columns(&frames[1])?,
-            ..Expect::fit(ROTATED)
-        },
-    )?;
+    let rotated = frames[1].fixture(Expect::fit(ROTATED))?;
     record(
         &frames[1],
         "rotated right, committed as revision 1",
@@ -196,32 +173,20 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[2],
         "the state panel collapsed",
-        pixels(
-            &paths[2],
-            &Expect {
-                columns: columns(&frames[2])?,
-                ..Expect::fit(ROTATED)
-            },
-        )?,
+        frames[2].fixture(Expect::fit(ROTATED))?,
     );
     expect_workspace(&frames[3], true, false, POINTER_MODE, false)?;
     record(
         &frames[3],
         "the state panel back, the tools panel collapsed",
-        pixels(
-            &paths[3],
-            &Expect {
-                columns: columns(&frames[3])?,
-                ..Expect::fit(ROTATED)
-            },
-        )?,
+        frames[3].fixture(Expect::fit(ROTATED))?,
     );
     expect_workspace(&frames[4], true, true, POINTER_MODE, true)?;
-    let thirds = thirds_overlay_present(&paths[4], &frames[4])?;
+    let thirds = thirds_overlay_present(&frames[4])?;
     record(
         &frames[4],
         "both panels open again, thirds overlay on",
-        json!({"fit":pixels(&paths[4], &Expect { columns: columns(&frames[4])?, ..Expect::fit(ROTATED) })?, "thirds":thirds}),
+        json!({"fit":frames[4].fixture(Expect::fit(ROTATED))?, "thirds":thirds}),
     );
 
     // Frame 5: previewing entry 0, the Original, unrotated at 480x320.
@@ -235,13 +200,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ),
     )?;
     expect_workspace(&frames[5], true, true, POINTER_MODE, true)?;
-    let preview = pixels(
-        &paths[5],
-        &Expect {
-            columns: columns(&frames[5])?,
-            ..Expect::fit(1)
-        },
-    )?;
+    let preview = frames[5].fixture(Expect::fit(1))?;
     record(
         &frames[5],
         "a historical preview of entry 0, the Original",
@@ -263,13 +222,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[6],
         "returned to the current, rotated state",
-        pixels(
-            &paths[6],
-            &Expect {
-                columns: columns(&frames[6])?,
-                ..Expect::fit(ROTATED)
-            },
-        )?,
+        frames[6].fixture(Expect::fit(ROTATED))?,
     );
 
     // Frames 7 and 8: Basic collapsed, then Transforms expanded, both view state alone.
@@ -360,40 +313,24 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
 /// with the crop module registered; the second reopens the same fixture (the catalog dedupes by
 /// file identity, so this is the same asset with the same committed stack) with the crop module
 /// disabled, so rendering it reports the unavailable effect instead of silently omitting it.
-pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
-    ensure(!out.exists(), "Smoke output must be new")?;
-    fs::create_dir_all(out)?;
-    let fixture = root.join(FIXTURE);
-    let launch1 = out.join("launch1");
-    let launch2 = out.join("launch2");
-
-    let mut result = json!({"scenario":"unavailable","status":"failed","launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
-    let check = (|| -> Result {
-        result["fixture_hash"] = json!(hash(&fixture)?);
-        result["binary_sha256"] = json!(hash(bin)?);
-        result["lockfile_sha256"] = json!(hash(&root.join("Cargo.lock"))?);
+pub fn unavailable(mut run: Run) -> Result {
+    let fixture = run.root().join(FIXTURE);
+    run.note(
+        "Two launches: the first commits a crop layer with every built-in module registered; the second reuses its catalog with `--disable-module lightwell.crop` and reopens the same fixture, which the catalog dedupes to the same asset, so the stack's crop layer is reported unavailable instead of silently rendered without it.",
+    );
+    run.check(|run| {
+        run.hash(std::slice::from_ref(&fixture))?;
 
         // Launch 1: crop enabled, commit a 16:9 fit.
-        let script1 = out.join("script1.json");
-        write_json(
-            &script1,
-            &json!([{"api":{"method":"edit.crop-fit","params":{"aspect":"16:9"}}}]),
+        let launch1 = run.launch(
+            Launch::named("launch1")
+                .open(&fixture)
+                .script(
+                    "script1.json",
+                    json!([{"api":{"method":"edit.crop-fit","params":{"aspect":"16:9"}}}]),
+                )
+                .window(WINDOW),
         )?;
-        let args1: Vec<OsString> = vec![
-            "--evidence-dir".into(),
-            launch1.clone().into_os_string(),
-            "--open".into(),
-            fixture.clone().into_os_string(),
-            "--evidence-script".into(),
-            script1.into_os_string(),
-            "--window-size".into(),
-            WINDOW[0].into(),
-            WINDOW[1].into(),
-        ];
-        let mut child1 = spawn_editor(root, bin, &args1, &out.join("launch1.log"))?;
-        let status1 = wait(&mut child1, timeout)?;
-        result["launch1_exit_code"] = json!(status1.code());
-        ensure(status1.success(), format!("Launch 1 exit {status1}"))?;
         let app1 = read_json(&launch1.join("result.json"))?;
         ensure(
             app1["status"] == "captured",
@@ -414,34 +351,26 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
         // Launch 2: the same catalog, the crop module disabled, the same fixture reopened.
         let catalog = launch1.join("catalog.sqlite");
         ensure(catalog.is_file(), "Launch 1 wrote no catalog")?;
-        let args2: Vec<OsString> = vec![
-            "--catalog".into(),
-            catalog.clone().into_os_string(),
-            "--disable-module".into(),
-            CROP_MODULE.into(),
-            "--evidence-dir".into(),
-            launch2.clone().into_os_string(),
-            "--open".into(),
-            fixture.clone().into_os_string(),
-            "--window-size".into(),
-            WINDOW[0].into(),
-            WINDOW[1].into(),
-        ];
-        let mut child2 = spawn_editor(root, bin, &args2, &out.join("launch2.log"))?;
-        let status2 = wait(&mut child2, timeout)?;
-        result["launch2_exit_code"] = json!(status2.code());
-        ensure(status2.success(), format!("Launch 2 exit {status2}"))?;
+        let launch2 = run.launch(
+            Launch::named("launch2")
+                .catalog(&catalog)
+                .disable(CROP_MODULE)
+                .open(&fixture)
+                .window(WINDOW),
+        )?;
         let app2 = read_json(&launch2.join("result.json"))?;
         ensure(
             app2["status"] == "captured",
             "Launch 2 did not finish captured",
         )?;
-        let frame2 = app2["frames"]
-            .as_array()
-            .and_then(|f| f.last())
-            .ok_or("Launch 2 wrote no frames")?
-            .clone();
-        let path2 = frame_identity(&launch2, &app2, &frame2)?;
+        let frame2 = &Frame::identified(
+            &launch2,
+            &app2,
+            app2["frames"]
+                .as_array()
+                .and_then(|f| f.last())
+                .ok_or("Launch 2 wrote no frames")?,
+        )?;
 
         ensure(
             frame2["state"]["render_error"]["code"] == json!("incompatible"),
@@ -484,8 +413,8 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
             "The crop module is not reported unavailable",
         )?;
         // No photo drawn: the canvas region carries none of the fixture's own colours.
-        let image = image::open(&path2)?.to_rgb8();
-        let [left, right] = columns(&frame2)?.unwrap_or([0, image.width()]);
+        let image = frame2.image()?;
+        let [left, right] = frame2.columns()?.unwrap_or([0, image.width()]);
         let has_fixture_colour = (0..image.height()).step_by(4).any(|y| {
             (left..right).step_by(4).any(|x| {
                 let p = image.get_pixel(x, y).0;
@@ -499,12 +428,9 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
             "Launch 2 drew the photo despite the unavailable provider",
         )?;
         // The source is read-only throughout: its hash is unchanged from before either launch.
-        ensure(
-            json!(hash(&fixture)?) == result["fixture_hash"],
-            "Source changed",
-        )?;
+        run.sources_unchanged()?;
         write_json(
-            &out.join("unavailable-checks.json"),
+            &run.out().join("unavailable-checks.json"),
             &json!({
                 "launch1_committed_crop_layer": true,
                 "launch2_render_error": frame2["state"]["render_error"],
@@ -515,19 +441,5 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
             }),
         )?;
         Ok(())
-    })();
-    match &check {
-        Ok(()) => result["status"] = json!("passed"),
-        Err(e) => result["error"] = json!(e.to_string()),
-    };
-    write_json(&out.join("result.json"), &result)?;
-    fs::write(
-        out.join("reproduce.md"),
-        format!(
-            "# Smoke run\n\nScenario: unavailable. Status: {}.\n\nTwo launches: the first commits a crop layer with every built-in module registered; the second reuses its catalog with `--disable-module lightwell.crop` and reopens the same fixture, which the catalog dedupes to the same asset, so the stack's crop layer is reported unavailable instead of silently rendered without it.\n\nReproduce with `cargo xtask smoke --scenario unavailable --output NEW_DIR --binary PATH`.\n",
-            result["status"],
-        ),
-    )?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    check
+    })
 }

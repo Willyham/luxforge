@@ -22,10 +22,9 @@
 //! in. A position is a normalized content coordinate, which is what a script paints in and what the
 //! stored stroke holds.
 use crate::{
-    smoke::{self, columns, frame_identity},
+    scenario::{Bright, Frame, Launch, Run, Scan, pixels, preamble},
     *,
 };
-use std::time::Duration;
 
 pub const SCENARIO: &str = "mask-brush";
 /// The Presence fixture: its bottom-right quadrant is a flat mid-grey, which is where the two
@@ -251,64 +250,10 @@ fn launch3_script() -> Value {
     ])
 }
 
-fn revision(frame: &Value) -> Result<u64> {
-    frame["state"]["stack"]["revision"]
-        .as_u64()
-        .ok_or_else(|| "Frame records no revision".into())
-}
-
-fn label(frame: &Value) -> Result<&str> {
-    frame["state"]["stack"]["label"]
-        .as_str()
-        .ok_or_else(|| "Frame records no history label".into())
-}
-
-fn masks(frame: &Value) -> Result<&Vec<Value>> {
-    frame["state"]["masks"]["masks"]
-        .as_array()
-        .ok_or_else(|| "Frame records no mask list".into())
-}
-
-fn only_mask(frame: &Value) -> Result<&Value> {
-    let masks = masks(frame)?;
-    ensure(
-        masks.len() == 1,
-        format!("Expected exactly one mask, found {}", json!(masks)),
-    )?;
-    Ok(&masks[0])
-}
-
-/// Every component of the open mask, as the panel derived them.
-fn components(frame: &Value) -> Result<&Vec<Value>> {
-    frame["state"]["masks"]["components"]
-        .as_array()
-        .ok_or_else(|| "Frame records no component list".into())
-}
-
-fn component(frame: &Value, index: usize) -> Result<&Value> {
-    components(frame)?
-        .get(index)
-        .ok_or_else(|| format!("The mask holds no component {index}").into())
-}
-
-/// The kinds and modes of the open mask's components, in list order.
-fn kinds(frame: &Value) -> Result<Vec<String>> {
-    Ok(components(frame)?
-        .iter()
-        .map(|component| {
-            format!(
-                "{} {}",
-                component["mode"].as_str().unwrap_or_default(),
-                component["kind"].as_str().unwrap_or_default()
-            )
-        })
-        .collect())
-}
-
 /// The content addresses of one component's strokes, in the order they compose. The panel lists them
 /// on the selected row, so a frame that records them is a frame whose row was open.
-fn strokes(frame: &Value, index: usize) -> Result<Vec<String>> {
-    Ok(component(frame, index)?["strokes"]
+fn strokes(frame: &Frame, index: usize) -> Result<Vec<String>> {
+    Ok(frame.component(index)?["strokes"]
         .as_array()
         .ok_or("The component records no stroke list")?
         .iter()
@@ -318,7 +263,7 @@ fn strokes(frame: &Value, index: usize) -> Result<Vec<String>> {
 
 /// The brush the panel is holding, as the frame recorded it: the settings the next stroke is drawn
 /// with, read from the fields `mask.add-stroke` itself declares.
-fn brush(frame: &Value, field: &str) -> Result<f64> {
+fn brush(frame: &Frame, field: &str) -> Result<f64> {
     let held = &frame["state"]["masks"]["brush"]["fields"][field];
     held.as_f64()
         .or_else(|| held.as_str().and_then(|text| text.parse::<f64>().ok()))
@@ -332,90 +277,32 @@ fn brush(frame: &Value, field: &str) -> Result<f64> {
 }
 
 /// The stack's one Presence layer, or `None` when the stack holds none.
-fn presence_layer(frame: &Value) -> Option<&Value> {
-    frame["state"]["stack"]["layers"]
-        .as_array()?
-        .iter()
-        .find(|layer| layer["effect"] == json!(lightwell_core::PRESENCE_EFFECT))
+fn presence_layer(frame: &Frame) -> Option<&Value> {
+    frame.layer(lightwell_core::PRESENCE_EFFECT)
 }
 
-/// The photograph's own drawn rectangle inside the capture.
+/// Where the photograph is drawn inside the capture.
 ///
 /// It is found on a frame the overlay has not painted — the opened fixture, or the frame after a
 /// crop — and reused for the frames beside it: the zoom and the panels do not move between them, and
-/// it cannot be found again from a frame painted mostly black.
-///
-/// The vertical extent is taken first and the horizontal one only among the photograph's own rows,
-/// for the reason `vignette` records: the mode strip is a bright floating bar over the same surface
-/// and a scan of every row measures whichever of the two happens to be wider. The photograph is the
-/// tallest bright thing there by a wide margin.
-fn photo_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
-    const BRIGHT: u32 = 32;
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [surface_left, surface_right] = columns(frame)?.unwrap_or([0, width]);
-    ensure(
-        surface_left < surface_right && surface_right <= width,
-        "Invalid surface columns",
-    )?;
-    let bright = |p: [u8; 3]| (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3 >= BRIGHT;
-    let top_margin = (height / 20).max(20);
-    let bottom_margin = height - top_margin;
-    let (inset_left, inset_right) = (surface_left + 10, surface_right - 10);
-    let mut tallest: Option<(u32, u32, u32)> = None;
-    for x in inset_left..inset_right {
-        if let Some((top, bottom)) = smoke::longest_run(
-            (top_margin..bottom_margin).map(|y| (y, bright(image.get_pixel(x, y).0))),
-        ) && tallest.is_none_or(|(h, ..)| bottom - top > h)
-        {
-            tallest = Some((bottom - top, top, bottom));
-        }
-    }
-    let (_, top, bottom) = tallest.ok_or("No photograph in the frame: blank or wrong render")?;
-    let mut widest: Option<(u32, u32, u32)> = None;
-    for y in top..bottom {
-        if let Some((left, right)) = smoke::longest_run(
-            (inset_left..inset_right).map(|x| (x, bright(image.get_pixel(x, y).0))),
-        ) && widest.is_none_or(|(w, ..)| right - left > w)
-        {
-            widest = Some((right - left, left, right));
-        }
-    }
-    let (_, left, right) = widest.ok_or("No photograph in the frame: blank or wrong render")?;
-    ensure(
-        right - left > 200 && bottom - top > 100,
-        format!("Photograph too small to measure: {left}..{right}, {top}..{bottom}"),
-    )?;
-    Ok([left, top, right, bottom])
-}
+/// it cannot be found again from a frame painted mostly black. The vertical extent is taken first,
+/// for the reason [`Scan::Tallest`] records.
+const BOUNDS: Bright = Bright {
+    threshold: 32,
+    scan: Scan::Tallest { last_row: false },
+    least: Some((200, 100)),
+};
 
 /// Mean Rec. 709 luminance of one small patch of the displayed photograph.
-fn patch(path: &Path, bounds: [u32; 4], at: [f64; 2]) -> Result<f64> {
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [left, top, right, bottom] = bounds;
-    let px = f64::from(left) + at[0] * f64::from(right - left);
-    let py = f64::from(top) + at[1] * f64::from(bottom - top);
-    let mut total = 0.0;
-    let mut count = 0u32;
-    for dy in -PATCH_HALF..=PATCH_HALF {
-        for dx in -PATCH_HALF..=PATCH_HALF {
-            let x = (px as i64 + dx).clamp(0, i64::from(width) - 1) as u32;
-            let y = (py as i64 + dy).clamp(0, i64::from(height) - 1) as u32;
-            let p = image.get_pixel(x, y).0;
-            total += 0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]);
-            count += 1;
-        }
-    }
-    ensure(count > 0, "Sampled no pixels")?;
-    Ok(total / f64::from(count))
+fn patch(frame: &Frame, bounds: [u32; 4], at: [f64; 2]) -> Result<f64> {
+    pixels::luminance_at(frame, bounds, at, PATCH_HALF)
 }
 
 /// All nine probes of one capture.
-fn probes(path: &Path, bounds: [u32; 4]) -> Result<[f64; 9]> {
+fn probes(frame: &Frame, bounds: [u32; 4]) -> Result<[f64; 9]> {
     let mut out = [0.0; 9];
     for (slot, at) in out.iter_mut().zip(PROBES) {
-        *slot = patch(path, bounds, at)?;
+        *slot = patch(frame, bounds, at)?;
     }
     Ok(out)
 }
@@ -446,8 +333,8 @@ fn describe(wanted: Reads) -> &'static str {
 
 /// One coverage frame against what the composition and the accumulation rules say it must be, at
 /// each of the nine probes in turn.
-fn coverage(path: &Path, bounds: [u32; 4], what: &str, expected: [Reads; 9]) -> Result<[f64; 9]> {
-    let read = probes(path, bounds)?;
+fn coverage(frame: &Frame, bounds: [u32; 4], what: &str, expected: [Reads; 9]) -> Result<[f64; 9]> {
+    let read = probes(frame, bounds)?;
     for ((value, want), name) in read.iter().zip(expected).zip(PROBE_NAMES) {
         ensure(
             reading_holds(*value, want),
@@ -525,117 +412,62 @@ impl Tail {
 }
 
 /// The whole scenario: three launches over one catalog, checked together.
-pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
-    ensure(!out.exists(), "Smoke output must be new")?;
-    fs::create_dir_all(out)?;
-    let fixture = root.join(FIXTURE);
-    ensure(
-        fixture.is_file(),
-        format!("{FIXTURE} is missing; run `cargo xtask generate-fixtures`"),
-    )?;
-    let launch1 = out.join("launch1");
-    let launch2 = out.join("launch2");
-    let launch3 = out.join("launch3");
-    let mut result = json!({"scenario":SCENARIO,"status":"failed","launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
-    let check = (|| -> Result {
-        result["fixture_hash"] = json!(hash(&fixture)?);
-        result["binary_sha256"] = json!(hash(bin)?);
-        result["lockfile_sha256"] = json!(hash(&root.join("Cargo.lock"))?);
-
-        let script1 = out.join("script1.json");
-        write_json(&script1, &launch1_script())?;
-        let args1: Vec<OsString> = vec![
-            "--evidence-dir".into(),
-            launch1.clone().into_os_string(),
-            "--open".into(),
-            fixture.clone().into_os_string(),
-            "--evidence-script".into(),
-            script1.into_os_string(),
-            "--window-size".into(),
-            WINDOW[0].into(),
-            WINDOW[1].into(),
-        ];
-        let mut child1 = smoke::spawn_editor(root, bin, &args1, &out.join("launch1.log"))?;
-        let status1 = smoke::wait(&mut child1, timeout)?;
-        result["launch1_exit_code"] = json!(status1.code());
-        ensure(status1.success(), format!("Launch 1 exit {status1}"))?;
-        let (app1, _) = smoke::preamble(&launch1, LAUNCH1_FRAMES)?;
+pub fn run(mut run: Run) -> Result {
+    let fixture = run.root().join(FIXTURE);
+    run.note(
+        "Generate the fixture first with `cargo xtask generate-fixtures --output fixtures/generated`.\n\nThree launches over one catalog: the first paints several strokes on one brush, feathers one at the other end of the range, erases across another and deletes one on its own; the second reopens it, subtracts a second brush from a radial gradient and drags Presence through the result; the third reopens it again and paints over the picture's edge, at 100% and under a rotated crop.",
+    );
+    run.check(|run| {
+        ensure(
+            fixture.is_file(),
+            format!("{FIXTURE} is missing; run `cargo xtask generate-fixtures`"),
+        )?;
+        run.hash(std::slice::from_ref(&fixture))?;
+        let launch1 = run.launch(
+            Launch::named("launch1")
+                .open(&fixture)
+                .script("script1.json", launch1_script())
+                .window(WINDOW),
+        )?;
+        let (app1, _) = preamble(&launch1, LAUNCH1_FRAMES)?;
         let checks = verify_launch1(&launch1, &app1)?;
-        result["launch1"] = checks.clone();
+        run.record("launch1", checks.clone());
 
         // Launch 2: the same catalog and the same file, in a new process.
         let catalog = launch1.join("catalog.sqlite");
         ensure(catalog.is_file(), "Launch 1 wrote no catalog")?;
-        let script2 = out.join("script2.json");
-        write_json(&script2, &launch2_script())?;
-        let args2: Vec<OsString> = vec![
-            "--catalog".into(),
-            catalog.into_os_string(),
-            "--evidence-dir".into(),
-            launch2.clone().into_os_string(),
-            "--open".into(),
-            fixture.clone().into_os_string(),
-            "--evidence-script".into(),
-            script2.into_os_string(),
-            "--window-size".into(),
-            WINDOW[0].into(),
-            WINDOW[1].into(),
-        ];
-        let mut child2 = smoke::spawn_editor(root, bin, &args2, &out.join("launch2.log"))?;
-        let status2 = smoke::wait(&mut child2, timeout)?;
-        result["launch2_exit_code"] = json!(status2.code());
-        ensure(status2.success(), format!("Launch 2 exit {status2}"))?;
-        let (app2, _) = smoke::preamble(&launch2, LAUNCH2_FRAMES)?;
+        let launch2 = run.launch(
+            Launch::named("launch2")
+                .catalog(&catalog)
+                .open(&fixture)
+                .script("script2.json", launch2_script())
+                .window(WINDOW),
+        )?;
+        let (app2, _) = preamble(&launch2, LAUNCH2_FRAMES)?;
         let composed = verify_launch2(&launch2, &app2, &checks)?;
-        result["launch2"] = composed.clone();
+        run.record("launch2", composed.clone());
 
         // Launch 3: the same catalog once more — the one launch 1 wrote, which launch 2 opened by
         // path and added to — and painting carried on in it.
         let catalog = launch1.join("catalog.sqlite");
         ensure(catalog.is_file(), "Launch 1's catalog is gone")?;
-        let script3 = out.join("script3.json");
-        write_json(&script3, &launch3_script())?;
-        let args3: Vec<OsString> = vec![
-            "--catalog".into(),
-            catalog.into_os_string(),
-            "--evidence-dir".into(),
-            launch3.clone().into_os_string(),
-            "--open".into(),
-            fixture.clone().into_os_string(),
-            "--evidence-script".into(),
-            script3.into_os_string(),
-            "--window-size".into(),
-            WINDOW[0].into(),
-            WINDOW[1].into(),
-        ];
-        let mut child3 = smoke::spawn_editor(root, bin, &args3, &out.join("launch3.log"))?;
-        let status3 = smoke::wait(&mut child3, timeout)?;
-        result["launch3_exit_code"] = json!(status3.code());
-        ensure(status3.success(), format!("Launch 3 exit {status3}"))?;
-        let (app3, _) = smoke::preamble(&launch3, LAUNCH3_FRAMES)?;
-        result["launch3"] = verify_launch3(&launch3, &app3, &composed)?;
-        ensure(
-            json!(hash(&fixture)?) == result["fixture_hash"],
-            "Source changed",
+        let launch3 = run.launch(
+            Launch::named("launch3")
+                .catalog(&catalog)
+                .open(&fixture)
+                .script("script3.json", launch3_script())
+                .window(WINDOW),
         )?;
-        write_json(&out.join("mask-brush-checks.json"), &result)?;
+        let (app3, _) = preamble(&launch3, LAUNCH3_FRAMES)?;
+        let carried = verify_launch3(&launch3, &app3, &composed)?;
+        run.record("launch3", carried.clone());
+        run.sources_unchanged()?;
+        write_json(
+            &run.out().join("mask-brush-checks.json"),
+            &json!({"launch1": checks, "launch2": composed, "launch3": carried}),
+        )?;
         Ok(())
-    })();
-    match &check {
-        Ok(()) => result["status"] = json!("passed"),
-        Err(error) => result["error"] = json!(error.to_string()),
-    };
-    write_json(&out.join("result.json"), &result)?;
-    fs::write(
-        out.join("reproduce.md"),
-        format!(
-            "# Smoke run\n\nScenario: {SCENARIO}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask generate-fixtures --output fixtures/generated` then `cargo xtask smoke --scenario {SCENARIO} --output NEW_DIR --binary PATH`; on macOS each launch runs hidden in a background-only bundle, so no window is ever placed on the desktop.\n\nThree launches over one catalog: the first paints several strokes on one brush, feathers one at the other end of the range, erases across another and deletes one on its own; the second reopens it, subtracts a second brush from a radial gradient and drags Presence through the result; the third reopens it again and paints over the picture's edge, at 100% and under a rotated crop.\n\nActual renderer readback. Synthetic fixtures only.\n",
-            result["status"],
-            launch::MODE
-        ),
-    )?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    check
+    })
 }
 
 /// Launch 1, frame by frame: the strokes, the feather, the erase, the delete, the gradient the
@@ -646,16 +478,12 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
         app["had_input_errors"] == json!(false),
         format!("The run recorded an input error: {}", app["script"]),
     )?;
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
+    let frames = Frame::all(evidence, app)?;
     ensure(
         frames.len() == LAUNCH1_FRAMES,
         format!("Launch 1 wrote {} frames", frames.len()),
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
-    let bounds = photo_bounds(&paths[0], &frames[0])?;
+    let bounds = pixels::bright_bounds(&frames[0], BOUNDS)?;
     let mut shows = Vec::new();
     let mut record = |frame: &Value, what: &str, detail: Value| {
         shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
@@ -663,10 +491,10 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
 
     // Frame 0: the fixture as launched, with no mask in the recipe.
     ensure(
-        masks(&frames[0])?.is_empty(),
+        frames[0].masks()?.is_empty(),
         "The fixture opened with a mask already in the recipe",
     )?;
-    let opened = probes(&paths[0], bounds)?;
+    let opened = probes(&frames[0], bounds)?;
     record(
         &frames[0],
         "the fixture as launched, with no mask in the recipe",
@@ -675,55 +503,55 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
 
     // Frame 4: the first stroke. One mask, one brush component, one stroke, one entry.
     ensure(
-        revision(&frames[4])? == revision(&frames[0])? + 1,
+        frames[4].revision()? == frames[0].revision()? + 1,
         format!(
             "The first stroke moved the revision to {}",
-            revision(&frames[4])?
+            frames[4].revision()?
         ),
     )?;
     ensure(
-        label(&frames[4])? == "Add brush",
-        format!("The first stroke is labelled {:?}", label(&frames[4])?),
+        frames[4].label()? == "Add brush",
+        format!("The first stroke is labelled {:?}", frames[4].label()?),
     )?;
     ensure(
-        kinds(&frames[4])? == ["add brush"],
-        format!("The first stroke made {:?}", kinds(&frames[4])?),
+        frames[4].kinds()? == ["add brush"],
+        format!("The first stroke made {:?}", frames[4].kinds()?),
     )?;
-    let mask = only_mask(&frames[4])?["id"]
+    let mask = frames[4].only_mask()?["id"]
         .as_str()
         .ok_or("The listed mask has no identity")?
         .to_owned();
     record(
         &frames[4],
         "one painted stroke: a mask, a brush component and the stroke, in one history entry",
-        json!({"label":label(&frames[4])?,"kinds":kinds(&frames[4])?,
+        json!({"label":frames[4].label()?,"kinds":frames[4].kinds()?,
                "brush":{"size":brush(&frames[4],"size")?,"feather":brush(&frames[4],"feather")?}}),
     );
 
     // Frame 5: the second stroke, on the same component and with no second gesture. Several strokes
     // in one mask are an ordinary list: two strokes, one row, two entries.
     ensure(
-        revision(&frames[5])? == revision(&frames[4])? + 1,
+        frames[5].revision()? == frames[4].revision()? + 1,
         "The second stroke did not commit one entry",
     )?;
     ensure(
-        label(&frames[5])? == "Update Brush 1",
-        format!("The second stroke is labelled {:?}", label(&frames[5])?),
+        frames[5].label()? == "Update Brush 1",
+        format!("The second stroke is labelled {:?}", frames[5].label()?),
     )?;
     ensure(
-        components(&frames[5])?.len() == 1,
-        format!("The second stroke made {:?}", kinds(&frames[5])?),
+        frames[5].components()?.len() == 1,
+        format!("The second stroke made {:?}", frames[5].kinds()?),
     )?;
     record(
         &frames[5],
         "a second stroke on the same brush: one more entry, still one component",
-        json!({"label":label(&frames[5])?,"components":components(&frames[5])?.len()}),
+        json!({"label":frames[5].label()?,"components":frames[5].components()?.len()}),
     );
 
     // Frame 6: the coverage itself. Both strokes are covered, the band beside the hard one is
     // covered too — a hard edge is coverage 1 right up to the radius — and nothing else is.
     let two_strokes = coverage(
-        &paths[6],
+        &frames[6],
         bounds,
         "two hard add strokes",
         [
@@ -747,7 +575,7 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
     // Frame 7: the brush at the other feather, before it has painted anything. The panel's own field
     // says so and nothing is committed.
     ensure(
-        revision(&frames[7])? == revision(&frames[5])?,
+        frames[7].revision()? == frames[5].revision()?,
         "Changing the brush committed something",
     )?;
     ensure(
@@ -764,7 +592,7 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
     // is strictly between the endpoints, where the hard strokes' band at the same offset is full.
     // That is the two feather settings, measured in the photograph rather than read off a payload.
     let feathered = coverage(
-        &paths[8],
+        &frames[8],
         bounds,
         "a fully feathered third stroke",
         [
@@ -796,11 +624,11 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
     // Frame 10: the erase stroke. It takes coverage out of the second stroke where it crosses it and
     // leaves the rest of that stroke exactly as it was.
     ensure(
-        revision(&frames[10])? == revision(&frames[8])? + 1,
+        frames[10].revision()? == frames[8].revision()? + 1,
         "The erase stroke did not commit one entry",
     )?;
     let erased = coverage(
-        &paths[10],
+        &frames[10],
         bounds,
         "an erase stroke across the second add stroke",
         [
@@ -818,13 +646,13 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
     record(
         &frames[10],
         "an erase stroke: coverage removed where it crosses, the rest of that stroke untouched",
-        json!({"label":label(&frames[10])?,"patches":erased}),
+        json!({"label":frames[10].label()?,"patches":erased}),
     );
 
     // Frame 12: the row selected, which is what lists its strokes. Four strokes, in the order they
     // compose, and selecting a row commits nothing.
     ensure(
-        revision(&frames[12])? == revision(&frames[10])?,
+        frames[12].revision()? == frames[10].revision()?,
         "Selecting a component committed something",
     )?;
     let listed = strokes(&frames[12], 0)?;
@@ -842,12 +670,12 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
     // stroke gone from the picture, every other stroke exactly where it was — including the erase,
     // which is what proves the order survived a removal from the middle of it.
     ensure(
-        revision(&frames[13])? == revision(&frames[12])? + 1,
+        frames[13].revision()? == frames[12].revision()? + 1,
         "Deleting a stroke did not commit one entry",
     )?;
     ensure(
-        label(&frames[13])? == "Delete a stroke from Brush 1",
-        format!("The delete is labelled {:?}", label(&frames[13])?),
+        frames[13].label()? == "Delete a stroke from Brush 1",
+        format!("The delete is labelled {:?}", frames[13].label()?),
     )?;
     let kept = strokes(&frames[13], 0)?;
     ensure(
@@ -855,7 +683,7 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
         format!("The delete left {kept:?} of {listed:?}"),
     )?;
     let deleted = coverage(
-        &paths[13],
+        &frames[13],
         bounds,
         "the feathered stroke deleted on its own",
         [
@@ -873,15 +701,15 @@ fn verify_launch1(evidence: &Path, app: &Value) -> Result<Value> {
     record(
         &frames[13],
         "one stroke deleted on its own: the others keep their order and their coverage",
-        json!({"label":label(&frames[13])?,"strokes":kept,"patches":deleted}),
+        json!({"label":frames[13].label()?,"strokes":kept,"patches":deleted}),
     );
 
     Ok(json!({
         "mask": mask,
-        "kinds": kinds(&frames[13])?,
+        "kinds": frames[13].kinds()?,
         "strokes": kept,
         "opened": opened,
-        "revision": revision(&frames[13])?,
+        "revision": frames[13].revision()?,
         "feather": {"hard_band": feathered[1], "soft_band": feathered[4]},
         "covered_threshold": COVERED,
         "uncovered_threshold": UNCOVERED,
@@ -897,16 +725,12 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         app["had_input_errors"] == json!(false),
         format!("The run recorded an input error: {}", app["script"]),
     )?;
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
+    let frames = Frame::all(evidence, app)?;
     ensure(
         frames.len() == LAUNCH2_FRAMES,
         format!("Launch 2 wrote {} frames", frames.len()),
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
-    let bounds = photo_bounds(&paths[0], &frames[0])?;
+    let bounds = pixels::bright_bounds(&frames[0], BOUNDS)?;
     let mut shows = Vec::new();
     let mut record = |frame: &Value, what: &str, detail: Value| {
         shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
@@ -915,10 +739,10 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
     // Frame 0: the reopened catalog. The mask, its component and its strokes are back, by the same
     // identities the first launch committed, with no gesture open and no Presence layer.
     ensure(
-        only_mask(&frames[0])?["id"] == launch1["mask"],
+        frames[0].only_mask()?["id"] == launch1["mask"],
         format!(
             "The reopened catalog holds {}",
-            only_mask(&frames[0])?["id"]
+            frames[0].only_mask()?["id"]
         ),
     )?;
     ensure(
@@ -928,13 +752,13 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
     record(
         &frames[0],
         "the catalog reopened in a new process, with the painted mask in the recipe",
-        json!({"mask":only_mask(&frames[0])?["id"]}),
+        json!({"mask":frames[0].only_mask()?["id"]}),
     );
 
     // Frame 2: the coverage after the reopen, read at the same nine points the first launch ended
     // on. The strokes survived as pixels and not only as rows.
     let reopened = coverage(
-        &paths[2],
+        &frames[2],
         bounds,
         "the reopened mask",
         [
@@ -952,20 +776,20 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
     record(
         &frames[2],
         "the reopened mask's own coverage: every stroke back where it was painted",
-        json!({"patches":reopened,"kinds":kinds(&frames[2])?}),
+        json!({"patches":reopened,"kinds":frames[2].kinds()?}),
     );
 
     // Frame 5: the radial gradient, committed into the same mask as a second component.
     ensure(
-        revision(&frames[5])? == revision(&frames[2])? + 1,
+        frames[5].revision()? == frames[2].revision()? + 1,
         "The radial did not commit one entry",
     )?;
     ensure(
-        kinds(&frames[5])? == ["add brush", "add radial"],
-        format!("The mask holds {:?}", kinds(&frames[5])?),
+        frames[5].kinds()? == ["add brush", "add radial"],
+        format!("The mask holds {:?}", frames[5].kinds()?),
     )?;
     let with_radial = coverage(
-        &paths[5],
+        &frames[5],
         bounds,
         "a radial gradient beside the brush",
         [
@@ -983,21 +807,21 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
     record(
         &frames[5],
         "a radial gradient added to the mask the brush drew",
-        json!({"kinds":kinds(&frames[5])?,"label":label(&frames[5])?,"patches":with_radial}),
+        json!({"kinds":frames[5].kinds()?,"label":frames[5].label()?,"patches":with_radial}),
     );
 
     // Frame 8: the subtract brush inside that gradient. This is the requirement in one frame: a
     // brush takes a region out of a gradient, and it is one more row rather than a special gesture.
     ensure(
-        revision(&frames[8])? == revision(&frames[5])? + 1,
+        frames[8].revision()? == frames[5].revision()? + 1,
         "The subtract brush did not commit one entry",
     )?;
     ensure(
-        kinds(&frames[8])? == ["add brush", "add radial", "subtract brush"],
-        format!("The mask holds {:?}", kinds(&frames[8])?),
+        frames[8].kinds()? == ["add brush", "add radial", "subtract brush"],
+        format!("The mask holds {:?}", frames[8].kinds()?),
     )?;
     let subtracted = coverage(
-        &paths[8],
+        &frames[8],
         bounds,
         "a brush subtracting from the radial",
         [
@@ -1015,16 +839,16 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
     record(
         &frames[8],
         "a second brush, in subtract mode, taking a region out of the gradient",
-        json!({"kinds":kinds(&frames[8])?,"label":label(&frames[8])?,"patches":subtracted}),
+        json!({"kinds":frames[8].kinds()?,"label":frames[8].label()?,"patches":subtracted}),
     );
 
     // Frame 9: the overlay off. No layer is bound to the mask yet, so the photograph is
     // byte-unchanged from the one this launch opened: a mask on its own is a selection, not an edit.
     ensure(
-        only_mask(&frames[9])?["layers"] == json!([]),
+        frames[9].only_mask()?["layers"] == json!([]),
         "A mask with no adjustment already has a layer bound to it",
     )?;
-    let bare = probes(&paths[9], bounds)?;
+    let bare = probes(&frames[9], bounds)?;
     let opened: Vec<f64> = launch1["opened"]
         .as_array()
         .ok_or("Launch 1 recorded no opened patches")?
@@ -1048,10 +872,10 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
     // left exactly as it was outside it and where the subtract brush removed the gradient, and the
     // layer the panel committed names the mask.
     ensure(
-        revision(&frames[10])? == revision(&frames[9])? + 1,
+        frames[10].revision()? == frames[9].revision()? + 1,
         format!(
             "The masked drag moved the revision to {}",
-            revision(&frames[10])?
+            frames[10].revision()?
         ),
     )?;
     let layer =
@@ -1064,7 +888,7 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         layer["payload"][DEHAZE] == json!(DEHAZED),
         format!("The committed layer holds {}", layer["payload"]),
     )?;
-    let dehazed = probes(&paths[10], bounds)?;
+    let dehazed = probes(&frames[10], bounds)?;
     moved(
         "the covered patch under masked Presence",
         dehazed[6],
@@ -1092,7 +916,7 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         &frames[10],
         "Presence applied through the painted mask: the covered patch moved, the subtracted one and \
          the outside one left alone",
-        json!({"layer":layer["id"],DEHAZE:DEHAZED,"label":label(&frames[10])?,
+        json!({"layer":layer["id"],DEHAZE:DEHAZED,"label":frames[10].label()?,
                "covered":dehazed[6],"subtracted":dehazed[7],"uncovered":dehazed[8]}),
     );
 
@@ -1103,25 +927,25 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         "Undo left the masked Presence layer in the stack",
     )?;
     ensure(
-        kinds(&frames[11])? == kinds(&frames[8])?,
+        frames[11].kinds()? == frames[8].kinds()?,
         "Undo changed the component list",
     )?;
-    let undone = probes(&paths[11], bounds)?;
+    let undone = probes(&frames[11], bounds)?;
     for (index, name) in PROBE_NAMES.iter().enumerate() {
         untouched(&format!("{name} after undo"), undone[index], bare[index])?;
     }
     record(
         &frames[11],
         "the undone state: the composed mask, with nothing applied through it",
-        json!({"patches":undone,"label":label(&frames[11])?}),
+        json!({"patches":undone,"label":frames[11].label()?}),
     );
 
     Ok(json!({
         "mask": launch1["mask"],
-        "kinds": kinds(&frames[11])?,
+        "kinds": frames[11].kinds()?,
         "reopened": reopened,
         "presence": {"covered": dehazed[6], "subtracted": dehazed[7], "uncovered": dehazed[8]},
-        "revision": revision(&frames[11])?,
+        "revision": frames[11].revision()?,
         "frames": shows,
         "scope": "Mean Rec. 709 luminance of nine patches of the displayed photograph, read back from the renderer; the coverage readings are of the mask-on-black overlay and are not a colorimetric claim",
     }))
@@ -1133,17 +957,13 @@ fn verify_launch3(evidence: &Path, app: &Value, launch2: &Value) -> Result<Value
         app["had_input_errors"] == json!(false),
         format!("The run recorded an input error: {}", app["script"]),
     )?;
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
+    let frames = Frame::all(evidence, app)?;
     ensure(
         frames.len() == LAUNCH3_FRAMES,
         format!("Launch 3 wrote {} frames", frames.len()),
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
     let steps = app["script"].as_array().ok_or("Missing steps")?;
-    let bounds = photo_bounds(&paths[0], &frames[0])?;
+    let bounds = pixels::bright_bounds(&frames[0], BOUNDS)?;
     let mut shows = Vec::new();
     let mut record = |frame: &Value, what: &str, detail: Value| {
         shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
@@ -1153,28 +973,28 @@ fn verify_launch3(evidence: &Path, app: &Value, launch2: &Value) -> Result<Value
     // component list is the panel's own, so it is read in Mask mode; frame 0 is the photograph as
     // the process opened it, which is also where the drawn rectangle is measured.
     ensure(
-        kinds(&frames[1])?
+        frames[1].kinds()?
             == launch2["kinds"]
                 .as_array()
                 .ok_or("Launch 2 recorded no kinds")?
                 .iter()
                 .map(|kind| kind.as_str().unwrap_or_default().to_owned())
                 .collect::<Vec<_>>(),
-        format!("The reopened mask holds {:?}", kinds(&frames[1])?),
+        format!("The reopened mask holds {:?}", frames[1].kinds()?),
     )?;
     record(
         &frames[1],
         "the catalog reopened again, with the composed mask in the recipe",
-        json!({"kinds":kinds(&frames[1])?}),
+        json!({"kinds":frames[1].kinds()?}),
     );
 
     // Frame 5: a stroke that begins outside the picture. It is an ordinary stroke — stored positions
     // run from -1 to 2 — and the coverage reaches the picture's own left edge.
     ensure(
-        revision(&frames[5])? == revision(&frames[2])? + 1,
+        frames[5].revision()? == frames[2].revision()? + 1,
         "The edge stroke did not commit one entry",
     )?;
-    let edge = patch(&paths[5], bounds, P_EDGE)?;
+    let edge = patch(&frames[5], bounds, P_EDGE)?;
     ensure(
         edge >= COVERED,
         format!("The picture's left edge read {edge:.1} after a stroke painted in over it"),
@@ -1182,7 +1002,7 @@ fn verify_launch3(evidence: &Path, app: &Value, launch2: &Value) -> Result<Value
     record(
         &frames[5],
         "a stroke begun outside the picture, painting in over its left edge",
-        json!({"label":label(&frames[5])?,"edge":edge,"points":EDGE}),
+        json!({"label":frames[5].label()?,"edge":edge,"points":EDGE}),
     );
 
     // Frames 6-7: painting at 100%, where the exact frame is what is on screen and no proxy stands
@@ -1195,21 +1015,21 @@ fn verify_launch3(evidence: &Path, app: &Value, launch2: &Value) -> Result<Value
         ),
     )?;
     ensure(
-        revision(&frames[7])? == revision(&frames[5])? + 1,
+        frames[7].revision()? == frames[5].revision()? + 1,
         "The stroke painted at 100% did not commit one entry",
     )?;
     let zoomed_strokes = strokes(&frames[7], 0)?;
     record(
         &frames[7],
         "one stroke painted at 100%, on the exact frame rather than a proxy",
-        json!({"label":label(&frames[7])?,"strokes":zoomed_strokes.len(),
+        json!({"label":frames[7].label()?,"strokes":zoomed_strokes.len(),
                "zoom":frames[7]["state"]["workspace"]["zoom"]}),
     );
 
     // Frame 8: back at Fit, where the whole picture is on screen again, the stroke painted at 100%
     // is where the content coordinates it was painted in say it is. A zoom is a view and a stroke is
     // an edit; this is what keeps the two apart.
-    let zoomed = patch(&paths[8], bounds, P_ZOOMED)?;
+    let zoomed = patch(&frames[8], bounds, P_ZOOMED)?;
     ensure(
         zoomed >= COVERED,
         format!("The stroke painted at 100% read {zoomed:.1} at Fit"),
@@ -1232,7 +1052,7 @@ fn verify_launch3(evidence: &Path, app: &Value, launch2: &Value) -> Result<Value
             after.output
         ),
     )?;
-    let cropped_bounds = photo_bounds(&paths[11], &frames[11])?;
+    let cropped_bounds = pixels::bright_bounds(&frames[11], BOUNDS)?;
     record(
         &frames[11],
         "a straightened, fitted crop under the painted mask",
@@ -1244,11 +1064,11 @@ fn verify_launch3(evidence: &Path, app: &Value, launch2: &Value) -> Result<Value
     // read back where the geometry tail's own affine says those coordinates land — which is the map
     // the canvas draws the brush cursor and the handles through.
     ensure(
-        revision(&frames[15])? == revision(&frames[11])? + 1,
+        frames[15].revision()? == frames[11].revision()? + 1,
         "The stroke painted under the crop did not commit one entry",
     )?;
     let placed = after.place(P_ROTATED);
-    let painted = patch(&paths[15], cropped_bounds, placed)?;
+    let painted = patch(&frames[15], cropped_bounds, placed)?;
     ensure(
         painted >= COVERED,
         format!(
@@ -1257,14 +1077,14 @@ fn verify_launch3(evidence: &Path, app: &Value, launch2: &Value) -> Result<Value
         ),
     )?;
     ensure(
-        kinds(&frames[15])?.len() == kinds(&frames[1])?.len(),
-        format!("Painting under the crop made {:?}", kinds(&frames[15])?),
+        frames[15].kinds()?.len() == frames[1].kinds()?.len(),
+        format!("Painting under the crop made {:?}", frames[15].kinds()?),
     )?;
     record(
         &frames[15],
         "a stroke painted under the rotated crop, landing on the content pixels the affine places \
          it on",
-        json!({"label":label(&frames[15])?,"content":P_ROTATED,"placed":placed,"read":painted}),
+        json!({"label":frames[15].label()?,"content":P_ROTATED,"placed":placed,"read":painted}),
     );
 
     Ok(json!({
@@ -1273,7 +1093,7 @@ fn verify_launch3(evidence: &Path, app: &Value, launch2: &Value) -> Result<Value
         "rotated": {"content": P_ROTATED, "placed": placed, "read": painted,
                     "output": [after.output.0, after.output.1],
                     "before": [before.output.0, before.output.1]},
-        "revision": revision(&frames[15])?,
+        "revision": frames[15].revision()?,
         "frames": shows,
         "scope": "Mean Rec. 709 luminance of patches of the displayed photograph, read back from the renderer; the coverage readings are of the mask-on-black overlay and are not a colorimetric claim",
     }))

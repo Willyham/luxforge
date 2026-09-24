@@ -22,7 +22,7 @@
 //! With `--source RAW` the heavy step is a RAW temperature commit instead, which redevelops the
 //! mosaic; that run is not part of `rendered`, because no RAW photograph is checked in.
 use crate::{
-    smoke::{Guard, frame_identity},
+    scenario::{Frame, launch::Guard},
     *,
 };
 use std::{
@@ -169,9 +169,9 @@ fn footprint(pid: u32) -> std::result::Result<u64, String> {
         })
 }
 
-/// Wait for the editor to exit as [`smoke::wait`] does, reading its memory from outside the
-/// process meanwhile: `ps` every [`POLL`] and `footprint` every [`FOOTPRINT_EVERY`] polls, each
-/// stamped with the wall-clock middle of the read. `footprint` needs no privileges for a process
+/// Wait for the editor to exit as [`crate::scenario::launch::wait`] does, reading its memory from
+/// outside the process meanwhile: `ps` every [`POLL`] and `footprint` every [`FOOTPRINT_EVERY`]
+/// polls, each stamped with the wall-clock middle of the read. `footprint` needs no privileges for a process
 /// of the same user; if it fails once it is not tried again and the reason is recorded.
 pub fn watch(child: &mut Guard, timeout: Duration) -> Result<(ExitStatus, Value)> {
     let pid = child.child.id();
@@ -379,12 +379,6 @@ fn count(frame: &Value, key: &str) -> Result<u64> {
     performance(frame)[key]
         .as_u64()
         .ok_or_else(|| format!("Frame records no performance {key}").into())
-}
-
-fn revision(frame: &Value) -> Result<u64> {
-    frame["state"]["stack"]["revision"]
-        .as_u64()
-        .ok_or_else(|| "Frame records no revision".into())
 }
 
 /// A frame whose section is collapsed: the heading alone, no caption, nothing sampling.
@@ -614,14 +608,11 @@ fn compare_memory(
 }
 
 pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
     ensure(
         app["had_input_errors"] == json!(false),
         "The run recorded an input error",
     )?;
-    for frame in &frames {
-        frame_identity(evidence, app, frame)?;
-    }
+    let frames = Frame::all(evidence, app)?;
     for (index, frame) in frames.iter().enumerate().skip(1) {
         ensure(
             frame["step"]["status"] == json!("sent"),
@@ -660,7 +651,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     // Opened: the section open and sampling from the launch, its figures from its own answers. Its
     // first reads may land before the runner's first reading of the new process, so its memory is
     // compared from the next frame on.
-    let opened = revision(&frames[OPENED])?;
+    let opened = frames[OPENED].revision()?;
     let compared = expect_expanded(OPENED, &frames[OPENED])?;
     checks.push(json!({"frame":frames[OPENED]["file"],"shows":"the photograph opened with the Performance section open and sampling","compared":compared}));
 
@@ -741,10 +732,10 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         (REOPENED, opened + 2),
     ] {
         ensure(
-            revision(&frames[index])? == expected,
+            frames[index].revision()? == expected,
             format!(
                 "Frame {index}: revision {}, expected {expected}",
-                revision(&frames[index])?
+                frames[index].revision()?
             ),
         )?;
     }

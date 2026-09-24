@@ -123,19 +123,9 @@ impl Launches {
         let Some(result) = result else { return 0 };
         match self {
             Self::None => 0,
-            // A scenario records one exit code per launch it made: the multi-launch scenarios
-            // (`unavailable`, `basic-restart`, `zoom`, `mask-linear`, `mask-combine`, `mask-brush`
-            // and `mask-range`) record `launch1_exit_code` and its siblings, every other one a
-            // single `exit_code`.
-            Self::Smoke => [
-                "exit_code",
-                "launch1_exit_code",
-                "launch2_exit_code",
-                "launch3_exit_code",
-            ]
-            .iter()
-            .filter(|key| !result[**key].is_null())
-            .count() as u64,
+            // A scenario lists every editor process it started under `launches`, however many
+            // it makes.
+            Self::Smoke => result["launches"].as_array().map_or(0, Vec::len) as u64,
             // One launch per measured run, plus the idle process, which is recorded separately.
             Self::Measure => runs(result) as u64 + u64::from(!result["idle"].is_null()),
             // One scripted gesture launch; `--idle` adds the hold and idle pair, and that pair is
@@ -1731,14 +1721,13 @@ mod tests {
         let dir = tmp.path();
         assert_eq!(Launches::None.count(dir, Some(&json!({}))), 0);
         assert_eq!(Launches::Smoke.count(dir, None), 0);
-        assert_eq!(Launches::Smoke.count(dir, Some(&json!({"exit_code":0}))), 1);
         assert_eq!(
-            Launches::Smoke.count(
-                dir,
-                Some(&json!({"launch1_exit_code":0,"launch2_exit_code":0}))
-            ),
-            2
+            Launches::Smoke.count(dir, Some(&json!({"launches":[{"exit_code":0}]}))),
+            1
         );
+        let four = json!({"launches":[{"exit_code":0},{"exit_code":0},{"exit_code":0},{"exit_code":null}]});
+        assert_eq!(Launches::Smoke.count(dir, Some(&four)), 4);
+        assert_eq!(Launches::Smoke.count(dir, Some(&json!({"exit_code":0}))), 0);
         let measure = json!({"runs":[{},{},{}],"idle":{"duration_s":30.0}});
         assert_eq!(Launches::Measure.count(dir, Some(&measure)), 4);
         assert_eq!(

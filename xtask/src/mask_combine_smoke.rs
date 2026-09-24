@@ -22,10 +22,9 @@
 //! sweep from a centre to a point puts `radius_x = |Δx| · W/H` and `radius_y = |Δy|` on the draft,
 //! so each component below is swept to `(x + r · H/W, y + r)` and is a circle.
 use crate::{
-    smoke::{self, columns, frame_identity, longest_run},
+    scenario::{Bright, Frame, Launch, Run, Scan, pixels, preamble},
     *,
 };
-use std::time::Duration;
 
 pub const SCENARIO: &str = "mask-combine";
 /// The Presence fixture: its bottom-right quadrant is a flat mid-grey, which is where the two
@@ -175,150 +174,55 @@ fn script() -> Value {
     ])
 }
 
-fn revision(frame: &Value) -> Result<u64> {
-    frame["state"]["stack"]["revision"]
-        .as_u64()
-        .ok_or_else(|| "Frame records no revision".into())
-}
-
-fn label(frame: &Value) -> Result<&str> {
-    frame["state"]["stack"]["label"]
-        .as_str()
-        .ok_or_else(|| "Frame records no history label".into())
-}
-
-fn masks(frame: &Value) -> Result<&Vec<Value>> {
-    frame["state"]["masks"]["masks"]
-        .as_array()
-        .ok_or_else(|| "Frame records no mask list".into())
-}
-
-fn only_mask(frame: &Value) -> Result<&Value> {
-    let masks = masks(frame)?;
-    ensure(
-        masks.len() == 1,
-        format!("Expected exactly one mask, found {}", json!(masks)),
-    )?;
-    Ok(&masks[0])
-}
-
-/// Every component of the open mask, as the panel derived them.
-fn components(frame: &Value) -> Result<&Vec<Value>> {
-    frame["state"]["masks"]["components"]
-        .as_array()
-        .ok_or_else(|| "Frame records no component list".into())
-}
-
 /// The modes of the open mask's components, in list order: the composition, in one line.
-fn modes(frame: &Value) -> Result<Vec<String>> {
-    Ok(components(frame)?
+fn modes(frame: &Frame) -> Result<Vec<String>> {
+    Ok(frame
+        .components()?
         .iter()
         .map(|component| component["mode"].as_str().unwrap_or_default().to_owned())
         .collect())
 }
 
 /// The identities of the open mask's components, in list order.
-fn component_ids(frame: &Value) -> Result<Vec<String>> {
-    Ok(components(frame)?
+fn component_ids(frame: &Frame) -> Result<Vec<String>> {
+    Ok(frame
+        .components()?
         .iter()
         .map(|component| component["id"].as_str().unwrap_or_default().to_owned())
         .collect())
 }
 
 /// The stack's one Presence layer, or `None` when the stack holds none.
-fn presence_layer(frame: &Value) -> Option<&Value> {
-    frame["state"]["stack"]["layers"]
-        .as_array()?
-        .iter()
-        .find(|layer| layer["effect"] == json!(lightwell_core::PRESENCE_EFFECT))
+fn presence_layer(frame: &Frame) -> Option<&Value> {
+    frame.layer(lightwell_core::PRESENCE_EFFECT)
 }
 
-/// The photograph's own drawn rectangle inside the capture.
+/// Where the photograph is drawn inside the capture.
 ///
 /// It is found once, on the opened fixture, and reused: the zoom is Fit for the whole run and the
 /// panels never move, so the rectangle is the same in every frame — and it cannot be found again
-/// from a frame the coverage overlay has painted black, which is most of them.
-///
-/// The vertical extent is taken first and the horizontal one only among the photograph's own rows,
-/// for the reason `vignette` records: the mode strip is a bright floating bar over the same
-/// surface, it grows with every mode the host registers, and a scan of every row measures whichever
-/// of the two currently happens to be wider. The photograph is the tallest bright thing there by a
-/// wide margin whatever the chrome does.
-fn photo_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
-    const BRIGHT: u32 = 32;
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [surface_left, surface_right] = columns(frame)?.unwrap_or([0, width]);
-    ensure(
-        surface_left < surface_right && surface_right <= width,
-        "Invalid surface columns",
-    )?;
-    let bright = |p: [u8; 3]| (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3 >= BRIGHT;
-    let top_margin = (height / 20).max(20);
-    let bottom_margin = height - top_margin;
-    let (inset_left, inset_right) = (surface_left + 10, surface_right - 10);
-    let mut tallest: Option<(u32, u32, u32)> = None;
-    for x in inset_left..inset_right {
-        if let Some((top, bottom)) =
-            longest_run((top_margin..bottom_margin).map(|y| (y, bright(image.get_pixel(x, y).0))))
-            && tallest.is_none_or(|(h, ..)| bottom - top > h)
-        {
-            tallest = Some((bottom - top, top, bottom));
-        }
-    }
-    let (_, top, bottom) = tallest.ok_or("No photograph in the frame: blank or wrong render")?;
-    let mut widest: Option<(u32, u32, u32)> = None;
-    for y in top..bottom {
-        if let Some((left, right)) =
-            longest_run((inset_left..inset_right).map(|x| (x, bright(image.get_pixel(x, y).0))))
-            && widest.is_none_or(|(w, ..)| right - left > w)
-        {
-            widest = Some((right - left, left, right));
-        }
-    }
-    let (_, left, right) = widest.ok_or("No photograph in the frame: blank or wrong render")?;
-    ensure(
-        right - left > 200 && bottom - top > 100,
-        format!("Photograph too small to measure: {left}..{right}, {top}..{bottom}"),
-    )?;
-    Ok([left, top, right, bottom])
-}
+/// from a frame the coverage overlay has painted black, which is most of them. The vertical extent
+/// is taken first, for the reason [`Scan::Tallest`] records.
+const BOUNDS: Bright = Bright {
+    threshold: 32,
+    scan: Scan::Tallest { last_row: false },
+    least: Some((200, 100)),
+};
 
-/// Mean Rec. 709 luminance of one small patch of the displayed photograph.
-fn patch(path: &Path, bounds: [u32; 4], at: [f64; 2]) -> Result<f64> {
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [left, top, right, bottom] = bounds;
-    let px = f64::from(left) + at[0] * f64::from(right - left);
-    let py = f64::from(top) + at[1] * f64::from(bottom - top);
-    let mut total = 0.0;
-    let mut count = 0u32;
-    for dy in -PATCH_HALF..=PATCH_HALF {
-        for dx in -PATCH_HALF..=PATCH_HALF {
-            let x = (px as i64 + dx).clamp(0, i64::from(width) - 1) as u32;
-            let y = (py as i64 + dy).clamp(0, i64::from(height) - 1) as u32;
-            let p = image.get_pixel(x, y).0;
-            total += 0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]);
-            count += 1;
-        }
-    }
-    ensure(count > 0, "Sampled no pixels")?;
-    Ok(total / f64::from(count))
-}
-
-/// All four probes of one capture.
-fn probes(path: &Path, bounds: [u32; 4]) -> Result<[f64; 4]> {
+/// All four probes of one capture: the mean Rec. 709 luminance of a small patch at each.
+fn probes(frame: &Frame, bounds: [u32; 4]) -> Result<[f64; 4]> {
+    let image = frame.image()?;
     let mut out = [0.0; 4];
     for (slot, at) in out.iter_mut().zip(PROBES) {
-        *slot = patch(path, bounds, at)?;
+        *slot = pixels::mean_luminance(image, pixels::at(bounds, at), PATCH_HALF)?;
     }
     Ok(out)
 }
 
 /// One coverage frame against what the composition algebra says it must be: `1` for covered, `0`
 /// for uncovered, at each of the four probes in turn.
-fn coverage(path: &Path, bounds: [u32; 4], what: &str, expected: [u8; 4]) -> Result<[f64; 4]> {
-    let read = probes(path, bounds)?;
+fn coverage(frame: &Frame, bounds: [u32; 4], what: &str, expected: [u8; 4]) -> Result<[f64; 4]> {
+    let read = probes(frame, bounds)?;
     for ((value, want), name) in read.iter().zip(expected).zip(PROBE_NAMES) {
         let ok = if want == 1 {
             *value >= COVERED
@@ -351,74 +255,42 @@ fn moved(what: &str, after: f64, before: f64) -> Result {
 }
 
 /// The whole scenario: one launch, and every frame checked against the algebra and the pixels.
-pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
-    ensure(!out.exists(), "Smoke output must be new")?;
-    fs::create_dir_all(out)?;
-    let fixture = root.join(FIXTURE);
-    ensure(
-        fixture.is_file(),
-        format!("{FIXTURE} is missing; run `cargo xtask generate-fixtures`"),
-    )?;
-    let evidence = out.join("launch");
-    let mut result = json!({"scenario":SCENARIO,"status":"failed","launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
-    let check = (|| -> Result {
-        result["fixture_hash"] = json!(hash(&fixture)?);
-        result["binary_sha256"] = json!(hash(bin)?);
-        result["lockfile_sha256"] = json!(hash(&root.join("Cargo.lock"))?);
-        let script_path = out.join("script.json");
-        write_json(&script_path, &script())?;
-        let args: Vec<OsString> = vec![
-            "--evidence-dir".into(),
-            evidence.clone().into_os_string(),
-            "--open".into(),
-            fixture.clone().into_os_string(),
-            "--evidence-script".into(),
-            script_path.into_os_string(),
-            "--window-size".into(),
-            WINDOW[0].into(),
-            WINDOW[1].into(),
-        ];
-        let mut child = smoke::spawn_editor(root, bin, &args, &out.join("launch.log"))?;
-        let status = smoke::wait(&mut child, timeout)?;
-        result["exit_code"] = json!(status.code());
-        ensure(status.success(), format!("Exit {status}"))?;
-        let (app, _) = smoke::preamble(&evidence, FRAMES)?;
-        result["checks"] = verify(&evidence, &app)?;
+pub fn run(mut run: Run) -> Result {
+    let fixture = run.root().join(FIXTURE);
+    run.note(
+        "Generate the fixture first with `cargo xtask generate-fixtures --output fixtures/generated`.\n\nOne mask of four radial components in three modes, its coverage read from the `mask-on-black` overlay after every commit, a refused reorder, a reorder that changes the picture, a masked Presence drag and an undo.",
+    );
+    run.check(|run| {
         ensure(
-            json!(hash(&fixture)?) == result["fixture_hash"],
-            "Source changed",
+            fixture.is_file(),
+            format!("{FIXTURE} is missing; run `cargo xtask generate-fixtures`"),
         )?;
-        write_json(&out.join("mask-combine-checks.json"), &result)?;
+        run.hash(std::slice::from_ref(&fixture))?;
+        let evidence = run.launch(
+            Launch::named("launch")
+                .open(&fixture)
+                .script("script.json", script())
+                .window(WINDOW),
+        )?;
+        let (app, _) = preamble(&evidence, FRAMES)?;
+        let checks = verify(&evidence, &app)?;
+        run.record("checks", checks.clone());
+        run.sources_unchanged()?;
+        write_json(
+            &run.out().join("mask-combine-checks.json"),
+            &json!({"checks": checks}),
+        )?;
         Ok(())
-    })();
-    match &check {
-        Ok(()) => result["status"] = json!("passed"),
-        Err(error) => result["error"] = json!(error.to_string()),
-    };
-    write_json(&out.join("result.json"), &result)?;
-    fs::write(
-        out.join("reproduce.md"),
-        format!(
-            "# Smoke run\n\nScenario: {SCENARIO}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask generate-fixtures --output fixtures/generated` then `cargo xtask smoke --scenario {SCENARIO} --output NEW_DIR --binary PATH`; on macOS the launch runs hidden in a background-only bundle, so no window is ever placed on the desktop.\n\nOne mask of four radial components in three modes, its coverage read from the `mask-on-black` overlay after every commit, a refused reorder, a reorder that changes the picture, a masked Presence drag and an undo.\n\nActual renderer readback. Synthetic fixtures only.\n",
-            result["status"],
-            launch::MODE
-        ),
-    )?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    check
+    })
 }
 
 /// Every frame, in order, against the algebra and against the pixels.
 fn verify(evidence: &Path, app: &Value) -> Result<Value> {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
+    let frames = Frame::all(evidence, app)?;
     ensure(
         frames.len() == FRAMES,
         format!("The run wrote {} frames", frames.len()),
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
 
     // Exactly one step was refused, and it is the one the script asked to be refused. Unlike every
     // other scenario this one expects `had_input_errors`, because a refusal the host makes is what
@@ -439,7 +311,7 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
         format!("The run refused steps {failed:?}, not only step {REFUSED_FRAME}"),
     )?;
 
-    let bounds = photo_bounds(&paths[0], &frames[0])?;
+    let bounds = pixels::bright_bounds(&frames[0], BOUNDS)?;
     let mut shows = Vec::new();
     let mut record = |frame: &Value, what: &str, detail: Value| {
         shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
@@ -447,10 +319,10 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
 
     // Frame 0: the fixture as launched, with no mask in the recipe.
     ensure(
-        masks(&frames[0])?.is_empty() && presence_layer(&frames[0]).is_none(),
+        frames[0].masks()?.is_empty() && presence_layer(&frames[0]).is_none(),
         "The fixture opened with a mask or a Presence layer already in the recipe",
     )?;
-    let opened = probes(&paths[0], bounds)?;
+    let opened = probes(&frames[0], bounds)?;
     record(
         &frames[0],
         "the fixture as launched, with no mask in the recipe",
@@ -459,14 +331,14 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
 
     // Frame 5: the first component committed. One mask, one `add` component, no layer bound to it.
     ensure(
-        revision(&frames[5])? == revision(&frames[0])? + 1,
-        format!("Apply moved the revision to {}", revision(&frames[5])?),
+        frames[5].revision()? == frames[0].revision()? + 1,
+        format!("Apply moved the revision to {}", frames[5].revision()?),
     )?;
     ensure(
         modes(&frames[5])? == ["add"],
         format!("The first commit holds {:?}", modes(&frames[5])?),
     )?;
-    let mask = only_mask(&frames[5])?["id"]
+    let mask = frames[5].only_mask()?["id"]
         .as_str()
         .ok_or("The listed mask has no identity")?
         .to_owned();
@@ -501,7 +373,7 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
     ];
     let mut readings = Vec::new();
     for (index, what, expected, caption) in stages {
-        let read = coverage(&paths[index], bounds, what, expected)?;
+        let read = coverage(&frames[index], bounds, what, expected)?;
         readings.push(
             json!({"frame":frames[index]["file"],"stage":what,"expected":expected,"patches":read}),
         );
@@ -516,7 +388,7 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
         format!("The finished mask holds {:?}", modes(&frames[18])?),
     )?;
     ensure(
-        revision(&frames[18])? == revision(&frames[0])? + 4,
+        frames[18].revision()? == frames[0].revision()? + 4,
         "Four components were not four history entries",
     )?;
     let drawn = component_ids(&frames[18])?;
@@ -533,21 +405,22 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
     for (row, expected) in alone.into_iter().enumerate() {
         let index = 19 + row;
         ensure(
-            revision(&frames[index])? == revision(&frames[18])?,
+            frames[index].revision()? == frames[18].revision()?,
             "Pointing at a component row committed something",
         )?;
         ensure(
-            components(&frames[index])?
+            frames[index]
+                .components()?
                 .iter()
                 .position(|component| component["hovered"] == json!(true))
                 == Some(row),
             format!(
                 "Frame {index} shows {} hovered",
-                json!(components(&frames[index])?)
+                json!(frames[index].components()?)
             ),
         )?;
         let read = coverage(
-            &paths[index],
+            &frames[index],
             bounds,
             &format!("component {row} alone"),
             expected,
@@ -561,7 +434,7 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
 
     // Frame 23: the pointer off the list, and the composition again.
     let composed = coverage(
-        &paths[23],
+        &frames[23],
         bounds,
         "the composition with the pointer off the list",
         [1, 1, 0, 0],
@@ -592,11 +465,11 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
         "The refused reorder moved the list",
     )?;
     ensure(
-        revision(&frames[24])? == revision(&frames[18])?,
+        frames[24].revision()? == frames[18].revision()?,
         "The refused reorder committed something",
     )?;
     let after_refusal = coverage(
-        &paths[24],
+        &frames[24],
         bounds,
         "the coverage after a refused reorder",
         [1, 1, 0, 0],
@@ -610,7 +483,7 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
     // Frame 25: the reorder that changes the picture. The second add now applies before the
     // subtraction rather than after it, so what it restored is taken out again.
     ensure(
-        revision(&frames[25])? == revision(&frames[24])? + 1,
+        frames[25].revision()? == frames[24].revision()? + 1,
         "The reorder did not commit one entry",
     )?;
     ensure(
@@ -628,7 +501,7 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
         format!("The reorder produced {:?}", component_ids(&frames[25])?),
     )?;
     let reordered = coverage(
-        &paths[25],
+        &frames[25],
         bounds,
         "the coverage after the reorder",
         [1, 0, 0, 0],
@@ -636,16 +509,16 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
     record(
         &frames[25],
         "the second add moved above the subtraction, so the region it restored is removed again",
-        json!({"modes":modes(&frames[25])?,"label":label(&frames[25])?,"patches":reordered}),
+        json!({"modes":modes(&frames[25])?,"label":frames[25].label()?,"patches":reordered}),
     );
 
     // Frame 26: the overlay off. The mask is a selection and nothing else: no layer is bound to it
     // yet, so the photograph is byte-unchanged from the one that opened.
     ensure(
-        only_mask(&frames[26])?["layers"] == json!([]),
+        frames[26].only_mask()?["layers"] == json!([]),
         "A mask with no adjustment already has a layer bound to it",
     )?;
-    let bare = probes(&paths[26], bounds)?;
+    let bare = probes(&frames[26], bounds)?;
     for (index, name) in PROBE_NAMES.iter().enumerate() {
         untouched(
             &format!("{name} with the mask drawn and no layer bound to it"),
@@ -662,10 +535,10 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
     // Frame 27: Presence through the mask. The flat quadrant moves inside the mask and is left
     // exactly as it was outside it, and the layer the panel committed names the mask.
     ensure(
-        revision(&frames[27])? == revision(&frames[26])? + 1,
+        frames[27].revision()? == frames[26].revision()? + 1,
         format!(
             "The masked drag moved the revision to {}",
-            revision(&frames[27])?
+            frames[27].revision()?
         ),
     )?;
     let layer =
@@ -678,7 +551,7 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
         layer["payload"][DEHAZE] == json!(DEHAZED),
         format!("The committed layer holds {}", layer["payload"]),
     )?;
-    let dehazed = probes(&paths[27], bounds)?;
+    let dehazed = probes(&frames[27], bounds)?;
     moved(
         "the covered patch under masked Presence",
         dehazed[0],
@@ -700,14 +573,14 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
     record(
         &frames[27],
         "one part of the photograph adjusted through the composed mask and the other left alone",
-        json!({"layer":layer["id"],DEHAZE:DEHAZED,"label":label(&frames[27])?,
+        json!({"layer":layer["id"],DEHAZE:DEHAZED,"label":frames[27].label()?,
                "covered":dehazed[0],"uncovered":dehazed[3],"before":bare}),
     );
 
     // Frame 28: undo. The layer is gone, the mask and every component keep their identities in
     // their reordered order, and the photograph is back to the one the mask alone left.
     ensure(
-        revision(&frames[28])? == revision(&frames[27])? + 1,
+        frames[28].revision()? == frames[27].revision()? + 1,
         "Undo did not advance the revision",
     )?;
     ensure(
@@ -718,14 +591,14 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
         component_ids(&frames[28])? == component_ids(&frames[25])?,
         "Undo changed the component identities or their order",
     )?;
-    let undone = probes(&paths[28], bounds)?;
+    let undone = probes(&frames[28], bounds)?;
     for (index, name) in PROBE_NAMES.iter().enumerate() {
         untouched(&format!("{name} after undo"), undone[index], bare[index])?;
     }
     record(
         &frames[28],
         "the undone state: the composed mask, with nothing applied through it",
-        json!({"patches":undone,"label":label(&frames[28])?}),
+        json!({"patches":undone,"label":frames[28].label()?}),
     );
 
     Ok(json!({
@@ -733,7 +606,7 @@ fn verify(evidence: &Path, app: &Value) -> Result<Value> {
         "components": drawn,
         "reordered": component_ids(&frames[25])?,
         "modes": modes(&frames[25])?,
-        "revision": revision(&frames[28])?,
+        "revision": frames[28].revision()?,
         "refused_step": {"step": REFUSED_FRAME, "reason": reason},
         "coverage": readings,
         "presence": {"covered": dehazed[0], "uncovered": dehazed[3], "before": bare},

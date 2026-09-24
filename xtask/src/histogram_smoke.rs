@@ -15,7 +15,7 @@
 //! status bar. The hover frame is compared with the frame before it pixel for pixel: the tools
 //! panel is identical, and the status bar changes only inside the readout's own slot.
 use crate::{
-    smoke::{Expect, columns, frame_identity, pixels},
+    scenario::{Expect, Frame, pixels},
     *,
 };
 use lightwell_core::{
@@ -70,7 +70,7 @@ pub fn frames(scenario: &str) -> Option<usize> {
     }
 }
 
-/// The scenario's own fixture, so `smoke::run` opens the one the checks below are written against.
+/// The scenario's own fixture, so `smoke::plain` opens the one the checks below are written against.
 pub fn source(scenario: &str) -> Option<&'static str> {
     matches!(scenario, "histogram" | "basic-crop").then_some(FIXTURE)
 }
@@ -319,10 +319,10 @@ fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result
 /// The photograph's exact rectangle in a capture: every pixel of the photo surface that carries one
 /// of the fixture's four quadrant colours. The scan is exhaustive rather than stepped, because the
 /// overlay checks below map single source pixels into it and a four-pixel error would miss them.
-fn photo_rect(path: &Path, frame: &Value) -> Result<([u32; 4], image::RgbImage)> {
-    let image = image::open(path)?.to_rgb8();
+fn photo_rect(frame: &Frame) -> Result<([u32; 4], &image::RgbImage)> {
+    let image = frame.image()?;
     let (width, height) = image.dimensions();
-    let [left_edge, right_edge] = columns(frame)?.unwrap_or([0, width]);
+    let [left_edge, right_edge] = frame.columns()?.unwrap_or([0, width]);
     let quadrant = |pixel: &[u8; 3]| {
         fixtures::COLORS
             .iter()
@@ -489,9 +489,10 @@ fn radius(rect: [u32; 4]) -> i64 {
 /// The tools panel is the capture right of the photo surface and its 1 pt divider, between the
 /// title bar's rule and the status bar's. The status bar is the bottom 26 pt. Both come from the
 /// capture's own recorded scale and surface columns rather than a guess at the layout.
-fn chrome_changes(before: &Path, after: &Path, frame: &Value) -> Result<Value> {
-    let before = image::open(before)?.to_rgb8();
-    let after = image::open(after)?.to_rgb8();
+fn chrome_changes(before: &Frame, after: &Frame) -> Result<Value> {
+    let frame = after;
+    let before = before.image()?;
+    let after = after.image()?;
     ensure(
         before.dimensions() == after.dimensions(),
         "The two captures are different sizes",
@@ -500,7 +501,9 @@ fn chrome_changes(before: &Path, after: &Path, frame: &Value) -> Result<Value> {
     let scale = frame["scale"]
         .as_f64()
         .ok_or("The frame records no scale")?;
-    let [_, surface_right] = columns(frame)?.ok_or("The frame records no surface columns")?;
+    let [_, surface_right] = frame
+        .columns()?
+        .ok_or("The frame records no surface columns")?;
     let px = |points: f64| (points * scale).ceil() as u32;
     let panel = [
         surface_right + px(RULE_PT),
@@ -539,15 +542,11 @@ fn chrome_changes(before: &Path, after: &Path, frame: &Value) -> Result<Value> {
 }
 
 pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
     ensure(
         app["had_input_errors"] == json!(false),
         "The run recorded an input error",
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
+    let frames = Frame::all(evidence, app)?;
     let mut checks = Vec::new();
     let mut record = |frame: &Value, shows: &str, detail: Value| {
         checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
@@ -593,7 +592,7 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     record(
         &frames[0],
         "the default screen with the histogram ready, counts equal to an independent reduction",
-        json!({"histogram":opened,"pixels":pixels(&paths[0], &Expect { columns: columns(&frames[0])?, ..Expect::fit(1) })?}),
+        json!({"histogram":opened,"pixels":frames[0].fixture(Expect::fit(1))?}),
     );
 
     // Frame 1: one both-endpoint pixel committed. The counts follow the new stack exactly.
@@ -640,7 +639,7 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     // Nothing else moved. The tools panel is pixel for pixel the frame before the hover, and the
     // status bar changed only inside one readout-slot-wide span that stops short of the trailing
     // facts: had the readout pushed anything, the zoom at the right edge would have moved too.
-    let chrome = chrome_changes(&paths[1], &paths[2], &frames[2])?;
+    let chrome = chrome_changes(&frames[1], &frames[2])?;
     ensure(
         chrome["tools_panel_pixels_changed"] == json!(0),
         format!(
@@ -676,7 +675,7 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     // The reference the overlay frames are compared against: the same stack, the same zoom, the
     // same panels, both overlays off. Every mask check below is a difference from this, so the
     // fixture's own strongly coloured quadrants cancel out instead of being mistaken for a mask.
-    let (bare_rect, bare) = photo_rect(&paths[2], &frames[2])?;
+    let (bare_rect, bare) = photo_rect(&frames[2])?;
     let bare_radius = radius(bare_rect);
 
     // Frame 3: the shadow overlay alone. Blue over the black dashes, and nothing red anywhere.
@@ -694,9 +693,9 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
         ),
     )?;
     ensure(overlay["drawn"] == json!(true), "The overlay was not drawn")?;
-    let (rect3, image3) = photo_rect(&paths[3], &frames[3])?;
+    let (rect3, image3) = photo_rect(&frames[3])?;
     same_rect(rect3, bare_rect, "frame 3")?;
-    let shadow_on_dash = window(&image3, &bare, rect3, DASH, bare_radius);
+    let shadow_on_dash = window(image3, bare, rect3, DASH, bare_radius);
     ensure(
         shadow_on_dash.iter().any(|delta| delta.is_shadow_mask()),
         format!(
@@ -711,16 +710,16 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     // The white centre line is at code 255 in every channel, so with only the shadow flag on it
     // must be exactly as it was.
     untouched(
-        &image3,
-        &bare,
+        image3,
+        bare,
         rect3,
         &[LINE],
         bare_radius,
         "the shadow overlay alone touched the 255 line",
     )?;
     untouched(
-        &image3,
-        &bare,
+        image3,
+        bare,
         rect3,
         &CLEAN,
         bare_radius,
@@ -745,16 +744,16 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
             && frames[4]["state"]["workspace"]["clip_highlights"] == json!(true),
         format!("Frame 4's flags are {}", frames[4]["state"]["workspace"]),
     )?;
-    let (rect4, image4) = photo_rect(&paths[4], &frames[4])?;
+    let (rect4, image4) = photo_rect(&frames[4])?;
     same_rect(rect4, bare_rect, "frame 4")?;
     ensure(
-        window(&image4, &bare, rect4, DASH, bare_radius)
+        window(image4, bare, rect4, DASH, bare_radius)
             .iter()
             .any(|delta| delta.is_shadow_mask()),
         format!("No blue overlay over the black dash band at source {DASH:?}"),
     )?;
     ensure(
-        window(&image4, &bare, rect4, LINE, bare_radius)
+        window(image4, bare, rect4, LINE, bare_radius)
             .iter()
             .any(|delta| delta.is_highlight_mask()),
         format!("No red overlay over the white centre line at source {LINE:?}"),
@@ -762,7 +761,7 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
     // Magenta is measured against the shadow-only frame rather than the bare one: turning the
     // highlight flag on changes that one cell from the shadow mask to the both mask, which adds
     // red and nothing else, whatever the photograph underneath is.
-    let both_upgrade = window(&image4, &image3, rect4, BOTH_PIXEL, bare_radius);
+    let both_upgrade = window(image4, image3, rect4, BOTH_PIXEL, bare_radius);
     ensure(
         both_upgrade.iter().any(|delta| delta.is_both_upgrade()),
         format!(
@@ -771,8 +770,8 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
         ),
     )?;
     untouched(
-        &image4,
-        &bare,
+        image4,
+        bare,
         rect4,
         &CLEAN,
         bare_radius,
@@ -800,7 +799,7 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
             frames[5]["state"]["histogram"]["overlay"]["cells"]
         ),
     )?;
-    let (rect5, image5) = photo_rect(&paths[5], &frames[5])?;
+    let (rect5, image5) = photo_rect(&frames[5])?;
     let hundred_width = rect5[2] - rect5[0];
     ensure(
         hundred_width.abs_diff(SOURCE.0) <= 2,
@@ -878,13 +877,13 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, events: &[Value]) -> Re
         frames[7]["state"]["histogram"]["overlay"] == Value::Null,
         "An overlay is still derived with both flags off",
     )?;
-    let (rect7, image7) = photo_rect(&paths[7], &frames[7])?;
+    let (rect7, image7) = photo_rect(&frames[7])?;
     same_rect(rect7, bare_rect, "frame 7")?;
     let mut covered = vec![DASH, LINE, BOTH_PIXEL];
     covered.extend(CLEAN);
     untouched(
-        &image7,
-        &bare,
+        image7,
+        bare,
         rect7,
         &covered,
         bare_radius,
@@ -1028,49 +1027,17 @@ const CROP_RATIO: f64 = 16.0 / 9.0;
 
 /// The photograph's bounding box in a capture, found by brightness rather than by the fixture's
 /// own quadrant colours: a Basic edit moves those colours, so matching them would be matching the
-/// edit rather than the placement. Inside the photo surface, between the notices at the top of the
-/// canvas and the floating mode strip at its bottom, nothing is as bright as the photograph.
-fn bright_rect(path: &Path, frame: &Value) -> Result<[u32; 4]> {
-    /// Well above the canvas surface (`#19191b`) and the bars over it (`#232326`), and well below
-    /// every quadrant of this fixture at any exposure this scenario uses.
-    const BRIGHT: u32 = 70;
-    /// The 1 px dividers at the surface's own edges are as bright as dark content, so the scan
-    /// starts inside them.
-    const INSET: u32 = 4;
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let [left_edge, right_edge] = columns(frame)?.unwrap_or([0, width]);
-    ensure(
-        left_edge + INSET < right_edge.saturating_sub(INSET) && right_edge <= width,
-        "Invalid surface columns",
-    )?;
-    let (band_top, band_bottom) = (height * 3 / 20, height * 22 / 25);
-    let (mut left, mut top, mut right, mut bottom) = (width, height, 0u32, 0u32);
-    for y in band_top..band_bottom {
-        for x in (left_edge + INSET)..(right_edge - INSET) {
-            let pixel = image.get_pixel(x, y).0;
-            let mean = (u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2])) / 3;
-            if mean >= BRIGHT {
-                left = left.min(x);
-                top = top.min(y);
-                right = right.max(x + 1);
-                bottom = bottom.max(y + 1);
-            }
-        }
-    }
-    ensure(
-        right > left && bottom > top,
-        "No photograph in the frame: blank or wrong render",
-    )?;
-    Ok([left, top, right, bottom])
-}
+/// edit rather than the placement. The threshold is well above the canvas surface (`#19191b`) and
+/// the bars over it (`#232326`), and well below every quadrant of this fixture at any exposure this
+/// scenario uses.
+const BRIGHT: u32 = 70;
 
 /// The displayed ratio and centring of a captured photograph, against the ratio its committed crop
 /// payload declares.
-fn expect_placement(path: &Path, frame: &Value, ratio: f64, what: &str) -> Result<Value> {
-    let [left, top, right, bottom] = bright_rect(path, frame)?;
-    let image = image::open(path)?.to_rgb8();
-    let [surface_left, surface_right] = columns(frame)?.unwrap_or([0, image.width()]);
+fn expect_placement(frame: &Frame, ratio: f64, what: &str) -> Result<Value> {
+    let [left, top, right, bottom] = pixels::band_bounds(frame, BRIGHT)?;
+    let image = frame.image()?;
+    let [surface_left, surface_right] = frame.columns()?.unwrap_or([0, image.width()]);
     let measured = f64::from(right - left) / f64::from(bottom - top);
     ensure(
         (measured - ratio).abs() < 0.02,
@@ -1096,15 +1063,11 @@ fn expect_placement(path: &Path, frame: &Value, ratio: f64, what: &str) -> Resul
 }
 
 pub fn verify_crop(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
     ensure(
         app["had_input_errors"] == json!(false),
         "The run recorded an input error",
     )?;
-    let paths: Vec<PathBuf> = frames
-        .iter()
-        .map(|frame| frame_identity(evidence, app, frame))
-        .collect::<Result<Vec<_>>>()?;
+    let frames = Frame::all(evidence, app)?;
 
     // Every frame's counts are an independent render and reduction of exactly the layers that
     // frame says it displays, so the plot is proved against the composition rather than itself.
@@ -1188,7 +1151,6 @@ pub fn verify_crop(root: &Path, evidence: &Path, app: &Value, _events: &[Value])
         (3, CROP_RATIO),
     ] {
         placements.push(expect_placement(
-            &paths[index],
             &frames[index],
             ratio,
             &format!("frame {index}"),

@@ -1,15 +1,14 @@
 use crate::{
-    basic_smoke as basic, controls_smoke as controls, crop_smoke as crop, gallery_smoke as gallery,
-    histogram_smoke as histogram, mask_brush_smoke as mask_brush,
-    mask_combine_smoke as mask_combine, mask_range_smoke as mask_range, mask_smoke as mask,
-    mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
-    presets_smoke as presets, raw_panel_smoke as raw_panel, vignette_smoke as vignette,
-    workspace_smoke as workspace, zoom_smoke as zoom, *,
+    basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
+    crop_smoke as crop, gallery_smoke as gallery, histogram_smoke as histogram,
+    mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
+    mask_range_smoke as mask_range, mask_smoke as mask, mixer_smoke as mixer,
+    performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
+    raw_panel_smoke as raw_panel,
+    scenario::{Expect, Frame, Launch, Run, preamble},
+    vignette_smoke as vignette, workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
-use std::{
-    process::{Child, Stdio},
-    time::{Duration, Instant},
-};
+use std::{borrow::Borrow, time::Duration};
 /// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
 /// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
 pub const SCENARIOS: [&str; 30] = [
@@ -45,230 +44,83 @@ pub const SCENARIOS: [&str; 30] = [
     "unavailable",
 ];
 
-/// Run one scenario, including the four that are not a single plain launch: a module can only be
-/// disabled at startup, persistence across a restart needs a second process, `zoom` runs its
-/// script over the 24 MP and the 60 MP photograph in turn, and the capability scenario runs its
-/// proof endpoint in this process.
-pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
-    match scenario {
-        "unavailable" => workspace::run_unavailable(root, out, bin, timeout),
-        "basic-restart" => basic::run_restart(root, out, bin, timeout),
-        zoom::SCENARIO => zoom::run(root, out, bin, timeout),
-        "capabilities" => crate::capabilities_smoke::run(root, out, bin, timeout),
-        // Two launches over one catalog: the mask is drawn and edited in the first, reopened in
-        // the second, so the scenario owns both and never reaches `run` below.
-        mask::SCENARIO => mask::run(root, out, bin, timeout),
-        // Four components in three modes in one mask, its coverage read off the overlay.
-        mask_combine::SCENARIO => mask_combine::run(root, out, bin, timeout),
-        // Two launches again: strokes painted, erased and deleted in the first, and painting
-        // carried on in the second over the edge, at 100% and under a rotated crop.
-        mask_brush::SCENARIO => mask_brush::run(root, out, bin, timeout),
-        // Two launches over one catalog: the range selections typed, picked and combined in the
-        // first, and their own limits taken one at a time in the second.
-        mask_range::SCENARIO => mask_range::run(root, out, bin, timeout),
-        _ => run(root, out, scenario, bin, timeout),
-    }
+/// What one scenario runs: a scenario of its own shape, or one plain launch over its sources.
+enum Plan {
+    Own(fn(Run) -> Result),
+    Plain(Vec<PathBuf>),
 }
 
-pub struct Guard {
-    pub child: Child,
-    _launch: launch::Background,
-}
-impl Drop for Guard {
-    fn drop(&mut self) {
-        if !matches!(self.child.try_wait(), Ok(Some(_))) {
-            let _ = self.child.kill();
-        }
-        let _ = self.child.wait();
-    }
-}
-pub fn spawn(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> Result<Guard> {
-    let launch = launch::Background::new(bin)?;
-    let f = fs::File::create(log)?;
-    Ok(Guard {
-        child: Command::new(&launch.executable)
-            .args(args)
-            .current_dir(root)
-            .stdin(Stdio::null())
-            .stdout(f.try_clone()?)
-            .stderr(f)
-            .spawn()?,
-        _launch: launch,
+/// The plan for `scenario`, or the reason it has none. The scenarios that are not a single plain
+/// launch are named here: a module can only be disabled at startup, persistence across a restart
+/// and a mask reopened in a new process need a second launch, `zoom` runs its script over the 24 MP
+/// and the 60 MP photograph in turn, and the capability scenario runs its proof endpoint in this
+/// process. `sources`, when given, replaces a plain scenario's own fixtures.
+fn plan(root: &Path, scenario: &str, sources: Option<Vec<PathBuf>>) -> Result<Plan> {
+    Ok(match scenario {
+        "unavailable" => Plan::Own(workspace::unavailable),
+        "basic-restart" => Plan::Own(basic::restart),
+        zoom::SCENARIO => Plan::Own(zoom::run),
+        "capabilities" => Plan::Own(capabilities::run),
+        // Two launches over one catalog: the mask is drawn and edited in the first, reopened in
+        // the second.
+        mask::SCENARIO => Plan::Own(mask::run),
+        // Four components in three modes in one mask, its coverage read off the overlay.
+        mask_combine::SCENARIO => Plan::Own(mask_combine::run),
+        // Three launches: strokes painted, erased and deleted in the first, a subtracting brush in
+        // the second, and painting carried on in the third over the edge, at 100% and under a
+        // rotated crop.
+        mask_brush::SCENARIO => Plan::Own(mask_brush::run),
+        // Two launches over one catalog: the range selections typed, picked and combined in the
+        // first, and their own limits taken one at a time in the second.
+        mask_range::SCENARIO => Plan::Own(mask_range::run),
+        _ => Plan::Plain(match sources {
+            Some(sources) => sources,
+            None => sources_for(root, scenario)?,
+        }),
     })
 }
 
-/// Launch the editor itself: the caller's arguments with the hidden-window flag the harness always
-/// passes. Children that are not the editor (the probe binary, xtask's own test children) use
-/// [`spawn`] directly.
-pub fn spawn_editor(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> Result<Guard> {
-    spawn(root, bin, &launch::editor_args(args), log)
-}
-
-pub fn wait(child: &mut Guard, timeout: Duration) -> Result<std::process::ExitStatus> {
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.child.try_wait()? {
-            return Ok(status);
-        }
-        ensure(
-            start.elapsed() < timeout,
-            "Child timed out; killed and reaped",
-        )?;
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-/// What a captured frame must show. Defaults describe the fixture at Fit; a crop changes the ratio
-/// the displayed image has and, when it is straightened, where its quadrants land.
-pub struct Expect {
-    /// Which EXIF orientation's quadrant order the fixture was saved with.
-    pub orientation: u8,
-    /// The displayed ratio, or the fixture's own when `None`.
-    pub aspect: Option<f64>,
-    /// The physical x range of the editor's photo surface; the whole width without it.
-    pub columns: Option<[u32; 2]>,
-    /// How far the measured ratio may differ from the expected one.
-    pub tolerance: f64,
-    /// The smallest fraction of the capture height the image may occupy. A wide crop fills less of
-    /// the surface than the fixture does.
-    pub min_height: f64,
-    /// Whether the image must be centred in the photo surface.
-    pub centred: bool,
-    /// Whether the four quarter points must show the four quadrant colours. A straightened crop
-    /// rotates the quadrant boundaries, so it only requires all four colours to be present.
-    pub quadrants: bool,
-}
-
-impl Expect {
-    pub fn fit(orientation: u8) -> Self {
-        Self {
-            orientation,
-            aspect: None,
-            columns: None,
-            tolerance: 0.015,
-            min_height: 0.5,
-            centred: true,
-            quadrants: true,
-        }
+fn execute(run: Run, plan: Plan) -> Result {
+    match plan {
+        Plan::Own(scenario) => scenario(run),
+        Plan::Plain(sources) => plain(run, sources),
     }
 }
 
-/// Check the captured frame shows the fixture, at Fit unless the expectation says otherwise.
-pub fn pixels(path: &Path, expect: &Expect) -> Result<Value> {
-    ensure(
-        (1..=8).contains(&expect.orientation),
-        "Orientation must be 1..8",
-    )?;
-    let img = image::open(path)?.to_rgb8();
-    let (w, h) = img.dimensions();
-    let [surface_left, surface_right] = expect.columns.unwrap_or([0, w]);
-    ensure(
-        surface_left < surface_right && surface_right <= w,
-        "Invalid surface columns",
-    )?;
-    let surface_width = surface_right - surface_left;
-    let colors = crate::fixtures::ORDERS[(expect.orientation - 1) as usize]
-        .map(|i| crate::fixtures::COLORS[i]);
-    let matches = |p: &[u8], c: [u8; 3]| p.iter().zip(c).all(|(a, b)| a.abs_diff(b) <= 8);
-    let (mut left, mut top, mut right, mut bottom) = (w, h, 0, 0);
-    let mut counts = [0u32; 4];
-    for y in (0..h).step_by(4) {
-        for x in (0..w).step_by(4) {
-            let pixel = &img.get_pixel(x, y).0;
-            if let Some(index) = colors.iter().position(|c| matches(pixel, *c)) {
-                counts[index] += 1;
-                left = left.min(x);
-                top = top.min(y);
-                right = right.max(x + 4);
-                bottom = bottom.max(y + 4);
-            }
-        }
-    }
-    ensure(
-        counts.iter().sum::<u32>() > 0,
-        "No fixture pixels: blank or wrong render",
-    )?;
-    let width = right - left;
-    let height = bottom - top;
-    ensure(
-        left >= surface_left && right <= surface_right,
-        "Image outside the photo surface",
-    )?;
-    ensure(
-        width as f64 > surface_width as f64 * 0.2
-            && height as f64 > h as f64 * expect.min_height.max(0.0),
-        "Fixture too small",
-    )?;
-    let aspect = expect.aspect.unwrap_or(if expect.orientation >= 5 {
-        2.0 / 3.0
-    } else {
-        3.0 / 2.0
-    });
-    ensure(aspect.is_finite() && aspect > 0.0, "Invalid aspect")?;
-    let measured = width as f64 / height as f64;
-    ensure(
-        (measured - aspect).abs() < expect.tolerance,
-        format!("Incorrect displayed aspect ratio {measured:.4}, expected {aspect:.4}"),
-    )?;
-    ensure(
-        !expect.centred
-            || ((left + right) as f64 / 2.0 - (surface_left + surface_right) as f64 / 2.0).abs()
-                <= 5.0,
-        "Image not centered",
-    )?;
-    let mut actual = Vec::new();
-    if expect.quadrants {
-        for ((fx, fy), color) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
-            .into_iter()
-            .zip(colors)
-        {
-            let x = (left as f64 + fx * width as f64).round() as u32;
-            let y = (top as f64 + fy * height as f64).round() as u32;
-            ensure(x < w && y < h, "Pixel bounds")?;
-            let p = img.get_pixel(x, y).0;
-            ensure(matches(&p, color), "Wrong orientation/color")?;
-            actual.push(p);
-        }
-    } else {
-        // A straightened crop moves the quadrant boundaries, so prove real content instead: every
-        // quadrant colour is still present in quantity.
-        ensure(
-            counts.iter().all(|count| *count >= 32),
-            format!("A quadrant colour is missing from the crop: sampled counts {counts:?}"),
-        )?;
-    }
-    Ok(
-        json!({"status":"passed","physical_size":[w,h],"surface_columns":[surface_left,surface_right],"image_bounds":[left,top,right,bottom],"measured_aspect":measured,"expected_aspect":aspect,"aspect_tolerance":expect.tolerance,"quadrant_sample_counts":counts,"corner_rgb":actual,"tolerance_per_channel":8,"scope":"Displayed geometry and sRGB interiors; not monitor calibration or native picker"}),
-    )
+/// Run one scenario into `out`.
+pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
+    let plan = plan(root, scenario, None)?;
+    execute(Run::start(root, out, scenario, bin, timeout)?, plan)
 }
-/// The inclusive `(start, end)` of the longest contiguous run of matching positions, or `None` if
-/// none matched at all. Used to find a photograph's own drawn extent by its widest row and tallest
-/// column: unlike the leftmost-to-rightmost span between any two matches, a contiguous run is never
-/// fooled by scattered chrome (title-bar text, an icon) that happens to span a wide gap of
-/// unmatched background between its own characters or glyphs.
-pub fn longest_run(positions: impl Iterator<Item = (u32, bool)>) -> Option<(u32, u32)> {
-    let mut best: Option<(u32, u32)> = None;
-    let mut run_start = None;
-    for (position, matched) in positions {
-        if matched {
-            let start = *run_start.get_or_insert(position);
-            if best.is_none_or(|(best_start, best_end)| position - start > best_end - best_start) {
-                best = Some((start, position));
-            }
-        } else {
-            run_start = None;
-        }
-    }
-    best
+
+/// Run one plain scenario over the given sources: a scenario whose photograph cannot be checked in
+/// (`raw-panel`) is handed its source instead.
+pub fn run_sources(
+    root: &Path,
+    out: &Path,
+    scenario: &str,
+    bin: &Path,
+    timeout: Duration,
+    sources: Vec<PathBuf>,
+) -> Result {
+    let plan = plan(root, scenario, Some(sources))?;
+    execute(Run::start(root, out, scenario, bin, timeout)?, plan)
 }
-pub fn columns(frame: &Value) -> Result<Option<[u32; 2]>> {
-    match frame.get("surface_columns") {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => {
-            let pair: [u32; 2] = serde_json::from_value(value.clone())?;
-            Ok(Some(pair))
-        }
-    }
+
+/// Rerun a recorded run's checks without launching: `recorded` is copied into `out` and the
+/// scenario's own code runs over the copy, each launch being the one recorded there. `sources`
+/// names a `--source` run's source again.
+pub fn verify_only(
+    root: &Path,
+    recorded: &Path,
+    out: &Path,
+    scenario: &str,
+    sources: Option<Vec<PathBuf>>,
+) -> Result {
+    let plan = plan(root, scenario, sources)?;
+    execute(Run::replay(root, recorded, out, scenario)?, plan)
 }
+
 /// The longest plausible render of one preview phase on the fixtures a scenario opens, in
 /// milliseconds. A release render of the 60 MP fixture's exact phase is well under a second; the
 /// bound exists to catch a figure that is not a render time at all, such as the time since the last
@@ -301,7 +153,7 @@ pub fn render_text(ms: f64, proxy: bool, approximate: bool) -> String {
 /// exactly the editor's wording, with `(proxy)` exactly when the frame on screen is the proxy and
 /// `approximate` exactly when it approximates a drafted RAW white balance. Returns the evidence
 /// record.
-pub fn expect_render_times(events: &[Value], frames: &[Value]) -> Result<Value> {
+pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> Result<Value> {
     let mut displayed = Vec::new();
     for event in events.iter().filter(|e| e["event"] == "preview_displayed") {
         let detail = &event["detail"];
@@ -327,6 +179,7 @@ pub fn expect_render_times(events: &[Value], frames: &[Value]) -> Result<Value> 
         .collect();
     let mut shown = Vec::new();
     for frame in frames {
+        let frame: &Value = frame.borrow();
         let bar = &frame["state"]["status_bar"];
         let text = bar["render"]
             .as_str()
@@ -378,70 +231,6 @@ pub fn expect_render_times(events: &[Value], frames: &[Value]) -> Result<Value> 
         shown.push(json!({"frame":frame["file"],"render":text,"render_ms":ms,"proxy":proxy,"approximate":approximate}));
     }
     Ok(json!({"bound_ms":RENDER_MS_BOUND,"preview_displayed":displayed,"status_bar":shown}))
-}
-
-pub fn events(path: &Path) -> Result<Vec<Value>> {
-    fs::read_to_string(path)?
-        .lines()
-        .map(|l| Ok(serde_json::from_str(l)?))
-        .collect()
-}
-/// The run's own result and log, with the lifecycle, run identity and frame count checked. `frames`
-/// is how many captures the scenario must have produced.
-pub fn preamble(evidence: &Path, frames: usize) -> Result<(Value, Vec<Value>)> {
-    let app = read_json(&evidence.join("result.json"))?;
-    let events = events(&evidence.join("events.jsonl"))?;
-    ensure(
-        events.first().is_some_and(|e| e["event"] == "startup")
-            && events.last().is_some_and(|e| e["event"] == "shutdown"),
-        "Missing lifecycle",
-    )?;
-    ensure(app["status"] == "captured", "Unsuccessful app result")?;
-    ensure(
-        app["run_id"].as_str().is_some_and(|s| !s.is_empty())
-            && events.iter().all(|e| e["run_id"] == app["run_id"]),
-        "Wrong log run identity",
-    )?;
-    ensure(
-        app["frames"]
-            .as_array()
-            .is_some_and(|captured| captured.len() == frames),
-        "Missing/stale frames",
-    )?;
-    Ok((app, events))
-}
-
-/// A frame's provenance: whose run it belongs to, that it names a backend, that it came from a
-/// renderer readback, and that the state file written beside it says the same thing.
-pub fn frame_identity(evidence: &Path, app: &Value, frame: &Value) -> Result<PathBuf> {
-    let state = &frame["state"];
-    ensure(state["run_id"] == app["run_id"], "Wrong frame run identity")?;
-    ensure(
-        ["backend", "adapter"]
-            .iter()
-            .all(|k| state["backend"][k].as_str().is_some_and(|s| !s.is_empty())),
-        "Missing backend",
-    )?;
-    ensure(
-        frame["capture_provenance"] == "window-renderer-readback",
-        "Wrong capture provenance",
-    )?;
-    let name = Path::new(frame["file"].as_str().ok_or("Missing capture filename")?);
-    ensure(
-        name.components()
-            .all(|c| matches!(c, std::path::Component::Normal(_))),
-        "Unsafe capture path",
-    )?;
-    let number = name
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .and_then(|stem| stem.strip_prefix("frame-"))
-        .ok_or("Unexpected capture filename")?;
-    ensure(
-        &read_json(&evidence.join(format!("state-{number}.json")))? == frame,
-        "The state file beside the frame disagrees with the run result",
-    )?;
-    Ok(evidence.join(name))
 }
 
 /// Evidence records the parser's explicit default `finish: open` on picker/curve steps. Match a
@@ -546,7 +335,7 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
             state["requested_generation"] == generation,
             "Wrong requested generation",
         )?;
-        let path = frame_identity(evidence, &app, frame)?;
+        let captured = Frame::identified(evidence, &app, frame)?;
         if matches!(scenario, "empty" | "invalid") {
             ensure(
                 state["phase"]
@@ -561,7 +350,7 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
             if scenario == "invalid" {
                 ensure(state["error_code"] == "invalid-input", "Wrong error")?;
             }
-            let img = image::open(&path)?.to_rgb8();
+            let img = captured.image()?;
             let colors: std::collections::BTreeSet<_> =
                 img.pixels().map(|p| p.0).take(20_000_000).collect();
             ensure(colors.len() > 10, "Blank empty UI")?;
@@ -601,18 +390,14 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
                     "Wrong replacement error",
                 )?;
             }
-            pixels(
-                &path,
-                &Expect {
-                    aspect: match scenario {
-                        "large24" => Some(1.5),
-                        "large60" => Some(5.0 / 3.0),
-                        _ => None,
-                    },
-                    columns: columns(frame)?,
-                    ..Expect::fit(orientation)
+            captured.fixture(Expect {
+                aspect: match scenario {
+                    "large24" => Some(1.5),
+                    "large60" => Some(5.0 / 3.0),
+                    _ => None,
                 },
-            )?;
+                ..Expect::fit(orientation)
+            })?;
             ensure(
                 events.iter().any(|e| {
                     e["event"] == "render_ready" && e["generation"] == state["displayed_generation"]
@@ -641,9 +426,11 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
     }
     Ok(app)
 }
-pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
+
+/// The fixtures a plain scenario opens, in order.
+fn sources_for(root: &Path, scenario: &str) -> Result<Vec<PathBuf>> {
     let fixture = root.join("fixtures/s0/orientation-6.jpg");
-    let sources = match scenario {
+    Ok(match scenario {
         "empty" => vec![],
         "load" => vec![fixture],
         "replacement" => vec![fixture, root.join("fixtures/s0/invalid.jpg")],
@@ -704,147 +491,68 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
             return Err("The raw-panel scenario needs --source RAW_FILE".into());
         }
         _ => return Err("Unknown smoke scenario".into()),
-    };
-    run_sources(root, out, scenario, bin, timeout, sources)
+    })
 }
 
-/// Run one scenario over the given sources: [`run`] names each scenario's own fixtures, and a
-/// scenario whose photograph cannot be checked in (`raw-panel`) is handed its source instead.
-pub fn run_sources(
-    root: &Path,
-    out: &Path,
-    scenario: &str,
-    bin: &Path,
-    timeout: Duration,
-    sources: Vec<PathBuf>,
-) -> Result {
-    ensure(!out.exists(), "Smoke output must be new")?;
-    fs::create_dir_all(out)?;
-    let evidence = out.join("app");
-    let mut args = vec!["--evidence-dir".into(), evidence.clone().into_os_string()];
-    if matches!(scenario, "gallery" | "controls") {
-        args.push("--developer".into());
+/// One plain launch of a scenario over `sources`, with its script and window, checked by
+/// [`verify`].
+pub fn plain(run: Run, sources: Vec<PathBuf>) -> Result {
+    let scenario = run.scenario().to_owned();
+    let mut launch = Launch::app();
+    if matches!(scenario.as_str(), "gallery" | "controls") {
+        launch = launch.developer();
     }
-    for p in &sources {
-        args.extend(["--open".into(), p.as_os_str().into()]);
-    }
-    if let Some(script) = gallery::script(scenario).or_else(|| controls::script(scenario)) {
+    launch = launch.open_all(&sources);
+    if let Some(script) = gallery::script(&scenario).or_else(|| controls::script(&scenario)) {
         let window = if scenario == "gallery" {
             gallery::WINDOW
         } else {
             controls::WINDOW
         };
-        let file = out.join("script.json");
-        write_json(&file, &script)?;
-        args.extend([
-            "--evidence-script".into(),
-            file.into_os_string(),
-            "--window-size".into(),
-            window[0].into(),
-            window[1].into(),
-        ]);
-    } else if let Some(script) = crop::script(scenario)? {
+        launch = launch.script("script.json", script).window(window);
+    } else if let Some(script) = crop::script(&scenario)? {
         // The crop frames need room for the overlay at Fit and at 100%.
-        let file = out.join("script.json");
-        write_json(&file, &script)?;
-        args.extend([
-            "--evidence-script".into(),
-            file.into_os_string(),
-            "--window-size".into(),
-            "1280".into(),
-            "800".into(),
-        ]);
-    } else if let Some(script) = workspace::script(scenario)
-        .or_else(|| basic::script(scenario))
-        .or_else(|| basic::panel_script(scenario))
-        .or_else(|| raw_panel::script(scenario))
-        .or_else(|| performance::script(scenario, &sources))
+        launch = launch.script("script.json", script).window(["1280", "800"]);
+    } else if let Some(script) = workspace::script(&scenario)
+        .or_else(|| basic::script(&scenario))
+        .or_else(|| basic::panel_script(&scenario))
+        .or_else(|| raw_panel::script(&scenario))
+        .or_else(|| performance::script(&scenario, &sources))
     {
-        let file = out.join("script.json");
-        write_json(&file, &script)?;
-        args.extend([
-            "--evidence-script".into(),
-            file.into_os_string(),
-            "--window-size".into(),
-            workspace::WINDOW[0].into(),
-            workspace::WINDOW[1].into(),
-        ]);
-    } else if let Some(script) = histogram::script(scenario)
-        .or_else(|| histogram::crop_script(scenario))
-        .or_else(|| presence::script(scenario))
-        .or_else(|| mixer::script(scenario))
-        .or_else(|| vignette::script(scenario))
-        .or_else(|| presets::script(scenario))
-        .or_else(|| zoom::script(scenario))
+        launch = launch
+            .script("script.json", script)
+            .window(workspace::WINDOW);
+    } else if let Some(script) = histogram::script(&scenario)
+        .or_else(|| histogram::crop_script(&scenario))
+        .or_else(|| presence::script(&scenario))
+        .or_else(|| mixer::script(&scenario))
+        .or_else(|| vignette::script(&scenario))
+        .or_else(|| presets::script(&scenario))
+        .or_else(|| zoom::script(&scenario))
     {
-        let file = out.join("script.json");
-        write_json(&file, &script)?;
-        args.extend([
-            "--evidence-script".into(),
-            file.into_os_string(),
-            "--window-size".into(),
-            histogram::WINDOW[0].into(),
-            histogram::WINDOW[1].into(),
-        ]);
+        launch = launch
+            .script("script.json", script)
+            .window(histogram::WINDOW);
     }
-    // The recorded command is what actually runs, hidden-window flag included.
-    let args = launch::editor_args(&args);
-    let command = std::iter::once(bin.as_os_str())
-        .chain(args.iter().map(OsString::as_os_str))
-        .map(|s| s.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let mut result = json!({"scenario":scenario,"status":"failed","command":command,"launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
-    let check = (|| -> Result {
-        let mut hashes = serde_json::Map::new();
-        for p in &sources {
-            hashes.insert(
-                p.file_name().unwrap().to_string_lossy().into_owned(),
-                json!(hash(p)?),
-            );
-        }
-        result["fixture_hashes"] = json!(hashes);
-        result["binary_sha256"] = json!(hash(bin)?);
-        result["lockfile_sha256"] = json!(hash(&root.join("Cargo.lock"))?);
-        let mut child = spawn(root, bin, &args, &out.join("subprocess.log"))?;
-        // `performance` compares the memory the editor reports with readings the runner takes of
-        // the same process while it runs, so it waits by watching.
-        let status = if performance::frames(scenario).is_some() {
-            let (status, readings) = performance::watch(&mut child, timeout)?;
-            write_json(&out.join(performance::READINGS), &readings)?;
-            status
-        } else {
-            wait(&mut child, timeout)?
-        };
-        result["exit_code"] = json!(status.code());
-        ensure(status.success(), format!("Application exit {status}"))?;
-        let app = verify(&evidence, scenario, sources.len())?;
-        for p in &sources {
-            ensure(
-                json!(hash(p)?)
-                    == result["fixture_hashes"][p.file_name().unwrap().to_string_lossy().as_ref()],
-                "Source changed",
-            )?;
-        }
-        result["backend"] =
-            app["frames"].as_array().unwrap().last().unwrap()["state"]["backend"].clone();
+    // `performance` compares the memory the editor reports with readings the runner takes of the
+    // same process while it runs, so it waits by watching.
+    if performance::frames(&scenario).is_some() {
+        launch = launch.watch(performance::READINGS, Box::new(performance::watch));
+    }
+    run.check(|run| {
+        run.hash(&sources)?;
+        let evidence = run.launch(launch)?;
+        let app = verify(&evidence, &scenario, sources.len())?;
+        run.sources_unchanged()?;
+        run.record(
+            "backend",
+            app["frames"]
+                .as_array()
+                .and_then(|frames| frames.last())
+                .map_or(Value::Null, |frame| frame["state"]["backend"].clone()),
+        );
         Ok(())
-    })();
-    match &check {
-        Ok(()) => result["status"] = json!("passed"),
-        Err(e) => result["error"] = json!(e.to_string()),
-    };
-    write_json(&out.join("result.json"), &result)?;
-    fs::write(
-        out.join("reproduce.md"),
-        format!(
-            "# Smoke run\n\nScenario: {scenario}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask smoke --scenario {scenario} --output NEW_DIR --binary PATH`; on macOS this copies the binary into a temporary background-only bundle and the editor runs with `--hidden-window`, so its window is never placed on the desktop. Running the argument array directly bypasses that focus protection.\n\nArgument array:\n\n```json\n{}\n```\n\nActual renderer readback; native dialog/focus verified separately. Synthetic fixtures only.\n",
-            result["status"],
-            launch::MODE,
-            serde_json::to_string_pretty(&command)?
-        ),
-    )?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    check
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -873,10 +581,11 @@ mod tests {
         );
         assert!(good.is_ok(), "{good:?}");
         // The old figure: half a million milliseconds since the open.
-        assert!(expect_render_times(&[displayed(json!(500_000.0))], &[]).is_err());
-        assert!(expect_render_times(&[displayed(Value::Null)], &[]).is_err());
+        let none: [Value; 0] = [];
+        assert!(expect_render_times(&[displayed(json!(500_000.0))], &none).is_err());
+        assert!(expect_render_times(&[displayed(Value::Null)], &none).is_err());
         assert!(
-            expect_render_times(&[], &[]).is_err(),
+            expect_render_times(&[], &none).is_err(),
             "nothing was presented"
         );
         // A status bar stating a figure no presented frame carried.
@@ -909,7 +618,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("evidence ü space");
         assert!(
-            run(
+            dispatch(
                 &root().unwrap(),
                 &out,
                 "load",
@@ -947,57 +656,5 @@ mod tests {
                 .to_string()
                 .contains("generation")
         );
-    }
-    #[test]
-    fn blank_frame_fails() {
-        let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().join("blank.png");
-        image::RgbImage::new(960, 640).save(&p).unwrap();
-        assert!(
-            pixels(&p, &Expect::fit(6))
-                .unwrap_err()
-                .to_string()
-                .contains("blank")
-        );
-        assert!(
-            pixels(
-                &p,
-                &Expect {
-                    columns: Some([10, 5]),
-                    ..Expect::fit(6)
-                }
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("surface columns")
-        );
-    }
-    #[test]
-    #[ignore]
-    fn sleeping_child() {
-        std::thread::sleep(Duration::from_secs(30));
-    }
-    #[test]
-    fn timeout_reaps_child() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut child = spawn(
-            &root().unwrap(),
-            &std::env::current_exe().unwrap(),
-            &[
-                "--ignored".into(),
-                "--exact".into(),
-                "smoke::tests::sleeping_child".into(),
-            ],
-            &tmp.path().join("child.log"),
-        )
-        .unwrap();
-        assert!(
-            wait(&mut child, Duration::from_millis(50))
-                .unwrap_err()
-                .to_string()
-                .contains("timed out")
-        );
-        child.child.kill().unwrap();
-        assert!(child.child.wait().is_ok());
     }
 }

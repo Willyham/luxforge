@@ -1,5 +1,8 @@
 //! Ten renderer captures of the full 78-state widget gallery in the real desktop.
-use crate::{smoke::frame_identity, *};
+use crate::{
+    scenario::{Frame, pixels},
+    *,
+};
 
 pub const WINDOW: [&str; 2] = ["1440", "1000"];
 pub const PAGES: usize = 10;
@@ -23,8 +26,8 @@ pub fn script(scenario: &str) -> Option<Value> {
 /// A small image-content check independent of the gallery's own state metadata. A valid renderer
 /// readback must contain multiple visual elements in the central board area; an all-background
 /// capture or a page with only a title is not accepted as rendered widget evidence.
-fn board_content(path: &Path) -> Result<Value> {
-    let image = image::open(path)?.to_rgb8();
+fn board_content(frame: &Frame) -> Result<Value> {
+    let image = frame.image()?;
     let (width, height) = image.dimensions();
     ensure(
         width >= 1440 && height >= 1000,
@@ -54,7 +57,7 @@ fn board_content(path: &Path) -> Result<Value> {
         colours.len() >= 12 && changed >= 200,
         format!(
             "Gallery board in {} is blank or unreadable: {} colours, {changed} differing samples",
-            path.display(),
+            frame.path()?.display(),
             colours.len()
         ),
     )?;
@@ -80,13 +83,13 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         logged.len() == PAGES + 1,
         "A gallery script event is missing",
     )?;
-    let initial = frame_identity(evidence, app, &frames[0])?;
-    let original = controls_smoke::identity_photo(&initial, &frames[0])?;
+    let initial = Frame::identified(evidence, app, &frames[0])?;
+    let original = pixels::identity_photo(&initial)?;
     let mut checks = vec![json!({"frame":frames[0]["file"],"original_photo":original})];
     let mut states = 0usize;
     for page in 0..PAGES {
         let frame = &frames[page + 1];
-        let path = frame_identity(evidence, app, frame)?;
+        let captured = Frame::identified(evidence, app, frame)?;
         let info = &frame["state"]["gallery"];
         ensure(
             info["page"] == page
@@ -112,7 +115,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                 && logged[page]["detail"]["request"] == steps[page],
             format!("Gallery page {page} is not correlated to its script/log"),
         )?;
-        let image = board_content(&path)?;
+        let image = board_content(&captured)?;
         checks.push(json!({"frame":frame["file"],"page":info,"board":image}));
     }
     ensure(
@@ -120,8 +123,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         format!("Gallery pages contain {states} states, expected all {STATES}"),
     )?;
     let returned = frames.last().unwrap();
-    let path = frame_identity(evidence, app, returned)?;
-    let returned_photo = controls_smoke::identity_photo(&path, returned)?;
+    let returned_photo = pixels::identity_photo(&Frame::identified(evidence, app, returned)?)?;
     ensure(
         returned["state"]["gallery"].is_null()
             && returned["state"]["workspace"] == frames[0]["state"]["workspace"]

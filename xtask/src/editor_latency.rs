@@ -270,7 +270,8 @@ fn evidence_run(
     args: &[OsString],
     deadline: Duration,
 ) -> Result<(Vec<Value>, f64)> {
-    let mut child = smoke::spawn_editor(root, bin, args, &out.join(format!("{name}.log")))?;
+    let mut child =
+        scenario::launch::spawn_editor(root, bin, args, &out.join(format!("{name}.log")))?;
     let start = Instant::now();
     let mut rss = Vec::new();
     let status = loop {
@@ -839,7 +840,7 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         app["status"] == "captured",
         "The paint run captured nothing",
     )?;
-    let events = smoke::events(&evidence.join("events.jsonl"))?;
+    let events = scenario::events(&evidence.join("events.jsonl"))?;
     ensure(
         app["had_input_errors"] == json!(false)
             && app["script"]
@@ -1065,7 +1066,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         app["status"] == "captured",
         "The gesture run captured nothing",
     )?;
-    let events = smoke::events(&evidence.join("events.jsonl"))?;
+    let events = scenario::events(&evidence.join("events.jsonl"))?;
     ensure(
         app["had_input_errors"] == json!(false)
             && app["script"]
@@ -1555,7 +1556,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         app["status"] == "captured",
         "The burst run captured nothing",
     )?;
-    let events = smoke::events(&evidence.join("events.jsonl"))?;
+    let events = scenario::events(&evidence.join("events.jsonl"))?;
     ensure(
         app["had_input_errors"] == json!(false)
             && app["script"]
@@ -1682,7 +1683,7 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
     // The second process: the same catalog, no script, left idle after its first frame.
     let data = out.join("idle-data");
     let log = out.join("idle.log");
-    let mut child = smoke::spawn_editor(
+    let mut child = scenario::launch::spawn_editor(
         root,
         bin,
         &[
@@ -1731,7 +1732,7 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
     // The scratch budget travels in the state snapshot written beside a captured frame, and an
     // ordinary launch captures none, so the idle process cannot report it. The gesture process
     // above does, and it runs the same colour stack.
-    let idle_events = smoke::events(&events)?;
+    let idle_events = scenario::events(&events)?;
     write_json(
         &out.join("resources.json"),
         &json!({

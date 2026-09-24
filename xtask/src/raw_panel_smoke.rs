@@ -14,10 +14,7 @@
 //! [`crate::smoke::SCENARIOS`] and takes its source from `--source`: an owner or raw.pixls.us file
 //! the editor supports. It proves what the panel shows, what its double-click does and that a RAW
 //! crop is drawn and shown, not RAW decoding, which `raw-editor` covers.
-use crate::{
-    smoke::{columns, frame_identity},
-    *,
-};
+use crate::{scenario::Frame, *};
 
 pub const SCENARIO: &str = "raw-panel";
 const RAW_MODULE: &str = "lightwell.raw";
@@ -173,12 +170,6 @@ pub fn script(scenario: &str) -> Option<Value> {
     })
 }
 
-fn revision(frame: &Value) -> Result<u64> {
-    frame["state"]["stack"]["revision"]
-        .as_u64()
-        .ok_or_else(|| "Missing stack revision".into())
-}
-
 fn raw_payload(frame: &Value) -> Result<&Value> {
     frame["state"]["stack"]["layers"]
         .as_array()
@@ -192,15 +183,16 @@ fn raw_payload(frame: &Value) -> Result<&Value> {
 /// tenths (the title and status bars stay outside), and the share of those pixels differing by more
 /// than two codes in any channel. The surface draws the photograph and nothing else here: no
 /// overlay is on and no draft bar is shown for a slider gesture.
-fn surface_difference(first: &Path, second: &Path, frame: &Value) -> Result<(f64, f64)> {
-    let first = image::open(first)?.to_rgb8();
-    let second = image::open(second)?.to_rgb8();
+fn surface_difference(first: &Frame, second: &Frame) -> Result<(f64, f64)> {
+    let frame = second;
+    let first = first.image()?;
+    let second = second.image()?;
     ensure(
         first.dimensions() == second.dimensions(),
         "The two captures are different sizes",
     )?;
     let (width, height) = first.dimensions();
-    let [left, right] = columns(frame)?.unwrap_or([0, width]);
+    let [left, right] = frame.columns()?.unwrap_or([0, width]);
     let (mut total, mut over, mut count) = (0_u64, 0_u64, 0_u64);
     for y in height / 10..height - height / 10 {
         for x in left..right.min(width) {
@@ -236,11 +228,12 @@ fn step_events(events: &[Value], step: usize) -> Vec<&Value> {
 }
 
 pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
-    let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    let records = app["frames"].as_array().ok_or("Missing frames")?;
     let mut checks = Vec::new();
-    for (index, frame) in frames.iter().enumerate() {
+    let mut frames = Vec::new();
+    for (index, frame) in records.iter().enumerate() {
         let state = &frame["state"];
-        frame_identity(evidence, app, frame)?;
+        frames.push(Frame::identified(evidence, app, frame)?);
         ensure(
             state["phase"] == "ready",
             format!("RAW panel frame {index} is not ready: {}", state["phase"]),
@@ -271,7 +264,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         "The second RAW panel frame is not Basic collapsed by step 1",
     )?;
     for drag in &DRAGS {
-        checks.push(white_balance_drag(evidence, app, events, frames, drag)?);
+        checks.push(white_balance_drag(events, &frames, drag)?);
     }
 
     // Each double-click is two history entries: the first press's committed jump, then the
@@ -300,7 +293,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                 && sent[0]["detail"]["action"] == click.reset
                 && sent[0]["detail"]["field"]
                     == json!({"action": click.action, "parameter": click.parameter})
-                && sent[0]["detail"]["revision"] == json!(revision(before)? + 1),
+                && sent[0]["detail"]["revision"] == json!(before.revision()? + 1),
             format!(
                 "{field}: the reset was not {} sent once, after the jump's commit: {sent:?}",
                 click.reset
@@ -311,11 +304,11 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             format!("{field}: the first press did not commit its jump once"),
         )?;
         ensure(
-            revision(after)? == revision(before)? + 2,
+            after.revision()? == before.revision()? + 2,
             format!(
                 "{field}: revision {} after {}, not the jump and the reset",
-                revision(after)?,
-                revision(before)?
+                after.revision()?,
+                before.revision()?
             ),
         )?;
         let mut shown = json!({"field": after["state"]["controls"][&field]});
@@ -346,8 +339,8 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             "field": field,
             "reset": click.reset,
             "label": after["state"]["stack"]["label"],
-            "revision_before": revision(before)?,
-            "revision_after": revision(after)?,
+            "revision_before": before.revision()?,
+            "revision_after": after.revision()?,
             "reset_sent_at_revision": sent[0]["detail"]["revision"],
             "queued": !named("field_reset_queued").is_empty(),
             "shown": shown,
@@ -384,7 +377,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             "revision": frame["state"]["stack"]["revision"]}),
         );
     }
-    checks.push(raw_crop(evidence, app, events, frames)?);
+    checks.push(raw_crop(events, &frames)?);
     write_json(&evidence.join("raw-panel-checks.json"), &json!(checks))?;
     Ok(())
 }
@@ -528,7 +521,7 @@ fn canvas_background(image: &image::RgbImage, frame: &Value) -> Result<([u8; 3],
 /// the canvas background. Drawn as the toolkit's own fragments of an image wider than one atlas
 /// layer, each turned about its own centre, it showed the background through 12% of these samples
 /// on the X100VI at 7°, and 66% at 44°.
-fn draft_is_whole(path: &Path, frame: &Value, source: [u32; 2]) -> Result<Value> {
+fn draft_is_whole(frame: &Frame, source: [u32; 2]) -> Result<Value> {
     let draft = &frame["state"]["crop"];
     let angle = draft["angle"]
         .as_f64()
@@ -539,8 +532,8 @@ fn draft_is_whole(path: &Path, frame: &Value, source: [u32; 2]) -> Result<Value>
         angle,
     };
     let (box_width, box_height) = stage.bounding_box();
-    let image = image::open(path)?.to_rgb8();
-    let (background, [left, top, right, bottom]) = canvas_background(&image, frame)?;
+    let image = frame.image()?;
+    let (background, [left, top, right, bottom]) = canvas_background(image, frame)?;
     let scale = frame["scale"]
         .as_f64()
         .ok_or("The frame records no scale")?;
@@ -600,9 +593,9 @@ fn draft_is_whole(path: &Path, frame: &Value, source: [u32; 2]) -> Result<Value>
 
 /// A committed crop at Fit: the photograph measured on the canvas is the crop's output fitted into
 /// the photo area and centred in it, not the picture from before the commit.
-fn fit_placement(path: &Path, frame: &Value, output: [u32; 2]) -> Result<Value> {
-    let image = image::open(path)?.to_rgb8();
-    let (background, [left, top, right, bottom]) = canvas_background(&image, frame)?;
+fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
+    let image = frame.image()?;
+    let (background, [left, top, right, bottom]) = canvas_background(image, frame)?;
     let scale = frame["scale"]
         .as_f64()
         .ok_or("The frame records no scale")?;
@@ -663,12 +656,7 @@ fn fit_placement(path: &Path, frame: &Value, output: [u32; 2]) -> Result<Value> 
 /// stage pixel under the pointer are the codes the canvas shows at that pixel, one stage pixel per
 /// physical pixel from the canvas's corner less the pan. The readout is the owner's own point
 /// evaluation of the current stack, so this ties the picture on screen to the committed recipe.
-fn readout_on_screen(
-    path: &Path,
-    frame: &Value,
-    point: (u32, u32),
-    output: [u32; 2],
-) -> Result<Value> {
+fn readout_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Result<Value> {
     let state = &frame["state"];
     ensure(
         state["surface"]["raster"] == json!(output) && state["proxy"]["presented"] == json!(false),
@@ -684,8 +672,8 @@ fn readout_on_screen(
     )?;
     let codes: [u8; 4] = serde_json::from_value(readout["rgba"].clone())
         .map_err(|_| format!("The readout carries no codes: {readout}"))?;
-    let image = image::open(path)?.to_rgb8();
-    let (_, [left, top, _, _]) = canvas_background(&image, frame)?;
+    let image = frame.image()?;
+    let (_, [left, top, _, _]) = canvas_background(image, frame)?;
     let scale = frame["scale"]
         .as_f64()
         .ok_or("The frame records no scale")?;
@@ -721,7 +709,7 @@ fn readout_on_screen(
 /// whole input stage, Apply commits one entry whose picture is the one on screen at Fit and at
 /// 100%, where the pointer readout's codes are the canvas's own, and a `crop-fit` through the API
 /// at 100% updates the same layer and is shown the same way.
-fn raw_crop(evidence: &Path, app: &Value, events: &[Value], frames: &[Value]) -> Result<Value> {
+fn raw_crop(events: &[Value], frames: &[Frame]) -> Result<Value> {
     let at = |offset: usize| &frames[FIRST_CROP_STEP + offset];
     let source: [u32; 2] = serde_json::from_value(frames[0]["state"]["source_dimensions"].clone())
         .map_err(|_| "The open frame records no source dimensions")?;
@@ -742,11 +730,7 @@ fn raw_crop(evidence: &Path, app: &Value, events: &[Value], frames: &[Value]) ->
         straightened["state"]["crop"]["angle"] == json!(CROP_ANGLE),
         "The draft was not straightened",
     )?;
-    let whole = draft_is_whole(
-        &frame_identity(evidence, app, straightened)?,
-        straightened,
-        source,
-    )?;
+    let whole = draft_is_whole(straightened, source)?;
 
     let applied = at(3);
     expect_no_failure(events, FIRST_CROP_STEP + 3, "Apply")?;
@@ -756,7 +740,7 @@ fn raw_crop(evidence: &Path, app: &Value, events: &[Value], frames: &[Value]) ->
             .filter(|event| event["event"] == "crop_draft_applied")
             .count()
             == 1
-            && revision(applied)? == revision(straightened)? + 1
+            && applied.revision()? == straightened.revision()? + 1
             && applied["state"]["crop"]["drafting"] == json!(false),
         "Apply did not commit exactly one entry and end the draft",
     )?;
@@ -765,7 +749,7 @@ fn raw_crop(evidence: &Path, app: &Value, events: &[Value], frames: &[Value]) ->
         applied["state"]["proxy"]["presented"] == json!(true),
         "The applied crop at Fit is not the display proxy",
     )?;
-    let placement = fit_placement(&frame_identity(evidence, app, applied)?, applied, output)?;
+    let placement = fit_placement(applied, output)?;
 
     let exact = at(4);
     shows_crop(exact, source, CROP_ANGLE, "The applied crop at 100%")?;
@@ -773,18 +757,13 @@ fn raw_crop(evidence: &Path, app: &Value, events: &[Value], frames: &[Value]) ->
     for (offset, point) in [(5, READOUTS[0]), (6, READOUTS[1])] {
         let frame = at(offset);
         shows_crop(frame, source, CROP_ANGLE, "A readout over the applied crop")?;
-        readouts.push(readout_on_screen(
-            &frame_identity(evidence, app, frame)?,
-            frame,
-            point,
-            output,
-        )?);
+        readouts.push(readout_on_screen(frame, point, output)?);
     }
 
     let fitted = at(7);
     expect_no_failure(events, FIRST_CROP_STEP + 7, "The API's crop-fit")?;
     ensure(
-        revision(fitted)? == revision(at(6))? + 1
+        fitted.revision()? == at(6).revision()? + 1
             && crop_layer(fitted)?.0 == crop_layer(applied)?.0,
         "The API's crop-fit did not update the same crop layer in one entry",
     )?;
@@ -798,15 +777,10 @@ fn raw_crop(evidence: &Path, app: &Value, events: &[Value], frames: &[Value]) ->
     )?;
     let frame = at(8);
     shows_crop(frame, source, FIT_ANGLE, "A readout over the API's crop")?;
-    readouts.push(readout_on_screen(
-        &frame_identity(evidence, app, frame)?,
-        frame,
-        READOUTS[1],
-        refitted,
-    )?);
+    readouts.push(readout_on_screen(frame, READOUTS[1], refitted)?);
     let back = at(9);
     shows_crop(back, source, FIT_ANGLE, "The API's crop back at Fit")?;
-    let back_placement = fit_placement(&frame_identity(evidence, app, back)?, back, refitted)?;
+    let back_placement = fit_placement(back, refitted)?;
     Ok(json!({
         "crop": {
             "source": source,
@@ -831,13 +805,7 @@ fn raw_crop(evidence: &Path, app: &Value, events: &[Value], frames: &[Value]) ->
 /// adopted, and the first frame handed to the surface after the commit — so the approximate frame
 /// stayed on screen until it was replaced, with nothing drawn in between. On average it is within
 /// a code of the approximate one.
-fn white_balance_drag(
-    evidence: &Path,
-    app: &Value,
-    events: &[Value],
-    frames: &[Value],
-    drag: &Drag,
-) -> Result<Value> {
+fn white_balance_drag(events: &[Value], frames: &[Frame], drag: &Drag) -> Result<Value> {
     let (drag_step, release_step, kelvin) = (drag.step, drag.step + 1, drag.kelvin);
     let (before, drafted, released) = (
         &frames[drag_step - 1],
@@ -915,11 +883,7 @@ fn white_balance_drag(
         unpreviewed == 0,
         format!("{unpreviewed} drafted values had no preview"),
     )?;
-    let (drag_mean, drag_over) = surface_difference(
-        &frame_identity(evidence, app, before)?,
-        &frame_identity(evidence, app, drafted)?,
-        drafted,
-    )?;
+    let (drag_mean, drag_over) = surface_difference(before, drafted)?;
     ensure(
         drag_mean > 1.0 && drag_over > 0.1,
         format!(
@@ -950,7 +914,7 @@ fn white_balance_drag(
         format!("The committed frame's own report is not plotted: {histogram}"),
     )?;
     ensure(
-        revision(released)? == revision(drafted)? + 1,
+        released.revision()? == drafted.revision()? + 1,
         "The release did not commit exactly one entry",
     )?;
     let release_events = step_events(events, release_step);
@@ -999,11 +963,7 @@ fn white_balance_drag(
         }),
         "The committed frame's report was not adopted",
     )?;
-    let (settled_mean, settled_over) = surface_difference(
-        &frame_identity(evidence, app, drafted)?,
-        &frame_identity(evidence, app, released)?,
-        released,
-    )?;
+    let (settled_mean, settled_over) = surface_difference(drafted, released)?;
     ensure(
         settled_mean < 1.0,
         format!("The exact frame is {settled_mean:.3} codes from the approximate one on average"),
