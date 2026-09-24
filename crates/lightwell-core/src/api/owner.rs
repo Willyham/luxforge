@@ -8,8 +8,8 @@ use super::{
 };
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
-    ErrorKind, HostConfig, JobId, JobStatus, MaskOverlayRequest, ModuleRegistry, PreviewJob,
-    ProxyBounds,
+    ErrorKind, HostConfig, JobId, JobStatus, MaskOverlayRequest, ModuleRegistry, Preparation,
+    PreparationNeeds, PreviewJob, ProxyBounds,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
@@ -192,7 +192,9 @@ struct SourceFlightKey {
 }
 
 enum SourceTaskKind {
-    File,
+    /// Read, verify and decode the original; a RAW one is developed at these gains, or at its
+    /// camera's as-shot gains when none are named.
+    File(Option<[f32; 3]>),
     Develop(RawDevelopment),
     /// The asset's source is already prepared; only its artifacts need reading.
     Artifacts(AssetId),
@@ -263,15 +265,29 @@ impl SourceJobs {
         expected_fingerprint: Option<String>,
         artifacts: Vec<ArtifactRead>,
     ) -> Result<JobId, Error> {
+        self.enqueue_file(client, path, expected_fingerprint, None, artifacts)
+    }
+
+    /// Prepare an original from its file, developing a RAW one at `gains` when they are named, and
+    /// read the artifacts after it.
+    fn enqueue_file(
+        &mut self,
+        client: ClientId,
+        path: PathBuf,
+        expected_fingerprint: Option<String>,
+        gains: Option<[f32; 3]>,
+        artifacts: Vec<ArtifactRead>,
+    ) -> Result<JobId, Error> {
         let (canonical, signature) = EditorService::request_signature(&path)?;
         let key = SourceFlightKey {
             path: canonical,
             signature: Some(signature),
             expected_fingerprint,
-            gains_bits: None,
+            gains_bits: gains.map(|gains| gains.map(f32::to_bits)),
             artifacts: flight_artifacts(&artifacts),
         };
-        self.submit(client, key, SourceTaskKind::File, artifacts, None, true)
+        let kind = SourceTaskKind::File(gains);
+        self.submit(client, key, kind, artifacts, None, true)
     }
 
     /// Read and verify an asset's artifacts when its source is already prepared.
@@ -528,40 +544,46 @@ impl SourceJobs {
     }
 }
 
-/// Queue one source job that prepares everything an entry's stack still needs: its original, its
-/// RAW development and the artifacts it references, plus any artifact identities a refused request
-/// named (a draft's effective recipe can reference one the entry does not). A stack with nothing
-/// left to prepare answers with a job that is already ready.
+/// Queue one source job that prepares exactly what `needs` names — the asset's original, its RAW
+/// development at the named gains and the named artifacts — and nothing re-derived from the request
+/// that was refused. An original the cache does not hold is prepared and developed at those gains
+/// in the same job; one it holds is redeveloped only when its planes do not hold them; artifacts
+/// that became ready since they were named are left out. Needs with nothing left to prepare answer
+/// with a job that is already ready.
 fn queue_preparation(
     service: &EditorService,
     jobs: &mut SourceJobs,
     client: ClientId,
-    asset_id: &AssetId,
-    entry_id: Option<&EntryId>,
-    requested: &[ArtifactId],
+    needs: &PreparationNeeds,
 ) -> Result<JobId, Error> {
-    let artifacts = service.artifact_preparation(asset_id, entry_id, requested)?;
-    if let Some(request) = service.raw_development(asset_id, entry_id)? {
+    let asset_id = &needs.asset_id;
+    let artifacts = service.artifact_reads(&needs.artifacts)?;
+    let Some(state) = service.cached_state(asset_id)? else {
+        let state = service.state(asset_id)?;
+        let id = jobs.enqueue_file(
+            client,
+            state.asset.locator,
+            Some(state.asset.fingerprint),
+            needs.gains,
+            artifacts,
+        )?;
+        service.evict_development();
+        return Ok(id);
+    };
+    let development = match needs.gains {
+        Some(gains) => service.raw_development(asset_id, gains)?,
+        None => None,
+    };
+    if let Some(request) = development {
         let id = jobs.enqueue_development(client, request, artifacts)?;
         service.evict_development();
         return Ok(id);
     }
-    if let Some(state) = service.cached_state(asset_id)? {
-        return if artifacts.is_empty() {
-            jobs.ready(client, state)
-        } else {
-            jobs.enqueue_artifacts(client, state.asset.id, artifacts)
-        };
+    if artifacts.is_empty() {
+        jobs.ready(client, state)
+    } else {
+        jobs.enqueue_artifacts(client, state.asset.id, artifacts)
     }
-    let state = service.state(asset_id)?;
-    let id = jobs.enqueue(
-        client,
-        state.asset.locator,
-        Some(state.asset.fingerprint),
-        artifacts,
-    )?;
-    service.evict_development();
-    Ok(id)
 }
 
 /// Where a test holds the source worker: after a task's activity has begun and before any of its
@@ -582,7 +604,7 @@ impl SourceHold {
 /// The activity one source task publishes, with the original's file name as its detail line.
 fn source_activity(task: &SourceTask) -> ActivitySpec {
     match &task.kind {
-        SourceTaskKind::File => ActivitySpec {
+        SourceTaskKind::File(_) => ActivitySpec {
             kind: "source.prepare",
             label: "Preparing original",
             detail: task
@@ -617,16 +639,6 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
     }
 }
 
-/// The artifact identities a `preparation-required` failure named in `data.artifacts`.
-fn requested_artifacts(data: Option<&Value>) -> Vec<ArtifactId> {
-    data.and_then(|data| data.get("artifacts"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|id| id.as_str().and_then(|id| ArtifactId::parse(id).ok()))
-        .collect()
-}
-
 /// Read and verify every listed artifact on the source worker, stopping at the first that is
 /// missing, corrupt or cancelled.
 fn read_artifacts(
@@ -657,8 +669,10 @@ fn source_worker(
         // A previous RAW result/cache or active/pending preview may still pin its large float
         // planes. Wait on the worker, never the catalog owner, before another source allocation.
         // Artifact work allocates no planes and never waits.
-        let allocates_planes =
-            matches!(task.kind, SourceTaskKind::File | SourceTaskKind::Develop(_));
+        let allocates_planes = matches!(
+            task.kind,
+            SourceTaskKind::File(_) | SourceTaskKind::Develop(_)
+        );
         while allocates_planes && !task.cancelled.load(Ordering::Relaxed) {
             let live = {
                 let mut planes = live_planes.lock().expect("source memory gate");
@@ -688,8 +702,8 @@ fn source_worker(
         }
         hold.wait();
         let result = match task.kind {
-            SourceTaskKind::File => {
-                EditorService::prepare_file_cancel(&task.key.path, &task.cancelled).and_then(
+            SourceTaskKind::File(gains) => {
+                EditorService::prepare_file_cancel(&task.key.path, gains, &task.cancelled).and_then(
                     |prepared| {
                         if Some(&prepared.signature) != task.key.signature.as_ref() {
                             return Err(Error::new(
@@ -1230,16 +1244,12 @@ impl Owner {
                 {
                     announce_once(&mut self.announced, &call.origin);
                 }
-                match result {
-                    // A stack whose source or artifacts are not prepared queues that preparation
-                    // and answers with the job to wait for.
-                    Err(error) if error.kind == ErrorKind::PreparationRequired => {
-                        Err(self.prepare_request(client, &request.params, &error))
-                    }
-                    other => other,
-                }
+                result
             }
         };
+        // A stack whose source or artifacts are not prepared queues exactly what the refusal
+        // names and answers with the job to wait for, whichever handler evaluated it.
+        let result = result.map_err(|error| self.prepare(client, error));
         match (result, key) {
             (Ok(mut value), Some(key)) => {
                 self.requests.record(key, &mut value);
@@ -1296,60 +1306,19 @@ impl Owner {
             });
         // A stack whose source is not prepared queues that preparation and answers with the job to
         // wait for, exactly as a JSON request does.
-        match job {
-            Err(error) if error.kind == ErrorKind::PreparationRequired => Err(self.prepare(
-                request.client,
-                &request.asset_id,
-                request.entry_id.as_ref(),
-                &error,
-            )),
-            other => other,
-        }
+        job.map_err(|error| self.prepare(request.client, error))
     }
 
-    /// Queue the preparation a refused request needs and return the error that names its job, or
-    /// the reason it could not be queued. The request names the stack it evaluated with `asset_id`
-    /// and an optional `entry_id`; a draft or no entry is the current one.
-    pub(super) fn prepare_request(
-        &mut self,
-        client: ClientId,
-        params: &Value,
-        refused: &Error,
-    ) -> Error {
-        let field = |value: &Value, name: &str| {
-            Error::new(ErrorKind::Validation, format!("{name}: invalid {value}"))
+    /// The one answer to a refusal that names what it needs prepared: queue exactly that as one
+    /// source job ([`queue_preparation`]) and answer `preparation-required` naming the job to wait
+    /// for, or the reason it could not be queued. Every other error, including a refusal that
+    /// already names its job, is answered as it is.
+    fn prepare(&mut self, client: ClientId, refused: Error) -> Error {
+        let Some(needs) = refused.needs() else {
+            return refused;
         };
-        let Some(asset) = params.get("asset_id") else {
-            return Error::new(ErrorKind::Validation, "missing asset_id");
-        };
-        let Ok(asset_id) = AssetId::deserialize(asset) else {
-            return field(asset, "asset_id");
-        };
-        let entry = params.get("entry_id");
-        let entry_id = match entry.map(EntryId::deserialize).transpose() {
-            Ok(entry_id) => entry_id,
-            Err(_) => return field(entry.unwrap_or(&Value::Null), "entry_id"),
-        };
-        self.prepare(client, &asset_id, entry_id.as_ref(), refused)
-    }
-
-    /// Queue what one stack still needs, plus any artifact the refusal named.
-    fn prepare(
-        &mut self,
-        client: ClientId,
-        asset_id: &AssetId,
-        entry_id: Option<&EntryId>,
-        refused: &Error,
-    ) -> Error {
-        match queue_preparation(
-            &self.service,
-            &mut self.jobs,
-            client,
-            asset_id,
-            entry_id,
-            &requested_artifacts(refused.data.as_deref()),
-        ) {
-            Ok(id) => Error::new(ErrorKind::PreparationRequired, id.to_string()),
+        match queue_preparation(&self.service, &mut self.jobs, client, needs) {
+            Ok(job) => refused.with_preparation(Preparation::Queued(job)),
             Err(error) => error,
         }
     }
@@ -1480,8 +1449,9 @@ pub(super) fn job_adopt(
             SourceState::Queued | SourceState::Preparing => {
                 return Err(Error::new(
                     ErrorKind::PreparationRequired,
-                    params.job_id.to_string(),
-                ));
+                    "the import is still being prepared",
+                )
+                .with_preparation(Preparation::Queued(params.job_id.clone())));
             }
         },
         _ => {
@@ -1514,14 +1484,10 @@ pub(super) fn source_prepare(
     call: &Call<'_>,
     params: SourcePrepare,
 ) -> Result<Value, Error> {
-    let id = queue_preparation(
-        &owner.service,
-        &mut owner.jobs,
-        call.client,
-        &params.asset_id,
-        params.entry_id.as_ref(),
-        &[],
-    )?;
+    let needs = owner
+        .service
+        .entry_needs(&params.asset_id, params.entry_id.as_ref())?;
+    let id = queue_preparation(&owner.service, &mut owner.jobs, call.client, &needs)?;
     Ok(json!({"job_id": id, "status": JobStatus::Queued}))
 }
 
@@ -1578,25 +1544,15 @@ pub(super) fn analysis_request(
                 .held_draft(draft_id)?,
         ),
     };
-    let plan = owner.service.analysis_plan(&params.asset_id, selection);
-    // A stack whose source or artifacts are not prepared queues that preparation and answers with
-    // the job to wait for, as every other evaluating request does.
+    // A stack whose source or artifacts are not prepared is refused naming what it needs, which
+    // the owner queues and answers with the job to wait for, as for every other evaluating request.
     let AnalysisPlan {
         identity,
         source,
         registry,
         recipe,
         failure,
-    } = match plan {
-        Err(error) if error.kind == ErrorKind::PreparationRequired => {
-            let entry_id = match &params.target {
-                AnalysisTarget::Entry { entry_id } => Some(entry_id),
-                AnalysisTarget::Current | AnalysisTarget::Draft { .. } => None,
-            };
-            return Err(owner.prepare(call.client, &params.asset_id, entry_id, &error));
-        }
-        plan => plan?,
-    };
+    } = owner.service.analysis_plan(&params.asset_id, selection)?;
     // An identical identity joins the job that already covers it, whether it is still running or
     // already holds a report: the same work is never done twice.
     let (job_id, fresh) = owner.analyses.request(identity.clone(), call.client);
@@ -1871,6 +1827,95 @@ mod tests {
         }
     }
 
+    /// A source job's settled status, waiting as long as a photo-sized RAW development takes.
+    fn wait_development(owner: &OwnerHandle, client: ClientId, id: &str) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let status = ok(owner, client, "status", "job.status", json!({"job_id": id}));
+            if !matches!(status["status"].as_str(), Some("queued" | "running")) {
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the source job never settled: {status}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// On a real RAW file: `render.sample` names no entry, so it samples the session's selection.
+    /// A historical entry whose white balance the developed planes do not hold is refused naming
+    /// that entry's development rather than the current one's, and the sample converges after the
+    /// one job that prepares it. Run with LIGHTWELL_RAW_FIXTURE pointing to a private qualified
+    /// NEF, RAF or DNG.
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn a_sample_of_a_historical_raw_entry_prepares_that_entry_and_converges_after_one_job() {
+        let path =
+            PathBuf::from(std::env::var("LIGHTWELL_RAW_FIXTURE").expect("LIGHTWELL_RAW_FIXTURE"));
+        let catalog = temp("historical-raw-sample.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &path);
+        let asset = state["asset"]["id"].clone();
+        let original = state["current_entry"]["id"].clone();
+        let sample = |id: &str| {
+            send(
+                &owner,
+                client,
+                id,
+                "render.sample",
+                json!({"asset_id": asset, "x": 100, "y": 100}),
+            )
+        };
+
+        // A custom white balance becomes current, and its development is prepared.
+        ok(
+            &owner,
+            client,
+            "temperature",
+            "edit.set-raw-temperature",
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": 0, "request_id": "temperature", "actor": "test"},
+                "kelvin": 3500.0,
+            }),
+        );
+        let prepared = ok(
+            &owner,
+            client,
+            "prepare",
+            "source.prepare",
+            json!({"asset_id": asset}),
+        );
+        let job = prepared["job_id"].as_str().unwrap();
+        assert_eq!(wait_development(&owner, client, job)["status"], "ready");
+        assert!(
+            sample("current").error.is_none(),
+            "the current entry samples"
+        );
+
+        // The Original, selected, holds the as-shot white balance the planes no longer hold.
+        ok(
+            &owner,
+            client,
+            "select",
+            "preview.select",
+            json!({"asset_id": asset, "entry_id": original}),
+        );
+        let refused = sample("historical").error.expect("a refusal");
+        assert_eq!(refused.code, "preparation-required", "{refused:?}");
+        let job = refused.job_id.expect("the job preparing the Original");
+        assert_eq!(wait_development(&owner, client, &job)["status"], "ready");
+        let sampled = sample("again");
+        assert!(sampled.error.is_none(), "{:?}", sampled.error);
+        assert_eq!(sampled.result.unwrap()["entry_id"], original);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     #[test]
     #[ignore = "requires two private photo-sized RAW fixtures"]
     fn queued_distinct_raw_imports_release_first_float_before_second_development() {
@@ -1945,7 +1990,7 @@ mod tests {
                                 &owner,
                                 client,
                                 "job.status",
-                                json!({"job_id":error.message}),
+                                json!({"job_id":error.job_id}),
                             )
                             .result
                             .unwrap();
@@ -2190,17 +2235,17 @@ mod tests {
         );
         let error = missing.error.unwrap();
         assert_eq!(error.code, "preparation-required");
-        assert_eq!(error.job_id.as_deref(), Some(error.message.as_str()));
+        assert_eq!(error.message, "source preparation required");
+        let job = error
+            .job_id
+            .expect("the refusal names the job preparing it");
         assert!(
             request(&owner, client, "session.state", json!({}))
                 .error
                 .is_none(),
             "the owner answers while decode runs"
         );
-        assert_eq!(
-            wait_source(&owner, client, &error.message)["status"],
-            "ready"
-        );
+        assert_eq!(wait_source(&owner, client, &job)["status"], "ready");
         assert_eq!(
             request(&owner, client, "events.since", json!({"after":0}))
                 .result

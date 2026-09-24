@@ -1,14 +1,15 @@
 use super::{
-    EditorService, EditorState, MutationResult,
+    AssetRecord, EditorService, EditorState, MutationResult,
     history::{Change, CommittedAction, request_input},
     masks::{recipe_for_target, resolve_mask_target, take_mask_target},
-    source::{RawSettingsMode, raw_settings, validate_source_recipe},
+    source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 use crate::{
-    AssetId, Draft, EntryId, Error, ErrorKind, Layer, LayerId, MaskId, Mutation, Recipe, Transform,
+    AssetId, Draft, EntryId, Error, ErrorKind, Layer, LayerId, LinearImage, LinearSettings, MaskId,
+    Mutation, Recipe, ToolModule, Transform,
     mask::commands::MaskOutcome,
     modules::{
-        ActionInput, ActionPlan, EffectStage, LayerEdit, MAX_COMPOSE_STEPS, Stage, StageContext,
+        ActionInput, ActionPlan, LayerEdit, MAX_COMPOSE_STEPS, Stage, StageContext, StageQuestions,
         action_label, check_parameters,
     },
     render::Evaluation,
@@ -16,6 +17,7 @@ use crate::{
     source::PreparedSource,
 };
 use serde_json::{Value, json};
+use std::cell::OnceCell;
 
 impl EditorService {
     /// One action request for every caller: the desktop, the JSON API and headless clients all
@@ -32,14 +34,9 @@ impl EditorService {
             Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
         })?;
         // An unavailable provider keeps its descriptor so its stored layers stay readable, but it
-        // changes nothing. A module with effects would be refused by the whole-stack compile at
-        // commit anyway; one with none, such as presets, would otherwise commit through it.
-        if !module.descriptor().is_available() {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unavailable module {}", module.descriptor().id),
-            ));
-        }
+        // changes nothing; it is refused here, before anything else, and again by the one plan
+        // path every commit, draft and query takes.
+        available(module)?;
         // The host's one optional target field, taken before the action's own parameters are checked
         // so the module receives exactly its declared fields and never learns a mask was involved.
         let mut parameters = parameters;
@@ -54,288 +51,117 @@ impl EditorService {
             .unwrap_or_else(|| action_label(action, &input.parameters));
         let request = request_input(&input, &mutation, mask.as_ref())?;
         self.mutate(asset_id, &mutation, &request, |service, state| {
-            service.plan_action(state, module, action_id, input, label, mask)
+            let current = &state.current_entry.snapshot.recipe;
+            let planned =
+                service.plan_action(&state.asset, current, module, &input, mask.as_ref())?;
+            let Some(recipe) = planned else {
+                return Ok(Change::NoOp);
+            };
+            let label = masked_label(current, mask.as_ref(), label);
+            Ok(Change::append(recipe, CommittedAction { input, label }))
         })
     }
 
-    /// What one parsed action does to the current stack, planned by its module against the
-    /// action's target, for [`Self::mutate`] to write.
-    fn plan_action(
+    /// What one parsed action does to `recipe`, the stack of `asset` it is planned against, or
+    /// `None` when it changes nothing: its module plans through [`Self::ask`] and the host
+    /// resolves the plan into the stack it produces ([`Self::resolve_plan`]).
+    ///
+    /// A commit and a draft's effective recipe both come here with the same parsed input and the
+    /// same target, so a drafted preview evaluates exactly the stack committing that draft writes,
+    /// for every module and source kind alike. Planning costs `O(layers)` plus whatever points the
+    /// module samples, and rasterizes nothing.
+    pub(super) fn plan_action(
         &self,
-        state: &EditorState,
-        module: &dyn crate::ToolModule,
-        action_id: &str,
-        input: ActionInput,
-        label: String,
-        mask: Option<MaskId>,
-    ) -> Result<Change, Error> {
-        let registry = &self.registry;
-        validate_source_recipe(&state.asset, &state.current_entry.snapshot.recipe)?;
-        // Both planning paths compile the current stack, so its artifacts are bound first.
-        let bound = self.bound(&state.current_entry.snapshot.recipe)?;
-        let recipe: &Recipe = &bound;
-        // A target the stack does not hold is refused here, before a module plans anything.
-        resolve_mask_target(recipe, mask.as_ref())?;
-        // A masked module edit always names its mask, where a `mask.*` command names one only once
-        // the stack holds more than one. The difference is not an inconsistency but the ambiguity
-        // each one actually has: `Update Linear 1` is unmistakable while a recipe holds one mask,
-        // but `Exposure +2.00 EV` is exactly what this module's *global* edit writes, so a single
-        // mask is already enough for a history row to show two entries nothing distinguishes.
-        let label = match mask
-            .as_ref()
-            .and_then(|id| recipe.masks.iter().find(|mask| &mask.id == id))
-        {
-            Some(mask) => format!("{} · {label}", mask.name),
-            None => label,
-        };
-        if module.descriptor().id == "lightwell.raw" {
-            let (width, height) = (state.asset.width, state.asset.height);
-            let stage = registry.compile(width, height, recipe)?.stage();
-            let unavailable = |_: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
-                Err(Error::new(
-                    ErrorKind::Incompatible,
-                    "RAW source action does not sample pixels",
-                ))
-            };
-            let stage_before = |index: usize| -> Result<Stage, Error> {
-                Ok(registry
-                    .compile_layers(
-                        width,
-                        height,
-                        prefix(&recipe.layers, index)?,
-                        &recipe.masks,
-                        &recipe.strokes,
-                        &recipe.artifacts,
-                    )?
-                    .stage())
-            };
-            let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
-                Err(Error::new(
-                    ErrorKind::Incompatible,
-                    "RAW source action does not sample pixels",
-                ))
-            };
-            let insertion_index = |effect_stage: EffectStage| {
-                registry.insertion_index(&recipe.layers, effect_stage, 0)
-            };
-            let insertion_index_for =
-                |effect_id: &str| registry.insertion_index_for(&recipe.layers, effect_id);
-            let raw_source = if action_id == "pick-raw-neutral" {
-                Some(self.verified_prepared(&state.asset)?)
-            } else {
-                None
-            };
-            let neutral_sampler = raw_source.as_ref().map(|prepared| {
-                move |x: u32, y: u32| -> Result<[f32; 3], Error> {
-                    match prepared {
-                        PreparedSource::Raw(raw) => crate::source::neutral_at(raw, x, y),
-                        PreparedSource::Jpeg(_) => Err(Error::new(
-                            ErrorKind::Validation,
-                            "RAW neutral picker requires a RAW original",
-                        )),
-                    }
-                }
-            });
-            let context = StageContext {
-                stage,
-                layers: &recipe.layers,
-                sampler: &unavailable,
-                stage_before: &stage_before,
-                insertion_index: &insertion_index,
-                insertion_index_for: &insertion_index_for,
-                sample_before: &sample_before,
-                sensor_neutral: neutral_sampler
-                    .as_ref()
-                    .map(|sample| sample as &dyn Fn(u32, u32) -> Result<[f32; 3], Error>),
-                registry,
-                target: None,
-            };
-            let recipe = match module.plan(&input, &context)? {
-                ActionPlan::NoOp => {
-                    return Ok(Change::NoOp);
-                }
-                ActionPlan::Update(update) => {
-                    edited(registry, recipe, LayerEdit::Update(update), None)?
-                }
-                ActionPlan::Commit(_) | ActionPlan::Edits(_) | ActionPlan::Compose(_) => {
-                    return Err(Error::new(
-                        ErrorKind::Validation,
-                        "RAW source action may only update its required layer",
-                    ));
-                }
-            };
-            return Ok(Change::append(recipe, CommittedAction { input, label }));
-        }
-        let source = self.verified_prepared(&state.asset)?;
-        let plan = self.plan_input(
-            recipe,
-            &source,
-            module,
-            &input,
-            registry.action_accepts_mask(action_id),
-            mask.as_ref(),
-        )?;
-        let Some(recipe) = self.resolve_plan(&source, recipe, plan, mask.as_ref())? else {
-            return Ok(Change::NoOp);
-        };
-        Ok(Change::append(recipe, CommittedAction { input, label }))
+        asset: &AssetRecord,
+        recipe: &Recipe,
+        module: &dyn ToolModule,
+        input: &ActionInput,
+        mask: Option<&MaskId>,
+    ) -> Result<Option<Recipe>, Error> {
+        self.ask(asset, recipe, module, mask, |context, bound| {
+            let plan = module.plan(input, context)?;
+            self.resolve_plan(asset, bound, plan, mask)
+        })
     }
 
-    /// Ask a module what one parsed request would do to the current stack, `recipe`, bound. The
-    /// stack is compiled once and every question the module may ask is a point query or a prefix
-    /// compile, so planning costs `O(layers)` and rasterizes nothing. Shared by a commit and by a
-    /// draft's effective recipe, so a drafted preview evaluates exactly what committing that draft
-    /// would produce.
-    fn plan_input(
+    /// Ask `module` one question about `recipe`, the stack of `asset`, for the target `mask`
+    /// names: the one path that plans an action for a commit, a draft or a composite's step, and
+    /// answers a query.
+    ///
+    /// The module must be available; the stack must be `asset`'s kind of stack; its artifacts are
+    /// bound; a mask target must be one the stack holds; and the module sees the stack of that
+    /// target ([`recipe_for_target`]) through a lazy [`StageContext`]
+    /// ([`Self::with_stage_context`]). `question` receives the context and the whole bound stack,
+    /// which is what a plan is resolved against.
+    fn ask<T>(
         &self,
+        asset: &AssetRecord,
         recipe: &Recipe,
-        source: &PreparedSource,
-        module: &dyn crate::ToolModule,
-        input: &ActionInput,
-        accepts_mask: bool,
+        module: &dyn ToolModule,
         mask: Option<&MaskId>,
-    ) -> Result<ActionPlan, Error> {
+        question: impl FnOnce(&StageContext<'_>, &Recipe) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        available(module)?;
+        validate_source_recipe(asset, recipe)?;
+        // Planning compiles the stack, so its artifacts are bound first.
+        let bound = self.bound(recipe)?;
+        // A target the stack does not hold is refused here, before a module plans anything.
+        resolve_mask_target(&bound, mask)?;
         // The module plans against the stack of one target: the global layer and each mask are
         // distinct targets, so a module that owns one layer still owns one per target and finds it
         // through the context's own-layer lookup for that target.
-        let recipe = recipe_for_target(&self.registry, recipe, accepts_mask, mask);
-        self.with_stage_context(source, &recipe, mask, |context| module.plan(input, context))
+        let maskable = module
+            .descriptor()
+            .effects
+            .iter()
+            .any(|effect| effect.maskable);
+        let target = recipe_for_target(&self.registry, &bound, maskable, mask);
+        self.with_stage_context(asset, &target, mask, |context| question(context, &bound))
     }
 
-    /// Build the questions a module may ask about one stack and hand them to `answer`.
+    /// Build the questions a module may ask about one stack of `asset` and hand them to `answer`.
     ///
-    /// The stack is compiled once and every question is a point query or a prefix compile, so this
-    /// costs `O(layers)` per question and rasterizes nothing. Planning an action and answering a
-    /// read-only query share it, which is what makes a query see exactly the stage a commit would
-    /// address.
+    /// The output stage is compiled from the asset's dimensions before anything is asked, which is
+    /// `O(layers)` and also refuses a stack that cannot compile. Everything else is answered only
+    /// when asked ([`HostStage`]): a prefix stage compiles that prefix, and the first question that
+    /// reads a pixel or the sensor resolves the verified source, and for a RAW stack its linear
+    /// settings, strictly, once for the whole context. A plan that reads no pixel therefore never
+    /// needs the original prepared or a RAW developed. Nothing is rasterized either way.
     pub(super) fn with_stage_context<T>(
         &self,
-        source: &PreparedSource,
+        asset: &AssetRecord,
         recipe: &Recipe,
         target: Option<&MaskId>,
         answer: impl FnOnce(&StageContext<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let registry = &self.registry;
-        let (width, height) = source.dimensions();
-        // A JPEG stack compiles once into one evaluation that answers every point. A RAW stack has
-        // no 8-bit buffer to evaluate, so its points come from the linear sampler at the settings
-        // this recipe asks for; either way nothing is rasterized.
-        let jpeg_evaluation = match source {
-            PreparedSource::Jpeg(image) => Some(Evaluation::new(registry, image, recipe)?),
-            PreparedSource::Raw(_) => None,
+        let stage = self
+            .registry
+            .compile(asset.width, asset.height, recipe)?
+            .stage();
+        let questions = HostStage {
+            service: self,
+            asset,
+            recipe,
+            source: OnceCell::new(),
+            settings: OnceCell::new(),
         };
-        let raw_settings = match source {
-            PreparedSource::Jpeg(_) => None,
-            PreparedSource::Raw(raw) => Some(raw_settings(raw, recipe, RawSettingsMode::Strict)?),
-        };
-        let raw_linear = || -> Result<&crate::LinearImage, Error> {
-            match source {
-                PreparedSource::Raw(raw) => raw.linear.as_ref().ok_or_else(|| {
-                    Error::new(ErrorKind::PreparationRequired, "RAW development required")
-                }),
-                PreparedSource::Jpeg(_) => Err(Error::new(
-                    ErrorKind::Incompatible,
-                    "JPEG source has no linear image",
-                )),
-            }
-        };
-        let stage = registry.compile(width, height, recipe)?.stage();
-        let sampler = |x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> {
-            match &jpeg_evaluation {
-                Some(evaluation) => evaluation.pixel(x, y),
-                None => Ok(sample_linear(
-                    registry,
-                    raw_linear()?,
-                    recipe,
-                    raw_settings.expect("RAW settings"),
-                    x,
-                    y,
-                )?
-                .rgba),
-            }
-        };
-        // The stage one layer receives: compile the prefix before it. Compiling folds declared
-        // output stages and allocates only the operation lists, so this copies no part of the stack
-        // and rasterizes nothing. The whole recipe compiled above, so its format is known good.
-        let stage_before = |index: usize| -> Result<Stage, Error> {
-            Ok(registry
-                .compile_layers(
-                    width,
-                    height,
-                    prefix(&recipe.layers, index)?,
-                    &recipe.masks,
-                    &recipe.strokes,
-                    &recipe.artifacts,
-                )?
-                .stage())
-        };
-        // One pixel of the stage a prefix produces, for a module planning against the position its
-        // layer will take. Compiling the prefix costs O(layers) and the evaluation answers the
-        // point per segment, so nothing is rasterized here either.
-        let sample_before = |index: usize, x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> {
-            let layers = prefix(&recipe.layers, index)?;
-            match source {
-                PreparedSource::Jpeg(image) => Evaluation::over_layers(
-                    registry,
-                    image,
-                    layers,
-                    &recipe.masks,
-                    &recipe.strokes,
-                    &recipe.artifacts,
-                )?
-                .pixel(x, y),
-                PreparedSource::Raw(_) => {
-                    let prefix_recipe = Recipe {
-                        format: recipe.format,
-                        layers: layers.to_vec(),
-                        // A prefix keeps the whole mask table: the masks a prefix layer references
-                        // are the recipe's, not the prefix's, and dropping them would make a valid
-                        // stack look as if it named a mask that does not exist.
-                        masks: recipe.masks.clone(),
-                        // And the strokes those masks resolved to, and the artifacts the recipe was
-                        // bound with, for the same reason.
-                        strokes: recipe.strokes.clone(),
-                        artifacts: recipe.artifacts.clone(),
-                    };
-                    Ok(sample_linear(
-                        registry,
-                        raw_linear()?,
-                        &prefix_recipe,
-                        raw_settings.expect("RAW settings"),
-                        x,
-                        y,
-                    )?
-                    .rgba)
-                }
-            }
-        };
-        let insertion_index =
-            |stage: EffectStage| registry.insertion_index(&recipe.layers, stage, 0);
-        let insertion_index_for =
-            |effect_id: &str| registry.insertion_index_for(&recipe.layers, effect_id);
-        let context = StageContext {
+        answer(&StageContext {
             stage,
             layers: &recipe.layers,
-            sampler: &sampler,
-            stage_before: &stage_before,
-            insertion_index: &insertion_index,
-            insertion_index_for: &insertion_index_for,
-            sample_before: &sample_before,
-            sensor_neutral: None,
-            registry,
+            registry: &self.registry,
             target,
-        };
-        answer(&context)
+            questions: &questions,
+        })
     }
 
     /// Answer one module query about a saved entry's stack: the read-only counterpart of
     /// [`EditorService::apply_action`].
     ///
     /// The query is resolved from the same registry discovery lists, its parameters go through the
-    /// same generic check, and it is handed the same [`StageContext`] a commit is planned against.
-    /// Nothing is written: no snapshot, no history entry, no request row and no event, so two
-    /// clients asking the same question concurrently get the same answer and neither disturbs the
-    /// other. Cost is `O(layers)` per point the module samples and no frame is allocated.
+    /// same generic check, and it is asked through the same [`Self::ask`] a commit is planned
+    /// through. Nothing is written: no snapshot, no history entry, no request row and no event, so
+    /// two clients asking the same question concurrently get the same answer and neither disturbs
+    /// the other. Cost is `O(layers)` per point the module samples and no frame is allocated.
     pub fn run_query(
         &self,
         asset_id: &AssetId,
@@ -347,45 +173,30 @@ impl EditorService {
         let (module, query) = registry.query(query_id).ok_or_else(|| {
             Error::new(ErrorKind::Validation, format!("unknown query {query_id}"))
         })?;
-        if !module.descriptor().is_available() {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!(
-                    "unavailable module {} cannot answer {query_id}",
-                    module.descriptor().id
-                ),
-            ));
-        }
         let checked = check_parameters(query, &parameters)?;
         let state = self.state(asset_id)?;
-        let mut entry = self.entry(asset_id, entry_id)?;
-        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
-        self.bind_artifacts(&mut entry.snapshot.recipe)?;
-        let source = self.verified_prepared(&state.asset)?;
-        // A query carries no mask target, so it asks about the global layer, and the target view hides
-        // the masked layers of the module's own effect. Without it a module that owns one layer would
-        // refuse its own query as ambiguous as soon as a mask held a layer of that effect, and the
-        // pixels it reads are unchanged: what it samples is the stage *before* its own layer, and a
-        // masked layer of the same effect is always after the global one.
-        let recipe = recipe_for_target(
-            &self.registry,
-            &entry.snapshot.recipe,
-            module
-                .descriptor()
-                .effects
-                .iter()
-                .any(|effect| effect.maskable),
-            None,
-        );
-        self.with_stage_context(&source, &recipe, None, |context| {
+        let entry = self.entry(asset_id, entry_id)?;
+        let recipe = &entry.snapshot.recipe;
+        // A query carries no mask target, so it asks about the global layer, and the target view
+        // hides the masked layers of the module's own effect. Without it a module that owns one
+        // layer would refuse its own query as ambiguous as soon as a mask held a layer of that
+        // effect, and the pixels it reads are unchanged: what it samples is the stage *before* its
+        // own layer, and a masked layer of the same effect is always after the global one.
+        let answer = self.ask(&state.asset, recipe, module, None, |context, _| {
             module.query(query_id, &checked, context)
-        })
+        });
+        self.needing(Evaluated::exactly(&state.asset, &entry.id, recipe), answer)
     }
 
     /// The recipe an open draft would produce: the current snapshot with the draft's action planned
     /// against it and its plan applied, computed on demand and never persisted. A `NoOp` plan means
     /// the current recipe unchanged, so a gesture that returned to its start previews exactly what
-    /// is committed. Nothing is rendered here; the caller decides what to do with the recipe.
+    /// is committed. Nothing is rendered here; the caller decides what to do with the recipe, and
+    /// binds it before evaluating it, since it may reference an artifact the current one does not.
+    ///
+    /// A module action plans through [`Self::plan_action`] and a `mask.*` command through
+    /// [`Self::plan_mask_command`], the functions `draft.commit` commits through, with the fields
+    /// and the target the commit will carry, so a draft equals its commit by construction.
     pub fn draft_recipe(
         &self,
         asset_id: &AssetId,
@@ -397,27 +208,21 @@ impl EditorService {
                 "draft belongs to another asset",
             ));
         }
-        let registry = self.registry.clone();
-        // A drafted host command previews through the same planner that commits it, so a gesture
-        // shows exactly the stack releasing it would write.
+        let state = self.state(asset_id)?;
+        let current = &state.current_entry.snapshot.recipe;
+        // Planning evaluates the current stack, so a refusal names what that stack needs.
+        let stack = Evaluated::exactly(&state.asset, &state.current_entry.id, current);
         if let Some(command) = crate::mask::commands::find(&draft.action) {
-            let state = self.state(asset_id)?;
-            let current = &state.current_entry.snapshot.recipe;
-            validate_source_recipe(&state.asset, current)?;
             let checked = check_parameters(&command.action, &Value::Object(draft.fields.clone()))?;
             let target = draft.target.clone().unwrap_or_default();
-            // The same seed the commit will store, read the same way, so a drafted limited stroke
-            // previews the stroke it is about to become rather than an unlimited one.
-            let seed = self.mask_colour_seed(&state, command, current, &target, &checked)?;
-            let recipe = match crate::mask::commands::plan(
-                command, current, &target, &checked, &registry, seed,
-            )? {
+            let planned = self.plan_mask_command(&state, command, &target, &checked);
+            let recipe = match self.needing(stack, planned)? {
                 MaskOutcome::NoOp => current.clone(),
                 MaskOutcome::Change(change) => change.recipe,
             };
             return Ok((recipe, state));
         }
-        let (module, action) = registry.action(&draft.action).ok_or_else(|| {
+        let (module, action) = self.registry.action(&draft.action).ok_or_else(|| {
             Error::new(
                 ErrorKind::Validation,
                 format!("unknown action {}", draft.action),
@@ -425,39 +230,22 @@ impl EditorService {
         })?;
         let checked = check_parameters(action, &Value::Object(draft.fields.clone()))?;
         let input = module.parse(&draft.action, &checked)?;
-        let mut state = self.state(asset_id)?;
-        validate_source_recipe(&state.asset, &state.current_entry.snapshot.recipe)?;
-        // Planning compiles the current stack, so it is bound first. The effective recipe may
-        // reference an artifact the current one does not, so each caller binds that recipe before
-        // evaluating it.
-        self.bind_artifacts(&mut state.current_entry.snapshot.recipe)?;
-        let source = self.verified_prepared(&state.asset)?;
         // The draft's target is the one the commit will carry: none for a global gesture, and the
         // mask a masked slider was opened on. The target view hides the layers of the drafted
         // module's effect that belong to another target, which is what lets a global slider drag and
         // a masked one each keep working on a stack that holds both.
-        let current = &state.current_entry.snapshot.recipe;
         let mask = draft
             .target
             .as_ref()
             .and_then(|target| target.mask.as_ref());
-        let plan = self.plan_input(
-            current,
-            &source,
-            module,
-            &input,
-            registry.action_accepts_mask(&draft.action),
-            mask,
-        )?;
+        let planned = self.plan_action(&state.asset, current, module, &input, mask);
         let recipe = self
-            .resolve_plan(&source, current, plan, mask)?
+            .needing(stack, planned)?
             .unwrap_or_else(|| current.clone());
         Ok((recipe, state))
     }
 
-    /// The stack one plan produces from `recipe`, or `None` when it changes nothing. A commit and a
-    /// draft's effective recipe both resolve their plan here, so a drafted preview is exactly what
-    /// committing it would produce, composites included.
+    /// The stack one plan produces from `recipe`, bound, or `None` when it changes nothing.
     ///
     /// `Commit` places the new layer by its effect's declared stage and order: a pixel-stage effect
     /// goes before the geometry tail, so a later crop change carries it instead of moving or
@@ -466,20 +254,20 @@ impl EditorService {
     /// position, and a missing identity is refused before anything is written.
     ///
     /// `Compose` runs each step exactly as that action would run alone, against the stack the steps
-    /// before it produced: the registry finds the action, which must be a field patch of an
-    /// available module; the generic check and the module's `parse` take its fields; and the module
-    /// plans against the intermediate stack through the same [`StageContext`] construction. A step
-    /// carries no mask target, so like an action sent without one it addresses the global layer:
-    /// it plans against [`recipe_for_target`]'s view of the intermediate stack for no mask, and its
-    /// plan is applied to the whole intermediate stack, so a masked layer of the step's effect is
-    /// neither read nor changed. A composite that was itself given a mask target is refused, since
-    /// its steps could not honour it. A step that is itself a composite is refused, and so is any
-    /// refused step, before anything is written. The final stack is `None` when it equals the
-    /// starting one. Each step plans by comparing payloads, so a composite costs
-    /// `O(steps × layers)` and rasterizes nothing.
+    /// before it produced: the registry finds the action, which must be a field patch; the generic
+    /// check and the module's `parse` take its fields; and the module is asked through the same
+    /// [`Self::ask`], which refuses an unavailable one. A step carries no mask target, so like an
+    /// action sent without one it addresses the global layer: it plans against
+    /// [`recipe_for_target`]'s view of the intermediate stack for no mask, and its plan is applied
+    /// to the whole intermediate stack, so a masked layer of the step's effect is neither read nor
+    /// changed. A composite that was itself given a mask target is refused, since its steps could
+    /// not honour it. A step that is itself a composite is refused, and so is any refused step,
+    /// before anything is written. The final stack is `None` when it equals the starting one. Each
+    /// step plans by comparing payloads, so a composite costs `O(steps × layers)` and rasterizes
+    /// nothing.
     fn resolve_plan(
         &self,
-        source: &PreparedSource,
+        asset: &AssetRecord,
         recipe: &Recipe,
         plan: ActionPlan,
         mask: Option<&MaskId>,
@@ -516,26 +304,11 @@ impl EditorService {
                     format!("{action_id} is not a field-patch action"),
                 ));
             }
-            let descriptor = module.descriptor();
-            if !descriptor.is_available() {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
-                    format!("unavailable module {}", descriptor.id),
-                ));
-            }
             let checked = check_parameters(action, &Value::Object(step.parameters))?;
             let input = module.parse(action_id, &checked)?;
-            let plan = {
-                let target = recipe_for_target(
-                    &registry,
-                    &resolved,
-                    registry.action_accepts_mask(action_id),
-                    None,
-                );
-                self.with_stage_context(source, &target, None, |context| {
-                    module.plan(&input, context)
-                })?
-            };
+            let plan = self.ask(asset, &resolved, module, None, |context, _| {
+                module.plan(&input, context)
+            })?;
             if let Some(next) = self.apply_plan(&resolved, plan, None)? {
                 resolved = next;
             }
@@ -614,6 +387,148 @@ impl EditorService {
             "transform",
             json!({"transform":transform}),
         )
+    }
+}
+
+/// Refuse a provider registered unavailable: it keeps its descriptor so its stored layers stay
+/// readable, but the host never plans, queries or commits through it.
+fn available(module: &dyn ToolModule) -> Result<(), Error> {
+    let descriptor = module.descriptor();
+    if descriptor.is_available() {
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorKind::Incompatible,
+        format!("unavailable module {}", descriptor.id),
+    ))
+}
+
+/// The history label of a module edit: a masked edit always names its mask, where a `mask.*`
+/// command names one only once the stack holds more than one. The difference is not an
+/// inconsistency but the ambiguity each one actually has: `Update Linear 1` is unmistakable while a
+/// recipe holds one mask, but `Exposure +2.00 EV` is exactly what this module's *global* edit
+/// writes, so a single mask is already enough for a history row to show two entries nothing
+/// distinguishes.
+fn masked_label(recipe: &Recipe, mask: Option<&MaskId>, label: String) -> String {
+    match mask.and_then(|id| recipe.masks.iter().find(|mask| &mask.id == id)) {
+        Some(mask) => format!("{} · {label}", mask.name),
+        None => label,
+    }
+}
+
+/// The host's answers to one stack's stage questions, each resolved the first time a module asks
+/// it: the verified source is looked up by the first question that reads a pixel or the sensor, and
+/// a RAW stack's linear settings by the first that reads a pixel, and both are kept for the rest of
+/// the context. So a plan that asks only for stages — a transform, a crop, a RAW white balance —
+/// needs neither the original prepared nor the development to hold its white balance, and one that
+/// samples finds out exactly when it does.
+struct HostStage<'s> {
+    service: &'s EditorService,
+    asset: &'s AssetRecord,
+    /// The stack the module sees, bound.
+    recipe: &'s Recipe,
+    source: OnceCell<PreparedSource>,
+    settings: OnceCell<LinearSettings>,
+}
+
+impl HostStage<'_> {
+    /// The verified source, from the prepared-source cache: `preparation-required` when it is not
+    /// there, since the catalog owner never decodes.
+    fn source(&self) -> Result<&PreparedSource, Error> {
+        if let Some(source) = self.source.get() {
+            return Ok(source);
+        }
+        let source = self.service.verified_prepared(self.asset)?;
+        Ok(self.source.get_or_init(|| source))
+    }
+
+    /// A RAW stack's developed planes and the linear settings this recipe asks of them. Strict:
+    /// planes that do not hold the recipe's white balance, or no planes at all, are
+    /// `preparation-required`, because a sample is a number and is never approximated.
+    fn linear(&self) -> Result<(&LinearImage, LinearSettings), Error> {
+        let PreparedSource::Raw(raw) = self.source()? else {
+            return Err(Error::new(
+                ErrorKind::Incompatible,
+                "JPEG source has no linear image",
+            ));
+        };
+        let settings = match self.settings.get() {
+            Some(settings) => *settings,
+            None => {
+                let settings = raw_settings(raw, self.recipe, RawSettingsMode::Strict)?;
+                *self.settings.get_or_init(|| settings)
+            }
+        };
+        let linear = raw.linear.as_ref().ok_or_else(|| {
+            Error::new(ErrorKind::PreparationRequired, "RAW development required")
+        })?;
+        Ok((linear, settings))
+    }
+}
+
+impl StageQuestions for HostStage<'_> {
+    /// Compile the prefix before `index`. Compiling folds declared output stages and allocates only
+    /// the operation lists, so this copies no part of the stack and rasterizes nothing.
+    fn stage_before(&self, index: usize) -> Result<Stage, Error> {
+        let recipe = self.recipe;
+        Ok(self
+            .service
+            .registry
+            .compile_layers(
+                self.asset.width,
+                self.asset.height,
+                prefix(&recipe.layers, index)?,
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )?
+            .stage())
+    }
+
+    /// One pixel of the stage a prefix produces. Compiling the prefix costs `O(layers)` and the
+    /// evaluation answers the point per segment, so nothing is rasterized.
+    fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
+        let recipe = self.recipe;
+        let registry = &self.service.registry;
+        let layers = prefix(&recipe.layers, index)?;
+        match self.source()? {
+            PreparedSource::Jpeg(image) => Evaluation::over_layers(
+                registry,
+                image,
+                layers,
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )?
+            .pixel(x, y),
+            PreparedSource::Raw(_) => {
+                let (linear, settings) = self.linear()?;
+                let prefix_recipe = Recipe {
+                    format: recipe.format,
+                    layers: layers.to_vec(),
+                    // A prefix keeps the whole mask table: the masks a prefix layer references are
+                    // the recipe's, not the prefix's, and dropping them would make a valid stack
+                    // look as if it named a mask that does not exist.
+                    masks: recipe.masks.clone(),
+                    // And the strokes those masks resolved to, and the artifacts the recipe was
+                    // bound with, for the same reason.
+                    strokes: recipe.strokes.clone(),
+                    artifacts: recipe.artifacts.clone(),
+                };
+                Ok(sample_linear(registry, linear, &prefix_recipe, settings, x, y)?.rgba)
+            }
+        }
+    }
+
+    /// The RAW mosaic's own patch, which needs the decoded sensor and no development.
+    fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
+        match self.source()? {
+            PreparedSource::Raw(raw) => crate::source::neutral_at(raw, x, y),
+            PreparedSource::Jpeg(_) => Err(Error::new(
+                ErrorKind::Validation,
+                "RAW neutral picker requires a RAW original",
+            )),
+        }
     }
 }
 
@@ -709,8 +624,8 @@ mod tests {
         },
     };
     use crate::{
-        BoxRect, CROP_EFFECT, CropPayload, CropStage, ModuleRegistry, ORIENTATION_EFFECT,
-        Orientation, PIXEL_EFFECT, Raster, SnapshotId, open_source, render,
+        BoxRect, CROP_EFFECT, CropPayload, CropStage, EffectStage, ModuleRegistry,
+        ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, Raster, SnapshotId, open_source, render,
     };
     use serde_json::Map;
     use std::sync::Arc;
@@ -2221,6 +2136,160 @@ mod tests {
                 .outcome,
             MutationOutcome::NoOp
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A draft's effective recipe holds the layers its commit stored, apart from the identity the
+    /// host gives a newly committed layer. The committed stack is read back from the catalog, whose
+    /// JSON parse of a 17-digit double can differ from the value written in its last bit, so the
+    /// drafted payloads are compared as they would be stored: through the same JSON text.
+    fn same_stack(drafted: &Recipe, committed: &Recipe) {
+        let shape = |recipe: &Recipe,
+                     payload: &dyn Fn(&Value) -> Value|
+         -> Vec<(String, u32, Value, Option<MaskId>)> {
+            recipe
+                .layers
+                .iter()
+                .map(|layer| {
+                    (
+                        layer.effect_id.clone(),
+                        layer.effect_format,
+                        payload(&layer.payload),
+                        layer.mask.clone(),
+                    )
+                })
+                .collect()
+        };
+        let stored = |payload: &Value| serde_json::from_str(&payload.to_string()).unwrap();
+        assert_eq!(shape(drafted, &stored), shape(committed, &Value::clone));
+        assert_eq!(drafted.masks, committed.masks);
+    }
+
+    /// The frame a preview job renders, on this thread.
+    fn preview_frame(service: &EditorService, job: &crate::PreviewJob) -> Raster {
+        job.source
+            .render(
+                &service.registry,
+                job.entry.snapshot.id.clone(),
+                &job.recipe,
+            )
+            .unwrap()
+    }
+
+    /// A drafted Basic edit previews exactly the bytes its commit renders: the draft is planned
+    /// through the one function the commit is planned through, with the same fields and target.
+    #[test]
+    fn a_drafted_basic_preview_equals_the_committed_render_byte_for_byte() {
+        let catalog = temp("draft-equals-commit.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let state = service.import(&fixture()).unwrap();
+        let asset = state.asset.id.clone();
+        let original = service.render_current(&asset).unwrap();
+        // A crop first, so the Basic layer is placed ahead of the geometry tail in both stacks.
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "crop"),
+                "crop",
+                json!({"angle": 3.0, "x": 0.1, "y": 0.1, "width": 0.7, "height": 0.8}),
+            )
+            .unwrap();
+        let revision = service.state(&asset).unwrap().revision;
+        let fields = Map::from_iter([
+            ("exposure".to_owned(), json!(0.35)),
+            ("contrast".to_owned(), json!(12)),
+            ("vibrance".to_owned(), json!(-20)),
+        ]);
+        let mut draft = Draft::new("set-basic", asset.clone(), revision);
+        draft.merge(fields.clone());
+        let drafted = service
+            .preview_job(&asset, None, None, Some(&draft), None)
+            .unwrap();
+        let drafted_frame = preview_frame(&service, &drafted);
+
+        service
+            .apply_action(
+                &asset,
+                mutation(revision, "commit"),
+                "set-basic",
+                Value::Object(fields),
+            )
+            .unwrap();
+        let committed = service.state(&asset).unwrap().current_entry.snapshot.recipe;
+        same_stack(&drafted.recipe, &committed);
+        let committed_frame = service.render_current(&asset).unwrap();
+        assert_eq!(
+            (drafted_frame.width, drafted_frame.height),
+            (committed_frame.width, committed_frame.height)
+        );
+        assert!(drafted_frame.rgba == committed_frame.rgba, "the same bytes");
+        assert!(
+            original.rgba != committed_frame.rgba,
+            "the edit changed them"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// On a real RAW file: a drafted exposure previews exactly the bytes its commit renders, and a
+    /// drafted temperature's effective stack is exactly the one its commit writes, although its
+    /// preview approximates that white balance until the release redevelops the mosaic. Run with
+    /// LIGHTWELL_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG.
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn a_drafted_raw_exposure_preview_equals_the_committed_render_byte_for_byte() {
+        let path = std::path::PathBuf::from(
+            std::env::var("LIGHTWELL_RAW_FIXTURE").expect("LIGHTWELL_RAW_FIXTURE"),
+        );
+        let catalog = temp("raw-draft-equals-commit.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let state = service.import(&path).unwrap();
+        let asset = state.asset.id.clone();
+
+        let mut temperature = Draft::new("set-raw-temperature", asset.clone(), state.revision);
+        temperature.merge(Map::from_iter([("kelvin".to_owned(), json!(4200.0))]));
+        let (drafted_temperature, _) = service.draft_recipe(&asset, &temperature).unwrap();
+
+        let exposure = Map::from_iter([("ev".to_owned(), json!(0.75))]);
+        let mut draft = Draft::new("set-raw-exposure", asset.clone(), state.revision);
+        draft.merge(exposure.clone());
+        let drafted = service
+            .preview_job(&asset, None, None, Some(&draft), None)
+            .unwrap();
+        assert!(
+            !drafted.source.approximate_white_balance(),
+            "the planes hold the white balance"
+        );
+        let drafted_frame = preview_frame(&service, &drafted);
+        let result = service
+            .apply_action(
+                &asset,
+                mutation(state.revision, "exposure"),
+                "set-raw-exposure",
+                Value::Object(exposure),
+            )
+            .unwrap();
+        let committed = service.state(&asset).unwrap().current_entry.snapshot.recipe;
+        same_stack(&drafted.recipe, &committed);
+        let committed_frame = service.render_current(&asset).unwrap();
+        assert!(drafted_frame.rgba == committed_frame.rgba, "the same bytes");
+
+        // Undo the exposure, then commit the drafted temperature over the stack it was drafted on.
+        service
+            .undo(&asset, mutation(result.revision, "undo"))
+            .unwrap();
+        let at = service.state(&asset).unwrap().revision;
+        service
+            .apply_action(
+                &asset,
+                mutation(at, "temperature"),
+                "set-raw-temperature",
+                json!({"kelvin": 4200.0}),
+            )
+            .unwrap();
+        let committed = service.state(&asset).unwrap().current_entry.snapshot.recipe;
+        same_stack(&drafted_temperature, &committed);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

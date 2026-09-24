@@ -4,8 +4,8 @@ use super::{
     catalog::{encode, insert_entry, now_ms, write},
 };
 use crate::{
-    AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Snapshot, open_source_bytes,
-    read_bounded_file,
+    AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Preparation, PreparationNeeds,
+    Snapshot, open_source_bytes, read_bounded_file,
     source::{PreparedSource, RawPrepared},
 };
 use rusqlite::{OptionalExtension, params};
@@ -156,11 +156,14 @@ impl EditorService {
 
     /// Read, hash and decode from the same bounded, stable read-only file handle on a worker.
     pub(crate) fn prepare_file(path: &Path) -> Result<PreparedFile, Error> {
-        Self::prepare_file_cancel(path, &AtomicBool::new(false))
+        Self::prepare_file_cancel(path, None, &AtomicBool::new(false))
     }
 
+    /// [`Self::prepare_file`] under a cancellation flag. A RAW original is developed at `gains`, or
+    /// at its camera's as-shot gains when none are named.
     pub(crate) fn prepare_file_cancel(
         path: &Path,
+        gains: Option<[f32; 3]>,
         cancel: &AtomicBool,
     ) -> Result<PreparedFile, Error> {
         let canonical = canonical_source(path)?;
@@ -181,7 +184,7 @@ impl EditorService {
             (PreparedSource::Jpeg(image), fingerprint)
         } else {
             let fingerprint = format!("{:x}", Sha256::digest(&bytes));
-            let raw = RawPrepared::decode(bytes, fingerprint.clone(), cancel)?;
+            let raw = RawPrepared::decode(bytes, fingerprint.clone(), gains, cancel)?;
             (PreparedSource::Raw(raw), fingerprint)
         };
         let handle_after = file.metadata().map_err(file_access)?;
@@ -244,8 +247,10 @@ impl EditorService {
         };
         validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
         let cached = self.cached_state(asset_id)?.is_some();
-        let needs_development =
-            cached && self.raw_development(asset_id, Some(&entry.id))?.is_some();
+        let needs_development = match development_gains(&state.asset, &entry.snapshot.recipe)? {
+            Some(gains) => cached && self.raw_development(asset_id, gains)?.is_some(),
+            None => false,
+        };
         Ok(json!({
             "asset_id": asset_id,
             "entry_id": entry.id,
@@ -257,28 +262,77 @@ impl EditorService {
         }))
     }
 
-    pub(crate) fn raw_development(
+    /// Everything evaluating one stack needs prepared, as a `preparation-required` refusal of it
+    /// names it: the asset's original, the development at the gains `stack.developed` asks for,
+    /// and the artifacts `stack.recipe` references that are not ready. `O(layers)` plus one file
+    /// signature per unready artifact; nothing is read or decoded.
+    pub(crate) fn preparation_needs(
+        &self,
+        stack: Evaluated<'_>,
+    ) -> Result<PreparationNeeds, Error> {
+        Ok(PreparationNeeds {
+            asset_id: stack.asset.id.clone(),
+            entry_id: stack.entry_id.clone(),
+            gains: development_gains(stack.asset, stack.developed)?,
+            artifacts: self.unprepared_artifacts(stack.recipe)?,
+        })
+    }
+
+    /// What one saved entry's stack needs prepared, or the current one's: what `source.prepare`
+    /// queues.
+    pub(crate) fn entry_needs(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
-    ) -> Result<Option<RawDevelopment>, Error> {
+    ) -> Result<PreparationNeeds, Error> {
         let state = self.state(asset_id)?;
         let entry = match entry_id {
             Some(id) => self.entry(asset_id, id)?,
             None => state.current_entry,
         };
         validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        self.preparation_needs(Evaluated::exactly(
+            &state.asset,
+            &entry.id,
+            &entry.snapshot.recipe,
+        ))
+    }
+
+    /// `result`, with a `preparation-required` refusal that does not yet say what it needs naming
+    /// everything `stack` needs ([`Self::preparation_needs`]). Every service method that evaluates a
+    /// stack answers through this, at the point where it knows which stack it evaluated, so the
+    /// catalog owner prepares exactly that stack whatever the request did or did not name.
+    pub(super) fn needing<T>(
+        &self,
+        stack: Evaluated<'_>,
+        result: Result<T, Error>,
+    ) -> Result<T, Error> {
+        match result {
+            Err(error)
+                if error.kind == ErrorKind::PreparationRequired && error.preparation.is_none() =>
+            {
+                let needs = self.preparation_needs(stack)?;
+                Err(error.with_preparation(Preparation::Needs(needs)))
+            }
+            result => result,
+        }
+    }
+
+    /// The development an asset's cached RAW source needs to hold `gains`: `None` when its planes
+    /// already hold them, and when the cache holds no RAW source of this asset, whose preparation
+    /// develops it.
+    pub(crate) fn raw_development(
+        &self,
+        asset_id: &AssetId,
+        gains: [f32; 3],
+    ) -> Result<Option<RawDevelopment>, Error> {
+        let state = self.state(asset_id)?;
         let cache = self.source_cache.borrow();
         let Some(cached) = cache.as_ref().filter(|cached| cached.asset_id == *asset_id) else {
             return Ok(None);
         };
         let PreparedSource::Raw(raw) = &cached.source else {
             return Ok(None);
-        };
-        let payload = raw_payload(&entry.snapshot.recipe)?;
-        let gains = match payload.wb_mode {
-            crate::WhiteBalanceMode::AsShot => raw.sensor.metadata().as_shot_gains,
-            crate::WhiteBalanceMode::Custom => payload.gains,
         };
         if gains == raw.gains && raw.linear.is_some() {
             return Ok(None);
@@ -596,7 +650,7 @@ pub(super) fn validate_source_recipe(
 /// [`Self::DraftPreview`] is taken in exactly one place, [`EditorService::preview_job`] for an
 /// open draft. Every other evaluation — a committed or historical preview, `render_entry` and so
 /// every export, `sample_entry` and `sample_draft` and so the readout and `render.sample`,
-/// `analysis_plan`, and the stage context every plan and query is answered from — is
+/// `analysis_plan`, and every pixel a plan or query samples from its stage context — is
 /// [`Self::Strict`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RawSettingsMode {
@@ -678,6 +732,52 @@ fn resolve_raw_settings(
         exposure_ev: payload.exposure_ev,
         white_balance,
     })
+}
+
+/// One stack an evaluation reads, which is what a `preparation-required` refusal of that
+/// evaluation names ([`EditorService::needing`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Evaluated<'a> {
+    pub(crate) asset: &'a AssetRecord,
+    /// The saved entry evaluated, or the one a draft or a change was planned over.
+    pub(crate) entry_id: &'a EntryId,
+    /// The stack evaluated, whose artifacts must be ready.
+    pub(crate) recipe: &'a crate::Recipe,
+    /// The stack whose white balance a RAW development must hold: `recipe` itself, except for a
+    /// drafted preview, which approximates on the development its entry holds.
+    pub(crate) developed: &'a crate::Recipe,
+}
+
+impl<'a> Evaluated<'a> {
+    /// A stack evaluated exactly, which needs a development at its own white balance.
+    pub(crate) fn exactly(
+        asset: &'a AssetRecord,
+        entry_id: &'a EntryId,
+        recipe: &'a crate::Recipe,
+    ) -> Self {
+        Self {
+            asset,
+            entry_id,
+            recipe,
+            developed: recipe,
+        }
+    }
+}
+
+/// The sensor gains a RAW asset's stack develops at — the camera's as-shot gains under As shot and
+/// the payload's own otherwise — or `None` for a JPEG, which has no development.
+fn development_gains(
+    asset: &AssetRecord,
+    recipe: &crate::Recipe,
+) -> Result<Option<[f32; 3]>, Error> {
+    let SourceKind::Raw { metadata } = &asset.source else {
+        return Ok(None);
+    };
+    let payload = raw_payload(recipe)?;
+    Ok(Some(match payload.wb_mode {
+        crate::WhiteBalanceMode::AsShot => metadata.as_shot_gains,
+        crate::WhiteBalanceMode::Custom => payload.gains,
+    }))
 }
 
 fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
@@ -1048,8 +1148,9 @@ mod tests {
     /// On a real RAW file: a drafted temperature previews through the approximation, and every
     /// other evaluation of the same drafted or committed white balance — the draft's point sample,
     /// its analysis, and once committed the preview, render (the export path), sample, analysis and
-    /// the stage context an action is planned in — stays `preparation-required` until the mosaic is
-    /// redeveloped. Run with LIGHTWELL_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG.
+    /// every pixel a plan samples from its stage context — stays `preparation-required` until the
+    /// mosaic is redeveloped, while a plan that samples nothing commits. Run with
+    /// LIGHTWELL_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG.
     #[test]
     #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
     fn a_raw_draft_preview_approximates_and_every_strict_path_refuses() {
@@ -1160,18 +1261,27 @@ mod tests {
                 .analysis_plan(&asset, AnalysisSelection::Current)
                 .unwrap_err()
         ));
-        // Planning a pixel-stage module's action answers from the stage context, which is strict
-        // too. (A RAW source action plans without pixels, so it would not reach it.)
+        // A plan that samples a pixel reads it from the stage context, which is strict too: a
+        // pixel replacement compares the pixel it would replace.
         assert!(is_required(
             service
                 .apply_action(
                     &asset,
-                    mutation(result.revision, "basic"),
-                    "set-basic",
-                    json!({"exposure": 0.5}),
+                    mutation(result.revision, "pixel"),
+                    "set-pixel",
+                    json!({"x": 10, "y": 10, "rgb": [1, 2, 3]}),
                 )
                 .unwrap_err()
         ));
+        // A plan that reads no pixel asks the context nothing it would refuse, so it commits.
+        service
+            .apply_action(
+                &asset,
+                mutation(result.revision, "basic"),
+                "set-basic",
+                json!({"exposure": 0.5}),
+            )
+            .expect("a Basic edit plans without the development");
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
@@ -1234,15 +1344,16 @@ mod tests {
             payload.gains[2], as_shot.gains[2],
             "partial custom edit retains camera blue gain"
         );
-        assert_eq!(
-            service
-                .preview_job(&initial.asset.id, None, None, None, None)
-                .unwrap_err()
-                .kind,
-            ErrorKind::PreparationRequired
-        );
+        let refused = service
+            .preview_job(&initial.asset.id, None, None, None, None)
+            .unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::PreparationRequired);
+        // The refusal names the development at the committed white balance.
+        let needs = refused.needs().expect("a refusal names what it needs");
+        assert_eq!(needs.entry_id, state.current_entry.id);
+        assert_eq!(needs.gains, Some(payload.gains));
         let request = service
-            .raw_development(&initial.asset.id, None)
+            .raw_development(&initial.asset.id, payload.gains)
             .unwrap()
             .unwrap();
         let developed = RawPrepared::develop(

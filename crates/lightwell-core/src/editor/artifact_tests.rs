@@ -696,18 +696,26 @@ fn jobs_pin_their_artifacts_and_an_unprepared_one_needs_preparation() {
     service.disable_sync_source();
     let error = service.render_current(&asset).unwrap_err();
     assert_eq!(error.kind, ErrorKind::PreparationRequired);
+    let current = service.state(&asset).unwrap().current_entry.id;
     assert_eq!(
-        error.data.as_deref(),
-        Some(&json!({"artifacts": [artifact.clone()]}))
+        error.needs(),
+        Some(&crate::PreparationNeeds {
+            asset_id: asset.clone(),
+            entry_id: current,
+            gains: None,
+            artifacts: vec![artifact.clone()],
+        })
     );
-    let reads = service.artifact_preparation(&asset, None, &[]).unwrap();
+    let reads = service
+        .artifact_reads(&error.needs().unwrap().artifacts)
+        .unwrap();
     assert_eq!(reads.len(), 1);
     let verified = crate::artifacts::read_verified(&reads[0], &AtomicBool::new(false)).unwrap();
     service.adopt_artifacts(vec![verified]);
     assert_eq!(service.render_current(&asset).unwrap().rgba, expected.rgba);
     assert!(
         service
-            .artifact_preparation(&asset, None, &[])
+            .artifact_reads(std::slice::from_ref(&artifact))
             .unwrap()
             .is_empty()
     );

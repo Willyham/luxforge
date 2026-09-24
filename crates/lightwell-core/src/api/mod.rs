@@ -77,8 +77,7 @@ impl ApiResponse {
             result: None,
             error: Some(ApiFailure {
                 code: error.kind.code().into(),
-                job_id: (error.kind == ErrorKind::PreparationRequired)
-                    .then(|| error.detail.clone()),
+                job_id: error.preparation_job().map(ToString::to_string),
                 message: error.detail,
                 data: error.data.map(|data| *data),
             }),

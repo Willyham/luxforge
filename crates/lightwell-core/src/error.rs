@@ -66,6 +66,9 @@ pub struct Error {
     /// Structured context a client acts on, such as a consent request's scope or the requirements a
     /// module is missing. Never a secret. Boxed so a `Result` stays small on the common path.
     pub data: Option<Box<serde_json::Value>>,
+    /// What a `preparation-required` refusal needs prepared, or the job preparing it. Boxed for the
+    /// same reason as `data`.
+    pub preparation: Option<Box<Preparation>>,
 }
 impl Error {
     pub fn new(kind: ErrorKind, detail: impl Into<String>) -> Self {
@@ -73,6 +76,7 @@ impl Error {
             kind,
             detail: detail.into(),
             data: None,
+            preparation: None,
         }
     }
     /// The same error carrying structured data for the client.
@@ -80,6 +84,52 @@ impl Error {
         self.data = Some(Box::new(data));
         self
     }
+    /// The same error naming what it needs prepared, or the job preparing it.
+    pub fn with_preparation(mut self, preparation: Preparation) -> Self {
+        self.preparation = Some(Box::new(preparation));
+        self
+    }
+    /// What this refusal needs prepared, when the work that was refused named it and nothing has
+    /// been queued for it yet.
+    pub fn needs(&self) -> Option<&PreparationNeeds> {
+        match self.preparation.as_deref() {
+            Some(Preparation::Needs(needs)) => Some(needs),
+            _ => None,
+        }
+    }
+    /// The source job preparing what this refusal needs: wait for it, then ask again.
+    pub fn preparation_job(&self) -> Option<&crate::JobId> {
+        match self.preparation.as_deref() {
+            Some(Preparation::Queued(job)) => Some(job),
+            _ => None,
+        }
+    }
+}
+
+/// What a `preparation-required` refusal carries: what the refused work needs prepared, as the
+/// service that evaluated the stack named it, or, once the catalog owner has queued that, the job
+/// to wait for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Preparation {
+    Needs(PreparationNeeds),
+    Queued(crate::JobId),
+}
+
+/// Everything one evaluated stack needs prepared before it can be evaluated, named where the stack
+/// is known, so the catalog owner queues exactly this as one source job and never re-derives it
+/// from the request that was refused. Preparing it always includes the asset's verified original.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparationNeeds {
+    /// The asset whose original the stack reads.
+    pub asset_id: crate::AssetId,
+    /// The saved entry that was evaluated, or the one a draft or a change was planned over.
+    pub entry_id: crate::EntryId,
+    /// The sensor gains a RAW original's development must hold, or `None` for a JPEG: the
+    /// evaluated stack's own white balance, except for a drafted preview, which approximates its
+    /// white balance on the development its entry holds and so names that one.
+    pub gains: Option<[f32; 3]>,
+    /// The derived artifacts the stack references that are not ready.
+    pub artifacts: Vec<crate::ArtifactId>,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

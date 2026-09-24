@@ -173,47 +173,49 @@ pub enum LayerEdit {
 /// names.
 pub const MAX_COMPOSE_STEPS: usize = MAX_SETTINGS_ACTIONS;
 
-/// What a module may ask about the current stack while planning: the output stage, the ordered
-/// layers, the stage any position receives, where a commit of a given stage would land, and point
-/// samplers over the whole stack or over any prefix of it. Every sampler evaluates one pixel
-/// without rasterizing, so planning an action never allocates a frame.
+/// The questions about a stack that compile a prefix of it or read its pixels, which the host
+/// answers for a [`StageContext`]. The host answers each one only when a module asks it, so a plan
+/// that reads no pixel never prepares the original, never develops a RAW and never compiles a
+/// prefix evaluation: planning a transform or a RAW white balance asks nothing here but stages.
+pub trait StageQuestions {
+    /// The stage the layer at index `index` receives, which is the output stage of the layers
+    /// before it. The host compiles that prefix, so this costs `O(layers)` and rasterizes nothing.
+    fn stage_before(&self, index: usize) -> Result<Stage, Error>;
+    /// One pixel of the stage the first `index` layers produce, or `None` outside that stage.
+    /// The host evaluates that one point segment by segment, so it allocates no frame.
+    fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error>;
+    /// The mean pre-white-balance sensor values of a bounded patch at upright content coordinates,
+    /// green-normalized, which a RAW neutral pick sets its gains from. Only a RAW original has a
+    /// sensor, so the default, for a stack without one, refuses.
+    fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
+        let _ = (x, y);
+        Err(Error::new(
+            crate::ErrorKind::Validation,
+            "RAW neutral picker requires a RAW original",
+        ))
+    }
+}
+
+/// What a module may ask about the current stack while planning an action or answering a query:
+/// the output stage, the ordered layers, the stage any position receives, where a commit of an
+/// effect would land, its own layer, one pixel of any prefix and, for a RAW original, a sensor
+/// patch. Every sample evaluates one pixel without rasterizing, so planning never allocates a
+/// frame, and the host answers the questions that read pixels only when they are asked.
 pub struct StageContext<'a> {
+    /// The output stage of the whole stack, which the host compiles from the source's dimensions
+    /// before the module is asked anything.
     pub stage: Stage,
     /// The current recipe's layers in evaluation order, so a module can find its own layer to
     /// update. Planning never mutates them.
     pub layers: &'a [Layer],
-    #[allow(clippy::type_complexity)]
-    pub sampler: &'a dyn Fn(u32, u32) -> Result<Option<[u8; 4]>, Error>,
-    /// The stage the layer at index `i` receives, which is the output stage of the layers before
-    /// it; `layers.len()` is [`StageContext::stage`]. A module updating a layer in place plans
-    /// against that layer's own input stage, not the final one. The host answers by compiling the
-    /// recipe prefix, so this costs `O(layers)` and rasterizes nothing.
-    #[allow(clippy::type_complexity)]
-    pub stage_before: &'a dyn Fn(usize) -> Result<Stage, Error>,
-    /// Where the host would put a [`ActionPlan::Commit`] of a layer of this effect stage that
-    /// declares the default order, by the placement rule in
-    /// [`crate::ModuleRegistry::insertion_index`]. A module plans against that position instead of
-    /// choosing one, so `stage_before` of this index is the stage its coordinates address.
-    #[allow(clippy::type_complexity)]
-    pub insertion_index: &'a dyn Fn(EffectStage) -> usize,
-    /// Where the host would put a [`ActionPlan::Commit`] of a layer of this effect: the same rule
-    /// read from the effect's own descriptor, so a module that declares an order among the layers
-    /// of its stage plans against the position its layer will actually take.
-    #[allow(clippy::type_complexity)]
-    pub insertion_index_for: &'a dyn Fn(&str) -> usize,
-    /// One pixel of the stage the first `index` layers produce, or `None` outside that stage.
-    /// Evaluated segment by segment like [`StageContext::sampler`], so a module that plans against
-    /// an insertion stage still allocates no frame.
-    #[allow(clippy::type_complexity)]
-    pub sample_before: &'a dyn Fn(usize, u32, u32) -> Result<Option<[u8; 4]>, Error>,
-    /// A bounded pre-WB sensor patch at upright content coordinates, only for RAW sources.
-    #[allow(clippy::type_complexity)]
-    pub sensor_neutral: Option<&'a dyn Fn(u32, u32) -> Result<[f32; 3], Error>>,
-    /// The providers, which answer [`StageContext::own_layer`].
+    /// The providers, which answer [`StageContext::own_layer`] and
+    /// [`StageContext::insertion_index_for`].
     pub registry: &'a ModuleRegistry,
     /// The target this plan or query addresses: `None` for the global layer, or the mask the
     /// request named.
     pub target: Option<&'a MaskId>,
+    /// The answers that compile a prefix or read pixels.
+    pub questions: &'a dyn StageQuestions,
 }
 
 impl<'a> StageContext<'a> {
@@ -225,6 +227,97 @@ impl<'a> StageContext<'a> {
     /// `single` effect. `O(layers)`; reads no pixels.
     pub fn own_layer(&self, effect_id: &str) -> Result<Option<(usize, &'a Layer)>, Error> {
         self.registry.own_layer(self.layers, effect_id, self.target)
+    }
+
+    /// Where the host would put an [`ActionPlan::Commit`] of a layer of this effect, by the stage
+    /// and order its descriptor declares ([`ModuleRegistry::insertion_index_for`]). A module plans
+    /// against that position instead of choosing one, so [`StageContext::stage_before`] of this
+    /// index is the stage its coordinates address. `O(layers)`; reads no pixels.
+    pub fn insertion_index_for(&self, effect_id: &str) -> usize {
+        self.registry.insertion_index_for(self.layers, effect_id)
+    }
+
+    /// The stage the layer at index `index` receives ([`StageQuestions::stage_before`]);
+    /// `layers.len()` is [`StageContext::stage`]. A module updating a layer in place plans against
+    /// that layer's own input stage, not the final one.
+    pub fn stage_before(&self, index: usize) -> Result<Stage, Error> {
+        self.questions.stage_before(index)
+    }
+
+    /// One pixel of the stage the first `index` layers produce
+    /// ([`StageQuestions::sample_before`]).
+    pub fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
+        self.questions.sample_before(index, x, y)
+    }
+
+    /// A RAW original's sensor patch at upright content coordinates
+    /// ([`StageQuestions::sensor_neutral`]).
+    pub fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
+        self.questions.sensor_neutral(x, y)
+    }
+}
+
+/// A test's answers to every stage question: each prefix receives `stage`, every point reads
+/// `pixel`, and a RAW sensor patch reads `neutral` when there is one.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FixedStage {
+    pub stage: Stage,
+    pub pixel: Option<[u8; 4]>,
+    pub neutral: Option<[f32; 3]>,
+}
+
+#[cfg(test)]
+impl FixedStage {
+    /// Every prefix receives `stage` and no point has a pixel.
+    pub(crate) fn new(stage: Stage) -> Self {
+        Self {
+            stage,
+            pixel: None,
+            neutral: None,
+        }
+    }
+
+    /// Every point reads `pixel`.
+    pub(crate) fn reading(self, pixel: [u8; 4]) -> Self {
+        Self {
+            pixel: Some(pixel),
+            ..self
+        }
+    }
+
+    /// A context over `layers` for the global target, whose output stage is also `stage`.
+    pub(crate) fn context<'a>(
+        &'a self,
+        layers: &'a [Layer],
+        registry: &'a ModuleRegistry,
+    ) -> StageContext<'a> {
+        StageContext {
+            stage: self.stage,
+            layers,
+            registry,
+            target: None,
+            questions: self,
+        }
+    }
+}
+
+#[cfg(test)]
+impl StageQuestions for FixedStage {
+    fn stage_before(&self, _: usize) -> Result<Stage, Error> {
+        Ok(self.stage)
+    }
+    fn sample_before(&self, _: usize, _: u32, _: u32) -> Result<Option<[u8; 4]>, Error> {
+        Ok(self.pixel)
+    }
+    fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
+        match self.neutral {
+            Some(neutral) => Ok(neutral),
+            None => Err(Error::new(
+                crate::ErrorKind::Validation,
+                format!("no RAW sensor at ({x}, {y})"),
+            )),
+        }
     }
 }
 

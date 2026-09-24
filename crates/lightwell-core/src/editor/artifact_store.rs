@@ -6,7 +6,7 @@
 //! stats (performance rule 5).
 use super::{EditorService, SourceSignature, source_signature, write};
 use crate::{
-    AssetId, EntryId, Error, ErrorKind, HistoryEntry, Recipe,
+    Error, ErrorKind, HistoryEntry, Recipe,
     artifacts::{
         self, ArtifactId, ArtifactMeta, ArtifactRead, ArtifactRecord, ArtifactTable,
         ArtifactWriter, Collection, LiveArtifacts, MANIFEST, PREPARED_ARTIFACT_BYTES,
@@ -220,8 +220,9 @@ impl EditorService {
     /// naming another catalog is `incompatible`) and a present object file of the recorded length.
     /// Everything one stack binds must fit the prepared cache at once, or it is a `resource-limit`.
     /// Bytes kept ready under the file's current signature are a hit. On a miss a direct service
-    /// reads and hashes synchronously; the catalog owner instead answers `preparation-required`
-    /// with the missing identities in `data.artifacts`, so a source job reads them on the worker.
+    /// reads and hashes synchronously; the catalog owner instead answers `preparation-required`,
+    /// which the evaluation that bound the stack names with everything that stack needs
+    /// ([`EditorService::needing`]), so a source job reads the missing identities on the worker.
     /// The table is replaced by exactly what the stack lists, and only when all of it is bound; a
     /// stack without artifacts costs one walk of its layers and allocates nothing.
     pub fn bind_artifacts(&self, recipe: &mut Recipe) -> Result<(), Error> {
@@ -239,12 +240,10 @@ impl EditorService {
             }
         }
         if !unprepared.is_empty() && !self.allow_sync_source {
-            let missing: Vec<&ArtifactId> = unprepared.iter().map(|read| &read.id).collect();
             return Err(Error::new(
                 ErrorKind::PreparationRequired,
                 "artifact preparation required",
-            )
-            .with_data(json!({"artifacts": missing})));
+            ));
         }
         let never = AtomicBool::new(false);
         for read in &unprepared {
@@ -273,30 +272,26 @@ impl EditorService {
         Ok(Cow::Owned(bound))
     }
 
-    /// The artifacts a source job must read and verify so that an entry's stack, plus any
-    /// identities a refused request named, can be evaluated: everything not already kept ready.
-    /// Fails like [`Self::bind_artifacts`] when one cannot be prepared at all.
-    pub(crate) fn artifact_preparation(
-        &self,
-        asset_id: &AssetId,
-        entry_id: Option<&EntryId>,
-        requested: &[ArtifactId],
-    ) -> Result<Vec<ArtifactRead>, Error> {
-        let recipe = match entry_id {
-            Some(entry_id) => self.entry(asset_id, entry_id)?.snapshot.recipe,
-            None => self.state(asset_id)?.current_entry.snapshot.recipe,
-        };
-        let mut ids = referenced(&recipe);
-        for id in requested {
-            if !ids.contains(id) {
-                ids.push(id.clone());
-            }
-        }
+    /// The artifacts a stack references that are not kept ready: what a source job must read and
+    /// verify before the stack can be bound. Fails like [`Self::bind_artifacts`] when one cannot
+    /// be prepared at all.
+    pub(super) fn unprepared_artifacts(&self, recipe: &Recipe) -> Result<Vec<ArtifactId>, Error> {
+        Ok(self
+            .artifact_reads(&referenced(recipe))?
+            .into_iter()
+            .map(|read| read.id)
+            .collect())
+    }
+
+    /// How a source job reads and verifies each of these artifacts that is not kept ready; one
+    /// that became ready since it was named is left out. Fails like [`Self::bind_artifacts`] when
+    /// one cannot be prepared at all.
+    pub(crate) fn artifact_reads(&self, ids: &[ArtifactId]) -> Result<Vec<ArtifactRead>, Error> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
         Ok(self
-            .bind(&ids)?
+            .bind(ids)?
             .into_iter()
             .filter_map(|binding| match binding {
                 Binding::Ready(_) => None,

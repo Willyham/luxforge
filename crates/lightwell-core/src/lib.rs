@@ -33,7 +33,7 @@ pub use capabilities::{
 };
 pub use draft::Draft;
 pub use editor::*;
-pub use error::{Error, ErrorKind};
+pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
 pub use model::*;
 pub use modules::*;
 pub use presets::*;

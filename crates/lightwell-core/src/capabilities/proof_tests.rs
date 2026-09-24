@@ -1130,32 +1130,14 @@ fn apply_commits_then_updates_in_place_and_reset_neutralises_the_same_layer() {
             parameters.insert("artifact".into(), json!(artifact.as_str()));
         }
         let input = module.parse(action, &parameters).unwrap();
-        let sampler = |_: u32, _: u32| Ok(None);
-        let stage_before = |_: usize| {
-            Ok(Stage {
-                width: 4,
-                height: 4,
-            })
-        };
-        let insertion = |_: crate::EffectStage| 0;
-        let insertion_for = |_: &str| 0;
-        let sample_before = |_: usize, _: u32, _: u32| Ok(None);
-        let context = StageContext {
-            stage: Stage {
-                width: 4,
-                height: 4,
-            },
-            layers,
-            sampler: &sampler,
-            stage_before: &stage_before,
-            insertion_index: &insertion,
-            insertion_index_for: &insertion_for,
-            sample_before: &sample_before,
-            sensor_neutral: None,
-            registry: &crate::ModuleRegistry::builtin(),
-            target: None,
-        };
-        module.plan(&input, &context).unwrap()
+        let stage = crate::modules::FixedStage::new(Stage {
+            width: 4,
+            height: 4,
+        });
+        let registry = crate::ModuleRegistry::builtin();
+        module
+            .plan(&input, &stage.context(layers, &registry))
+            .unwrap()
     };
     let ActionPlan::Commit(new) = plan("apply-proof-tint", Some(&first), &[]) else {
         panic!("the first apply commits");

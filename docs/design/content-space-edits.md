@@ -21,7 +21,7 @@ The invariant that a layer's coordinates are its input stage is unchanged. Placi
 
 ### Planning against the content stage
 
-`plan` for a pixel-stage action validates coordinates against the stage at the insertion index, not the output stage, and its no-op check samples that stage. `StageContext` gains the insertion index and a sampler over the stack prefix before it; `stage_before(i)` already answers the stage. The point sampler is the existing per-segment evaluation, so planning still allocates no frame.
+`plan` for a pixel-stage action validates coordinates against the stage at the insertion index, not the output stage, and its no-op check samples that stage. `StageContext` answers where a commit of the effect would land (`insertion_index_for`) and samples the stack prefix before it (`sample_before`); `stage_before(i)` answers the stage. The point sampler is the existing per-segment evaluation, so planning still allocates no frame.
 
 ### Mapping a view point to content coordinates
 

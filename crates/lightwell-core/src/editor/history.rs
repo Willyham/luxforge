@@ -6,7 +6,7 @@ use super::{
         now_ms, write,
     },
     masks::MASK_FIELD,
-    source::validate_source_recipe,
+    source::{Evaluated, validate_source_recipe},
 };
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, HistoryRow, MaskId, Mutation, Recipe,
@@ -136,9 +136,21 @@ impl EditorService {
         }
         let state = self.state(asset_id)?;
         ensure_revision(&state, mutation.expected_revision)?;
-        let mut change = plan(self, &state)?;
+        // Every change is planned against the current stack, so a plan refused for want of a
+        // prepared source or artifact names what that stack needs; an admission refused for want
+        // of an artifact names what the stack it admits needs.
+        let current = &state.current_entry;
+        let planned = plan(self, &state);
+        let mut change = self.needing(
+            Evaluated::exactly(&state.asset, &current.id, &current.snapshot.recipe),
+            planned,
+        )?;
         if let Change::Append { recipe, .. } = &mut change {
-            self.admit(&state.asset, recipe)?;
+            let admitted = self.admit(&state.asset, recipe);
+            self.needing(
+                Evaluated::exactly(&state.asset, &current.id, recipe),
+                admitted,
+            )?;
         }
         let next = state.revision + 1;
         let (outcome, revision, current_entry_id, created_entry_id) = match &change {

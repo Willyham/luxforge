@@ -1,15 +1,13 @@
 use super::{
-    AnalysisPlan, AnalysisSelection, AssetRecord, DraftStamp, EditorService, PixelSample,
-    SamplePlan,
-    source::{RawSettingsMode, raw_settings, validate_source_recipe},
+    AnalysisPlan, AnalysisSelection, AssetRecord, DraftStamp, EditorService, EditorState,
+    PixelSample, SamplePlan,
+    source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 use crate::{
     AssetId, ContentPoint, Draft, EntryId, Error, ErrorKind, HistoryEntry, PreviewJob,
     PreviewSource, ProxyBounds, Raster, Recipe, StageTransform,
     analysis::AnalysisIdentity,
-    render,
     render::{locate_dimensions, stage_transform},
-    render_linear,
     source::PreparedSource,
 };
 
@@ -59,22 +57,30 @@ impl EditorService {
                 format!("preview layer count {count} exceeds the {layers} layers of this entry"),
             ));
         }
-        // The artifacts the rendered stack references are bound into it before anything compiles
-        // it, so the job's recipe carries their verified bytes to the worker and a cache eviction
-        // never breaks it there.
-        self.bind_artifacts(&mut recipe)?;
         // A draft's effective recipe decides the RAW development settings too, so a drafted
         // exposure previews the value the gesture holds rather than the committed one. A drafted
         // temperature or tint the developed planes do not hold is approximated on them, and only
         // here: this is the one evaluation that may, because its frame is a gesture's preview and
         // is labelled so, never analysed and replaced by the exact frame once the release
-        // redevelops. A preview without a draft is strict, as every other evaluation is.
+        // redevelops. A preview without a draft is strict, as every other evaluation is. So a
+        // drafted preview that finds no development at all names the one its entry holds, which
+        // the gesture's release redevelops from anyway, rather than one per drafted value.
         let mode = if draft.is_some() {
             RawSettingsMode::DraftPreview
         } else {
             RawSettingsMode::Strict
         };
-        let source = self.preview_source(&state.asset, &recipe, mode)?;
+        let result = self.bound_source(&state.asset, &mut recipe, mode);
+        let stack = Evaluated {
+            asset: &state.asset,
+            entry_id: &entry.id,
+            recipe: &recipe,
+            developed: match draft {
+                Some(_) => &entry.snapshot.recipe,
+                None => &recipe,
+            },
+        };
+        let source = self.needing(stack, result)?;
         // The identity is computed exactly as an analysis job's is, so a report the preview worker
         // produces from this frame is a cache hit for a later `analysis.request`.
         let draft_stamp = draft.map(|draft| DraftStamp {
@@ -143,6 +149,19 @@ impl EditorService {
         Ok((identity, failure))
     }
 
+    /// Bind the artifacts `recipe` references into it and resolve the buffer it is evaluated on
+    /// ([`Self::preview_source`]). The job's recipe then carries the artifacts' verified bytes to
+    /// its worker, so a cache eviction never breaks it there.
+    fn bound_source(
+        &self,
+        asset: &AssetRecord,
+        recipe: &mut Recipe,
+        mode: RawSettingsMode,
+    ) -> Result<PreviewSource, Error> {
+        self.bind_artifacts(recipe)?;
+        self.preview_source(asset, recipe, mode)
+    }
+
     /// The immutable buffer a preview or an analysis worker renders, chosen by the asset's source
     /// interpretation: the decoded JPEG, or the developed RAW mosaic with the linear settings the
     /// given recipe asks for. A RAW stack whose white balance the prepared image does not hold
@@ -208,7 +227,9 @@ impl EditorService {
         };
         // The job's recipe carries the verified bytes of every artifact it references, so a cache
         // eviction never breaks it on the worker.
-        self.bind_artifacts(&mut recipe)?;
+        let bound = self.bind_artifacts(&mut recipe);
+        let stack = Evaluated::exactly(&state.asset, &entry.id, &recipe);
+        self.needing(stack, bound)?;
         // The identity and the output stage come from the asset record, so a stack the host cannot
         // evaluate at all is reported failed without decoding or developing the original: there is
         // no frame for that job to render. Only an evaluable stack asks for the prepared source.
@@ -223,7 +244,10 @@ impl EditorService {
         // An analysis is a number, so it is never taken from an approximate white balance.
         let source = match failure {
             Some(_) => None,
-            None => Some(self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict)?),
+            None => Some(self.needing(
+                stack,
+                self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict),
+            )?),
         };
         Ok(AnalysisPlan {
             identity,
@@ -234,33 +258,33 @@ impl EditorService {
         })
     }
 
+    /// Render one saved entry exactly, as an export does.
     pub fn render_entry(&self, asset_id: &AssetId, entry_id: &EntryId) -> Result<Raster, Error> {
         let state = self.state(asset_id)?;
-        let mut entry = self.entry(asset_id, entry_id)?;
-        self.bind_artifacts(&mut entry.snapshot.recipe)?;
-        match self.verified_prepared(&state.asset)? {
-            PreparedSource::Jpeg(source) => {
-                validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
-                render(
-                    &self.registry,
-                    &source,
-                    entry.snapshot.id.clone(),
-                    &entry.snapshot.recipe,
-                )
-            }
-            PreparedSource::Raw(raw) => {
-                let settings = raw_settings(&raw, &entry.snapshot.recipe, RawSettingsMode::Strict)?;
-                render_linear(
-                    &self.registry,
-                    raw.linear.as_ref().ok_or_else(|| {
-                        Error::new(ErrorKind::PreparationRequired, "RAW development required")
-                    })?,
-                    entry.snapshot.id.clone(),
-                    &entry.snapshot.recipe,
-                    settings,
-                )
-            }
-        }
+        let (entry, source) = self.exact_entry(&state, entry_id)?;
+        source.render(
+            &self.registry,
+            entry.snapshot.id.clone(),
+            &entry.snapshot.recipe,
+        )
+    }
+
+    /// One saved entry of an asset, bound, with the buffer it is evaluated on exactly: a RAW
+    /// development must hold its own white balance. A refusal names everything that entry needs.
+    fn exact_entry(
+        &self,
+        state: &EditorState,
+        entry_id: &EntryId,
+    ) -> Result<(HistoryEntry, PreviewSource), Error> {
+        let mut entry = self.entry(&state.asset.id, entry_id)?;
+        let result = self.bound_source(
+            &state.asset,
+            &mut entry.snapshot.recipe,
+            RawSettingsMode::Strict,
+        );
+        let stack = Evaluated::exactly(&state.asset, &entry.id, &entry.snapshot.recipe);
+        let source = self.needing(stack, result)?;
+        Ok((entry, source))
     }
 
     /// Evaluate one output pixel of a saved entry without rasterizing the image.
@@ -272,13 +296,7 @@ impl EditorService {
         y: u32,
     ) -> Result<PixelSample, Error> {
         let state = self.state(asset_id)?;
-        let mut entry = self.entry(asset_id, entry_id)?;
-        self.bind_artifacts(&mut entry.snapshot.recipe)?;
-        let source = self.preview_source(
-            &state.asset,
-            &entry.snapshot.recipe,
-            RawSettingsMode::Strict,
-        )?;
+        let (entry, source) = self.exact_entry(&state, entry_id)?;
         let sampled = source.sample(&self.registry, &entry.snapshot.recipe, x, y)?;
         pixel_sample(entry, &state.asset.fingerprint, sampled, x, y, None)
     }
@@ -290,11 +308,10 @@ impl EditorService {
     /// state read, a cached source verification and an `O(layers)` compile; no pixel is read.
     pub(crate) fn sample_plan(&self, asset_id: &AssetId) -> Result<SamplePlan, Error> {
         let state = self.state(asset_id)?;
-        let mut recipe = state.current_entry.snapshot.recipe;
-        self.bind_artifacts(&mut recipe)?;
         // Samples are numbers sent to a provider, so a white balance the planes do not hold is
         // `preparation-required` here, as it is for `render.sample`.
-        let source = self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict)?;
+        let (entry, source) = self.exact_entry(&state, &state.current_entry.id)?;
+        let recipe = entry.snapshot.recipe;
         let (width, height) = source.dimensions();
         self.registry.compile(width, height, &recipe)?;
         Ok(SamplePlan {
@@ -315,10 +332,12 @@ impl EditorService {
         y: u32,
     ) -> Result<PixelSample, Error> {
         let (mut recipe, state) = self.draft_recipe(asset_id, draft)?;
-        self.bind_artifacts(&mut recipe)?;
         // A sampled code is a number, so a drafted white balance the planes do not hold is
-        // `preparation-required` here even while the draft's preview approximates it.
-        let source = self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict)?;
+        // `preparation-required` here even while the draft's preview approximates it, and the
+        // refusal names a development at the drafted white balance.
+        let result = self.bound_source(&state.asset, &mut recipe, RawSettingsMode::Strict);
+        let stack = Evaluated::exactly(&state.asset, &state.current_entry.id, &recipe);
+        let source = self.needing(stack, result)?;
         let sampled = source.sample(&self.registry, &recipe, x, y)?;
         let fingerprint = state.asset.fingerprint.clone();
         pixel_sample(
@@ -345,9 +364,7 @@ impl EditorService {
         y: u32,
     ) -> Result<ContentPoint, Error> {
         let state = self.state(asset_id)?;
-        let mut entry = self.entry(asset_id, entry_id)?;
-        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
-        self.bind_artifacts(&mut entry.snapshot.recipe)?;
+        let entry = self.bound_entry(&state, entry_id)?;
         locate_dimensions(
             &self.registry,
             state.asset.width,
@@ -356,6 +373,17 @@ impl EditorService {
             x,
             y,
         )
+    }
+
+    /// One saved entry of an asset with its artifacts bound, for a question its compiled geometry
+    /// answers without the original.
+    fn bound_entry(&self, state: &EditorState, entry_id: &EntryId) -> Result<HistoryEntry, Error> {
+        let mut entry = self.entry(&state.asset.id, entry_id)?;
+        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        let bound = self.bind_artifacts(&mut entry.snapshot.recipe);
+        let stack = Evaluated::exactly(&state.asset, &entry.id, &entry.snapshot.recipe);
+        self.needing(stack, bound)?;
+        Ok(entry)
     }
 
     /// The content-to-output affine of a saved entry's geometry tail, both ways. `locate_entry`
@@ -368,9 +396,7 @@ impl EditorService {
         entry_id: &EntryId,
     ) -> Result<StageTransform, Error> {
         let state = self.state(asset_id)?;
-        let mut entry = self.entry(asset_id, entry_id)?;
-        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
-        self.bind_artifacts(&mut entry.snapshot.recipe)?;
+        let entry = self.bound_entry(&state, entry_id)?;
         stage_transform(
             &self.registry,
             state.asset.width,
@@ -476,6 +502,73 @@ mod tests {
                 .contains("preview layer count 3 exceeds the 2 layers"),
             "{error}"
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// With the original not prepared, as on the catalog owner after a reopen: a refusal names the
+    /// stack that was evaluated — a historical entry's sample names that entry, a draft's planning
+    /// and a sampling commit name the current one — and a plan that samples nothing needs nothing.
+    #[test]
+    fn a_refusal_names_the_entry_it_evaluated_and_a_plan_that_samples_nothing_needs_nothing() {
+        let catalog = temp("preparation-needs.sqlite");
+        let asset = {
+            let mut service = EditorService::open(&catalog).unwrap();
+            let asset = service.import(&fixture()).unwrap().asset.id;
+            service
+                .apply_action(
+                    &asset,
+                    mutation(0, "exposure"),
+                    "set-basic",
+                    serde_json::json!({"exposure": 0.5}),
+                )
+                .unwrap();
+            asset
+        };
+        let mut service = EditorService::open(&catalog).unwrap();
+        service.disable_sync_source();
+        let state = service.state(&asset).unwrap();
+        let original = service.history(&asset, None, 10).unwrap().entries[1].clone();
+        assert_eq!(original.action_id, "original");
+        let needs = |entry_id: &EntryId| crate::PreparationNeeds {
+            asset_id: asset.clone(),
+            entry_id: entry_id.clone(),
+            gains: None,
+            artifacts: Vec::new(),
+        };
+
+        let refused = service
+            .sample_entry(&asset, &original.id, 0, 0)
+            .unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::PreparationRequired);
+        assert_eq!(refused.needs(), Some(&needs(&original.id)));
+
+        // A pixel replacement compares the pixel it would replace, so its plan samples.
+        let refused = service
+            .apply_pixel(&asset, mutation(1, "pixel"), 0, 0, [1, 2, 3])
+            .unwrap_err();
+        assert_eq!(refused.needs(), Some(&needs(&state.current_entry.id)));
+        let mut draft = Draft::new("set-pixel", asset.clone(), 1);
+        draft.merge(serde_json::Map::from_iter([
+            ("x".to_owned(), serde_json::json!(0)),
+            ("y".to_owned(), serde_json::json!(0)),
+            ("rgb".to_owned(), serde_json::json!([1, 2, 3])),
+        ]));
+        let refused = service.draft_recipe(&asset, &draft).unwrap_err();
+        assert_eq!(refused.needs(), Some(&needs(&state.current_entry.id)));
+
+        // A Basic patch and a transform read no pixel, so they commit without the original.
+        service
+            .apply_action(
+                &asset,
+                mutation(1, "contrast"),
+                "set-basic",
+                serde_json::json!({"contrast": 10}),
+            )
+            .expect("a field patch plans without the original");
+        service
+            .apply_transform(&asset, mutation(2, "turn"), crate::Transform::RotateRight)
+            .expect("a transform plans without the original");
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

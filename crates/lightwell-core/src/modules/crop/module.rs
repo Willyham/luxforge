@@ -541,7 +541,7 @@ impl ToolModule for CropModule {
         // A crop layer acts on the stage the layers before it produce, not on the final stage.
         let (stage, existing) = match located {
             Some((index, layer)) => (
-                (context.stage_before)(index)?,
+                context.stage_before(index)?,
                 Some((
                     layer,
                     payload(&layer.effect_id, layer.effect_format, &layer.payload)?,
@@ -694,33 +694,30 @@ mod tests {
             .expect("a declared action");
         let checked = check_parameters(declared, &parameters)?;
         let input = module.parse(action, &checked)?;
-        let sampler = |_: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
-            panic!("planning a crop never samples a pixel")
-        };
-        let stage_before = |index: usize| -> Result<Stage, Error> {
-            assert!(index < layers.len(), "the crop layer is in the stack");
-            Ok(INPUT)
-        };
-        let insertion_index = |_: EffectStage| layers.len();
-        let insertion_index_for = |_: &str| layers.len();
-        let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
-            panic!("planning a crop never samples a pixel")
-        };
         module.plan(
             &input,
             &StageContext {
                 stage: if layers.is_empty() { INPUT } else { FINAL },
                 layers,
-                sampler: &sampler,
-                stage_before: &stage_before,
-                insertion_index: &insertion_index,
-                insertion_index_for: &insertion_index_for,
-                sample_before: &sample_before,
-                sensor_neutral: None,
                 registry: &crate::ModuleRegistry::builtin(),
                 target: None,
+                questions: &CropInput(layers.len()),
             },
         )
+    }
+
+    /// The crop layer, which is in a stack of this many layers, receives [`INPUT`]; planning a
+    /// crop never samples a pixel.
+    struct CropInput(usize);
+
+    impl crate::modules::StageQuestions for CropInput {
+        fn stage_before(&self, index: usize) -> Result<Stage, Error> {
+            assert!(index < self.0, "the crop layer is in the stack");
+            Ok(INPUT)
+        }
+        fn sample_before(&self, _: usize, _: u32, _: u32) -> Result<Option<[u8; 4]>, Error> {
+            panic!("planning a crop never samples a pixel")
+        }
     }
 
     fn crop_layer(payload: CropPayload) -> Layer {

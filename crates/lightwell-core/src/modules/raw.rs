@@ -35,6 +35,17 @@ fn validation(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, message)
 }
 
+/// Refuse anything but the RAW development's own effect and format.
+fn raw_effect(effect_id: &str, format: u32) -> Result<(), Error> {
+    if effect_id != RAW_EFFECT || format != EFFECT_FORMAT {
+        return Err(Error::new(
+            ErrorKind::Incompatible,
+            "invalid RAW source layer",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WhiteBalanceMode {
@@ -134,14 +145,16 @@ impl RawPayload {
         Ok(())
     }
 
+    /// The development a stored layer holds.
     pub fn from_layer(layer: &Layer) -> Result<Self, Error> {
-        if layer.effect_id != RAW_EFFECT || layer.effect_format != EFFECT_FORMAT {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                "invalid RAW source layer",
-            ));
-        }
-        let payload: Self = serde_json::from_value(layer.payload.clone())
+        Self::from_value(&layer.effect_id, layer.effect_format, &layer.payload)
+    }
+
+    /// The development a payload stored under this effect and format holds, parsed straight from
+    /// the stored value and validated.
+    pub fn from_value(effect_id: &str, format: u32, payload: &Value) -> Result<Self, Error> {
+        raw_effect(effect_id, format)?;
+        let payload = Self::deserialize(payload)
             .map_err(|e| validation(format!("invalid RAW payload: {e}")))?;
         payload.validate()?;
         Ok(payload)
@@ -448,7 +461,8 @@ impl ToolModule for RawModule {
             .first()
             .filter(|layer| layer.effect_id == RAW_EFFECT)
             .ok_or_else(|| validation("RAW controls require a RAW original"))?;
-        let mut payload = RawPayload::from_layer(layer)?;
+        let stored = RawPayload::from_layer(layer)?;
+        let mut payload = stored.clone();
         match input.action_id.as_str() {
             SET_EXPOSURE => {
                 payload.exposure_ev = input
@@ -512,11 +526,7 @@ impl ToolModule for RawModule {
                     .and_then(Value::as_u64)
                     .and_then(|y| u32::try_from(y).ok())
                     .ok_or_else(|| validation("missing neutral y"))?;
-                payload.gains = stage
-                    .sensor_neutral
-                    .ok_or_else(|| validation("RAW sensor is unavailable"))?(
-                    x, y
-                )?;
+                payload.gains = stage.sensor_neutral(x, y)?;
                 payload.temperature_kelvin = None;
                 payload.tint = None;
                 payload.wb_mode = WhiteBalanceMode::Custom;
@@ -526,7 +536,7 @@ impl ToolModule for RawModule {
             _ => return Err(validation("unknown RAW action")),
         }
         payload.validate()?;
-        if payload == RawPayload::from_layer(layer)? {
+        if payload == stored {
             return Ok(ActionPlan::NoOp);
         }
         Ok(ActionPlan::Update(LayerUpdate::new(
@@ -535,38 +545,15 @@ impl ToolModule for RawModule {
         )))
     }
     fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
-        RawPayload::from_layer(&Layer {
-            id: LayerId::new(),
-            effect_id: effect_id.into(),
-            effect_format: format,
-            payload: value.clone(),
-            mask: None,
-            artifacts: Vec::new(),
-        })
-        .map(|_| ())
+        RawPayload::from_value(effect_id, format, value).map(|_| ())
     }
     /// The Original's development: As shot at 0 EV, whatever custom values the payload keeps
     /// ([`RawPayload::is_neutral`]). Every RAW recipe holds this layer from its Original on.
     fn is_neutral(&self, effect_id: &str, format: u32, value: &Value) -> Result<bool, Error> {
-        Ok(RawPayload::from_layer(&Layer {
-            id: LayerId::new(),
-            effect_id: effect_id.into(),
-            effect_format: format,
-            payload: value.clone(),
-            mask: None,
-            artifacts: Vec::new(),
-        })?
-        .is_neutral())
+        Ok(RawPayload::from_value(effect_id, format, value)?.is_neutral())
     }
     fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
-        let payload = RawPayload::from_layer(&Layer {
-            id: LayerId::new(),
-            effect_id: effect_id.into(),
-            effect_format: format,
-            payload: value.clone(),
-            mask: None,
-            artifacts: Vec::new(),
-        })?;
+        let payload = RawPayload::from_value(effect_id, format, value)?;
         Ok(format!(
             "Exposure {:+.2} EV · {} WB",
             payload.exposure_ev,
@@ -588,14 +575,7 @@ impl ToolModule for RawModule {
         format: u32,
         value: &Value,
     ) -> Result<Map<String, Value>, Error> {
-        let payload = RawPayload::from_layer(&Layer {
-            id: LayerId::new(),
-            effect_id: effect_id.into(),
-            effect_format: format,
-            payload: value.clone(),
-            mask: None,
-            artifacts: Vec::new(),
-        })?;
+        let payload = RawPayload::from_value(effect_id, format, value)?;
         let [kelvin, tint] = payload.white_balance_controls();
         Ok(Map::from_iter([
             ("ev".to_owned(), Value::from(payload.exposure_ev)),
@@ -603,14 +583,18 @@ impl ToolModule for RawModule {
             ("tint".to_owned(), Value::from(tint)),
         ]))
     }
+    /// The development happens on the source before any layer is evaluated, so at compile its
+    /// layer is the identity of its stage. Admission validated the payload, and the development
+    /// reads it where it runs, so compiling checks only which effect and format this is: nothing
+    /// is parsed and no white-balance locus is solved for an answer the payload cannot change.
     fn compile(
         &self,
         effect_id: &str,
         format: u32,
-        value: &Value,
+        _: &Value,
         stage: Stage,
     ) -> Result<Processing, Error> {
-        self.validate_payload(effect_id, format, value)?;
+        raw_effect(effect_id, format)?;
         Ok(Processing::ExactGeometry(ExactGeometry {
             a: 1,
             b: 0,
@@ -631,34 +615,19 @@ mod tests {
 
     fn planned(layer: &Layer, action: &str, params: Value) -> Result<RawPayload, Error> {
         let module = RawModule::new();
-        let unavailable = |_: u32, _: u32| Ok(None);
-        let stage_before = |_: usize| {
-            Ok(Stage {
+        let stage = crate::modules::FixedStage {
+            neutral: Some([1.4, 1.0, 1.6]),
+            ..crate::modules::FixedStage::new(Stage {
                 width: 32,
                 height: 32,
             })
         };
-        let insertion_index = |_: EffectStage| 0;
-        let insertion_index_for = |_: &str| 0;
-        let sample_before = |_: usize, _: u32, _: u32| Ok(None);
-        let neutral = |_: u32, _: u32| Ok([1.4, 1.0, 1.6]);
-        let context = StageContext {
-            stage: Stage {
-                width: 32,
-                height: 32,
-            },
-            layers: std::slice::from_ref(layer),
-            sampler: &unavailable,
-            stage_before: &stage_before,
-            insertion_index: &insertion_index,
-            insertion_index_for: &insertion_index_for,
-            sample_before: &sample_before,
-            sensor_neutral: Some(&neutral),
-            registry: &crate::ModuleRegistry::builtin(),
-            target: None,
-        };
+        let registry = crate::ModuleRegistry::builtin();
         let input = module.parse(action, params.as_object().unwrap())?;
-        match module.plan(&input, &context)? {
+        match module.plan(
+            &input,
+            &stage.context(std::slice::from_ref(layer), &registry),
+        )? {
             ActionPlan::Update(next) => RawPayload::from_layer(&Layer {
                 payload: next.payload,
                 ..layer.clone()

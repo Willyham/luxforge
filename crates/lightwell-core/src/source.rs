@@ -252,13 +252,16 @@ pub(crate) fn raw_error(error: RawError) -> Error {
 }
 
 impl RawPrepared {
+    /// Decode a RAW original and develop it at `gains`, or at the camera's as-shot gains when none
+    /// are named, so a preparation for a stack with its own white balance develops it once.
     pub(crate) fn decode(
         bytes: Vec<u8>,
         fingerprint: String,
+        gains: Option<[f32; 3]>,
         cancel: &AtomicBool,
     ) -> Result<Self, Error> {
         let sensor = Arc::new(RawSource::decode(Arc::from(bytes), cancel).map_err(raw_error)?);
-        let gains = sensor.metadata().as_shot_gains;
+        let gains = gains.unwrap_or(sensor.metadata().as_shot_gains);
         Self::develop(sensor, fingerprint, gains, cancel)
     }
 
@@ -522,7 +525,7 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let fingerprint = format!("{:x}", Sha256::digest(&bytes));
         let cancel = AtomicBool::new(false);
-        let as_shot = RawPrepared::decode(bytes, fingerprint.clone(), &cancel).unwrap();
+        let as_shot = RawPrepared::decode(bytes, fingerprint.clone(), None, &cancel).unwrap();
         let metadata = as_shot.sensor.metadata().clone();
         let camera = metadata
             .rgb_cam

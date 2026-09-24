@@ -2,7 +2,7 @@
 //! parsed parameters to one capability host operation, with the registry, the caller's authority
 //! where it matters and the call's origin, under which the host announces what the call changed.
 use super::{Call, Owner};
-use crate::{ClientAuthority, Error, ErrorKind, capabilities::host::TASK_PREFIX};
+use crate::{ClientAuthority, Error, capabilities::host::TASK_PREFIX};
 use serde_json::Value;
 
 pub(in crate::api) use crate::capabilities::host::{
@@ -235,21 +235,15 @@ pub(in crate::api) fn job_cancel(
 
 /// A generated `task.<id>` method. The request queues a capability job and announces nothing: the
 /// task is announced when it succeeds. A task samples its asset's current entry before it is
-/// queued, so an unprepared source or artifact queues that preparation and answers with the job to
-/// wait for, as every other evaluating request does.
+/// queued, so an unprepared source or artifact is refused naming what it needs, which the owner
+/// queues and answers with the job to wait for, as for every other evaluating request.
 pub(in crate::api) fn task(owner: &mut Owner, call: &Call<'_>) -> Result<Value, Error> {
     let task_id = call
         .request
         .method
         .strip_prefix(TASK_PREFIX)
         .unwrap_or_default();
-    match owner
+    owner
         .host
         .task(&owner.service, task_id, &call.request.params, &call.origin)
-    {
-        Err(error) if error.kind == ErrorKind::PreparationRequired => {
-            Err(owner.prepare_request(call.client, &call.request.params, &error))
-        }
-        other => other,
-    }
 }

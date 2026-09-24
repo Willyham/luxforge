@@ -1,7 +1,7 @@
 use super::{
-    EditorService, EditorState, MutationResult, PixelInput,
+    AssetRecord, EditorService, EditorState, MutationResult, PixelInput,
     history::{Change, CommittedAction, request_input},
-    source::validate_source_recipe,
+    source::{Evaluated, validate_source_recipe},
 };
 use crate::{
     AssetId, EntryId, Error, ErrorKind, MaskId, ModuleRegistry, Mutation, Recipe,
@@ -57,17 +57,11 @@ impl EditorService {
         let request = request_input(&input, &mutation, None)?;
         // What the command changed beside the recipe, which its report names.
         let mut changed = None;
-        let result = self.mutate(asset_id, &mutation, &request, |service, state| {
-            let recipe = &state.current_entry.snapshot.recipe;
-            validate_source_recipe(&state.asset, recipe)?;
-            // A stroke that asks to be limited to a colour is seeded here, by the host, from the
-            // pixel the operation this mask modulates receives at the position the stroke began.
-            // The request named the limit and never the colour, so nothing a client sends can put
-            // a colour in a stroke that the photograph does not have at that position, and the
-            // planner below stays pure — it is handed the pixel rather than reading one.
-            let seed = service.mask_colour_seed(state, command, recipe, &target, &checked)?;
-            let registry = &service.registry;
-            match crate::mask::commands::plan(command, recipe, &target, &checked, registry, seed)? {
+        let result = self.mutate(
+            asset_id,
+            &mutation,
+            &request,
+            |service, state| match service.plan_mask_command(state, command, &target, &checked)? {
                 MaskOutcome::NoOp => Ok(Change::NoOp),
                 MaskOutcome::Change(MaskChange {
                     recipe,
@@ -79,8 +73,8 @@ impl EditorService {
                     changed = Some((label.clone(), mask, component, removed_layers));
                     Ok(Change::append(recipe, CommittedAction { input, label }))
                 }
-            }
-        })?;
+            },
+        )?;
         // A retry is answered from the entry the original call wrote, so it reports the same.
         if result.deduplicated {
             return self.mask_report(asset_id, result);
@@ -95,6 +89,27 @@ impl EditorService {
             },
             None => MaskCommandResult::plain(result),
         })
+    }
+
+    /// What one checked `mask.*` command does to the asset's current stack: the one planning step a
+    /// commit and a drafted gesture share, so a draft equals its commit by construction.
+    ///
+    /// A stroke that asks to be limited to a colour is seeded here, by the host, from the pixel the
+    /// operation this mask modulates receives at the position the stroke began. The request named
+    /// the limit and never the colour, so nothing a client sends can put a colour in a stroke that
+    /// the photograph does not have at that position, and the command family's planner stays pure —
+    /// it is handed the pixel rather than reading one.
+    pub(super) fn plan_mask_command(
+        &self,
+        state: &EditorState,
+        command: &MaskCommand,
+        target: &MaskTarget,
+        parameters: &Map<String, Value>,
+    ) -> Result<MaskOutcome, Error> {
+        let recipe = &state.current_entry.snapshot.recipe;
+        validate_source_recipe(&state.asset, recipe)?;
+        let seed = self.mask_colour_seed(state, command, recipe, target, parameters)?;
+        crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, seed)
     }
 
     /// The report of a deduplicated retry, read back from the entry the original call wrote so the
@@ -129,7 +144,7 @@ impl EditorService {
     /// here, because the editor is the only thing that can evaluate one. That split is what makes a
     /// stored seed a colour the photograph has: a request carries a flag and a path, never a colour,
     /// so no client can put anything else in a stroke.
-    pub(super) fn mask_colour_seed(
+    fn mask_colour_seed(
         &self,
         state: &EditorState,
         command: &MaskCommand,
@@ -142,11 +157,10 @@ impl EditorService {
         else {
             return Ok(None);
         };
-        let source = self.verified_prepared(&state.asset)?;
         // Reading the pixel compiles the stack, so its artifacts are bound first.
         let recipe = self.bound(recipe)?;
-        self.with_stage_context(&source, &recipe, None, |context| {
-            let stage = (context.stage_before)(request.layer)?;
+        self.with_stage_context(&state.asset, &recipe, None, |context| {
+            let stage = context.stage_before(request.layer)?;
             // The stroke's positions are normalized against the stage its mask is compiled against,
             // which is the stage this layer receives, so the pixel is that stage's own. A stroke that
             // began outside the picture — an ordinary gesture, which the stored range allows — has no
@@ -168,7 +182,9 @@ impl EditorService {
             };
             let x = pixel(request.x, stage.width).ok_or_else(outside)?;
             let y = pixel(request.y, stage.height).ok_or_else(outside)?;
-            let rgba = (context.sample_before)(request.layer, x, y)?.ok_or_else(outside)?;
+            let rgba = context
+                .sample_before(request.layer, x, y)?
+                .ok_or_else(outside)?;
             // The codes, not the decoded colour: a stroke is addressed by the hash of its bytes, and
             // an integer survives a JSON round trip exactly where an `f64` does not. Decoding is the
             // delivered one and happens where the stroke is compiled.
@@ -194,15 +210,28 @@ impl EditorService {
         y: u32,
     ) -> Result<PixelInput, Error> {
         let state = self.state(asset_id)?;
-        let mut entry = self.entry(asset_id, entry_id)?;
+        let entry = self.entry(asset_id, entry_id)?;
         let asset = &state.asset;
-        validate_source_recipe(asset, &entry.snapshot.recipe)?;
-        let layer = crate::mask::commands::input_layer_index(&entry.snapshot.recipe, mask)?;
-        self.bind_artifacts(&mut entry.snapshot.recipe)?;
         let recipe = &entry.snapshot.recipe;
-        let source = self.verified_prepared(asset)?;
-        self.with_stage_context(&source, recipe, None, |context| {
-            let stage = (context.stage_before)(layer)?;
+        validate_source_recipe(asset, recipe)?;
+        let layer = crate::mask::commands::input_layer_index(recipe, mask)?;
+        let sampled = self
+            .bound(recipe)
+            .and_then(|bound| self.input_sample(asset, &bound, layer, x, y));
+        self.needing(Evaluated::exactly(asset, &entry.id, recipe), sampled)
+    }
+
+    /// The pixel the layer at `layer` of a bound stack receives at `(x, y)`, in linear sRGB.
+    fn input_sample(
+        &self,
+        asset: &AssetRecord,
+        recipe: &Recipe,
+        layer: usize,
+        x: u32,
+        y: u32,
+    ) -> Result<PixelInput, Error> {
+        self.with_stage_context(asset, recipe, None, |context| {
+            let stage = context.stage_before(layer)?;
             if x >= stage.width || y >= stage.height {
                 return Err(Error::new(
                     ErrorKind::Validation,
@@ -213,7 +242,7 @@ impl EditorService {
                     ),
                 ));
             }
-            let rgba = (context.sample_before)(layer, x, y)?.ok_or_else(|| {
+            let rgba = context.sample_before(layer, x, y)?.ok_or_else(|| {
                 Error::new(
                     ErrorKind::Validation,
                     format!("outside the stage: ({x}, {y}) has no pixel to read"),

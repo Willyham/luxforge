@@ -365,32 +365,12 @@ mod tests {
                 "name": "Soft film",
             })),
         };
-        let unused = |_: u32, _: u32| -> Result<Option<[u8; 4]>, Error> { Ok(None) };
-        let stage_before = |_: usize| -> Result<Stage, Error> {
-            Ok(Stage {
-                width: 1,
-                height: 1,
-            })
-        };
-        let insertion_index = |_: crate::EffectStage| 0;
-        let insertion_index_for = |_: &str| 0;
-        let sample_before =
-            |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> { Ok(None) };
-        let context = StageContext {
-            stage: Stage {
-                width: 1,
-                height: 1,
-            },
-            layers: &[],
-            sampler: &unused,
-            stage_before: &stage_before,
-            insertion_index: &insertion_index,
-            insertion_index_for: &insertion_index_for,
-            sample_before: &sample_before,
-            sensor_neutral: None,
-            registry: &crate::ModuleRegistry::builtin(),
-            target: None,
-        };
+        let stage = crate::modules::FixedStage::new(Stage {
+            width: 1,
+            height: 1,
+        });
+        let registry = crate::ModuleRegistry::builtin();
+        let context = stage.context(&[], &registry);
         let step = |action_id: &str, parameters: Value| ActionInput {
             action_id: action_id.into(),
             parameters: fields(parameters),

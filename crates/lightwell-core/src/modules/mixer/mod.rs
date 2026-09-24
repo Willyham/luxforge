@@ -266,7 +266,7 @@ impl FieldPatch for Mixer {
 mod tests {
     use super::*;
     use crate::modules::{
-        ActionInput, ActionPlan, Control, ParameterKind, ResetAction, StageContext, ToolModule,
+        ActionInput, ActionPlan, Control, FixedStage, ParameterKind, ResetAction, ToolModule,
     };
     use crate::{BASIC_EFFECT, modules::check_parameters};
     use crate::{ErrorKind, Layer, LayerId};
@@ -299,25 +299,11 @@ mod tests {
             .expect("a declared action");
         let checked = check_parameters(declared, &parameters)?;
         let input = module.parse(action, &checked)?;
-        let sampler = |_: u32, _: u32| Ok(Some([0, 0, 0, 255]));
-        let stage_before = |_: usize| Ok(STAGE);
-        let insertion_index = |_: EffectStage| 0usize;
-        let insertion_index_for = |_: &str| 0usize;
-        let sample_before = |_: usize, _: u32, _: u32| Ok(Some([0, 0, 0, 255]));
         module.plan(
             &input,
-            &StageContext {
-                stage: STAGE,
-                layers,
-                sampler: &sampler,
-                stage_before: &stage_before,
-                insertion_index: &insertion_index,
-                insertion_index_for: &insertion_index_for,
-                sample_before: &sample_before,
-                sensor_neutral: None,
-                registry: &crate::ModuleRegistry::builtin(),
-                target: None,
-            },
+            &FixedStage::new(STAGE)
+                .reading([0, 0, 0, 255])
+                .context(layers, &crate::ModuleRegistry::builtin()),
         )
     }
 

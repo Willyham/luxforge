@@ -245,8 +245,8 @@ impl ToolModule for PixelModule {
         // The coordinates address the stage this layer will be inserted at, not the output stage:
         // a pixel outside a crop is still a pixel of the photograph, and replacing one with the
         // value the content already holds is a no-op whatever a later resample shows there.
-        let index = (stage.insertion_index)(EffectStage::Pixel);
-        let content = (stage.stage_before)(index)?;
+        let index = stage.insertion_index_for(PIXEL_EFFECT);
+        let content = stage.stage_before(index)?;
         let outside = || {
             validation(format!(
                 "pixel ({x}, {y}) is outside the {}x{} content stage",
@@ -256,7 +256,7 @@ impl ToolModule for PixelModule {
         if x >= content.width || y >= content.height {
             return Err(outside());
         }
-        let current = (stage.sample_before)(index, x, y)?.ok_or_else(outside)?;
+        let current = stage.sample_before(index, x, y)?.ok_or_else(outside)?;
         if current[..3] == rgb {
             return Ok(ActionPlan::NoOp);
         }

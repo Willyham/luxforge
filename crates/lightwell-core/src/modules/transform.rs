@@ -300,7 +300,9 @@ fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<Orientation,
 /// always did, and nothing else is placed there.
 fn edits(transform: Transform, context: &StageContext<'_>) -> Result<Vec<LayerEdit>, Error> {
     let layers = context.layers;
-    let at = (context.insertion_index_for)(ORIENTATION_EFFECT).min(layers.len());
+    let at = context
+        .insertion_index_for(ORIENTATION_EFFECT)
+        .min(layers.len());
     let mut crop = None;
     let mut folded = Orientation::NEUTRAL;
     let mut edits = Vec::new();
@@ -321,7 +323,7 @@ fn edits(transform: Transform, context: &StageContext<'_>) -> Result<Vec<LayerEd
     let turned = folded.then(transform);
     if let Some((index, layer)) = crop {
         let stored = stored_payload(layer)?;
-        let input = (context.stage_before)(index)?;
+        let input = context.stage_before(index)?;
         let carried = stored.carried((input.width, input.height), turned)?;
         if carried != stored {
             edits.push(LayerEdit::Update(LayerUpdate::new(
@@ -454,7 +456,7 @@ mod tests {
     use super::*;
     use crate::{
         CropPayload, LayerId, ModuleRegistry, PIXEL_EFFECT, VIGNETTE_EFFECT,
-        modules::check_parameters,
+        modules::{StageQuestions, check_parameters},
     };
     use serde_json::json;
 
@@ -492,10 +494,28 @@ mod tests {
         let checked =
             check_parameters(declared, &json!({"transform": transform.action_id()})).unwrap();
         let input = module.parse(TRANSFORM_ACTION, &checked).unwrap();
-        let sampler = |_: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
-            panic!("planning a transform never samples a pixel")
-        };
-        let stage_before = |index: usize| -> Result<Stage, Error> {
+        module
+            .plan(
+                &input,
+                &StageContext {
+                    stage: STAGE,
+                    layers,
+                    registry: &ModuleRegistry::builtin(),
+                    target: None,
+                    questions: &Oriented(layers),
+                },
+            )
+            .expect("a transform always plans")
+    }
+
+    /// A stack on [`STAGE`] whose only stage-changing layers are orientations: the stage before a
+    /// layer folds the quarter turns ahead of it. A transform asks for the crop's input stage and
+    /// never samples a pixel.
+    struct Oriented<'a>(&'a [Layer]);
+
+    impl StageQuestions for Oriented<'_> {
+        fn stage_before(&self, index: usize) -> Result<Stage, Error> {
+            let layers = self.0;
             assert_eq!(
                 layers[index].effect_id, CROP_EFFECT,
                 "a transform plans only the crop's input stage"
@@ -509,30 +529,10 @@ mod tests {
                     _ => stage,
                 }
             }))
-        };
-        let registry = ModuleRegistry::builtin();
-        let insertion_index = |_: EffectStage| panic!("a transform places its own effect");
-        let insertion_index_for = |effect: &str| registry.insertion_index_for(layers, effect);
-        let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
+        }
+        fn sample_before(&self, _: usize, _: u32, _: u32) -> Result<Option<[u8; 4]>, Error> {
             panic!("planning a transform never samples a pixel")
-        };
-        module
-            .plan(
-                &input,
-                &StageContext {
-                    stage: STAGE,
-                    layers,
-                    sampler: &sampler,
-                    stage_before: &stage_before,
-                    insertion_index: &insertion_index,
-                    insertion_index_for: &insertion_index_for,
-                    sample_before: &sample_before,
-                    sensor_neutral: None,
-                    registry: &crate::ModuleRegistry::builtin(),
-                    target: None,
-                },
-            )
-            .expect("a transform always plans")
+        }
     }
 
     /// The orientation layer the host stores for a one-layer plan: a commit's payload under a new

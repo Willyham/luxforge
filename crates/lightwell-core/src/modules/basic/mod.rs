@@ -354,9 +354,9 @@ impl FieldPatch for Basic {
             Some((index, _)) => index,
             // The stage this module's own layer would be committed at, by its declared stage and
             // order, so the picker reads the pixels the layer it creates will receive.
-            None => (context.insertion_index_for)(BASIC_EFFECT),
+            None => context.insertion_index_for(BASIC_EFFECT),
         };
-        let stage = (context.stage_before)(index)?;
+        let stage = context.stage_before(index)?;
         let outside = || {
             validation(format!(
                 "outside the stage: ({centre_x}, {centre_y}) is not inside the {}x{} stage this \
@@ -382,7 +382,7 @@ impl FieldPatch for Basic {
         let mut pixels: Vec<[u8; 3]> = Vec::with_capacity(25);
         for y in top..=bottom {
             for x in left..=right {
-                let sampled = (context.sample_before)(index, x as u32, y as u32)?;
+                let sampled = context.sample_before(index, x as u32, y as u32)?;
                 let rgba = sampled.ok_or_else(outside)?;
                 pixels.push([rgba[0], rgba[1], rgba[2]]);
             }
@@ -451,24 +451,13 @@ mod tests {
             .expect("a declared action");
         let checked = check_parameters(declared, &parameters)?;
         let input = module.parse(action, &checked)?;
-        let sampler = |_: u32, _: u32| Ok(Some([0, 0, 0, 255]));
-        let stage_before = |_: usize| Ok(STAGE);
-        let insertion_index = |_: EffectStage| 0usize;
-        let insertion_index_for = |_: &str| 0usize;
-        let sample_before = |_: usize, _: u32, _: u32| Ok(Some([0, 0, 0, 255]));
+        let stage = crate::modules::FixedStage::new(STAGE).reading([0, 0, 0, 255]);
+        let registry = crate::ModuleRegistry::builtin();
         module.plan(
             &input,
             &StageContext {
-                stage: STAGE,
-                layers,
-                sampler: &sampler,
-                stage_before: &stage_before,
-                insertion_index: &insertion_index,
-                insertion_index_for: &insertion_index_for,
-                sample_before: &sample_before,
-                sensor_neutral: None,
-                registry: &crate::ModuleRegistry::builtin(),
                 target,
+                ..stage.context(layers, &registry)
             },
         )
     }
@@ -1486,39 +1475,40 @@ mod tests {
             .query(NEUTRAL_SAMPLE)
             .expect("a declared query");
         let checked = check_parameters(declared, &json!({"x": x, "y": y}))?;
-        let stage = Stage {
-            width: probe.width,
-            height: probe.height,
-        };
-        let sampler = |_: u32, _: u32| Ok(None);
-        let stage_before = |_: usize| Ok(stage);
-        // A colour layer joins the stack before the geometry tail; this stack has none, so a first
-        // commit would land at the end.
-        let insertion_index = |_: EffectStage| layers.len();
-        let insertion_index_for = |_: &str| layers.len();
-        let sample_before = |index: usize, x: u32, y: u32| {
-            probe.asked.borrow_mut().push((index, x, y));
-            Ok((x < probe.width && y < probe.height).then(|| {
-                let pixel = probe.pixels[(y * probe.width + x) as usize];
-                [pixel[0], pixel[1], pixel[2], 255]
-            }))
-        };
         module.query(
             NEUTRAL_SAMPLE,
             &checked,
             &StageContext {
-                stage,
+                stage: probe.stage(),
                 layers,
-                sampler: &sampler,
-                stage_before: &stage_before,
-                insertion_index: &insertion_index,
-                insertion_index_for: &insertion_index_for,
-                sample_before: &sample_before,
-                sensor_neutral: None,
                 registry: &crate::ModuleRegistry::builtin(),
                 target: None,
+                questions: probe,
             },
         )
+    }
+
+    impl Probe {
+        fn stage(&self) -> Stage {
+            Stage {
+                width: self.width,
+                height: self.height,
+            }
+        }
+    }
+
+    /// Every prefix receives the probe's stage, and every point reads the probe's pixel there.
+    impl crate::modules::StageQuestions for Probe {
+        fn stage_before(&self, _: usize) -> Result<Stage, Error> {
+            Ok(self.stage())
+        }
+        fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
+            self.asked.borrow_mut().push((index, x, y));
+            Ok((x < self.width && y < self.height).then(|| {
+                let pixel = self.pixels[(y * self.width + x) as usize];
+                [pixel[0], pixel[1], pixel[2], 255]
+            }))
+        }
     }
 
     #[derive(serde::Deserialize)]
@@ -1756,27 +1746,13 @@ mod tests {
         assert_eq!(error.detail, AMBIGUOUS);
 
         let module = BasicModule::new();
-        let sampler = |_: u32, _: u32| Ok(None);
-        let stage_before = |_: usize| Ok(STAGE);
-        let insertion_index = |_: EffectStage| 0usize;
-        let insertion_index_for = |_: &str| 0usize;
-        let sample_before = |_: usize, _: u32, _: u32| Ok(Some([128, 128, 128, 255]));
         let error = module
             .query(
                 "histogram",
                 &json!({"x": 0, "y": 0}).as_object().cloned().unwrap(),
-                &StageContext {
-                    stage: STAGE,
-                    layers: &[],
-                    sampler: &sampler,
-                    stage_before: &stage_before,
-                    insertion_index: &insertion_index,
-                    insertion_index_for: &insertion_index_for,
-                    sample_before: &sample_before,
-                    sensor_neutral: None,
-                    registry: &crate::ModuleRegistry::builtin(),
-                    target: None,
-                },
+                &crate::modules::FixedStage::new(STAGE)
+                    .reading([128, 128, 128, 255])
+                    .context(&[], &crate::ModuleRegistry::builtin()),
             )
             .expect_err("an undeclared query");
         assert_eq!(error.kind, ErrorKind::Validation);
@@ -1839,27 +1815,12 @@ mod tests {
     fn a_module_without_queries_refuses_the_call() {
         let module = crate::modules::TransformModule::new();
         assert!(module.descriptor().queries.is_empty());
-        let sampler = |_: u32, _: u32| Ok(None);
-        let stage_before = |_: usize| Ok(STAGE);
-        let insertion_index = |_: EffectStage| 0usize;
-        let insertion_index_for = |_: &str| 0usize;
-        let sample_before = |_: usize, _: u32, _: u32| Ok(None);
         let error = module
             .query(
                 NEUTRAL_SAMPLE,
                 &Map::new(),
-                &StageContext {
-                    stage: STAGE,
-                    layers: &[],
-                    sampler: &sampler,
-                    stage_before: &stage_before,
-                    insertion_index: &insertion_index,
-                    insertion_index_for: &insertion_index_for,
-                    sample_before: &sample_before,
-                    sensor_neutral: None,
-                    registry: &crate::ModuleRegistry::builtin(),
-                    target: None,
-                },
+                &crate::modules::FixedStage::new(STAGE)
+                    .context(&[], &crate::ModuleRegistry::builtin()),
             )
             .expect_err("no queries");
         assert_eq!(error.kind, ErrorKind::Validation);

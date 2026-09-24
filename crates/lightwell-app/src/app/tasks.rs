@@ -344,7 +344,11 @@ fn ready_preview_job(owner: &OwnerHandle, request: PreviewRequest) -> Result<Pre
         match plan_preview(owner, request.clone()) {
             Ok(job) => return Ok(job),
             Err(error) if error.kind == lightwell_core::ErrorKind::PreparationRequired => {
-                let _ = wait_source_job(owner, client, &error.detail, None)?;
+                let job = error
+                    .preparation_job()
+                    .ok_or_else(|| error.to_string())?
+                    .to_string();
+                let _ = wait_source_job(owner, client, &job, None)?;
             }
             Err(error)
                 if error.kind == lightwell_core::ErrorKind::ResourceLimit
