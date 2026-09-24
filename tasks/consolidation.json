@@ -1484,7 +1484,7 @@
     {
       "id": "TASK-026",
       "description": "Answer `history.list` with rows read from columns instead of full recipe snapshots, and scope the desktop's refresh after a command to what the command changed, so a commit costs the owner calls performance rule 7 allows.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-021",
         "TASK-022",
