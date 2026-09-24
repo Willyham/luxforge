@@ -18,12 +18,16 @@
 //! entries, both stored in lists sized once when the board is made, one uncontended mutex per call,
 //! and no timer, thread or queue.
 use crate::{AssetId, Error, ErrorKind};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
+
+/// The longest progress message any activity keeps; a longer one is cut. The one progress model
+/// every publisher shares, capability jobs included (`docs/design/module-capabilities.md`).
+pub const MAX_PROGRESS_MESSAGE: usize = 256;
 
 /// How many entries can be active at once. A `begin` past this still runs its work; it records
 /// nothing and counts in [`ActivitySnapshot::untracked`] instead, so a burst of work can never grow
@@ -75,16 +79,35 @@ pub struct ActivitySpec {
     pub job_id: Option<String>,
 }
 
-/// A determinate progress report, from work that knows a truthful total.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// How far a piece of work has come: a fraction of 0 to 1 from work that knows a truthful extent,
+/// and a short message such as `downloading`. Either, both or neither may be reported at once. The
+/// one progress model every activity publisher shares — a capability job reports through it rather
+/// than keeping its own copy (`docs/design/module-capabilities.md`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ActivityProgress {
-    pub done: u64,
-    pub total: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fraction: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl ActivityProgress {
+    /// Clamp the fraction to 0..=1 (dropping a non-finite one) and cut the message to
+    /// [`MAX_PROGRESS_MESSAGE`] characters, so every publisher reports the same bounded shape.
+    fn new(fraction: Option<f64>, message: &str) -> Self {
+        Self {
+            fraction: fraction
+                .filter(|fraction| fraction.is_finite())
+                .map(|fraction| fraction.clamp(0.0, 1.0)),
+            message: (!message.is_empty())
+                .then(|| message.chars().take(MAX_PROGRESS_MESSAGE).collect()),
+        }
+    }
 }
 
 /// What an active or a recent entry says about its work. Absent optional fields are left out of the
 /// JSON rather than written as `null`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ActivityEntry {
     /// Unique on this board and increasing in the order the work began.
     pub id: u64,
@@ -104,7 +127,7 @@ pub struct ActivityEntry {
 }
 
 /// One piece of work still running.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ActiveActivity {
     #[serde(flatten)]
     pub entry: ActivityEntry,
@@ -113,7 +136,7 @@ pub struct ActiveActivity {
 }
 
 /// One piece of work that finished after running at least the board's recent threshold.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RecentActivity {
     #[serde(flatten)]
     pub entry: ActivityEntry,
@@ -125,7 +148,7 @@ pub struct RecentActivity {
 }
 
 /// The board at one moment, as `activity.list` returns it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ActivitySnapshot {
     /// Changes exactly when the contents do, so a poller can skip a snapshot it has already seen.
     pub sequence: u64,
@@ -295,10 +318,20 @@ impl ActivityBoard {
         let Some(entry) = board.running(id) else {
             return;
         };
-        if entry.progress != Some(progress) {
+        if entry.progress.as_ref() != Some(&progress) {
             entry.progress = Some(progress);
             board.changed();
         }
+    }
+
+    /// The progress this active entry currently reports, if it has any. Reading it costs the same
+    /// lock as a `set_progress`; nothing here holds the guard's own bookkeeping.
+    fn progress_of(&self, id: u64) -> Option<ActivityProgress> {
+        self.lock()
+            .active
+            .iter()
+            .find(|running| running.entry.id == id)
+            .and_then(|running| running.entry.progress.clone())
     }
 
     fn end(&self, id: u64, outcome: Outcome) {
@@ -355,12 +388,20 @@ impl Activity {
         }
     }
 
-    /// Report determinate progress. Only work that knows a truthful total should call this.
-    pub fn progress(&self, done: u64, total: u64) {
+    /// Report progress: a fraction of 0 to 1 when the work knows a truthful extent, and a short
+    /// message. Either may be omitted.
+    pub fn progress(&self, fraction: Option<f64>, message: &str) {
         if let Some(id) = self.id {
             self.board
-                .set_progress(id, ActivityProgress { done, total });
+                .set_progress(id, ActivityProgress::new(fraction, message));
         }
+    }
+
+    /// The progress this activity currently reports on the board, if it has any and the guard
+    /// still tracks a live entry. A reader such as `module.job.read` uses this to answer with the
+    /// same progress the board carries, rather than keeping its own copy.
+    pub fn progress_snapshot(&self) -> Option<ActivityProgress> {
+        self.id.and_then(|id| self.board.progress_of(id))
     }
 
     /// End the work with this outcome.
@@ -439,16 +480,19 @@ mod tests {
         assert_eq!(entry.detail.as_deref(), Some("DSC_0412.NEF"));
         assert_eq!(entry.asset_id.as_ref(), Some(&asset));
         assert_eq!(entry.job_id.as_deref(), Some("source-job-7"));
-        assert_eq!((entry.phase, entry.progress), (None, None));
+        assert_eq!((entry.phase, entry.progress.clone()), (None, None));
 
         activity.phase("decode");
-        activity.progress(3, 10);
+        activity.progress(Some(0.3), "3 of 10");
         let reported = board.snapshot();
         let entry = &reported.active[0].entry;
         assert_eq!(entry.phase, Some("decode"));
         assert_eq!(
             entry.progress,
-            Some(ActivityProgress { done: 3, total: 10 })
+            Some(ActivityProgress {
+                fraction: Some(0.3),
+                message: Some("3 of 10".into())
+            })
         );
 
         activity.finish(Outcome::Completed);
@@ -465,7 +509,10 @@ mod tests {
         );
         assert_eq!(
             recent.entry.progress,
-            Some(ActivityProgress { done: 3, total: 10 })
+            Some(ActivityProgress {
+                fraction: Some(0.3),
+                message: Some("3 of 10".into())
+            })
         );
 
         // Ids keep increasing across entries.
@@ -531,7 +578,7 @@ mod tests {
 
         // An untracked guard records nothing, however it is used.
         overflow.phase("ignored");
-        overflow.progress(1, 2);
+        overflow.progress(Some(0.5), "ignored");
         overflow.finish(Outcome::Completed);
         let after = board.snapshot();
         assert_eq!(after.sequence, full.sequence);
@@ -598,11 +645,11 @@ mod tests {
         step(false, "the same phase again");
         activity.phase("exact");
         step(true, "another phase");
-        activity.progress(1, 4);
+        activity.progress(Some(0.25), "quarter");
         step(true, "new progress");
-        activity.progress(1, 4);
+        activity.progress(Some(0.25), "quarter");
         step(false, "the same progress again");
-        activity.progress(2, 4);
+        activity.progress(Some(0.5), "half");
         step(true, "more progress");
         activity.finish(Outcome::Completed);
         step(true, "a finish");
@@ -622,7 +669,7 @@ mod tests {
             job_id: Some("source-job-7".into()),
         });
         full.phase("develop");
-        full.progress(1, 2);
+        full.progress(Some(0.5), "developing");
         let listed = serde_json::to_value(board.snapshot()).unwrap();
         assert_eq!(keys(&listed), ["active", "recent", "sequence", "untracked"]);
         let active = listed["active"].as_array().unwrap();
@@ -644,7 +691,10 @@ mod tests {
             ]
         );
         assert_eq!(active[1]["asset_id"], json!(asset.as_str()));
-        assert_eq!(active[1]["progress"], json!({"done": 1, "total": 2}));
+        assert_eq!(
+            active[1]["progress"],
+            json!({"fraction": 0.5, "message": "developing"})
+        );
         assert_eq!(active[1]["phase"], json!("develop"));
 
         drop(bare);

@@ -52,9 +52,9 @@ fn import_asset(owner: &OwnerHandle, client: ClientId) -> Value {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let status = call(owner, client, "job.status", json!({"job_id":job}));
-        match status["state"].as_str() {
+        match status["status"].as_str() {
             Some("ready") => break,
-            Some("queued" | "preparing") => {
+            Some("queued" | "running") => {
                 assert!(Instant::now() < deadline, "import timed out: {status}");
                 std::thread::sleep(Duration::from_millis(1));
             }

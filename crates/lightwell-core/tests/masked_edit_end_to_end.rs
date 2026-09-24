@@ -213,9 +213,9 @@ mod json_client {
             let asset = loop {
                 let status = Self::call(&owner, client, "job.status", json!({"job_id": id}))
                     .expect("a job this client owns");
-                match status["state"].as_str() {
+                match status["status"].as_str() {
                     Some("ready") => break status["asset"]["asset"]["id"].clone(),
-                    Some("queued" | "preparing") => {
+                    Some("queued" | "running") => {
                         std::thread::sleep(std::time::Duration::from_millis(1))
                     }
                     other => panic!("unexpected import job {other:?}"),

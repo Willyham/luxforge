@@ -1402,7 +1402,10 @@ fn module_summary(
                     artifacts,
                     result,
                 } => json!({
-                    "status": "succeeded",
+                    // The shared job vocabulary's word for success, so a task's summary reads the
+                    // same status word whether it is still in flight (`TaskPhase::Job` passes the
+                    // capability job's own `status` through) or has settled here.
+                    "status": "ready",
                     "job_id": job,
                     "artifact": artifacts.first(),
                     "artifacts": artifacts,

@@ -284,9 +284,9 @@ mod tests {
                 )
                 .unwrap();
             let status = response.result.unwrap();
-            match status["state"].as_str() {
+            match status["status"].as_str() {
                 Some("ready") => break,
-                Some("queued" | "preparing") => std::thread::sleep(Duration::from_millis(1)),
+                Some("queued" | "running") => std::thread::sleep(Duration::from_millis(1)),
                 other => panic!("unexpected reopen preparation {other:?}: {status}"),
             }
         }

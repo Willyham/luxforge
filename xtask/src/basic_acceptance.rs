@@ -133,13 +133,13 @@ pub(crate) fn import(owner: &OwnerHandle, client: ClientId, path: &Path) -> Resu
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let status = call(owner, client, "job.status", json!({"job_id": job_id}))?;
-        match status["state"].as_str() {
+        match status["status"].as_str() {
             Some("ready") => return Ok(status["asset"].clone()),
-            Some("queued" | "preparing") => {
+            Some("queued" | "running") => {
                 ensure(Instant::now() < deadline, "The import never became ready")?;
                 std::thread::sleep(Duration::from_millis(2));
             }
-            other => return Err(format!("Unexpected import state {other:?}: {status}").into()),
+            other => return Err(format!("Unexpected import status {other:?}: {status}").into()),
         }
     }
 }
@@ -648,8 +648,8 @@ pub(crate) fn settle_source(owner: &OwnerHandle, client: ClientId, job_id: &str)
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let status = call(owner, client, "job.status", json!({"job_id": job_id}))?;
-        match status["state"].as_str() {
-            Some("queued" | "preparing") => {
+        match status["status"].as_str() {
+            Some("queued" | "running") => {
                 ensure(Instant::now() < deadline, "A source job never settled")?;
                 std::thread::sleep(Duration::from_millis(2));
             }
@@ -699,7 +699,7 @@ pub(crate) fn analyse(
     loop {
         let read = call(owner, client, "analysis.read", json!({"job_id": job_id}))?;
         match read["status"].as_str() {
-            Some("pending") => {
+            Some("queued" | "running") => {
                 ensure(Instant::now() < deadline, "An analysis job never settled")?;
                 std::thread::sleep(Duration::from_millis(2));
             }

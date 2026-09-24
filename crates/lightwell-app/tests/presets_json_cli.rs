@@ -116,9 +116,9 @@ impl JsonClient {
         loop {
             assert!(started.elapsed() < JOB_TIMEOUT, "import timed out");
             let status = self.call("job.status", json!({"job_id": job}));
-            match status["state"].as_str() {
+            match status["status"].as_str() {
                 Some("ready") => return status["asset"]["asset"].clone(),
-                Some("queued" | "preparing") => std::thread::sleep(Duration::from_millis(5)),
+                Some("queued" | "running") => std::thread::sleep(Duration::from_millis(5)),
                 other => panic!("unexpected source job {other:?}: {status}"),
             }
         }

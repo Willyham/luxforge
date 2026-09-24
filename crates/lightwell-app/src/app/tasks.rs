@@ -231,7 +231,7 @@ fn wait_source_job(
             return Err("superseded preview".into());
         }
         let (status, _) = call(owner, client, "job.status", json!({"job_id":job_id}))?;
-        match status["state"].as_str() {
+        match status["status"].as_str() {
             Some("ready") => return parse(status["asset"].clone()),
             Some("failed") => {
                 return Err(format!(
@@ -242,10 +242,8 @@ fn wait_source_job(
                         .unwrap_or("source preparation failed")
                 ));
             }
-            Some("queued" | "preparing") => {
-                std::thread::sleep(std::time::Duration::from_millis(50))
-            }
-            _ => return Err("unexpected source job state".into()),
+            Some("queued" | "running") => std::thread::sleep(std::time::Duration::from_millis(50)),
+            _ => return Err("unexpected source job status".into()),
         }
     }
 }

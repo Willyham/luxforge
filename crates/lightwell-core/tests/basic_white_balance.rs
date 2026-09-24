@@ -461,9 +461,9 @@ fn import_asset(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let status = call(owner, client, "job.status", json!({"job_id": job_id}));
-        match status["state"].as_str() {
+        match status["status"].as_str() {
             Some("ready") => break,
-            Some("queued" | "preparing") => {
+            Some("queued" | "running") => {
                 assert!(
                     std::time::Instant::now() < deadline,
                     "the import never became ready: {status}"

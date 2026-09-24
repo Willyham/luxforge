@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{
     AssetId, Availability, ClientAuthority, EditorService, Error, ErrorKind, JobId,
-    ModuleDescriptor, ModuleRegistry, api::params::host_params,
+    ModuleDescriptor, ModuleRegistry, activity::ActivityBoard, api::params::host_params,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -425,13 +425,15 @@ pub(crate) struct CapabilityHost {
 
 impl CapabilityHost {
     /// `deliver` posts a finished job into the owner's channel; it is called on a lane thread.
-    pub(crate) fn new(config: HostConfig, deliver: Deliver) -> Self {
+    /// `board` is the owner's activity board, which every capability job publishes to while it
+    /// runs, beside source preparation and analysis.
+    pub(crate) fn new(config: HostConfig, deliver: Deliver, board: Arc<ActivityBoard>) -> Self {
         Self {
             settings: config.config_dir.clone().map(SettingsStore::new),
             grants: config.config_dir.clone().map(GrantsStore::new),
             resources: config.resource_dir.clone().map(ResourceStore::new),
             transport: Arc::new(SharedTransport::new(config.transport.clone())),
-            jobs: Jobs::new(deliver),
+            jobs: Jobs::new(deliver, board),
             activations: HashMap::new(),
             tasks: HashMap::new(),
             config,
@@ -498,7 +500,7 @@ impl CapabilityHost {
                 }
             }
             JobKind::Install | JobKind::Remove | JobKind::Task => {
-                if done.record.status == JobStatus::Succeeded
+                if done.record.status == JobStatus::Ready
                     && let Some(origin) = &done.origin
                 {
                     announce_once(announce, origin);
@@ -1310,13 +1312,13 @@ impl CapabilityHost {
         activation.job = None;
         let pending = activation.pending.take();
         match (record.status, pending) {
-            (JobStatus::Succeeded, None) => {
+            (JobStatus::Ready, None) => {
                 activation.state = ActivationState::Active;
                 activation.reason = None;
                 activation.error = None;
             }
             // It finished loading just as it was asked to stop: release what it loaded.
-            (JobStatus::Succeeded, Some(reason)) => {
+            (JobStatus::Ready, Some(reason)) => {
                 let origin = None;
                 if self
                     .release(registry, &record.module_id, reason.clone(), origin)

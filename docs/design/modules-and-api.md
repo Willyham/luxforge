@@ -132,17 +132,18 @@ The histogram is not a recipe effect and writes no history. It is a read-only **
 
 `analysis.request {asset_id, target}` returns `{job_id, status, identity}` promptly, with `report` included when the store already holds it. `target` is one of `{"kind": "current"}`, `{"kind": "entry", "entry_id"}` (a frozen historical entry, which a later commit by any client never relabels) or `{"kind": "draft", "draft_id"}` — the calling session's own draft, evaluated at the `draft_revision` it holds now; another client's draft, or one that has ended, is a `validation` error. `analysis.read {job_id}` returns `{status, identity, report?, error?}` and `analysis.cancel {job_id}` returns `{cancelled: true}`. A job this client never requested is a `validation` error on read and on cancel. None of the three mutates anything or emits an event, and none requires a GUI or a change of selection.
 
-`status` is one of:
+`status` is the one job-status vocabulary source, analysis and capability jobs all share (`crate::JobStatus`, [lifecycle and jobs](module-capabilities.md#lifecycle-jobs-and-resources)):
 
 | Status | Meaning |
 | --- | --- |
-| `pending` | Queued or running on the analysis worker |
+| `queued` | Accepted, waiting in the worker's one replaceable pending slot |
+| `running` | The worker holds it now |
 | `ready` | Complete; `report` carries the counts |
 | `failed` | The stack could not be evaluated; `error` carries the structured reason |
 | `superseded` | A newer request took the single pending slot; the requester may simply ask again |
 | `cancelled` | Every interested client withdrew before the work finished |
 
-Only `ready` ever carries `report`. Pending, failed, superseded and cancelled results have no counts at all, so no state can be read as a valid but empty histogram.
+Only `ready` ever carries `report`. Queued, running, failed, superseded and cancelled results have no counts at all, so no status can be read as a valid but empty histogram.
 
 The identity is `{asset_id, source_fingerprint, entry_id, snapshot_id, recipe_hash, draft?, width, height, domain}`. `recipe_hash` is the SHA-256 of the effective recipe's canonical JSON, `draft` is `{draft_id, draft_revision}` when a draft was analysed, `width`/`height` are the **output** stage, and `domain` is always `srgb-8bit-output`. A `failed` job whose stack has no output stage at all — an unavailable provider, or a payload the registry refuses — reports `width` and `height` as `0` and carries its error; nothing is rewritten or discarded to make such a stack renderable.
 

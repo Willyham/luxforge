@@ -78,9 +78,9 @@ impl Fixture {
                 "job.status",
                 json!({"job_id": job_id}),
             );
-            match status["state"].as_str() {
+            match status["status"].as_str() {
                 Some("ready") => break,
-                Some("queued" | "preparing") => {
+                Some("queued" | "running") => {
                     assert!(
                         Instant::now() < deadline,
                         "the import never settled: {status}"

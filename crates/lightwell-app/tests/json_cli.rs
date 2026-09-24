@@ -57,9 +57,9 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
         output.read_line(&mut line).unwrap();
         let status: Value = serde_json::from_str(&line).unwrap();
         assert!(status.get("error").is_none(), "{status}");
-        match status["result"]["state"].as_str() {
+        match status["result"]["status"].as_str() {
             Some("ready") => break status["result"]["asset"]["asset"]["id"].clone(),
-            Some("queued" | "preparing") => std::thread::sleep(std::time::Duration::from_millis(1)),
+            Some("queued" | "running") => std::thread::sleep(std::time::Duration::from_millis(1)),
             other => panic!("unexpected source job {other:?}: {status}"),
         }
     };
@@ -306,9 +306,9 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
     );
     let asset = loop {
         let status = client.ok("job.status", json!({"job_id": imported["job_id"]}));
-        match status["state"].as_str() {
+        match status["status"].as_str() {
             Some("ready") => break status["asset"]["asset"]["id"].clone(),
-            Some("queued" | "preparing") => std::thread::sleep(Duration::from_millis(1)),
+            Some("queued" | "running") => std::thread::sleep(Duration::from_millis(1)),
             other => panic!("unexpected source job {other:?}: {status}"),
         }
     };
@@ -345,15 +345,12 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
     client.grant(&refused);
     // After Allow the install is sent again as a new request: the refused one changed nothing.
     let installed = client.ok("module.resource.install", install("cli-install-2"));
-    assert_eq!(client.finished(&installed["job_id"])["status"], "succeeded");
+    assert_eq!(client.finished(&installed["job_id"])["status"], "ready");
     let activating = client.ok(
         "module.activate",
         json!({"module_id": module, "mutation": {"request_id": "cli-activate", "actor": "cli-test"}}),
     );
-    assert_eq!(
-        client.finished(&activating["job_id"])["status"],
-        "succeeded"
-    );
+    assert_eq!(client.finished(&activating["job_id"])["status"], "ready");
     let task = json!({"asset_id": asset, "profile_id": profile});
     let mut consents = 0;
     let queued = loop {
@@ -369,7 +366,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
     };
     assert_eq!(consents, 1, "this photo's send");
     let job = client.finished(&queued["job_id"]);
-    assert_eq!(job["status"], "succeeded", "{job}");
+    assert_eq!(job["status"], "ready", "{job}");
     let artifact = job["result"]["artifacts"][0].clone();
     let gains = job["result"]["result"]["gains"].clone();
     let sample = json!({"asset_id": asset, "x": 3, "y": 4});

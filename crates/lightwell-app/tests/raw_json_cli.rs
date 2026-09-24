@@ -195,8 +195,8 @@ fn wait_job(client: &mut JsonClient, job_id: &str) -> Value {
         let response = client.call_raw("job.status", json!({"job_id":job_id}));
         assert!(response.get("error").is_none(), "job.status: {response}");
         let result = &response["result"];
-        match result["state"].as_str() {
-            Some("queued" | "preparing") => thread::sleep(Duration::from_millis(50)),
+        match result["status"].as_str() {
+            Some("queued" | "running") => thread::sleep(Duration::from_millis(50)),
             Some("ready") => return result.clone(),
             Some("failed") => panic!("RAW source job failed: {result}"),
             state => panic!("unexpected RAW source job state {state:?}: {result}"),
@@ -257,7 +257,7 @@ fn sample_after_preparation(
                 .to_owned()
         };
         let ready = wait_job(client, &job_id);
-        assert_eq!(ready["state"], "ready");
+        assert_eq!(ready["status"], "ready");
     }
     panic!("render.sample remained preparation-required after bounded retries")
 }

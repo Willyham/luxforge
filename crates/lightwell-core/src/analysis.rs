@@ -11,8 +11,8 @@ mod mask_overlay;
 mod overlay;
 
 pub use jobs::{
-    AnalysisDomain, AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStatus,
-    AnalysisStore, MAX_JOB_RECORDS, MAX_READY_REPORTS, Release,
+    AnalysisDomain, AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore,
+    MAX_JOB_RECORDS, MAX_READY_REPORTS, Release,
 };
 pub use mask_overlay::{
     MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MaskInputPixel, MaskOverlay, MaskPixels, coverage_grid,

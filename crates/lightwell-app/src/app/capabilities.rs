@@ -194,8 +194,8 @@ fn wait_preparation(
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let status = call(owner, client, "job.status", json!({"job_id": job_id}), sent)?;
-        match status["state"].as_str() {
-            Some("queued" | "preparing") if Instant::now() < deadline => {
+        match status["status"].as_str() {
+            Some("queued" | "running") if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(50));
             }
             Some("failed") => {

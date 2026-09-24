@@ -101,7 +101,7 @@ impl Proof {
                 json!({"job_id": imported["job_id"]}),
             )
             .unwrap();
-            if status["state"] == "ready" {
+            if status["status"] == "ready" {
                 break serde_json::from_value(status["asset"]["asset"]["id"].clone()).unwrap();
             }
             assert!(Instant::now() < deadline, "{status}");
@@ -578,7 +578,7 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     let artifact = preset["artifact"].as_str().unwrap().to_owned();
     assert!(artifact.starts_with("artifact-"));
     let summary = proof.editor.snapshot()["capabilities"][MODULE].clone();
-    assert_eq!(summary["tasks"][TASK]["status"], "succeeded");
+    assert_eq!(summary["tasks"][TASK]["status"], "ready");
     assert_eq!(summary["tasks"][TASK]["artifact"], artifact.as_str());
     assert_eq!(summary["tasks"][TASK]["apply_available"], true);
     assert_eq!(summary["permissions"]["live"], 2);

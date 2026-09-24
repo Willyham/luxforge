@@ -106,6 +106,42 @@ identifier!(PresetId, "preset-");
 identifier!(MaskId, "mask-");
 identifier!(ComponentId, "component-");
 
+/// The lifecycle every job in Lightwell moves through — source, analysis and capability jobs alike
+/// — and the one `status` key their API answers carry (`job.status`, `analysis.request`,
+/// `analysis.read` and `module.job.read`). Not every kind reaches every value:
+///
+/// - **Source jobs** (`crates/lightwell-core/src/api/owner.rs`): `queued`, `running`, `ready`,
+///   `failed`, `cancelled`. Never `superseded`: a second request for the same work joins the job
+///   already in flight rather than displacing it.
+/// - **Analysis jobs** (`crates/lightwell-core/src/analysis/jobs.rs`): all six. The worker runs one
+///   active job with one replaceable pending job; a fresh request beyond those two displaces the
+///   pending one, which reads `superseded`.
+/// - **Capability jobs** (`crates/lightwell-core/src/capabilities/jobs.rs`): all six. A queued
+///   activation a deactivation replaces reads `superseded`; nothing else does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobStatus {
+    /// Accepted, not yet started.
+    Queued,
+    /// Running on its worker.
+    Running,
+    /// Finished successfully; its result is ready to read.
+    Ready,
+    /// Finished with an error.
+    Failed,
+    /// Stopped before it finished.
+    Cancelled,
+    /// Replaced before it started, by a newer request that only one slot could hold.
+    Superseded,
+}
+
+impl JobStatus {
+    /// Whether a job in this status is done: no further update will follow.
+    pub fn is_finished(self) -> bool {
+        !matches!(self, Self::Queued | Self::Running)
+    }
+}
+
 /// Masks per recipe, components per mask and the serialized size of one recipe's mask table: the
 /// structural part of the declared masking limits, each refused with a `ResourceLimit` error that
 /// names the limit. Every history entry stores a complete stack, so the byte bound is what keeps a

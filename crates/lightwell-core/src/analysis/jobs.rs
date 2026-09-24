@@ -13,8 +13,8 @@
 
 use super::{DOMAIN, Report, deserialize_domain, reduce_raster};
 use crate::{
-    AssetId, ClientId, DraftStamp, EntryId, Error, ErrorKind, HistoryEntry, JobId, ModuleRegistry,
-    PreviewSource, Recipe, SnapshotId,
+    AssetId, ClientId, DraftStamp, EntryId, Error, ErrorKind, HistoryEntry, JobId, JobStatus,
+    ModuleRegistry, PreviewSource, Recipe, SnapshotId,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     artifacts::PreparedArtifact,
 };
@@ -133,24 +133,6 @@ impl AnalysisIdentity {
     pub fn has_output_stage(&self) -> bool {
         self.width != 0 && self.height != 0
     }
-}
-
-/// The lifecycle of one analysis job. Only `ready` ever carries counts: the histogram and clipping
-/// contract requires that pending, failed, superseded and unavailable states can never be mistaken
-/// for a valid but empty histogram.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AnalysisStatus {
-    /// Queued or running on the worker.
-    Pending,
-    /// Complete; the report is in the store.
-    Ready,
-    /// The render or the reduction failed; the job carries the error and no report.
-    Failed,
-    /// A newer request replaced this one in the single pending slot. Requesters may re-request.
-    Superseded,
-    /// Every interested client withdrew before the work finished.
-    Cancelled,
 }
 
 /// What one job needs to run: the immutable source buffer, the shared registry, the effective
@@ -307,13 +289,18 @@ enum JobState {
 }
 
 impl JobState {
-    fn status(&self) -> AnalysisStatus {
+    /// The shared [`JobStatus`] this record reads as. `Pending` alone cannot say whether the
+    /// worker holds the job or it still waits in the queue's one replaceable slot, so it asks
+    /// `queue`, the same distinction [`AnalysisQueue::is_active`] and [`AnalysisQueue::is_pending`]
+    /// already draw.
+    fn status(&self, job_id: &JobId, queue: &AnalysisQueue) -> JobStatus {
         match self {
-            Self::Pending => AnalysisStatus::Pending,
-            Self::Ready(_) => AnalysisStatus::Ready,
-            Self::Failed(_) => AnalysisStatus::Failed,
-            Self::Superseded => AnalysisStatus::Superseded,
-            Self::Cancelled => AnalysisStatus::Cancelled,
+            Self::Pending if queue.is_active(job_id) => JobStatus::Running,
+            Self::Pending => JobStatus::Queued,
+            Self::Ready(_) => JobStatus::Ready,
+            Self::Failed(_) => JobStatus::Failed,
+            Self::Superseded => JobStatus::Superseded,
+            Self::Cancelled => JobStatus::Cancelled,
         }
     }
     fn is_finished(&self) -> bool {
@@ -335,11 +322,11 @@ struct JobRecord {
 /// What one client reads back about a job.
 #[derive(Debug)]
 pub struct AnalysisRead<'a> {
-    pub status: AnalysisStatus,
+    pub status: JobStatus,
     pub identity: &'a AnalysisIdentity,
-    /// Only ever `Some` for [`AnalysisStatus::Ready`].
+    /// Only ever `Some` for [`JobStatus::Ready`].
     pub report: Option<&'a Report>,
-    /// Only ever `Some` for [`AnalysisStatus::Failed`].
+    /// Only ever `Some` for [`JobStatus::Failed`].
     pub error: Option<&'a Error>,
 }
 
@@ -516,14 +503,21 @@ impl AnalysisStore {
     }
 
     /// One client's view of one job. A job this client never requested is simply not its own.
-    pub fn read(&self, job_id: &JobId, client: ClientId) -> Result<AnalysisRead<'_>, Error> {
+    /// `queue` resolves a `Pending` record to `running` or `queued`, since the record alone cannot
+    /// say which.
+    pub fn read(
+        &self,
+        job_id: &JobId,
+        client: ClientId,
+        queue: &AnalysisQueue,
+    ) -> Result<AnalysisRead<'_>, Error> {
         let record = self
             .jobs
             .get(job_id)
             .filter(|record| record.requesters.contains(&client))
             .ok_or_else(|| unknown_job(job_id))?;
         Ok(AnalysisRead {
-            status: record.state.status(),
+            status: record.state.status(job_id, queue),
             identity: &record.identity,
             report: match &record.state {
                 JobState::Ready(report) => Some(report.as_ref()),
@@ -537,10 +531,10 @@ impl AnalysisStore {
     }
 
     /// The job's state without a client check, for the owner's own responses.
-    pub fn state_of(&self, job_id: &JobId) -> Option<AnalysisRead<'_>> {
+    pub fn state_of(&self, job_id: &JobId, queue: &AnalysisQueue) -> Option<AnalysisRead<'_>> {
         let record = self.jobs.get(job_id)?;
         Some(AnalysisRead {
-            status: record.state.status(),
+            status: record.state.status(job_id, queue),
             identity: &record.identity,
             report: match &record.state {
                 JobState::Ready(report) => Some(report.as_ref()),
@@ -660,6 +654,12 @@ mod tests {
         report
     }
 
+    /// A queue with no worker behind it, for tests that drive `AnalysisStore` directly and never
+    /// read a job while it is genuinely `Pending` — only `JobState::status` ever consults it.
+    fn queue() -> AnalysisQueue {
+        AnalysisQueue::new(Arc::new(|_, _| {}))
+    }
+
     #[test]
     fn an_identity_hashes_the_recipe_and_marks_a_stack_without_an_output_stage() {
         let asset = AssetId::new();
@@ -713,10 +713,10 @@ mod tests {
         store.cancel(&job);
         // Both clients still read the outcome they asked for; nobody else can.
         assert_eq!(
-            store.read(&job, one).unwrap().status,
-            AnalysisStatus::Cancelled
+            store.read(&job, one, &queue()).unwrap().status,
+            JobStatus::Cancelled
         );
-        assert!(store.read(&job, ClientId::testing(3)).is_err());
+        assert!(store.read(&job, ClientId::testing(3), &queue()).is_err());
         // A cancelled identity is re-requestable and gets a fresh job.
         let (fresh_job, scheduled) = store.request(identity, one);
         assert_ne!(fresh_job, job);
@@ -750,11 +750,14 @@ mod tests {
         assert_eq!(store.reports(), MAX_READY_REPORTS, "oldest reports evicted");
         assert_eq!(store.len(), MAX_READY_REPORTS);
         for evicted in &jobs[..4] {
-            assert!(store.read(evicted, client).is_err(), "evicted");
+            assert!(store.read(evicted, client, &queue()).is_err(), "evicted");
         }
         assert_eq!(
-            store.read(jobs.last().unwrap(), client).unwrap().status,
-            AnalysisStatus::Ready
+            store
+                .read(jobs.last().unwrap(), client, &queue())
+                .unwrap()
+                .status,
+            JobStatus::Ready
         );
         // Finished non-report records are bounded by the job table cap.
         for index in 0..MAX_JOB_RECORDS * 2 {
@@ -799,6 +802,9 @@ mod tests {
             store.disconnect(one).contains(&job),
             "one's job is orphaned too"
         );
-        assert!(store.read(&job, one).is_err(), "a gone client owns nothing");
+        assert!(
+            store.read(&job, one, &queue()).is_err(),
+            "a gone client owns nothing"
+        );
     }
 }

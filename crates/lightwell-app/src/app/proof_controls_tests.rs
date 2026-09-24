@@ -52,9 +52,9 @@ impl Proof {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let status = call(&owner, json_client, "job.status", json!({"job_id":job_id})).0;
-            match status["state"].as_str() {
+            match status["status"].as_str() {
                 Some("ready") => break,
-                Some("queued" | "preparing") => {
+                Some("queued" | "running") => {
                     assert!(Instant::now() < deadline, "source preparation: {status}");
                     std::thread::sleep(Duration::from_millis(1));
                 }

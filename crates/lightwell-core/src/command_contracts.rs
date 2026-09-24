@@ -51,9 +51,9 @@ fn import_asset(owner: &OwnerHandle, client: ClientId, source: &Path) -> Value {
     let id = queued["job_id"].as_str().unwrap();
     loop {
         let status = call("status", "job.status", json!({"job_id":id}));
-        match status["state"].as_str() {
+        match status["status"].as_str() {
             Some("ready") => return status["asset"]["asset"]["id"].clone(),
-            Some("queued" | "preparing") => std::thread::sleep(std::time::Duration::from_millis(1)),
+            Some("queued" | "running") => std::thread::sleep(std::time::Duration::from_millis(1)),
             other => panic!("unexpected import job {other:?}: {status}"),
         }
     }
@@ -440,7 +440,7 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
     assert_eq!(requested["identity"]["domain"], json!("srgb-8bit-output"));
     assert!(matches!(
         requested["status"].as_str(),
-        Some("pending" | "ready")
+        Some("queued" | "running" | "ready")
     ));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let report = loop {
@@ -448,7 +448,10 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
         if read["status"] == json!("ready") {
             break read["report"].clone();
         }
-        assert_eq!(read["status"], json!("pending"), "{read}");
+        assert!(
+            matches!(read["status"].as_str(), Some("queued" | "running")),
+            "{read}"
+        );
         assert!(
             std::time::Instant::now() < deadline,
             "the analysis job never settled"

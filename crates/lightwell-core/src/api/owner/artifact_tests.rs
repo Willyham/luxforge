@@ -57,14 +57,14 @@ fn failure(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -
         .unwrap_or_else(|| panic!("{method} was expected to fail"))
 }
 
-/// Wait for a source job to leave `queued` and `preparing`. Nothing in the owner polls; this is the
+/// Wait for a source job to leave `queued` and `running`. Nothing in the owner polls; this is the
 /// test standing in for a client, bounded by a deadline.
 fn settled(owner: &OwnerHandle, client: ClientId, job_id: &str) -> Value {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let status = ok(owner, client, "job.status", json!({"job_id": job_id}));
-        match status["state"].as_str() {
-            Some("queued" | "preparing") => {
+        match status["status"].as_str() {
+            Some("queued" | "running") => {
                 assert!(Instant::now() < deadline, "the job never settled: {status}");
                 thread::sleep(Duration::from_millis(1));
             }
@@ -81,7 +81,7 @@ fn prepared(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) 
             None => return response.result.expect("a result"),
             Some(error) if error.code == "preparation-required" => {
                 let job = error.job_id.expect("a preparation names its job");
-                assert_eq!(settled(owner, client, &job)["state"], "ready");
+                assert_eq!(settled(owner, client, &job)["status"], "ready");
             }
             Some(error) => panic!("{method}: {error:?}"),
         }
@@ -140,7 +140,7 @@ fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
     let refused = failure(&owner, client, "render.sample", sample.clone());
     assert_eq!(refused.code, "preparation-required");
     let job = refused.job_id.expect("a job to wait for");
-    assert_eq!(settled(&owner, client, &job)["state"], "ready");
+    assert_eq!(settled(&owner, client, &job)["status"], "ready");
     assert_eq!(
         ok(&owner, client, "render.sample", sample.clone())["rgba"],
         json!(expected)
@@ -175,7 +175,7 @@ fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
             "analysis.read",
             json!({"job_id": requested["job_id"]}),
         );
-        if read["status"] != "pending" {
+        if !matches!(read["status"].as_str(), Some("queued" | "running")) {
             break read;
         }
         assert!(Instant::now() < deadline, "the analysis never settled");
@@ -270,7 +270,7 @@ fn a_corrupt_artifact_fails_its_preparation_job_and_nothing_is_rewritten() {
         let refused = failure(&owner, client, method, params);
         assert_eq!(refused.code, "preparation-required", "{method}");
         let failed = settled(&owner, client, &refused.job_id.unwrap());
-        assert_eq!(failed["state"], "failed", "{method}: {failed}");
+        assert_eq!(failed["status"], "failed", "{method}: {failed}");
         assert_eq!(failed["error"]["code"], "source-unavailable");
         assert_eq!(
             failed["error"]["message"],
@@ -380,7 +380,7 @@ fn collection_through_the_api_counts_what_it_removed() {
     );
     assert_eq!(queued["status"], "queued");
     let done = settled(&owner, client, queued["job_id"].as_str().unwrap());
-    assert_eq!(done["state"], "ready", "{done}");
+    assert_eq!(done["status"], "ready", "{done}");
     assert_eq!(
         done["result"],
         json!({"rows": 1, "objects": 2, "temporary": 1})

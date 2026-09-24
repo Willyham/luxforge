@@ -1209,7 +1209,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 | `module.settings.read` owner round trip | 0.009 / 0.012 ms | 30 |
 | `module.activate` to active (the proof reads and checks its palette) | 0.27 / 0.31 ms | 30 |
 | Cancel a running activation to `cancelled` (the proof's slow loader checks every ~10 ms) | 10.2 / 15.1 ms | 10 |
-| A whole `task.generate-proof-tint`: request to `succeeded`, including the 64 samples, the file read, the loopback request, the artifact publish and its row | 14.9 / 15.8 ms | 30 |
+| A whole `task.generate-proof-tint`: request to `ready`, including the 64 samples, the file read, the loopback request, the artifact publish and its row | 14.9 / 15.8 ms | 30 |
 | … of which publishing one 12-byte artifact (synced, renamed) | 9.1 / 9.9 ms | 30 |
 | Cancel a task stalled inside its request to `cancelled` (100 ms read slice) | 84.8 / 89.6 ms | 10 |
 | Installed proof resource on disk, `installed.json` included; staging left behind | 448 bytes; none | 1 |

@@ -89,7 +89,7 @@ pub(crate) struct GpuCounters {
 
 /// One `activity.list` answer, as much of it as the section reads: the rows need labels, details,
 /// phases, progress and times, never an entry's kind, identity or job.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub(crate) struct ActivityList {
     /// Oldest first.
     pub(crate) active: Vec<ActiveJob>,
@@ -97,7 +97,7 @@ pub(crate) struct ActivityList {
     pub(crate) recent: Vec<RecentJob>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub(crate) struct ActiveJob {
     pub(crate) label: String,
     pub(crate) detail: Option<String>,
@@ -117,10 +117,13 @@ pub(crate) struct RecentJob {
     pub(crate) ended_ms_ago: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+/// The one progress model every activity on the board carries
+/// (`lightwell_core::activity::ActivityProgress`): a fraction of 0 to 1 and a short message. The
+/// section does not yet display the message; it is read so the shape round-trips exactly.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub(crate) struct JobProgress {
-    pub(crate) done: u64,
-    pub(crate) total: u64,
+    pub(crate) fraction: Option<f64>,
+    pub(crate) message: Option<String>,
 }
 
 /// The sampler's window of raw samples and the board it read last. It is bounded to
@@ -615,8 +618,9 @@ fn running(job: &ActiveJob) -> JobRow {
         detail: (!parts.is_empty()).then(|| parts.join(" \u{b7} ")),
         progress: job
             .progress
-            .filter(|progress| progress.total > 0)
-            .map(|progress| (progress.done as f64 / progress.total as f64) as f32),
+            .as_ref()
+            .and_then(|progress| progress.fraction)
+            .map(|fraction| fraction.clamp(0.0, 1.0) as f32),
         running: true,
     }
 }
@@ -1066,9 +1070,15 @@ mod tests {
     #[test]
     fn one_long_job_is_one_job_and_its_progress_is_a_fraction() {
         let mut export = active("Exporting", 64_000);
-        export.progress = Some(JobProgress { done: 3, total: 8 });
+        export.progress = Some(JobProgress {
+            fraction: Some(0.375),
+            message: None,
+        });
         let mut unknown = active("Exporting", 400);
-        unknown.progress = Some(JobProgress { done: 3, total: 0 });
+        unknown.progress = Some(JobProgress {
+            fraction: None,
+            message: Some("preparing".into()),
+        });
         let listed = jobs(Some(&ActivityList {
             active: vec![export, unknown],
             ..ActivityList::default()
@@ -1078,11 +1088,14 @@ mod tests {
         assert_eq!(listed.rows[0].trailing, "1 min 4 s");
         assert_eq!(listed.rows[0].progress, Some(0.375));
         assert_eq!(listed.rows[0].detail, None, "neither a detail nor a phase");
-        let zero_total = running(&ActiveJob {
-            progress: Some(JobProgress { done: 3, total: 0 }),
+        let no_fraction = running(&ActiveJob {
+            progress: Some(JobProgress {
+                fraction: None,
+                message: Some("preparing".into()),
+            }),
             ..active("x", 900)
         });
-        assert_eq!(zero_total.progress, None, "no truthful total, no bar");
+        assert_eq!(no_fraction.progress, None, "no truthful fraction, no bar");
     }
 
     #[test]

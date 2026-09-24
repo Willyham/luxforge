@@ -638,10 +638,7 @@ fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
         "the grant cleared the denial"
     );
     let queued = owner.ok(INSTALL, install);
-    assert_eq!(
-        owner.finished(&queued["job_id"])["status"],
-        json!("succeeded")
-    );
+    assert_eq!(owner.finished(&queued["job_id"])["status"], json!("ready"));
     owner.stop();
 }
 
@@ -887,7 +884,7 @@ fn the_module_lane_runs_one_holds_four_and_refuses_the_sixth() {
         probe.hold.store(false, Ordering::SeqCst);
     }
     for job in [&first, &waiting[0], &waiting[3], &admitted] {
-        assert_eq!(owner.finished(&job["job_id"])["status"], json!("succeeded"));
+        assert_eq!(owner.finished(&job["job_id"])["status"], json!("ready"));
     }
     for (index, probe) in fixture.lanes.iter().enumerate() {
         let expected = match index {
@@ -1025,11 +1022,11 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
             json!({"module_id": MODULE, "resource_id": "palette"}),
         )["job_id"],
     );
-    assert_eq!(installed["status"], json!("succeeded"));
+    assert_eq!(installed["status"], json!("ready"));
     let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     assert_eq!(queued["activation"], json!("activating"));
     let activated = owner.finished(&queued["job_id"]);
-    assert_eq!(activated["status"], json!("succeeded"));
+    assert_eq!(activated["status"], json!("ready"));
     assert_eq!(activated["result"], json!({"activation": "active"}));
     assert_eq!(
         activated["request_id"],
@@ -1071,7 +1068,7 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
     assert_eq!(deactivated["activation"], json!("inactive"));
     let released = owner.finished(&deactivated["job_id"]);
     assert_eq!(released["kind"], json!("deactivate"));
-    assert_eq!(released["status"], json!("succeeded"));
+    assert_eq!(released["status"], json!("ready"));
     assert_eq!(fixture.probe.loaded.lock().unwrap().as_deref(), None);
     assert_eq!(
         owner.status(MODULE)["activation"],
@@ -1134,10 +1131,7 @@ fn a_failed_activation_reads_failed_and_releases_its_partial_state() {
     // A failed module can be activated again.
     fixture.probe.fail.store(false, Ordering::SeqCst);
     let retried = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(
-        owner.finished(&retried["job_id"])["status"],
-        json!("succeeded")
-    );
+    assert_eq!(owner.finished(&retried["job_id"])["status"], json!("ready"));
     assert_eq!(owner.status(MODULE)["activation"]["state"], json!("active"));
     owner.stop();
 }
@@ -1161,7 +1155,7 @@ fn a_settings_change_that_invalidates_activation_deactivates_the_module() {
     assert_eq!(status["activation"]["reason"], json!("settings changed"));
     assert_eq!(
         owner.finished(&release_job(&status))["status"],
-        json!("succeeded")
+        json!("ready")
     );
     assert_eq!(fixture.probe.loaded.lock().unwrap().as_deref(), None);
     assert_eq!(fixture.probe.deactivations.load(Ordering::SeqCst), 1);
@@ -1192,7 +1186,7 @@ fn a_download_installs_the_pinned_bytes_with_their_record() {
         "a second install joins the first: {joined}"
     );
     let done = owner.finished(&queued["job_id"]);
-    assert_eq!(done["status"], json!("succeeded"));
+    assert_eq!(done["status"], json!("ready"));
     assert_eq!(done["kind"], json!("install"));
     assert_eq!(done["resource_id"], json!("palette"));
     assert_eq!(done["progress"]["fraction"], json!(1.0));
@@ -1322,10 +1316,7 @@ fn every_failed_install_leaves_nothing_installed_and_nothing_staged() {
     *mode.lock().unwrap() = "good";
     fixture.probe.refuse.store(false, Ordering::SeqCst);
     let queued = owner.ok(INSTALL, install);
-    assert_eq!(
-        owner.finished(&queued["job_id"])["status"],
-        json!("succeeded")
-    );
+    assert_eq!(owner.finished(&queued["job_id"])["status"], json!("ready"));
     owner.stop();
 }
 
@@ -1421,7 +1412,7 @@ fn what_a_crash_leaves_is_not_installed_and_the_next_install_removes_it() {
         json!([{"kind": "resource", "id": "palette", "state": "not-installed"}])
     );
     let done = owner.install_from_file(&fixture, "palette", PALETTE);
-    assert_eq!(done["status"], json!("succeeded"));
+    assert_eq!(done["status"], json!("ready"));
     assert!(!stale.exists(), "the stale staging directory was removed");
     assert!(!fixture.resources().join(STAGING_DIR).exists());
     assert!(fixture.version_dir("palette").join(INSTALLED_FILE).exists());
@@ -1434,7 +1425,7 @@ fn a_local_file_installs_without_a_grant_only_when_its_bytes_match() {
     let fixture = Fixture::new("local", &server);
     let owner = fixture.start();
     let done = owner.install_from_file(&fixture, "palette", PALETTE);
-    assert_eq!(done["status"], json!("succeeded"), "{done}");
+    assert_eq!(done["status"], json!("ready"), "{done}");
     let marker: Value = serde_json::from_slice(
         &fs::read(fixture.version_dir("palette").join(INSTALLED_FILE)).unwrap(),
     )
@@ -1477,10 +1468,7 @@ fn removing_a_required_resource_deactivates_the_module_and_deletes_only_the_reso
         REMOVE,
         json!({"module_id": MODULE, "resource_id": "swatch"}),
     );
-    assert_eq!(
-        owner.finished(&swatch["job_id"])["status"],
-        json!("succeeded")
-    );
+    assert_eq!(owner.finished(&swatch["job_id"])["status"], json!("ready"));
     assert_eq!(owner.status(MODULE)["activation"]["state"], json!("active"));
     assert!(!fixture.version_dir("swatch").exists());
     let removal = owner.ok(
@@ -1491,7 +1479,7 @@ fn removing_a_required_resource_deactivates_the_module_and_deletes_only_the_reso
     assert_eq!(status["activation"]["state"], json!("inactive"));
     assert_eq!(status["activation"]["reason"], json!("resource removed"));
     let removed = owner.finished(&removal["job_id"]);
-    assert_eq!(removed["status"], json!("succeeded"));
+    assert_eq!(removed["status"], json!("ready"));
     assert_eq!(
         removed["result"],
         json!({"resource_id": "palette", "version": "1.0.0", "removed": true})
@@ -1718,10 +1706,7 @@ fn a_retry_of_every_capability_family_returns_the_first_answer_and_records_no_ev
         INSTALL,
         json!({"module_id": MODULE, "resource_id": "palette", "mutation": envelope("install-1")}),
     );
-    assert_eq!(
-        owner.job(&installed["job_id"])["status"],
-        json!("succeeded")
-    );
+    assert_eq!(owner.job(&installed["job_id"])["status"], json!("ready"));
     assert_eq!(jobs("install"), 1, "the retry queued no second install");
     let activating = twice(
         owner.edit,
@@ -1747,7 +1732,7 @@ fn a_retry_of_every_capability_family_returns_the_first_answer_and_records_no_ev
         REMOVE,
         json!({"module_id": MODULE, "resource_id": "palette", "mutation": envelope("remove-1")}),
     );
-    assert_eq!(owner.job(&removed["job_id"])["status"], json!("succeeded"));
+    assert_eq!(owner.job(&removed["job_id"])["status"], json!("ready"));
     assert_eq!(jobs("remove"), 1, "the retry queued no second removal");
     let revoked = twice(
         owner.edit,

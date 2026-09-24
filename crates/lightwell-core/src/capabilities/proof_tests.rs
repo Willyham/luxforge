@@ -357,13 +357,13 @@ impl Owner {
                     let deadline = Instant::now() + Duration::from_secs(20);
                     loop {
                         let status = self.ok("job.status", json!({"job_id": job}));
-                        match status["state"].as_str() {
-                            Some("queued" | "preparing") => {
+                        match status["status"].as_str() {
+                            Some("queued" | "running") => {
                                 assert!(Instant::now() < deadline, "{status}");
                                 thread::sleep(Duration::from_millis(2));
                             }
                             _ => {
-                                assert_eq!(status["state"], "ready", "{status}");
+                                assert_eq!(status["status"], "ready", "{status}");
                                 break;
                             }
                         }
@@ -445,9 +445,9 @@ fn ready(fixture: &Fixture, owner: &Owner, assets: [AssetId; 2]) -> Ready {
     let install = json!({"module_id": MODULE, "resource_id": "proof-palette"});
     owner.grant(&owner.fail(INSTALL, install.clone()));
     let installed = owner.ok(INSTALL, install);
-    assert_eq!(owner.finished(&installed["job_id"])["status"], "succeeded");
+    assert_eq!(owner.finished(&installed["job_id"])["status"], "ready");
     let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(owner.finished(&activating["job_id"])["status"], "succeeded");
+    assert_eq!(owner.finished(&activating["job_id"])["status"], "ready");
     owner.grant(&owner.task(&assets[0], &profile).unwrap_err());
     Ready { assets, profile }
 }
@@ -606,9 +606,9 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     owner.grant(&refused);
     let installed = owner.ok(INSTALL, install);
     let job = owner.finished(&installed["job_id"]);
-    assert_eq!(job["status"], "succeeded", "{job}");
+    assert_eq!(job["status"], "ready", "{job}");
     let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(owner.finished(&activating["job_id"])["status"], "succeeded");
+    assert_eq!(owner.finished(&activating["job_id"])["status"], "ready");
     assert_eq!(
         owner.ok(STATUS, json!({"module_id": MODULE}))["activation"]["state"],
         "active"
@@ -657,7 +657,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
         "sampling a photo the owner has not prepared queued its preparation first"
     );
     let job = owner.finished(&queued["job_id"]);
-    assert_eq!(job["status"], "succeeded", "{job}");
+    assert_eq!(job["status"], "ready", "{job}");
     assert_eq!(job["kind"], "task");
     let result = &job["result"]["result"];
     let artifact = job["result"]["artifacts"][0].clone();
@@ -746,7 +746,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
             assert_eq!(error.code, "preparation-required");
             let job = error.job_id.unwrap();
             let deadline = Instant::now() + Duration::from_secs(20);
-            while owner.ok("job.status", json!({"job_id": job}))["state"] != "ready" {
+            while owner.ok("job.status", json!({"job_id": job}))["status"] != "ready" {
                 assert!(Instant::now() < deadline);
                 thread::sleep(Duration::from_millis(2));
             }
@@ -796,7 +796,7 @@ fn every_photo_needs_its_own_remote_grant_and_a_denial_is_reported() {
     let owner = fixture.start();
     let Ready { assets, profile } = ready(&fixture, &owner, assets);
     let queued = owner.task(&assets[0], &profile).unwrap();
-    assert_eq!(owner.finished(&queued["job_id"])["status"], "succeeded");
+    assert_eq!(owner.finished(&queued["job_id"])["status"], "ready");
     // The remote grant covers only the first photo.
     let refused = owner.task(&assets[1], &profile).unwrap_err();
     assert_eq!(refused.code, "consent-required");
@@ -956,7 +956,7 @@ fn only_a_successful_task_records_what_it_published() {
     );
     let queued = owner.ok("task.publish-then-answer", json!({"fail": false}));
     let job = owner.finished(&queued["job_id"]);
-    assert_eq!(job["status"], "succeeded");
+    assert_eq!(job["status"], "ready");
     assert_eq!(
         job["result"],
         json!({"result": {"published": id}, "artifacts": [id]})
@@ -1058,7 +1058,7 @@ fn removing_the_resource_deactivates_the_module_and_the_accepted_tint_still_rend
         REMOVE,
         json!({"module_id": MODULE, "resource_id": "proof-palette"}),
     );
-    assert_eq!(owner.finished(&removed["job_id"])["status"], "succeeded");
+    assert_eq!(owner.finished(&removed["job_id"])["status"], "ready");
     let status = owner.ok(STATUS, json!({"module_id": MODULE}));
     assert_eq!(status["activation"]["state"], "inactive");
     assert_eq!(status["activation"]["reason"], "resource removed");
@@ -1098,7 +1098,7 @@ fn a_running_activation_of_the_proof_module_is_cancelled_by_a_deactivation() {
         INSTALL,
         json!({"module_id": MODULE, "resource_id": "proof-palette", "source": {"kind": "file", "path": path}}),
     );
-    assert_eq!(owner.finished(&installed["job_id"])["status"], "succeeded");
+    assert_eq!(owner.finished(&installed["job_id"])["status"], "ready");
     let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     let deadline = Instant::now() + Duration::from_secs(20);
     while owner.ok(JOB_READ, json!({"job_id": activating["job_id"]}))["status"] != "running" {
@@ -1328,7 +1328,7 @@ fn capability_timing() {
         let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
         let (job, _) = settled(&owner, &activating["job_id"]);
         activation.push(started.elapsed().as_secs_f64() * 1000.0);
-        assert_eq!(job["status"], "succeeded", "{job}");
+        assert_eq!(job["status"], "ready", "{job}");
     }
     report("activate to active (proof palette load)", &mut activation);
     drop(owner);
@@ -1347,7 +1347,7 @@ fn capability_timing() {
         let queued = owner.task(&assets[0], &profile).unwrap();
         let (job, _) = settled(&owner, &queued["job_id"]);
         task.push(started.elapsed().as_secs_f64() * 1000.0);
-        assert_eq!(job["status"], "succeeded", "{job}");
+        assert_eq!(job["status"], "ready", "{job}");
     }
     report("task request to succeeded (loopback round trip)", &mut task);
     // The task's durable part: one artifact synced and renamed into place, as the writer does it.

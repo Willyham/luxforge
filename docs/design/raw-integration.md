@@ -48,8 +48,8 @@ There is one source worker, eight pending tasks, 64 retained terminal job result
 
 The current API exposes:
 
-- `catalog.import`: return `{job_id,state}` and commit an asset only after successful preparation.
-- `job.status`: queued/preparing/ready/failed; a ready result includes the asset state.
+- `catalog.import`: return `{job_id,status}` and commit an asset only after successful preparation.
+- `job.status`: queued/running/ready/failed; a ready result includes the asset state.
 - `job.cancel`: detach this client's interest; another waiter keeps shared work alive.
 - `job.adopt`: adopt only this client's latest ready import into its session.
 - `source.prepare`: request preparation for an asset and optional historical entry.

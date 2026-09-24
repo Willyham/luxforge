@@ -8,7 +8,8 @@ use super::{
 };
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
-    ErrorKind, HostConfig, JobId, MaskOverlayRequest, ModuleRegistry, PreviewJob, ProxyBounds,
+    ErrorKind, HostConfig, JobId, JobStatus, MaskOverlayRequest, ModuleRegistry, PreviewJob,
+    ProxyBounds,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
@@ -81,10 +82,10 @@ enum OwnerMessage {
         identity: Box<AnalysisIdentity>,
         report: Box<Report>,
     },
-    SourceStarted(String),
+    SourceStarted(JobId),
     /// Boxed: a prepared source with its verified artifacts is several times larger than any
     /// other message, and every message on the owner's channel would otherwise carry that size.
-    SourceComplete(String, Box<Result<SourceResult, Error>>),
+    SourceComplete(JobId, Box<Result<SourceResult, Error>>),
     /// A client registered with more than edit authority. Sent by `register_with` before it
     /// returns, so the channel orders it before any call the client makes.
     Register {
@@ -207,7 +208,7 @@ enum SourceResult {
 }
 
 struct SourceTask {
-    id: String,
+    id: JobId,
     key: SourceFlightKey,
     cancelled: Arc<AtomicBool>,
     kind: SourceTaskKind,
@@ -242,10 +243,9 @@ struct SourceJob {
 
 struct SourceJobs {
     sender: SyncSender<SourceTask>,
-    jobs: HashMap<String, SourceJob>,
-    active: HashMap<SourceFlightKey, String>,
-    completed: VecDeque<String>,
-    next_id: u64,
+    jobs: HashMap<JobId, SourceJob>,
+    active: HashMap<SourceFlightKey, JobId>,
+    completed: VecDeque<JobId>,
 }
 
 /// The identities a job reads, sorted, for its flight key.
@@ -262,7 +262,7 @@ impl SourceJobs {
         path: PathBuf,
         expected_fingerprint: Option<String>,
         artifacts: Vec<ArtifactRead>,
-    ) -> Result<String, Error> {
+    ) -> Result<JobId, Error> {
         let (canonical, signature) = EditorService::request_signature(&path)?;
         let key = SourceFlightKey {
             path: canonical,
@@ -280,7 +280,7 @@ impl SourceJobs {
         client: ClientId,
         asset_id: AssetId,
         artifacts: Vec<ArtifactRead>,
-    ) -> Result<String, Error> {
+    ) -> Result<JobId, Error> {
         let key = SourceFlightKey {
             path: asset_id.as_str().into(),
             signature: None,
@@ -298,7 +298,7 @@ impl SourceJobs {
         client: ClientId,
         path: PathBuf,
         kind: SourceTaskKind,
-    ) -> Result<String, Error> {
+    ) -> Result<JobId, Error> {
         let key = SourceFlightKey {
             path,
             signature: None,
@@ -319,14 +319,13 @@ impl SourceJobs {
         artifacts: Vec<ArtifactRead>,
         sensor: Option<Weak<lightwell_raw::RawSource>>,
         shared: bool,
-    ) -> Result<String, Error> {
+    ) -> Result<JobId, Error> {
         if shared && let Some(id) = self.active.get(&key) {
             let job = self.jobs.get_mut(id).expect("active job is indexed");
             job.clients.insert(client);
             return Ok(id.clone());
         }
-        let id = format!("source-job-{}", self.next_id);
-        self.next_id = self.next_id.saturating_add(1);
+        let id = JobId::new();
         let cancelled = Arc::new(AtomicBool::new(false));
         let task = SourceTask {
             id: id.clone(),
@@ -372,7 +371,7 @@ impl SourceJobs {
         client: ClientId,
         request: RawDevelopment,
         artifacts: Vec<ArtifactRead>,
-    ) -> Result<String, Error> {
+    ) -> Result<JobId, Error> {
         let key = SourceFlightKey {
             path: request.asset_id.as_str().into(),
             signature: Some(request.signature.clone()),
@@ -411,10 +410,9 @@ impl SourceJobs {
         self.submit(client, key, kind, artifacts, Some(sensor), true)
     }
 
-    fn ready(&mut self, client: ClientId, state: EditorState) -> Result<String, Error> {
+    fn ready(&mut self, client: ClientId, state: EditorState) -> Result<JobId, Error> {
         let signature = EditorService::request_signature(&state.asset.locator)?.1;
-        let id = format!("source-job-{}", self.next_id);
-        self.next_id = self.next_id.saturating_add(1);
+        let id = JobId::new();
         self.jobs.insert(
             id.clone(),
             SourceJob {
@@ -441,7 +439,7 @@ impl SourceJobs {
         Ok(id)
     }
 
-    fn mark_import(&mut self, id: &str, request_id: &str) {
+    fn mark_import(&mut self, id: &JobId, request_id: &str) {
         if let Some(job) = self.jobs.get_mut(id)
             && job.import_request_id.is_none()
         {
@@ -449,7 +447,9 @@ impl SourceJobs {
         }
     }
 
-    fn status(&self, client: ClientId, id: &str) -> Result<Value, Error> {
+    /// `queued`, `running` (preparing), `ready`, `failed`. Never `cancelled`: a client that cancels
+    /// leaves the job (see [`Self::cancel`]) and cannot read it again.
+    fn status(&self, client: ClientId, id: &JobId) -> Result<Value, Error> {
         let job = self
             .jobs
             .get(id)
@@ -458,17 +458,23 @@ impl SourceJobs {
                 Error::new(ErrorKind::Validation, "unknown source job for this client")
             })?;
         Ok(match &job.state {
-            SourceState::Queued => json!({"job_id":id,"state":"queued"}),
-            SourceState::Preparing => json!({"job_id":id,"state":"preparing"}),
-            SourceState::Ready(asset) => json!({"job_id":id,"state":"ready","asset":asset}),
-            SourceState::Finished(result) => json!({"job_id":id,"state":"ready","result":result}),
+            SourceState::Queued => json!({"job_id":id,"status":JobStatus::Queued}),
+            SourceState::Preparing => json!({"job_id":id,"status":JobStatus::Running}),
+            SourceState::Ready(asset) => {
+                json!({"job_id":id,"status":JobStatus::Ready,"asset":asset})
+            }
+            SourceState::Finished(result) => {
+                json!({"job_id":id,"status":JobStatus::Ready,"result":result})
+            }
             SourceState::Failed(error) => {
-                json!({"job_id":id,"state":"failed","error":{"code":error.kind.code(),"message":error.detail}})
+                json!({"job_id":id,"status":JobStatus::Failed,"error":{"code":error.kind.code(),"message":error.detail}})
             }
         })
     }
 
-    fn cancel(&mut self, client: ClientId, id: &str) -> Result<Value, Error> {
+    /// Leave the job: the calling client will never read it again, whatever becomes of the work.
+    /// The last client leaving stops the underlying task, if it has not already finished.
+    fn cancel(&mut self, client: ClientId, id: &JobId) -> Result<Value, Error> {
         let job = self.jobs.get_mut(id).ok_or_else(|| {
             Error::new(ErrorKind::Validation, "unknown source job for this client")
         })?;
@@ -485,7 +491,7 @@ impl SourceJobs {
                 self.active.remove(&key);
             }
         }
-        Ok(json!({"job_id":id,"state":"cancelled"}))
+        Ok(json!({"job_id":id,"status":JobStatus::Cancelled}))
     }
 
     fn disconnect(&mut self, client: ClientId) {
@@ -504,7 +510,7 @@ impl SourceJobs {
     }
 
     /// Record a finished job's outcome: ready, finished or failed.
-    fn complete(&mut self, id: &str, state: SourceState) {
+    fn complete(&mut self, id: &JobId, state: SourceState) {
         let Some(job) = self.jobs.get_mut(id) else {
             return;
         };
@@ -513,7 +519,7 @@ impl SourceJobs {
         }
         job.state = state;
         job.sensor = None;
-        self.completed.push_back(id.to_owned());
+        self.completed.push_back(id.clone());
         while self.completed.len() > SOURCE_RESULT_CAPACITY {
             if let Some(old) = self.completed.pop_front() {
                 self.jobs.remove(&old);
@@ -533,7 +539,7 @@ fn queue_preparation(
     asset_id: &AssetId,
     entry_id: Option<&EntryId>,
     requested: &[ArtifactId],
-) -> Result<String, Error> {
+) -> Result<JobId, Error> {
     let artifacts = service.artifact_preparation(asset_id, entry_id, requested)?;
     if let Some(request) = service.raw_development(asset_id, entry_id)? {
         let id = jobs.enqueue_development(client, request, artifacts)?;
@@ -585,28 +591,28 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned()),
             asset_id: None,
-            job_id: Some(task.id.clone()),
+            job_id: Some(task.id.to_string()),
         },
         SourceTaskKind::Develop(request) => ActivitySpec {
             kind: "source.develop",
             label: "Developing RAW",
             detail: request.file_name.clone(),
             asset_id: Some(request.asset_id.clone()),
-            job_id: Some(task.id.clone()),
+            job_id: Some(task.id.to_string()),
         },
         SourceTaskKind::Artifacts(asset_id) => ActivitySpec {
             kind: "artifacts.read",
             label: "Verifying artifacts",
             detail: None,
             asset_id: Some(asset_id.clone()),
-            job_id: Some(task.id.clone()),
+            job_id: Some(task.id.to_string()),
         },
         SourceTaskKind::Collect(_) => ActivitySpec {
             kind: "artifacts.collect",
             label: "Removing unused artifacts",
             detail: None,
             asset_id: None,
-            job_id: Some(task.id.clone()),
+            job_id: Some(task.id.to_string()),
         },
     }
 }
@@ -766,7 +772,7 @@ host_params! {
 host_params! {
     /// `job.status`, `job.adopt` and `job.cancel`.
     pub(super) struct JobParams {
-        job_id: String,
+        job_id: JobId,
     }
 }
 
@@ -909,6 +915,7 @@ impl OwnerHandle {
             Arc::new(move |job_id, result| {
                 let _ = capability_sender.send(OwnerMessage::CapabilityFinished { job_id, result });
             }),
+            activity.clone(),
         );
         let owner_activity = activity.clone();
         let join = std::thread::spawn(move || {
@@ -1042,7 +1049,6 @@ fn owner_loop(
             jobs: HashMap::new(),
             active: HashMap::new(),
             completed: VecDeque::new(),
-            next_id: 1,
         },
         sessions: HashMap::new(),
         analyses: AnalysisStore::default(),
@@ -1168,7 +1174,7 @@ pub(super) struct Owner {
     analyses: AnalysisStore,
     queue: AnalysisQueue,
     activity: Arc<ActivityBoard>,
-    latest_import: HashMap<ClientId, String>,
+    latest_import: HashMap<ClientId, JobId>,
     log: EventLog,
     requests: RequestTable,
     /// What the message being handled changed, each change once. The owner records them as events
@@ -1343,7 +1349,7 @@ impl Owner {
             entry_id,
             &requested_artifacts(refused.data.as_deref()),
         ) {
-            Ok(id) => Error::new(ErrorKind::PreparationRequired, id),
+            Ok(id) => Error::new(ErrorKind::PreparationRequired, id.to_string()),
             Err(error) => error,
         }
     }
@@ -1363,7 +1369,7 @@ impl Owner {
 
     /// A source job finished on the worker: commit what it prepared for the clients still waiting,
     /// and record the import event when it created an asset.
-    fn source_complete(&mut self, id: &str, result: Result<SourceResult, Error>) {
+    fn source_complete(&mut self, id: &JobId, result: Result<SourceResult, Error>) {
         let interested = self
             .jobs
             .jobs
@@ -1425,20 +1431,20 @@ pub(super) fn catalog_import(
     params: Import,
 ) -> Result<Value, Error> {
     params.mutation.validate()?;
-    let (id, state) = match owner.service.cached_import(&params.path)? {
-        Some(state) => (owner.jobs.ready(call.client, state)?, "ready"),
+    let (id, status) = match owner.service.cached_import(&params.path)? {
+        Some(state) => (owner.jobs.ready(call.client, state)?, JobStatus::Ready),
         None => {
             let expected = owner.service.known_fingerprint(&params.path)?;
             let id = owner
                 .jobs
                 .enqueue(call.client, params.path, expected, Vec::new())?;
             owner.service.evict_development();
-            (id, "queued")
+            (id, JobStatus::Queued)
         }
     };
     owner.jobs.mark_import(&id, &call.request.id);
     owner.latest_import.insert(call.client, id.clone());
-    Ok(json!({"job_id": id, "state": state}))
+    Ok(json!({"job_id": id, "status": status}))
 }
 
 pub(super) fn job_status(
@@ -1472,7 +1478,10 @@ pub(super) fn job_adopt(
                 ));
             }
             SourceState::Queued | SourceState::Preparing => {
-                return Err(Error::new(ErrorKind::PreparationRequired, params.job_id));
+                return Err(Error::new(
+                    ErrorKind::PreparationRequired,
+                    params.job_id.to_string(),
+                ));
             }
         },
         _ => {
@@ -1513,7 +1522,7 @@ pub(super) fn source_prepare(
         params.entry_id.as_ref(),
         &[],
     )?;
-    Ok(json!({"job_id": id, "state": "queued"}))
+    Ok(json!({"job_id": id, "status": JobStatus::Queued}))
 }
 
 /// `artifact.collect`: remove the collectable rows now, in one catalog transaction, and queue a
@@ -1533,7 +1542,7 @@ pub(super) fn artifact_collect(
             .jobs
             .enqueue_maintenance(call.client, root, SourceTaskKind::Collect(collection))?;
     announce_once(&mut owner.announced, &call.origin);
-    Ok(json!({"job_id": id, "status": "queued"}))
+    Ok(json!({"job_id": id, "status": JobStatus::Queued}))
 }
 
 /// `activity.list`: one lock and a copy of at most 80 small entries.
@@ -1614,7 +1623,7 @@ pub(super) fn analysis_request(
     }
     let read = owner
         .analyses
-        .state_of(&job_id)
+        .state_of(&job_id, &owner.queue)
         .expect("the job was just opened or joined");
     let mut value = analysis_value(&read)?;
     value["job_id"] = json!(job_id);
@@ -1627,7 +1636,11 @@ pub(super) fn analysis_read(
     call: &Call<'_>,
     params: AnalysisJobParams,
 ) -> Result<Value, Error> {
-    analysis_value(&owner.analyses.read(&params.job_id, call.client)?)
+    analysis_value(
+        &owner
+            .analyses
+            .read(&params.job_id, call.client, &owner.queue)?,
+    )
 }
 
 /// `analysis.cancel`. Dropping the last interest drops a pending job outright; an active render is
@@ -1736,9 +1749,9 @@ mod tests {
                 "job.status",
                 json!({"job_id": job_id}),
             );
-            match status["state"].as_str() {
+            match status["status"].as_str() {
                 Some("ready") => break,
-                Some("queued" | "preparing") => {
+                Some("queued" | "running") => {
                     assert!(
                         std::time::Instant::now() < deadline,
                         "the import never became ready: {status}"
@@ -1770,9 +1783,9 @@ mod tests {
             .unwrap_or_else(|| panic!("{id} was expected to fail"))
     }
 
-    /// Poll `analysis.read` until the job leaves `pending`. Nothing in the owner polls: this is the
-    /// test standing in for a client that would rather be told, and it fails on a deadline instead
-    /// of spinning forever.
+    /// Poll `analysis.read` until the job leaves `queued` or `running`. Nothing in the owner
+    /// polls: this is the test standing in for a client that would rather be told, and it fails on
+    /// a deadline instead of spinning forever.
     fn settled(owner: &OwnerHandle, client: ClientId, job_id: &Value) -> Value {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
@@ -1783,7 +1796,7 @@ mod tests {
                 "analysis.read",
                 json!({"job_id": job_id}),
             );
-            if read["status"] != json!("pending") {
+            if !matches!(read["status"].as_str(), Some("queued" | "running")) {
                 return read;
             }
             assert!(
@@ -1848,9 +1861,9 @@ mod tests {
             let status = request(owner, client, "job.status", json!({"job_id":id}));
             assert!(status.error.is_none(), "{:?}", status.error);
             let status = status.result.unwrap();
-            match status["state"].as_str() {
+            match status["status"].as_str() {
                 Some("ready" | "failed") => return status,
-                Some("queued" | "preparing")
+                Some("queued" | "running")
                     if start.elapsed() < std::time::Duration::from_secs(5) =>
                 {
                     std::thread::sleep(std::time::Duration::from_millis(1))
@@ -1895,10 +1908,10 @@ mod tests {
             let b_status = request(&owner, second, "job.status", json!({"job_id":b_id}))
                 .result
                 .unwrap();
-            assert_ne!(a_status["state"], "failed", "{a_status}");
-            assert_ne!(b_status["state"], "failed", "{b_status}");
-            a_ready = a_status["state"] == "ready";
-            b_ready = b_status["state"] == "ready";
+            assert_ne!(a_status["status"], "failed", "{a_status}");
+            assert_ne!(b_status["status"], "failed", "{b_status}");
+            a_ready = a_status["status"] == "ready";
+            b_ready = b_status["status"] == "ready";
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(
@@ -1938,9 +1951,9 @@ mod tests {
                             )
                             .result
                             .unwrap();
-                            match status["state"].as_str() {
+                            match status["status"].as_str() {
                                 Some("ready" | "failed") => break status,
-                                Some("queued" | "preparing") => {
+                                Some("queued" | "running") => {
                                     assert!(
                                         std::time::Instant::now() < until,
                                         "RAW preparation stalled: {status}"
@@ -1950,7 +1963,7 @@ mod tests {
                                 other => panic!("invalid source state: {other:?}"),
                             }
                         };
-                        assert_eq!(prepared["state"], "ready", "{prepared}");
+                        assert_eq!(prepared["status"], "ready", "{prepared}");
                     }
                     Some(error) => panic!("RAW sample failed: {error:?}"),
                 }
@@ -1997,7 +2010,6 @@ mod tests {
             jobs: HashMap::new(),
             active: HashMap::new(),
             completed: VecDeque::new(),
-            next_id: 1,
         };
         let first = jobs
             .enqueue_development(ClientId(1), a.clone(), Vec::new())
@@ -2028,7 +2040,6 @@ mod tests {
             jobs: HashMap::new(),
             active: HashMap::new(),
             completed: VecDeque::new(),
-            next_id: 1,
         };
         let first = ClientId(1);
         let second = ClientId(2);
@@ -2037,8 +2048,8 @@ mod tests {
             jobs.enqueue(second, fixture(), None, Vec::new()).unwrap(),
             id
         );
-        assert_eq!(jobs.cancel(first, &id).unwrap()["state"], "cancelled");
-        assert_eq!(jobs.status(second, &id).unwrap()["state"], "queued");
+        assert_eq!(jobs.cancel(first, &id).unwrap()["status"], "cancelled");
+        assert_eq!(jobs.status(second, &id).unwrap()["status"], "queued");
         jobs.disconnect(second);
         assert!(jobs.jobs[&id].cancelled.load(Ordering::Relaxed));
         assert_ne!(
@@ -2055,7 +2066,6 @@ mod tests {
             jobs: HashMap::new(),
             active: HashMap::new(),
             completed: VecDeque::new(),
-            next_id: 1,
         };
         let path = temp("source-flight-changed.jpg");
         std::fs::copy(fixture(), &path).unwrap();
@@ -2090,7 +2100,7 @@ mod tests {
             .unwrap();
         let first = a["job_id"].as_str().unwrap();
         let second = b["job_id"].as_str().unwrap();
-        assert_eq!(wait_source(&owner, client, first)["state"], "ready");
+        assert_eq!(wait_source(&owner, client, first)["status"], "ready");
         let expected = wait_source(&owner, client, second)["asset"]["asset"]["id"].clone();
         let stale = request(&owner, client, "job.adopt", json!({"job_id":first}));
         assert_eq!(stale.error.unwrap().code, "conflict");
@@ -2123,7 +2133,7 @@ mod tests {
         assert_eq!(
             request(&owner, first, "job.cancel", json!({"job_id":first_id}))
                 .result
-                .unwrap()["state"],
+                .unwrap()["status"],
             "cancelled"
         );
         assert_eq!(
@@ -2134,13 +2144,13 @@ mod tests {
             "validation"
         );
         let ready = wait_source(&owner, second, second_id);
-        assert_eq!(ready["state"], "ready");
+        assert_eq!(ready["status"], "ready");
         let asset = ready["asset"]["asset"]["id"].clone();
         let again = request(&owner, second, "catalog.import", import_params(fixture()))
             .result
             .unwrap();
         assert_eq!(
-            again["state"], "ready",
+            again["status"], "ready",
             "a matching signature uses cached pixels"
         );
         assert_eq!(
@@ -2190,7 +2200,7 @@ mod tests {
             "the owner answers while decode runs"
         );
         assert_eq!(
-            wait_source(&owner, client, &error.message)["state"],
+            wait_source(&owner, client, &error.message)["status"],
             "ready"
         );
         assert_eq!(
@@ -2213,7 +2223,7 @@ mod tests {
             .result
             .unwrap();
         let failed = wait_source(&owner, client, queued["job_id"].as_str().unwrap());
-        assert_eq!(failed["state"], "failed");
+        assert_eq!(failed["status"], "failed");
         assert_eq!(
             request(&owner, client, "catalog.list", json!({}))
                 .result
@@ -2310,9 +2320,9 @@ mod tests {
         let job_id = queued["job_id"].as_str().unwrap();
         let imported = loop {
             let status = call(viewer, "status", "job.status", json!({"job_id":job_id}));
-            match status["state"].as_str() {
+            match status["status"].as_str() {
                 Some("ready") => break status["asset"].clone(),
-                Some("queued" | "preparing") => {
+                Some("queued" | "running") => {
                     std::thread::sleep(std::time::Duration::from_millis(1))
                 }
                 other => panic!("unexpected import job {other:?}: {status}"),
@@ -2862,11 +2872,15 @@ mod tests {
         // Three requests: the first takes the worker, the second the one pending slot and the
         // third displaces the second out of it.
         let active = entry_request(viewer, "a", &entries[0]);
-        assert_eq!(active["status"], json!("pending"));
+        assert_eq!(active["status"], json!("running"), "the worker holds it");
         let displaced = entry_request(viewer, "b", &entries[1]);
-        assert_eq!(displaced["status"], json!("pending"));
+        assert_eq!(
+            displaced["status"],
+            json!("queued"),
+            "waits in the one slot"
+        );
         let winner = entry_request(viewer, "c", &entries[2]);
-        assert_eq!(winner["status"], json!("pending"));
+        assert_eq!(winner["status"], json!("queued"), "took the slot from b");
         let superseded = read(viewer, "read-b", &displaced["job_id"]);
         assert_eq!(
             superseded["status"],
@@ -2883,7 +2897,7 @@ mod tests {
         // from the request that displaced it: the newest request always holds it.
         let again = entry_request(viewer, "b-again", &entries[1]);
         assert_ne!(again["job_id"], displaced["job_id"]);
-        assert_eq!(again["status"], json!("pending"));
+        assert_eq!(again["status"], json!("queued"), "took the slot from c");
         assert_eq!(
             read(viewer, "read-c", &winner["job_id"])["status"],
             json!("superseded"),
@@ -2912,7 +2926,7 @@ mod tests {
         // A disconnect releases every interest that client held, exactly as a cancel does: the
         // identity becomes re-requestable and the gone client owns no job.
         let before = entry_request(agent, "before", &entries[6]);
-        assert_eq!(before["status"], json!("pending"));
+        assert_eq!(before["status"], json!("queued"), "the slot was free again");
         owner.disconnect(agent);
         assert_eq!(
             failure(
@@ -2944,8 +2958,8 @@ mod tests {
         );
         assert_eq!(
             read(partner, "read-shared-held", &shared_partner["job_id"])["status"],
-            json!("pending"),
-            "the other client still wants it"
+            json!("queued"),
+            "the other client still wants it, still waiting for the worker"
         );
 
         // The gate opens: the held job finishes, the queue starts the one in the slot, and the
@@ -3258,17 +3272,17 @@ mod tests {
         );
         assert!(entry["elapsed_ms"].is_u64());
         // The worker begins the activity and then tells the owner it started, so the job reads as
-        // preparing a moment after it is listed; it is held there, and still listed, until the
+        // running a moment after it is listed; it is held there, and still listed, until the
         // gate opens.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while request(&owner, client, "job.status", json!({"job_id": job_id}))
             .result
-            .unwrap()["state"]
-            != json!("preparing")
+            .unwrap()["status"]
+            != json!("running")
         {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the held job never read as preparing"
+                "the held job never read as running"
             );
             std::thread::yield_now();
         }
@@ -3278,7 +3292,7 @@ mod tests {
         ));
         source_gate.open();
         assert_eq!(
-            wait_source(&owner, client, job_id.as_str().unwrap())["state"],
+            wait_source(&owner, client, job_id.as_str().unwrap())["status"],
             json!("ready")
         );
         // The entry ended before the owner learned the result, so it is recent already.
@@ -3623,14 +3637,14 @@ mod tests {
         assert_eq!(queued["deduplicated"], json!(false));
         let job_id = queued["job_id"].as_str().unwrap().to_owned();
         let ready = wait_source(&owner, client, &job_id);
-        assert_eq!(ready["state"], "ready");
+        assert_eq!(ready["status"], "ready");
         let asset = ready["asset"]["asset"]["id"].clone();
         let (events, imported_at) = events_after(&owner, client, 0);
         assert_eq!(events, [("catalog.import".to_owned(), "import".to_owned())]);
         let retried = ok(&owner, client, "import", "catalog.import", import);
         assert_eq!(retried["deduplicated"], json!(true));
         assert_eq!(retried["job_id"], json!(job_id));
-        assert_eq!(retried["state"], queued["state"], "the first answer");
+        assert_eq!(retried["status"], queued["status"], "the first answer");
         assert_eq!(events_after(&owner, client, 0).1, imported_at);
         conflict(
             "catalog.import",
@@ -3726,7 +3740,7 @@ mod tests {
         );
         assert_eq!(announced, 1);
         assert_eq!(
-            wait_source(&owner, client, collect["job_id"].as_str().unwrap())["state"],
+            wait_source(&owner, client, collect["job_id"].as_str().unwrap())["status"],
             "ready"
         );
 

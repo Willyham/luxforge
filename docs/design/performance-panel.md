@@ -18,16 +18,16 @@ The board's `sequence` changes whenever its contents change, so a poller can ski
 
 ## Scope
 
-In scope: the activity board and `activity.list`; the resource counters and `resources.read`; publishing from the work that exists today (source preparation, RAW redevelopment, preview jobs and owner-side analysis); the Performance section with its sampler; widgets, evidence and measurement.
+In scope: the activity board and `activity.list`; the resource counters and `resources.read`; publishing from the work that exists today (source preparation, RAW redevelopment, preview jobs, owner-side analysis and capability jobs); the Performance section with its sampler; widgets, evidence and measurement.
 
-Out of scope: export, AI and module-owned jobs, which will publish through the same board when they exist (a module's jobs will run on host workers under the [shared capability](module-capabilities.md) lifecycle, so the host publishes on the module's behalf); cancelling work from the panel; per-cache memory attribution; persisting the section's expanded state across launches; GPU time and GPU allocations on Windows and Linux.
+Out of scope: export and AI jobs, which will publish through the same board when they exist; cancelling work from the panel; per-cache memory attribution; persisting the section's expanded state across launches; GPU time and GPU allocations on Windows and Linux.
 
 ## Activity board
 
 `lightwell_core::activity`. One board per catalog owner, created at `OwnerHandle::start_with` and shared as `Arc<ActivityBoard>` with the owner's workers; `OwnerHandle::activity()` hands the desktop the same board for its preview queue.
 
 - `board.begin(spec) -> Activity` records an active entry and returns a guard. `spec` is `{kind, label, detail?, asset_id?, job_id?}`: `kind` is a stable dotted identifier, `label` a short present-participle phrase for people, `detail` an optional second line (a file name), `job_id` the id of a job that `job.status` can also answer, when there is one.
-- `activity.phase(&'static str)` and `activity.progress(done, total)` update the entry. Progress is reported only by work that knows a truthful total; nothing today does, so no current publisher calls it.
+- `activity.phase(&'static str)` and `activity.progress(fraction, message)` update the entry: `fraction` is 0 to 1 when the work knows a truthful extent, `message` a short word for what it is doing (`downloading`, `copying`). Either may be omitted. A capability job's `ModuleContext::progress` is this call, forwarded through its `JobControl`; `module.job.read` answers with the same progress rather than keeping its own copy.
 - `activity.finish(outcome)` with `completed`, `cancelled` or `failed` moves the entry to the recent list. Dropping the guard without finishing records `cancelled`, or `failed` when the thread is panicking, so an entry can never outlive its work.
 - Bounds: at most 64 active entries; a `begin` past that is still allowed to run, returns a guard that records nothing and increments `untracked`. At most 16 recent entries, newest first, and only work that ran for at least 250 ms enters the recent list, so a drag's preview churn never evicts a RAW redevelopment. The threshold is a board constant that tests may lower.
 - Cost: `begin`, `phase` and `finish` each take one uncontended mutex and allocate only the optional detail string. Labels are `&'static str`. No timer, thread or queue is added.
@@ -40,8 +40,13 @@ Publishers today:
 | `source.develop` | Developing RAW | Source worker, `SourceTaskKind::Develop` | File name | none |
 | `preview.render` | Rendering preview | The preview queue's job thread, from its start to the end of its exact phase, before the exact result is sent | none | `proxy` (when a proxy plan exists), then `exact` |
 | `analysis.histogram` | Measuring histogram | The owner's analysis job thread, until before its result is posted | none | none |
+| `module.activate` | Activating module | The capability worker's module lane, from the moment it dispatches the job to the moment its result is in | Module ID | none |
+| `module.deactivate` | Deactivating module | The capability worker's module lane | Module ID | none |
+| `module.resource.install` | Installing resource | The capability worker's transfer lane | `<module ID>/<resource ID>` | none |
+| `module.resource.remove` | Removing resource | The capability worker's transfer lane | `<module ID>/<resource ID>` | none |
+| `module.task` | Running task | The capability worker's module lane | Module ID | none |
 
-Every entry but `source.prepare` names its `asset_id`; a new import has no asset yet. A source job's `job_id` is the one `job.status` answers, an analysis job's the one `analysis.read` answers. Each entry ends before its result reaches a reader, so a client that sees the job finished never still finds it running. A cancelled source job, a superseded or abandoned exact phase and `ErrorKind::Cancelled` end `cancelled`; any other error ends `failed`.
+Every entry but `source.prepare` names its `asset_id`; a new import has no asset yet. Capability jobs name no `asset_id`: a task's photo is in its own request, not the board's schema. A source job's `job_id` is the one `job.status` answers, an analysis job's the one `analysis.read` answers, a capability job's the one `module.job.read` answers. Each entry ends before its result reaches a reader, so a client that sees the job finished never still finds it running. A cancelled source job, a superseded or abandoned exact phase and `ErrorKind::Cancelled` end `cancelled`; any other error ends `failed`.
 
 The clipping overlay and preset import are left out: the first is a desktop-local reduction measured in milliseconds, the second runs synchronously on the owner.
 
@@ -54,7 +59,7 @@ No parameters (an omitted or empty `params` is accepted and any key is refused, 
   "sequence": 812,
   "active": [
     {"id": 41, "kind": "source.develop", "label": "Developing RAW", "detail": "DSC_0412.NEF",
-     "asset_id": "…", "job_id": "source-job-7", "elapsed_ms": 1204}
+     "asset_id": "…", "job_id": "job-…", "elapsed_ms": 1204}
   ],
   "recent": [
     {"id": 40, "kind": "preview.render", "label": "Rendering preview", "phase": "exact",
@@ -64,7 +69,7 @@ No parameters (an omitted or empty `params` is accepted and any key is refused, 
 }
 ```
 
-Optional keys (`detail`, `asset_id`, `job_id`, `phase`, `progress` as `{"done", "total"}`) are omitted when absent. Active entries are oldest first. Times are whole milliseconds computed from monotonic clocks at snapshot time.
+Optional keys (`detail`, `asset_id`, `job_id`, `phase`, `progress` as `{"fraction"?, "message"?}`) are omitted when absent. Active entries are oldest first. Times are whole milliseconds computed from monotonic clocks at snapshot time.
 
 ## Resource counters
 

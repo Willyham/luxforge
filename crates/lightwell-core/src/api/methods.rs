@@ -96,7 +96,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "job.status",
         owner::JobParams,
         owner::job_status,
-        "this client's bounded source job state; ready includes the committed asset state"
+        "this client's bounded source job status (queued, running, ready, failed); ready includes the committed asset state"
     ),
     // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
     // answers from it: one lock and a copy, nothing rendered or read.
@@ -104,7 +104,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "activity.list",
         NoParams,
         owner::activity_list,
-        "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {done, total} and job_id when known; job_id names the job that job.status (source work) or analysis.read (histograms) also answers; sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event"
+        "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {fraction, message} and job_id when known; job_id names the job that job.status (source work), analysis.read (histograms) or module.job.read (capability jobs) also answers, all with the shared status vocabulary (queued, running, ready, failed, cancelled, superseded); sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event"
     ),
     owner!(
         "job.adopt",
@@ -283,7 +283,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.job.read",
         owner::capability::JobParams,
         owner::capability::job_read,
-        "{job_id, kind, module_id, resource_id?, status, progress: {fraction?, message?}, result?, error?: {code, message, data?}, request_id?}; kind is activate, deactivate, install, remove or task; status is queued, running, succeeded, failed, cancelled or superseded; any client may read any capability job; the owner keeps the last 32 finished"
+        "{job_id, kind, module_id, resource_id?, status, progress: {fraction?, message?}, result?, error?: {code, message, data?}, request_id?}; kind is activate, deactivate, install, remove or task; status is queued, running, ready, failed, cancelled or superseded; any client may read any capability job; the owner keeps the last 32 finished"
     ),
     owner!(
         "module.job.cancel",
@@ -491,7 +491,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "analysis.read",
         owner::AnalysisJobParams,
         owner::analysis_read,
-        "{status, identity, report?, error?}; status is pending, ready, failed, superseded or cancelled and only ready carries counts, so no state can be read as an empty histogram; a job this client did not request is a validation error"
+        "{status, identity, report?, error?}; status is queued, running, ready, failed, superseded or cancelled and only ready carries counts, so no status can be read as an empty histogram; a job this client did not request is a validation error"
     ),
     owner!(
         "analysis.cancel",

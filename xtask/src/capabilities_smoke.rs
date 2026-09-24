@@ -397,7 +397,7 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         .ok_or_else(|| format!("The task did not succeed: {done}"))?
         .to_owned();
     ensure(
-        done["status"] == "succeeded" && done["apply_available"] == true,
+        done["status"] == "ready" && done["apply_available"] == true,
         format!("The task has no result to apply: {done}"),
     )?;
     ensure(

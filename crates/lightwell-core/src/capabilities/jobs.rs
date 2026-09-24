@@ -5,7 +5,10 @@
 //! most [`LANE_QUEUE`] of them, so a queued job can be cancelled or superseded without touching the
 //! thread, and it keeps at most [`FINISHED_RECORDS`] finished records. Progress travels the other
 //! way through a [`JobControl`] the worker writes and the owner reads when a client asks.
-use crate::{Error, ErrorKind, JobId};
+use crate::{
+    Error, ErrorKind, JobId,
+    activity::{Activity, ActivityBoard, ActivitySpec, Outcome},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -23,8 +26,6 @@ use std::{
 pub const LANE_QUEUE: usize = 4;
 /// Finished job records the owner keeps; the oldest is forgotten first.
 pub const FINISHED_RECORDS: usize = 32;
-/// The longest progress message a job reports, in characters.
-pub const MAX_PROGRESS_MESSAGE: usize = 256;
 
 /// The capability job methods.
 pub const JOB_READ: &str = "module.job.read";
@@ -75,33 +76,16 @@ impl JobKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum JobStatus {
-    Queued,
-    Running,
-    Succeeded,
-    Failed,
-    Cancelled,
-    /// A queued activation a deactivation replaced before it ran.
-    Superseded,
-}
+/// The shared job lifecycle (`crate::JobStatus`), re-exported under its historical name here: a
+/// capability job reaches every value, `superseded` only for a queued activation a deactivation
+/// replaced before it ran.
+pub use crate::JobStatus;
 
-impl JobStatus {
-    pub fn is_finished(self) -> bool {
-        !matches!(self, Self::Queued | Self::Running)
-    }
-}
-
-/// How far a job has come, as the worker last reported it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct JobProgress {
-    /// 0 to 1, when the job knows its extent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fraction: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
+/// How far a job has come. The one progress model every activity publisher shares
+/// (`crate::activity::ActivityProgress`): a capability job reports through the activity its lane
+/// begins rather than keeping its own copy, and `module.job.read` answers with what the board
+/// carries.
+pub use crate::activity::ActivityProgress as JobProgress;
 
 /// A failed or cancelled job's error, as a client reads it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -160,12 +144,14 @@ impl Origin {
 }
 
 /// The state a job's worker and the owner share: the cancel flag with its reason, set by the
-/// owner, and the progress, set by the worker.
+/// owner, and the activity it publishes to once its lane picks it up, which carries its progress.
+/// A job has no activity before that: nothing reports progress before it runs, and a queued job's
+/// progress reads empty.
 #[derive(Debug, Default)]
 pub struct JobControl {
     cancelled: AtomicBool,
     reason: Mutex<Option<String>>,
-    progress: Mutex<JobProgress>,
+    activity: Mutex<Option<Activity>>,
 }
 
 impl JobControl {
@@ -206,21 +192,37 @@ impl JobControl {
         }
     }
 
-    /// Report progress: a fraction clamped to 0..=1 and a message cut to
-    /// [`MAX_PROGRESS_MESSAGE`] characters.
-    pub fn set_progress(&self, fraction: Option<f64>, message: &str) {
-        let progress = JobProgress {
-            fraction: fraction
-                .filter(|fraction| fraction.is_finite())
-                .map(|fraction| fraction.clamp(0.0, 1.0)),
-            message: (!message.is_empty())
-                .then(|| message.chars().take(MAX_PROGRESS_MESSAGE).collect()),
-        };
-        *self.progress.lock().expect("job progress") = progress;
+    /// Attach the activity this job publishes to, once its lane picks it up. Owner-only: called
+    /// exactly once, from `Jobs::dispatch`, before the job's work reaches its worker thread.
+    pub(crate) fn begin_activity(&self, activity: Activity) {
+        *self.activity.lock().expect("job activity") = Some(activity);
     }
 
+    /// Report progress: forwarded straight to the job's activity, the one progress model every
+    /// publisher on the board shares. Called from the job's own worker thread.
+    pub fn set_progress(&self, fraction: Option<f64>, message: &str) {
+        if let Some(activity) = self.activity.lock().expect("job activity").as_ref() {
+            activity.progress(fraction, message);
+        }
+    }
+
+    /// The progress this job currently reports on the board, for `module.job.read` to answer
+    /// with while it runs. A job with no activity yet reports nothing.
     fn progress(&self) -> JobProgress {
-        self.progress.lock().expect("job progress").clone()
+        self.activity
+            .lock()
+            .expect("job activity")
+            .as_ref()
+            .and_then(Activity::progress_snapshot)
+            .unwrap_or_default()
+    }
+
+    /// End the job's activity with this outcome. Owner-only, called once a job's result is in; a
+    /// job that never started running has no activity to end.
+    pub(crate) fn finish_activity(&self, outcome: Outcome) {
+        if let Some(activity) = self.activity.lock().expect("job activity").take() {
+            activity.finish(outcome);
+        }
     }
 }
 
@@ -314,22 +316,57 @@ pub(crate) enum Cancelled {
     Finished(JobRecord),
 }
 
+/// The activity one capability job publishes, from the moment its lane picks it up to the moment
+/// it reports back. `detail` names the resource an install or removal is for, or otherwise the
+/// module, so the panel's job row says which one is running without a dynamic label.
+fn capability_activity(record: &JobRecord) -> ActivitySpec {
+    let (kind, label): (&'static str, &'static str) = match record.kind {
+        JobKind::Activate => ("module.activate", "Activating module"),
+        JobKind::Deactivate => ("module.deactivate", "Deactivating module"),
+        JobKind::Install => ("module.resource.install", "Installing resource"),
+        JobKind::Remove => ("module.resource.remove", "Removing resource"),
+        JobKind::Task => ("module.task", "Running task"),
+    };
+    let detail = match &record.resource_id {
+        Some(resource_id) => format!("{}/{resource_id}", record.module_id),
+        None => record.module_id.clone(),
+    };
+    ActivitySpec {
+        kind,
+        label,
+        detail: Some(detail),
+        asset_id: None,
+        job_id: Some(record.job_id.to_string()),
+    }
+}
+
 /// The owner's job table and lanes.
 pub(crate) struct Jobs {
     entries: HashMap<JobId, Entry>,
     finished: VecDeque<JobId>,
     lanes: [LaneState; 2],
     deliver: Deliver,
+    /// Where every job publishes from the moment its lane picks it up, so `activity.list` shows
+    /// capability work beside source preparation and analysis.
+    board: Arc<ActivityBoard>,
 }
 
 impl Jobs {
-    pub(crate) fn new(deliver: Deliver) -> Self {
+    pub(crate) fn new(deliver: Deliver, board: Arc<ActivityBoard>) -> Self {
         Self {
             entries: HashMap::new(),
             finished: VecDeque::new(),
             lanes: [LaneState::new(Lane::Transfer), LaneState::new(Lane::Module)],
             deliver,
+            board,
         }
+    }
+
+    /// The board this table publishes every running job to, for a test that wants to read what a
+    /// job reported without going through `read`'s own `JobRecord` copy.
+    #[cfg(test)]
+    pub(crate) fn board(&self) -> &Arc<ActivityBoard> {
+        &self.board
     }
 
     /// Queue a job, or refuse it with `resource-limit` when its lane is full. The job starts at
@@ -429,6 +466,9 @@ impl Jobs {
             .expect("a waiting job has an entry");
         let work = entry.work.take().expect("a waiting job holds its work");
         entry.record.status = JobStatus::Running;
+        entry
+            .control
+            .begin_activity(self.board.begin(capability_activity(&entry.record)));
         let dispatch = Dispatch {
             job_id: job_id.clone(),
             control: entry.control.clone(),
@@ -448,11 +488,13 @@ impl Jobs {
         Ok(())
     }
 
-    /// Record an outcome the lane never produced, and start the next job.
+    /// Record an outcome the lane never produced, and start the next job. A job that had not
+    /// started running yet has no activity to end; ending one that had is harmless either way.
     fn fail(&mut self, job_id: &JobId, error: Error) {
         if let Some(entry) = self.entries.get_mut(job_id) {
             entry.record.status = JobStatus::Failed;
             entry.record.error = Some(JobError::from(&error));
+            entry.control.finish_activity(Outcome::Failed);
         }
         self.retire(job_id);
     }
@@ -514,10 +556,13 @@ impl Jobs {
             return None;
         }
         let cancel_requested = entry.control.is_cancelled();
+        // Captured from the still-live activity before `finish_activity` ends and takes it, so the
+        // record keeps the last progress the board carried rather than an empty one.
         entry.record.progress = entry.control.progress();
+        let outcome = Outcome::of(&result);
         match result {
             Ok(value) => {
-                entry.record.status = JobStatus::Succeeded;
+                entry.record.status = JobStatus::Ready;
                 entry.record.result = Some(value);
             }
             Err(error) if error.kind == ErrorKind::Cancelled => {
@@ -536,6 +581,7 @@ impl Jobs {
                 entry.record.error = Some(JobError::from(&error));
             }
         }
+        entry.control.finish_activity(outcome);
         let finished = Finished {
             record: entry.record.clone(),
             origin: entry.origin.clone(),
@@ -698,14 +744,22 @@ mod tests {
     /// One finished job as a lane delivers it.
     type Completion = (JobId, Result<Value, Error>);
 
-    /// A job table whose completions arrive on a channel the test reads, as the owner's would.
+    /// A job table whose completions arrive on a channel the test reads, as the owner's would, and
+    /// whose board keeps work of any duration as recent, so a test can read a job's activity right
+    /// after it finishes.
     fn jobs() -> (Jobs, Receiver<Completion>) {
         let (sender, receiver) = channel();
         let sender = Mutex::new(sender);
         let deliver: Deliver = Arc::new(move |job_id, result| {
             let _ = sender.lock().unwrap().send((job_id, result));
         });
-        (Jobs::new(deliver), receiver)
+        (
+            Jobs::new(
+                deliver,
+                ActivityBoard::with_recent_threshold(Duration::ZERO),
+            ),
+            receiver,
+        )
     }
 
     fn job(kind: JobKind, admission: Admission) -> NewJob {
@@ -799,7 +853,7 @@ mod tests {
         let (id, result) = receive(&completions);
         assert_eq!(id, first.job_id);
         let finished = jobs.complete(&id, result).unwrap();
-        assert_eq!(finished.record.status, JobStatus::Succeeded);
+        assert_eq!(finished.record.status, JobStatus::Ready);
         assert_eq!(finished.record.result, Some(json!({"done": true})));
         assert_eq!(
             jobs.read(&waiting[1]).unwrap().status,
@@ -853,6 +907,63 @@ mod tests {
             panic!("a finished job is left alone");
         };
         assert_eq!(record.status, JobStatus::Cancelled);
+        jobs.shutdown();
+    }
+
+    /// A capability job publishes to the activity board the moment its lane picks it up, reports
+    /// progress through it and ends it on arrival — the same board `activity.list` and
+    /// `source.prepare`/`analysis.request` publish to, and the only place its progress lives.
+    #[test]
+    fn a_capability_jobs_progress_and_activity_are_on_the_board() {
+        let (mut jobs, completions) = jobs();
+        let control = JobControl::new();
+        let (work, open) = gated(&control);
+        let running = jobs
+            .submit(
+                job(JobKind::Install, Admission::Bounded),
+                control.clone(),
+                work,
+            )
+            .unwrap();
+        let snapshot = jobs.board().snapshot();
+        assert_eq!(
+            snapshot.active.len(),
+            1,
+            "the job is on the board as soon as it runs"
+        );
+        let entry = &snapshot.active[0].entry;
+        assert_eq!(entry.kind, "module.resource.install");
+        assert_eq!(entry.job_id.as_deref(), Some(running.job_id.as_str()));
+        assert_eq!(entry.detail.as_deref(), Some("test.module"));
+        assert!(entry.progress.is_none(), "nothing reported yet");
+
+        control.set_progress(Some(0.5), "halfway");
+        let midway = jobs.board().snapshot();
+        assert_eq!(
+            midway.active[0].entry.progress,
+            Some(JobProgress {
+                fraction: Some(0.5),
+                message: Some("halfway".into())
+            }),
+            "the board carries the same progress `module.job.read` answers with"
+        );
+        assert_eq!(
+            jobs.read(&running.job_id).unwrap().progress,
+            midway.active[0].entry.progress.clone().unwrap(),
+            "module.job.read reads the board's own progress, not a separate copy"
+        );
+
+        open.send(()).unwrap();
+        let (id, result) = receive(&completions);
+        let finished = jobs.complete(&id, result).unwrap();
+        assert_eq!(finished.record.status, JobStatus::Ready);
+        let after = jobs.board().snapshot();
+        assert!(after.active.is_empty(), "the activity ended with the job");
+        assert_eq!(after.recent[0].outcome, Outcome::Completed);
+        assert_eq!(
+            after.recent[0].entry.job_id.as_deref(),
+            Some(running.job_id.as_str())
+        );
         jobs.shutdown();
     }
 
