@@ -297,7 +297,7 @@ mod tests {
             request("list", "catalog.list", json!({})),
             request("pixel", "edit.set-pixel", json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"p1","actor":"api-test"},"x":0,"y":0,"rgb":[1,2,3]})),
             request("sample", "render.sample", json!({"asset_id":asset,"x":0,"y":0})),
-            request("version", "version.create", json!({"asset_id":asset,"name":"Edited","actor":"api-test"})),
+            request("version", "version.create", json!({"asset_id":asset,"name":"Edited","mutation":{"request_id":"v1","actor":"api-test"}})),
             request("undo", "history.undo", json!({"asset_id":asset,"mutation":{"expected_revision":1,"request_id":"u1","actor":"api-test"}})),
             request("versions", "version.list", json!({"asset_id":asset})),
             request("lineage", "history.lineage", json!({"asset_id":asset})),

@@ -803,20 +803,42 @@ pub struct Mutation {
 
 impl Mutation {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.request_id.is_empty() || self.request_id.len() > 128 {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "request_id must contain 1..128 characters",
-            ));
-        }
-        if self.actor.is_empty() || self.actor.len() > 128 {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "actor must contain 1..128 characters",
-            ));
-        }
-        Ok(())
+        validate_request(&self.request_id, &self.actor)
     }
+}
+
+/// The mutation envelope of a method that changes nothing with a revision: the preset library,
+/// versions, the catalog's import and artifact collection, and module permissions, activation,
+/// resources and capability jobs. It is [`Mutation`] without `expected_revision`, and a retry of the
+/// same `request_id` returns the first answer exactly as it does for an edit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MutationRequest {
+    pub request_id: String,
+    pub actor: String,
+}
+
+impl MutationRequest {
+    pub fn validate(&self) -> Result<(), Error> {
+        validate_request(&self.request_id, &self.actor)
+    }
+}
+
+/// The request identity and actor every mutation envelope carries: 1..128 bytes each.
+fn validate_request(request_id: &str, actor: &str) -> Result<(), Error> {
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            "request_id must contain 1..128 characters",
+        ));
+    }
+    if actor.is_empty() || actor.len() > 128 {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            "actor must contain 1..128 characters",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

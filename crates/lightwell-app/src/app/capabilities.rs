@@ -14,7 +14,7 @@ use crate::{
         Editor,
         evidence::{CapabilityAction, CapabilityStep, Settle},
         message::{CapabilityMessage, Message},
-        tasks::{REQUEST_NUMBER, mutation},
+        tasks::{REQUEST_NUMBER, mutation, request},
     },
     state::{
         capabilities::{
@@ -150,15 +150,6 @@ fn envelope(module_id: &str, profile: Option<&String>, revision: u64) -> Map<Str
     }
     params.insert("mutation".into(), json!(mutation(revision)));
     params
-}
-
-/// A fresh request identity for a grant, so a retry of the same press is recognised.
-fn grant_request() -> String {
-    format!(
-        "desktop-{}-{}",
-        std::process::id(),
-        REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
-    )
 }
 
 /// What a failure means for the section: consent, missing requirements, or a plain failure.
@@ -304,42 +295,42 @@ fn perform(
             owner,
             client,
             "module.resource.install",
-            json!({"module_id": module_id, "resource_id": resource}),
+            json!({"module_id": module_id, "resource_id": resource, "mutation": request()}),
             sent,
         ),
         Operation::Remove { resource } => call(
             owner,
             client,
             "module.resource.remove",
-            json!({"module_id": module_id, "resource_id": resource}),
+            json!({"module_id": module_id, "resource_id": resource, "mutation": request()}),
             sent,
         ),
         Operation::Activate => call(
             owner,
             client,
             "module.activate",
-            json!({"module_id": module_id}),
+            json!({"module_id": module_id, "mutation": request()}),
             sent,
         ),
         Operation::Deactivate => call(
             owner,
             client,
             "module.deactivate",
-            json!({"module_id": module_id}),
+            json!({"module_id": module_id, "mutation": request()}),
             sent,
         ),
         Operation::Cancel { job } => call(
             owner,
             client,
             "module.job.cancel",
-            json!({"job_id": job}),
+            json!({"job_id": job, "mutation": request()}),
             sent,
         ),
         Operation::Revoke { grant } => call(
             owner,
             client,
             "module.permission.revoke",
-            json!({"grant_id": grant}),
+            json!({"grant_id": grant, "mutation": request()}),
             sent,
         ),
         Operation::RunTask {
@@ -382,20 +373,20 @@ fn perform(
             consent,
             retry,
         } => {
-            let scope = json!({
+            // Allow and Don't allow are one press each, so each is a new request.
+            let answer = json!({
                 "module_id": consent.module_id,
                 "capability": consent.capability,
                 "scope": consent.scope,
+                "mutation": request(),
             });
             if !*allow {
-                return match call(owner, client, "module.permission.deny", scope, sent) {
+                return match call(owner, client, "module.permission.deny", answer, sent) {
                     Ok(answer) => Outcome::Done(answer),
                     Err(error) => Outcome::Failed(error),
                 };
             }
-            let mut grant = scope;
-            grant["request_id"] = json!(grant_request());
-            if let Err(error) = call(owner, client, "module.permission.grant", grant, sent) {
+            if let Err(error) = call(owner, client, "module.permission.grant", answer, sent) {
                 return Outcome::Failed(error);
             }
             return match retry {

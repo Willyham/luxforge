@@ -1,6 +1,9 @@
 //! The JSON owner API: protocol types, the single catalog owner, the method table and the
 //! loopback transport. Every client, including the desktop, drives the same methods.
 mod methods;
+pub(crate) mod params;
+#[cfg(test)]
+pub(crate) use methods::host_envelope;
 mod owner;
 mod transport;
 
@@ -9,7 +12,7 @@ pub use owner::{ClientId, OwnerHandle, PreviewRequest};
 
 pub use transport::{LocalServer, LocalSessionInfo, serve_json_lines, serve_json_lines_with};
 
-use crate::{Draft, Error, ErrorKind, PreviewSession};
+use crate::{Draft, DraftId, Error, ErrorKind, PreviewSession};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -271,5 +274,20 @@ pub struct ClientSession {
 impl ClientSession {
     pub(super) fn touch(&mut self) {
         self.revision = self.revision.saturating_add(1);
+    }
+
+    /// The draft this client holds under that identity. Another client's draft, or one that has
+    /// already ended, is simply not this session's. Every method and preview job that names a draft
+    /// resolves it here.
+    pub(super) fn held_draft(&self, draft_id: &DraftId) -> Result<&Draft, Error> {
+        self.draft
+            .as_ref()
+            .filter(|draft| &draft.draft_id == draft_id)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Validation,
+                    format!("unknown draft {draft_id} for this client"),
+                )
+            })
     }
 }

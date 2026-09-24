@@ -367,12 +367,17 @@ fn collection_through_the_api_counts_what_it_removed() {
             &owner,
             client,
             "artifact.collect",
-            json!({"everything": true})
+            json!({"everything": true, "mutation": {"request_id": "everything", "actor": "test"}})
         )
         .code,
         "validation"
     );
-    let queued = ok(&owner, client, "artifact.collect", json!({}));
+    let queued = ok(
+        &owner,
+        client,
+        "artifact.collect",
+        json!({"mutation": {"request_id": "collect", "actor": "test"}}),
+    );
     assert_eq!(queued["status"], "queued");
     let done = settled(&owner, client, queued["job_id"].as_str().unwrap());
     assert_eq!(done["state"], "ready", "{done}");

@@ -9,9 +9,9 @@ use iced::Task;
 use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
     EntryId, ErrorKind, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage,
-    MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationResult, OwnerHandle,
-    PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription, StageTransform,
-    Version,
+    MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest, MutationResult,
+    OwnerHandle, PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription,
+    StageTransform, Version,
     mask::commands::{MaskCommandResult, MaskListing, MaskTarget},
 };
 use serde_json::{Value, json};
@@ -155,14 +155,29 @@ fn proxied(request: PreviewRequest, proxy: Option<ProxyBounds>) -> PreviewReques
     }
 }
 
+/// A fresh request identity, so a retry of the same press is recognised and a new press is not.
+fn request_id() -> String {
+    format!(
+        "desktop-{}-{}",
+        std::process::id(),
+        REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// The envelope of a change to something with a revision: an asset or a module's settings.
 pub(crate) fn mutation(revision: u64) -> Mutation {
     Mutation {
         expected_revision: revision,
-        request_id: format!(
-            "desktop-{}-{}",
-            std::process::id(),
-            REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
-        ),
+        request_id: request_id(),
+        actor: ACTOR.into(),
+    }
+}
+
+/// The envelope of every other change: the preset library, versions, an import, and module
+/// permissions, activation, resources and jobs.
+pub(crate) fn request() -> MutationRequest {
+    MutationRequest {
+        request_id: request_id(),
         actor: ACTOR.into(),
     }
 }
@@ -406,7 +421,12 @@ pub(crate) fn import_task(
 ) -> Task<Message> {
     Task::perform(
         async move {
-            let (result, sequence) = call(&owner, client, "catalog.import", json!({"path":path}))?;
+            let (result, sequence) = call(
+                &owner,
+                client,
+                "catalog.import",
+                json!({"path":path,"mutation":request()}),
+            )?;
             let job_id = result["job_id"]
                 .as_str()
                 .ok_or("catalog.import did not return a source job")?;
@@ -1288,7 +1308,7 @@ pub(crate) fn preset_import_now(
         owner,
         client,
         "preset.import",
-        json!({"content": content, "file_name": file_name, "actor": ACTOR}),
+        json!({"content": content, "file_name": file_name, "mutation": request()}),
     )
 }
 
@@ -1308,7 +1328,12 @@ pub(crate) fn preset_delete_now(
     client: ClientId,
     id: &str,
 ) -> Result<PresetChange, String> {
-    preset_change(owner, client, "preset.delete", json!({"preset_id": id}))
+    preset_change(
+        owner,
+        client,
+        "preset.delete",
+        json!({"preset_id": id, "mutation": request()}),
+    )
 }
 
 pub(crate) fn preset_delete_task(

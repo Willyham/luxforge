@@ -16,6 +16,14 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 const JOB_TIMEOUT: Duration = Duration::from_secs(60);
 const ACTOR: &str = "presets-json-cli";
 
+/// A fresh `{request_id, actor}` envelope, so every call is a new request.
+fn request() -> Value {
+    json!({
+        "request_id": format!("request-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+        "actor": ACTOR,
+    })
+}
+
 fn temp_catalog() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "lightwell-presets-json-cli-{}-{}.sqlite",
@@ -99,7 +107,11 @@ impl JsonClient {
 
     /// Import a file and wait for its verified source; returns the asset record.
     fn import(&mut self, path: &Path) -> Value {
-        let job = self.call("catalog.import", json!({"path": path}))["job_id"].clone();
+        let job = self.call(
+            "catalog.import",
+            json!({"path": path, "mutation": request()}),
+        )["job_id"]
+            .clone();
         let started = Instant::now();
         loop {
             assert!(started.elapsed() < JOB_TIMEOUT, "import timed out");
@@ -191,7 +203,7 @@ fn a_preset_imports_applies_like_its_individual_actions_and_round_trips_through_
     let develop = preset_file("develop.xmp");
     let imported = client.call(
         "preset.import",
-        json!({"content": develop, "actor": ACTOR, "file_name": "develop.xmp"}),
+        json!({"content": develop, "mutation": request(), "file_name": "develop.xmp"}),
     );
     let record = &imported["preset"];
     assert_eq!(imported["report"], record["report"]);
@@ -319,7 +331,7 @@ fn a_preset_imports_applies_like_its_individual_actions_and_round_trips_through_
     assert_eq!(at_preset_entry, captured);
     let created = client.call(
         "preset.create",
-        json!({"name": "Captured film", "settings": captured, "actor": ACTOR}),
+        json!({"name": "Captured film", "settings": captured, "mutation": request()}),
     )["preset"]
         .clone();
     assert_eq!(created["settings"], captured);
@@ -332,7 +344,7 @@ fn a_preset_imports_applies_like_its_individual_actions_and_round_trips_through_
         "preset.import",
         json!({
             "content": exported["content"],
-            "actor": ACTOR,
+            "mutation": request(),
             "file_name": exported["file_name"],
             "name": "Captured film copy",
         }),
@@ -351,10 +363,27 @@ fn a_preset_imports_applies_like_its_individual_actions_and_round_trips_through_
     );
 
     // 5. Delete, then read the event log: every library write and nothing else.
-    let deleted = client.call("preset.delete", json!({"preset_id": created["id"]}));
-    assert_eq!(deleted, json!({"outcome": "applied", "deleted": true}));
-    let again = client.call("preset.delete", json!({"preset_id": created["id"]}));
-    assert_eq!(again, json!({"outcome": "no-op", "deleted": false}));
+    let delete = json!({"preset_id": created["id"], "mutation": request()});
+    let deleted = client.call("preset.delete", delete.clone());
+    assert_eq!(
+        deleted,
+        json!({"outcome": "applied", "deleted": true, "deduplicated": false})
+    );
+    // A retry of the same request is its first answer, and changes and announces nothing.
+    let retried = client.call("preset.delete", delete);
+    assert_eq!(
+        retried,
+        json!({"outcome": "applied", "deleted": true, "deduplicated": true})
+    );
+    // A new request for a preset that is gone is a no-op.
+    let again = client.call(
+        "preset.delete",
+        json!({"preset_id": created["id"], "mutation": request()}),
+    );
+    assert_eq!(
+        again,
+        json!({"outcome": "no-op", "deleted": false, "deduplicated": false})
+    );
     let events = client.call("events.since", json!({"after": 0}));
     assert_eq!(events["gap"], json!(false));
     let preset_events: Vec<&str> = events["events"]
@@ -404,7 +433,7 @@ fn an_unsupported_or_unmappable_file_is_refused_and_nothing_is_stored() {
     ] {
         let error = client.error(
             "preset.import",
-            json!({"content": preset_file(file), "actor": ACTOR, "file_name": file}),
+            json!({"content": preset_file(file), "mutation": request(), "file_name": file}),
         );
         assert_eq!(error["code"], json!("unsupported-input"), "{file}: {error}");
         assert!(

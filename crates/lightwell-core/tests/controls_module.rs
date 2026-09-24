@@ -48,7 +48,7 @@ fn error(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> 
 
 fn import_asset(owner: &OwnerHandle, client: ClientId) -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg");
-    let job = call(owner, client, "catalog.import", json!({"path":path}))["job_id"].clone();
+    let job = call(owner, client, "catalog.import", json!({"path": path, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}))["job_id"].clone();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let status = call(owner, client, "job.status", json!({"job_id":job}));

@@ -66,7 +66,7 @@ impl Fixture {
             client,
             "import",
             "catalog.import",
-            json!({"path": source}),
+            json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}),
         );
         let job_id = queued["job_id"].as_str().expect("a job id").to_owned();
         let deadline = Instant::now() + Duration::from_secs(30);

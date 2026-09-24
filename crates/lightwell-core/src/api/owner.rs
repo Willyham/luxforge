@@ -1,6 +1,10 @@
-//! One thread owns the catalog and every client session; all clients call it in turn.
+//! One thread owns the catalog and every client session; all clients call it in turn. The owner
+//! loop finds each request's method in the one method table, calls its handler and records the
+//! events the call announced; the owner handlers the table names live here.
 use super::{
-    ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, methods,
+    ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult,
+    methods::{self, Route},
+    params::{Envelope, NoParams, host_params},
 };
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
@@ -8,10 +12,14 @@ use crate::{
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
-    capabilities::{host::CapabilityHost, jobs::Origin},
+    capabilities::{
+        host::{CapabilityHost, announce_once},
+        jobs::Origin,
+    },
     editor::{PreparedFile, RawDevelopment, SourceSignature},
     source::RawPrepared,
 };
+use requests::{RequestKey, RequestTable};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -28,6 +36,8 @@ use std::{
 
 #[cfg(test)]
 mod artifact_tests;
+pub(super) mod capability;
+mod requests;
 
 const EVENT_CAPACITY: usize = 256;
 const SOURCE_QUEUE_CAPACITY: usize = 8;
@@ -745,52 +755,68 @@ fn source_worker(
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ImportParams {
-    path: PathBuf,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct JobParams {
-    job_id: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourceParams {
-    asset_id: AssetId,
-    entry_id: Option<EntryId>,
-}
-fn parse_params<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, Error> {
-    serde_json::from_value(value.clone())
-        .map_err(|e| Error::new(ErrorKind::Validation, e.to_string()))
-}
-
-/// A method that takes no parameters accepts `{}` or no params at all.
-fn no_params(method: &str, value: &Value) -> Result<(), Error> {
-    match value {
-        Value::Null => Ok(()),
-        Value::Object(fields) if fields.is_empty() => Ok(()),
-        _ => Err(Error::new(
-            ErrorKind::Validation,
-            format!("{method} takes no parameters"),
-        )),
+host_params! {
+    /// `catalog.import`.
+    pub(super) struct Import {
+        path: PathBuf,
+        mutation: MutationRequest,
     }
 }
 
-/// `artifact.collect`: remove the collectable rows now, in one catalog transaction, and queue a
-/// source job that removes their files, orphan files and stale staged files. Should the queue be
-/// full, the removed rows' files are simply orphans the next collection removes.
-fn queue_collection(
-    service: &mut EditorService,
-    jobs: &mut SourceJobs,
-    client: ClientId,
-    params: &Value,
-) -> Result<String, Error> {
-    no_params("artifact.collect", params)?;
-    let collection = service.plan_collection()?;
-    let root = collection.root.clone();
-    jobs.enqueue_maintenance(client, root, SourceTaskKind::Collect(collection))
+host_params! {
+    /// `job.status`, `job.adopt` and `job.cancel`.
+    pub(super) struct JobParams {
+        job_id: String,
+    }
+}
+
+host_params! {
+    /// `source.prepare`.
+    pub(super) struct SourcePrepare {
+        asset_id: AssetId,
+        entry_id: Option<EntryId> = "historical entry; default current",
+    }
+}
+
+host_params! {
+    /// `events.since`.
+    pub(super) struct EventsSince {
+        after: u64,
+    }
+}
+
+host_params! {
+    /// `analysis.request`.
+    pub(super) struct AnalysisRequest {
+        asset_id: AssetId,
+        target: AnalysisTarget,
+    }
+}
+
+host_params! {
+    /// `analysis.read` and `analysis.cancel`.
+    pub(super) struct AnalysisJobParams {
+        job_id: JobId,
+    }
+}
+
+host_params! {
+    /// `artifact.collect`.
+    pub(super) struct Collect {
+        mutation: MutationRequest,
+    }
+}
+
+/// Which evaluated stack the caller wants analysed.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub(super) enum AnalysisTarget {
+    /// The asset's current entry.
+    Current,
+    /// One frozen historical entry, which a later commit never relabels.
+    Entry { entry_id: EntryId },
+    /// This client's own open draft, at the `draft_revision` it holds now.
+    Draft { draft_id: DraftId },
 }
 
 #[derive(Clone)]
@@ -991,25 +1017,14 @@ impl OwnerHandle {
 }
 
 fn owner_loop(
-    mut service: EditorService,
-    mut host: CapabilityHost,
+    service: EditorService,
+    host: CapabilityHost,
     completions: SyncSender<OwnerMessage>,
     receiver: Receiver<OwnerMessage>,
     source_sender: SyncSender<SourceTask>,
     worker: JoinHandle<()>,
     activity: Arc<ActivityBoard>,
 ) {
-    let mut jobs = SourceJobs {
-        sender: source_sender,
-        jobs: HashMap::new(),
-        active: HashMap::new(),
-        completed: VecDeque::new(),
-        next_id: 1,
-    };
-    let mut sequence = 0u64;
-    let mut events = VecDeque::with_capacity(EVENT_CAPACITY);
-    let mut sessions: HashMap<ClientId, ClientSession> = HashMap::new();
-    let mut store = AnalysisStore::default();
     // One analysis worker with one active and one replaceable pending job, globally. The worker
     // sends its report back into this loop; nothing here waits on it or polls for it.
     let mut queue = AnalysisQueue::new(Arc::new(move |job_id, result| {
@@ -1019,467 +1034,72 @@ fn owner_loop(
         });
     }));
     queue.set_activity(activity.clone());
-    let mut latest_import: HashMap<ClientId, String> = HashMap::new();
+    let mut owner = Owner {
+        service,
+        host,
+        jobs: SourceJobs {
+            sender: source_sender,
+            jobs: HashMap::new(),
+            active: HashMap::new(),
+            completed: VecDeque::new(),
+            next_id: 1,
+        },
+        sessions: HashMap::new(),
+        analyses: AnalysisStore::default(),
+        queue,
+        activity,
+        latest_import: HashMap::new(),
+        log: EventLog::default(),
+        requests: RequestTable::default(),
+        announced: Vec::new(),
+    };
     while let Ok(message) = receiver.recv() {
         match message {
             OwnerMessage::Stop => break,
+            OwnerMessage::Call(call) => {
+                let response = owner.call(call.client, &call.request);
+                let _ = call.response.send(response);
+            }
+            OwnerMessage::Preview { request, response } => {
+                let _ = response.send(owner.preview(request));
+            }
             OwnerMessage::Register { client, authority } => {
-                sessions.entry(client).or_default().authority = authority;
+                owner.sessions.entry(client).or_default().authority = authority;
             }
             OwnerMessage::CapabilityFinished { job_id, result } => {
-                let mut announced = Vec::new();
-                host.finished(&mut service, &job_id, result, &mut announced);
-                for origin in &announced {
-                    record_event(&mut events, &mut sequence, origin);
-                }
+                owner
+                    .host
+                    .finished(&mut owner.service, &job_id, result, &mut owner.announced);
+                owner.record_announced();
             }
             #[cfg(test)]
             OwnerMessage::CapabilityThreads(reply) => {
-                let _ = reply.send(host.lanes_started());
+                let _ = reply.send(owner.host.lanes_started());
             }
-            OwnerMessage::Disconnect(client) => {
-                sessions.remove(&client);
-                // A gone client releases its analysis interests exactly as a cancel does; a job
-                // nobody else wants is dropped from the pending slot, or its result is discarded
-                // when it arrives from the worker.
-                for job_id in store.disconnect(client) {
-                    queue.drop_pending(&job_id);
-                    store.cancel(&job_id);
-                }
-                latest_import.remove(&client);
-                jobs.disconnect(client);
-            }
+            OwnerMessage::Disconnect(client) => owner.disconnect(client),
             OwnerMessage::SourceStarted(id) => {
-                if let Some(job) = jobs.jobs.get_mut(&id) {
+                if let Some(job) = owner.jobs.jobs.get_mut(&id) {
                     job.state = SourceState::Preparing;
                 }
             }
-            OwnerMessage::SourceComplete(id, result) => {
-                let result = *result;
-                let interested = jobs
-                    .jobs
-                    .get(&id)
-                    .is_some_and(|job| !job.clients.is_empty());
-                let outcome = if interested {
-                    result.and_then(|prepared| match prepared {
-                        SourceResult::File(file, verified) => {
-                            let (state, created) = service.import_prepared(file)?;
-                            service.adopt_artifacts(verified);
-                            Ok(Completed::Asset(Box::new(state), created))
-                        }
-                        SourceResult::Develop(request, developed, verified) => {
-                            let state = service.install_development(&request, developed)?;
-                            service.adopt_artifacts(verified);
-                            Ok(Completed::Asset(Box::new(state), false))
-                        }
-                        SourceResult::Artifacts(asset_id, verified) => {
-                            service.adopt_artifacts(verified);
-                            Ok(Completed::Asset(Box::new(service.state(&asset_id)?), false))
-                        }
-                        SourceResult::Collected(collected) => serde_json::to_value(collected)
-                            .map(Completed::Value)
-                            .map_err(|error| Error::new(ErrorKind::Internal, error.to_string())),
-                    })
-                } else {
-                    Err(Error::new(ErrorKind::Conflict, "source job cancelled"))
-                };
-                if matches!(outcome, Ok(Completed::Asset(_, true))) {
-                    sequence = sequence.saturating_add(1);
-                    if events.len() == EVENT_CAPACITY {
-                        events.pop_front();
-                    }
-                    if let Some(request_id) = jobs
-                        .jobs
-                        .get(&id)
-                        .and_then(|job| job.import_request_id.clone())
-                    {
-                        events.push_back(ApiEvent {
-                            sequence,
-                            method: "catalog.import".into(),
-                            request_id,
-                        });
-                    }
-                }
-                jobs.complete(
-                    &id,
-                    match outcome {
-                        Ok(Completed::Asset(state, _)) => SourceState::Ready(state),
-                        Ok(Completed::Value(value)) => SourceState::Finished(value),
-                        Err(error) => SourceState::Failed(error),
-                    },
-                );
-                if !jobs.active.is_empty() {
-                    service.evict_development();
-                }
-            }
+            OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
             OwnerMessage::AnalysisFinished { job_id, result } => {
-                if store.awaits(&job_id) {
-                    store.complete(&job_id, result.map(|report| *report));
+                if owner.analyses.awaits(&job_id) {
+                    owner
+                        .analyses
+                        .complete(&job_id, result.map(|report| *report));
                 }
-                queue.finished(&job_id);
+                owner.queue.finished(&job_id);
             }
             OwnerMessage::AnalysisSubmitted { identity, report } => {
-                store.submit(*identity, *report);
-            }
-            OwnerMessage::Preview { request, response } => {
-                // A draft is session state, so the owner looks it up in the requesting client's own
-                // session: naming another client's draft, or one that has ended, is a validation
-                // error rather than a preview of someone else's gesture.
-                let draft = match &request.draft {
-                    None => Ok(None),
-                    Some(draft_id) => sessions
-                        .get(&request.client)
-                        .and_then(|session| session.draft.as_ref())
-                        .filter(|draft| &draft.draft_id == draft_id)
-                        .map(Some)
-                        .ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::Validation,
-                                format!("unknown draft {draft_id} for this client"),
-                            )
-                        }),
-                };
-                let job = draft.and_then(|draft| {
-                    if request.analyse && request.layer_count.is_some() {
-                        return Err(Error::new(
-                            ErrorKind::Validation,
-                            "a truncated preview renders a layer prefix its identity does not describe, so it cannot be analysed",
-                        ));
-                    }
-                    service
-                        .preview_job(
-                            &request.asset_id,
-                            request.entry_id.as_ref(),
-                            request.layer_count,
-                            draft,
-                            request.proxy,
-                        )
-                        .map(|mut job| {
-                            job.analyse = request.analyse;
-                            job
-                        })
-                        .and_then(|job| match request.mask_overlay.clone() {
-                            // Validated against the stack the job will render, which is why it is
-                            // applied here and not copied in like the flags above.
-                            Some(overlay) => job.with_mask_overlay(overlay),
-                            None => Ok(job),
-                        })
-                });
-                // A stack whose source is not prepared queues that preparation and answers with
-                // the job to wait for, exactly as a JSON request does.
-                let job = match job {
-                    Err(error) if error.kind == ErrorKind::PreparationRequired => {
-                        let queued = queue_preparation(
-                            &service,
-                            &mut jobs,
-                            request.client,
-                            &request.asset_id,
-                            request.entry_id.as_ref(),
-                            &requested_artifacts(error.data.as_deref()),
-                        );
-                        Err(queued.map_or_else(
-                            |error| error,
-                            |id| Error::new(ErrorKind::PreparationRequired, id),
-                        ))
-                    }
-                    other => other,
-                };
-                let _ = response.send(job);
-            }
-            OwnerMessage::Call(call) => {
-                if matches!(
-                    call.request.method.as_str(),
-                    "catalog.import"
-                        | "job.status"
-                        | "job.adopt"
-                        | "job.cancel"
-                        | "source.prepare"
-                        | "artifact.collect"
-                ) {
-                    let answer: Result<Value, Error> = match call.request.method.as_str() {
-                        "catalog.import" => parse_params::<ImportParams>(&call.request.params)
-                            .and_then(|p| match service.cached_import(&p.path)? {
-                                Some(state) => {
-                                    jobs.ready(call.client, state).map(|id| (id, "ready"))
-                                }
-                                None => {
-                                    let expected = service.known_fingerprint(&p.path)?;
-                                    let id =
-                                        jobs.enqueue(call.client, p.path, expected, Vec::new())?;
-                                    service.evict_development();
-                                    Ok((id, "queued"))
-                                }
-                            })
-                            .map(|(id, state)| {
-                                jobs.mark_import(&id, &call.request.id);
-                                latest_import.insert(call.client, id.clone());
-                                json!({"job_id":id,"state":state})
-                            }),
-                        "job.status" => parse_params::<JobParams>(&call.request.params)
-                            .and_then(|p| jobs.status(call.client, &p.job_id)),
-                        "job.adopt" => {
-                            parse_params::<JobParams>(&call.request.params).and_then(|p| {
-                                if latest_import.get(&call.client) != Some(&p.job_id) {
-                                    return Err(Error::new(
-                                        ErrorKind::Conflict,
-                                        "a newer import superseded this job",
-                                    ));
-                                }
-                                let state = match jobs.jobs.get(&p.job_id) {
-                                    Some(job) if job.clients.contains(&call.client) => {
-                                        match &job.state {
-                                            SourceState::Ready(state) => (**state).clone(),
-                                            SourceState::Failed(error) => return Err(error.clone()),
-                                            SourceState::Finished(_) => {
-                                                return Err(Error::new(
-                                                    ErrorKind::Validation,
-                                                    "this source job is not an import",
-                                                ));
-                                            }
-                                            _ => {
-                                                return Err(Error::new(
-                                                    ErrorKind::PreparationRequired,
-                                                    p.job_id,
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    _ => {
-                                        return Err(Error::new(
-                                            ErrorKind::Validation,
-                                            "unknown source job for this client",
-                                        ));
-                                    }
-                                };
-                                let session = sessions.entry(call.client).or_default();
-                                session.preview.return_current();
-                                session.touch();
-                                latest_import.remove(&call.client);
-                                Ok(json!({"asset":state,"session":session}))
-                            })
-                        }
-                        "job.cancel" => {
-                            parse_params::<JobParams>(&call.request.params).and_then(|p| {
-                                if latest_import.get(&call.client) == Some(&p.job_id) {
-                                    latest_import.remove(&call.client);
-                                }
-                                jobs.cancel(call.client, &p.job_id)
-                            })
-                        }
-                        "source.prepare" => parse_params::<SourceParams>(&call.request.params)
-                            .and_then(|p| {
-                                queue_preparation(
-                                    &service,
-                                    &mut jobs,
-                                    call.client,
-                                    &p.asset_id,
-                                    p.entry_id.as_ref(),
-                                    &[],
-                                )
-                            })
-                            .map(|id| json!({"job_id":id,"state":"queued"})),
-                        "artifact.collect" => queue_collection(
-                            &mut service,
-                            &mut jobs,
-                            call.client,
-                            &call.request.params,
-                        )
-                        .map(|id| json!({"job_id":id,"status":"queued"})),
-                        _ => unreachable!(),
-                    };
-                    // A collection is a mutation the moment it is accepted, as an import is: other
-                    // clients learn of it from the event log.
-                    if answer.is_ok() && call.request.method.as_str() == "artifact.collect" {
-                        sequence = sequence.saturating_add(1);
-                        if events.len() == EVENT_CAPACITY {
-                            events.pop_front();
-                        }
-                        events.push_back(ApiEvent {
-                            sequence,
-                            method: call.request.method.clone(),
-                            request_id: call.request.id.clone(),
-                        });
-                    }
-                    let response = match answer {
-                        Ok(value) => ApiResponse::success(call.request.id, sequence, value),
-                        Err(error) => ApiResponse::failure(call.request.id, sequence, error),
-                    };
-                    let _ = call.response.send(response);
-                    continue;
-                }
-                // Discovery and dispatch resolve through the same registry-aware lookup.
-                let method = methods::find(&service, &call.request.method);
-                let response = match method {
-                    // The methods the owner answers from its own state: the event log, the
-                    // analysis jobs, whose store, worker slots and client drafts all live here,
-                    // the capability host's settings and the activity board its workers publish to.
-                    Some(method) if method.owner_answered() => {
-                        let request = &call.request;
-                        // A client's authority is part of its session, fixed when it registered.
-                        let authority = sessions
-                            .get(&call.client)
-                            .map_or(ClientAuthority::Edit, |session| session.authority);
-                        let mut announced = Vec::new();
-                        if let Some(result) =
-                            host.answer(&service, authority, request, &mut announced)
-                        {
-                            // The host announces exactly what a request changed: a committed
-                            // write, a grant, a cancelled job or a deactivation. A read, a no-op
-                            // and a retry answered from a request log change nothing.
-                            for origin in &announced {
-                                record_event(&mut events, &mut sequence, origin);
-                            }
-                            // A task samples its asset before it is queued; an unprepared source
-                            // or artifact queues that preparation and answers with the job to wait
-                            // for, as every other evaluating request does.
-                            let result = match result {
-                                Err(error) if error.kind == ErrorKind::PreparationRequired => {
-                                    Err(prepare_current(
-                                        &service,
-                                        &mut jobs,
-                                        call.client,
-                                        &request.params,
-                                        &error,
-                                    ))
-                                }
-                                other => other,
-                            };
-                            let response = answer(request, sequence, result);
-                            let _ = call.response.send(response);
-                            continue;
-                        }
-                        match request.method.as_str() {
-                            "activity.list" => {
-                                answer(request, sequence, activity_list(&activity, &request.params))
-                            }
-                            "analysis.request" => {
-                                let requested = analysis_request(
-                                    &service,
-                                    &sessions,
-                                    &mut store,
-                                    &mut queue,
-                                    call.client,
-                                    &request.params,
-                                );
-                                // A stack whose source or artifacts are not prepared queues that
-                                // preparation and answers with the job to wait for, as every other
-                                // evaluating request does.
-                                let requested = match requested {
-                                    Err(error) if error.kind == ErrorKind::PreparationRequired => {
-                                        Err(prepare_analysis(
-                                            &service,
-                                            &mut jobs,
-                                            call.client,
-                                            &request.params,
-                                            &error,
-                                        ))
-                                    }
-                                    other => other,
-                                };
-                                answer(request, sequence, requested)
-                            }
-                            "analysis.read" => answer(
-                                request,
-                                sequence,
-                                analysis_read(&store, call.client, &request.params),
-                            ),
-                            "analysis.cancel" => answer(
-                                request,
-                                sequence,
-                                analysis_cancel(
-                                    &mut store,
-                                    &mut queue,
-                                    call.client,
-                                    &request.params,
-                                ),
-                            ),
-                            "events.since" => event_response(request, sequence, &events),
-                            _ => unrouted(request, sequence),
-                        }
-                    }
-                    Some(method) => {
-                        let session = sessions.entry(call.client).or_default();
-                        let mut response =
-                            methods::dispatch(&mut service, session, &call.request, sequence);
-                        if response
-                            .error
-                            .as_ref()
-                            .is_some_and(|e| e.code == ErrorKind::PreparationRequired.code())
-                        {
-                            let asset_id = call
-                                .request
-                                .params
-                                .get("asset_id")
-                                .cloned()
-                                .ok_or_else(|| {
-                                    Error::new(ErrorKind::Validation, "missing asset_id")
-                                })
-                                .and_then(|value| parse_params::<AssetId>(&value));
-                            let entry_id = call
-                                .request
-                                .params
-                                .get("entry_id")
-                                .cloned()
-                                .map(|value| parse_params::<EntryId>(&value))
-                                .transpose();
-                            let requested = requested_artifacts(
-                                response.error.as_ref().and_then(|e| e.data.as_ref()),
-                            );
-                            let queued = asset_id.and_then(|id| {
-                                entry_id.and_then(|entry| {
-                                    queue_preparation(
-                                        &service,
-                                        &mut jobs,
-                                        call.client,
-                                        &id,
-                                        entry.as_ref(),
-                                        &requested,
-                                    )
-                                })
-                            });
-                            response = match queued {
-                                Ok(id) => ApiResponse::failure(
-                                    call.request.id.clone(),
-                                    sequence,
-                                    Error::new(ErrorKind::PreparationRequired, id),
-                                ),
-                                Err(error) => {
-                                    ApiResponse::failure(call.request.id.clone(), sequence, error)
-                                }
-                            };
-                        }
-                        if response.error.is_none()
-                            && methods::mutates(&method, response.result.as_ref())
-                        {
-                            sequence = sequence.saturating_add(1);
-                            if events.len() == EVENT_CAPACITY {
-                                events.pop_front();
-                            }
-                            events.push_back(ApiEvent {
-                                sequence,
-                                method: call.request.method.clone(),
-                                request_id: call.request.id.clone(),
-                            });
-                            ApiResponse {
-                                sequence,
-                                ..response
-                            }
-                        } else {
-                            response
-                        }
-                    }
-                    None => {
-                        let session = sessions.entry(call.client).or_default();
-                        methods::dispatch(&mut service, session, &call.request, sequence)
-                    }
-                };
-                let _ = call.response.send(response);
+                owner.analyses.submit(*identity, *report);
             }
         }
     }
-    for job in jobs.jobs.values() {
+    for job in owner.jobs.jobs.values() {
         job.cancelled.store(true, Ordering::Relaxed);
     }
+    let Owner { jobs, mut host, .. } = owner;
     drop(jobs);
     // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
     // left waiting on a full channel while the owner waits for it.
@@ -1488,114 +1108,470 @@ fn owner_loop(
     let _ = worker.join();
 }
 
-/// Append one event for a committed change, dropping the oldest beyond the log's capacity.
-fn record_event(events: &mut VecDeque<ApiEvent>, sequence: &mut u64, origin: &Origin) {
-    *sequence = sequence.saturating_add(1);
-    if events.len() == EVENT_CAPACITY {
-        events.pop_front();
-    }
-    events.push_back(ApiEvent {
-        sequence: *sequence,
-        method: origin.method.clone(),
-        request_id: origin.request_id.clone(),
-    });
+/// The event log: the last [`EVENT_CAPACITY`] changes and the sequence of the newest. Every event
+/// the owner emits is appended by [`EventLog::record`].
+#[derive(Default)]
+struct EventLog {
+    events: VecDeque<ApiEvent>,
+    sequence: u64,
 }
 
-/// A method the table lists without a service handler and that no owner route answers. It is a
-/// defect in this build, never a request a client got wrong, so it is refused as an internal error
-/// naming the method rather than answered as some other method would be.
-fn unrouted(request: &ApiRequest, sequence: u64) -> ApiResponse {
-    answer(
-        request,
-        sequence,
-        Err(Error::new(
-            ErrorKind::Internal,
-            format!(
-                "{} has no service handler and no catalog-owner route",
-                request.method
+impl EventLog {
+    /// Append one event for a committed change, dropping the oldest beyond the log's capacity.
+    fn record(&mut self, origin: &Origin) {
+        self.sequence = self.sequence.saturating_add(1);
+        if self.events.len() == EVENT_CAPACITY {
+            self.events.pop_front();
+        }
+        self.events.push_back(ApiEvent {
+            sequence: self.sequence,
+            method: origin.method.clone(),
+            request_id: origin.request_id.clone(),
+        });
+    }
+
+    /// The events after `after`, and whether the log no longer holds some of them.
+    fn since(&self, after: u64) -> EventsResult {
+        let oldest = self
+            .events
+            .front()
+            .map_or(self.sequence.saturating_add(1), |event| event.sequence);
+        EventsResult {
+            events: self
+                .events
+                .iter()
+                .filter(|event| event.sequence > after)
+                .cloned()
+                .collect(),
+            current_sequence: self.sequence,
+            gap: after.saturating_add(1) < oldest,
+        }
+    }
+}
+
+/// One request an owner handler answers.
+pub(super) struct Call<'a> {
+    pub client: ClientId,
+    pub request: &'a ApiRequest,
+    /// The method and request identity an event this call announces names.
+    pub origin: Origin,
+}
+
+/// Everything the catalog owner holds: the catalog, every client's session, the source and analysis
+/// jobs, the capability host, the activity board, the event log and the request table. The owner
+/// loop hands it every message; the owner handlers of the method table read and change it.
+pub(super) struct Owner {
+    pub(super) service: EditorService,
+    pub(super) host: CapabilityHost,
+    jobs: SourceJobs,
+    sessions: HashMap<ClientId, ClientSession>,
+    analyses: AnalysisStore,
+    queue: AnalysisQueue,
+    activity: Arc<ActivityBoard>,
+    latest_import: HashMap<ClientId, String>,
+    log: EventLog,
+    requests: RequestTable,
+    /// What the message being handled changed, each change once. The owner records them as events
+    /// when the message is handled, before it answers.
+    pub(super) announced: Vec<Origin>,
+}
+
+impl Owner {
+    /// Answer one request: find its method, answer a retried revision-less mutation from the request
+    /// table, otherwise call its handler, then record the events its changes announced.
+    fn call(&mut self, client: ClientId, request: &ApiRequest) -> ApiResponse {
+        let result = self.answer(client, request);
+        self.record_announced();
+        match result {
+            Ok(value) => ApiResponse::success(request.id.clone(), self.log.sequence, value),
+            Err(error) => ApiResponse::failure(request.id.clone(), self.log.sequence, error),
+        }
+    }
+
+    fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Value, Error> {
+        let method = methods::find(&self.service, &request.method).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Protocol,
+                format!("unknown method {}", request.method),
+            )
+        })?;
+        // A mutation of something without a revision is answered from the request table when it
+        // is a retry, and its handler does not run again; a revisioned store answers its own.
+        let key = match method.envelope() {
+            Envelope::Request => RequestKey::of(&request.method, &request.params),
+            Envelope::None | Envelope::Revision => None,
+        };
+        if let Some(key) = &key
+            && let Some(first) = self.requests.answered(key)?
+        {
+            return Ok(first);
+        }
+        let call = Call {
+            client,
+            request,
+            origin: Origin::new(&request.method, &request.id),
+        };
+        let result = match method.route() {
+            Route::Owner(handler) => handler(self, &call),
+            Route::Service => {
+                let session = self.sessions.entry(client).or_default();
+                let result = method.serve(&mut self.service, session, &request.params);
+                // A service answer says whether it changed anything: a no-op and a retry answered
+                // from a store's request log did not.
+                if result
+                    .as_ref()
+                    .is_ok_and(|value| methods::mutates(&method, Some(value)))
+                {
+                    announce_once(&mut self.announced, &call.origin);
+                }
+                match result {
+                    // A stack whose source or artifacts are not prepared queues that preparation
+                    // and answers with the job to wait for.
+                    Err(error) if error.kind == ErrorKind::PreparationRequired => {
+                        Err(self.prepare_request(client, &request.params, &error))
+                    }
+                    other => other,
+                }
+            }
+        };
+        match (result, key) {
+            (Ok(mut value), Some(key)) => {
+                self.requests.record(key, &mut value);
+                Ok(value)
+            }
+            (result, _) => result,
+        }
+    }
+
+    /// Record every change the message just handled announced, once each.
+    fn record_announced(&mut self) {
+        for origin in std::mem::take(&mut self.announced) {
+            self.log.record(&origin);
+        }
+    }
+
+    /// A preview job for the requesting client. A draft is session state, so the owner looks it up
+    /// in that client's own session: naming another client's draft, or one that has ended, is a
+    /// validation error rather than a preview of someone else's gesture.
+    fn preview(&mut self, request: PreviewRequest) -> Result<PreviewJob, Error> {
+        let draft = match &request.draft {
+            None => None,
+            Some(draft_id) => Some(
+                self.sessions
+                    .entry(request.client)
+                    .or_default()
+                    .held_draft(draft_id)?,
             ),
-        )),
-    )
-}
+        };
+        if request.analyse && request.layer_count.is_some() {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "a truncated preview renders a layer prefix its identity does not describe, so it cannot be analysed",
+            ));
+        }
+        let job = self
+            .service
+            .preview_job(
+                &request.asset_id,
+                request.entry_id.as_ref(),
+                request.layer_count,
+                draft,
+                request.proxy,
+            )
+            .map(|mut job| {
+                job.analyse = request.analyse;
+                job
+            })
+            .and_then(|job| match request.mask_overlay.clone() {
+                // Validated against the stack the job will render, which is why it is applied here
+                // and not copied in like the flags above.
+                Some(overlay) => job.with_mask_overlay(overlay),
+                None => Ok(job),
+            });
+        // A stack whose source is not prepared queues that preparation and answers with the job to
+        // wait for, exactly as a JSON request does.
+        match job {
+            Err(error) if error.kind == ErrorKind::PreparationRequired => Err(self.prepare(
+                request.client,
+                &request.asset_id,
+                request.entry_id.as_ref(),
+                &error,
+            )),
+            other => other,
+        }
+    }
 
-/// Wrap one owner-answered result in the shared response envelope.
-fn answer(request: &ApiRequest, sequence: u64, result: Result<Value, Error>) -> ApiResponse {
-    match result {
-        Ok(result) => ApiResponse::success(request.id.clone(), sequence, result),
-        Err(error) => ApiResponse::failure(request.id.clone(), sequence, error),
+    /// Queue the preparation a refused request needs and return the error that names its job, or
+    /// the reason it could not be queued. The request names the stack it evaluated with `asset_id`
+    /// and an optional `entry_id`; a draft or no entry is the current one.
+    pub(super) fn prepare_request(
+        &mut self,
+        client: ClientId,
+        params: &Value,
+        refused: &Error,
+    ) -> Error {
+        let field = |value: &Value, name: &str| {
+            Error::new(ErrorKind::Validation, format!("{name}: invalid {value}"))
+        };
+        let Some(asset) = params.get("asset_id") else {
+            return Error::new(ErrorKind::Validation, "missing asset_id");
+        };
+        let Ok(asset_id) = AssetId::deserialize(asset) else {
+            return field(asset, "asset_id");
+        };
+        let entry = params.get("entry_id");
+        let entry_id = match entry.map(EntryId::deserialize).transpose() {
+            Ok(entry_id) => entry_id,
+            Err(_) => return field(entry.unwrap_or(&Value::Null), "entry_id"),
+        };
+        self.prepare(client, &asset_id, entry_id.as_ref(), refused)
+    }
+
+    /// Queue what one stack still needs, plus any artifact the refusal named.
+    fn prepare(
+        &mut self,
+        client: ClientId,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+        refused: &Error,
+    ) -> Error {
+        match queue_preparation(
+            &self.service,
+            &mut self.jobs,
+            client,
+            asset_id,
+            entry_id,
+            &requested_artifacts(refused.data.as_deref()),
+        ) {
+            Ok(id) => Error::new(ErrorKind::PreparationRequired, id),
+            Err(error) => error,
+        }
+    }
+
+    /// Forget a client's session. A gone client releases its analysis interests exactly as a
+    /// cancel does; a job nobody else wants is dropped from the pending slot, or its result is
+    /// discarded when it arrives from the worker.
+    fn disconnect(&mut self, client: ClientId) {
+        self.sessions.remove(&client);
+        for job_id in self.analyses.disconnect(client) {
+            self.queue.drop_pending(&job_id);
+            self.analyses.cancel(&job_id);
+        }
+        self.latest_import.remove(&client);
+        self.jobs.disconnect(client);
+    }
+
+    /// A source job finished on the worker: commit what it prepared for the clients still waiting,
+    /// and record the import event when it created an asset.
+    fn source_complete(&mut self, id: &str, result: Result<SourceResult, Error>) {
+        let interested = self
+            .jobs
+            .jobs
+            .get(id)
+            .is_some_and(|job| !job.clients.is_empty());
+        let service = &mut self.service;
+        let outcome = if interested {
+            result.and_then(|prepared| match prepared {
+                SourceResult::File(file, verified) => {
+                    let (state, created) = service.import_prepared(file)?;
+                    service.adopt_artifacts(verified);
+                    Ok(Completed::Asset(Box::new(state), created))
+                }
+                SourceResult::Develop(request, developed, verified) => {
+                    let state = service.install_development(&request, developed)?;
+                    service.adopt_artifacts(verified);
+                    Ok(Completed::Asset(Box::new(state), false))
+                }
+                SourceResult::Artifacts(asset_id, verified) => {
+                    service.adopt_artifacts(verified);
+                    Ok(Completed::Asset(Box::new(service.state(&asset_id)?), false))
+                }
+                SourceResult::Collected(collected) => serde_json::to_value(collected)
+                    .map(Completed::Value)
+                    .map_err(|error| Error::new(ErrorKind::Internal, error.to_string())),
+            })
+        } else {
+            Err(Error::new(ErrorKind::Conflict, "source job cancelled"))
+        };
+        // An import is announced when it commits an asset, under the request that asked for it.
+        if matches!(outcome, Ok(Completed::Asset(_, true)))
+            && let Some(request_id) = self
+                .jobs
+                .jobs
+                .get(id)
+                .and_then(|job| job.import_request_id.as_deref())
+        {
+            self.log.record(&Origin::new("catalog.import", request_id));
+        }
+        self.jobs.complete(
+            id,
+            match outcome {
+                Ok(Completed::Asset(state, _)) => SourceState::Ready(state),
+                Ok(Completed::Value(value)) => SourceState::Finished(value),
+                Err(error) => SourceState::Failed(error),
+            },
+        );
+        if !self.jobs.active.is_empty() {
+            self.service.evict_development();
+        }
     }
 }
 
-/// `activity.list`: one lock and a copy of at most 80 small entries. It takes no parameters; an
-/// omitted `params` is accepted and a named one is refused, so a misspelt filter is never silently
-/// ignored.
-fn activity_list(board: &ActivityBoard, params: &Value) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Params {}
-    if !params.is_null() {
-        methods::params::<Params>(params)?;
+/// `catalog.import`: queue the preparation, or answer from the verified cache. The import is
+/// announced when it commits an asset, not here.
+pub(super) fn catalog_import(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: Import,
+) -> Result<Value, Error> {
+    params.mutation.validate()?;
+    let (id, state) = match owner.service.cached_import(&params.path)? {
+        Some(state) => (owner.jobs.ready(call.client, state)?, "ready"),
+        None => {
+            let expected = owner.service.known_fingerprint(&params.path)?;
+            let id = owner
+                .jobs
+                .enqueue(call.client, params.path, expected, Vec::new())?;
+            owner.service.evict_development();
+            (id, "queued")
+        }
+    };
+    owner.jobs.mark_import(&id, &call.request.id);
+    owner.latest_import.insert(call.client, id.clone());
+    Ok(json!({"job_id": id, "state": state}))
+}
+
+pub(super) fn job_status(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: JobParams,
+) -> Result<Value, Error> {
+    owner.jobs.status(call.client, &params.job_id)
+}
+
+/// `job.adopt`: the ready result of this client's latest import becomes its current asset.
+pub(super) fn job_adopt(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: JobParams,
+) -> Result<Value, Error> {
+    if owner.latest_import.get(&call.client) != Some(&params.job_id) {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            "a newer import superseded this job",
+        ));
     }
-    serde_json::to_value(board.snapshot())
-        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
+    let state = match owner.jobs.jobs.get(&params.job_id) {
+        Some(job) if job.clients.contains(&call.client) => match &job.state {
+            SourceState::Ready(state) => (**state).clone(),
+            SourceState::Failed(error) => return Err(error.clone()),
+            SourceState::Finished(_) => {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    "this source job is not an import",
+                ));
+            }
+            SourceState::Queued | SourceState::Preparing => {
+                return Err(Error::new(ErrorKind::PreparationRequired, params.job_id));
+            }
+        },
+        _ => {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "unknown source job for this client",
+            ));
+        }
+    };
+    let session = owner.sessions.entry(call.client).or_default();
+    session.preview.return_current();
+    session.touch();
+    owner.latest_import.remove(&call.client);
+    Ok(json!({"asset": state, "session": session}))
 }
 
-/// Which evaluated stack the caller wants analysed.
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-enum AnalysisTarget {
-    /// The asset's current entry.
-    Current,
-    /// One frozen historical entry, which a later commit never relabels.
-    Entry { entry_id: EntryId },
-    /// This client's own open draft, at the `draft_revision` it holds now.
-    Draft { draft_id: DraftId },
+pub(super) fn job_cancel(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: JobParams,
+) -> Result<Value, Error> {
+    if owner.latest_import.get(&call.client) == Some(&params.job_id) {
+        owner.latest_import.remove(&call.client);
+    }
+    owner.jobs.cancel(call.client, &params.job_id)
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AnalysisJobParams {
-    job_id: JobId,
+pub(super) fn source_prepare(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: SourcePrepare,
+) -> Result<Value, Error> {
+    let id = queue_preparation(
+        &owner.service,
+        &mut owner.jobs,
+        call.client,
+        &params.asset_id,
+        params.entry_id.as_ref(),
+        &[],
+    )?;
+    Ok(json!({"job_id": id, "state": "queued"}))
+}
+
+/// `artifact.collect`: remove the collectable rows now, in one catalog transaction, and queue a
+/// source job that removes their files, orphan files and stale staged files. Should the queue be
+/// full, the removed rows' files are simply orphans the next collection removes. The collection is
+/// a mutation the moment it is accepted, so other clients learn of it from the event log then.
+pub(super) fn artifact_collect(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: Collect,
+) -> Result<Value, Error> {
+    params.mutation.validate()?;
+    let collection = owner.service.plan_collection()?;
+    let root = collection.root.clone();
+    let id =
+        owner
+            .jobs
+            .enqueue_maintenance(call.client, root, SourceTaskKind::Collect(collection))?;
+    announce_once(&mut owner.announced, &call.origin);
+    Ok(json!({"job_id": id, "status": "queued"}))
+}
+
+/// `activity.list`: one lock and a copy of at most 80 small entries.
+pub(super) fn activity_list(owner: &mut Owner, _: &Call<'_>, _: NoParams) -> Result<Value, Error> {
+    methods::value(owner.activity.snapshot())
+}
+
+/// `events.since`.
+pub(super) fn events_since(
+    owner: &mut Owner,
+    _: &Call<'_>,
+    params: EventsSince,
+) -> Result<Value, Error> {
+    methods::value(owner.log.since(params.after))
 }
 
 /// `analysis.request`. Everything the owner does here is bookkeeping and `O(layers)` planning: a
 /// state read, the cached verified source, the draft's plan and one compile to learn the output
 /// stage. No frame is allocated and nothing is rasterized on this thread.
-fn analysis_request(
-    service: &EditorService,
-    sessions: &HashMap<ClientId, ClientSession>,
-    store: &mut AnalysisStore,
-    queue: &mut AnalysisQueue,
-    client: ClientId,
-    params: &Value,
+pub(super) fn analysis_request(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: AnalysisRequest,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Params {
-        asset_id: AssetId,
-        target: AnalysisTarget,
-    }
-    let request: Params = methods::params(params)?;
-    // A draft is session state, so it resolves from the calling client's own session: another
-    // client's draft, or one that has ended, is simply not this session's.
-    let held;
-    let selection = match &request.target {
+    let selection = match &params.target {
         AnalysisTarget::Current => AnalysisSelection::Current,
         AnalysisTarget::Entry { entry_id } => AnalysisSelection::Entry(entry_id),
-        AnalysisTarget::Draft { draft_id } => {
-            held = sessions
-                .get(&client)
-                .and_then(|session| session.draft.as_ref())
-                .filter(|draft| &draft.draft_id == draft_id)
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Validation,
-                        format!("unknown draft {draft_id} for this client"),
-                    )
-                })?;
-            AnalysisSelection::Draft(held)
-        }
+        AnalysisTarget::Draft { draft_id } => AnalysisSelection::Draft(
+            owner
+                .sessions
+                .entry(call.client)
+                .or_default()
+                .held_draft(draft_id)?,
+        ),
     };
+    let plan = owner.service.analysis_plan(&params.asset_id, selection);
+    // A stack whose source or artifacts are not prepared queues that preparation and answers with
+    // the job to wait for, as every other evaluating request does.
     let AnalysisPlan {
         identity,
         source,
@@ -1603,18 +1579,27 @@ fn analysis_request(
         recipe,
         failure,
         artifacts,
-    } = service.analysis_plan(&request.asset_id, selection)?;
+    } = match plan {
+        Err(error) if error.kind == ErrorKind::PreparationRequired => {
+            let entry_id = match &params.target {
+                AnalysisTarget::Entry { entry_id } => Some(entry_id),
+                AnalysisTarget::Current | AnalysisTarget::Draft { .. } => None,
+            };
+            return Err(owner.prepare(call.client, &params.asset_id, entry_id, &error));
+        }
+        plan => plan?,
+    };
     // An identical identity joins the job that already covers it, whether it is still running or
     // already holds a report: the same work is never done twice.
-    let (job_id, fresh) = store.request(identity.clone(), client);
+    let (job_id, fresh) = owner.analyses.request(identity.clone(), call.client);
     if fresh {
         match failure {
             // The effective recipe resolved but has no output stage the host can evaluate, so no
             // worker is started: the job is failed from the start and carries the reason.
-            Some(error) => store.fail(&job_id, error),
+            Some(error) => owner.analyses.fail(&job_id, error),
             None => {
                 let source = source.expect("an evaluable stack carries its prepared source");
-                if let Some(displaced) = queue.submit(AnalysisJob {
+                if let Some(displaced) = owner.queue.submit(AnalysisJob {
                     job_id: job_id.clone(),
                     identity,
                     source,
@@ -1622,12 +1607,13 @@ fn analysis_request(
                     recipe,
                     artifacts,
                 }) {
-                    store.supersede(&displaced);
+                    owner.analyses.supersede(&displaced);
                 }
             }
         }
     }
-    let read = store
+    let read = owner
+        .analyses
         .state_of(&job_id)
         .expect("the job was just opened or joined");
     let mut value = analysis_value(&read)?;
@@ -1635,91 +1621,26 @@ fn analysis_request(
     Ok(value)
 }
 
-/// Queue the preparation a refused `analysis.request` needs and return the error that names its
-/// job, or the reason it could not be queued.
-fn prepare_analysis(
-    service: &EditorService,
-    jobs: &mut SourceJobs,
-    client: ClientId,
-    params: &Value,
-    refused: &Error,
-) -> Error {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Params {
-        asset_id: AssetId,
-        target: AnalysisTarget,
-    }
-    let queued = methods::params::<Params>(params).and_then(|request| {
-        let entry_id = match &request.target {
-            AnalysisTarget::Entry { entry_id } => Some(entry_id),
-            AnalysisTarget::Current | AnalysisTarget::Draft { .. } => None,
-        };
-        queue_preparation(
-            service,
-            jobs,
-            client,
-            &request.asset_id,
-            entry_id,
-            &requested_artifacts(refused.data.as_deref()),
-        )
-    });
-    match queued {
-        Ok(id) => Error::new(ErrorKind::PreparationRequired, id),
-        Err(error) => error,
-    }
-}
-
-/// Queue the preparation a refused owner-answered request needs to evaluate its asset's current
-/// entry — a task sampling the data it discloses — and return the error that names its job, or the
-/// reason it could not be queued.
-fn prepare_current(
-    service: &EditorService,
-    jobs: &mut SourceJobs,
-    client: ClientId,
-    params: &Value,
-    refused: &Error,
-) -> Error {
-    let queued = params
-        .get("asset_id")
-        .cloned()
-        .ok_or_else(|| Error::new(ErrorKind::Validation, "missing asset_id"))
-        .and_then(|value| parse_params::<AssetId>(&value))
-        .and_then(|asset_id| {
-            queue_preparation(
-                service,
-                jobs,
-                client,
-                &asset_id,
-                None,
-                &requested_artifacts(refused.data.as_deref()),
-            )
-        });
-    match queued {
-        Ok(id) => Error::new(ErrorKind::PreparationRequired, id),
-        Err(error) => error,
-    }
-}
-
 /// `analysis.read`. A job this client never requested is not its own.
-fn analysis_read(store: &AnalysisStore, client: ClientId, params: &Value) -> Result<Value, Error> {
-    let params: AnalysisJobParams = methods::params(params)?;
-    analysis_value(&store.read(&params.job_id, client)?)
+pub(super) fn analysis_read(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: AnalysisJobParams,
+) -> Result<Value, Error> {
+    analysis_value(&owner.analyses.read(&params.job_id, call.client)?)
 }
 
 /// `analysis.cancel`. Dropping the last interest drops a pending job outright; an active render is
 /// not interrupted mid-way — it runs to completion on the worker and its result is discarded on
 /// arrival, which costs nothing the render was not already spending.
-fn analysis_cancel(
-    store: &mut AnalysisStore,
-    queue: &mut AnalysisQueue,
-    client: ClientId,
-    params: &Value,
+pub(super) fn analysis_cancel(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: AnalysisJobParams,
 ) -> Result<Value, Error> {
-    let params: AnalysisJobParams = methods::params(params)?;
-    if store.release(&params.job_id, client)? == crate::analysis::Release::Cancelled {
-        queue.drop_pending(&params.job_id);
-        store.cancel(&params.job_id);
+    if owner.analyses.release(&params.job_id, call.client)? == crate::analysis::Release::Cancelled {
+        owner.queue.drop_pending(&params.job_id);
+        owner.analyses.cancel(&params.job_id);
     }
     Ok(json!({"cancelled": true}))
 }
@@ -1732,45 +1653,12 @@ fn analysis_value(read: &AnalysisRead<'_>) -> Result<Value, Error> {
         "identity": read.identity,
     });
     if let Some(report) = read.report {
-        value["report"] = serde_json::to_value(report)
-            .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+        value["report"] = methods::value(report)?;
     }
     if let Some(error) = read.error {
         value["error"] = json!({"code": error.kind.code(), "message": error.detail});
     }
     Ok(value)
-}
-
-fn event_response(request: &ApiRequest, sequence: u64, events: &VecDeque<ApiEvent>) -> ApiResponse {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Params {
-        after: u64,
-    }
-    match methods::params::<Params>(&request.params) {
-        Ok(params) => {
-            let oldest = events
-                .front()
-                .map(|event| event.sequence)
-                .unwrap_or(sequence.saturating_add(1));
-            let gap = params.after.saturating_add(1) < oldest;
-            let selected = events
-                .iter()
-                .filter(|event| event.sequence > params.after)
-                .cloned()
-                .collect();
-            ApiResponse::success(
-                request.id.clone(),
-                sequence,
-                EventsResult {
-                    events: selected,
-                    current_sequence: sequence,
-                    gap,
-                },
-            )
-        }
-        Err(error) => ApiResponse::failure(request.id.clone(), sequence, error),
-    }
 }
 
 #[cfg(test)]
@@ -1814,6 +1702,20 @@ mod tests {
         response.result.expect("a result")
     }
 
+    /// A fresh request envelope, so every call is a new request.
+    fn envelope() -> Value {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        json!({
+            "request_id": format!("owner-test-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+            "actor": "test",
+        })
+    }
+
+    /// `catalog.import` of one file, as a new request.
+    fn import_params(path: impl serde::Serialize) -> Value {
+        json!({"path": path, "mutation": envelope()})
+    }
+
     /// Import a fixture the way every client must now: the owner acknowledges with a job id, the
     /// bounded source worker prepares the original, and `job.adopt` hands back the asset state.
     fn import_asset(owner: &OwnerHandle, client: ClientId, path: &std::path::Path) -> Value {
@@ -1822,7 +1724,7 @@ mod tests {
             client,
             "import",
             "catalog.import",
-            json!({"path": path}),
+            import_params(path),
         );
         let job_id = queued["job_id"].as_str().expect("a job id").to_owned();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -1970,14 +1872,14 @@ mod tests {
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let first = owner.register();
         let second = owner.register();
-        let a = request(&owner, first, "catalog.import", json!({"path":first_path}))
+        let a = request(&owner, first, "catalog.import", import_params(&first_path))
             .result
             .unwrap();
         let b = request(
             &owner,
             second,
             "catalog.import",
-            json!({"path":second_path}),
+            import_params(&second_path),
         )
         .result
         .unwrap();
@@ -2180,10 +2082,10 @@ mod tests {
         std::fs::copy(fixture(), &newer).unwrap();
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();
-        let a = request(&owner, client, "catalog.import", json!({"path":older}))
+        let a = request(&owner, client, "catalog.import", import_params(&older))
             .result
             .unwrap();
-        let b = request(&owner, client, "catalog.import", json!({"path":newer}))
+        let b = request(&owner, client, "catalog.import", import_params(&newer))
             .result
             .unwrap();
         let first = a["job_id"].as_str().unwrap();
@@ -2210,10 +2112,10 @@ mod tests {
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let first = owner.register();
         let second = owner.register();
-        let a = request(&owner, first, "catalog.import", json!({"path":fixture()}))
+        let a = request(&owner, first, "catalog.import", import_params(fixture()))
             .result
             .unwrap();
-        let b = request(&owner, second, "catalog.import", json!({"path":fixture()}))
+        let b = request(&owner, second, "catalog.import", import_params(fixture()))
             .result
             .unwrap();
         let first_id = a["job_id"].as_str().unwrap();
@@ -2234,7 +2136,7 @@ mod tests {
         let ready = wait_source(&owner, second, second_id);
         assert_eq!(ready["state"], "ready");
         let asset = ready["asset"]["asset"]["id"].clone();
-        let again = request(&owner, second, "catalog.import", json!({"path":fixture()}))
+        let again = request(&owner, second, "catalog.import", import_params(fixture()))
             .result
             .unwrap();
         assert_eq!(
@@ -2307,7 +2209,7 @@ mod tests {
             .error
             .is_none()
         );
-        let queued = request(&owner, client, "catalog.import", json!({"path":invalid}))
+        let queued = request(&owner, client, "catalog.import", import_params(&invalid))
             .result
             .unwrap();
         let failed = wait_source(&owner, client, queued["job_id"].as_str().unwrap());
@@ -2404,12 +2306,7 @@ mod tests {
             assert!(response.error.is_none(), "{id}: {:?}", response.error);
             response.result.unwrap()
         };
-        let queued = call(
-            viewer,
-            "import",
-            "catalog.import",
-            json!({"path":fixture()}),
-        );
+        let queued = call(viewer, "import", "catalog.import", import_params(fixture()));
         let job_id = queued["job_id"].as_str().unwrap();
         let imported = loop {
             let status = call(viewer, "status", "job.status", json!({"job_id":job_id}));
@@ -3343,7 +3240,7 @@ mod tests {
             client,
             "import",
             "catalog.import",
-            json!({"path": photo}),
+            import_params(&photo),
         );
         let job_id = queued["job_id"].clone();
         let running = listed(&owner, client, |list| active_kind(list, "source.prepare"));
@@ -3674,60 +3571,329 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// Every method the table lists without a service handler reaches an owner route: none is
-    /// refused as unrouted, and only `events.since` answers with the event log. One that reached
-    /// no route is an internal error naming it, never the `events.since` answer.
+    /// Every method family that changes something without a revision takes the `{request_id,
+    /// actor}` envelope, and a retry of it is answered from the owner's request table: the first
+    /// answer comes back marked `deduplicated`, nothing changes again and no second event is
+    /// recorded. The same `request_id` with other input is a conflict. A revisioned family,
+    /// history here, answers its retry from the catalog's own request table the same way.
     #[test]
-    fn every_handler_less_method_is_routed_and_an_unrouted_one_is_an_internal_error() {
-        let catalog = temp("unrouted.sqlite");
+    fn a_retry_of_every_mutation_family_returns_the_first_answer_and_records_no_event() {
+        let catalog = temp("retry-families.sqlite");
         let _ = std::fs::remove_file(&catalog);
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();
-        let owner_answered: Vec<&str> = methods::METHODS
-            .iter()
-            .filter(|spec| spec.handler.is_none())
-            .map(|spec| spec.name)
-            .collect();
-        assert!(owner_answered.contains(&"events.since"));
-        for name in owner_answered {
-            // Parameters no method declares, so every route refuses them without acting.
-            let response = send(&owner, client, name, name, json!({"unrouted-probe": true}));
-            if let Some(error) = &response.error {
-                assert!(
-                    !error.message.contains("no catalog-owner route"),
-                    "{name} is listed without a handler but no owner route answers it"
-                );
-            }
-            if name != "events.since" {
-                assert!(
-                    response
-                        .result
-                        .as_ref()
-                        .is_none_or(|result| result.get("current_sequence").is_none()),
-                    "{name} was answered with the event log"
-                );
-            }
+        let photo = temp("retry-families.jpg");
+        std::fs::copy(fixture(), &photo).unwrap();
+        // The same request twice, as a client resends it after losing the answer.
+        let twice = |id: &str, method: &str, params: Value| -> (Value, Value, u64) {
+            let (_, before) = events_after(&owner, client, 0);
+            let first = ok(&owner, client, id, method, params.clone());
+            let (_, after_first) = events_after(&owner, client, 0);
+            let retry = send(&owner, client, id, method, params);
+            let (_, after_retry) = events_after(&owner, client, 0);
+            let retried = retry
+                .result
+                .unwrap_or_else(|| panic!("{method}: {:?}", retry.error));
+            assert_eq!(first["deduplicated"], json!(false), "{method}");
+            assert_eq!(retried["deduplicated"], json!(true), "{method}");
+            let mut original = retried.clone();
+            original["deduplicated"] = json!(false);
+            assert_eq!(original, first, "{method}: the retry is the first answer");
+            assert_eq!(
+                after_retry, after_first,
+                "{method}: the retry records no event"
+            );
+            assert_eq!(retry.sequence, after_first, "{method}");
+            (first, retried, after_first - before)
+        };
+        let conflict = |method: &str, params: Value| {
+            let error = failure(&owner, client, "conflict", method, params);
+            assert_eq!(error.code, "conflict", "{method}: {}", error.message);
+            assert_eq!(
+                error.message, "request_id was already used with different input",
+                "{method}"
+            );
+        };
+        let request = |request_id: &str| json!({"request_id": request_id, "actor": "test"});
+
+        // catalog: the import commits its asset, and its event, once. The event is recorded when
+        // the worker's preparation commits, so the retry is sent after that.
+        let import = json!({"path": photo, "mutation": request("import-1")});
+        let queued = ok(&owner, client, "import", "catalog.import", import.clone());
+        assert_eq!(queued["deduplicated"], json!(false));
+        let job_id = queued["job_id"].as_str().unwrap().to_owned();
+        let ready = wait_source(&owner, client, &job_id);
+        assert_eq!(ready["state"], "ready");
+        let asset = ready["asset"]["asset"]["id"].clone();
+        let (events, imported_at) = events_after(&owner, client, 0);
+        assert_eq!(events, [("catalog.import".to_owned(), "import".to_owned())]);
+        let retried = ok(&owner, client, "import", "catalog.import", import);
+        assert_eq!(retried["deduplicated"], json!(true));
+        assert_eq!(retried["job_id"], json!(job_id));
+        assert_eq!(retried["state"], queued["state"], "the first answer");
+        assert_eq!(events_after(&owner, client, 0).1, imported_at);
+        conflict(
+            "catalog.import",
+            json!({"path": fixture(), "mutation": request("import-1")}),
+        );
+
+        // preset: create, update, import and delete.
+        let settings = json!({"set-basic": {"exposure": 0.5}});
+        let (created, _, announced) = twice(
+            "create",
+            "preset.create",
+            json!({"name": "Soft", "settings": settings, "mutation": request("preset-1")}),
+        );
+        assert_eq!(announced, 1);
+        assert_eq!(created["preset"]["actor"], json!("test"));
+        let presets = ok(&owner, client, "list", "preset.list", json!({}));
+        assert_eq!(
+            presets["presets"].as_array().unwrap().len(),
+            1,
+            "one preset"
+        );
+        conflict(
+            "preset.create",
+            json!({"name": "Hard", "settings": settings, "mutation": request("preset-1")}),
+        );
+        let preset_id = created["preset"]["id"].clone();
+        let (updated, _, announced) = twice(
+            "update",
+            "preset.update",
+            json!({"preset_id": preset_id, "name": "Softer", "mutation": request("preset-2")}),
+        );
+        assert_eq!(
+            (updated["outcome"].clone(), announced),
+            (json!("applied"), 1)
+        );
+        let document = ok(
+            &owner,
+            client,
+            "export",
+            "preset.export",
+            json!({"preset_id": preset_id}),
+        );
+        let (imported, _, announced) = twice(
+            "import",
+            "preset.import",
+            json!({
+                "content": document["content"], "name": "Imported copy",
+                "mutation": request("preset-3"),
+            }),
+        );
+        assert_eq!(announced, 1);
+        assert_eq!(imported["preset"]["name"], json!("Imported copy"));
+        let (deleted, _, announced) = twice(
+            "delete",
+            "preset.delete",
+            json!({"preset_id": preset_id, "mutation": request("preset-4")}),
+        );
+        assert_eq!((deleted["deleted"].clone(), announced), (json!(true), 1));
+        let presets = ok(&owner, client, "list", "preset.list", json!({}));
+        assert_eq!(
+            presets["presets"].as_array().unwrap().len(),
+            1,
+            "the import is left"
+        );
+
+        // version: create and delete, per asset.
+        let (named, _, announced) = twice(
+            "version",
+            "version.create",
+            json!({"asset_id": asset, "name": "Start", "mutation": request("version-1")}),
+        );
+        assert_eq!((named["outcome"].clone(), announced), (json!("applied"), 1));
+        assert_eq!(named["version"]["actor"], json!("test"));
+        conflict(
+            "version.create",
+            json!({"asset_id": asset, "name": "Other", "mutation": request("version-1")}),
+        );
+        let (removed, _, announced) = twice(
+            "unversion",
+            "version.delete",
+            json!({"asset_id": asset, "name": "Start", "mutation": request("version-2")}),
+        );
+        assert_eq!(
+            (removed["outcome"].clone(), announced),
+            (json!("applied"), 1)
+        );
+
+        // artifact: a collection is accepted once.
+        let (collect, _, announced) = twice(
+            "collect",
+            "artifact.collect",
+            json!({"mutation": request("collect-1")}),
+        );
+        assert_eq!(announced, 1);
+        assert_eq!(
+            wait_source(&owner, client, collect["job_id"].as_str().unwrap())["state"],
+            "ready"
+        );
+
+        // history, a revisioned family: the catalog's request table answers its retry.
+        pixel_edit(&owner, client, &asset, 0, "edit-1", [1, 2, 3]);
+        let undo = json!({
+            "asset_id": asset,
+            "mutation": {"expected_revision": 1, "request_id": "undo-1", "actor": "test"},
+        });
+        let (_, before) = events_after(&owner, client, 0);
+        let first = ok(&owner, client, "undo", "history.undo", undo.clone());
+        let retry = ok(&owner, client, "undo", "history.undo", undo);
+        assert_eq!(first["deduplicated"], json!(false));
+        assert_eq!(retry["deduplicated"], json!(true));
+        assert_eq!(retry["current_entry_id"], first["current_entry_id"]);
+        assert_eq!(events_after(&owner, client, 0).1, before + 1);
+
+        // The envelope is required and carries no revision here.
+        for (method, params, expected) in [
+            (
+                "preset.delete",
+                json!({"preset_id": preset_id}),
+                "missing field `mutation`",
+            ),
+            (
+                "version.create",
+                json!({"asset_id": asset, "name": "X", "mutation": {"expected_revision": 0, "request_id": "r", "actor": "a"}}),
+                "unknown field `expected_revision`",
+            ),
+            (
+                "preset.create",
+                json!({"name": "Y", "settings": settings, "mutation": {"request_id": "", "actor": "a"}}),
+                "request_id must contain 1..128 characters",
+            ),
+        ] {
+            let error = failure(&owner, client, "envelope", method, params);
+            assert_eq!(error.code, "validation", "{method}");
+            assert!(
+                error.message.contains(expected),
+                "{method}: {}",
+                error.message
+            );
         }
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+    }
 
-        let refused = unrouted(
-            &ApiRequest {
-                id: "probe".into(),
-                method: "test.unrouted".into(),
-                params: json!({"after": 0}),
-                token: None,
-            },
-            7,
-        );
-        assert!(refused.result.is_none(), "no event log is answered");
-        assert_eq!(refused.sequence, 7);
-        let error = refused.error.expect("an unrouted method is refused");
-        assert_eq!(error.code, "internal");
+    /// Every method `schema.list` lists is answered through the one table, and its schema is its
+    /// parser: each declared field is accepted by name, all of them together raise no
+    /// unknown-field error, and one field nothing declares is a validation error — naming it, for a
+    /// host method, whose parameters are declared once as the struct it parses. The owner answers,
+    /// so the service and owner handlers are covered alike, and the proof module's task is listed
+    /// too. Values are `null`: the point is which names each parser knows, not what it accepts.
+    #[test]
+    fn every_listed_method_accepts_its_declared_fields_and_refuses_an_unknown_one() {
+        let catalog = temp("declared.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(Arc::new(crate::CapabilitiesProofModule::new(
+                "http://127.0.0.1:9",
+            )))
+            .unwrap();
+        let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
+        let client = owner.register();
+        let schema = ok(&owner, client, "schema", "schema.list", json!({}));
+        let listed = schema["methods"].as_object().expect("the methods");
+        assert!(listed.keys().any(|name| name.starts_with("task.")));
+        const UNDECLARED: &str = "_undeclared";
+        for (name, method) in listed {
+            let host = methods::METHODS.iter().any(|spec| spec.name == name);
+            let mut declared: Vec<String> = method["required"]
+                .as_array()
+                .expect("required fields")
+                .iter()
+                .map(|field| field.as_str().expect("a field name").to_owned())
+                .collect();
+            declared.extend(
+                method["optional"]
+                    .as_object()
+                    .expect("optional fields")
+                    .keys()
+                    .cloned(),
+            );
+            let unknown = |response: &ApiResponse, field: &str| {
+                response.error.as_ref().is_some_and(|error| {
+                    error.message.contains(&format!("unknown field `{field}`"))
+                })
+            };
+            for field in &declared {
+                let response = send(&owner, client, name, name, json!({field.as_str(): null}));
+                assert!(
+                    !unknown(&response, field),
+                    "{name} refuses its declared {field}"
+                );
+                assert!(
+                    response
+                        .error
+                        .as_ref()
+                        .is_none_or(|error| !error.message.starts_with("unknown method")),
+                    "{name} is listed but not answered"
+                );
+            }
+            let all: serde_json::Map<String, Value> = declared
+                .iter()
+                .map(|field| (field.clone(), Value::Null))
+                .collect();
+            let response = send(&owner, client, name, name, Value::Object(all.clone()));
+            for field in &declared {
+                assert!(
+                    !unknown(&response, field),
+                    "{name} refuses its declared {field}"
+                );
+            }
+            let mut probe = all;
+            probe.insert(UNDECLARED.into(), json!(1));
+            let error = send(&owner, client, name, name, Value::Object(probe))
+                .error
+                .unwrap_or_else(|| panic!("{name} accepted an undeclared field"));
+            assert_eq!(error.code, "validation", "{name}: {}", error.message);
+            if host {
+                assert!(
+                    error
+                        .message
+                        .contains(&format!("unknown field `{UNDECLARED}`")),
+                    "{name}: {}",
+                    error.message
+                );
+            }
+        }
+        // Methods that take nothing say so too.
+        for name in [
+            "schema.list",
+            "catalog.list",
+            "preset.list",
+            "session.state",
+            "preview.return-current",
+            "activity.list",
+            "resources.read",
+            "artifact.status",
+        ] {
+            assert!(send(&owner, client, name, name, json!({})).error.is_none());
+            assert!(
+                send(&owner, client, name, name, Value::Null)
+                    .error
+                    .is_none()
+            );
+            let error = send(&owner, client, name, name, json!({"filter": "x"}))
+                .error
+                .unwrap_or_else(|| panic!("{name} ignored a parameter"));
+            assert_eq!(
+                (error.code.as_str(), error.message.as_str()),
+                ("validation", "unknown field `filter`, there are no fields"),
+                "{name}"
+            );
+        }
         assert_eq!(
-            error.message,
-            "test.unrouted has no service handler and no catalog-owner route"
+            send(&owner, client, "missing", "test.missing", json!({}))
+                .error
+                .expect("an unknown method is refused")
+                .code,
+            "protocol"
         );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
     }
 }

@@ -207,7 +207,13 @@ fn wait_job(client: &mut JsonClient, job_id: &str) -> Value {
 fn import_and_adopt(client: &mut JsonClient, path: &Path) -> Value {
     let imported = client.call(
         "catalog.import",
-        json!({"path":path.to_str().expect("fixture is UTF-8")}),
+        json!({
+            "path": path.to_str().expect("fixture is UTF-8"),
+            "mutation": {
+                "request_id": format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+                "actor": "raw-json-cli",
+            },
+        }),
     );
     let job_id = imported["job_id"]
         .as_str()
@@ -442,7 +448,7 @@ fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
 
     let version = client.call(
         "version.create",
-        json!({"asset_id":asset,"name":"RAW WB","actor":"raw-json-cli","entry_id":baseline_entry}),
+        json!({"asset_id":asset,"name":"RAW WB","mutation":{"request_id":"raw-version","actor":"raw-json-cli"},"entry_id":baseline_entry}),
     );
     assert_eq!(version["version"]["entry_id"], baseline_entry);
     let wb_recipe = client.call(

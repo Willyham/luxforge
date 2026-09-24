@@ -1,696 +1,528 @@
-//! The method table: host methods carry their schema description, mutation flag and handler, and
-//! every module action resolves to a generated `edit.<action>` method from the same registry, so
-//! discovery, event emission and dispatch cannot drift apart.
+//! The method table: every host method is one entry with its declared parameters, notes and
+//! handler, and every module action, query and task resolves to a generated method from the same
+//! registry, so discovery, event emission and dispatch cannot drift apart.
+//!
+//! A handler is either a service handler, which the editor service answers with the caller's
+//! session, or an owner handler, which the catalog owner answers from its own state: its source and
+//! analysis jobs, its event log, the capability host and the activity board. The catalog owner finds
+//! a method here, calls its handler and records the event a change announces; nothing is routed any
+//! other way.
 use super::{
-    ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, MASK_MODE,
-    MaskOverlayColour, MaskOverlayMode, POINTER_MODE, PROTOCOL,
+    COMPONENT_GALLERY_PAGE_COUNT, ClientSession, MASK_MODE, MaskOverlayColour, MaskOverlayMode,
+    POINTER_MODE, PROTOCOL,
+    owner::{self, Call, Owner},
+    params::{self, Envelope, HostParams, NoParams, ParamSchema, host_params, parse},
 };
 use crate::{
-    ActionDescriptor, ArtifactId, AssetId, ComponentId, Draft, DraftId, EditorService, EntryId,
-    Error, ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome,
-    PresetId, Zoom,
+    ActionDescriptor, ArtifactId, AssetId, ComponentId, DraftId, EditorService, EntryId, Error,
+    ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome, PresetId, Zoom,
     capabilities::{descriptor::TaskDescriptor, host::TASK_PREFIX},
     mask::commands::{self as mask_commands, MaskCommand, MaskTarget},
     path,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-pub(super) type Handler =
+/// A method the editor service answers with the caller's session.
+pub(super) type ServiceHandler =
     fn(&mut EditorService, &mut ClientSession, &Value) -> Result<Value, Error>;
+
+/// A method the catalog owner answers from its own state.
+pub(super) type OwnerHandler = fn(&mut Owner, &Call<'_>) -> Result<Value, Error>;
+
+pub(super) enum Handler {
+    Service(ServiceHandler),
+    Owner(OwnerHandler),
+}
 
 pub(super) struct MethodSpec {
     pub name: &'static str,
-    pub mutates: bool,
-    pub required: &'static [&'static str],
-    pub optional: &'static [(&'static str, &'static str)],
+    /// The parameters, generated with the struct the handler parses.
+    pub params: &'static ParamSchema,
     pub notes: &'static str,
-    /// `None` marks a method the owner loop answers from its own state.
-    pub handler: Option<Handler>,
+    pub handler: Handler,
+}
+
+impl MethodSpec {
+    /// A method mutates exactly when it carries a mutation envelope.
+    pub(super) fn mutates(&self) -> bool {
+        self.params.envelope != Envelope::None
+    }
+}
+
+/// One service method: its handler takes the struct its schema was generated from, parsed from the
+/// request by the one parse function, so the two cannot differ.
+macro_rules! service {
+    ($name:literal, $params:ty, $handler:path, $notes:expr $(,)?) => {
+        MethodSpec {
+            name: $name,
+            params: &<$params as HostParams>::SCHEMA,
+            notes: $notes,
+            handler: Handler::Service(|service, session, request| {
+                $handler(service, session, parse::<$params>(request)?)
+            }),
+        }
+    };
+}
+
+/// One owner method, parsed the same way.
+macro_rules! owner {
+    ($name:literal, $params:ty, $handler:path, $notes:expr $(,)?) => {
+        MethodSpec {
+            name: $name,
+            params: &<$params as HostParams>::SCHEMA,
+            notes: $notes,
+            handler: Handler::Owner(|owner, call| {
+                $handler(owner, call, parse::<$params>(&call.request.params)?)
+            }),
+        }
+    };
 }
 
 pub(super) const METHODS: &[MethodSpec] = &[
-    MethodSpec {
-        name: "schema.list",
-        mutates: false,
-        required: &[],
-        optional: &[],
-        notes: "protocol identity and every method with its parameters",
-        handler: Some(schema_list),
-    },
-    MethodSpec {
-        name: "catalog.import",
-        mutates: true,
-        required: &["path"],
-        optional: &[],
-        notes: "queues bounded source preparation; returns a job to inspect with job.status; commits only on verified success",
-        handler: None,
-    },
-    MethodSpec {
-        name: "job.status",
-        mutates: false,
-        required: &["job_id"],
-        optional: &[],
-        notes: "this client's bounded source job state; ready includes the committed asset state",
-        handler: None,
-    },
+    service!(
+        "schema.list",
+        NoParams,
+        schema_list,
+        "protocol identity and every method with its parameters"
+    ),
+    owner!(
+        "catalog.import",
+        owner::Import,
+        owner::catalog_import,
+        "queues bounded source preparation; returns a job to inspect with job.status; commits only on verified success, which emits the event"
+    ),
+    owner!(
+        "job.status",
+        owner::JobParams,
+        owner::job_status,
+        "this client's bounded source job state; ready includes the committed asset state"
+    ),
     // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
     // answers from it: one lock and a copy, nothing rendered or read.
-    MethodSpec {
-        name: "activity.list",
-        mutates: false,
-        required: &[],
-        optional: &[],
-        notes: "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {done, total} and job_id when known; job_id names the job that job.status (source work) or analysis.read (histograms) also answers; sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event",
-        handler: None,
-    },
-    MethodSpec {
-        name: "job.adopt",
-        mutates: false,
-        required: &["job_id"],
-        optional: &[],
-        notes: "select the ready result of this client's latest import as current; stale imports are refused",
-        handler: None,
-    },
-    MethodSpec {
-        name: "job.cancel",
-        mutates: false,
-        required: &["job_id"],
-        optional: &[],
-        notes: "remove this client's interest in a source job without cancelling other clients",
-        handler: None,
-    },
-    MethodSpec {
-        name: "source.prepare",
-        mutates: false,
-        required: &["asset_id"],
-        optional: &[("entry_id", "historical entry; default current")],
-        notes: "queue signature-verified preparation of an imported source after reopen or cache eviction",
-        handler: None,
-    },
-    MethodSpec {
-        name: "catalog.list",
-        mutates: false,
-        required: &[],
-        optional: &[],
-        notes: "referenced assets in import order",
-        handler: Some(catalog_list),
-    },
-    MethodSpec {
-        name: "asset.state",
-        mutates: false,
-        required: &["asset_id"],
-        optional: &[],
-        notes: "current entry, revision and redo path",
-        handler: Some(asset_state),
-    },
-    MethodSpec {
-        name: "source.inspect",
-        mutates: false,
-        required: &["asset_id"],
-        optional: &[("entry_id", "historical entry; default current")],
-        notes: "persisted source identity, RAW interpretation, crop, backend and preparation readiness without decoding",
-        handler: Some(source_inspect),
-    },
-    MethodSpec {
-        name: "history.list",
-        mutates: false,
-        required: &["asset_id"],
-        optional: &[("before_sequence", "u64"), ("limit", "1..100")],
-        notes: "chronological entries newest first, including abandoned branches",
-        handler: Some(history_list),
-    },
-    MethodSpec {
-        name: "history.inspect",
-        mutates: false,
-        required: &["asset_id", "entry_id"],
-        optional: &[],
-        notes: "one entry with its complete immutable stack",
-        handler: Some(history_inspect),
-    },
-    MethodSpec {
-        name: "history.lineage",
-        mutates: false,
-        required: &["asset_id"],
-        optional: &[
-            ("entry_id", "start entry; default current"),
-            ("limit", "1..100"),
-        ],
-        notes: "undo-parent chain newest first; next_entry_id continues a longer chain",
-        handler: Some(history_lineage),
-    },
-    MethodSpec {
-        name: "recipe.describe",
-        mutates: false,
-        required: &["asset_id"],
-        optional: &[("entry_id", "entry to describe; default current")],
-        notes: "an entry's stored layers in order with their module, title, summary and availability; reads payloads only and renders nothing",
-        handler: Some(recipe_describe),
-    },
-    MethodSpec {
-        name: "module.list",
-        mutates: false,
-        required: &[],
-        optional: &[("asset_id", "filter controls for this asset source kind")],
-        notes: "every registered module descriptor with its effects, actions, parameters and controls",
-        handler: Some(module_list),
-    },
+    owner!(
+        "activity.list",
+        NoParams,
+        owner::activity_list,
+        "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {done, total} and job_id when known; job_id names the job that job.status (source work) or analysis.read (histograms) also answers; sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event"
+    ),
+    owner!(
+        "job.adopt",
+        owner::JobParams,
+        owner::job_adopt,
+        "select the ready result of this client's latest import as current; stale imports are refused"
+    ),
+    owner!(
+        "job.cancel",
+        owner::JobParams,
+        owner::job_cancel,
+        "remove this client's interest in a source job without cancelling other clients"
+    ),
+    owner!(
+        "source.prepare",
+        owner::SourcePrepare,
+        owner::source_prepare,
+        "queue signature-verified preparation of an imported source after reopen or cache eviction"
+    ),
+    service!(
+        "catalog.list",
+        NoParams,
+        catalog_list,
+        "referenced assets in import order"
+    ),
+    service!(
+        "asset.state",
+        AssetParams,
+        asset_state,
+        "current entry, revision and redo path"
+    ),
+    service!(
+        "source.inspect",
+        SourceInspect,
+        source_inspect,
+        "persisted source identity, RAW interpretation, crop, backend and preparation readiness without decoding"
+    ),
+    service!(
+        "history.list",
+        HistoryList,
+        history_list,
+        "chronological entries newest first, including abandoned branches"
+    ),
+    service!(
+        "history.inspect",
+        EntryParams,
+        history_inspect,
+        "one entry with its complete immutable stack"
+    ),
+    service!(
+        "history.lineage",
+        HistoryLineage,
+        history_lineage,
+        "undo-parent chain newest first; next_entry_id continues a longer chain"
+    ),
+    service!(
+        "recipe.describe",
+        RecipeDescribe,
+        recipe_describe,
+        "an entry's stored layers in order with their module, title, summary and availability; reads payloads only and renders nothing"
+    ),
+    service!(
+        "module.list",
+        ModuleList,
+        module_list,
+        "every registered module descriptor with its effects, actions, parameters and controls"
+    ),
     // Module settings are answered by the catalog owner, which holds the capability host: the
     // settings directory and the secret store. They are user-level, outside every catalog, and
     // never create history entries.
-    MethodSpec {
-        name: "module.settings.read",
-        mutates: false,
-        required: &["module_id"],
-        optional: &[],
-        notes: "{module_id, schema, revision, state, fields, profiles}: each field's value, default, source (user or default) and validity, a secret field as {secret_present} only, and each profile's status (ready, incomplete, missing-credentials or incompatible); state is ready, incomplete or incompatible",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.settings.set",
-        mutates: true,
-        required: &["module_id", "values", "mutation"],
-        optional: &[(
-            "profile_id",
-            "the profile whose fields to set; default the module's own fields",
-        )],
-        notes: "validates the named non-secret fields against their kinds and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts and a file as its canonical path; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, invalidates_activation, settings}",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.settings.set-secret",
-        mutates: true,
-        required: &["module_id", "setting", "value", "mutation"],
-        optional: &[(
-            "profile_id",
-            "the profile whose secret to set; default the module's own",
-        )],
-        notes: "stores one secret field's value in the secure store and never echoes it; a retry is matched by the setting alone; not-ready names a locked or unavailable store and nothing is kept in plain text",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.settings.clear-secret",
-        mutates: true,
-        required: &["module_id", "setting", "mutation"],
-        optional: &[(
-            "profile_id",
-            "the profile whose secret to clear; default the module's own",
-        )],
-        notes: "removes only that secret from the secure store; an absent secret is a no-op",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.settings.reset",
-        mutates: true,
-        required: &["module_id", "mutation"],
-        optional: &[],
-        notes: "deletes the module's stored values and profiles and clears their secrets; the one write an incompatible entry accepts; the revision keeps counting",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.profile.create",
-        mutates: true,
-        required: &["module_id", "adapter", "label", "mutation"],
-        optional: &[],
-        notes: "a new empty provider profile of a declared adapter with a host-generated profile-<uuid> identity, at most the module's declared maximum; returns it as profile",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.profile.remove",
-        mutates: true,
-        required: &["module_id", "profile_id", "mutation"],
-        optional: &[],
-        notes: "clears the profile's secrets and removes it and its values, revokes the profile's grants and returns the removed profile",
-        handler: None,
-    },
+    owner!(
+        "module.settings.read",
+        owner::capability::ModuleParams,
+        owner::capability::settings_read,
+        "{module_id, schema, revision, state, fields, profiles}: each field's value, default, source (user or default) and validity, a secret field as {secret_present} only, and each profile's status (ready, incomplete, missing-credentials or incompatible); state is ready, incomplete or incompatible"
+    ),
+    owner!(
+        "module.settings.set",
+        owner::capability::SetParams,
+        owner::capability::settings_set,
+        "validates the named non-secret fields against their kinds and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts and a file as its canonical path; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, invalidates_activation, settings}"
+    ),
+    owner!(
+        "module.settings.set-secret",
+        owner::capability::SetSecretParams,
+        owner::capability::settings_set_secret,
+        "stores one secret field's value in the secure store and never echoes it; a retry is matched by the setting alone; not-ready names a locked or unavailable store and nothing is kept in plain text"
+    ),
+    owner!(
+        "module.settings.clear-secret",
+        owner::capability::ClearSecretParams,
+        owner::capability::settings_clear_secret,
+        "removes only that secret from the secure store; an absent secret is a no-op"
+    ),
+    owner!(
+        "module.settings.reset",
+        owner::capability::ResetParams,
+        owner::capability::settings_reset,
+        "deletes the module's stored values and profiles and clears their secrets; the one write an incompatible entry accepts; the revision keeps counting"
+    ),
+    owner!(
+        "module.profile.create",
+        owner::capability::CreateProfileParams,
+        owner::capability::profile_create,
+        "a new empty provider profile of a declared adapter with a host-generated profile-<uuid> identity, at most the module's declared maximum; returns it as profile"
+    ),
+    owner!(
+        "module.profile.remove",
+        owner::capability::RemoveProfileParams,
+        owner::capability::profile_remove,
+        "clears the profile's secrets and removes it and its values, revokes the profile's grants and returns the removed profile"
+    ),
     // Permissions, activation, resources and capability jobs are answered by the catalog owner
     // too: grants live beside the settings, and the jobs, lanes and activation state live there.
-    MethodSpec {
-        name: "module.permission.grant",
-        mutates: true,
-        required: &["module_id", "capability", "scope", "request_id"],
-        optional: &[],
-        notes: "grants one exact scope of a declared capability; only a client with permission authority may, otherwise forbidden; scope is {resource, version, origin} for download-artifact (the declared version from the origin of its pinned URL) or {profile_id, adapter, origin, data, asset_id} for remote-image-request (an existing profile of that adapter whose endpoint has that origin, the capability's data class and an asset of this catalog); clears a matching denial; a retried request_id returns the same grant; returns {grant, outcome, deduplicated}",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.permission.deny",
-        mutates: true,
-        required: &["module_id", "capability", "scope"],
-        optional: &[],
-        notes: "records that the person did not allow one exact scope; the next consent-required for it reports denied: true; any client may; returns {denial}",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.permission.revoke",
-        mutates: true,
-        required: &["grant_id"],
-        optional: &[("reason", "1..256 characters; default revoked")],
-        notes: "marks the grant revoked and cancels the queued and running jobs that depend on it with cancelled: permission revoked; never touches recipes, history or artifacts; any client may; returns {grant, outcome, cancelled_jobs}",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.permission.list",
-        mutates: false,
-        required: &[],
-        optional: &[("module_id", "one module's grants and denials; default all")],
-        notes: "{grants, denials}: every grant, revoked ones with {revoked: {ms, reason}}, and every recorded denial; none holds a secret",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.activate",
-        mutates: true,
-        required: &["module_id"],
-        optional: &[],
-        notes: "checks the module's declared required settings and resources and fails with not-ready and data.requirements [{kind, id, state}] listing every missing one before anything is queued; otherwise queues its activation on the module lane, or joins the one queued or running; returns {module_id, activation, job_id?, status?}; an active module answers activation: active with no job",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.deactivate",
-        mutates: true,
-        required: &["module_id"],
-        optional: &[],
-        notes: "supersedes a queued activation, cancels a running one, or marks an active module inactive and queues the release of what it loaded after the module lane's earlier work; never deletes a resource or an edit; returns {module_id, activation, job_id?, status?}",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.status",
-        mutates: false,
-        required: &["module_id"],
-        optional: &[],
-        notes: "{module_id, activation: {state, reason?, job_id?, error?}, settings: {state, revision, missing}, resources, permissions: {grants, denials}, jobs}; state is inactive, activating, active or failed; reads settings, stats installed markers and reads grants, and loads nothing",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.resource.list",
-        mutates: false,
-        required: &["module_id"],
-        optional: &[],
-        notes: "{resources: [{id, title, version, bytes, sha256, license, provenance, url, state, path?, installed_ms?, job_id?, error?}], storage: {root, used_bytes, quota_bytes}}; state is not-installed, installing, installed or failed; stats only, no hashing",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.resource.install",
-        mutates: true,
-        required: &["module_id", "resource_id"],
-        optional: &[(
-            "source",
-            "{kind: download} (default), which needs the download-artifact grant, or {kind: file, path} to copy a local file, which needs none because only the pinned bytes are accepted",
-        )],
-        notes: "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?}",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.resource.remove",
-        mutates: true,
-        required: &["module_id", "resource_id"],
-        optional: &[],
-        notes: "queues a transfer-lane job that deletes the installed version; a module that requires it and is active or activating is deactivated first; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?}",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.job.read",
-        mutates: false,
-        required: &["job_id"],
-        optional: &[],
-        notes: "{job_id, kind, module_id, resource_id?, status, progress: {fraction?, message?}, result?, error?: {code, message, data?}, request_id?}; kind is activate, deactivate, install, remove or task; status is queued, running, succeeded, failed, cancelled or superseded; any client may read any capability job; the owner keeps the last 32 finished",
-        handler: None,
-    },
-    MethodSpec {
-        name: "module.job.cancel",
-        mutates: true,
-        required: &["job_id"],
-        optional: &[],
-        notes: "removes a queued job as cancelled, or asks a running one to stop at its next checkpoint; a finished job is returned unchanged; a deactivation cannot be cancelled; any client may; returns the job",
-        handler: None,
-    },
-    MethodSpec {
-        name: "history.undo",
-        mutates: true,
-        required: &["asset_id", "mutation"],
-        optional: &[],
-        notes: "moves current to its undo parent without adding an entry",
-        handler: Some(history_undo),
-    },
-    MethodSpec {
-        name: "history.redo",
-        mutates: true,
-        required: &["asset_id", "mutation"],
-        optional: &[],
-        notes: "follows the persisted redo path",
-        handler: Some(history_redo),
-    },
-    MethodSpec {
-        name: "history.restore",
-        mutates: true,
-        required: &["asset_id", "mutation", "entry_id"],
-        optional: &[],
-        notes: "appends a restore action copying the entry's stack and returns the session to current",
-        handler: Some(history_restore),
-    },
-    MethodSpec {
-        name: "version.create",
-        mutates: true,
-        required: &["asset_id", "name", "actor"],
-        optional: &[("entry_id", "entry to name; default current")],
-        notes: "names a retained entry; unique per asset ignoring case; no-op when the name already names that entry",
-        handler: Some(version_create),
-    },
-    MethodSpec {
-        name: "version.delete",
-        mutates: true,
-        required: &["asset_id", "name"],
-        optional: &[],
-        notes: "removes the name only; the entry stays in history; no-op when absent",
-        handler: Some(version_delete),
-    },
-    MethodSpec {
-        name: "version.list",
-        mutates: false,
-        required: &["asset_id"],
-        optional: &[],
-        notes: "saved versions in creation order with their entry sequence",
-        handler: Some(version_list),
-    },
+    owner!(
+        "module.permission.grant",
+        owner::capability::GrantParams,
+        owner::capability::permission_grant,
+        "grants one exact scope of a declared capability; only a client with permission authority may, otherwise forbidden; scope is {resource, version, origin} for download-artifact (the declared version from the origin of its pinned URL) or {profile_id, adapter, origin, data, asset_id} for remote-image-request (an existing profile of that adapter whose endpoint has that origin, the capability's data class and an asset of this catalog); clears a matching denial; a scope that already has a live grant returns it as a no-op; returns {grant, outcome, deduplicated}"
+    ),
+    owner!(
+        "module.permission.deny",
+        owner::capability::DenyParams,
+        owner::capability::permission_deny,
+        "records that the person did not allow one exact scope; the next consent-required for it reports denied: true; any client may; returns {denial, deduplicated}"
+    ),
+    owner!(
+        "module.permission.revoke",
+        owner::capability::RevokeParams,
+        owner::capability::permission_revoke,
+        "marks the grant revoked and cancels the queued and running jobs that depend on it with cancelled: permission revoked; never touches recipes, history or artifacts; any client may; returns {grant, outcome, cancelled_jobs, deduplicated}"
+    ),
+    owner!(
+        "module.permission.list",
+        owner::capability::PermissionList,
+        owner::capability::permission_list,
+        "{grants, denials}: every grant, revoked ones with {revoked: {ms, reason}}, and every recorded denial; none holds a secret"
+    ),
+    owner!(
+        "module.activate",
+        owner::capability::ModuleChange,
+        owner::capability::module_activate,
+        "checks the module's declared required settings and resources and fails with not-ready and data.requirements [{kind, id, state}] listing every missing one before anything is queued; otherwise queues its activation on the module lane, or joins the one queued or running; returns {module_id, activation, job_id?, status?, deduplicated}; an active module answers activation: active with no job"
+    ),
+    owner!(
+        "module.deactivate",
+        owner::capability::ModuleChange,
+        owner::capability::module_deactivate,
+        "supersedes a queued activation, cancels a running one, or marks an active module inactive and queues the release of what it loaded after the module lane's earlier work; never deletes a resource or an edit; returns {module_id, activation, job_id?, status?, deduplicated}"
+    ),
+    owner!(
+        "module.status",
+        owner::capability::ModuleParams,
+        owner::capability::module_status,
+        "{module_id, activation: {state, reason?, job_id?, error?}, settings: {state, revision, missing}, resources, permissions: {grants, denials}, jobs}; state is inactive, activating, active or failed; reads settings, stats installed markers and reads grants, and loads nothing"
+    ),
+    owner!(
+        "module.resource.list",
+        owner::capability::ModuleParams,
+        owner::capability::resource_list,
+        "{resources: [{id, title, version, bytes, sha256, license, provenance, url, state, path?, installed_ms?, job_id?, error?}], storage: {root, used_bytes, quota_bytes}}; state is not-installed, installing, installed or failed; stats only, no hashing"
+    ),
+    owner!(
+        "module.resource.install",
+        owner::capability::InstallParams,
+        owner::capability::resource_install,
+        "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?, deduplicated}"
+    ),
+    owner!(
+        "module.resource.remove",
+        owner::capability::ResourceParams,
+        owner::capability::resource_remove,
+        "queues a transfer-lane job that deletes the installed version; a module that requires it and is active or activating is deactivated first; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?, deduplicated}"
+    ),
+    owner!(
+        "module.job.read",
+        owner::capability::JobParams,
+        owner::capability::job_read,
+        "{job_id, kind, module_id, resource_id?, status, progress: {fraction?, message?}, result?, error?: {code, message, data?}, request_id?}; kind is activate, deactivate, install, remove or task; status is queued, running, succeeded, failed, cancelled or superseded; any client may read any capability job; the owner keeps the last 32 finished"
+    ),
+    owner!(
+        "module.job.cancel",
+        owner::capability::JobCancelParams,
+        owner::capability::job_cancel,
+        "removes a queued job as cancelled, or asks a running one to stop at its next checkpoint; a finished job is returned unchanged; a deactivation cannot be cancelled; any client may; returns the job with deduplicated"
+    ),
+    service!(
+        "history.undo",
+        Navigate,
+        history_undo,
+        "moves current to its undo parent without adding an entry"
+    ),
+    service!(
+        "history.redo",
+        Navigate,
+        history_redo,
+        "follows the persisted redo path"
+    ),
+    service!(
+        "history.restore",
+        Restore,
+        history_restore,
+        "appends a restore action copying the entry's stack and returns the session to current"
+    ),
+    service!(
+        "version.create",
+        VersionCreate,
+        version_create,
+        "names a retained entry; unique per asset ignoring case; no-op when the name already names that entry; records mutation.actor"
+    ),
+    service!(
+        "version.delete",
+        VersionDelete,
+        version_delete,
+        "removes the name only; the entry stays in history; no-op when absent"
+    ),
+    service!(
+        "version.list",
+        AssetParams,
+        version_list,
+        "saved versions in creation order with their entry sequence"
+    ),
     // The preset library is catalog data beside history. None of these methods renders, opens a
     // source or hashes pixels; applying a preset is edit.apply-preset.
-    MethodSpec {
-        name: "preset.list",
-        mutates: false,
-        required: &[],
-        optional: &[],
-        notes: "{presets: [{id, name, group, settings, origin, report, actor, created_ms, updated_ms, unavailable}]} sorted by group, then name, ignoring case; report is the import report's counts {mapped, neutral, unsupported, refused}, or null for a preset created in Lightwell; unavailable names the settings actions this registry cannot apply; no source_text",
-        handler: Some(preset_list),
-    },
-    MethodSpec {
-        name: "preset.read",
-        mutates: false,
-        required: &["preset_id"],
-        optional: &[],
-        notes: "{preset}: one record with its full import report and source_text, the imported file's text kept verbatim, or null for a preset created in Lightwell",
-        handler: Some(preset_read),
-    },
-    MethodSpec {
-        name: "preset.create",
-        mutates: true,
-        required: &["name", "settings", "actor"],
-        optional: &[("group", "1..64 printable characters; default User presets")],
-        notes: "{preset}: stores a settings set as a Lightwell preset with origin {kind: lightwell} and report null; name is 1..128 and group 1..64 printable characters after trimming, the (group, name) pair is unique ignoring case (a duplicate is a conflict) and the library holds at most 1000 presets (resource-limit); every action and field is checked against the registry",
-        handler: Some(preset_create),
-    },
-    MethodSpec {
-        name: "preset.capture",
-        mutates: false,
-        required: &["asset_id", "fields"],
-        optional: &[("entry_id", "entry to read; default the session's selection")],
-        notes: "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create",
-        handler: Some(preset_capture),
-    },
-    MethodSpec {
-        name: "preset.update",
-        mutates: true,
-        required: &["preset_id", "actor"],
-        optional: &[
-            ("name", "1..128 printable characters"),
-            ("group", "1..64 printable characters"),
-            ("settings", "a settings set checked against the registry"),
-        ],
-        notes: "{outcome, preset}: applied when the name, group or settings change, recording the actor and updated_ms; no-op, with nothing written, when they do not; a rename onto another preset's (group, name) pair is a conflict; origin and report are kept",
-        handler: Some(preset_update),
-    },
-    MethodSpec {
-        name: "preset.delete",
-        mutates: true,
-        required: &["preset_id"],
-        optional: &[],
-        notes: "{outcome, deleted}: applied and true when the preset existed, no-op and false when it is absent; history entries that applied it are unchanged",
-        handler: Some(preset_delete),
-    },
-    MethodSpec {
-        name: "preset.export",
-        mutates: false,
-        required: &["preset_id"],
-        optional: &[],
-        notes: "{file_name, content}: the preset as a Lightwell preset document named <name>.lwpreset, which preset.import reads back to the same name, group and settings",
-        handler: Some(preset_export),
-    },
-    MethodSpec {
-        name: "preset.inspect",
-        mutates: false,
-        required: &["content"],
-        optional: &[(
-            "file_name",
-            "the file's name, for the fallback preset name and the origin",
-        )],
-        notes: "dry run of preset.import that stores nothing: {preset, report}, where preset has the record's shape with id, actor, created_ms and updated_ms null, the file's name and the file's group or Imported, and report is the full per-setting import report; a file that maps nothing still returns its report with empty settings",
-        handler: Some(preset_inspect),
-    },
-    MethodSpec {
-        name: "preset.import",
-        mutates: true,
-        required: &["content", "actor"],
-        optional: &[
-            (
-                "file_name",
-                "the file's name, for the fallback preset name and the origin",
-            ),
-            ("name", "overrides the file's name"),
-            ("group", "overrides the file's group; default Imported"),
-        ],
-        notes: "{preset, report}: reads the text of a Lightwell preset document, a Lightroom XMP preset or a .lrtemplate, at most 1 MiB, and stores its mapped settings with the text kept verbatim; the library's name, uniqueness and size rules apply as for preset.create; a file that maps nothing is unsupported-input with the report counts, and a refused import stores nothing",
-        handler: Some(preset_import),
-    },
-    MethodSpec {
-        name: "preview.select",
-        mutates: false,
-        required: &["asset_id", "entry_id"],
-        optional: &[],
-        notes: "read-only session selection; the current entry selects current, not a historical preview; returns generation and session",
-        handler: Some(preview_select),
-    },
-    MethodSpec {
-        name: "preview.return-current",
-        mutates: false,
-        required: &[],
-        optional: &[],
-        notes: "returns generation and session",
-        handler: Some(preview_return_current),
-    },
-    MethodSpec {
-        name: "view.set",
-        mutates: false,
-        required: &[],
-        optional: &[
-            ("zoom", "{mode:fit} or {mode:percent,value:10..1600}"),
-            ("pan_x", "finite"),
-            ("pan_y", "finite"),
-        ],
-        notes: "session view state; returns the session",
-        handler: Some(view_set),
-    },
-    MethodSpec {
-        name: "workspace.set",
-        mutates: false,
-        required: &[],
-        optional: &[
-            ("state_panel", "bool"),
-            ("tools_panel", "bool"),
-            (
-                "mode",
-                "pointer or an available module id that declares a canvas interaction",
-            ),
-            ("thirds", "bool"),
-            ("clip_shadows", "bool; show the shadow clipping overlay"),
-            (
-                "clip_highlights",
-                "bool; show the highlight clipping overlay",
-            ),
-            (
-                "mask_overlay",
-                "off, tint, mask-on-black or image-on-black; what the canvas draws of the selected mask",
-            ),
-            (
-                "mask_overlay_colour",
-                "green or white; the tint the mask overlay is drawn in",
-            ),
-            (
-                "component_gallery",
-                "null closes the diagnostic components board; integer 0..9 selects a page",
-            ),
-        ],
-        notes: "per-client screen preference: panels, canvas mode, overlays and diagnostic components page; needs no asset and changes no history or frame; returns the session",
-        handler: Some(workspace_set),
-    },
-    MethodSpec {
-        name: "session.state",
-        mutates: false,
-        required: &[],
-        optional: &[],
-        notes: "this client's selection, view, workspace state and session revision",
-        handler: Some(session_state),
-    },
-    MethodSpec {
-        name: "resources.read",
-        mutates: false,
-        required: &[],
-        optional: &[],
-        notes: "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}}; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing",
-        handler: Some(resources_read),
-    },
-    MethodSpec {
-        name: "draft.begin",
-        mutates: false,
-        required: &["asset_id", "action"],
-        optional: &[
-            (
-                "mask",
-                "the mask a mask.* gesture edits, or the mask an action of a maskable effect drafts through",
-            ),
-            (
-                "component",
-                "the component inside that mask, for a mask.* gesture only",
-            ),
-        ],
-        notes: "opens this client's one draft of that action, bound to the asset's current revision; refused while a draft is open or a historical entry is previewed",
-        handler: Some(draft_begin),
-    },
-    MethodSpec {
-        name: "draft.set",
-        mutates: false,
-        required: &["draft_id", "fields"],
-        optional: &[],
-        notes: "validates the named fields against the action's parameters and merges them into the draft; an invalid field changes nothing",
-        handler: Some(draft_set),
-    },
-    MethodSpec {
-        name: "draft.read",
-        mutates: false,
-        required: &["draft_id"],
-        optional: &[],
-        notes: "the draft with conflicted recomputed against the asset's current revision",
-        handler: Some(draft_read),
-    },
-    MethodSpec {
-        name: "draft.cancel",
-        mutates: false,
-        required: &["draft_id"],
-        optional: &[],
-        notes: "ends the draft and commits nothing",
-        handler: Some(draft_cancel),
-    },
-    MethodSpec {
-        name: "draft.commit",
-        mutates: true,
-        required: &["draft_id", "mutation"],
-        optional: &[],
-        notes: "runs the draft's action with its accumulated fields and ends the draft; a conflicted draft or a mismatched expected_revision is refused and the draft is kept",
-        handler: Some(draft_commit),
-    },
-    MethodSpec {
-        name: "draft.reapply",
-        mutates: false,
-        required: &["draft_id"],
-        optional: &[],
-        notes: "rebases the draft on the asset's current revision, keeping and revalidating only the fields this client set",
-        handler: Some(draft_reapply),
-    },
-    MethodSpec {
-        name: "render.sample",
-        mutates: false,
-        required: &["asset_id", "x", "y"],
-        optional: &[(
-            "draft_id",
-            "this client's draft to sample instead of the stored stack",
-        )],
-        notes: "one pixel of the session's selected entry, or of an open draft's effective recipe, evaluated without rasterizing",
-        handler: Some(render_sample),
-    },
-    MethodSpec {
-        name: "render.locate",
-        mutates: false,
-        required: &["asset_id", "x", "y"],
-        optional: &[(
-            "entry_id",
-            "entry to locate in; default the session's selection",
-        )],
-        notes: "the content pixel, the source after EXIF orientation, that one output pixel shows",
-        handler: Some(render_locate),
-    },
-    MethodSpec {
-        name: "render.transform",
-        mutates: false,
-        required: &["asset_id"],
-        optional: &[(
-            "entry_id",
-            "entry to answer for; default the session's selection",
-        )],
-        notes: "the geometry tail as one affine map, {content, output, forward, inverse}, in continuous pixel-center coordinates, so a gesture maps pointer positions between the content stage and the rendered image without asking per move",
-        handler: Some(render_transform),
-    },
-    MethodSpec {
-        name: "events.since",
-        mutates: false,
-        required: &["after"],
-        optional: &[],
-        notes: "gap=true requires an asset.state refresh",
-        handler: None,
-    },
+    service!(
+        "preset.list",
+        NoParams,
+        preset_list,
+        "{presets: [{id, name, group, settings, origin, report, actor, created_ms, updated_ms, unavailable}]} sorted by group, then name, ignoring case; report is the import report's counts {mapped, neutral, unsupported, refused}, or null for a preset created in Lightwell; unavailable names the settings actions this registry cannot apply; no source_text"
+    ),
+    service!(
+        "preset.read",
+        PresetParams,
+        preset_read,
+        "{preset}: one record with its full import report and source_text, the imported file's text kept verbatim, or null for a preset created in Lightwell"
+    ),
+    service!(
+        "preset.create",
+        PresetCreate,
+        preset_create,
+        "{preset, deduplicated}: stores a settings set as a Lightwell preset with origin {kind: lightwell}, report null and mutation.actor as its actor; name is 1..128 and group 1..64 printable characters after trimming, the (group, name) pair is unique ignoring case (a duplicate is a conflict) and the library holds at most 1000 presets (resource-limit); every action and field is checked against the registry"
+    ),
+    service!(
+        "preset.capture",
+        PresetCapture,
+        preset_capture,
+        "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create"
+    ),
+    service!(
+        "preset.update",
+        PresetUpdate,
+        preset_update,
+        "{outcome, preset, deduplicated}: applied when the name, group or settings change, recording mutation.actor and updated_ms; no-op, with nothing written, when they do not; a rename onto another preset's (group, name) pair is a conflict; origin and report are kept"
+    ),
+    service!(
+        "preset.delete",
+        PresetDelete,
+        preset_delete,
+        "{outcome, deleted, deduplicated}: applied and true when the preset existed, no-op and false when it is absent; history entries that applied it are unchanged"
+    ),
+    service!(
+        "preset.export",
+        PresetParams,
+        preset_export,
+        "{file_name, content}: the preset as a Lightwell preset document named <name>.lwpreset, which preset.import reads back to the same name, group and settings"
+    ),
+    service!(
+        "preset.inspect",
+        PresetInspect,
+        preset_inspect,
+        "dry run of preset.import that stores nothing: {preset, report}, where preset has the record's shape with id, actor, created_ms and updated_ms null, the file's name and the file's group or Imported, and report is the full per-setting import report; a file that maps nothing still returns its report with empty settings"
+    ),
+    service!(
+        "preset.import",
+        PresetImport,
+        preset_import,
+        "{preset, report, deduplicated}: reads the text of a Lightwell preset document, a Lightroom XMP preset or a .lrtemplate, at most 1 MiB, and stores its mapped settings with the text kept verbatim and mutation.actor as its actor; the library's name, uniqueness and size rules apply as for preset.create; a file that maps nothing is unsupported-input with the report counts, and a refused import stores nothing"
+    ),
+    service!(
+        "preview.select",
+        EntryParams,
+        preview_select,
+        "read-only session selection; the current entry selects current, not a historical preview; returns generation and session"
+    ),
+    service!(
+        "preview.return-current",
+        NoParams,
+        preview_return_current,
+        "returns generation and session"
+    ),
+    service!(
+        "view.set",
+        ViewSet,
+        view_set,
+        "session view state; returns the session"
+    ),
+    service!(
+        "workspace.set",
+        WorkspaceSet,
+        workspace_set,
+        "per-client screen preference: panels, canvas mode, overlays and diagnostic components page; needs no asset and changes no history or frame; returns the session"
+    ),
+    service!(
+        "session.state",
+        NoParams,
+        session_state,
+        "this client's selection, view, workspace state and session revision"
+    ),
+    service!(
+        "resources.read",
+        NoParams,
+        resources_read,
+        "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}}; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing"
+    ),
+    service!(
+        "draft.begin",
+        DraftBegin,
+        draft_begin,
+        "opens this client's one draft of that action, bound to the asset's current revision; refused while a draft is open or a historical entry is previewed"
+    ),
+    service!(
+        "draft.set",
+        DraftSet,
+        draft_set,
+        "validates the named fields against the action's parameters and merges them into the draft; an invalid field changes nothing"
+    ),
+    service!(
+        "draft.read",
+        DraftParams,
+        draft_read,
+        "the draft with conflicted recomputed against the asset's current revision"
+    ),
+    service!(
+        "draft.cancel",
+        DraftParams,
+        draft_cancel,
+        "ends the draft and commits nothing"
+    ),
+    service!(
+        "draft.commit",
+        DraftCommit,
+        draft_commit,
+        "runs the draft's action with its accumulated fields and ends the draft; a conflicted draft or a mismatched expected_revision is refused and the draft is kept"
+    ),
+    service!(
+        "draft.reapply",
+        DraftParams,
+        draft_reapply,
+        "rebases the draft on the asset's current revision, keeping and revalidating only the fields this client set"
+    ),
+    service!(
+        "render.sample",
+        RenderSample,
+        render_sample,
+        "one pixel of the session's selected entry, or of an open draft's effective recipe, evaluated without rasterizing"
+    ),
+    service!(
+        "render.locate",
+        RenderLocate,
+        render_locate,
+        "the content pixel, the source after EXIF orientation, that one output pixel shows"
+    ),
+    service!(
+        "render.transform",
+        RenderTransform,
+        render_transform,
+        "the geometry tail as one affine map, {content, output, forward, inverse}, in continuous pixel-center coordinates, so a gesture maps pointer positions between the content stage and the rendered image without asking per move"
+    ),
+    owner!(
+        "events.since",
+        owner::EventsSince,
+        owner::events_since,
+        "gap=true requires an asset.state refresh"
+    ),
     // The analysis methods are answered by the catalog owner, because the job store, the worker
     // slots and every client's draft live there. They mutate nothing and emit no event.
-    MethodSpec {
-        name: "analysis.request",
-        mutates: false,
-        required: &["asset_id", "target"],
-        optional: &[],
-        notes: "queues the exact RGB histogram and output-clipping reduction of one evaluated stack and returns {job_id, status, identity} promptly, with the report included when the store already holds it; target is {kind:current}, {kind:entry,entry_id} or {kind:draft,draft_id} for this client's own draft; identical identities share one job",
-        handler: None,
-    },
-    MethodSpec {
-        name: "analysis.read",
-        mutates: false,
-        required: &["job_id"],
-        optional: &[],
-        notes: "{status, identity, report?, error?}; status is pending, ready, failed, superseded or cancelled and only ready carries counts, so no state can be read as an empty histogram; a job this client did not request is a validation error",
-        handler: None,
-    },
-    MethodSpec {
-        name: "analysis.cancel",
-        mutates: false,
-        required: &["job_id"],
-        optional: &[],
-        notes: "drops this client's interest in the job and cancels the work only when no other client holds it; returns {cancelled: true}",
-        handler: None,
-    },
-    MethodSpec {
-        name: "artifact.status",
-        mutates: false,
-        required: &[],
-        optional: &[],
-        notes: "the catalog's derived-artifact root and its state (absent, ready, missing or foreign), the catalog_id its manifest must name, and how many artifacts entries reference, how many a collection would remove and their recorded bytes; reads the manifest and counts rows only",
-        handler: Some(artifact_status),
-    },
-    MethodSpec {
-        name: "artifact.inspect",
-        mutates: false,
-        required: &["artifact_id"],
-        optional: &[],
-        notes: "one artifact's record (hash, bytes, kind, dimensions, colour, publishing module, time), whether its file is present, missing or of the wrong length, how many entries reference it and whether a task of this process published it; stats only",
-        handler: Some(artifact_inspect),
-    },
+    owner!(
+        "analysis.request",
+        owner::AnalysisRequest,
+        owner::analysis_request,
+        "queues the exact RGB histogram and output-clipping reduction of one evaluated stack and returns {job_id, status, identity} promptly, with the report included when the store already holds it; target is {kind:current}, {kind:entry,entry_id} or {kind:draft,draft_id} for this client's own draft; identical identities share one job"
+    ),
+    owner!(
+        "analysis.read",
+        owner::AnalysisJobParams,
+        owner::analysis_read,
+        "{status, identity, report?, error?}; status is pending, ready, failed, superseded or cancelled and only ready carries counts, so no state can be read as an empty histogram; a job this client did not request is a validation error"
+    ),
+    owner!(
+        "analysis.cancel",
+        owner::AnalysisJobParams,
+        owner::analysis_cancel,
+        "drops this client's interest in the job and cancels the work only when no other client holds it; returns {cancelled: true}"
+    ),
+    service!(
+        "artifact.status",
+        NoParams,
+        artifact_status,
+        "the catalog's derived-artifact root and its state (absent, ready, missing or foreign), the catalog_id its manifest must name, and how many artifacts entries reference, how many a collection would remove and their recorded bytes; reads the manifest and counts rows only"
+    ),
+    service!(
+        "artifact.inspect",
+        ArtifactInspect,
+        artifact_inspect,
+        "one artifact's record (hash, bytes, kind, dimensions, colour, publishing module, time), whether its file is present, missing or of the wrong length, how many entries reference it and whether a task of this process published it; stats only"
+    ),
     // Collection runs on the source worker and is read with job.status, so the catalog owner
     // answers it. It emits its event when the request is accepted.
-    MethodSpec {
-        name: "artifact.collect",
-        mutates: true,
-        required: &[],
-        optional: &[],
-        notes: "removes the rows of artifacts no entry references and no task of this process published, then queues a source job that removes their files, object files without a row and staged files older than an hour; nothing an entry references is touched; returns {job_id, status} and the job result counts {rows, objects, temporary}",
-        handler: None,
-    },
+    owner!(
+        "artifact.collect",
+        owner::Collect,
+        owner::artifact_collect,
+        "removes the rows of artifacts no entry references and no task of this process published, then queues a source job that removes their files, object files without a row and staged files older than an hour; nothing an entry references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary}"
+    ),
 ];
 
 /// A resolved method: a host method from the static table, or one generated from a registered
-/// module action, query or task. All four come from the same lookup discovery uses.
+/// module action, query or task. All of them come from the same lookup discovery uses.
 pub(super) enum Method {
     Host(&'static MethodSpec),
     Action(String),
@@ -704,23 +536,71 @@ pub(super) enum Method {
     Task,
 }
 
+/// Who answers a resolved method.
+pub(super) enum Route {
+    /// The editor service, with the caller's session: [`Method::serve`].
+    Service,
+    Owner(OwnerHandler),
+}
+
 impl Method {
+    /// The mutation envelope the method carries. A module action and a mutating mask command change
+    /// an asset, which has a revision.
+    pub(super) fn envelope(&self) -> Envelope {
+        match self {
+            Self::Host(spec) => spec.params.envelope,
+            Self::Action(_) => Envelope::Revision,
+            Self::Mask(command) if command.mutates => Envelope::Revision,
+            Self::Mask(_) | Self::Query(_) | Self::Task => Envelope::None,
+        }
+    }
+
     pub(super) fn mutates(&self) -> bool {
+        self.envelope() != Envelope::None
+    }
+
+    pub(super) fn route(&self) -> Route {
         match self {
-            Self::Host(spec) => spec.mutates,
-            Self::Action(_) => true,
-            Self::Mask(command) => command.mutates,
-            Self::Query(_) | Self::Task => false,
+            Self::Host(MethodSpec {
+                handler: Handler::Owner(handler),
+                ..
+            }) => Route::Owner(*handler),
+            Self::Task => Route::Owner(owner::capability::task),
+            Self::Host(_) | Self::Action(_) | Self::Query(_) | Self::Mask(_) => Route::Service,
         }
     }
-    /// `true` for the methods the owner loop answers from its own state.
-    pub(super) fn owner_answered(&self) -> bool {
+
+    /// Answer a method the editor service answers. The owner never sends it one of its own, which
+    /// [`Method::route`] names.
+    pub(super) fn serve(
+        &self,
+        service: &mut EditorService,
+        session: &mut ClientSession,
+        params: &Value,
+    ) -> Result<Value, Error> {
         match self {
-            Self::Host(spec) => spec.handler.is_none(),
-            Self::Task => true,
-            Self::Action(_) | Self::Query(_) | Self::Mask(_) => false,
+            Self::Host(MethodSpec {
+                handler: Handler::Service(handler),
+                ..
+            }) => handler(service, session, params),
+            Self::Action(action_id) => edit_action(service, session, action_id, params),
+            Self::Query(query_id) => module_query(service, session, query_id, params),
+            Self::Mask(command) => mask_command(service, session, command, params),
+            Self::Host(MethodSpec {
+                name,
+                handler: Handler::Owner(_),
+                ..
+            }) => Err(owner_answered(name)),
+            Self::Task => Err(owner_answered("a task")),
         }
     }
+}
+
+fn owner_answered(name: &str) -> Error {
+    Error::new(
+        ErrorKind::Internal,
+        format!("{name} is answered by the catalog owner"),
+    )
 }
 
 /// Action method names are generated: action `set-pixel` is `edit.set-pixel`.
@@ -763,8 +643,17 @@ pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
         .map(|_| Method::Query(query_id.to_owned()))
 }
 
+/// The envelope of a host method by name, for test clients that fill it in.
+#[cfg(test)]
+pub(crate) fn host_envelope(name: &str) -> Envelope {
+    METHODS
+        .iter()
+        .find(|spec| spec.name == name)
+        .map_or(Envelope::None, |spec| spec.params.envelope)
+}
+
 /// A method emits an event when it is mutating and its result changed something: not a no-op, and
-/// not a retry answered from the request table, which keeps the original `outcome` but reports
+/// not a retry answered from a request log, which keeps the original `outcome` but reports
 /// `deduplicated` because the first attempt already emitted the event.
 pub(super) fn mutates(method: &Method, result: Option<&Value>) -> bool {
     method.mutates()
@@ -774,35 +663,24 @@ pub(super) fn mutates(method: &Method, result: Option<&Value>) -> bool {
         })
 }
 
-pub(super) fn dispatch(
-    service: &mut EditorService,
-    session: &mut ClientSession,
-    request: &ApiRequest,
-    sequence: u64,
-) -> ApiResponse {
-    let result = match find(service, &request.method) {
-        Some(Method::Host(MethodSpec {
-            handler: Some(handler),
-            ..
-        })) => handler(service, session, &request.params),
-        Some(Method::Host(_) | Method::Task) => Err(Error::new(
-            ErrorKind::Protocol,
-            format!("{} is answered by the catalog owner", request.method),
-        )),
-        Some(Method::Action(action_id)) => {
-            edit_action(service, session, &action_id, &request.params)
-        }
-        Some(Method::Query(query_id)) => module_query(service, session, &query_id, &request.params),
-        Some(Method::Mask(command)) => mask_command(service, session, command, &request.params),
-        None => Err(Error::new(
-            ErrorKind::Protocol,
-            format!("unknown method {}", request.method),
-        )),
-    };
-    match result {
-        Ok(result) => ApiResponse::success(request.id.clone(), sequence, result),
-        Err(error) => ApiResponse::failure(request.id.clone(), sequence, error),
+/// One host method's schema entry, generated from its declared parameters.
+fn host_schema(spec: &MethodSpec) -> Value {
+    let optional: Map<String, Value> = spec
+        .params
+        .optional
+        .iter()
+        .map(|(name, meaning)| ((*name).to_owned(), json!(meaning)))
+        .collect();
+    let mut schema = json!({
+        "mutates": spec.mutates(),
+        "required": spec.params.required,
+        "optional": optional,
+        "notes": spec.notes,
+    });
+    if let Some(envelope) = spec.params.envelope.name() {
+        schema["mutation"] = json!(envelope);
     }
+    schema
 }
 
 /// One generated method description: the envelope every action shares plus the action's own
@@ -836,6 +714,7 @@ fn action_schema(action: &ActionDescriptor, maskable: bool) -> Value {
     }
     json!({
         "mutates": true,
+        "mutation": Envelope::Revision.name(),
         "patch": action.patch,
         "required": required,
         "optional": optional,
@@ -904,27 +783,16 @@ fn task_schema(task: &TaskDescriptor) -> Value {
 pub fn schemas(registry: &ModuleRegistry) -> Value {
     let mut methods: Map<String, Value> = METHODS
         .iter()
-        .map(|spec| {
-            let optional: Map<String, Value> = spec
-                .optional
-                .iter()
-                .map(|(name, meaning)| ((*name).to_string(), json!(meaning)))
-                .collect();
-            (
-                spec.name.to_string(),
-                json!({
-                    "mutates": spec.mutates,
-                    "required": spec.required,
-                    "optional": optional,
-                    "notes": spec.notes,
-                }),
-            )
-        })
+        .map(|spec| (spec.name.to_owned(), host_schema(spec)))
         .collect();
     // The host's own `mask.*` family, declared from the same descriptor types, so a client
     // discovers a mask command and a module action from one listing.
     for command in mask_commands::all() {
-        methods.insert(command.method.to_owned(), command.schema());
+        let mut schema = command.schema();
+        if let Some(envelope) = Method::Mask(command).envelope().name() {
+            schema["mutation"] = json!(envelope);
+        }
+        methods.insert(command.method.to_owned(), schema);
     }
     let descriptors = registry.descriptors();
     for descriptor in &descriptors {
@@ -971,14 +839,252 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             // the `paths` block above says nothing about masks and this one says what a mask adds.
             "points_per_mask": crate::POINTS_PER_MASK,
         },
-        "mutation": {"required": ["expected_revision", "request_id", "actor"]},
+        // Every mutating method names its envelope in its own `mutation` field.
+        "mutation": {
+            "revision": Envelope::Revision.fields(),
+            "request": Envelope::Request.fields(),
+            "notes": "Every mutating method carries a mutation envelope. A method that changes an asset or a module's settings, which have a revision, carries revision: expected_revision must be that revision or the request is a conflict. Every other mutating method carries request. request_id and actor are 1..128 characters. A retry with the same request_id and the same input returns the first answer, marked deduplicated: true, and emits no event; the same request_id with different input is a conflict. A revision's request_id is unique per asset, or per module for settings, and is remembered durably with the change; a request's is unique per method family, the method name without its last segment, and is remembered for the owner's lifetime, bounded to the most recent requests.",
+        },
     })
+}
+
+host_params! {
+    pub(super) struct AssetParams {
+        asset_id: AssetId,
+    }
+}
+
+host_params! {
+    pub(super) struct EntryParams {
+        asset_id: AssetId,
+        entry_id: EntryId,
+    }
+}
+
+host_params! {
+    pub(super) struct SourceInspect {
+        asset_id: AssetId,
+        entry_id: Option<EntryId> = "historical entry; default current",
+    }
+}
+
+host_params! {
+    pub(super) struct HistoryList {
+        asset_id: AssetId,
+        before_sequence: Option<u64> = "u64",
+        limit: Option<usize> = "1..100",
+    }
+}
+
+host_params! {
+    pub(super) struct HistoryLineage {
+        asset_id: AssetId,
+        entry_id: Option<EntryId> = "start entry; default current",
+        limit: Option<usize> = "1..100",
+    }
+}
+
+host_params! {
+    pub(super) struct RecipeDescribe {
+        asset_id: AssetId,
+        entry_id: Option<EntryId> = "entry to describe; default current",
+    }
+}
+
+host_params! {
+    pub(super) struct ModuleList {
+        asset_id: Option<AssetId> = "filter controls for this asset source kind",
+    }
+}
+
+host_params! {
+    pub(super) struct Navigate {
+        asset_id: AssetId,
+        mutation: Mutation,
+    }
+}
+
+host_params! {
+    pub(super) struct Restore {
+        asset_id: AssetId,
+        mutation: Mutation,
+        entry_id: EntryId,
+    }
+}
+
+host_params! {
+    pub(super) struct VersionCreate {
+        asset_id: AssetId,
+        name: String,
+        mutation: MutationRequest,
+        entry_id: Option<EntryId> = "entry to name; default current",
+    }
+}
+
+host_params! {
+    pub(super) struct VersionDelete {
+        asset_id: AssetId,
+        name: String,
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
+    pub(super) struct PresetParams {
+        preset_id: PresetId,
+    }
+}
+
+host_params! {
+    pub(super) struct PresetCreate {
+        name: String,
+        settings: Map<String, Value>,
+        mutation: MutationRequest,
+        group: Option<String> = "1..64 printable characters; default User presets",
+    }
+}
+
+host_params! {
+    pub(super) struct PresetCapture {
+        asset_id: AssetId,
+        fields: Map<String, Value>,
+        entry_id: Option<EntryId> = "entry to read; default the session's selection",
+    }
+}
+
+host_params! {
+    pub(super) struct PresetUpdate {
+        preset_id: PresetId,
+        mutation: MutationRequest,
+        name: Option<String> = "1..128 printable characters",
+        group: Option<String> = "1..64 printable characters",
+        settings: Option<Map<String, Value>> = "a settings set checked against the registry",
+    }
+}
+
+host_params! {
+    pub(super) struct PresetDelete {
+        preset_id: PresetId,
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
+    pub(super) struct PresetInspect {
+        content: String,
+        file_name: Option<String> = "the file's name, for the fallback preset name and the origin",
+    }
+}
+
+host_params! {
+    pub(super) struct PresetImport {
+        content: String,
+        mutation: MutationRequest,
+        file_name: Option<String> = "the file's name, for the fallback preset name and the origin",
+        name: Option<String> = "overrides the file's name",
+        group: Option<String> = "overrides the file's group; default Imported",
+    }
+}
+
+host_params! {
+    pub(super) struct ViewSet {
+        zoom: Option<Zoom> = "{mode:fit} or {mode:percent,value:10..1600}",
+        pan_x: Option<f32> = "finite",
+        pan_y: Option<f32> = "finite",
+    }
+}
+
+/// A normal `Option<Option<T>>` deserializer cannot distinguish a missing field from explicit
+/// JSON null. `workspace.set` needs that distinction: omission preserves, null closes the board.
+fn present_nullable_page<'de, D>(deserializer: D) -> Result<Option<Option<usize>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<usize>::deserialize(deserializer).map(Some)
+}
+
+host_params! {
+    pub(super) struct WorkspaceSet {
+        state_panel: Option<bool> = "bool",
+        tools_panel: Option<bool> = "bool",
+        mode: Option<String> = "pointer or an available module id that declares a canvas interaction",
+        thirds: Option<bool> = "bool",
+        clip_shadows: Option<bool> = "bool; show the shadow clipping overlay",
+        clip_highlights: Option<bool> = "bool; show the highlight clipping overlay",
+        // Taken as strings so an unknown one is refused with the vocabulary spelled out, as `mode`
+        // is, rather than with serde's report of an unmatched variant.
+        mask_overlay: Option<String> = "off, tint, mask-on-black or image-on-black; what the canvas draws of the selected mask",
+        mask_overlay_colour: Option<String> = "green or white; the tint the mask overlay is drawn in",
+        #[serde(default, deserialize_with = "present_nullable_page")]
+        component_gallery: Option<Option<usize>> = "null closes the diagnostic components board; integer 0..9 selects a page",
+    }
+}
+
+host_params! {
+    pub(super) struct DraftBegin {
+        asset_id: AssetId,
+        action: String,
+        /// The mask and component a `mask.*` gesture edits. A module action's draft takes neither.
+        mask: Option<MaskId> = "the mask a mask.* gesture edits, or the mask an action of a maskable effect drafts through",
+        component: Option<ComponentId> = "the component inside that mask, for a mask.* gesture only",
+    }
+}
+
+host_params! {
+    pub(super) struct DraftSet {
+        draft_id: DraftId,
+        fields: Map<String, Value>,
+    }
+}
+
+host_params! {
+    pub(super) struct DraftParams {
+        draft_id: DraftId,
+    }
+}
+
+host_params! {
+    pub(super) struct DraftCommit {
+        draft_id: DraftId,
+        mutation: Mutation,
+    }
+}
+
+host_params! {
+    pub(super) struct RenderSample {
+        asset_id: AssetId,
+        x: u32,
+        y: u32,
+        draft_id: Option<DraftId> = "this client's draft to sample instead of the stored stack",
+    }
+}
+
+host_params! {
+    pub(super) struct RenderLocate {
+        asset_id: AssetId,
+        x: u32,
+        y: u32,
+        entry_id: Option<EntryId> = "entry to locate in; default the session's selection",
+    }
+}
+
+host_params! {
+    pub(super) struct RenderTransform {
+        asset_id: AssetId,
+        entry_id: Option<EntryId> = "entry to answer for; default the session's selection",
+    }
+}
+
+host_params! {
+    pub(super) struct ArtifactInspect {
+        artifact_id: ArtifactId,
+    }
 }
 
 fn schema_list(
     service: &mut EditorService,
     _: &mut ClientSession,
-    _: &Value,
+    _: NoParams,
 ) -> Result<Value, Error> {
     Ok(schemas(service.registry()))
 }
@@ -986,14 +1092,8 @@ fn schema_list(
 fn module_list(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: ModuleList,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: Option<AssetId>,
-    }
-    let p = parse::<P>(params)?;
     let raw = p
         .asset_id
         .as_ref()
@@ -1012,7 +1112,7 @@ fn module_list(
 fn catalog_list(
     service: &mut EditorService,
     _: &mut ClientSession,
-    _: &Value,
+    _: NoParams,
 ) -> Result<Value, Error> {
     Ok(json!({"assets": service.assets()?}))
 }
@@ -1020,65 +1120,40 @@ fn catalog_list(
 fn asset_state(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: AssetParams,
 ) -> Result<Value, Error> {
-    let p = parse::<AssetParams>(params)?;
     value(service.state(&p.asset_id)?)
 }
 
 fn source_inspect(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: SourceInspect,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        entry_id: Option<EntryId>,
-    }
-    let p = parse::<P>(params)?;
     service.inspect_source(&p.asset_id, p.entry_id.as_ref())
 }
 
 fn history_list(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: HistoryList,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        before_sequence: Option<u64>,
-        limit: Option<usize>,
-    }
-    let p = parse::<P>(params)?;
     value(service.history(&p.asset_id, p.before_sequence, p.limit.unwrap_or(50))?)
 }
 
 fn history_inspect(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: EntryParams,
 ) -> Result<Value, Error> {
-    let p = parse::<EntryParams>(params)?;
     value(service.entry(&p.asset_id, &p.entry_id)?)
 }
 
 fn history_lineage(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: HistoryLineage,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        entry_id: Option<EntryId>,
-        limit: Option<usize>,
-    }
-    let p = parse::<P>(params)?;
     value(service.lineage(&p.asset_id, p.entry_id.as_ref(), p.limit.unwrap_or(50))?)
 }
 
@@ -1088,21 +1163,12 @@ fn edit_action(
     service: &mut EditorService,
     session: &mut ClientSession,
     action_id: &str,
-    params: &Value,
+    request: &Value,
 ) -> Result<Value, Error> {
     require_current(session)?;
-    let mut parameters = match params {
-        Value::Object(object) => object.clone(),
-        Value::Null => Map::new(),
-        _ => {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "params must be a JSON object",
-            ));
-        }
-    };
-    let asset_id: AssetId = envelope(&mut parameters, "asset_id")?;
-    let mutation: Mutation = envelope(&mut parameters, "mutation")?;
+    let mut parameters = params::generated(request)?;
+    let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
+    let mutation: Mutation = params::take(&mut parameters, "mutation")?;
     value(service.apply_action(&asset_id, mutation, action_id, Value::Object(parameters))?)
 }
 
@@ -1117,26 +1183,12 @@ fn module_query(
     service: &mut EditorService,
     session: &mut ClientSession,
     query_id: &str,
-    request_params: &Value,
+    request: &Value,
 ) -> Result<Value, Error> {
-    let mut parameters = match request_params {
-        Value::Object(object) => object.clone(),
-        Value::Null => Map::new(),
-        _ => {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "params must be a JSON object",
-            ));
-        }
-    };
-    let asset_id: AssetId = envelope(&mut parameters, "asset_id")?;
-    let entry_id: EntryId = match parameters.remove("entry_id") {
-        Some(entry_id) => params(&entry_id)?,
-        None => match &session.preview.selection {
-            HistorySelection::Current => service.state(&asset_id)?.current_entry.id,
-            HistorySelection::Entry(id) => id.clone(),
-        },
-    };
+    let mut parameters = params::generated(request)?;
+    let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
+    let entry_id = params::take_optional(&mut parameters, "entry_id")?;
+    let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
     service.run_query(&asset_id, &entry_id, query_id, Value::Object(parameters))
 }
 
@@ -1148,14 +1200,14 @@ fn mask_command(
     service: &mut EditorService,
     session: &mut ClientSession,
     command: &'static MaskCommand,
-    request_params: &Value,
+    request: &Value,
 ) -> Result<Value, Error> {
-    let mut parameters = object(request_params)?;
-    let asset_id: AssetId = envelope(&mut parameters, "asset_id")?;
+    let mut parameters = params::generated(request)?;
+    let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
     // The one read-only command resolves its entry exactly as `render.sample` and `render.locate` do
     // and touches nothing at all.
     if command.method == mask_commands::LIST {
-        let entry_id: Option<EntryId> = optional_envelope(&mut parameters, "entry_id")?;
+        let entry_id: Option<EntryId> = params::take_optional(&mut parameters, "entry_id")?;
         if let Some(name) = parameters.keys().next() {
             return Err(Error::new(
                 ErrorKind::Validation,
@@ -1169,8 +1221,8 @@ fn mask_command(
     // way `mask.list` does, takes the mask in the envelope like every other command, and its two
     // coordinates through the same generic check a mutation's parameters take.
     if command.method == mask_commands::SAMPLE_INPUT {
-        let entry_id: Option<EntryId> = optional_envelope(&mut parameters, "entry_id")?;
-        let mask = optional_envelope(&mut parameters, "mask")?;
+        let entry_id: Option<EntryId> = params::take_optional(&mut parameters, "entry_id")?;
+        let mask = params::take_optional(&mut parameters, "mask")?;
         let target = MaskTarget {
             mask,
             ..MaskTarget::default()
@@ -1195,14 +1247,14 @@ fn mask_command(
         return value(service.mask_input_sample(&asset_id, &entry_id, mask, x, y)?);
     }
     require_current(session)?;
-    let mutation: Mutation = envelope(&mut parameters, "mutation")?;
+    let mutation: Mutation = params::take(&mut parameters, "mutation")?;
     let target = MaskTarget {
-        mask: optional_envelope(&mut parameters, "mask")?,
-        component: optional_envelope(&mut parameters, "component")?,
-        name: optional_envelope(&mut parameters, "name")?,
+        mask: params::take_optional(&mut parameters, "mask")?,
+        component: params::take_optional(&mut parameters, "component")?,
+        name: params::take_optional(&mut parameters, "name")?,
         // A stroke's content address is an identity like the other two and travels here for the
         // same reason: no declared parameter kind carries one.
-        stroke: optional_envelope(&mut parameters, "stroke")?,
+        stroke: params::take_optional(&mut parameters, "stroke")?,
     };
     value(service.apply_mask_command(
         &asset_id,
@@ -1221,75 +1273,29 @@ fn missing_parameter(name: &str, method: &str) -> Error {
     )
 }
 
-fn object(params: &Value) -> Result<Map<String, Value>, Error> {
-    match params {
-        Value::Object(object) => Ok(object.clone()),
-        Value::Null => Ok(Map::new()),
-        _ => Err(Error::new(
-            ErrorKind::Validation,
-            "params must be a JSON object",
-        )),
-    }
-}
-
-fn envelope<T: DeserializeOwned>(
-    parameters: &mut Map<String, Value>,
-    name: &str,
-) -> Result<T, Error> {
-    let field = parameters.remove(name).ok_or_else(|| {
-        Error::new(
-            ErrorKind::Validation,
-            format!("missing required field {name}"),
-        )
-    })?;
-    params(&field)
-}
-
-/// An envelope field the request may omit. A command that requires it says so itself, so the refusal
-/// names the command.
-fn optional_envelope<T: DeserializeOwned>(
-    parameters: &mut Map<String, Value>,
-    name: &str,
-) -> Result<Option<T>, Error> {
-    match parameters.remove(name) {
-        Some(field) => params(&field).map(Some),
-        None => Ok(None),
-    }
-}
-
 fn history_undo(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: Navigate,
 ) -> Result<Value, Error> {
     require_current(session)?;
-    let p = parse::<MutationParams>(params)?;
     value(service.undo(&p.asset_id, p.mutation)?)
 }
 
 fn history_redo(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: Navigate,
 ) -> Result<Value, Error> {
     require_current(session)?;
-    let p = parse::<MutationParams>(params)?;
     value(service.redo(&p.asset_id, p.mutation)?)
 }
 
 fn history_restore(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: Restore,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        mutation: Mutation,
-        entry_id: EntryId,
-    }
-    let p = parse::<P>(params)?;
     let result = service.restore(&p.asset_id, p.mutation, &p.entry_id)?;
     if !session.preview.can_edit() {
         session.preview.return_current();
@@ -1301,48 +1307,33 @@ fn history_restore(
 fn version_create(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: VersionCreate,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        name: String,
-        actor: String,
-        entry_id: Option<EntryId>,
-    }
-    let p = parse::<P>(params)?;
-    value(service.create_version(&p.asset_id, &p.name, p.entry_id.as_ref(), &p.actor)?)
+    p.mutation.validate()?;
+    value(service.create_version(&p.asset_id, &p.name, p.entry_id.as_ref(), &p.mutation.actor)?)
 }
 
 fn version_delete(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: VersionDelete,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        name: String,
-    }
-    let p = parse::<P>(params)?;
+    p.mutation.validate()?;
     value(service.delete_version(&p.asset_id, &p.name)?)
 }
 
 fn version_list(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: AssetParams,
 ) -> Result<Value, Error> {
-    let p = parse::<AssetParams>(params)?;
     Ok(json!({"versions": service.versions(&p.asset_id)?}))
 }
 
 fn preset_list(
     service: &mut EditorService,
     _: &mut ClientSession,
-    _: &Value,
+    _: NoParams,
 ) -> Result<Value, Error> {
     Ok(json!({"presets": service.presets()?}))
 }
@@ -1350,9 +1341,8 @@ fn preset_list(
 fn preset_read(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: PresetParams,
 ) -> Result<Value, Error> {
-    let p = parse::<PresetParams>(params)?;
     let (record, source_text) = service.preset(&p.preset_id)?;
     let mut preset = value(record)?;
     preset["source_text"] = json!(source_text);
@@ -1362,18 +1352,11 @@ fn preset_read(
 fn preset_create(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: PresetCreate,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        name: String,
-        settings: Map<String, Value>,
-        actor: String,
-        group: Option<String>,
-    }
-    let p = parse::<P>(params)?;
-    let preset = service.create_preset(&p.name, p.group.as_deref(), &p.settings, &p.actor)?;
+    p.mutation.validate()?;
+    let preset =
+        service.create_preset(&p.name, p.group.as_deref(), &p.settings, &p.mutation.actor)?;
     Ok(json!({"preset": preset}))
 }
 
@@ -1382,44 +1365,21 @@ fn preset_create(
 fn preset_capture(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: PresetCapture,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        fields: Map<String, Value>,
-        entry_id: Option<EntryId>,
-    }
-    let p = parse::<P>(params)?;
-    let entry_id = match p.entry_id {
-        Some(entry_id) => entry_id,
-        None => match &session.preview.selection {
-            HistorySelection::Current => service.state(&p.asset_id)?.current_entry.id,
-            HistorySelection::Entry(id) => id.clone(),
-        },
-    };
+    let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
     Ok(json!({"settings": service.capture_preset(&p.asset_id, &entry_id, &p.fields)?}))
 }
 
 fn preset_update(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: PresetUpdate,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        preset_id: PresetId,
-        actor: String,
-        name: Option<String>,
-        group: Option<String>,
-        settings: Option<Map<String, Value>>,
-    }
-    let p = parse::<P>(params)?;
+    p.mutation.validate()?;
     value(service.update_preset(
         &p.preset_id,
-        &p.actor,
+        &p.mutation.actor,
         p.name.as_deref(),
         p.group.as_deref(),
         p.settings.as_ref(),
@@ -1429,9 +1389,9 @@ fn preset_update(
 fn preset_delete(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: PresetDelete,
 ) -> Result<Value, Error> {
-    let p = parse::<PresetParams>(params)?;
+    p.mutation.validate()?;
     let outcome = service.delete_preset(&p.preset_id)?;
     Ok(json!({"outcome": outcome, "deleted": outcome == MutationOutcome::Applied}))
 }
@@ -1439,48 +1399,31 @@ fn preset_delete(
 fn preset_export(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: PresetParams,
 ) -> Result<Value, Error> {
-    let p = parse::<PresetParams>(params)?;
     value(service.export_preset(&p.preset_id)?)
 }
 
 fn preset_inspect(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: PresetInspect,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        content: String,
-        file_name: Option<String>,
-    }
-    let p = parse::<P>(params)?;
     service.inspect_import(&p.content, p.file_name.as_deref())
 }
 
 fn preset_import(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: PresetImport,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        content: String,
-        actor: String,
-        file_name: Option<String>,
-        name: Option<String>,
-        group: Option<String>,
-    }
-    let p = parse::<P>(params)?;
+    p.mutation.validate()?;
     let preset = service.import_preset(
         &p.content,
         p.file_name.as_deref(),
         p.name.as_deref(),
         p.group.as_deref(),
-        &p.actor,
+        &p.mutation.actor,
     )?;
     Ok(json!({"report": preset.report, "preset": preset}))
 }
@@ -1488,9 +1431,8 @@ fn preset_import(
 fn preview_select(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: EntryParams,
 ) -> Result<Value, Error> {
-    let p = parse::<EntryParams>(params)?;
     // The current entry is the live state, not a historical snapshot: selecting it is Return to
     // current, so the session keeps following later commits and editing stays enabled.
     let selection = if service.state(&p.asset_id)?.current_entry.id == p.entry_id {
@@ -1507,7 +1449,7 @@ fn preview_select(
 fn preview_return_current(
     service: &mut EditorService,
     session: &mut ClientSession,
-    _: &Value,
+    _: NoParams,
 ) -> Result<Value, Error> {
     let generation = session.preview.return_current();
     session.touch();
@@ -1517,16 +1459,8 @@ fn preview_return_current(
 fn view_set(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: ViewSet,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        zoom: Option<Zoom>,
-        pan_x: Option<f32>,
-        pan_y: Option<f32>,
-    }
-    let p = parse::<P>(params)?;
     if let Some(zoom) = p.zoom {
         session.preview.view.set_zoom(zoom)?;
     }
@@ -1543,15 +1477,8 @@ fn view_set(
 fn recipe_describe(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: RecipeDescribe,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        entry_id: Option<EntryId>,
-    }
-    let p = parse::<P>(params)?;
     value(service.describe_entry(&p.asset_id, p.entry_id.as_ref())?)
 }
 
@@ -1583,37 +1510,11 @@ fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
     modes
 }
 
-/// A normal `Option<Option<T>>` deserializer cannot distinguish a missing field from explicit
-/// JSON null. `workspace.set` needs that distinction: omission preserves, null closes the board.
-fn present_nullable_page<'de, D>(deserializer: D) -> Result<Option<Option<usize>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<usize>::deserialize(deserializer).map(Some)
-}
-
 fn workspace_set(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: WorkspaceSet,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        state_panel: Option<bool>,
-        tools_panel: Option<bool>,
-        mode: Option<String>,
-        thirds: Option<bool>,
-        clip_shadows: Option<bool>,
-        clip_highlights: Option<bool>,
-        // Taken as strings so an unknown one is refused with the vocabulary spelled out, as `mode`
-        // is, rather than with serde's report of an unmatched variant.
-        mask_overlay: Option<String>,
-        mask_overlay_colour: Option<String>,
-        #[serde(default, deserialize_with = "present_nullable_page")]
-        component_gallery: Option<Option<usize>>,
-    }
-    let p = parse::<P>(params)?;
     // Validate before changing anything, so a rejected request leaves the session as it was.
     if let Some(mode) = &p.mode {
         let modes = canvas_modes(service.registry());
@@ -1698,7 +1599,7 @@ fn workspace_set(
 fn session_state(
     service: &mut EditorService,
     session: &mut ClientSession,
-    _: &Value,
+    _: NoParams,
 ) -> Result<Value, Error> {
     session_value(service, session)
 }
@@ -1708,74 +1609,30 @@ fn session_state(
 fn resources_read(
     _: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    _: NoParams,
 ) -> Result<Value, Error> {
-    match params {
-        Value::Null => {}
-        Value::Object(object) => {
-            if let Some(name) = object.keys().next() {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!("unknown parameter {name}; resources.read takes none"),
-                ));
-            }
-        }
-        _ => {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "params must be a JSON object",
-            ));
-        }
-    }
     value(crate::resources::read())
 }
 
 fn render_sample(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: RenderSample,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        x: u32,
-        y: u32,
-        draft_id: Option<DraftId>,
-    }
-    let p = parse::<P>(params)?;
     let mut sampled = match &p.draft_id {
         // A draft's effective recipe answers the point, so a readout during a gesture matches the
         // frame the same draft is previewing.
         Some(draft_id) => {
-            let draft = held_draft(session, draft_id)?.clone();
-            value(service.sample_draft(&p.asset_id, &draft, p.x, p.y)?)?
+            let draft = session.held_draft(draft_id)?;
+            value(service.sample_draft(&p.asset_id, draft, p.x, p.y)?)?
         }
         None => {
-            let entry_id = match &session.preview.selection {
-                HistorySelection::Current => service.state(&p.asset_id)?.current_entry.id,
-                HistorySelection::Entry(id) => id.clone(),
-            };
+            let entry_id = selected_entry(service, session, &p.asset_id, None)?;
             value(service.sample_entry(&p.asset_id, &entry_id, p.x, p.y)?)?
         }
     };
     sampled["source_detail_ready"] = json!(true);
     Ok(sampled)
-}
-
-/// The draft this client holds under that identity. Another client's draft, or one that has
-/// already ended, is simply not this session's.
-fn held_draft<'a>(session: &'a ClientSession, draft_id: &DraftId) -> Result<&'a Draft, Error> {
-    session
-        .draft
-        .as_ref()
-        .filter(|draft| &draft.draft_id == draft_id)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!("unknown draft {draft_id} for this client"),
-            )
-        })
 }
 
 /// `conflicted` is derived, never notified: the asset moved under the draft. Every read, set,
@@ -1816,18 +1673,8 @@ fn draft_action<'a>(
 fn draft_begin(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: DraftBegin,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        action: String,
-        /// The mask and component a `mask.*` gesture edits. A module action's draft takes neither.
-        mask: Option<MaskId>,
-        component: Option<ComponentId>,
-    }
-    let p = parse::<P>(params)?;
     if let Some(draft) = &session.draft {
         return Err(Error::new(
             ErrorKind::Conflict,
@@ -1880,7 +1727,7 @@ fn draft_begin(
         }
     };
     let revision = service.state(&p.asset_id)?.revision;
-    let mut draft = Draft::new(&p.action, p.asset_id, revision);
+    let mut draft = crate::Draft::new(&p.action, p.asset_id, revision);
     draft.target = target;
     session.draft = Some(draft);
     session.touch();
@@ -1890,16 +1737,9 @@ fn draft_begin(
 fn draft_set(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: DraftSet,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        draft_id: DraftId,
-        fields: Map<String, Value>,
-    }
-    let p = parse::<P>(params)?;
-    let draft = held_draft(session, &p.draft_id)?;
+    let draft = session.held_draft(&p.draft_id)?;
     // Validate every field before merging any, so a rejected request leaves the draft as it was.
     let action = draft_action(service, &draft.action)?;
     draft.checked_fields(&action.parameters, &p.fields)?;
@@ -1912,20 +1752,18 @@ fn draft_set(
 fn draft_read(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: DraftParams,
 ) -> Result<Value, Error> {
-    let p = parse::<DraftParams>(params)?;
-    held_draft(session, &p.draft_id)?;
+    session.held_draft(&p.draft_id)?;
     draft_value(service, session)
 }
 
 fn draft_cancel(
     _: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: DraftParams,
 ) -> Result<Value, Error> {
-    let p = parse::<DraftParams>(params)?;
-    held_draft(session, &p.draft_id)?;
+    session.held_draft(&p.draft_id)?;
     session.draft = None;
     session.touch();
     Ok(json!({"cancelled": true}))
@@ -1934,17 +1772,10 @@ fn draft_cancel(
 fn draft_commit(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: DraftCommit,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        draft_id: DraftId,
-        mutation: Mutation,
-    }
-    let p = parse::<P>(params)?;
     refresh_conflict(service, session)?;
-    let draft = held_draft(session, &p.draft_id)?;
+    let draft = session.held_draft(&p.draft_id)?;
     if draft.conflicted {
         return Err(Error::new(
             ErrorKind::Conflict,
@@ -1993,14 +1824,13 @@ fn draft_commit(
 fn draft_reapply(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: DraftParams,
 ) -> Result<Value, Error> {
-    let p = parse::<DraftParams>(params)?;
-    let draft = held_draft(session, &p.draft_id)?;
+    let draft = session.held_draft(&p.draft_id)?;
     // Only the fields this client set survive, revalidated against the action they belong to;
     // whatever another client changed meanwhile stays in the layer the commit merges over.
     let action = draft_action(service, &draft.action)?;
-    draft.checked_fields(&action.parameters, &draft.fields.clone())?;
+    draft.checked_fields(&action.parameters, &draft.fields)?;
     let revision = service.state(&draft.asset_id)?.revision;
     let draft = session.draft.as_mut().expect("the draft was just found");
     draft.base_revision = revision;
@@ -2020,17 +1850,8 @@ fn draft_value(service: &EditorService, session: &mut ClientSession) -> Result<V
 fn render_locate(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: RenderLocate,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        entry_id: Option<EntryId>,
-        x: u32,
-        y: u32,
-    }
-    let p = parse::<P>(params)?;
     let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
     value(service.locate_entry(&p.asset_id, &entry_id, p.x, p.y)?)
 }
@@ -2038,28 +1859,16 @@ fn render_locate(
 fn artifact_status(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    _: NoParams,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {}
-    if !params.is_null() {
-        parse::<P>(params)?;
-    }
     service.artifact_status()
 }
 
 fn artifact_inspect(
     service: &mut EditorService,
     _: &mut ClientSession,
-    params: &Value,
+    p: ArtifactInspect,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        artifact_id: ArtifactId,
-    }
-    let p = parse::<P>(params)?;
     service.inspect_artifact(&p.artifact_id)
 }
 
@@ -2070,22 +1879,15 @@ fn artifact_inspect(
 fn render_transform(
     service: &mut EditorService,
     session: &mut ClientSession,
-    params: &Value,
+    p: RenderTransform,
 ) -> Result<Value, Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct P {
-        asset_id: AssetId,
-        entry_id: Option<EntryId>,
-    }
-    let p = parse::<P>(params)?;
     let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
     value(service.transform_entry(&p.asset_id, &entry_id)?)
 }
 
 /// The entry a read-only question is answered against: the one the caller named, or the session's
-/// selection, which is the rule `render.sample` follows and the only rule there is. A client
-/// previewing a historical entry therefore asks about the stack it is looking at.
+/// selection. Every method that reads "the entry the client is looking at" resolves it here, so a
+/// client previewing a historical entry asks about the stack it is looking at.
 fn selected_entry(
     service: &EditorService,
     session: &ClientSession,
@@ -2112,48 +1914,14 @@ fn require_current(session: &ClientSession) -> Result<(), Error> {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AssetParams {
-    asset_id: AssetId,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EntryParams {
-    asset_id: AssetId,
-    entry_id: EntryId,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MutationParams {
-    asset_id: AssetId,
-    mutation: Mutation,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DraftParams {
-    draft_id: DraftId,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PresetParams {
-    preset_id: PresetId,
-}
-
-fn parse<T: DeserializeOwned>(value: &Value) -> Result<T, Error> {
-    params(value)
-}
-pub(super) fn params<T: DeserializeOwned>(value: &Value) -> Result<T, Error> {
-    serde_json::from_value(value.clone())
-        .map_err(|error| Error::new(ErrorKind::Validation, error.to_string()))
-}
-fn value(value: impl Serialize) -> Result<Value, Error> {
+pub(super) fn value(value: impl Serialize) -> Result<Value, Error> {
     serde_json::to_value(value).map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::ApiResponse;
     use crate::{
         ActionInput, ActionPlan, Availability, EFFECT_FORMAT, EffectDescriptor, EffectStage,
         ExactGeometry, Layer, LayerId, ModuleDescriptor, ParameterDescriptor, ParameterKind,
@@ -2170,23 +1938,31 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
     }
 
+    /// Answer one service method against a service and a session the test holds, exactly as the
+    /// owner calls it. The owner's own methods are exercised through an `OwnerHandle` in its tests.
     fn call(
         service: &mut EditorService,
         session: &mut ClientSession,
         method: &str,
         params: Value,
     ) -> ApiResponse {
-        dispatch(
-            service,
-            session,
-            &ApiRequest {
-                id: method.into(),
-                method: method.into(),
-                params,
-                token: None,
-            },
-            0,
-        )
+        let result = match find(service, method) {
+            Some(resolved) => {
+                assert!(
+                    matches!(resolved.route(), Route::Service),
+                    "{method} is the owner's"
+                );
+                resolved.serve(service, session, &params)
+            }
+            None => Err(Error::new(
+                ErrorKind::Protocol,
+                format!("unknown method {method}"),
+            )),
+        };
+        match result {
+            Ok(result) => ApiResponse::success(method.into(), 0, result),
+            Err(error) => ApiResponse::failure(method.into(), 0, error),
+        }
     }
 
     fn ok(
@@ -2346,129 +2122,69 @@ mod tests {
             3
         );
         assert_eq!(listed["edit.transform"]["mutates"], json!(true));
-        assert_eq!(
-            listed["recipe.describe"],
-            json!({
-                "mutates": false,
-                "required": ["asset_id"],
-                "optional": {"entry_id": "entry to describe; default current"},
-                "notes": listed["recipe.describe"]["notes"],
-            })
-        );
-        // The capability host's methods follow module.list in the table, are answered by the
-        // catalog owner and say which of them write.
-        let listing = METHODS
-            .iter()
-            .position(|spec| spec.name == "module.list")
-            .unwrap();
-        for (offset, (name, writes)) in crate::capabilities::host::METHODS.iter().enumerate() {
-            let spec = &METHODS[listing + 1 + offset];
-            assert_eq!(spec.name, *name);
-            assert!(spec.handler.is_none(), "{name} is answered by the owner");
-            assert_eq!(spec.mutates, *writes, "{name}");
-            assert!(listed.contains_key(*name));
-        }
-        assert_eq!(
-            listed["module.settings.set-secret"]["required"],
-            json!(["module_id", "setting", "value", "mutation"])
-        );
-        assert_eq!(
-            listed["module.settings.set"]["optional"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .collect::<Vec<_>>(),
-            ["profile_id"]
-        );
-        // The preset library's host methods, in table order, with their parameters.
-        assert_eq!(
-            METHODS
-                .iter()
-                .map(|spec| spec.name)
-                .filter(|name| name.starts_with("preset."))
-                .collect::<Vec<_>>(),
-            [
-                "preset.list",
-                "preset.read",
-                "preset.create",
-                "preset.capture",
-                "preset.update",
-                "preset.delete",
-                "preset.export",
-                "preset.inspect",
-                "preset.import",
-            ]
-        );
-        for (name, mutates, required, optional) in [
-            ("preset.list", false, json!([]), vec![]),
-            ("preset.read", false, json!(["preset_id"]), vec![]),
-            (
-                "preset.create",
-                true,
-                json!(["name", "settings", "actor"]),
-                vec!["group"],
-            ),
-            (
-                "preset.capture",
-                false,
-                json!(["asset_id", "fields"]),
-                vec!["entry_id"],
-            ),
-            (
-                "preset.update",
-                true,
-                json!(["preset_id", "actor"]),
-                vec!["group", "name", "settings"],
-            ),
-            ("preset.delete", true, json!(["preset_id"]), vec![]),
-            ("preset.export", false, json!(["preset_id"]), vec![]),
-            (
-                "preset.inspect",
-                false,
-                json!(["content"]),
-                vec!["file_name"],
-            ),
-            (
-                "preset.import",
-                true,
-                json!(["content", "actor"]),
-                vec!["file_name", "group", "name"],
-            ),
-        ] {
-            assert_eq!(listed[name]["mutates"], json!(mutates), "{name}");
-            assert_eq!(listed[name]["required"], required, "{name}");
+        // Each host method's schema is generated from the struct its handler parses, so the lists
+        // are the parser's own; the owner's generated test sends every method its declared fields.
+        for spec in METHODS {
+            let schema = &listed[spec.name];
             assert_eq!(
-                listed[name]["optional"]
+                schema["required"],
+                json!(spec.params.required),
+                "{}",
+                spec.name
+            );
+            assert_eq!(
+                schema["optional"]
                     .as_object()
                     .expect("the optional fields")
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-                optional,
-                "{name}"
+                    .len(),
+                spec.params.optional.len(),
+                "{}",
+                spec.name
+            );
+            // A method mutates exactly when it carries a mutation envelope, and says which.
+            assert_eq!(schema["mutates"], json!(spec.mutates()), "{}", spec.name);
+            assert_eq!(
+                schema.get("mutation").cloned(),
+                spec.params.envelope.name().map(|name| json!(name)),
+                "{}",
+                spec.name
+            );
+            assert_eq!(
+                spec.params.required.contains(&"mutation"),
+                spec.mutates(),
+                "{} carries its envelope as the required mutation field",
+                spec.name
             );
         }
-        assert_eq!(listed["workspace.set"]["required"], json!([]));
+        // Every generated action commits a revisioned change to an asset.
+        assert_eq!(listed["edit.set-pixel"]["mutation"], json!("revision"));
+        assert_eq!(listed["mask.delete"]["mutation"], json!("revision"));
+        assert_eq!(listed["mask.list"].get("mutation"), None);
+        for (name, envelope) in [
+            ("history.undo", "revision"),
+            ("draft.commit", "revision"),
+            ("module.settings.set", "revision"),
+            ("preset.create", "request"),
+            ("version.create", "request"),
+            ("catalog.import", "request"),
+            ("artifact.collect", "request"),
+            ("module.permission.grant", "request"),
+            ("module.activate", "request"),
+            ("module.resource.install", "request"),
+            ("module.job.cancel", "request"),
+        ] {
+            assert_eq!(listed[name]["mutation"], json!(envelope), "{name}");
+        }
         assert_eq!(
-            listed["workspace.set"]["optional"]
-                .as_object()
-                .expect("the workspace fields")
-                .keys()
-                .collect::<Vec<_>>(),
-            [
-                "clip_highlights",
-                "clip_shadows",
-                "component_gallery",
-                "mask_overlay",
-                "mask_overlay_colour",
-                "mode",
-                "state_panel",
-                "thirds",
-                "tools_panel"
-            ]
+            schema["mutation"]["revision"],
+            json!(["expected_revision", "request_id", "actor"])
+        );
+        assert_eq!(
+            schema["mutation"]["request"],
+            json!(["request_id", "actor"])
         );
         // The descriptor additions the workspace renders from reach a client through module.list.
-        let modules = module_list(&mut service, &mut session, &json!({})).unwrap();
+        let modules = ok(&mut service, &mut session, "module.list", json!({}));
         let module = |id: &str| -> Value {
             modules["modules"]
                 .as_array()
@@ -2579,20 +2295,10 @@ mod tests {
             .chain(generated.iter().map(String::as_str))
         {
             let spec = find(&service, name).expect("listed methods resolve");
-            let request = ApiRequest {
-                id: "schema".into(),
-                method: name.into(),
-                params: json!({}),
-                token: None,
-            };
-            let response = dispatch(&mut service, &mut session, &request, 0);
-            if let Some(error) = &response.error {
-                assert!(
-                    !error.message.starts_with("unknown method"),
-                    "{name} is listed but not dispatched"
-                );
-                if spec.owner_answered() {
-                    assert_eq!(error.code, "protocol");
+            if matches!(spec.route(), Route::Service) {
+                let response = call(&mut service, &mut session, name, json!({}));
+                if let Some(error) = &response.error {
+                    assert_ne!(error.code, "internal", "{name}: {}", error.message);
                 }
             }
             assert!(
@@ -2658,7 +2364,10 @@ mod tests {
             assert!(notes.contains(phrase), "the notes say {phrase:?}");
         }
         let method = find(&service, "resources.read").expect("found");
-        assert!(!method.owner_answered(), "its handler answers it");
+        assert!(
+            matches!(method.route(), Route::Service),
+            "its service handler answers it"
+        );
         for params in [json!({}), Value::Null] {
             let read = ok(&mut service, &mut session, "resources.read", params);
             let mut keys: Vec<&str> = read
@@ -2679,7 +2388,7 @@ mod tests {
             );
         }
         for (params, message) in [
-            (json!({"interval": 1}), "unknown parameter interval"),
+            (json!({"interval": 1}), "unknown field `interval`"),
             (json!([]), "params must be a JSON object"),
         ] {
             let error = call(&mut service, &mut session, "resources.read", params)
@@ -2743,23 +2452,16 @@ mod tests {
             );
         }
         let method = find(&service, &tasks[0]).unwrap();
-        assert!(method.owner_answered());
+        assert!(matches!(method.route(), Route::Owner(_)));
         assert!(
             !method.mutates(),
             "the request queues a job and writes nothing"
         );
-        let response = dispatch(
-            &mut service,
-            &mut session,
-            &ApiRequest {
-                id: "task".into(),
-                method: tasks[0].clone(),
-                params: json!({}),
-                token: None,
-            },
-            0,
-        );
-        assert_eq!(response.error.unwrap().code, "protocol");
+        // The service never answers it: the catalog owner holds the capability host.
+        let refused = method
+            .serve(&mut service, &mut session, &json!({}))
+            .unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::Internal);
         assert_eq!(
             listed[&tasks[0]]["parameters"],
             json!([]),
@@ -3073,20 +2775,15 @@ mod tests {
             listed["methods"]["edit.test-angle"]["parameters"][0]["kind"],
             json!("number")
         );
-        let response = dispatch(
+        let response = call(
             &mut service,
             &mut session,
-            &ApiRequest {
-                id: "angle".into(),
-                method: "edit.test-angle".into(),
-                params: json!({
-                    "asset_id": asset,
-                    "mutation": {"expected_revision":0,"request_id":"angle","actor":"test"},
-                    "angle": -3.5,
-                }),
-                token: None,
-            },
-            0,
+            "edit.test-angle",
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision":0,"request_id":"angle","actor":"test"},
+                "angle": -3.5,
+            }),
         );
         assert!(response.error.is_none(), "{:?}", response.error);
         assert_eq!(response.result.unwrap()["outcome"], json!("no-op"));

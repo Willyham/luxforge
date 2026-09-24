@@ -36,7 +36,7 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
     writeln!(
         input,
         "{}",
-        json!({"id":"import","method":"catalog.import","params":{"path":fixture}})
+        json!({"id":"import","method":"catalog.import","params":{"path":fixture,"mutation":{"request_id":"import","actor":"subprocess-test"}}})
     )
     .unwrap();
     input.flush().unwrap();
@@ -131,7 +131,7 @@ fn only_a_client_started_with_permission_authority_may_grant() {
         json!({"id": "state", "method": "session.state", "params": {}}),
         json!({"id": "grant", "method": "module.permission.grant", "params": {
             "module_id": "test.missing", "capability": "echo",
-            "scope": {}, "request_id": "cli-grant",
+            "scope": {}, "mutation": {"request_id": "cli-grant", "actor": "cli-test"},
         }}),
     ];
     let plain = session(&data_root, &[], &requests);
@@ -227,7 +227,8 @@ impl Client {
             "module.permission.grant",
             json!({
                 "module_id": consent["module_id"], "capability": consent["capability"],
-                "scope": consent["scope"], "request_id": request_id,
+                "scope": consent["scope"],
+                "mutation": {"request_id": request_id, "actor": "cli-test"},
             }),
         );
     }
@@ -299,7 +300,10 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         "--proof-endpoint",
         &base,
     ]);
-    let imported = client.ok("catalog.import", json!({"path": fixture}));
+    let imported = client.ok(
+        "catalog.import",
+        json!({"path": fixture, "mutation": {"request_id": "cli-import", "actor": "cli-test"}}),
+    );
     let asset = loop {
         let status = client.ok("job.status", json!({"job_id": imported["job_id"]}));
         match status["state"].as_str() {
@@ -331,12 +335,21 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
             "mutation": mutation,
         }),
     );
-    let install = json!({"module_id": module, "resource_id": "proof-palette"});
-    let refused = client.call("module.resource.install", install.clone());
+    let install = |request_id: &str| {
+        json!({
+            "module_id": module, "resource_id": "proof-palette",
+            "mutation": {"request_id": request_id, "actor": "cli-test"},
+        })
+    };
+    let refused = client.call("module.resource.install", install("cli-install-1"));
     client.grant(&refused);
-    let installed = client.ok("module.resource.install", install);
+    // After Allow the install is sent again as a new request: the refused one changed nothing.
+    let installed = client.ok("module.resource.install", install("cli-install-2"));
     assert_eq!(client.finished(&installed["job_id"])["status"], "succeeded");
-    let activating = client.ok("module.activate", json!({"module_id": module}));
+    let activating = client.ok(
+        "module.activate",
+        json!({"module_id": module, "mutation": {"request_id": "cli-activate", "actor": "cli-test"}}),
+    );
     assert_eq!(
         client.finished(&activating["job_id"])["status"],
         "succeeded"

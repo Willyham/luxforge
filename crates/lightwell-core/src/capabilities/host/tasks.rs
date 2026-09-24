@@ -13,6 +13,7 @@ use super::{
 };
 use crate::{
     AssetId, Availability, EditorService, Error, ErrorKind, JobId, ModuleDescriptor,
+    api::params,
     capabilities::{
         consent::{consent_required, remote_disclosure},
         context::{GrantedSend, ModuleContext, ProfileView, TaskOutcome},
@@ -29,8 +30,7 @@ use crate::{
     },
     modules::check_declared_values,
 };
-use serde::de::DeserializeOwned;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// Every generated task method is this prefix and the task's identity: task `generate-proof-tint`
@@ -66,17 +66,6 @@ fn adapter<'a>(descriptor: &'a ModuleDescriptor, id: &str) -> Result<&'a Adapter
                 format!("adapter {id} of module {} is not declared", descriptor.id),
             )
         })
-}
-
-/// Take one envelope field out of a task request: `asset_id` or `profile_id`.
-fn envelope<T: DeserializeOwned>(
-    parameters: &mut Map<String, Value>,
-    name: &str,
-) -> Result<T, Error> {
-    let value = parameters
-        .remove(name)
-        .ok_or_else(|| validation(format!("missing field `{name}`")))?;
-    serde_json::from_value(value).map_err(|error| validation(format!("{name}: {error}")))
 }
 
 fn profile_status(status: ProfileStatus) -> &'static str {
@@ -140,7 +129,7 @@ impl CapabilityHost {
     /// for each capability the task uses (the first missing one is `consent-required`); then bind
     /// the disclosed data, which is `preparation-required` for an unprepared source or artifact,
     /// and queue the task on the module lane under its grants. Returns `{job_id, status}`.
-    pub(super) fn task(
+    pub(crate) fn task(
         &mut self,
         service: &EditorService,
         task_id: &str,
@@ -159,18 +148,14 @@ impl CapabilityHost {
                 format!("unavailable module {module_id} cannot run task {task_id}: {reason}"),
             ));
         }
-        let mut parameters = match request {
-            Value::Object(object) => object.clone(),
-            Value::Null => Map::new(),
-            _ => return Err(validation("params must be a JSON object")),
-        };
+        let mut parameters = params::generated(request)?;
         let asset_id: Option<AssetId> = task
             .asset
-            .then(|| envelope(&mut parameters, "asset_id"))
+            .then(|| params::take(&mut parameters, "asset_id"))
             .transpose()?;
         let profile_id: Option<String> = task
             .profile
-            .then(|| envelope(&mut parameters, "profile_id"))
+            .then(|| params::take(&mut parameters, "profile_id"))
             .transpose()?;
         let checked = check_declared_values(
             "task",

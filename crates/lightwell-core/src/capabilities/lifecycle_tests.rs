@@ -9,8 +9,8 @@ use super::{
     secrets::MemorySecretStore,
     settings::{CREATE_PROFILE, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET},
     testing::{
-        CountingNet, LifecycleModule, MODULE, PALETTE, Probe, SWATCH, Server, lane_descriptor,
-        lifecycle_descriptor, reply, sha256_hex, temp,
+        CountingNet, LifecycleModule, MODULE, PALETTE, Probe, SWATCH, Server, enveloped,
+        lane_descriptor, lifecycle_descriptor, reply, sha256_hex, temp,
     },
     transport::{TlsTrust, TransportConfig},
 };
@@ -176,6 +176,7 @@ impl Owner {
     fn call(&self, client: ClientId, method: &str, params: Value) -> ApiResponse {
         let id = format!("request-{}", self.next.get());
         self.next.set(self.next.get() + 1);
+        let params = enveloped(method, params, &id);
         let response = self
             .handle
             .call(
@@ -279,7 +280,6 @@ impl Owner {
                 "module_id": MODULE,
                 "capability": capability,
                 "scope": download_scope(fixture, resource),
-                "request_id": format!("grant-{capability}-{}", self.next.get()),
             }),
         )
     }
@@ -415,11 +415,11 @@ fn only_a_client_registered_with_permission_authority_can_grant() {
         owner.ok_as(owner.admin, "session.state", json!({}))["authority"],
         json!("permissions")
     );
+    // Each call below is a new request: the helper gives each one a fresh request identity.
     let request = json!({
         "module_id": MODULE,
         "capability": "palette",
         "scope": download_scope(&fixture, "palette"),
-        "request_id": "grant-palette",
     });
     let refused = owner.fail(GRANT, request.clone());
     assert_eq!(refused.code, "forbidden");
@@ -427,11 +427,17 @@ fn only_a_client_registered_with_permission_authority_can_grant() {
         refused.message,
         "granting a permission needs permission authority"
     );
-    // Authority is checked before anything else, so a malformed request is forbidden too.
-    assert_eq!(owner.fail(GRANT, json!({})).code, "forbidden");
+    // Every request is parsed before its handler runs, so a malformed one is refused as malformed
+    // whoever sends it; it grants nothing either way.
+    assert_eq!(owner.fail(GRANT, json!({})).code, "validation");
     let granted = owner.ok_as(owner.admin, GRANT, request.clone());
     assert_eq!(granted["outcome"], json!("committed"));
-    assert_eq!(granted["grant"]["actor"], json!("permissions"));
+    assert_eq!(granted["deduplicated"], json!(false));
+    assert_eq!(
+        granted["grant"]["actor"],
+        json!("test"),
+        "the envelope's actor"
+    );
     assert_eq!(granted["grant"]["kind"], json!("download-artifact"));
     assert!(
         granted["grant"]["grant_id"]
@@ -464,10 +470,12 @@ fn only_a_client_registered_with_permission_authority_can_grant() {
     match LocalServer::start(owner.handle.clone(), &session_file) {
         Ok(live) => {
             let mut stream = TcpStream::connect(live.info().address).unwrap();
+            let mut params = request;
+            params["mutation"] = json!({"request_id": "live-grant", "actor": "live"});
             let line = json!({
                 "id": "live-grant",
                 "method": GRANT,
-                "params": request,
+                "params": params,
                 "token": live.info().token,
             });
             writeln!(stream, "{line}").unwrap();
@@ -504,7 +512,7 @@ fn a_grant_scope_must_be_one_the_module_can_use_now_and_a_retry_returns_the_same
         owner.call(
             owner.admin,
             GRANT,
-            json!({"module_id": MODULE, "capability": capability, "scope": scope, "request_id": request_id}),
+            json!({"module_id": MODULE, "capability": capability, "scope": scope, "mutation": {"request_id": request_id, "actor": "test"}}),
         )
     };
     let refusal = |response: ApiResponse| {
@@ -572,7 +580,7 @@ fn a_grant_scope_must_be_one_the_module_can_use_now_and_a_retry_returns_the_same
         .call(
             owner.admin,
             GRANT,
-            json!({"module_id": "test.missing", "capability": "echo", "scope": {}, "request_id": "x"}),
+            json!({"module_id": "test.missing", "capability": "echo", "scope": {}, "mutation": {"request_id": "x", "actor": "test"}}),
         )
         .error
         .unwrap();
@@ -620,7 +628,7 @@ fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
     owner.ok_as(
         owner.admin,
         GRANT,
-        json!({"module_id": MODULE, "capability": "palette", "scope": consent["scope"], "request_id": "allow"}),
+        json!({"module_id": MODULE, "capability": "palette", "scope": consent["scope"], "mutation": {"request_id": "allow", "actor": "test"}}),
     );
     assert!(
         owner.ok(LIST, json!({}))["denials"]
@@ -711,7 +719,7 @@ fn changing_what_a_grant_names_revokes_it() {
         owner.ok_as(
             owner.admin,
             GRANT,
-            json!({"module_id": MODULE, "capability": capability, "scope": scope, "request_id": uuid::Uuid::new_v4().to_string()}),
+            json!({"module_id": MODULE, "capability": capability, "scope": scope, "mutation": {"request_id": uuid::Uuid::new_v4().to_string(), "actor": "test"}}),
         )["grant"]["grant_id"]
             .clone()
     };
@@ -807,7 +815,7 @@ fn a_grants_file_of_another_format_is_refused_and_kept() {
     let refused = owner.fail_as(
         owner.admin,
         GRANT,
-        json!({"module_id": MODULE, "capability": "palette", "scope": download_scope(&fixture, "palette"), "request_id": "g"}),
+        json!({"module_id": MODULE, "capability": "palette", "scope": download_scope(&fixture, "palette"), "mutation": {"request_id": "g", "actor": "test"}}),
     );
     assert_eq!(refused.code, "incompatible");
     let status = owner.status(MODULE);
@@ -1057,7 +1065,7 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
     // Activating an active module changes nothing.
     assert_eq!(
         owner.ok(ACTIVATE, json!({"module_id": MODULE})),
-        json!({"module_id": MODULE, "activation": "active"})
+        json!({"module_id": MODULE, "activation": "active", "deduplicated": false})
     );
     let deactivated = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
     assert_eq!(deactivated["activation"], json!("inactive"));
@@ -1075,7 +1083,7 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
     );
     assert_eq!(
         owner.ok(DEACTIVATE, json!({"module_id": MODULE})),
-        json!({"module_id": MODULE, "activation": "inactive"}),
+        json!({"module_id": MODULE, "activation": "inactive", "deduplicated": false}),
         "deactivating an inactive module changes nothing"
     );
     // Each change a job made is announced under the request that started it.
@@ -1205,7 +1213,7 @@ fn a_download_installs_the_pinned_bytes_with_their_record() {
             "format": 1, "module_id": MODULE, "resource_id": "palette", "version": "1.0.0",
             "url": server.url("/palette"), "sha256": sha256_hex(PALETTE), "bytes": 12,
             "license": "CC0-1.0", "provenance": "Generated for tests", "source": "download",
-            "actor": "edit", "installed_ms": installed_ms,
+            "actor": "test", "installed_ms": installed_ms,
         })
     );
     let listed = owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}));
@@ -1220,7 +1228,7 @@ fn a_download_installs_the_pinned_bytes_with_their_record() {
             INSTALL,
             json!({"module_id": MODULE, "resource_id": "palette"})
         ),
-        json!({"module_id": MODULE, "resource_id": "palette", "state": "installed"}),
+        json!({"module_id": MODULE, "resource_id": "palette", "state": "installed", "deduplicated": false}),
         "an installed resource answers at once"
     );
     assert_eq!(server.hits(), 1, "the resource was downloaded once");
@@ -1504,7 +1512,7 @@ fn removing_a_required_resource_deactivates_the_module_and_deletes_only_the_reso
             REMOVE,
             json!({"module_id": MODULE, "resource_id": "palette"})
         ),
-        json!({"module_id": MODULE, "resource_id": "palette", "state": "not-installed"}),
+        json!({"module_id": MODULE, "resource_id": "palette", "state": "not-installed", "deduplicated": false}),
         "removing what is not installed queues nothing"
     );
     assert_eq!(
@@ -1536,9 +1544,22 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
         let asked = fixture.secrets.calls().total();
         owner.ok("module.list", json!({}));
         let schema = owner.ok("schema.list", json!({}));
-        for (method, _) in super::host::METHODS {
+        for method in [
+            GRANT,
+            DENY,
+            REVOKE,
+            LIST,
+            ACTIVATE,
+            DEACTIVATE,
+            STATUS,
+            RESOURCE_LIST,
+            INSTALL,
+            REMOVE,
+            JOB_READ,
+            JOB_CANCEL,
+        ] {
             assert!(
-                schema["methods"].get(*method).is_some(),
+                schema["methods"].get(method).is_some(),
                 "{method} is discoverable"
             );
         }
@@ -1621,4 +1642,118 @@ fn a_sentinel_secret_reaches_the_worker_and_no_observable_surface() {
             path.display()
         );
     }
+}
+
+/// Every capability family that carries the `{request_id, actor}` envelope — permissions,
+/// activation, resources and capability jobs — answers a retry from the owner's request table: the
+/// first answer comes back marked `deduplicated`, nothing runs or is queued again and no event is
+/// recorded; the same `request_id` with other input is a conflict. Each request's own work is let
+/// finish before its retry, so an event its job announces is never mistaken for the retry's.
+#[test]
+fn a_retry_of_every_capability_family_returns_the_first_answer_and_records_no_event() {
+    let server = serving();
+    let fixture = Fixture::new("retries", &server);
+    let owner = fixture.start();
+    owner.set(json!({"label": "tint"}));
+    owner.ok(
+        SET_SECRET,
+        json!({"module_id": MODULE, "setting": "token", "value": "worker-only", "mutation": mutation(owner.revision())}),
+    );
+    let envelope = |request_id: &str| json!({"request_id": request_id, "actor": "test"});
+    let twice = |client: ClientId, method: &str, params: Value| -> Value {
+        let first = owner.ok_as(client, method, params.clone());
+        if let Some(job_id) = first.get("job_id") {
+            owner.finished(job_id);
+        }
+        let announced = owner.events().len();
+        let retry = owner.ok_as(client, method, params);
+        assert_eq!(first["deduplicated"], json!(false), "{method}");
+        assert_eq!(retry["deduplicated"], json!(true), "{method}");
+        let mut original = retry.clone();
+        original["deduplicated"] = json!(false);
+        assert_eq!(original, first, "{method}: the retry is the first answer");
+        assert_eq!(
+            owner.events().len(),
+            announced,
+            "{method}: the retry records no event"
+        );
+        first
+    };
+    let jobs = |kind: &str| {
+        owner.status(MODULE)["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|job| job["kind"] == json!(kind))
+            .count()
+    };
+
+    let granted = twice(
+        owner.admin,
+        GRANT,
+        json!({"module_id": MODULE, "capability": "palette", "scope": download_scope(&fixture, "palette"), "mutation": envelope("grant-1")}),
+    );
+    assert_eq!(granted["outcome"], json!("committed"));
+    assert_eq!(
+        owner.ok(LIST, json!({"module_id": MODULE}))["grants"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "one grant"
+    );
+    let conflict = owner.fail_as(
+        owner.admin,
+        GRANT,
+        json!({"module_id": MODULE, "capability": "swatches", "scope": download_scope(&fixture, "swatch"), "mutation": envelope("grant-1")}),
+    );
+    assert_eq!(conflict.code, "conflict");
+    twice(
+        owner.edit,
+        DENY,
+        json!({"module_id": MODULE, "capability": "swatches", "scope": download_scope(&fixture, "swatch"), "mutation": envelope("deny-1")}),
+    );
+    let installed = twice(
+        owner.edit,
+        INSTALL,
+        json!({"module_id": MODULE, "resource_id": "palette", "mutation": envelope("install-1")}),
+    );
+    assert_eq!(
+        owner.job(&installed["job_id"])["status"],
+        json!("succeeded")
+    );
+    assert_eq!(jobs("install"), 1, "the retry queued no second install");
+    let activating = twice(
+        owner.edit,
+        ACTIVATE,
+        json!({"module_id": MODULE, "mutation": envelope("activate-1")}),
+    );
+    assert_eq!(activating["activation"], json!("activating"));
+    assert_eq!(owner.status(MODULE)["activation"]["state"], json!("active"));
+    assert_eq!(jobs("activate"), 1, "the retry queued no second activation");
+    twice(
+        owner.edit,
+        DEACTIVATE,
+        json!({"module_id": MODULE, "mutation": envelope("deactivate-1")}),
+    );
+    assert_eq!(jobs("deactivate"), 1);
+    twice(
+        owner.edit,
+        JOB_CANCEL,
+        json!({"job_id": installed["job_id"], "mutation": envelope("cancel-1")}),
+    );
+    let removed = twice(
+        owner.edit,
+        REMOVE,
+        json!({"module_id": MODULE, "resource_id": "palette", "mutation": envelope("remove-1")}),
+    );
+    assert_eq!(owner.job(&removed["job_id"])["status"], json!("succeeded"));
+    assert_eq!(jobs("remove"), 1, "the retry queued no second removal");
+    let revoked = twice(
+        owner.edit,
+        REVOKE,
+        json!({"grant_id": granted["grant"]["grant_id"], "mutation": envelope("revoke-1")}),
+    );
+    assert_eq!(revoked["outcome"], json!("committed"));
+    owner.stop();
 }

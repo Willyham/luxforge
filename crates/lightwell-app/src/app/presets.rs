@@ -13,8 +13,8 @@ use crate::{
         evidence::Settle,
         message::{MenuTarget, Message, PresetMessage},
         tasks::{
-            ACTOR, PresetChange, preset_create_task, preset_delete_task, preset_export_task,
-            preset_import_task, preset_report_task,
+            PresetChange, preset_create_task, preset_delete_task, preset_export_task,
+            preset_import_task, preset_report_task, request,
         },
     },
     state::presets::{PresetForm, capture_fields, import_status, presettable_groups},
@@ -211,7 +211,7 @@ impl Editor {
         }
         Ok((
             json!({"asset_id": state.asset.id, "entry_id": entry, "fields": fields}),
-            json!({"name": form.name, "group": form.group, "actor": ACTOR}),
+            json!({"name": form.name, "group": form.group, "mutation": request()}),
         ))
     }
 

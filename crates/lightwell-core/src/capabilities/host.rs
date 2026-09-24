@@ -1,37 +1,36 @@
 //! The capability host the catalog owner holds: where settings, grants and resources live, which
 //! secret store holds credentials, the capability worker's lanes and jobs, each module's
-//! activation, and the owner-answered methods over all of them. Every call here is a short file,
-//! stat or secret-store attribute call; nothing hashes, downloads, loads module state or reads a
-//! secret's data on the owner. That work is queued on a lane, whose result comes back into the
-//! owner's channel. See `docs/design/module-capabilities.md`.
+//! activation, and the operations the owner-answered `module.*` methods call over all of them. The
+//! method table in `api::methods` names each method, parses its parameters, declared here, and calls
+//! one of these operations; nothing here dispatches by method name. Every call is a short file, stat
+//! or secret-store attribute call; nothing hashes, downloads, loads module state or reads a secret's
+//! data on the owner. That work is queued on a lane, whose result comes back into the owner's
+//! channel. See `docs/design/module-capabilities.md`.
 use super::{
     consent::{consent_required, download_disclosure},
     context::ModuleContext,
     descriptor::{CapabilityDescriptor, CapabilityKind, ResourceDescriptor, SettingKind},
-    grants::{
-        self, DENY, DownloadScope, GRANT, Grant, GrantKind, GrantScope, GrantsStore, LIST,
-        MAX_REASON, NewGrant, REVOKE,
-    },
+    grants::{DownloadScope, Grant, GrantKind, GrantScope, GrantsStore, MAX_REASON, NewGrant},
     jobs::{
-        Admission, Cancelled, Deliver, JOB_CANCEL, JOB_READ, JobControl, JobError, JobKind,
-        JobRecord, JobStatus, Jobs, NewJob, Origin, PERMISSION_REVOKED, Work,
+        Admission, Cancelled, Deliver, JobControl, JobError, JobKind, JobRecord, JobStatus, Jobs,
+        NewJob, Origin, PERMISSION_REVOKED, Work,
     },
     resources::{
-        self, DEFAULT_RESOURCE_QUOTA_BYTES, Fetch, INSTALL, InstallJob, InstallSource, REMOVE,
-        RESOURCE_LIST, ResourceRow, ResourceState, ResourceStore, SharedTransport,
+        self, DEFAULT_RESOURCE_QUOTA_BYTES, Fetch, InstallJob, InstallSource, ResourceRow,
+        ResourceState, ResourceStore, SharedTransport,
     },
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
     settings::{
-        CLEAR_SECRET, CREATE_PROFILE, FieldRead, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET,
+        CLEAR_SECRET, CREATE_PROFILE, FieldRead, REMOVE_PROFILE, RESET, SET, SET_SECRET,
         SettingsRead, SettingsState, SettingsStore, SettingsWrite, WriteOutcome,
     },
     transport::{Endpoint, EndpointClass, TransportConfig, parse_endpoint},
 };
 use crate::{
-    ApiRequest, AssetId, Availability, ClientAuthority, EditorService, Error, ErrorKind, JobId,
-    ModuleDescriptor, ModuleRegistry, Mutation,
+    AssetId, Availability, ClientAuthority, EditorService, Error, ErrorKind, JobId,
+    ModuleDescriptor, ModuleRegistry, api::params::host_params,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashMap,
@@ -106,141 +105,205 @@ fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
 }
 
-fn params<T: DeserializeOwned>(value: &Value) -> Result<T, Error> {
-    serde_json::from_value(value.clone()).map_err(|error| validation(error.to_string()))
-}
-
 fn encode(value: impl serde::Serialize) -> Result<Value, Error> {
     serde_json::to_value(value).map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
 }
 
 /// Announce `origin` once, however many changes a request made.
-fn announce_once(announce: &mut Vec<Origin>, origin: &Origin) {
+pub(crate) fn announce_once(announce: &mut Vec<Origin>, origin: &Origin) {
     if !announce.contains(origin) {
         announce.push(origin.clone());
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ModuleParams {
-    module_id: String,
+host_params! {
+    /// `module.settings.read`, `module.status` and `module.resource.list`.
+    pub(crate) struct ModuleParams {
+        module_id: String,
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OptionalModuleParams {
-    #[serde(default)]
-    module_id: Option<String>,
+host_params! {
+    /// `module.permission.list`.
+    pub(crate) struct PermissionList {
+        module_id: Option<String> = "one module's grants and denials; default all",
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SetParams {
-    module_id: String,
-    #[serde(default)]
-    profile_id: Option<String>,
-    values: Map<String, Value>,
-    mutation: Mutation,
+host_params! {
+    /// `module.activate` and `module.deactivate`.
+    pub(crate) struct ModuleChange {
+        module_id: String,
+        mutation: MutationRequest,
+    }
 }
 
-/// `set-secret` without its value, which is taken out of the request before anything else reads
-/// it, and `clear-secret`.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SecretParams {
-    module_id: String,
-    #[serde(default)]
-    profile_id: Option<String>,
-    setting: String,
-    mutation: Mutation,
+host_params! {
+    pub(crate) struct SetParams {
+        module_id: String,
+        values: Map<String, Value>,
+        mutation: Mutation,
+        profile_id: Option<String> = "the profile whose fields to set; default the module's own fields",
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ResetParams {
-    module_id: String,
-    mutation: Mutation,
+host_params! {
+    /// `set-secret`. Its value is read by [`SecretParam`], which never echoes it.
+    pub(crate) struct SetSecretParams {
+        module_id: String,
+        setting: String,
+        value: SecretParam,
+        mutation: Mutation,
+        profile_id: Option<String> = "the profile whose secret to set; default the module's own",
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CreateProfileParams {
-    module_id: String,
-    adapter: String,
-    label: String,
-    mutation: Mutation,
+host_params! {
+    pub(crate) struct ClearSecretParams {
+        module_id: String,
+        setting: String,
+        mutation: Mutation,
+        profile_id: Option<String> = "the profile whose secret to clear; default the module's own",
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RemoveProfileParams {
-    module_id: String,
-    profile_id: String,
-    mutation: Mutation,
+host_params! {
+    pub(crate) struct ResetParams {
+        module_id: String,
+        mutation: Mutation,
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GrantParams {
-    module_id: String,
-    capability: String,
-    scope: Value,
-    request_id: String,
+host_params! {
+    pub(crate) struct CreateProfileParams {
+        module_id: String,
+        adapter: String,
+        label: String,
+        mutation: Mutation,
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DenyParams {
-    module_id: String,
-    capability: String,
-    scope: Value,
+host_params! {
+    pub(crate) struct RemoveProfileParams {
+        module_id: String,
+        profile_id: String,
+        mutation: Mutation,
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RevokeParams {
-    grant_id: String,
-    #[serde(default)]
-    reason: Option<String>,
+host_params! {
+    pub(crate) struct GrantParams {
+        module_id: String,
+        capability: String,
+        scope: Value,
+        mutation: MutationRequest,
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct JobParams {
-    job_id: JobId,
+host_params! {
+    pub(crate) struct DenyParams {
+        module_id: String,
+        capability: String,
+        scope: Value,
+        mutation: MutationRequest,
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ResourceParams {
-    module_id: String,
-    resource_id: String,
+host_params! {
+    pub(crate) struct RevokeParams {
+        grant_id: String,
+        mutation: MutationRequest,
+        reason: Option<String> = "1..256 characters; default revoked",
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstallParams {
-    module_id: String,
-    resource_id: String,
-    #[serde(default)]
-    source: InstallSource,
+host_params! {
+    /// `module.job.read`.
+    pub(crate) struct JobParams {
+        job_id: JobId,
+    }
 }
 
-/// Split a `set-secret` request into its secret and the rest. The value is moved straight into a
-/// [`SecretValue`], and a malformed one is refused without echoing it, which serde's own message
-/// for a wrong type would do.
-fn secret_params(request: &Value) -> Result<(SecretParams, SecretValue), Error> {
-    let mut object = match request {
-        Value::Object(object) => object.clone(),
-        _ => return Err(validation("params must be a JSON object")),
-    };
-    let value = match object.remove("value") {
-        Some(Value::String(value)) => SecretValue::new(value),
-        Some(_) => return Err(validation("value must be a string")),
-        None => return Err(validation("missing field `value`")),
-    };
-    Ok((params(&Value::Object(object))?, value))
+host_params! {
+    /// `module.job.cancel`.
+    pub(crate) struct JobCancelParams {
+        job_id: JobId,
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
+    /// `module.resource.remove`.
+    pub(crate) struct ResourceParams {
+        module_id: String,
+        resource_id: String,
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
+    pub(crate) struct InstallParams {
+        module_id: String,
+        resource_id: String,
+        mutation: MutationRequest,
+        source: Option<InstallSource> = "{kind: download} (default), which needs the download-artifact grant, or {kind: file, path} to copy a local file, which needs none because only the pinned bytes are accepted",
+    }
+}
+
+/// The `value` of a `set-secret` request, moved straight into a [`SecretValue`]. A malformed one is
+/// refused without echoing it, which serde's own message for a wrong type would do.
+pub(crate) struct SecretParam(SecretValue);
+
+impl<'de> Deserialize<'de> for SecretParam {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Secret;
+        fn refused<E: serde::de::Error>() -> E {
+            E::custom("value must be a string")
+        }
+        impl<'de> serde::de::Visitor<'de> for Secret {
+            type Value = SecretParam;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<SecretParam, E> {
+                Ok(SecretParam(SecretValue::new(value.to_owned())))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<SecretParam, E> {
+                Ok(SecretParam(SecretValue::new(value)))
+            }
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<SecretParam, E> {
+                Err(refused())
+            }
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<SecretParam, E> {
+                Err(refused())
+            }
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<SecretParam, E> {
+                Err(refused())
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<SecretParam, E> {
+                Err(refused())
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<SecretParam, E> {
+                Err(refused())
+            }
+            fn visit_none<E: serde::de::Error>(self) -> Result<SecretParam, E> {
+                Err(refused())
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                _: A,
+            ) -> Result<SecretParam, A::Error> {
+                Err(refused())
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                _: A,
+            ) -> Result<SecretParam, A::Error> {
+                Err(refused())
+            }
+        }
+        deserializer.deserialize_any(Secret)
+    }
 }
 
 /// A module's activation state. Nothing activates it but `module.activate`; a new owner starts
@@ -404,44 +467,6 @@ impl CapabilityHost {
         self.jobs.lanes_started()
     }
 
-    /// Answer one capability method, or `None` when the method is not one this host owns.
-    /// `authority` is the caller's, for the one method that needs more than editing. Every change a
-    /// request makes that other clients should learn of is pushed to `announce`, which the owner
-    /// turns into events.
-    pub(crate) fn answer(
-        &mut self,
-        service: &EditorService,
-        authority: ClientAuthority,
-        request: &ApiRequest,
-        announce: &mut Vec<Origin>,
-    ) -> Option<Result<Value, Error>> {
-        let registry = service.registry();
-        let params = &request.params;
-        let origin = Origin::new(&request.method, &request.id);
-        if let Some(task_id) = request.method.strip_prefix(TASK_PREFIX) {
-            return Some(self.task(service, task_id, params, &origin));
-        }
-        Some(match request.method.as_str() {
-            READ => self.read(registry, params),
-            SET | SET_SECRET | CLEAR_SECRET | RESET | CREATE_PROFILE | REMOVE_PROFILE => {
-                self.settings_write(registry, request, announce)
-            }
-            GRANT => self.grant(service, authority, params, &origin, announce),
-            DENY => self.deny(registry, authority, params, &origin, announce),
-            REVOKE => self.revoke(params, &origin, announce),
-            LIST => self.list_permissions(registry, params),
-            ACTIVATE => self.activate(registry, params, &origin),
-            DEACTIVATE => self.deactivate_request(registry, params, &origin, announce),
-            STATUS => self.status(registry, params),
-            JOB_READ => self.job_read(params),
-            JOB_CANCEL => self.job_cancel(params, &origin, announce),
-            RESOURCE_LIST => self.resource_list(registry, params),
-            INSTALL => self.install(registry, authority, params, &origin),
-            REMOVE => self.remove(registry, params, &origin, announce),
-            _ => return None,
-        })
-    }
-
     /// A lane finished a job: record it, update the module it belongs to, and announce what
     /// changed under the request that started it. A task's artifacts are recorded in the catalog
     /// first, so a client that reads it succeeded can apply them. A failed install, removal or
@@ -489,38 +514,159 @@ impl CapabilityHost {
 
     // Settings.
 
-    fn read(&self, registry: &ModuleRegistry, request: &Value) -> Result<Value, Error> {
-        let request: ModuleParams = params(request)?;
+    /// `module.settings.read`.
+    pub(crate) fn read(
+        &self,
+        registry: &ModuleRegistry,
+        request: ModuleParams,
+    ) -> Result<Value, Error> {
         let descriptor = module(registry, &request.module_id)?;
         encode(self.settings()?.read(descriptor, self.secrets())?)
     }
 
-    /// Every settings write: commit it, then apply what it implies for grants and activation, and
-    /// answer with its result and the module's settings as they read now. Neither holds a secret.
-    /// A retry answered from the request log implies nothing new: it was applied the first time.
-    fn settings_write(
+    /// `module.settings.set`.
+    pub(crate) fn settings_set(
         &mut self,
         registry: &Arc<ModuleRegistry>,
-        request: &ApiRequest,
+        request: SetParams,
+        origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        let (descriptor, write) = self.write_settings(registry, request)?;
+        let descriptor = module(registry, &request.module_id)?;
+        let write = self.settings()?.set(
+            descriptor,
+            request.profile_id.as_deref(),
+            &request.values,
+            &request.mutation,
+        )?;
+        self.settings_written(registry, descriptor, SET, write, origin, announce)
+    }
+
+    /// `module.settings.set-secret`: the value was moved into a [`SecretValue`] as it was parsed.
+    pub(crate) fn settings_set_secret(
+        &mut self,
+        registry: &Arc<ModuleRegistry>,
+        request: SetSecretParams,
+        origin: &Origin,
+        announce: &mut Vec<Origin>,
+    ) -> Result<Value, Error> {
+        let descriptor = module(registry, &request.module_id)?;
+        let write = self.settings()?.set_secret(
+            descriptor,
+            self.secrets(),
+            request.profile_id.as_deref(),
+            &request.setting,
+            &request.value.0,
+            &request.mutation,
+        )?;
+        self.settings_written(registry, descriptor, SET_SECRET, write, origin, announce)
+    }
+
+    /// `module.settings.clear-secret`.
+    pub(crate) fn settings_clear_secret(
+        &mut self,
+        registry: &Arc<ModuleRegistry>,
+        request: ClearSecretParams,
+        origin: &Origin,
+        announce: &mut Vec<Origin>,
+    ) -> Result<Value, Error> {
+        let descriptor = module(registry, &request.module_id)?;
+        let write = self.settings()?.clear_secret(
+            descriptor,
+            self.secrets(),
+            request.profile_id.as_deref(),
+            &request.setting,
+            &request.mutation,
+        )?;
+        self.settings_written(registry, descriptor, CLEAR_SECRET, write, origin, announce)
+    }
+
+    /// `module.settings.reset`.
+    pub(crate) fn settings_reset(
+        &mut self,
+        registry: &Arc<ModuleRegistry>,
+        request: ResetParams,
+        origin: &Origin,
+        announce: &mut Vec<Origin>,
+    ) -> Result<Value, Error> {
+        let descriptor = module(registry, &request.module_id)?;
+        let write = self
+            .settings()?
+            .reset(descriptor, self.secrets(), &request.mutation)?;
+        self.settings_written(registry, descriptor, RESET, write, origin, announce)
+    }
+
+    /// `module.profile.create`.
+    pub(crate) fn profile_create(
+        &mut self,
+        registry: &Arc<ModuleRegistry>,
+        request: CreateProfileParams,
+        origin: &Origin,
+        announce: &mut Vec<Origin>,
+    ) -> Result<Value, Error> {
+        let descriptor = module(registry, &request.module_id)?;
+        let write = self.settings()?.create_profile(
+            descriptor,
+            &request.adapter,
+            &request.label,
+            &request.mutation,
+        )?;
+        self.settings_written(
+            registry,
+            descriptor,
+            CREATE_PROFILE,
+            write,
+            origin,
+            announce,
+        )
+    }
+
+    /// `module.profile.remove`.
+    pub(crate) fn profile_remove(
+        &mut self,
+        registry: &Arc<ModuleRegistry>,
+        request: RemoveProfileParams,
+        origin: &Origin,
+        announce: &mut Vec<Origin>,
+    ) -> Result<Value, Error> {
+        let descriptor = module(registry, &request.module_id)?;
+        let write = self.settings()?.remove_profile(
+            descriptor,
+            self.secrets(),
+            &request.profile_id,
+            &request.mutation,
+        )?;
+        self.settings_written(
+            registry,
+            descriptor,
+            REMOVE_PROFILE,
+            write,
+            origin,
+            announce,
+        )
+    }
+
+    /// Every committed settings write: apply what it implies for grants and activation, and answer
+    /// with its result and the module's settings as they read now. Neither holds a secret. A retry
+    /// answered from the request log implies nothing new: it was applied the first time.
+    fn settings_written(
+        &mut self,
+        registry: &Arc<ModuleRegistry>,
+        descriptor: &ModuleDescriptor,
+        method: &str,
+        write: SettingsWrite,
+        origin: &Origin,
+        announce: &mut Vec<Origin>,
+    ) -> Result<Value, Error> {
         let mut value = encode(&write.result)?;
         if write.result.outcome == WriteOutcome::Committed && !write.result.deduplicated {
-            let origin = Origin::new(&request.method, &request.id);
-            announce_once(announce, &origin);
+            announce_once(announce, origin);
             // The write is committed whatever follows, so a grants file that cannot be updated is
             // reported beside the result rather than as the write's failure. Nothing it leaves
             // behind can be used: a grant names its exact path or endpoint origin, which the
             // settings no longer hold.
-            match self.after_settings_write(
-                registry,
-                descriptor,
-                &request.method,
-                &write,
-                &origin,
-                announce,
-            ) {
+            match self.after_settings_write(registry, descriptor, method, &write, origin, announce)
+            {
                 Ok(revoked) if revoked.is_empty() => {}
                 Ok(revoked) => {
                     value["revoked"] = json!(
@@ -537,88 +683,6 @@ impl CapabilityHost {
         }
         value["settings"] = encode(self.settings()?.read(descriptor, self.secrets())?)?;
         Ok(value)
-    }
-
-    fn write_settings<'a>(
-        &self,
-        registry: &'a ModuleRegistry,
-        request: &ApiRequest,
-    ) -> Result<(&'a ModuleDescriptor, SettingsWrite), Error> {
-        let request_params = &request.params;
-        Ok(match request.method.as_str() {
-            SET => {
-                let request: SetParams = params(request_params)?;
-                let descriptor = module(registry, &request.module_id)?;
-                let write = self.settings()?.set(
-                    descriptor,
-                    request.profile_id.as_deref(),
-                    &request.values,
-                    &request.mutation,
-                )?;
-                (descriptor, write)
-            }
-            SET_SECRET => {
-                let (request, value) = secret_params(request_params)?;
-                let descriptor = module(registry, &request.module_id)?;
-                let write = self.settings()?.set_secret(
-                    descriptor,
-                    self.secrets(),
-                    request.profile_id.as_deref(),
-                    &request.setting,
-                    &value,
-                    &request.mutation,
-                )?;
-                (descriptor, write)
-            }
-            CLEAR_SECRET => {
-                let request: SecretParams = params(request_params)?;
-                let descriptor = module(registry, &request.module_id)?;
-                let write = self.settings()?.clear_secret(
-                    descriptor,
-                    self.secrets(),
-                    request.profile_id.as_deref(),
-                    &request.setting,
-                    &request.mutation,
-                )?;
-                (descriptor, write)
-            }
-            RESET => {
-                let request: ResetParams = params(request_params)?;
-                let descriptor = module(registry, &request.module_id)?;
-                let write =
-                    self.settings()?
-                        .reset(descriptor, self.secrets(), &request.mutation)?;
-                (descriptor, write)
-            }
-            CREATE_PROFILE => {
-                let request: CreateProfileParams = params(request_params)?;
-                let descriptor = module(registry, &request.module_id)?;
-                let write = self.settings()?.create_profile(
-                    descriptor,
-                    &request.adapter,
-                    &request.label,
-                    &request.mutation,
-                )?;
-                (descriptor, write)
-            }
-            REMOVE_PROFILE => {
-                let request: RemoveProfileParams = params(request_params)?;
-                let descriptor = module(registry, &request.module_id)?;
-                let write = self.settings()?.remove_profile(
-                    descriptor,
-                    self.secrets(),
-                    &request.profile_id,
-                    &request.mutation,
-                )?;
-                (descriptor, write)
-            }
-            method => {
-                return Err(Error::new(
-                    ErrorKind::Internal,
-                    format!("{method} is not a settings write"),
-                ));
-            }
-        })
     }
 
     /// What a committed settings write implies. A changed field declared `invalidates_activation`
@@ -705,12 +769,13 @@ impl CapabilityHost {
     // Permissions.
 
     /// `module.permission.grant`: only a client with permission authority, only for a scope the
-    /// module can use now. A retry of the same `request_id` returns the grant it made.
-    fn grant(
+    /// module can use now. The grant records the envelope's actor and request identity; a retry of
+    /// the request is answered by the owner's request table before it reaches here.
+    pub(crate) fn grant(
         &mut self,
         service: &EditorService,
         authority: ClientAuthority,
-        request: &Value,
+        request: GrantParams,
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
@@ -720,39 +785,20 @@ impl CapabilityHost {
                 "granting a permission needs permission authority",
             ));
         }
-        let request: GrantParams = params(request)?;
-        if request.request_id.is_empty() || request.request_id.len() > 128 {
-            return Err(validation("request_id must contain 1..128 characters"));
-        }
+        request.mutation.validate()?;
         let registry = service.registry();
         let descriptor = registered(registry, &request.module_id)?;
         let capability = declared_capability(descriptor, &request.capability)?;
         let scope = GrantScope::parse(GrantKind::of(&capability.kind), &request.scope)?;
-        let grants = self.grants()?;
-        // A retry is recognised before the scope is checked again, so it returns what the first
-        // request did even if the scope has since stopped being usable.
-        if let Some(previous) = grants.request(&request.module_id, &request.request_id)? {
-            if previous.capability != capability.id || previous.scope != scope {
-                return Err(Error::new(
-                    ErrorKind::Conflict,
-                    "request_id was already used with different input",
-                ));
-            }
-            return encode(grants::GrantOutcome {
-                grant: previous,
-                outcome: WriteOutcome::NoOp,
-                deduplicated: true,
-            });
-        }
         self.check_usable(service, descriptor, capability, &scope)?;
         let outcome = self.grants()?.grant(NewGrant {
             module_id: &descriptor.id,
             capability: &capability.id,
             scope,
-            actor: authority.label(),
-            request_id: &request.request_id,
+            actor: &request.mutation.actor,
+            request_id: &request.mutation.request_id,
         })?;
-        if outcome.outcome == WriteOutcome::Committed && !outcome.deduplicated {
+        if outcome.outcome == WriteOutcome::Committed {
             announce_once(announce, origin);
         }
         encode(outcome)
@@ -822,35 +868,38 @@ impl CapabilityHost {
         Ok(())
     }
 
-    /// `module.permission.deny`: record a "Don't allow" for one exact scope. Any client may.
-    fn deny(
+    /// `module.permission.deny`: record a "Don't allow" for one exact scope, with the envelope's
+    /// actor. Any client may.
+    pub(crate) fn deny(
         &mut self,
         registry: &ModuleRegistry,
-        authority: ClientAuthority,
-        request: &Value,
+        request: DenyParams,
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        let request: DenyParams = params(request)?;
+        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         let capability = declared_capability(descriptor, &request.capability)?;
         let scope = GrantScope::parse(GrantKind::of(&capability.kind), &request.scope)?;
-        let denial =
-            self.grants()?
-                .deny(&descriptor.id, &capability.id, scope, authority.label())?;
+        let denial = self.grants()?.deny(
+            &descriptor.id,
+            &capability.id,
+            scope,
+            &request.mutation.actor,
+        )?;
         announce_once(announce, origin);
         Ok(json!({"denial": denial}))
     }
 
     /// `module.permission.revoke`: mark the grant revoked and cancel the jobs running under it.
     /// Any client may. Recipes, history and accepted artifacts are never touched.
-    fn revoke(
+    pub(crate) fn revoke(
         &mut self,
-        request: &Value,
+        request: RevokeParams,
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        let request: RevokeParams = params(request)?;
+        request.mutation.validate()?;
         let reason = request.reason.unwrap_or_else(|| "revoked".to_owned());
         if reason.trim().is_empty() || reason.chars().count() > MAX_REASON {
             return Err(validation(format!(
@@ -872,8 +921,11 @@ impl CapabilityHost {
     }
 
     /// `module.permission.list`: grants, revoked ones included, and denials.
-    fn list_permissions(&self, registry: &ModuleRegistry, request: &Value) -> Result<Value, Error> {
-        let request: OptionalModuleParams = params(request)?;
+    pub(crate) fn list_permissions(
+        &self,
+        registry: &ModuleRegistry,
+        request: PermissionList,
+    ) -> Result<Value, Error> {
         if let Some(module_id) = &request.module_id {
             registered(registry, module_id)?;
         }
@@ -896,8 +948,8 @@ impl CapabilityHost {
 
     // Jobs.
 
-    fn job_read(&self, request: &Value) -> Result<Value, Error> {
-        let request: JobParams = params(request)?;
+    /// `module.job.read`.
+    pub(crate) fn job_read(&self, request: JobParams) -> Result<Value, Error> {
         encode(
             self.jobs
                 .read(&request.job_id)
@@ -907,13 +959,13 @@ impl CapabilityHost {
 
     /// `module.job.cancel`: any client may, since a capability job belongs to its module. A
     /// deactivation releases what a module holds and is never cancelled.
-    fn job_cancel(
+    pub(crate) fn job_cancel(
         &mut self,
-        request: &Value,
+        request: JobCancelParams,
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        let request: JobParams = params(request)?;
+        request.mutation.validate()?;
         let record = self
             .jobs
             .read(&request.job_id)
@@ -975,13 +1027,13 @@ impl CapabilityHost {
 
     /// `module.activate`: check every declared requirement and queue the activation on the module
     /// lane, or join the one already queued or running. An active module answers at once.
-    fn activate(
+    pub(crate) fn activate(
         &mut self,
         registry: &Arc<ModuleRegistry>,
-        request: &Value,
+        request: ModuleChange,
         origin: &Origin,
     ) -> Result<Value, Error> {
-        let request: ModuleParams = params(request)?;
+        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         if let Availability::Unavailable { reason } = &descriptor.availability {
             return Err(validation(format!(
@@ -1133,14 +1185,14 @@ impl CapabilityHost {
     }
 
     /// `module.deactivate`: a client's explicit deactivation, which records no reason.
-    fn deactivate_request(
+    pub(crate) fn deactivate_request(
         &mut self,
         registry: &Arc<ModuleRegistry>,
-        request: &Value,
+        request: ModuleChange,
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        let request: ModuleParams = params(request)?;
+        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         let job = self.deactivate(registry, &descriptor.id, None, Some(origin), announce)?;
         let state = self
@@ -1287,8 +1339,11 @@ impl CapabilityHost {
 
     /// `module.status`: activation, settings validity, resources, grants and this module's jobs.
     /// A settings read, stats of installed markers and a grants file read; no hashing.
-    fn status(&self, registry: &ModuleRegistry, request: &Value) -> Result<Value, Error> {
-        let request: ModuleParams = params(request)?;
+    pub(crate) fn status(
+        &self,
+        registry: &ModuleRegistry,
+        request: ModuleParams,
+    ) -> Result<Value, Error> {
         let descriptor = registered(registry, &request.module_id)?;
         let activation = self
             .activations
@@ -1383,8 +1438,11 @@ impl CapabilityHost {
     }
 
     /// `module.resource.list`: the declared resources and the storage they share.
-    fn resource_list(&self, registry: &ModuleRegistry, request: &Value) -> Result<Value, Error> {
-        let request: ModuleParams = params(request)?;
+    pub(crate) fn resource_list(
+        &self,
+        registry: &ModuleRegistry,
+        request: ModuleParams,
+    ) -> Result<Value, Error> {
         let descriptor = registered(registry, &request.module_id)?;
         let storage = self.resources.as_ref().map(|store| {
             json!({
@@ -1404,14 +1462,13 @@ impl CapabilityHost {
     /// local file whose bytes must match the pinned hash. Consent, the quota and the lane bound
     /// are checked before anything is queued; a second request joins the queued or running
     /// install, and an installed resource answers at once.
-    fn install(
+    pub(crate) fn install(
         &mut self,
         registry: &Arc<ModuleRegistry>,
-        authority: ClientAuthority,
-        request: &Value,
+        request: InstallParams,
         origin: &Origin,
     ) -> Result<Value, Error> {
-        let request: InstallParams = params(request)?;
+        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         let resource = declared_resource(descriptor, &request.resource_id)?;
         let store = self.resources()?;
@@ -1436,7 +1493,7 @@ impl CapabilityHost {
         {
             return Ok(answer(ResourceState::Installing, Some(&job)));
         }
-        let (fetch, grants) = match request.source {
+        let (fetch, grants) = match request.source.unwrap_or_default() {
             InstallSource::Download => {
                 let capability = descriptor
                     .capabilities
@@ -1491,7 +1548,7 @@ impl CapabilityHost {
             fetch,
             registry: registry.clone(),
             quota: self.config.resource_quota_bytes,
-            actor: authority.label().to_owned(),
+            actor: request.mutation.actor.clone(),
             control: control.clone(),
         };
         let record = self.jobs.submit(
@@ -1512,14 +1569,14 @@ impl CapabilityHost {
 
     /// `module.resource.remove`: queue the removal of the installed version, joining one already
     /// queued. A module that is active or activating and requires the resource is deactivated first.
-    fn remove(
+    pub(crate) fn remove(
         &mut self,
         registry: &Arc<ModuleRegistry>,
-        request: &Value,
+        request: ResourceParams,
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        let request: ResourceParams = params(request)?;
+        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         let resource = declared_resource(descriptor, &request.resource_id)?;
         let store = self.resources()?.clone();
@@ -1735,38 +1792,17 @@ fn declared_resource<'a>(
     })
 }
 
-/// Every owner-answered capability method in the order the method table lists them, and whether
-/// it writes, for the method table's tests.
-#[cfg(test)]
-pub(crate) const METHODS: &[(&str, bool)] = &[
-    (READ, false),
-    (SET, true),
-    (SET_SECRET, true),
-    (CLEAR_SECRET, true),
-    (RESET, true),
-    (CREATE_PROFILE, true),
-    (REMOVE_PROFILE, true),
-    (GRANT, true),
-    (DENY, true),
-    (REVOKE, true),
-    (LIST, false),
-    (ACTIVATE, true),
-    (DEACTIVATE, true),
-    (STATUS, false),
-    (RESOURCE_LIST, false),
-    (INSTALL, true),
-    (REMOVE, true),
-    (JOB_READ, false),
-    (JOB_CANCEL, true),
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        ApiResponse, ClientId, OwnerHandle,
+        ApiRequest, ApiResponse, ClientId, OwnerHandle,
         capabilities::{
+            grants::{DENY, GRANT, LIST, REVOKE},
+            jobs::{JOB_CANCEL, JOB_READ},
+            resources::{INSTALL, REMOVE, RESOURCE_LIST},
             secrets::{MemorySecretStore, SecretKey},
+            settings::READ,
             testing::{ADAPTER, MODULE, TASK, capability_descriptor, temp},
         },
         modules::TestModule,
@@ -1918,8 +1954,28 @@ mod tests {
                 .unwrap();
             assert_eq!(in_schema, &declared);
             let methods = schema["methods"].as_object().unwrap();
-            for (method, _) in METHODS {
-                assert!(methods.contains_key(*method), "{method} is discoverable");
+            for method in [
+                READ,
+                SET,
+                SET_SECRET,
+                CLEAR_SECRET,
+                RESET,
+                CREATE_PROFILE,
+                REMOVE_PROFILE,
+                GRANT,
+                DENY,
+                REVOKE,
+                LIST,
+                ACTIVATE,
+                DEACTIVATE,
+                STATUS,
+                RESOURCE_LIST,
+                INSTALL,
+                REMOVE,
+                JOB_READ,
+                JOB_CANCEL,
+            ] {
+                assert!(methods.contains_key(method), "{method} is discoverable");
             }
             let task = &methods[&format!("task.{TASK}")];
             assert_eq!(

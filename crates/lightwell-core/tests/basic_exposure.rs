@@ -1143,7 +1143,12 @@ fn import_asset(
     client: lightwell_core::ClientId,
     path: &std::path::Path,
 ) -> Value {
-    let queued = call(owner, client, "catalog.import", json!({"path": path}));
+    let queued = call(
+        owner,
+        client,
+        "catalog.import",
+        json!({"path": path, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}),
+    );
     let job_id = queued["job_id"]
         .as_str()
         .expect("an import job id")

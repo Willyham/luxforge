@@ -152,9 +152,9 @@ pub struct Grant {
     pub capability: String,
     pub kind: GrantKind,
     pub scope: GrantScope,
-    /// The authority of the client that granted it.
+    /// The actor of the request that granted it.
     pub actor: String,
-    /// The grant request's identity, by which a retry is recognised.
+    /// The grant request's identity, kept as its provenance.
     pub request_id: String,
     pub created_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,15 +262,13 @@ impl Document {
     }
 }
 
-/// What a grant request did: a new grant, the grant a retry names, or the live grant that already
-/// covers the scope.
+/// What a grant request did: a new grant, or the live grant that already covers the scope. A retry
+/// of the request never reaches the store: the owner's request table answers it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct GrantOutcome {
     pub grant: Grant,
     /// `committed` when anything was written, `no-op` when the scope was already granted.
     pub outcome: super::settings::WriteOutcome,
-    /// The request was a retry of an earlier one, answered with its grant.
-    pub deduplicated: bool,
 }
 
 /// The fields of a new grant a caller supplies; the host adds the identity and the time.
@@ -317,15 +315,6 @@ impl GrantsStore {
         })
     }
 
-    /// The grant one module's grant request made, by the request's identity.
-    pub fn request(&self, module_id: &str, request_id: &str) -> Result<Option<Grant>, Error> {
-        Ok(self
-            .load()?
-            .grants
-            .into_iter()
-            .find(|grant| grant.module_id == module_id && grant.request_id == request_id))
-    }
-
     /// The live grant covering exactly this scope, and whether a denial of it is recorded.
     pub fn consent(
         &self,
@@ -345,9 +334,8 @@ impl GrantsStore {
         Ok((grant, denied))
     }
 
-    /// Record a grant. A retry of the same request returns the grant it made, whatever became of it
-    /// since; the same request identity with another scope is a `conflict`. A live grant of the same
-    /// scope is returned instead of a duplicate. A matching denial is cleared either way.
+    /// Record a grant. A live grant of the same scope is returned instead of a duplicate. A matching
+    /// denial is cleared either way. The request identity is kept on the grant as its provenance.
     pub(crate) fn grant(&self, request: NewGrant<'_>) -> Result<GrantOutcome, Error> {
         let _lock = self.lock()?;
         let mut document = self.load()?;
@@ -358,23 +346,6 @@ impl GrantsStore {
             actor,
             request_id,
         } = request;
-        if let Some(previous) = document
-            .grants
-            .iter()
-            .find(|grant| grant.module_id == module_id && grant.request_id == request_id)
-        {
-            if !previous.covers(module_id, capability, &scope) {
-                return Err(Error::new(
-                    ErrorKind::Conflict,
-                    "request_id was already used with different input",
-                ));
-            }
-            return Ok(GrantOutcome {
-                grant: previous.clone(),
-                outcome: super::settings::WriteOutcome::NoOp,
-                deduplicated: true,
-            });
-        }
         let denials = document.denials.len();
         document
             .denials
@@ -396,7 +367,6 @@ impl GrantsStore {
                 } else {
                     super::settings::WriteOutcome::NoOp
                 },
-                deduplicated: false,
             });
         }
         document.make_room()?;
@@ -416,7 +386,6 @@ impl GrantsStore {
         Ok(GrantOutcome {
             grant,
             outcome: super::settings::WriteOutcome::Committed,
-            deduplicated: false,
         })
     }
 
@@ -652,8 +621,8 @@ mod tests {
     }
 
     #[test]
-    fn a_retry_returns_its_grant_and_a_denial_is_cleared_by_a_grant() {
-        let fixture = Fixture::new("grants-retry");
+    fn a_live_grant_answers_a_second_grant_and_a_denial_is_cleared_by_a_grant() {
+        let fixture = Fixture::new("grants-live");
         assert_eq!(fixture.store.list(None).unwrap(), GrantList::default());
         assert!(!fixture.file().exists(), "reading creates nothing");
         let denial = fixture
@@ -676,33 +645,22 @@ mod tests {
             first.outcome,
             super::super::settings::WriteOutcome::Committed
         );
-        assert!(!first.deduplicated);
         assert!(first.grant.grant_id.starts_with("grant-"));
         assert_eq!(first.grant.actor, "permissions");
+        assert_eq!(first.grant.request_id, "grant-1", "kept as provenance");
         let (live, denied) = fixture
             .store
             .consent(MODULE, "download", &download_scope("/a"))
             .unwrap();
         assert_eq!(live.as_ref(), Some(&first.grant));
         assert!(!denied, "the grant cleared the denial");
-        let retry = fixture
-            .store
-            .grant(new_grant(download_scope("/a"), "grant-1"))
-            .unwrap();
-        assert!(retry.deduplicated);
-        assert_eq!(retry.grant, first.grant);
-        let error = fixture
-            .store
-            .grant(new_grant(download_scope("/b"), "grant-1"))
-            .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Conflict);
         // Another request for a scope already granted returns the live grant instead of a copy.
         let again = fixture
             .store
             .grant(new_grant(download_scope("/a"), "grant-2"))
             .unwrap();
         assert_eq!(again.outcome, super::super::settings::WriteOutcome::NoOp);
-        assert_eq!(again.grant.grant_id, first.grant.grant_id);
+        assert_eq!(again.grant, first.grant);
         let (revoked, changed) = fixture
             .store
             .revoke(&first.grant.grant_id, "revoked by test")
@@ -716,15 +674,18 @@ mod tests {
                 .unwrap()
                 .1
         );
-        // A retry of the original request still names the grant it made, revoked as it now is.
-        let retry = fixture
+        // A revoked grant covers nothing, so granting the scope again records a new grant.
+        let renewed = fixture
             .store
-            .grant(new_grant(download_scope("/a"), "grant-1"))
+            .grant(new_grant(download_scope("/a"), "grant-3"))
             .unwrap();
-        assert!(retry.deduplicated);
-        assert!(!retry.grant.is_live());
+        assert_eq!(
+            renewed.outcome,
+            super::super::settings::WriteOutcome::Committed
+        );
+        assert_ne!(renewed.grant.grant_id, first.grant.grant_id);
         let listed = fixture.store.list(Some(MODULE)).unwrap();
-        assert_eq!(listed.grants.len(), 1);
+        assert_eq!(listed.grants.len(), 2);
         assert!(
             fixture
                 .store

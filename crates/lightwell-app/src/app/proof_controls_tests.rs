@@ -45,7 +45,7 @@ impl Proof {
             &owner,
             json_client,
             "catalog.import",
-            json!({"path":source}),
+            json!({"path":source,"mutation":crate::app::tasks::request()}),
         )
         .0;
         let job_id = queued["job_id"].as_str().expect("source job");

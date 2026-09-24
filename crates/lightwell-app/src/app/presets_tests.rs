@@ -54,7 +54,7 @@ impl Library {
             &owner,
             agent,
             "catalog.import",
-            json!({"path": fixture("fixtures/s0/orientation-1.jpg")}),
+            json!({"path": fixture("fixtures/s0/orientation-1.jpg"), "mutation": crate::app::tasks::request()}),
         )
         .unwrap();
         let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
@@ -300,9 +300,15 @@ fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
         "the Tone group's fields, of the entry on screen"
     );
     assert_eq!(
-        create,
-        json!({"name": "Tone only", "group": "User presets", "actor": "desktop"})
+        create["mutation"]["actor"],
+        json!("desktop"),
+        "the create carries a fresh request envelope"
     );
+    assert!(create["mutation"]["request_id"].is_string());
+    assert!(create["mutation"].get("expected_revision").is_none());
+    let mut named = create.clone();
+    named.as_object_mut().unwrap().remove("mutation");
+    assert_eq!(named, json!({"name": "Tone only", "group": "User presets"}));
     let _ = library
         .editor
         .update(Message::Preset(PresetMessage::Create));
@@ -344,8 +350,11 @@ fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
     assert_eq!(basic["contrast"].as_f64(), Some(20.0));
     assert_eq!(basic["shadows"].as_f64(), Some(0.0));
     // A second preset of the same name in the same group is the core's conflict, shown as it is.
+    // It is a new press, so a new request; resending the first one would be answered as its retry.
+    let mut again = create;
+    again["mutation"] = json!(tasks::request());
     let duplicate =
-        tasks::preset_create_now(&library.owner(), library.editor.client, capture, create);
+        tasks::preset_create_now(&library.owner(), library.editor.client, capture, again);
     let _ = library
         .editor
         .update(Message::Preset(PresetMessage::Created(
@@ -388,7 +397,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         &library.owner(),
         library.agent,
         "preset.import",
-        json!({"content": content, "actor": "agent"}),
+        json!({"content": content, "mutation": {"request_id": "agent-import", "actor": "agent"}}),
     )
     .unwrap();
     let polled = tasks::sync_now(

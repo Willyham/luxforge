@@ -122,7 +122,13 @@ pub(crate) fn as_str(value: &Value, what: &str) -> Result<String> {
 /// Import one file and wait for the asset. The import is a source job, so this is the same
 /// `catalog.import` then `job.status` loop any independent client runs.
 pub(crate) fn import(owner: &OwnerHandle, client: ClientId, path: &Path) -> Result<Value> {
-    let queued = call(owner, client, "catalog.import", json!({"path": path}))?;
+    let request = json!({"request_id": next_id("import"), "actor": "xtask-basic-acceptance"});
+    let queued = call(
+        owner,
+        client,
+        "catalog.import",
+        json!({"path": path, "mutation": request}),
+    )?;
     let job_id = queued["job_id"].clone();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {

@@ -207,7 +207,7 @@ mod json_client {
             std::fs::copy(fixture(), &source).unwrap();
             let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
             let client = owner.register();
-            let queued = Self::call(&owner, client, "catalog.import", json!({"path": source}))
+            let queued = Self::call(&owner, client, "catalog.import", json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}))
                 .expect("import queues");
             let id = queued["job_id"].as_str().unwrap().to_owned();
             let asset = loop {

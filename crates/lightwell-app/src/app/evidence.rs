@@ -10,7 +10,7 @@ use crate::{
             PaletteAction, PresetMessage, RowEdit,
         },
         performance,
-        tasks::{HostAnswer, host_task, mutation, workspace_task},
+        tasks::{HostAnswer, host_task, mutation, request, workspace_task},
     },
     crop_draft::{Corner, Handle},
     mask_draft::MaskDraft,
@@ -1216,9 +1216,14 @@ impl Editor {
         if let Err(reason) = self.resolve_identities(&mut params) {
             return self.fail_step(reason);
         }
-        if let Some(takes_asset) = envelope_free(&method) {
-            if takes_asset && let Some(state) = &self.state {
+        if let Some(step) = envelope_free(&method) {
+            if step.takes_asset
+                && let Some(state) = &self.state
+            {
                 params.insert("asset_id".into(), json!(state.asset.id));
+            }
+            if step.request && !params.contains_key("mutation") {
+                params.insert("mutation".into(), json!(request()));
             }
             self.await_step(Settle::Host);
             return host_task(
@@ -4236,10 +4241,20 @@ fn parse_preset_import(value: &Value) -> Result<Step, String> {
     )?))
 }
 
-/// When a method takes no mutation envelope, whether it names the open asset; `None` for a method
-/// that takes the envelope, or one the method table does not list, which keep it. Read from the
-/// schema the method table publishes, so no method is named here.
-pub(crate) fn envelope_free(method: &str) -> Option<bool> {
+/// How an `api` step sends a method that is not an edit of the open asset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HostStep {
+    /// The method names an asset, so the step names the open one.
+    pub(crate) takes_asset: bool,
+    /// The method carries the `request` mutation envelope, so the step sends a fresh one.
+    pub(crate) request: bool,
+}
+
+/// How an `api` step sends `method`: `None` for an edit of the open asset, which carries the
+/// `revision` envelope, and for a method the method table does not list, which keep the desktop's
+/// envelope; otherwise the host step. Read from the schema the method table publishes, so no
+/// method is named here.
+pub(crate) fn envelope_free(method: &str) -> Option<HostStep> {
     let schema = lightwell_core::schemas(&lightwell_core::ModuleRegistry::builtin());
     let spec = schema["methods"].get(method)?;
     let names = |list: &Value| -> Vec<String> {
@@ -4253,15 +4268,17 @@ pub(crate) fn envelope_free(method: &str) -> Option<bool> {
         }
     };
     let required = names(&spec["required"]);
-    if required.iter().any(|name| name == "mutation") {
-        return None;
+    let takes_asset = required
+        .iter()
+        .chain(names(&spec["optional"]).iter())
+        .any(|name| name == "asset_id");
+    match spec["mutation"].as_str() {
+        Some("revision") if takes_asset => None,
+        envelope => Some(HostStep {
+            takes_asset,
+            request: envelope == Some("request"),
+        }),
     }
-    Some(
-        required
-            .iter()
-            .chain(names(&spec["optional"]).iter())
-            .any(|name| name == "asset_id"),
-    )
 }
 
 fn parse_api(value: &Value) -> Result<Step, String> {
@@ -5798,9 +5815,21 @@ mod tests {
     fn a_host_method_is_sent_as_written_and_an_edit_keeps_its_envelope() {
         // The method table's own schema decides: a method that takes the mutation envelope keeps
         // it, and any other goes as written, with the asset only where it names one.
-        assert_eq!(envelope_free("preset.list"), Some(false));
-        assert_eq!(envelope_free("session.state"), Some(false));
-        assert_eq!(envelope_free("preset.capture"), Some(true));
+        let host = |takes_asset, request| {
+            Some(HostStep {
+                takes_asset,
+                request,
+            })
+        };
+        assert_eq!(envelope_free("preset.list"), host(false, false));
+        assert_eq!(envelope_free("session.state"), host(false, false));
+        assert_eq!(envelope_free("preset.capture"), host(true, false));
+        assert_eq!(
+            envelope_free("preset.delete"),
+            host(false, true),
+            "a library change carries a fresh request envelope"
+        );
+        assert_eq!(envelope_free("version.create"), host(true, true));
         assert_eq!(envelope_free("history.undo"), None);
         assert_eq!(envelope_free("edit.apply-preset"), None);
         assert_eq!(envelope_free("no.such-method"), None);

@@ -73,7 +73,7 @@ impl Json {
         let (owner, join) = OwnerHandle::start(catalog).unwrap();
         let client = owner.register();
         let asset = {
-            let queued = Self::call(&owner, client, "catalog.import", json!({"path": source}))
+            let queued = Self::call(&owner, client, "catalog.import", json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}))
                 .expect("import queues");
             let id = queued["job_id"].as_str().unwrap().to_owned();
             loop {

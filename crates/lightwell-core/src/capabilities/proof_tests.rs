@@ -11,7 +11,7 @@ use super::{
     resources::{INSTALL, REMOVE},
     secrets::MemorySecretStore,
     settings::{CREATE_PROFILE, READ, SET, SET_SECRET},
-    testing::temp,
+    testing::{enveloped, temp},
     transport::{TlsTrust, TransportConfig},
 };
 use crate::{
@@ -243,6 +243,7 @@ impl Owner {
     fn call(&self, client: ClientId, method: &str, params: Value) -> ApiResponse {
         let id = format!("request-{}", self.next.get());
         self.next.set(self.next.get() + 1);
+        let params = enveloped(method, params, &id);
         let response = self
             .handle
             .call(
@@ -322,7 +323,6 @@ impl Owner {
                 "module_id": consent["module_id"],
                 "capability": consent["capability"],
                 "scope": consent["scope"],
-                "request_id": format!("grant-{}", self.next.get()),
             }),
         )["grant"]
             .clone()
@@ -596,7 +596,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
             .call(
                 owner.edit,
                 GRANT,
-                json!({"module_id": MODULE, "capability": "palette", "scope": consent["scope"], "request_id": "edit-grant"}),
+                json!({"module_id": MODULE, "capability": "palette", "scope": consent["scope"], "mutation": {"request_id": "edit-grant", "actor": "test"}}),
             )
             .error
             .unwrap()

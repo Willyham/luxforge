@@ -43,7 +43,11 @@ fn import_asset(owner: &OwnerHandle, client: ClientId, source: &Path) -> Value {
         assert!(response.error.is_none(), "{method}: {:?}", response.error);
         response.result.unwrap()
     };
-    let queued = call("import", "catalog.import", json!({"path":source}));
+    let queued = call(
+        "import",
+        "catalog.import",
+        json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}),
+    );
     let id = queued["job_id"].as_str().unwrap();
     loop {
         let status = call("status", "job.status", json!({"job_id":id}));

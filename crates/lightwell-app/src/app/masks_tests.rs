@@ -61,7 +61,7 @@ impl Masking {
             &owner,
             agent,
             "catalog.import",
-            json!({"path": fixture("fixtures/s0/orientation-1.jpg")}),
+            json!({"path": fixture("fixtures/s0/orientation-1.jpg"), "mutation": crate::app::tasks::request()}),
         )
         .unwrap();
         let job_id = queued["job_id"].as_str().expect("a source job").to_owned();

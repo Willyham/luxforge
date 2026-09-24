@@ -85,8 +85,13 @@ impl Proof {
             .canonicalize()
             .unwrap();
         let client = editor.client;
-        let (imported, _) =
-            call(&owner, client, "catalog.import", json!({"path": fixture})).unwrap();
+        let (imported, _) = call(
+            &owner,
+            client,
+            "catalog.import",
+            json!({"path": fixture, "mutation": crate::app::tasks::request()}),
+        )
+        .unwrap();
         let deadline = Instant::now() + Duration::from_secs(30);
         let asset: AssetId = loop {
             let (status, _) = call(
@@ -699,10 +704,9 @@ fn cancel_and_deactivate_go_through_the_job_and_activation_methods() {
         job: job.clone(),
     });
     let sent = proof.answer();
-    assert_eq!(
-        sent[0],
-        json!({"method": "module.job.cancel", "params": {"job_id": job}})
-    );
+    assert_eq!(sent[0]["method"], "module.job.cancel");
+    assert_eq!(sent[0]["params"]["job_id"], json!(job));
+    assert_eq!(sent[0]["params"]["mutation"]["actor"], "desktop");
     proof.endpoint.set_delay(Duration::ZERO);
     proof.finish_jobs();
     assert!(matches!(

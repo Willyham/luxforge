@@ -71,7 +71,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tasks::{
-    ACTOR, Refresh, Upload, import_task, locate_task, merge_current_entry, modules_task, mutation,
+    Refresh, Upload, import_task, locate_task, merge_current_entry, modules_task, mutation,
     older_task, pan_task, presets_task, preview_task, query_task, recipe_task, sample_task,
     session_task, state_task, sync_task, versions_task, workspace_task,
 };
@@ -4036,7 +4036,7 @@ impl Editor {
                     self.status = "Enter a version name first".into();
                     return Task::none();
                 }
-                let params = json!({"asset_id":state.asset.id,"name":name,"actor":ACTOR,"entry_id":entry_id});
+                let params = json!({"asset_id":state.asset.id,"name":name,"mutation":tasks::request(),"entry_id":entry_id});
                 self.version_form_open = false;
                 return self.version_command("version.create", params);
             }
@@ -4044,7 +4044,8 @@ impl Editor {
                 let Some(state) = &self.state else {
                     return Task::none();
                 };
-                let params = json!({"asset_id":state.asset.id,"name":name});
+                let params =
+                    json!({"asset_id":state.asset.id,"name":name,"mutation":tasks::request()});
                 return self.version_command("version.delete", params);
             }
             Message::LoadOlder => {
