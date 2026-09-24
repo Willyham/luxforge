@@ -1,6 +1,6 @@
 use super::{
     EditorService, EditorState, MutationResult,
-    history::{CommittedAction, ensure_revision, request_input},
+    history::{Change, CommittedAction, request_input},
     masks::{recipe_for_target, resolve_mask_target, take_mask_target},
     source::{RawSettingsMode, raw_settings, validate_source_recipe},
 };
@@ -27,7 +27,6 @@ impl EditorService {
         action_id: &str,
         parameters: Value,
     ) -> Result<MutationResult, Error> {
-        mutation.validate()?;
         let registry = self.registry.clone();
         let (module, action) = registry.action(action_id).ok_or_else(|| {
             Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
@@ -54,11 +53,23 @@ impl EditorService {
             .label(&input)
             .unwrap_or_else(|| action_label(action, &input.parameters));
         let request = request_input(&input, &mutation, mask.as_ref())?;
-        if let Some(result) = self.request_result(asset_id, &mutation.request_id, &request)? {
-            return Ok(result);
-        }
-        let state = self.state(asset_id)?;
-        ensure_revision(&state, mutation.expected_revision)?;
+        self.mutate(asset_id, &mutation, &request, |service, state| {
+            service.plan_action(state, module, action_id, input, label, mask)
+        })
+    }
+
+    /// What one parsed action does to the current stack, planned by its module against the
+    /// action's target, for [`Self::mutate`] to write.
+    fn plan_action(
+        &self,
+        state: &EditorState,
+        module: &dyn crate::ToolModule,
+        action_id: &str,
+        input: ActionInput,
+        label: String,
+        mask: Option<MaskId>,
+    ) -> Result<Change, Error> {
+        let registry = &self.registry;
         let recipe = &state.current_entry.snapshot.recipe;
         validate_source_recipe(&state.asset, recipe)?;
         // Both planning paths compile the current stack, so its artifacts are bound first.
@@ -136,13 +147,11 @@ impl EditorService {
                     .as_ref()
                     .map(|sample| sample as &dyn Fn(u32, u32) -> Result<[f32; 3], Error>),
             };
-            let snapshot = match module.plan(&input, &context)? {
+            let recipe = match module.plan(&input, &context)? {
                 ActionPlan::NoOp => {
-                    return self.persist_noop(asset_id, &mutation, &request, &state);
+                    return Ok(Change::NoOp);
                 }
-                ActionPlan::Update(layer) => {
-                    state.current_entry.snapshot.with_layer_replaced(layer)?
-                }
+                ActionPlan::Update(layer) => recipe.with_layer_replaced(layer)?,
                 ActionPlan::Commit(_) | ActionPlan::Edits(_) | ActionPlan::Compose(_) => {
                     return Err(Error::new(
                         ErrorKind::Validation,
@@ -150,18 +159,11 @@ impl EditorService {
                     ));
                 }
             };
-            return self.commit_snapshot(
-                asset_id,
-                mutation,
-                request,
-                snapshot,
-                &state.asset,
-                CommittedAction { input, label },
-            );
+            return Ok(Change::append(recipe, CommittedAction { input, label }));
         }
         let source = self.verified_prepared(&state.asset)?;
         let plan = self.plan_input(
-            &state,
+            state,
             &source,
             module,
             &input,
@@ -169,17 +171,9 @@ impl EditorService {
             mask.as_ref(),
         )?;
         let Some(recipe) = self.resolve_plan(&source, recipe, plan, mask.as_ref())? else {
-            return self.persist_noop(asset_id, &mutation, &request, &state);
+            return Ok(Change::NoOp);
         };
-        let snapshot = state.current_entry.snapshot.with_recipe(recipe)?;
-        self.commit_snapshot(
-            asset_id,
-            mutation,
-            request,
-            snapshot,
-            &state.asset,
-            CommittedAction { input, label },
-        )
+        Ok(Change::append(recipe, CommittedAction { input, label }))
     }
 
     /// Ask a module what one parsed request would do to this stack. The stack is compiled once and

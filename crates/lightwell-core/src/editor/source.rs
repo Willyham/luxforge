@@ -1,14 +1,14 @@
 use super::{
     AssetRecord, CachedSource, EditorService, EditorState, PreparedFile, RawDevelopment,
     SourceKind, SourceSignature,
-    catalog::{catalog_error, encode, insert_entry, now_ms},
+    catalog::{encode, insert_entry, now_ms, write},
 };
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Snapshot, open_source_bytes,
     read_bounded_file,
     source::{PreparedSource, RawPrepared},
 };
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -149,8 +149,7 @@ impl EditorService {
                 params![canonical.to_string_lossy(), file_identity],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
-            .optional()
-            .map_err(catalog_error)?
+            .optional()?
             .map(|(id, fingerprint)| Ok((AssetId::parse(id)?, fingerprint)))
             .transpose()
     }
@@ -458,36 +457,39 @@ impl EditorService {
             undo_parent: None,
             restore_target: None,
         };
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        tx.execute(
-            "INSERT INTO assets VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![
-                asset.id.as_str(),
-                asset.source_root.to_string_lossy(),
-                asset.locator.to_string_lossy(),
-                canonical_text,
-                asset.file_identity,
-                asset.fingerprint,
-                i64::try_from(asset.byte_len).map_err(|_| Error::new(
-                    ErrorKind::ResourceLimit,
-                    "source length exceeds catalog range"
-                ))?,
-                i64::from(asset.width),
-                i64::from(asset.height),
-                encode(&asset.source)?,
-            ],
-        )
-        .map_err(catalog_error)?;
-        insert_entry(&self.registry, &tx, &self.artifact_root, &entry)?;
-        tx.execute(
-            "INSERT INTO asset_state VALUES (?1,?2,0,'[]')",
-            params![asset.id.as_str(), entry.id.as_str()],
-        )
-        .map_err(catalog_error)?;
-        tx.commit().map_err(catalog_error)?;
+        // An import is its own write, because it creates the asset a head would name, but it admits
+        // its Original exactly as a commit admits the stack it writes.
+        let _artifacts = self.admit(&asset, &entry.snapshot.recipe)?;
+        let byte_len = i64::try_from(asset.byte_len).map_err(|_| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "source length exceeds catalog range",
+            )
+        })?;
+        let artifact_root = &self.artifact_root;
+        write(&mut self.connection, |tx| {
+            tx.execute(
+                "INSERT INTO assets VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![
+                    asset.id.as_str(),
+                    asset.source_root.to_string_lossy(),
+                    asset.locator.to_string_lossy(),
+                    canonical_text,
+                    asset.file_identity,
+                    asset.fingerprint,
+                    byte_len,
+                    i64::from(asset.width),
+                    i64::from(asset.height),
+                    encode(&asset.source)?,
+                ],
+            )?;
+            insert_entry(tx, artifact_root, &entry)?;
+            tx.execute(
+                "INSERT INTO asset_state VALUES (?1,?2,0,'[]')",
+                params![asset.id.as_str(), entry.id.as_str()],
+            )?;
+            Ok(())
+        })?;
         self.source_cache.replace(Some(CachedSource {
             asset_id: asset.id.clone(),
             signature,

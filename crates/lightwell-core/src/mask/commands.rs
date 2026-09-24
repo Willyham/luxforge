@@ -15,9 +15,10 @@
 //!   toggles and mode selector with the widgets it already has.
 //! - `schema.list` lists every command from this table through [`MaskCommand::schema`], so discovery
 //!   and dispatch cannot drift apart.
-//! - A command commits through the delivered [`crate::EditorService::commit_snapshot`] path, so the
-//!   mutation envelope, the input-hash deduplication, the revision check, the single history entry
-//!   and the single immutable snapshot are the delivered ones and not a second implementation.
+//! - A command commits through the editor's one mutation path, `EditorService::mutate`, so the
+//!   mutation envelope, the input-hash deduplication, the revision check, the admission of the
+//!   recipe, the single history entry and the single immutable snapshot are the delivered ones and
+//!   not a second implementation.
 //! - A gesture drafts through the delivered `draft.begin` / `draft.set` / `draft.commit` lifecycle
 //!   with its existing conflict, Discard and Reapply behaviour; see [`MaskTarget`] for the one thing
 //!   a draft needed that a declared parameter cannot carry.

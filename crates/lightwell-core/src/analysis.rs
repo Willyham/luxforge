@@ -306,7 +306,7 @@ fn reduce_parallel(rgba: &[u8], cancel: &Cancel) -> Result<Bins, Error> {
                 for pixel in chunk.chunks_exact(4) {
                     bins.add_pixel([pixel[0], pixel[1], pixel[2], pixel[3]]);
                 }
-                Ok(bins)
+                Ok::<_, Error>(bins)
             },
         )
         .try_reduce(

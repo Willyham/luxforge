@@ -1,6 +1,6 @@
 use super::{
     AssetRecord, EditorService, EditorState, LayerDescription, RecipeDescription,
-    catalog::{ASSET_COLUMNS, asset_row, catalog_error, stored_revision},
+    catalog::{ASSET_COLUMNS, asset_row, stored_revision},
 };
 use crate::{AssetId, EntryId, Error, HistoryEntry};
 use serde_json::Map;
@@ -31,15 +31,11 @@ impl EditorService {
 
     /// Every referenced asset in import order.
     pub fn assets(&self) -> Result<Vec<AssetRecord>, Error> {
-        let mut statement = self
-            .connection
-            .prepare(&format!(
-                "SELECT {ASSET_COLUMNS} FROM assets ORDER BY rowid"
-            ))
-            .map_err(catalog_error)?;
-        let rows = statement.query_map([], asset_row).map_err(catalog_error)?;
-        rows.map(|row| row.map_err(catalog_error)?.into_record())
-            .collect()
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {ASSET_COLUMNS} FROM assets ORDER BY rowid"
+        ))?;
+        let rows = statement.query_map([], asset_row)?;
+        rows.map(|row| row?.into_record()).collect()
     }
 
     /// One entry of this asset's history with its strokes resolved: decoded once, then copied

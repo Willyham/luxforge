@@ -38,7 +38,7 @@ mod source;
 #[cfg(test)]
 mod test_support;
 
-pub(crate) use catalog::{catalog_error, decode, encode, now_ms};
+pub(crate) use catalog::{decode, encode, now_ms, write};
 pub use masks::MASK_FIELD;
 pub(crate) use masks::in_target;
 pub(crate) use plan::prefix;
@@ -77,6 +77,26 @@ pub(crate) mod read_counts {
             DECODED.with(|count| count.replace(0)),
             HASHED.with(|count| count.replace(0)),
         )
+    }
+}
+
+/// How many stacks were validated against the registry, counted per thread, for the test that proves
+/// a commit validates the stack it writes once.
+#[cfg(test)]
+pub(crate) mod validations {
+    use std::cell::Cell;
+
+    thread_local! {
+        static VALIDATED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn validated() {
+        VALIDATED.with(|count| count.set(count.get() + 1));
+    }
+
+    /// The validations this thread made since it last asked.
+    pub(crate) fn take() -> u64 {
+        VALIDATED.with(|count| count.replace(0))
     }
 }
 
@@ -371,24 +391,18 @@ impl EditorService {
                 )
             })?;
         }
-        let connection = Connection::open(path).map_err(catalog_error)?;
-        connection
-            .busy_timeout(Duration::from_millis(100))
-            .map_err(catalog_error)?;
-        connection
-            .execute_batch(
-                "PRAGMA foreign_keys=ON;
-                 PRAGMA synchronous=FULL;
-                 PRAGMA locking_mode=EXCLUSIVE;
-                 BEGIN IMMEDIATE;
-                 COMMIT;",
-            )
-            .map_err(catalog_error)?;
-        let version: i64 = connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .map_err(catalog_error)?;
+        let mut connection = Connection::open(path)?;
+        connection.busy_timeout(Duration::from_millis(100))?;
+        connection.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             PRAGMA synchronous=FULL;
+             PRAGMA locking_mode=EXCLUSIVE;
+             BEGIN IMMEDIATE;
+             COMMIT;",
+        )?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => Self::create_schema(&connection)?,
+            0 => Self::create_schema(&mut connection)?,
             CATALOG_FORMAT => {}
             other => {
                 return Err(Error::new(
@@ -399,17 +413,14 @@ impl EditorService {
                 ));
             }
         }
-        let meta = |key: &str| -> Result<Option<String>, Error> {
-            connection
-                .query_row(
-                    "SELECT value FROM catalog_meta WHERE key=?1",
-                    [key],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(catalog_error)
-        };
-        let catalog_id = meta("catalog_id")?.ok_or_else(|| {
+        let catalog_id: Option<String> = connection
+            .query_row(
+                "SELECT value FROM catalog_meta WHERE key='catalog_id'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let catalog_id = catalog_id.ok_or_else(|| {
             Error::new(
                 ErrorKind::Incompatible,
                 "catalog has no identity; choose a new catalog path",

@@ -2,8 +2,8 @@ use super::{
     AssetRecord, EditorService, EditorState, HistoryPage, Lineage, LineageStep, MutationOutcome,
     MutationResult, Version, VersionResult, artifact_store,
     catalog::{
-        catalog_error, decode, encode, ensure_request_absent, input_hash, insert_entry,
-        insert_request, json_error, next_sequence, now_ms,
+        decode, encode, input_hash, insert_entry, insert_request, json_error, next_sequence,
+        now_ms, write,
     },
     masks::MASK_FIELD,
     source::validate_source_recipe,
@@ -12,8 +12,8 @@ use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, MaskId, Mutation, Recipe, Snapshot,
     SnapshotId, artifacts::PreparedArtifact, modules::ActionInput,
 };
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
-use serde_json::{Value, json};
+use rusqlite::{OptionalExtension, params};
+use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
 const MAX_HISTORY_PAGE: usize = 100;
@@ -37,19 +37,14 @@ impl EditorService {
             .min(i64::MAX as u64) as i64;
         let mut statement = self
             .connection
-            .prepare("SELECT entry_json FROM entries WHERE asset_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT ?3")
-            .map_err(catalog_error)?;
+            .prepare("SELECT entry_json FROM entries WHERE asset_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT ?3")?;
         let rows = statement
             .query_map(params![asset_id.as_str(), before, limit as i64], |row| {
                 row.get::<_, String>(0)
-            })
-            .map_err(catalog_error)?;
+            })?;
         let mut entries: Vec<HistoryEntry> = Vec::new();
         for row in rows {
-            entries.push(decode(
-                "invalid history entry",
-                row.map_err(catalog_error)?,
-            )?);
+            entries.push(decode("invalid history entry", row?)?);
         }
         let next_before_sequence =
             (entries.len() == limit).then(|| entries.last().unwrap().sequence);
@@ -60,8 +55,9 @@ impl EditorService {
     }
 
     /// Admit one stack a write is about to persist as a new snapshot. Every path that writes one —
-    /// an action, a composite, a `mask.*` command and a restore — admits through here, so none
-    /// persists a stack with fewer checks than another.
+    /// [`Self::mutate`] for an action, a composite, a `mask.*` command and a restore, and an import
+    /// for its Original — admits through here, once, so none persists a stack with fewer checks
+    /// than another and none validates it twice.
     ///
     /// The stack is validated against the registry (an unavailable provider, a refused payload or a
     /// mask on a stage that cannot carry one is refused by name) and against the asset's source
@@ -71,7 +67,7 @@ impl EditorService {
     /// dimensions, which resolves every stroke it references, so a later layer addressing a stage
     /// that no longer exists or a stroke the store has lost is refused with the compile error and
     /// nothing is written. `O(layers)`; it rasterizes nothing.
-    fn admit(
+    pub(super) fn admit(
         &self,
         asset: &AssetRecord,
         recipe: &Recipe,
@@ -84,57 +80,140 @@ impl EditorService {
         Ok(artifacts)
     }
 
-    /// Persist one resulting stack: the same path for an appended and an updated layer. The stack
-    /// is [admitted](Self::admit) first, so a stack any check refuses writes nothing.
+    /// The one path every change to an asset's history takes: an action, a composite, a `mask.*`
+    /// command, undo, redo, restore, and the no-op of any of them.
+    ///
+    /// In order: the envelope is validated; a retry of a request this asset already answered gets
+    /// that answer, marked deduplicated, and nothing is planned; the head is read and the expected
+    /// revision checked; `plan` decides the [`Change`] against that state; an appended stack is
+    /// [admitted](Self::admit), which is the one validation it gets; then one transaction writes the
+    /// entry, moves the head and records the request's result, and the head the entry cache holds
+    /// moves once that transaction has committed. A failure at any step writes nothing and moves
+    /// nothing cached. `request` is the request's identity, whose hash a retry must match.
+    ///
+    /// The owner is the catalog's only writer, so the head `plan` sees is the one the transaction
+    /// moves; a request committed since the retry check is refused as a `conflict` by the insert of
+    /// its result.
+    pub(super) fn mutate(
+        &mut self,
+        asset_id: &AssetId,
+        mutation: &Mutation,
+        request: &Value,
+        plan: impl FnOnce(&Self, &EditorState) -> Result<Change, Error>,
+    ) -> Result<MutationResult, Error> {
+        mutation.validate()?;
+        if let Some(result) = self.request_result(asset_id, &mutation.request_id, request)? {
+            return Ok(result);
+        }
+        let state = self.state(asset_id)?;
+        ensure_revision(&state, mutation.expected_revision)?;
+        let change = plan(self, &state)?;
+        // Held until the write, whose transaction checks the references again and records them.
+        let _artifacts = match &change {
+            Change::Append { recipe, .. } => self.admit(&state.asset, recipe)?,
+            Change::Navigate { .. } | Change::NoOp => Vec::new(),
+        };
+        let next = state.revision + 1;
+        let (outcome, revision, current_entry_id, created_entry_id) = match &change {
+            Change::Append { .. } => {
+                let created = EntryId::new();
+                (
+                    MutationOutcome::Applied,
+                    next,
+                    created.clone(),
+                    Some(created),
+                )
+            }
+            Change::Navigate { target, .. } => {
+                (MutationOutcome::Navigated, next, target.clone(), None)
+            }
+            Change::NoOp => (
+                MutationOutcome::NoOp,
+                state.revision,
+                state.current_entry.id.clone(),
+                None,
+            ),
+        };
+        let result = MutationResult {
+            outcome,
+            revision,
+            current_entry_id,
+            created_entry_id,
+            deduplicated: false,
+        };
+        let artifact_root = &self.artifact_root;
+        let moved = write(&mut self.connection, |tx| {
+            // The redo list the head moves to, or `None` when it stays where it is.
+            let redo = match change {
+                Change::Append {
+                    recipe,
+                    action,
+                    restore_target,
+                } => {
+                    let entry = HistoryEntry {
+                        id: result.current_entry_id.clone(),
+                        asset_id: asset_id.clone(),
+                        sequence: next_sequence(tx, asset_id)?,
+                        action_id: action.input.action_id,
+                        label: action.label,
+                        parameters: Value::Object(action.input.parameters),
+                        actor: mutation.actor.clone(),
+                        timestamp_ms: now_ms(),
+                        request_id: Some(mutation.request_id.clone()),
+                        base_revision: state.revision,
+                        result_revision: result.revision,
+                        snapshot: Snapshot {
+                            id: SnapshotId::new(),
+                            asset_id: asset_id.clone(),
+                            recipe,
+                        },
+                        undo_parent: Some(state.current_entry.id.clone()),
+                        restore_target,
+                    };
+                    insert_entry(tx, artifact_root, &entry)?;
+                    // A new entry starts a new path: nothing is left to redo.
+                    Some(Vec::new())
+                }
+                Change::Navigate { redo, .. } => Some(redo),
+                Change::NoOp => None,
+            };
+            if let Some(redo) = &redo {
+                tx.execute(
+                    "UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json=?4 WHERE asset_id=?1",
+                    params![
+                        asset_id.as_str(),
+                        result.current_entry_id.as_str(),
+                        result.revision as i64,
+                        encode(redo)?
+                    ],
+                )?;
+            }
+            insert_request(tx, asset_id, &mutation.request_id, request, &result)?;
+            Ok(redo)
+        })?;
+        if let Some(redo) = moved {
+            self.entries
+                .get_mut()
+                .moved(asset_id, result.revision, &result.current_entry_id, redo);
+        }
+        Ok(result)
+    }
+
+    /// Commit this stack as one entry through [`Self::mutate`]: how a test writes a stack no action
+    /// produces. `mutate` reads the asset's record for itself.
+    #[cfg(test)]
     pub(super) fn commit_snapshot(
         &mut self,
         asset_id: &AssetId,
         mutation: Mutation,
         request: Value,
         snapshot: Snapshot,
-        asset: &AssetRecord,
+        _asset: &AssetRecord,
         action: CommittedAction,
     ) -> Result<MutationResult, Error> {
-        let mut state = self.state(asset_id)?;
-        ensure_revision(&state, mutation.expected_revision)?;
-        let _artifacts = self.admit(asset, &snapshot.recipe)?;
-        let entry = HistoryEntry {
-            id: EntryId::new(),
-            asset_id: asset_id.clone(),
-            sequence: next_sequence(&self.connection, asset_id)?,
-            action_id: action.input.action_id,
-            label: action.label,
-            parameters: Value::Object(action.input.parameters),
-            actor: mutation.actor.clone(),
-            timestamp_ms: now_ms(),
-            request_id: Some(mutation.request_id.clone()),
-            base_revision: state.revision,
-            result_revision: state.revision + 1,
-            snapshot,
-            undo_parent: Some(state.current_entry.id.clone()),
-            restore_target: None,
-        };
-        let result = MutationResult {
-            outcome: MutationOutcome::Applied,
-            revision: entry.result_revision,
-            current_entry_id: entry.id.clone(),
-            created_entry_id: Some(entry.id.clone()),
-            deduplicated: false,
-        };
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        ensure_request_absent(&tx, asset_id, &mutation.request_id)?;
-        insert_entry(&self.registry, &tx, &self.artifact_root, &entry)?;
-        tx.execute("UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json='[]' WHERE asset_id=?1", params![asset_id.as_str(), entry.id.as_str(), entry.result_revision as i64]).map_err(catalog_error)?;
-        insert_request(&tx, asset_id, &mutation.request_id, &request, &result)?;
-        tx.commit().map_err(catalog_error)?;
-        self.entries
-            .get_mut()
-            .moved(asset_id, entry.result_revision, &entry.id, Vec::new());
-        state.current_entry = entry;
-        Ok(result)
+        self.mutate(asset_id, &mutation, &request, |_, _| {
+            Ok(Change::append(snapshot.recipe, action))
+        })
     }
 
     pub fn undo(
@@ -159,124 +238,64 @@ impl EditorService {
         mutation: Mutation,
         navigation: Navigation,
     ) -> Result<MutationResult, Error> {
-        mutation.validate()?;
         let action = match navigation {
             Navigation::Undo => "undo",
             Navigation::Redo => "redo",
         };
-        let input = json!({"action":action,"mutation":mutation});
-        if let Some(result) = self.request_result(asset_id, &mutation.request_id, &input)? {
-            return Ok(result);
-        }
-        let state = self.state(asset_id)?;
-        ensure_revision(&state, mutation.expected_revision)?;
-        let mut redo = state.redo.clone();
-        let target = match navigation {
-            Navigation::Undo => {
-                let Some(parent) = state.current_entry.undo_parent.clone() else {
-                    return self.persist_noop(asset_id, &mutation, &input, &state);
-                };
-                redo.push(state.current_entry.id.clone());
-                parent
-            }
-            Navigation::Redo => {
-                let Some(entry) = redo.pop() else {
-                    return self.persist_noop(asset_id, &mutation, &input, &state);
-                };
-                entry
-            }
-        };
-        let _ = self.entry(asset_id, &target)?;
-        let result = MutationResult {
-            outcome: MutationOutcome::Navigated,
-            revision: state.revision + 1,
-            current_entry_id: target.clone(),
-            created_entry_id: None,
-            deduplicated: false,
-        };
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        tx.execute(
-            "UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json=?4 WHERE asset_id=?1",
-            params![
-                asset_id.as_str(),
-                target.as_str(),
-                result.revision as i64,
-                encode(&redo)?
-            ],
-        )
-        .map_err(catalog_error)?;
-        insert_request(&tx, asset_id, &mutation.request_id, &input, &result)?;
-        tx.commit().map_err(catalog_error)?;
-        self.entries
-            .get_mut()
-            .moved(asset_id, result.revision, &target, redo);
-        Ok(result)
+        let request = json!({"action":action,"mutation":mutation});
+        self.mutate(asset_id, &mutation, &request, |service, state| {
+            let mut redo = state.redo.clone();
+            let target = match navigation {
+                Navigation::Undo => {
+                    let Some(parent) = state.current_entry.undo_parent.clone() else {
+                        return Ok(Change::NoOp);
+                    };
+                    redo.push(state.current_entry.id.clone());
+                    parent
+                }
+                Navigation::Redo => {
+                    let Some(entry) = redo.pop() else {
+                        return Ok(Change::NoOp);
+                    };
+                    entry
+                }
+            };
+            // The target must be one of this asset's entries.
+            service.shared_entry(asset_id, &target)?;
+            Ok(Change::Navigate { target, redo })
+        })
     }
 
+    /// Copy a retained entry's stack into a new Restore entry. The copied stack is admitted by
+    /// [`Self::mutate`] exactly as a commit's is, so restoring one this build cannot evaluate — an
+    /// unavailable provider, a lost stroke or artifact — fails explicitly; browsing it with undo,
+    /// redo and history stays available. Restoring the stack that is already current is a no-op.
     pub fn restore(
         &mut self,
         asset_id: &AssetId,
         mutation: Mutation,
         target_id: &EntryId,
     ) -> Result<MutationResult, Error> {
-        mutation.validate()?;
-        let input = json!({"action":"restore","mutation":mutation,"target_entry_id":target_id});
-        if let Some(result) = self.request_result(asset_id, &mutation.request_id, &input)? {
-            return Ok(result);
-        }
-        let state = self.state(asset_id)?;
-        ensure_revision(&state, mutation.expected_revision)?;
-        let target = self.entry(asset_id, target_id)?;
-        // A restore admits the stack it copies exactly as a commit admits the stack it writes, so
-        // restoring one this build cannot evaluate — an unavailable provider, a lost stroke or
-        // artifact — fails explicitly; browsing it with undo, redo and history stays available.
-        let _artifacts = self.admit(&state.asset, &target.snapshot.recipe)?;
-        if target.snapshot.recipe == state.current_entry.snapshot.recipe {
-            return self.persist_noop(asset_id, &mutation, &input, &state);
-        }
-        let snapshot = Snapshot {
-            id: SnapshotId::new(),
-            asset_id: asset_id.clone(),
-            recipe: target.snapshot.recipe.clone(),
-        };
-        let entry = HistoryEntry {
-            id: EntryId::new(),
-            asset_id: asset_id.clone(),
-            sequence: next_sequence(&self.connection, asset_id)?,
-            action_id: "restore".into(),
-            label: format!("Restore entry {}", target.sequence),
-            parameters: json!({"target_entry_id":target_id}),
-            actor: mutation.actor.clone(),
-            timestamp_ms: now_ms(),
-            request_id: Some(mutation.request_id.clone()),
-            base_revision: state.revision,
-            result_revision: state.revision + 1,
-            snapshot,
-            undo_parent: Some(state.current_entry.id.clone()),
-            restore_target: Some(target_id.clone()),
-        };
-        let result = MutationResult {
-            outcome: MutationOutcome::Applied,
-            revision: entry.result_revision,
-            current_entry_id: entry.id.clone(),
-            created_entry_id: Some(entry.id.clone()),
-            deduplicated: false,
-        };
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        insert_entry(&self.registry, &tx, &self.artifact_root, &entry)?;
-        tx.execute("UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json='[]' WHERE asset_id=?1", params![asset_id.as_str(), entry.id.as_str(), entry.result_revision as i64]).map_err(catalog_error)?;
-        insert_request(&tx, asset_id, &mutation.request_id, &input, &result)?;
-        tx.commit().map_err(catalog_error)?;
-        self.entries
-            .get_mut()
-            .moved(asset_id, entry.result_revision, &entry.id, Vec::new());
-        Ok(result)
+        let request = json!({"action":"restore","mutation":mutation,"target_entry_id":target_id});
+        self.mutate(asset_id, &mutation, &request, |service, state| {
+            let target = service.shared_entry(asset_id, target_id)?;
+            if target.snapshot.recipe == state.current_entry.snapshot.recipe {
+                return Ok(Change::NoOp);
+            }
+            let mut parameters = Map::new();
+            parameters.insert("target_entry_id".into(), json!(target_id));
+            Ok(Change::Append {
+                recipe: target.snapshot.recipe.clone(),
+                action: CommittedAction {
+                    input: ActionInput {
+                        action_id: "restore".into(),
+                        parameters,
+                    },
+                    label: format!("Restore entry {}", target.sequence),
+                },
+                restore_target: Some(target_id.clone()),
+            })
+        })
     }
 
     /// Walk undo parents from `from` (default: current) towards Original, newest first.
@@ -309,8 +328,7 @@ impl EditorService {
                     params![entry_id.as_str(), asset_id.as_str()],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
-                .optional()
-                .map_err(catalog_error)?
+                .optional()?
                 .ok_or_else(|| {
                     Error::new(
                         ErrorKind::Validation,
@@ -335,28 +353,23 @@ impl EditorService {
 
     /// Saved versions of one asset in creation order.
     pub fn versions(&self, asset_id: &AssetId) -> Result<Vec<Version>, Error> {
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT v.name,v.entry_id,e.sequence,v.actor,v.created_ms FROM versions v
-                 JOIN entries e ON e.id = v.entry_id
-                 WHERE v.asset_id=?1 ORDER BY v.created_ms, v.name",
-            )
-            .map_err(catalog_error)?;
-        let rows = statement
-            .query_map([asset_id.as_str()], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
-            })
-            .map_err(catalog_error)?;
+        let mut statement = self.connection.prepare(
+            "SELECT v.name,v.entry_id,e.sequence,v.actor,v.created_ms FROM versions v
+             JOIN entries e ON e.id = v.entry_id
+             WHERE v.asset_id=?1 ORDER BY v.created_ms, v.name",
+        )?;
+        let rows = statement.query_map([asset_id.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
         let mut versions = Vec::new();
         for row in rows {
-            let (name, entry_id, sequence, actor, created_ms) = row.map_err(catalog_error)?;
+            let (name, entry_id, sequence, actor, created_ms) = row?;
             versions.push(Version {
                 asset_id: asset_id.clone(),
                 name,
@@ -414,22 +427,19 @@ impl EditorService {
             actor: actor.into(),
             created_ms: now_ms(),
         };
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        tx.execute(
-            "INSERT INTO versions VALUES (?1,?2,?3,?4,?5)",
-            params![
-                asset_id.as_str(),
-                version.name,
-                version.entry_id.as_str(),
-                version.actor,
-                version.created_ms
-            ],
-        )
-        .map_err(catalog_error)?;
-        tx.commit().map_err(catalog_error)?;
+        write(&mut self.connection, |tx| {
+            tx.execute(
+                "INSERT INTO versions VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    asset_id.as_str(),
+                    version.name,
+                    version.entry_id.as_str(),
+                    version.actor,
+                    version.created_ms
+                ],
+            )?;
+            Ok(())
+        })?;
         Ok(VersionResult {
             outcome: MutationOutcome::Applied,
             version: Some(version),
@@ -443,17 +453,12 @@ impl EditorService {
         name: &str,
     ) -> Result<VersionResult, Error> {
         let name = valid_version_name(name)?;
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        let removed = tx
-            .execute(
+        let removed = write(&mut self.connection, |tx| {
+            Ok(tx.execute(
                 "DELETE FROM versions WHERE asset_id=?1 AND name=?2",
                 params![asset_id.as_str(), name],
-            )
-            .map_err(catalog_error)?;
-        tx.commit().map_err(catalog_error)?;
+            )?)
+        })?;
         Ok(VersionResult {
             outcome: if removed == 0 {
                 MutationOutcome::NoOp
@@ -464,30 +469,9 @@ impl EditorService {
         })
     }
 
-    pub(super) fn persist_noop(
-        &mut self,
-        asset_id: &AssetId,
-        mutation: &Mutation,
-        input: &Value,
-        state: &EditorState,
-    ) -> Result<MutationResult, Error> {
-        let result = MutationResult {
-            outcome: MutationOutcome::NoOp,
-            revision: state.revision,
-            current_entry_id: state.current_entry.id.clone(),
-            created_entry_id: None,
-            deduplicated: false,
-        };
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        insert_request(&tx, asset_id, &mutation.request_id, input, &result)?;
-        tx.commit().map_err(catalog_error)?;
-        Ok(result)
-    }
-
-    pub(super) fn request_result(
+    /// The answer this asset already gave `request_id`, marked deduplicated, or `None` for a new
+    /// request. The same identity with a different input is a `conflict`.
+    fn request_result(
         &self,
         asset_id: &AssetId,
         request_id: &str,
@@ -500,8 +484,7 @@ impl EditorService {
                 params![asset_id.as_str(), request_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
-            .optional()
-            .map_err(catalog_error)?;
+            .optional()?;
         let Some((stored_hash, result_json)) = found else {
             return Ok(None);
         };
@@ -522,6 +505,34 @@ enum Navigation {
     Redo,
 }
 
+/// What one mutation's plan decided to do to the asset's history, which [`EditorService::mutate`]
+/// writes.
+pub(super) enum Change {
+    /// Write a new entry holding this stack and make it current, one revision on, with nothing left
+    /// to redo. `restore_target` names the entry a Restore copied.
+    Append {
+        recipe: Recipe,
+        action: CommittedAction,
+        restore_target: Option<EntryId>,
+    },
+    /// Make an entry already written current, one revision on, leaving `redo` to redo. No entry is
+    /// written.
+    Navigate { target: EntryId, redo: Vec<EntryId> },
+    /// Change nothing. Only the request's result is recorded, so a retry is answered the same way.
+    NoOp,
+}
+
+impl Change {
+    /// A new entry an action or a command commits: everything but a Restore.
+    pub(super) fn append(recipe: Recipe, action: CommittedAction) -> Self {
+        Self::Append {
+            recipe,
+            action,
+            restore_target: None,
+        }
+    }
+}
+
 /// What one action records on the entry it commits: the durable identity and stored parameters the
 /// module parsed, and the label the host rendered from the action that was requested.
 pub(super) struct CommittedAction {
@@ -529,7 +540,7 @@ pub(super) struct CommittedAction {
     pub(super) label: String,
 }
 
-pub(super) fn ensure_revision(state: &EditorState, expected: u64) -> Result<(), Error> {
+fn ensure_revision(state: &EditorState, expected: u64) -> Result<(), Error> {
     if state.revision == expected {
         Ok(())
     } else {
@@ -1092,6 +1103,151 @@ mod tests {
             (restored.kind, &restored.detail),
             (committed.kind, &committed.detail)
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A commit validates the stack it writes against the registry once: admission does it and the
+    /// write that follows only writes. That holds for every kind of commit, and a navigation, a
+    /// no-op and a retry write no stack and validate none.
+    #[test]
+    fn a_commit_validates_its_stack_once() {
+        use crate::{
+            APPLY_PRESET,
+            editor::validations,
+            mask::commands::{self, MaskTarget},
+        };
+        let catalog = temp("validated-once.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        validations::take();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        assert_eq!(validations::take(), 1, "an import");
+        let pixel = service
+            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [1, 2, 3])
+            .unwrap()
+            .current_entry_id;
+        assert_eq!(validations::take(), 1, "an action");
+        service
+            .apply_action(
+                &asset,
+                mutation(1, "preset"),
+                APPLY_PRESET,
+                json!({"name": "Look", "settings": {"set-basic": {"exposure": 0.5}}}),
+            )
+            .unwrap();
+        assert_eq!(validations::take(), 1, "a preset composite");
+        service
+            .apply_mask_command(
+                &asset,
+                mutation(2, "stroke"),
+                commands::find(commands::ADD_STROKE).unwrap(),
+                json!({"points": [[0.2, 0.2], [0.4, 0.4]], "size": 0.1, "feather": 50.0,
+                       "flow": 100.0, "erase": false}),
+                MaskTarget::default(),
+            )
+            .unwrap();
+        assert_eq!(validations::take(), 1, "a mask command");
+        let restored = service
+            .restore(&asset, mutation(3, "restore"), &pixel)
+            .unwrap();
+        assert_eq!(restored.outcome, MutationOutcome::Applied);
+        assert_eq!(validations::take(), 1, "a restore");
+        let retried = service
+            .restore(&asset, mutation(3, "restore"), &pixel)
+            .unwrap();
+        assert!(retried.deduplicated);
+        assert_eq!(validations::take(), 0, "a retry");
+        service.undo(&asset, mutation(4, "undo")).unwrap();
+        service.redo(&asset, mutation(5, "redo")).unwrap();
+        let nothing = service.redo(&asset, mutation(6, "nothing")).unwrap();
+        assert_eq!(nothing.outcome, MutationOutcome::NoOp);
+        assert_eq!(validations::take(), 0, "navigation and a no-op");
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A request committed by another write between a mutation's retry check and its own commit is
+    /// a `conflict` for every kind of mutation — an action, a restore, a navigation and a no-op —
+    /// never a catalog error, and the refused write leaves the rows and every cached read as they
+    /// were. The trigger stands in for that other write: it commits the same request identity while
+    /// the mutation's transaction is open.
+    #[test]
+    fn a_request_committed_concurrently_is_a_conflict_for_every_mutation() {
+        type Attempt = fn(&mut EditorService, &AssetId, &EntryId) -> Result<MutationResult, Error>;
+        let catalog = temp("concurrent-request.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let a = service
+            .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])
+            .unwrap()
+            .current_entry_id;
+        service
+            .apply_pixel(&asset, mutation(1, "b"), 0, 0, [4, 5, 6])
+            .unwrap();
+        service
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER concurrent_request BEFORE INSERT ON requests
+                 WHEN NEW.request_id LIKE 'concurrent-%' BEGIN
+                    INSERT INTO requests VALUES (NEW.asset_id, NEW.request_id, 'other', '{}');
+                 END;",
+            )
+            .unwrap();
+        let count = |service: &EditorService, table: &str| -> i64 {
+            service
+                .connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        let attempts: [(&str, Attempt); 4] = [
+            ("an action", |service, asset, _| {
+                service.apply_pixel(asset, mutation(2, "concurrent-action"), 1, 1, [7, 8, 9])
+            }),
+            ("a restore", |service, asset, target| {
+                service.restore(asset, mutation(2, "concurrent-restore"), target)
+            }),
+            ("an undo", |service, asset, _| {
+                service.undo(asset, mutation(2, "concurrent-undo"))
+            }),
+            ("a no-op", |service, asset, _| {
+                service.redo(asset, mutation(2, "concurrent-no-op"))
+            }),
+        ];
+        for (case, attempt) in attempts {
+            let before = service.state(&asset).unwrap();
+            let rows = (count(&service, "entries"), count(&service, "requests"));
+            let error = attempt(&mut service, &asset, &a).expect_err(case);
+            assert_eq!(
+                (error.kind, error.detail.as_str()),
+                (ErrorKind::Conflict, "request was committed concurrently"),
+                "{case}"
+            );
+            // The cached reads and the rows behind them are both where they were.
+            assert_eq!(service.state(&asset).unwrap(), before, "{case}: cached");
+            let head = super::super::catalog::head_from(&service.connection, &asset).unwrap();
+            assert_eq!(
+                (head.revision, &head.current, &head.redo),
+                (before.revision, &before.current_entry.id, &before.redo),
+                "{case}: rows"
+            );
+            assert_eq!(
+                (count(&service, "entries"), count(&service, "requests")),
+                rows,
+                "{case}: nothing written, the other write's request included"
+            );
+        }
+        // Nothing was kept under the refused identity, so the request is new once it can commit.
+        service
+            .connection
+            .execute_batch("DROP TRIGGER concurrent_request")
+            .unwrap();
+        let restored = service
+            .restore(&asset, mutation(2, "concurrent-restore"), &a)
+            .unwrap();
+        assert_eq!(restored.outcome, MutationOutcome::Applied);
+        assert!(!restored.deduplicated);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

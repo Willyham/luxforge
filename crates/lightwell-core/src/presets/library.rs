@@ -5,7 +5,7 @@
 //! most 16 × 64 fields plus its import report, an import parses at most
 //! [`MAX_PRESET_BYTES`](super::MAX_PRESET_BYTES) of text, which is kept verbatim, and capture reads
 //! the stored payloads of one entry. Nothing opens a source, decodes, renders or hashes pixels.
-//! Writes are short `BEGIN IMMEDIATE` transactions, like the version methods.
+//! Writes are short `BEGIN IMMEDIATE` transactions through the catalog's one `write` helper.
 //! `docs/design/presets.md` is the contract.
 use super::{
     ImportReport, PresetExport, PresetOrigin, ReportCounts, export_document, inspect_preset,
@@ -14,9 +14,9 @@ use super::{
 use crate::{
     AssetId, EditorService, EntryId, Error, ErrorKind, MAX_PRESET_NAME, MAX_SETTINGS_ACTIONS,
     MAX_SETTINGS_FIELDS, ModuleRegistry, MutationOutcome, PresetId,
-    editor::{catalog_error, decode, encode, in_target, now_ms},
+    editor::{decode, encode, in_target, now_ms, write},
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -221,17 +221,14 @@ fn load(
             [preset_id.as_str()],
             columns,
         )
-        .optional()
-        .map_err(catalog_error)?
+        .optional()?
         .ok_or_else(|| unknown_preset(preset_id))?;
     record(registry, columns)
 }
 
 /// Refuse a library that already holds [`MAX_PRESETS`] presets.
 fn ensure_room(tx: &Transaction<'_>) -> Result<(), Error> {
-    let count: i64 = tx
-        .query_row("SELECT COUNT(*) FROM presets", [], |row| row.get(0))
-        .map_err(catalog_error)?;
+    let count: i64 = tx.query_row("SELECT COUNT(*) FROM presets", [], |row| row.get(0))?;
     if count >= MAX_PRESETS as i64 {
         return Err(Error::new(
             ErrorKind::ResourceLimit,
@@ -252,20 +249,16 @@ fn ensure_unique(
     except: Option<&PresetId>,
 ) -> Result<(), Error> {
     let (group_key, name_key) = (group.to_lowercase(), name.to_lowercase());
-    let mut statement = tx
-        .prepare("SELECT id,name,group_name FROM presets")
-        .map_err(catalog_error)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(catalog_error)?;
+    let mut statement = tx.prepare("SELECT id,name,group_name FROM presets")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
     for row in rows {
-        let (id, existing_name, existing_group) = row.map_err(catalog_error)?;
+        let (id, existing_name, existing_group) = row?;
         if except.is_some_and(|except| except.as_str() == id) {
             continue;
         }
@@ -288,12 +281,11 @@ impl EditorService {
     pub fn presets(&self) -> Result<Vec<PresetSummary>, Error> {
         let mut statement = self
             .connection
-            .prepare(&format!("SELECT {RECORD_COLUMNS} FROM presets"))
-            .map_err(catalog_error)?;
-        let rows = statement.query_map([], columns).map_err(catalog_error)?;
+            .prepare(&format!("SELECT {RECORD_COLUMNS} FROM presets"))?;
+        let rows = statement.query_map([], columns)?;
         let mut presets = Vec::new();
         for row in rows {
-            presets.push(record(self.registry(), row.map_err(catalog_error)?)?.summary());
+            presets.push(record(self.registry(), row?)?.summary());
         }
         presets
             .sort_by_cached_key(|preset| (preset.group.to_lowercase(), preset.name.to_lowercase()));
@@ -310,8 +302,7 @@ impl EditorService {
                 [preset_id.as_str()],
                 |row| Ok((columns(row)?, row.get::<_, Option<String>>(4)?)),
             )
-            .optional()
-            .map_err(catalog_error)?
+            .optional()?
             .ok_or_else(|| unknown_preset(preset_id))?;
         Ok((record(self.registry(), columns)?, source_text))
     }
@@ -366,62 +357,53 @@ impl EditorService {
         if let Some(settings) = settings {
             validate_settings(&registry, settings)?;
         }
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        let mut preset = load(&tx, &registry, preset_id)?;
-        let changed = name.as_ref().is_some_and(|name| *name != preset.name)
-            || group.as_ref().is_some_and(|group| *group != preset.group)
-            || settings.is_some_and(|settings| *settings != preset.settings);
-        if !changed {
-            // Dropping the transaction ends it without a write.
-            return Ok(PresetUpdate {
-                outcome: MutationOutcome::NoOp,
+        write(&mut self.connection, |tx| {
+            let mut preset = load(tx, &registry, preset_id)?;
+            let changed = name.as_ref().is_some_and(|name| *name != preset.name)
+                || group.as_ref().is_some_and(|group| *group != preset.group)
+                || settings.is_some_and(|settings| *settings != preset.settings);
+            if !changed {
+                // The transaction commits having written nothing.
+                return Ok(PresetUpdate {
+                    outcome: MutationOutcome::NoOp,
+                    preset,
+                });
+            }
+            if let Some(name) = name {
+                preset.name = name;
+            }
+            if let Some(group) = group {
+                preset.group = group;
+            }
+            if let Some(settings) = settings {
+                preset.settings = settings.clone();
+                preset.unavailable = unavailable_actions(&registry, &preset.settings);
+            }
+            ensure_unique(tx, &preset.group, &preset.name, Some(preset_id))?;
+            preset.actor = actor.to_owned();
+            preset.updated_ms = now_ms();
+            tx.execute(
+                "UPDATE presets SET name=?2,group_name=?3,record_json=?4 WHERE id=?1",
+                params![
+                    preset_id.as_str(),
+                    preset.name,
+                    preset.group,
+                    encode(&Written::of(&preset))?
+                ],
+            )?;
+            Ok(PresetUpdate {
+                outcome: MutationOutcome::Applied,
                 preset,
-            });
-        }
-        if let Some(name) = name {
-            preset.name = name;
-        }
-        if let Some(group) = group {
-            preset.group = group;
-        }
-        if let Some(settings) = settings {
-            preset.settings = settings.clone();
-            preset.unavailable = unavailable_actions(&registry, &preset.settings);
-        }
-        ensure_unique(&tx, &preset.group, &preset.name, Some(preset_id))?;
-        preset.actor = actor.to_owned();
-        preset.updated_ms = now_ms();
-        tx.execute(
-            "UPDATE presets SET name=?2,group_name=?3,record_json=?4 WHERE id=?1",
-            params![
-                preset_id.as_str(),
-                preset.name,
-                preset.group,
-                encode(&Written::of(&preset))?
-            ],
-        )
-        .map_err(catalog_error)?;
-        tx.commit().map_err(catalog_error)?;
-        Ok(PresetUpdate {
-            outcome: MutationOutcome::Applied,
-            preset,
+            })
         })
     }
 
     /// Remove a preset: `Applied` when it existed and `NoOp` when it is absent. History entries
     /// that applied it keep their settings, because an entry stores what was applied.
     pub fn delete_preset(&mut self, preset_id: &PresetId) -> Result<MutationOutcome, Error> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        let removed = tx
-            .execute("DELETE FROM presets WHERE id=?1", [preset_id.as_str()])
-            .map_err(catalog_error)?;
-        tx.commit().map_err(catalog_error)?;
+        let removed = write(&mut self.connection, |tx| {
+            Ok(tx.execute("DELETE FROM presets WHERE id=?1", [preset_id.as_str()])?)
+        })?;
         Ok(if removed == 0 {
             MutationOutcome::NoOp
         } else {
@@ -512,24 +494,21 @@ impl EditorService {
         record: &PresetRecord,
         source_text: Option<&str>,
     ) -> Result<(), Error> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        ensure_room(&tx)?;
-        ensure_unique(&tx, &record.group, &record.name, None)?;
-        tx.execute(
-            "INSERT INTO presets (id,name,group_name,record_json,source_text) VALUES (?1,?2,?3,?4,?5)",
-            params![
-                record.id.as_str(),
-                record.name,
-                record.group,
-                encode(&Written::of(record))?,
-                source_text
-            ],
-        )
-        .map_err(catalog_error)?;
-        tx.commit().map_err(catalog_error)
+        write(&mut self.connection, |tx| {
+            ensure_room(tx)?;
+            ensure_unique(tx, &record.group, &record.name, None)?;
+            tx.execute(
+                "INSERT INTO presets (id,name,group_name,record_json,source_text) VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    record.id.as_str(),
+                    record.name,
+                    record.group,
+                    encode(&Written::of(record))?,
+                    source_text
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     /// `preset.capture`: a settings set read from one entry's stack. `fields` maps field-patch

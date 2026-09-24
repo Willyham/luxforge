@@ -5,18 +5,19 @@
 //! catalog's only writer, over an exclusive connection, and every write takes `&mut self`. So an
 //! entry read once, with its strokes resolved, is that entry for as long as the service is open, and
 //! an asset's head — its row, its revision, its current entry and its redo list — changes only where
-//! this service commits a write that moves it. Those writes update the head in the same place they
-//! commit, after the commit succeeds:
+//! this service commits a write that moves it. Every such write is one `mutate`, which updates the
+//! head in one place, after its transaction commits:
 //!
-//! - an action, a composite and a `mask.*` command commit through `commit_snapshot`, and a restore
-//!   through `restore`: the new entry becomes current, one revision on, with nothing to redo;
-//! - undo and redo through `navigate`: the target becomes current, one revision on, with the redo
-//!   list the navigation wrote;
-//! - an import inserts a new asset under a new identity, which no head or entry here can name, so
-//!   there is nothing to update; a repeated import writes nothing;
-//! - a no-op records only its request, and naming or removing a version touches neither an entry
-//!   nor a head, so neither has anything to update;
-//! - reopening builds a new service, whose cache starts empty.
+//! - an action, a composite, a `mask.*` command and a restore append an entry: the new entry
+//!   becomes current, one revision on, with nothing to redo;
+//! - undo and redo navigate: the target becomes current, one revision on, with the redo list the
+//!   navigation wrote;
+//! - a no-op records only its request and moves nothing.
+//!
+//! No other write moves a head. An import inserts a new asset under a new identity, which no head or
+//! entry here can name, so there is nothing to update, and a repeated import writes nothing; naming
+//! or removing a version touches neither an entry nor a head; and reopening builds a new service,
+//! whose cache starts empty.
 //!
 //! A write that fails updates nothing, because the catalog kept its prior state too.
 //!

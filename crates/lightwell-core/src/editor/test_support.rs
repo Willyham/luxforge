@@ -93,12 +93,15 @@ pub(super) fn brushed(recipe: &Recipe, strokes: &[crate::path::Stroke]) -> Recip
     }
 }
 
-/// Write one entry through the production write path, which is what stores its strokes.
+/// Write one entry as a commit would, validated and then through the production row write, which
+/// is what stores its strokes.
 pub(super) fn commit(catalog: &Path, entry: &HistoryEntry) {
-    let registry = ModuleRegistry::builtin();
+    ModuleRegistry::builtin()
+        .validate_recipe(&entry.snapshot.recipe)
+        .unwrap();
     let mut connection = Connection::open(catalog).unwrap();
     let tx = connection.transaction().unwrap();
-    insert_entry(&registry, &tx, &default_artifact_root(catalog), entry).unwrap();
+    insert_entry(&tx, &default_artifact_root(catalog), entry).unwrap();
     tx.execute(
         "UPDATE asset_state SET current_entry_id=?1, revision=?2 WHERE asset_id=?3",
         params![

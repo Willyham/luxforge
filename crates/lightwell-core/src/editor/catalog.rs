@@ -1,6 +1,8 @@
 use super::{AssetRecord, EditorService, MutationResult, artifact_store, entries::Head};
-use crate::{AssetId, EntryId, Error, ErrorKind, HistoryEntry, ModuleRegistry, Recipe};
-use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
+use crate::{AssetId, EntryId, Error, ErrorKind, HistoryEntry, Recipe};
+use rusqlite::{
+    Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -23,19 +25,39 @@ pub(super) const CATALOG_FORMAT: i64 = 7;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
-pub(crate) fn catalog_error(error: rusqlite::Error) -> Error {
-    let kind = match &error {
-        rusqlite::Error::SqliteFailure(problem, _)
-            if matches!(
-                problem.code,
-                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
-            ) =>
-        {
-            ErrorKind::Conflict
-        }
-        _ => ErrorKind::Catalog,
-    };
-    Error::new(kind, error.to_string())
+/// A catalog failure: `conflict` while another connection holds the database, `catalog` otherwise.
+impl From<rusqlite::Error> for Error {
+    fn from(error: rusqlite::Error) -> Self {
+        let kind = match &error {
+            rusqlite::Error::SqliteFailure(problem, _)
+                if matches!(
+                    problem.code,
+                    ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
+                ) =>
+            {
+                ErrorKind::Conflict
+            }
+            _ => ErrorKind::Catalog,
+        };
+        Error::new(kind, error.to_string())
+    }
+}
+
+/// Run `f` in one `BEGIN IMMEDIATE` transaction and commit what it wrote, or write nothing: an
+/// error from `f` or from the commit rolls the whole transaction back. Every catalog write goes
+/// through here — history through [`EditorService::mutate`], an import, versions, the preset
+/// library and the artifact rows — so each one is short and atomic.
+///
+/// It takes the connection rather than the service, so the caller's closure can still borrow the
+/// service's other fields, such as the artifact root an entry's references are checked in.
+pub(crate) fn write<T>(
+    connection: &mut Connection,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let value = f(&tx)?;
+    tx.commit()?;
+    Ok(value)
 }
 
 pub(super) fn json_error(context: &str, error: impl std::fmt::Display) -> Error {
@@ -61,22 +83,20 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 impl EditorService {
-    pub(super) fn create_schema(connection: &Connection) -> Result<(), Error> {
-        let occupied: bool = connection
-            .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
-                row.get(0)
-            })
-            .map_err(catalog_error)?;
-        if occupied {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                "unmarked catalog is not empty; choose a new catalog path",
-            ));
-        }
-        connection
-            .execute_batch(&format!(
-                "BEGIN IMMEDIATE;
-                 CREATE TABLE assets (
+    pub(super) fn create_schema(connection: &mut Connection) -> Result<(), Error> {
+        write(connection, |tx| {
+            let occupied: bool =
+                tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
+                    row.get(0)
+                })?;
+            if occupied {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    "unmarked catalog is not empty; choose a new catalog path",
+                ));
+            }
+            Ok(tx.execute_batch(&format!(
+                "CREATE TABLE assets (
                     id TEXT PRIMARY KEY,
                     source_root TEXT NOT NULL,
                     locator TEXT NOT NULL,
@@ -161,11 +181,10 @@ impl EditorService {
                     SELECT RAISE(ABORT, 'artifact references are permanent');
                  END;
                  INSERT INTO catalog_meta VALUES ('catalog_id', '{catalog_id}');
-                 PRAGMA user_version={CATALOG_FORMAT};
-                 COMMIT;",
+                 PRAGMA user_version={CATALOG_FORMAT};",
                 catalog_id = uuid::Uuid::new_v4()
-            ))
-            .map_err(catalog_error)
+            ))?)
+        })
     }
 }
 
@@ -178,6 +197,11 @@ pub(super) fn input_hash(input: &Value) -> Result<String, Error> {
     ))
 }
 
+/// Record one mutation's result under its request identity, in the transaction that made the
+/// mutation, so a retry is answered from here. A row already under that identity means the same
+/// request was committed since this one looked it up: that is a `conflict`, whatever the mutation,
+/// and the caller's whole transaction rolls back. The insert itself is the check, so nothing can
+/// commit the request between a check and the row.
 pub(super) fn insert_request(
     tx: &Transaction<'_>,
     asset_id: &AssetId,
@@ -185,44 +209,24 @@ pub(super) fn insert_request(
     input: &Value,
     result: &MutationResult,
 ) -> Result<(), Error> {
-    tx.execute(
-        "INSERT INTO requests VALUES (?1,?2,?3,?4)",
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO requests VALUES (?1,?2,?3,?4)",
         params![
             asset_id.as_str(),
             request_id,
             input_hash(input)?,
             encode(result)?
         ],
-    )
-    .map_err(catalog_error)?;
+    )?;
+    if inserted == 0 {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            "request was committed concurrently",
+        ));
+    }
     Ok(())
 }
 
-pub(super) fn ensure_request_absent(
-    tx: &Transaction<'_>,
-    asset_id: &AssetId,
-    request_id: &str,
-) -> Result<(), Error> {
-    let found: bool = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM requests WHERE asset_id=?1 AND request_id=?2)",
-            params![asset_id.as_str(), request_id],
-            |row| row.get(0),
-        )
-        .map_err(catalog_error)?;
-    if found {
-        Err(Error::new(
-            ErrorKind::Conflict,
-            "request was committed concurrently",
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-/// Every path that writes a history entry comes through here, inside its own transaction, so the
-/// entry's artifact references are checked and recorded with it or not at all: a snapshot can
-/// never point at an artifact the catalog does not hold.
 /// The artifact directory a catalog uses: `<stem>.artifacts` beside the catalog file. One rule, so
 /// anything writing an entry without an open service — a test on the production write path —
 /// names the same directory the service would.
@@ -240,13 +244,18 @@ pub(super) fn default_artifact_root(catalog: &Path) -> PathBuf {
         .join(format!("{stem}.artifacts"))
 }
 
+/// Write one history entry in the caller's transaction: its strokes to the store, its row and its
+/// artifact references. Every path that writes an entry comes through here, so the references are
+/// checked and recorded with the entry or not at all: a snapshot can never point at an artifact the
+/// catalog does not hold.
+///
+/// It writes and does not validate. The caller [admitted](EditorService::admit) the stack before it
+/// opened the transaction, and that is the one validation a commit makes.
 pub(super) fn insert_entry(
-    registry: &ModuleRegistry,
     tx: &Transaction<'_>,
     artifact_root: &Path,
     entry: &HistoryEntry,
 ) -> Result<(), Error> {
-    registry.validate_recipe(&entry.snapshot.recipe)?;
     store_strokes(tx, &entry.snapshot.recipe)?;
     tx.execute(
         "INSERT INTO entries (id,asset_id,sequence,action_id,undo_parent_id,entry_json)
@@ -259,8 +268,7 @@ pub(super) fn insert_entry(
             entry.undo_parent.as_ref().map(EntryId::as_str),
             encode(entry)?
         ],
-    )
-    .map_err(catalog_error)?;
+    )?;
     artifact_store::link_artifacts(tx, artifact_root, entry)
 }
 
@@ -278,18 +286,15 @@ fn store_strokes(tx: &Transaction<'_>, recipe: &Recipe) -> Result<(), Error> {
     if references.is_empty() {
         return Ok(());
     }
-    let mut statement = tx
-        .prepare("INSERT OR IGNORE INTO strokes (id,stroke_json) VALUES (?1,?2)")
-        .map_err(catalog_error)?;
+    let mut statement =
+        tx.prepare("INSERT OR IGNORE INTO strokes (id,stroke_json) VALUES (?1,?2)")?;
     for (_, id) in &references {
         let Some(stroke) = recipe.strokes.get(id) else {
             continue;
         };
         let text = String::from_utf8(stroke.canonical())
             .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot store stroke: {e}")))?;
-        statement
-            .execute(params![id.as_str(), text])
-            .map_err(catalog_error)?;
+        statement.execute(params![id.as_str(), text])?;
     }
     Ok(())
 }
@@ -312,17 +317,14 @@ fn hydrate_strokes(
         return Ok(());
     }
     let mut table = crate::path::StrokeTable::new(origin);
-    let mut statement = connection
-        .prepare("SELECT stroke_json FROM strokes WHERE id=?1")
-        .map_err(catalog_error)?;
+    let mut statement = connection.prepare("SELECT stroke_json FROM strokes WHERE id=?1")?;
     for (_, id) in references {
         if table.get(&id).is_some() {
             continue;
         }
         let stored: Option<String> = statement
             .query_row(params![id.as_str()], |row| row.get(0))
-            .optional()
-            .map_err(catalog_error)?;
+            .optional()?;
         match stored {
             None => table.fault(id, crate::path::StrokeFault::Missing),
             Some(text) => match crate::path::Stroke::from_stored(&id, text.as_bytes()) {
@@ -338,13 +340,11 @@ fn hydrate_strokes(
 }
 
 pub(super) fn next_sequence(connection: &Connection, asset_id: &AssetId) -> Result<u64, Error> {
-    let sequence: i64 = connection
-        .query_row(
-            "SELECT COALESCE(MAX(sequence),-1)+1 FROM entries WHERE asset_id=?1",
-            [asset_id.as_str()],
-            |row| row.get(0),
-        )
-        .map_err(catalog_error)?;
+    let sequence: i64 = connection.query_row(
+        "SELECT COALESCE(MAX(sequence),-1)+1 FROM entries WHERE asset_id=?1",
+        [asset_id.as_str()],
+        |row| row.get(0),
+    )?;
     u64::try_from(sequence).map_err(|_| Error::new(ErrorKind::Catalog, "invalid history sequence"))
 }
 
@@ -405,17 +405,14 @@ pub(super) fn head_from(connection: &Connection, asset_id: &AssetId) -> Result<H
             [asset_id.as_str()],
             asset_row,
         )
-        .optional()
-        .map_err(catalog_error)?
+        .optional()?
         .ok_or_else(|| Error::new(ErrorKind::Validation, "unknown asset"))?
         .into_record()?;
-    let (current, revision, redo): (String, i64, String) = connection
-        .query_row(
-            "SELECT current_entry_id,revision,redo_json FROM asset_state WHERE asset_id=?1",
-            [asset_id.as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(catalog_error)?;
+    let (current, revision, redo): (String, i64, String) = connection.query_row(
+        "SELECT current_entry_id,revision,redo_json FROM asset_state WHERE asset_id=?1",
+        [asset_id.as_str()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
     Ok(Head {
         asset,
         revision: revision as u64,
@@ -432,8 +429,7 @@ pub(super) fn stored_revision(connection: &Connection, asset_id: &AssetId) -> Re
             [asset_id.as_str()],
             |row| row.get::<_, i64>(0),
         )
-        .optional()
-        .map_err(catalog_error)?
+        .optional()?
         .map(|revision| revision as u64)
         .ok_or_else(|| Error::new(ErrorKind::Validation, "unknown asset"))
 }
@@ -449,8 +445,7 @@ pub(super) fn entry_from(
             params![entry_id.as_str(), asset_id.as_str()],
             |row| row.get(0),
         )
-        .optional()
-        .map_err(catalog_error)?
+        .optional()?
         .ok_or_else(|| {
             Error::new(
                 ErrorKind::Validation,
@@ -473,7 +468,7 @@ mod tests {
     use crate::editor::test_support::{
         brushed, commit, fixture, mutation, next_entry, stored_entry_json, stroke, temp,
     };
-    use crate::{Component, ComponentMode, Mask, Snapshot, SnapshotId};
+    use crate::{Component, ComponentMode, Mask, ModuleRegistry, Snapshot, SnapshotId};
     use serde_json::json;
     use std::time::Instant;
 
@@ -824,7 +819,8 @@ mod tests {
                 ..previous.clone()
             };
             revision += 1;
-            insert_entry(&registry, &tx, &default_artifact_root(catalog), &entry).unwrap();
+            registry.validate_recipe(&entry.snapshot.recipe).unwrap();
+            insert_entry(&tx, &default_artifact_root(catalog), &entry).unwrap();
             previous = entry;
         }
         tx.commit().unwrap();
@@ -1057,7 +1053,8 @@ mod tests {
             };
             revision += 1;
             let tx = connection.transaction().unwrap();
-            insert_entry(&registry, &tx, &default_artifact_root(catalog), &entry).unwrap();
+            registry.validate_recipe(&entry.snapshot.recipe).unwrap();
+            insert_entry(&tx, &default_artifact_root(catalog), &entry).unwrap();
             tx.execute(
                 "UPDATE asset_state SET current_entry_id=?1, revision=?2 WHERE asset_id=?3",
                 params![entry.id.as_str(), revision as i64, asset.as_str()],
@@ -1401,32 +1398,36 @@ mod tests {
             masks.len(),
             crate::MASK_BYTES_PER_RECIPE / 1024,
         );
-        let over = HistoryEntry {
-            id: EntryId::new(),
-            sequence: state.current_entry.sequence + 1,
-            label: "Brush past the bound".into(),
-            undo_parent: Some(current.clone()),
-            base_revision: state.revision,
-            result_revision: state.revision + 1,
-            snapshot: Snapshot {
-                id: SnapshotId::new(),
-                asset_id: asset.clone(),
-                recipe: Recipe {
-                    masks,
-                    strokes: table,
-                    ..base
-                },
+        let over = Snapshot {
+            id: SnapshotId::new(),
+            asset_id: asset.clone(),
+            recipe: Recipe {
+                masks,
+                strokes: table,
+                ..base
             },
-            ..state.current_entry.clone()
         };
 
-        let registry = ModuleRegistry::builtin();
-        let mut connection = Connection::open(&catalog).unwrap();
-        let tx = connection.transaction().unwrap();
-        let error = insert_entry(&registry, &tx, &default_artifact_root(&catalog), &over)
+        // Committed through the one write path, which admits the stack before it opens a
+        // transaction.
+        let mut service = EditorService::open(&catalog).unwrap();
+        let error = service
+            .commit_snapshot(
+                &asset,
+                mutation(state.revision, "over"),
+                json!({"action": "brush"}),
+                over,
+                &state.asset,
+                crate::editor::history::CommittedAction {
+                    input: crate::modules::ActionInput {
+                        action_id: "brush".into(),
+                        parameters: serde_json::Map::new(),
+                    },
+                    label: "Brush past the bound".into(),
+                },
+            )
             .expect_err("past the serialized bound");
-        drop(tx);
-        drop(connection);
+        drop(service);
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         assert_eq!(
             error.detail,
@@ -1438,7 +1439,7 @@ mod tests {
         );
 
         // Byte for byte as it was: the bound is checked before anything is written, so the refused
-        // entry left neither an entry row nor a stroke in the store.
+        // stack left neither an entry row, a request nor a stroke in the store.
         let after = std::fs::read(&catalog).unwrap();
         assert_eq!(
             digest(&before),

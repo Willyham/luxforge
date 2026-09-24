@@ -3,7 +3,7 @@
 //! before anything compiles it. Reading and hashing artifact bytes belongs to
 //! [`crate::artifacts`] on a worker; the owner only stats files and reads the small manifest, so
 //! binding a stack costs `O(references)` lookups and stats (performance rule 5).
-use super::{EditorService, SourceSignature, catalog_error, source_signature};
+use super::{EditorService, SourceSignature, source_signature, write};
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, Recipe,
     artifacts::{
@@ -12,7 +12,7 @@ use crate::{
         PreparedArtifact, RootState, VerifiedArtifact,
     },
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::{
     collections::HashSet,
@@ -69,7 +69,7 @@ fn artifact_row(
     connection: &Connection,
     id: &ArtifactId,
 ) -> Result<Option<(u64, ArtifactMeta)>, Error> {
-    connection
+    Ok(connection
         .query_row(
             "SELECT bytes,kind,width,height,colour FROM artifacts WHERE id=?1",
             [id.as_str()],
@@ -85,8 +85,7 @@ fn artifact_row(
                 ))
             },
         )
-        .optional()
-        .map_err(catalog_error)
+        .optional()?)
 }
 
 /// Check that every artifact a stack references is recorded in the catalog and present in the root
@@ -119,8 +118,7 @@ pub(super) fn link_artifacts(
         tx.execute(
             "INSERT INTO artifact_refs (entry_id,artifact_id) VALUES (?1,?2)",
             params![entry.id.as_str(), id.as_str()],
-        )
-        .map_err(catalog_error)?;
+        )?;
     }
     Ok(())
 }
@@ -130,18 +128,14 @@ fn collection_candidates(
     connection: &Connection,
     live: &LiveArtifacts,
 ) -> Result<Vec<ArtifactId>, Error> {
-    let mut statement = connection
-        .prepare(
-            "SELECT id FROM artifacts a WHERE NOT EXISTS
+    let mut statement = connection.prepare(
+        "SELECT id FROM artifacts a WHERE NOT EXISTS
              (SELECT 1 FROM artifact_refs r WHERE r.artifact_id=a.id) ORDER BY id",
-        )
-        .map_err(catalog_error)?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(catalog_error)?;
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
     let mut candidates = Vec::new();
     for row in rows {
-        let id = ArtifactId::parse(row.map_err(catalog_error)?)?;
+        let id = ArtifactId::parse(row?)?;
         if !live.contains(&id) {
             candidates.push(id);
         }
@@ -187,28 +181,25 @@ impl EditorService {
             ));
         }
         let signature = object_signature(&self.artifact_root, &record.id, record.bytes)?;
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO artifacts
-             (id,sha256,bytes,kind,width,height,colour,module_id,created_ms)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![
-                record.id.as_str(),
-                record.sha256,
-                record.bytes as i64,
-                record.meta.kind,
-                record.meta.width.map(i64::from),
-                record.meta.height.map(i64::from),
-                record.meta.colour,
-                record.module_id,
-                record.created_ms,
-            ],
-        )
-        .map_err(catalog_error)?;
-        tx.commit().map_err(catalog_error)?;
+        write(&mut self.connection, |tx| {
+            tx.execute(
+                "INSERT OR IGNORE INTO artifacts
+                 (id,sha256,bytes,kind,width,height,colour,module_id,created_ms)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![
+                    record.id.as_str(),
+                    record.sha256,
+                    record.bytes as i64,
+                    record.meta.kind,
+                    record.meta.width.map(i64::from),
+                    record.meta.height.map(i64::from),
+                    record.meta.colour,
+                    record.module_id,
+                    record.created_ms,
+                ],
+            )?;
+            Ok(())
+        })?;
         if live {
             self.live_artifacts.mark(&record.id);
         }
@@ -397,22 +388,16 @@ impl EditorService {
     /// `artifact.status`: the root, what its manifest says, and how many artifacts are referenced,
     /// collectable and recorded in bytes. Reads the manifest and counts rows; touches no object.
     pub(crate) fn artifact_status(&self) -> Result<Value, Error> {
-        let (rows, bytes): (i64, i64) = self
-            .connection
-            .query_row(
-                "SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM artifacts",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(catalog_error)?;
-        let referenced: i64 = self
-            .connection
-            .query_row(
-                "SELECT COUNT(DISTINCT artifact_id) FROM artifact_refs",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(catalog_error)?;
+        let (rows, bytes): (i64, i64) = self.connection.query_row(
+            "SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM artifacts",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let referenced: i64 = self.connection.query_row(
+            "SELECT COUNT(DISTINCT artifact_id) FROM artifact_refs",
+            [],
+            |row| row.get(0),
+        )?;
         let state = match artifacts::root_state(&self.artifact_root, &self.catalog_id)? {
             RootState::Absent if rows == 0 => "absent",
             RootState::Absent | RootState::Unmarked => "missing",
@@ -454,17 +439,13 @@ impl EditorService {
                     })
                 },
             )
-            .optional()
-            .map_err(catalog_error)?
+            .optional()?
             .ok_or_else(|| Error::new(ErrorKind::Validation, format!("unknown artifact {id}")))?;
-        let references: i64 = self
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM artifact_refs WHERE artifact_id=?1",
-                [id.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(catalog_error)?;
+        let references: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM artifact_refs WHERE artifact_id=?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )?;
         let file = match artifacts::object_path(&self.artifact_root, id).metadata() {
             Ok(metadata) if metadata.is_file() && metadata.len() == record.bytes => "present",
             Ok(metadata) if metadata.is_file() => "wrong-length",
@@ -483,29 +464,20 @@ impl EditorService {
     /// artifacts the catalog still records, so it removes every other object file. A referenced
     /// row is never removed; the foreign keys refuse it even if this query were wrong.
     pub(crate) fn plan_collection(&mut self) -> Result<Collection, Error> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        let removed = collection_candidates(&tx, &self.live_artifacts)?;
-        for id in &removed {
-            tx.execute("DELETE FROM artifacts WHERE id=?1", [id.as_str()])
-                .map_err(catalog_error)?;
-        }
-        let keep = {
-            let mut statement = tx
-                .prepare("SELECT id FROM artifacts")
-                .map_err(catalog_error)?;
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(catalog_error)?;
+        let live = &self.live_artifacts;
+        let (removed, keep) = write(&mut self.connection, |tx| {
+            let removed = collection_candidates(tx, live)?;
+            for id in &removed {
+                tx.execute("DELETE FROM artifacts WHERE id=?1", [id.as_str()])?;
+            }
+            let mut statement = tx.prepare("SELECT id FROM artifacts")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
             let mut keep = HashSet::new();
             for row in rows {
-                keep.insert(ArtifactId::parse(row.map_err(catalog_error)?)?);
+                keep.insert(ArtifactId::parse(row?)?);
             }
-            keep
-        };
-        tx.commit().map_err(catalog_error)?;
+            Ok((removed, keep))
+        })?;
         let mut cache = self.prepared_artifacts.borrow_mut();
         for id in &removed {
             cache.remove(id);

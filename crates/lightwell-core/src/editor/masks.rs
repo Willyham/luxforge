@@ -1,11 +1,10 @@
 use super::{
     EditorService, EditorState, MutationResult, PixelInput,
-    history::{CommittedAction, ensure_revision, request_input},
+    history::{Change, CommittedAction, request_input},
     source::validate_source_recipe,
 };
 use crate::{
-    AssetId, EntryId, Error, ErrorKind, Layer, MaskId, ModuleRegistry, Mutation, Recipe, Snapshot,
-    SnapshotId,
+    AssetId, EntryId, Error, ErrorKind, Layer, MaskId, ModuleRegistry, Mutation, Recipe,
     mask::commands::{
         MaskChange, MaskCommand, MaskCommandResult, MaskListing, MaskOutcome, MaskTarget,
     },
@@ -31,10 +30,10 @@ impl EditorService {
     /// layers through [`ActionPlan`] and must never rewrite the recipe, while every one of these
     /// rewrites the mask table beside the layers. Everything else is the delivered path and not a
     /// second implementation of it: the parameters go through the same [`check_parameters`], the
-    /// request identity and its deduplication are built by the same [`request_input`], the revision
-    /// is checked by the same [`ensure_revision`], a change is persisted by the same
-    /// [`Self::commit_snapshot`] — one history entry, one immutable snapshot, one validated and
-    /// compiled recipe — and a change that changes nothing takes the same [`Self::persist_noop`].
+    /// request identity is built by the same [`request_input`], and the envelope, the
+    /// deduplication, the revision, the admission of the resulting recipe and its write are the one
+    /// [`Self::mutate`] every mutation takes — one history entry, one immutable snapshot, one
+    /// validated and compiled recipe, or a recorded no-op.
     pub fn apply_mask_command(
         &mut self,
         asset_id: &AssetId,
@@ -43,7 +42,6 @@ impl EditorService {
         parameters: Value,
         target: MaskTarget,
     ) -> Result<MaskCommandResult, Error> {
-        mutation.validate()?;
         command.checked_target(&target)?;
         let checked = check_parameters(&command.action, &parameters)?;
         // The entry stores the declared parameters and the envelope fields naming what they addressed,
@@ -57,56 +55,46 @@ impl EditorService {
         // parameters above, so it is hashed with them. The field a module action passes here names
         // the *layer* an edit addressed, which is a different question a mask command never asks.
         let request = request_input(&input, &mutation, None)?;
-        if let Some(result) = self.request_result(asset_id, &mutation.request_id, &request)? {
-            return self.mask_report(asset_id, result);
-        }
-        let state = self.state(asset_id)?;
-        ensure_revision(&state, mutation.expected_revision)?;
-        let recipe = &state.current_entry.snapshot.recipe;
-        validate_source_recipe(&state.asset, recipe)?;
-        let registry = self.registry.clone();
-        // A stroke that asks to be limited to a colour is seeded here, by the host, from the pixel
-        // the operation this mask modulates receives at the position the stroke began. The request
-        // named the limit and never the colour, so nothing a client sends can put a colour in a
-        // stroke that the photograph does not have at that position, and the planner below stays
-        // pure — it is handed the pixel rather than reading one.
-        let seed = self.mask_colour_seed(&state, command, recipe, &target, &checked)?;
-        match crate::mask::commands::plan(command, recipe, &target, &checked, &registry, seed)? {
-            MaskOutcome::NoOp => Ok(MaskCommandResult::plain(
-                self.persist_noop(asset_id, &mutation, &request, &state)?,
-            )),
-            MaskOutcome::Change(MaskChange {
-                recipe,
-                label,
-                mask,
-                component,
-                removed_layers,
-            }) => {
-                let snapshot = Snapshot {
-                    id: SnapshotId::new(),
-                    asset_id: asset_id.clone(),
+        // What the command changed beside the recipe, which its report names.
+        let mut changed = None;
+        let result = self.mutate(asset_id, &mutation, &request, |service, state| {
+            let recipe = &state.current_entry.snapshot.recipe;
+            validate_source_recipe(&state.asset, recipe)?;
+            // A stroke that asks to be limited to a colour is seeded here, by the host, from the
+            // pixel the operation this mask modulates receives at the position the stroke began.
+            // The request named the limit and never the colour, so nothing a client sends can put
+            // a colour in a stroke that the photograph does not have at that position, and the
+            // planner below stays pure — it is handed the pixel rather than reading one.
+            let seed = service.mask_colour_seed(state, command, recipe, &target, &checked)?;
+            let registry = &service.registry;
+            match crate::mask::commands::plan(command, recipe, &target, &checked, registry, seed)? {
+                MaskOutcome::NoOp => Ok(Change::NoOp),
+                MaskOutcome::Change(MaskChange {
                     recipe,
-                };
-                let mutation = self.commit_snapshot(
-                    asset_id,
-                    mutation,
-                    request,
-                    snapshot,
-                    &state.asset,
-                    CommittedAction {
-                        input,
-                        label: label.clone(),
-                    },
-                )?;
-                Ok(MaskCommandResult {
-                    mutation,
-                    label: Some(label),
+                    label,
                     mask,
                     component,
                     removed_layers,
-                })
+                }) => {
+                    changed = Some((label.clone(), mask, component, removed_layers));
+                    Ok(Change::append(recipe, CommittedAction { input, label }))
+                }
             }
+        })?;
+        // A retry is answered from the entry the original call wrote, so it reports the same.
+        if result.deduplicated {
+            return self.mask_report(asset_id, result);
         }
+        Ok(match changed {
+            Some((label, mask, component, removed_layers)) => MaskCommandResult {
+                mutation: result,
+                label: Some(label),
+                mask,
+                component,
+                removed_layers,
+            },
+            None => MaskCommandResult::plain(result),
+        })
     }
 
     /// The report of a deduplicated retry, read back from the entry the original call wrote so the
@@ -372,7 +360,7 @@ mod tests {
         MutationOutcome,
         test_support::{fixture, mutation, stored_entry_json, temp},
     };
-    use crate::{Component, ComponentMode, HistoryEntry, Mask, Transform};
+    use crate::{Component, ComponentMode, HistoryEntry, Mask, Snapshot, SnapshotId, Transform};
     use rusqlite::{Connection, params};
     use serde_json::json;
     use std::path::Path;
@@ -422,7 +410,7 @@ mod tests {
 
     /// Write one entry and make it current without going through a mutation. The `mask.*` commands
     /// arrive later, so this is the only way to hold a stored masked stack against reopen now; a
-    /// dangling reference could not be written through [`insert_entry`] at all, which is its own
+    /// dangling reference could not be written through [`EditorService::mutate`] at all, which is its own
     /// guarantee and is asserted below.
     fn plant(catalog: &Path, entry: &HistoryEntry) {
         let connection = Connection::open(catalog).unwrap();
@@ -787,7 +775,7 @@ mod tests {
                 .unwrap_err()
                 .kind,
             ErrorKind::Incompatible,
-            "insert_entry validates the same recipe before any row is written"
+            "every commit admits the same recipe before any row is written"
         );
         drop(service);
         plant(&catalog, &dangling);

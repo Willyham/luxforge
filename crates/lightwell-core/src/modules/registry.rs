@@ -510,6 +510,8 @@ impl ModuleRegistry {
     }
 
     pub fn validate_recipe(&self, recipe: &Recipe) -> Result<(), Error> {
+        #[cfg(test)]
+        crate::editor::validations::validated();
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
         for layer in &recipe.layers {
