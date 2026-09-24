@@ -112,6 +112,12 @@ impl SpatialUnit for Dehaze {
         filters::scratch_bytes(full.saturating_add(reduced))
     }
 
+    fn estimate_key(&self) -> Option<String> {
+        // Atmospheric light depends only on the operation's input reduction, never on the
+        // amount or radii used by apply. The host separately keys the source, prefix and stage.
+        Some("presence dehaze atmosphere".into())
+    }
+
     /// The atmospheric light: the pointwise channel minimum of the host's 1/16-per-side reduction,
     /// the brightest [`ATMOSPHERE_FRACTION`] of those pixels (at least [`ATMOSPHERE_MIN_COUNT`]),
     /// their per-channel mean, floored at [`A_FLOOR`]. Three `f64`, 24 bytes.

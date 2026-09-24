@@ -604,15 +604,12 @@ pub(crate) fn reserve_one(plan: &SpatialPlan) -> SpatialReservation<'static> {
 /// estimate is computed from a reduction of that stage, and the prefix hash because the layers
 /// before the operation decide what the stage holds.
 ///
-/// The unit's own description is part of it too, not just its position. A module compiles its
+/// The unit's estimate identity is part of it too, not just its position. A module compiles its
 /// payload into whichever units that payload needs, so the same position of the same stack can hold
 /// a different unit from one evaluation to the next — the Presence module omits a unit whose amount
 /// is zero, which moves the others up — and a position alone would hand one unit the estimate
-/// another prepared, including the answer "this unit wants none". Two units that describe themselves
-/// identically process identically, which is the trait's own rule, so the description is exactly the
-/// identity this store needs. The cost is that a unit whose coefficients changed prepares again; for
-/// the one estimate in this design, an atmospheric light that does not depend on the amount, that is
-/// one bounded reduction of the stage per changed amount.
+/// another prepared, including a cached `None`. By default the estimate identity is the unit's
+/// complete description; a unit may exclude only coefficients its estimate does not depend on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EstimateKey {
     pub(crate) fingerprint: String,
@@ -620,12 +617,12 @@ pub(crate) struct EstimateKey {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) unit: usize,
-    pub(crate) describe: String,
+    pub(crate) estimate: String,
 }
 
 /// The bounded store of prepared estimates: [`ESTIMATE_STORE_ENTRIES`] entries, oldest first, each
-/// at most [`crate::modules::MAX_GLOBAL_BYTES`]. A unit that wants no estimate is cached as such,
-/// so a second evaluation of the same stack costs no reduction at all.
+/// at most [`crate::modules::MAX_GLOBAL_BYTES`]. A prepared `None` is cached too. A unit that
+/// declares no estimate skips the store and reduction entirely.
 static ESTIMATES: Mutex<VecDeque<(EstimateKey, Option<Global>)>> = Mutex::new(VecDeque::new());
 
 fn estimates() -> std::sync::MutexGuard<'static, VecDeque<(EstimateKey, Option<Global>)>> {
@@ -665,8 +662,8 @@ pub fn cached_estimates() -> usize {
 
 /// The global estimate of every unit of an operation, from the store where it is already there and
 /// from one reduction of the operation's input stage otherwise. The reduction is built at most
-/// once, and only when some unit is missing: a stack evaluated twice reduces nothing the second
-/// time.
+/// once, and only when a unit that needs it is missing: units declaring no estimate and a stack
+/// evaluated twice reduce nothing.
 pub(crate) fn resolve_globals(
     operation: &SpatialOperation,
     stage: Stage,
@@ -674,20 +671,25 @@ pub(crate) fn resolve_globals(
     prefix_hash: &str,
     reduce: impl FnOnce() -> Result<Reduction, Error>,
 ) -> Result<Vec<Option<Global>>, Error> {
-    let keys: Vec<EstimateKey> = operation
+    let keys: Vec<Option<EstimateKey>> = operation
         .units()
         .iter()
         .enumerate()
-        .map(|(unit, declared)| EstimateKey {
-            fingerprint: fingerprint.to_owned(),
-            prefix_hash: prefix_hash.to_owned(),
-            width: stage.width,
-            height: stage.height,
-            unit,
-            describe: declared.describe(),
+        .map(|(unit, declared)| {
+            declared.estimate_key().map(|estimate| EstimateKey {
+                fingerprint: fingerprint.to_owned(),
+                prefix_hash: prefix_hash.to_owned(),
+                width: stage.width,
+                height: stage.height,
+                unit,
+                estimate,
+            })
         })
         .collect();
-    let hits: Vec<Option<Option<Global>>> = keys.iter().map(cached).collect();
+    let hits: Vec<Option<Option<Global>>> = keys
+        .iter()
+        .map(|key| key.as_ref().map_or(Some(None), cached))
+        .collect();
     if hits.iter().all(Option::is_some) {
         return Ok(hits.into_iter().map(Option::unwrap).collect());
     }
@@ -698,7 +700,7 @@ pub(crate) fn resolve_globals(
             Some(global) => global,
             None => {
                 let prepared = unit.prepare(&reduction);
-                remember(key, prepared.clone());
+                remember(key.expect("a missing estimate has a key"), prepared.clone());
                 prepared
             }
         };
@@ -1618,6 +1620,62 @@ pub(crate) mod tests {
             approximate_alone,
             "an approximate render after an exact one estimated from its own pixels"
         );
+    }
+
+    #[test]
+    fn strength_independent_dehaze_estimates_keep_white_balance_inputs_distinct() {
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        let source = linear_source(40, 30);
+        let seed = recipe(vec![Layer {
+            id: LayerId::new(),
+            effect_id: crate::PRESENCE_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"dehaze": 60.0}),
+            mask: None,
+            artifacts: Vec::new(),
+        }]);
+        let mut changed = seed.clone();
+        changed.layers[0].payload = json!({"dehaze": 61.0});
+        let exact = LinearSettings::default();
+        let approximate = |red, blue| LinearSettings {
+            exposure_ev: 0.0,
+            white_balance: Some(
+                crate::WhiteBalanceApproximation::from_matrix([
+                    [red, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, blue],
+                ])
+                .unwrap(),
+            ),
+        };
+        let settings = [exact, approximate(1.4, 0.6), approximate(0.7, 1.3)];
+        let render = |recipe: &Recipe, settings| {
+            crate::render_linear(&registry, &source, SnapshotId::new(), recipe, settings)
+                .unwrap()
+                .rgba
+        };
+        let expected = settings.map(|settings| {
+            clear_estimates();
+            render(&changed, settings)
+        });
+        clear_estimates();
+        for settings in settings {
+            render(&seed, settings);
+        }
+        assert_eq!(
+            cached_estimates(),
+            3,
+            "each white balance owns its estimate"
+        );
+        for (settings, expected) in settings.into_iter().zip(expected) {
+            assert_eq!(render(&changed, settings), expected);
+            assert_eq!(
+                cached_estimates(),
+                3,
+                "only amount changed: reuse the matching input"
+            );
+        }
     }
 
     #[test]

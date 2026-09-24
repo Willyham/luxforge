@@ -108,6 +108,10 @@ impl SpatialUnit for Texture {
         filters::scratch_bytes(values.saturating_mul(3 + GUIDED_SELF_PLANES as u64))
     }
 
+    fn estimate_key(&self) -> Option<String> {
+        None
+    }
+
     /// Texture needs no global estimate.
     fn prepare(&self, _: &Reduction) -> Option<Global> {
         None

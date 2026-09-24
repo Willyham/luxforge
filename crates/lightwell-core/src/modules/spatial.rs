@@ -531,10 +531,22 @@ pub trait SpatialUnit: Send + Sync {
     /// slice as uninitialized and must not expect its own values back on the next tile.
     fn scratch_bytes(&self, region: Stage) -> u64;
 
+    /// The identity of the estimate this unit prepares, or `None` when it needs no estimate and
+    /// the host may skip both the reduction and [`Self::prepare`]. The default preserves the
+    /// complete unit description: a provider need only override this to declare no estimate or to
+    /// omit coefficients that cannot affect its prepared value.
+    ///
+    /// Two units with the same key must prepare the same value from the same reduction. The host
+    /// also keys by source, upstream recipe, stage and unit position; this key must still identify
+    /// the unit itself, because another unit can occupy the same position in a different recipe.
+    fn estimate_key(&self) -> Option<String> {
+        Some(self.describe())
+    }
+
     /// The global estimate this unit wants, prepared once from a bounded reduction of the whole
     /// operation input stage, or `None` when the unit needs none. The host caches the answer,
     /// including `None`, keyed by the source, the layers before this operation, the stage and the
-    /// unit's position in the operation.
+    /// unit's position and [`Self::estimate_key`]. It never calls this when the key is `None`.
     fn prepare(&self, reduction: &Reduction) -> Option<Global>;
 
     /// Fill `output.region()` from `input`, reading no further than [`Self::halo`] beyond it, with

@@ -94,6 +94,10 @@ impl SpatialUnit for Clarity {
         filters::scratch_bytes(full.saturating_add(reduced))
     }
 
+    fn estimate_key(&self) -> Option<String> {
+        None
+    }
+
     /// Clarity needs no global estimate.
     fn prepare(&self, _: &Reduction) -> Option<Global> {
         None
