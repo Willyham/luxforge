@@ -19,6 +19,32 @@ pub(crate) struct RawPrepared {
     pub(crate) gains: [f32; 3],
 }
 
+/// A known recipe's source-only target, resolved without reading pixels on the catalog owner.
+/// The freshly unpacked interpretation must match before its gains can develop that mosaic.
+#[derive(Clone, Debug)]
+pub(crate) struct RawPreparation {
+    pub(crate) metadata: RawMetadata,
+    pub(crate) gains: [f32; 3],
+}
+
+impl RawPreparation {
+    pub(crate) fn validate(&self, metadata: &RawMetadata) -> Result<(), Error> {
+        // Both sides are typed first, so catalog JSON's shortest f32 decimals compare at the
+        // native precision, exactly as they do when the owner adopts the completed source.
+        let value = |metadata: &RawMetadata| {
+            serde_json::to_value(metadata)
+                .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
+        };
+        if value(&self.metadata)? != value(metadata)? {
+            return Err(Error::new(
+                ErrorKind::Incompatible,
+                "original source interpretation changed",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl PreparedSource {
     pub(crate) fn dimensions(&self) -> (u32, u32) {
         match self {
@@ -59,10 +85,17 @@ impl RawPrepared {
     pub(crate) fn decode(
         bytes: Vec<u8>,
         fingerprint: String,
+        target: Option<&RawPreparation>,
         cancel: &AtomicBool,
     ) -> Result<Self, Error> {
         let sensor = Arc::new(RawSource::decode(Arc::from(bytes), cancel).map_err(raw_error)?);
-        let gains = sensor.metadata().as_shot_gains;
+        let gains = match target {
+            Some(target) => {
+                target.validate(sensor.metadata())?;
+                target.gains
+            }
+            None => sensor.metadata().as_shot_gains,
+        };
         Self::develop(sensor, fingerprint, gains, cancel)
     }
 
@@ -326,7 +359,7 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let fingerprint = format!("{:x}", Sha256::digest(&bytes));
         let cancel = AtomicBool::new(false);
-        let as_shot = RawPrepared::decode(bytes, fingerprint.clone(), &cancel).unwrap();
+        let as_shot = RawPrepared::decode(bytes, fingerprint.clone(), None, &cancel).unwrap();
         let metadata = as_shot.sensor.metadata().clone();
         let camera = metadata
             .rgb_cam

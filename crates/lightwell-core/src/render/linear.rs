@@ -2564,7 +2564,7 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let prepared =
-            crate::source::RawPrepared::decode(bytes, "sha256:point-sample".into(), &cancel)
+            crate::source::RawPrepared::decode(bytes, "sha256:point-sample".into(), None, &cancel)
                 .unwrap();
         let image = prepared.linear.clone().unwrap();
         let registry = ModuleRegistry::builtin();

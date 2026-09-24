@@ -14,7 +14,7 @@ use crate::{
     open_source_bytes, read_bounded_file, render,
     render::{Evaluation, locate_dimensions, stage_transform},
     render_linear, sample_linear,
-    source::{PreparedSource, RawPrepared},
+    source::{PreparedSource, RawPreparation, RawPrepared},
 };
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -336,6 +336,47 @@ pub(crate) struct PreparedFile {
     pub(crate) fingerprint: String,
 }
 
+/// Immutable source settings for a known file. Queued jobs carry only bounded catalog metadata,
+/// never a decoded source or a recipe-sized pixel buffer. Later recipe changes still pass through
+/// the normal strict development check before a preview, sample or analysis can use the result.
+#[derive(Clone, Debug)]
+pub(crate) struct FilePreparation {
+    pub(crate) fingerprint: String,
+    pub(crate) raw: Option<RawPreparation>,
+}
+
+impl FilePreparation {
+    fn for_recipe(asset: &AssetRecord, recipe: &Recipe) -> Result<Self, Error> {
+        validate_source_recipe(asset, recipe)?;
+        let raw = match &asset.source {
+            SourceKind::Jpeg => None,
+            SourceKind::Raw { metadata } => {
+                let metadata = parse_raw_interpretation(metadata, "RAW interpretation")?;
+                let payload = raw_payload(recipe)?;
+                let gains = match payload.wb_mode {
+                    crate::WhiteBalanceMode::AsShot => metadata.as_shot_gains,
+                    crate::WhiteBalanceMode::Custom => payload.gains,
+                };
+                Some(RawPreparation { metadata, gains })
+            }
+        };
+        Ok(Self {
+            fingerprint: asset.fingerprint.clone(),
+            raw,
+        })
+    }
+
+    fn verify_fingerprint(&self, fingerprint: &str) -> Result<(), Error> {
+        if self.fingerprint != fingerprint {
+            return Err(Error::new(
+                ErrorKind::SourceUnavailable,
+                "original source fingerprint changed",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct RawDevelopment {
     pub(crate) asset_id: AssetId,
@@ -592,11 +633,12 @@ impl EditorService {
 
     /// Read, hash and decode from the same bounded, stable read-only file handle on a worker.
     pub(crate) fn prepare_file(path: &Path) -> Result<PreparedFile, Error> {
-        Self::prepare_file_cancel(path, &AtomicBool::new(false))
+        Self::prepare_file_cancel(path, None, &AtomicBool::new(false))
     }
 
     pub(crate) fn prepare_file_cancel(
         path: &Path,
+        target: Option<&FilePreparation>,
         cancel: &AtomicBool,
     ) -> Result<PreparedFile, Error> {
         let canonical = path.canonicalize().map_err(|e| {
@@ -624,10 +666,33 @@ impl EditorService {
         let (source, fingerprint) = if bytes.starts_with(&[0xff, 0xd8]) {
             let image = open_source_bytes(bytes)?;
             let fingerprint = image.fingerprint.clone();
+            if let Some(target) = target {
+                target.verify_fingerprint(&fingerprint)?;
+                if target.raw.is_some() {
+                    return Err(Error::new(
+                        ErrorKind::Incompatible,
+                        "original source interpretation changed",
+                    ));
+                }
+            }
             (PreparedSource::Jpeg(image), fingerprint)
         } else {
             let fingerprint = format!("{:x}", Sha256::digest(&bytes));
-            let raw = RawPrepared::decode(bytes, fingerprint.clone(), cancel)?;
+            if let Some(target) = target {
+                target.verify_fingerprint(&fingerprint)?;
+                if target.raw.is_none() {
+                    return Err(Error::new(
+                        ErrorKind::Incompatible,
+                        "original source interpretation changed",
+                    ));
+                }
+            }
+            let raw = RawPrepared::decode(
+                bytes,
+                fingerprint.clone(),
+                target.and_then(|target| target.raw.as_ref()),
+                cancel,
+            )?;
             (PreparedSource::Raw(raw), fingerprint)
         };
         let handle_after = file
@@ -652,13 +717,35 @@ impl EditorService {
         })
     }
 
-    pub(crate) fn known_fingerprint(&self, path: &Path) -> Result<Option<String>, Error> {
+    pub(crate) fn known_file_preparation(
+        &self,
+        path: &Path,
+    ) -> Result<Option<FilePreparation>, Error> {
         let (canonical, signature) = Self::request_signature(path)?;
-        self.connection.query_row(
-            "SELECT fingerprint FROM assets WHERE canonical_locator=?1 OR file_identity=?2 LIMIT 1",
-            params![canonical.to_string_lossy(), signature.file_identity],
-            |row| row.get(0),
-        ).optional().map_err(catalog_error)
+        let id: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT id FROM assets WHERE canonical_locator=?1 OR file_identity=?2 LIMIT 1",
+                params![canonical.to_string_lossy(), signature.file_identity],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(catalog_error)?;
+        id.map(|id| self.file_preparation(&AssetId::parse(id)?, None))
+            .transpose()
+    }
+
+    pub(crate) fn file_preparation(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<FilePreparation, Error> {
+        let state = self.state(asset_id)?;
+        let entry = match entry_id {
+            Some(id) => self.entry(asset_id, id)?,
+            None => state.current_entry,
+        };
+        FilePreparation::for_recipe(&state.asset, &entry.snapshot.recipe)
     }
 
     /// A repeated import can reuse the one verified immutable decode without a new worker job.
@@ -851,8 +938,9 @@ impl EditorService {
 
     /// Direct service clients may prepare synchronously; the API owner never calls this path.
     pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
-        self.import_prepared(Self::prepare_file(path)?)
-            .map(|(state, _)| state)
+        let target = self.known_file_preparation(path)?;
+        let prepared = Self::prepare_file_cancel(path, target.as_ref(), &AtomicBool::new(false))?;
+        self.import_prepared(prepared).map(|(state, _)| state)
     }
 
     /// Complete an import only after a worker has verified and decoded its exact source bytes.
@@ -3717,6 +3805,51 @@ mod tests {
             .with_layer_inserted(0, payload.layer(layer_id.clone()))
             .unwrap();
         validate_source_recipe(&asset, &snapshot.recipe).unwrap();
+        let target = FilePreparation::for_recipe(&asset, &snapshot.recipe).unwrap();
+        assert_eq!(target.fingerprint, asset.fingerprint);
+        let raw = target.raw.as_ref().unwrap();
+        assert_eq!(raw.gains, metadata.as_shot_gains);
+        raw.validate(&metadata).unwrap();
+        let mut changed = metadata.clone();
+        changed.backend.push_str(" changed");
+        assert_eq!(
+            raw.validate(&changed).unwrap_err().kind,
+            ErrorKind::Incompatible
+        );
+        let mut changed = metadata.clone();
+        changed.cam_xyz[0][0] += 0.1;
+        assert_eq!(
+            raw.validate(&changed).unwrap_err().kind,
+            ErrorKind::Incompatible
+        );
+        target.verify_fingerprint(&asset.fingerprint).unwrap();
+        assert_eq!(
+            target.verify_fingerprint("changed").unwrap_err().kind,
+            ErrorKind::SourceUnavailable
+        );
+        // As-shot resolves from the immutable interpretation, even with unused custom gains.
+        let mut selected = payload.clone();
+        selected.gains[0] += 0.5;
+        let mut recipe = snapshot.recipe.clone();
+        recipe.layers[0] = selected.layer(layer_id.clone());
+        assert_eq!(
+            FilePreparation::for_recipe(&asset, &recipe)
+                .unwrap()
+                .raw
+                .unwrap()
+                .gains,
+            metadata.as_shot_gains
+        );
+        selected.wb_mode = crate::WhiteBalanceMode::Custom;
+        recipe.layers[0] = selected.layer(layer_id.clone());
+        assert_eq!(
+            FilePreparation::for_recipe(&asset, &recipe)
+                .unwrap()
+                .raw
+                .unwrap()
+                .gains,
+            selected.gains
+        );
         let mut incompatible_asset = asset.clone();
         if let (
             SourceKind::Raw { metadata },
@@ -3747,7 +3880,32 @@ mod tests {
                 ErrorKind::Incompatible,
                 "{calibration}"
             );
+            assert_eq!(
+                FilePreparation::for_recipe(&asset, &recipe)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Incompatible,
+                "target refuses {calibration}"
+            );
         }
+    }
+
+    #[test]
+    fn file_preparation_preserves_hash_checks() {
+        let path = fixture();
+        let prepared = EditorService::prepare_file(&path).unwrap();
+        let target = FilePreparation {
+            fingerprint: prepared.fingerprint,
+            raw: None,
+        };
+        EditorService::prepare_file_cancel(&path, Some(&target), &AtomicBool::new(false)).unwrap();
+        let wrong = FilePreparation {
+            fingerprint: "different bytes".into(),
+            ..target
+        };
+        let result =
+            EditorService::prepare_file_cancel(&path, Some(&wrong), &AtomicBool::new(false));
+        assert_eq!(result.err().unwrap().kind, ErrorKind::SourceUnavailable);
     }
 
     /// A camera matrix with rows summing to one and strong cross terms, as a real `rgb_cam` has.

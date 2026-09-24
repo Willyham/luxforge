@@ -9,7 +9,7 @@ use crate::{
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
     capabilities::{host::CapabilityHost, jobs::Origin},
-    editor::{PreparedFile, RawDevelopment, SourceSignature},
+    editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
     source::RawPrepared,
 };
 use serde::Deserialize;
@@ -181,7 +181,7 @@ struct SourceFlightKey {
 }
 
 enum SourceTaskKind {
-    File,
+    File(Option<Box<FilePreparation>>),
     Develop(RawDevelopment),
     /// The asset's source is already prepared; only its artifacts need reading.
     Artifacts(AssetId),
@@ -260,18 +260,28 @@ impl SourceJobs {
         &mut self,
         client: ClientId,
         path: PathBuf,
-        expected_fingerprint: Option<String>,
+        target: Option<FilePreparation>,
         artifacts: Vec<ArtifactRead>,
     ) -> Result<String, Error> {
         let (canonical, signature) = EditorService::request_signature(&path)?;
         let key = SourceFlightKey {
             path: canonical,
             signature: Some(signature),
-            expected_fingerprint,
-            gains_bits: None,
+            expected_fingerprint: target.as_ref().map(|target| target.fingerprint.clone()),
+            gains_bits: target
+                .as_ref()
+                .and_then(|target| target.raw.as_ref())
+                .map(|raw| raw.gains.map(f32::to_bits)),
             artifacts: flight_artifacts(&artifacts),
         };
-        self.submit(client, key, SourceTaskKind::File, artifacts, None, true)
+        self.submit(
+            client,
+            key,
+            SourceTaskKind::File(target.map(Box::new)),
+            artifacts,
+            None,
+            true,
+        )
     }
 
     /// Read and verify an asset's artifacts when its source is already prepared.
@@ -549,12 +559,8 @@ fn queue_preparation(
         };
     }
     let state = service.state(asset_id)?;
-    let id = jobs.enqueue(
-        client,
-        state.asset.locator,
-        Some(state.asset.fingerprint),
-        artifacts,
-    )?;
+    let target = service.file_preparation(asset_id, entry_id)?;
+    let id = jobs.enqueue(client, state.asset.locator, Some(target), artifacts)?;
     service.evict_development();
     Ok(id)
 }
@@ -577,7 +583,7 @@ impl SourceHold {
 /// The activity one source task publishes, with the original's file name as its detail line.
 fn source_activity(task: &SourceTask) -> ActivitySpec {
     match &task.kind {
-        SourceTaskKind::File => ActivitySpec {
+        SourceTaskKind::File(_) => ActivitySpec {
             kind: "source.prepare",
             label: "Preparing original",
             detail: task
@@ -661,8 +667,10 @@ fn source_worker(
         // A previous RAW result/cache or active/pending preview may still pin its large float
         // planes. Wait on the worker, never the catalog owner, before another source allocation.
         // Artifact work allocates no planes and never waits.
-        let allocates_planes =
-            matches!(task.kind, SourceTaskKind::File | SourceTaskKind::Develop(_));
+        let allocates_planes = matches!(
+            task.kind,
+            SourceTaskKind::File(_) | SourceTaskKind::Develop(_)
+        );
         while allocates_planes && !task.cancelled.load(Ordering::Relaxed) {
             let live = {
                 let mut planes = live_planes.lock().expect("source memory gate");
@@ -692,31 +700,32 @@ fn source_worker(
         }
         hold.wait();
         let result = match task.kind {
-            SourceTaskKind::File => {
-                EditorService::prepare_file_cancel(&task.key.path, &task.cancelled).and_then(
-                    |prepared| {
-                        if Some(&prepared.signature) != task.key.signature.as_ref() {
-                            return Err(Error::new(
-                                ErrorKind::Conflict,
-                                "source changed after job was queued",
-                            ));
-                        }
-                        if task
-                            .key
-                            .expected_fingerprint
-                            .as_deref()
-                            .is_some_and(|expected| expected != prepared.fingerprint)
-                        {
-                            return Err(Error::new(
-                                ErrorKind::SourceUnavailable,
-                                "original source fingerprint changed",
-                            ));
-                        }
-                        let verified = read_artifacts(&task.artifacts, &task.cancelled)?;
-                        Ok(SourceResult::File(prepared, verified))
-                    },
-                )
-            }
+            SourceTaskKind::File(target) => EditorService::prepare_file_cancel(
+                &task.key.path,
+                target.as_deref(),
+                &task.cancelled,
+            )
+            .and_then(|prepared| {
+                if Some(&prepared.signature) != task.key.signature.as_ref() {
+                    return Err(Error::new(
+                        ErrorKind::Conflict,
+                        "source changed after job was queued",
+                    ));
+                }
+                if task
+                    .key
+                    .expected_fingerprint
+                    .as_deref()
+                    .is_some_and(|expected| expected != prepared.fingerprint)
+                {
+                    return Err(Error::new(
+                        ErrorKind::SourceUnavailable,
+                        "original source fingerprint changed",
+                    ));
+                }
+                let verified = read_artifacts(&task.artifacts, &task.cancelled)?;
+                Ok(SourceResult::File(prepared, verified))
+            }),
             SourceTaskKind::Develop(request) => RawPrepared::develop(
                 request.sensor.clone(),
                 request.fingerprint.clone(),
@@ -1261,7 +1270,7 @@ fn owner_loop(
                                     jobs.ready(call.client, state).map(|id| (id, "ready"))
                                 }
                                 None => {
-                                    let expected = service.known_fingerprint(&p.path)?;
+                                    let expected = service.known_file_preparation(&p.path)?;
                                     let id =
                                         jobs.enqueue(call.client, p.path, expected, Vec::new())?;
                                     service.evict_development();
@@ -2005,6 +2014,365 @@ mod tests {
                 other => panic!("source job did not complete: {other:?}: {status}"),
             }
         }
+    }
+
+    /// These are complete planar float bits, including negative values/headroom and pixels outside
+    /// the crop view. Hashing streams through them without a second photo-sized allocation.
+    fn raw_planes_hash(image: &crate::LinearImage) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for value in image.planes() {
+            hash.update(value.to_bits().to_le_bytes());
+        }
+        format!("{:x}", hash.finalize())
+    }
+
+    fn exact_raw_hash(owner: &OwnerHandle, request: PreviewRequest) -> String {
+        let job = owner
+            .preview_job(request)
+            .expect("the requested RAW is ready immediately");
+        match &job.source {
+            PreviewSource::Raw { image, settings } => {
+                assert!(
+                    settings.white_balance.is_none(),
+                    "committed sources never approximate WB"
+                );
+                raw_planes_hash(image)
+            }
+            _ => panic!("expected a RAW source"),
+        }
+    }
+
+    fn wait_raw_source(owner: &OwnerHandle, client: ClientId, id: &str) -> Value {
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            let status = ok(
+                owner,
+                client,
+                "raw-status",
+                "job.status",
+                json!({"job_id":id}),
+            );
+            match status["state"].as_str() {
+                Some("ready") => return status,
+                Some("queued" | "preparing") if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                _ => panic!("RAW source did not become ready: {status}"),
+            }
+        }
+    }
+
+    fn counted_source_owner(
+        catalog: &Path,
+        gate: Arc<crate::modules::RenderGate>,
+    ) -> (OwnerHandle, JoinHandle<()>, Arc<AtomicU64>) {
+        let count = Arc::new(AtomicU64::new(0));
+        let worker_count = count.clone();
+        let (owner, join) = OwnerHandle::start_observed(
+            catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            ActivityBoard::with_recent_threshold(Duration::ZERO),
+            Some(Arc::new(move || {
+                worker_count.fetch_add(1, Ordering::Relaxed);
+                gate.pass();
+            })),
+        )
+        .unwrap();
+        (owner, join, count)
+    }
+
+    /// The reference takes the retained-mosaic development path. Cold worker loads must produce
+    /// every same float bit with one file job, for new imports, saved custom WB and history. A
+    /// controlled concurrent edit proves that a completion at old gains is never used as current.
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn cold_raw_preparation_targets_current_history_and_rejects_stale_wb() {
+        use crate::{WhiteBalanceMode, source::PreparedSource};
+        use sha2::{Digest, Sha256};
+        let path = PathBuf::from(std::env::var("LIGHTWELL_RAW_FIXTURE").expect("RAW fixture"));
+        let catalog = temp("cold-raw-target.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let prepared = EditorService::prepare_file(&path).unwrap();
+        let fingerprint = prepared.fingerprint.clone();
+        let PreparedSource::Raw(raw) = prepared.source else {
+            panic!("RAW fixture required")
+        };
+        let metadata = raw.sensor.metadata().clone();
+        let as_shot_hash = raw_planes_hash(raw.linear.as_ref().unwrap());
+        let gains_a = [
+            (metadata.as_shot_gains[0] * 1.1).min(31.0),
+            1.0,
+            metadata.as_shot_gains[2],
+        ];
+        let gains_b = [
+            (metadata.as_shot_gains[0] * 1.2).min(32.0),
+            1.0,
+            metadata.as_shot_gains[2],
+        ];
+        assert_ne!(gains_a, gains_b);
+        let sensor = raw.sensor.clone();
+        drop(raw);
+        let reference = |gains| {
+            let developed = RawPrepared::develop(
+                sensor.clone(),
+                fingerprint.clone(),
+                gains,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            raw_planes_hash(developed.linear.as_ref().unwrap())
+        };
+        let hash_a = reference(gains_a);
+        let hash_b = reference(gains_b);
+        drop(sensor);
+
+        // The target cannot bypass either the hash or a fresh interpretation check. Neither
+        // rejected load reaches development. JPEG-vs-RAW interpretation is checked too.
+        let mut target = FilePreparation {
+            fingerprint: fingerprint.clone(),
+            raw: Some(crate::source::RawPreparation {
+                metadata,
+                gains: gains_a,
+            }),
+        };
+        target.fingerprint = "wrong fingerprint".into();
+        assert_eq!(
+            EditorService::prepare_file_cancel(&path, Some(&target), &AtomicBool::new(false))
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::SourceUnavailable
+        );
+        target.fingerprint = fingerprint.clone();
+        target
+            .raw
+            .as_mut()
+            .unwrap()
+            .metadata
+            .backend
+            .push_str(" incompatible");
+        assert_eq!(
+            EditorService::prepare_file_cancel(&path, Some(&target), &AtomicBool::new(false))
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::Incompatible
+        );
+        target.raw = None;
+        assert_eq!(
+            EditorService::prepare_file_cancel(&path, Some(&target), &AtomicBool::new(false))
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::Incompatible
+        );
+
+        let start = || counted_source_owner(&catalog, crate::modules::RenderGate::open_gate());
+        let (owner, join, count) = start();
+        let client = owner.register();
+        let initial: EditorState =
+            serde_json::from_value(import_asset(&owner, client, &path)).unwrap();
+        let asset = initial.asset.id.clone();
+        assert_eq!(initial.asset.fingerprint, fingerprint);
+        let payload =
+            crate::RawPayload::from_layer(&initial.current_entry.snapshot.recipe.layers[0])
+                .unwrap();
+        assert_eq!(payload.wb_mode, WhiteBalanceMode::AsShot);
+        assert_eq!(
+            exact_raw_hash(&owner, PreviewRequest::new(client, asset.clone())),
+            as_shot_hash
+        );
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            1,
+            "a new import develops once"
+        );
+        let edited = ok(
+            &owner,
+            client,
+            "save-wb",
+            "edit.set-raw-red-gain",
+            json!({
+                "asset_id":asset,
+                "mutation":{"expected_revision":initial.revision,"request_id":"save-wb","actor":"test"},
+                "gain":gains_a[0],
+            }),
+        );
+        let current: EntryId = serde_json::from_value(edited["current_entry_id"].clone()).unwrap();
+        owner.stop();
+        join.join().unwrap();
+
+        let (owner, join, count) = start();
+        let client = owner.register();
+        let saved: EditorState =
+            serde_json::from_value(import_asset(&owner, client, &path)).unwrap();
+        assert_eq!(saved.current_entry.id, current);
+        assert_eq!(
+            exact_raw_hash(&owner, PreviewRequest::new(client, asset.clone())),
+            hash_a
+        );
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            1,
+            "saved WB needs no second source task"
+        );
+        let second = ok(
+            &owner,
+            client,
+            "second-wb",
+            "edit.set-raw-red-gain",
+            json!({
+                "asset_id":asset,
+                "mutation":{"expected_revision":saved.revision,"request_id":"second-wb","actor":"test"},
+                "gain":gains_b[0],
+            }),
+        );
+        let second_entry: EntryId =
+            serde_json::from_value(second["current_entry_id"].clone()).unwrap();
+        owner.stop();
+        join.join().unwrap();
+
+        let (owner, join, count) = start();
+        let client = owner.register();
+        let queued = ok(
+            &owner,
+            client,
+            "prepare-history",
+            "source.prepare",
+            json!({"asset_id":asset,"entry_id":current}),
+        );
+        wait_raw_source(&owner, client, queued["job_id"].as_str().unwrap());
+        assert_eq!(
+            exact_raw_hash(
+                &owner,
+                PreviewRequest::new(client, asset.clone()).entry(Some(current.clone()))
+            ),
+            hash_a
+        );
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            1,
+            "history selects its own gains on a cold load"
+        );
+        assert_eq!(
+            ok(
+                &owner,
+                client,
+                "current",
+                "asset.state",
+                json!({"asset_id":asset})
+            )["current_entry"]["id"],
+            json!(second_entry)
+        );
+        owner.stop();
+        join.join().unwrap();
+
+        let gate = crate::modules::RenderGate::open_gate();
+        gate.shut();
+        let (owner, join, count) = counted_source_owner(&catalog, gate.clone());
+        let client = owner.register();
+        let queued = ok(
+            &owner,
+            client,
+            "held-import",
+            "catalog.import",
+            json!({"path":path}),
+        );
+        let first = queued["job_id"].as_str().unwrap();
+        let duplicate = ok(
+            &owner,
+            client,
+            "same-target",
+            "source.prepare",
+            json!({"asset_id":asset}),
+        );
+        assert_eq!(
+            duplicate["job_id"], queued["job_id"],
+            "identical targets share one flight"
+        );
+        let edited = ok(
+            &owner,
+            client,
+            "race-wb",
+            "edit.set-raw-red-gain",
+            json!({
+                "asset_id":asset,
+                "mutation":{"expected_revision":second["revision"],"request_id":"race-wb","actor":"test"},
+                "gain":gains_a[0],
+            }),
+        );
+        let newest: EntryId = serde_json::from_value(edited["current_entry_id"].clone()).unwrap();
+        let changed = ok(
+            &owner,
+            client,
+            "new-target",
+            "source.prepare",
+            json!({"asset_id":asset}),
+        );
+        assert_ne!(
+            changed["job_id"], queued["job_id"],
+            "different gains cannot join an old flight"
+        );
+        ok(
+            &owner,
+            client,
+            "cancel-new",
+            "job.cancel",
+            json!({"job_id":changed["job_id"]}),
+        );
+        gate.open();
+        wait_raw_source(&owner, client, first);
+        let adopted = ok(
+            &owner,
+            client,
+            "adopt-held",
+            "job.adopt",
+            json!({"job_id":first}),
+        );
+        assert_eq!(adopted["asset"]["current_entry"]["id"], json!(newest));
+        assert_eq!(
+            exact_raw_hash(
+                &owner,
+                PreviewRequest::new(client, asset.clone()).entry(Some(second_entry))
+            ),
+            hash_b
+        );
+        let needs_current = owner
+            .preview_job(PreviewRequest::new(client, asset.clone()))
+            .unwrap_err();
+        assert_eq!(
+            needs_current.kind,
+            ErrorKind::PreparationRequired,
+            "old gains cannot render current"
+        );
+        wait_raw_source(&owner, client, &needs_current.detail);
+        assert_eq!(
+            exact_raw_hash(&owner, PreviewRequest::new(client, asset.clone())),
+            hash_a
+        );
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            2,
+            "one old file preparation and one retained-mosaic development"
+        );
+        assert_eq!(
+            ok(
+                &owner,
+                client,
+                "final-state",
+                "asset.state",
+                json!({"asset_id":asset})
+            )["current_entry"]["id"],
+            json!(newest)
+        );
+        owner.stop();
+        join.join().unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(std::fs::read(path).unwrap())),
+            fingerprint
+        );
+        std::fs::remove_file(catalog).unwrap();
     }
 
     #[test]
