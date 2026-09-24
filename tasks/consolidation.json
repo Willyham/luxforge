@@ -1480,6 +1480,80 @@
           "All pass."
         ]
       }
+    },
+    {
+      "id": "TASK-026",
+      "description": "Answer `history.list` with rows read from columns instead of full recipe snapshots, and scope the desktop's refresh after a command to what the command changed, so a commit costs the owner calls performance rule 7 allows.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-021",
+        "TASK-022",
+        "TASK-024"
+      ],
+      "extra_context": [
+        "After a commit the desktop's `refresh` makes about thirteen owner calls: `asset.state`, `history.list` of 50 entries, `version.list`, `history.lineage`, `session.state`, `recipe.describe`, `mask.list`, a one-row `history.list` only to find the Original's id, and `preview_still_current` twice (two calls each) around the preview job. Rule 7 allows the command, `asset.state` and one preview job, plus what the panels need.",
+        "Every `history.list` row carries its entry's full snapshot (masks included, up to 256 KiB each); the desktop's state and view never read a row's snapshot. Each page decodes every row.",
+        "Rows need id, sequence, action, label, actor, timestamp, undo parent and restore target; the entries table has columns for some and the rest are inside the entry JSON. Adding columns bumps the catalog format, which current shapes only allows.",
+        "The preview queue already tags jobs with a generation, which is what `preview_still_current` re-checks by round trip."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Editor history",
+          "target": "crates/lightwell-core/src/editor/history.rs",
+          "relevance": "`history`, the page."
+        },
+        {
+          "kind": "file",
+          "label": "Editor catalog",
+          "target": "crates/lightwell-core/src/editor/catalog.rs",
+          "relevance": "Schema and entry rows."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop refresh",
+          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "relevance": "`refresh`, `ready_preview_job`, `preview_still_current`."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules 7 and 10."
+        },
+        {
+          "kind": "file",
+          "label": "Versions and lineage",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "History rows and lineage."
+        }
+      ],
+      "acceptance_criteria": [
+        "`history.list` answers rows without snapshots, read without decoding entry JSON; `history.inspect` still returns the full entry.",
+        "After an ordinary commit the desktop makes only the calls the changed panels need, counted by a test; undo, redo and restore add lineage; the Original's id is read once per asset open.",
+        "The preview job is not wrapped in round-trip currency checks.",
+        "History, lineage, branch and versions tests pass; the catalog format bump refuses older catalogs explicitly."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "An owner-call count test for commit, undo and restore refreshes; history paging and lineage tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass with the counted calls."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1531,6 +1605,12 @@
       "wave": 5,
       "task_ids": [
         "TASK-024"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-026"
       ]
     }
   ]
