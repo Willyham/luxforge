@@ -230,7 +230,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         mutates: true,
         required: &["module_id", "capability", "scope", "request_id"],
         optional: &[],
-        notes: "grants one exact scope of a declared capability; only a client with permission authority may, otherwise forbidden; scope is {path} for read-user-file (the canonical path its file setting holds now), {resource, version, origin} for download-artifact (the declared version from the origin of its pinned URL) or {profile_id, adapter, origin, data, asset_id} for remote-image-request (an existing profile of that adapter whose endpoint has that origin, the capability's data class and an asset of this catalog); clears a matching denial; a retried request_id returns the same grant; returns {grant, outcome, deduplicated}",
+        notes: "grants one exact scope of a declared capability; only a client with permission authority may, otherwise forbidden; scope is {resource, version, origin} for download-artifact (the declared version from the origin of its pinned URL) or {profile_id, adapter, origin, data, asset_id} for remote-image-request (an existing profile of that adapter whose endpoint has that origin, the capability's data class and an asset of this catalog); clears a matching denial; a retried request_id returns the same grant; returns {grant, outcome, deduplicated}",
         handler: None,
     },
     MethodSpec {
@@ -677,16 +677,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         notes: "one artifact's record (hash, bytes, kind, dimensions, colour, publishing module, time), whether its file is present, missing or of the wrong length, how many entries reference it and whether a task of this process published it; stats only",
         handler: Some(artifact_inspect),
     },
-    // Relocation and collection run on the source worker and are read with job.status, so the
-    // catalog owner answers them. Both emit their event when the request is accepted.
-    MethodSpec {
-        name: "artifact.relocate",
-        mutates: true,
-        required: &["directory"],
-        optional: &[],
-        notes: "queues a source job that checks the directory's manifest names this catalog and every referenced artifact's hash there, then records it as the artifact root; any mismatch fails the job naming the first bad artifact and changes nothing; returns {job_id, status}",
-        handler: None,
-    },
+    // Collection runs on the source worker and is read with job.status, so the catalog owner
+    // answers it. It emits its event when the request is accepted.
     MethodSpec {
         name: "artifact.collect",
         mutates: true,

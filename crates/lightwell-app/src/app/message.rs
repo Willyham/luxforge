@@ -402,17 +402,6 @@ pub(crate) enum CapabilityMessage {
         field: String,
         value: Value,
     },
-    /// Choose… on a file field: open the native file dialog.
-    ChooseFile {
-        module_id: String,
-        field: String,
-    },
-    /// What the native dialog chose, or nothing when it was dismissed.
-    FileChosen {
-        module_id: String,
-        field: String,
-        path: Option<PathBuf>,
-    },
     /// Replace on a secret: open its masked input.
     SecretEdit {
         module_id: String,

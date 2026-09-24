@@ -130,8 +130,8 @@ fn only_a_client_started_with_permission_authority_may_grant() {
     let requests = [
         json!({"id": "state", "method": "session.state", "params": {}}),
         json!({"id": "grant", "method": "module.permission.grant", "params": {
-            "module_id": "test.missing", "capability": "input",
-            "scope": {"path": "/tmp/input.bin"}, "request_id": "cli-grant",
+            "module_id": "test.missing", "capability": "echo",
+            "scope": {}, "request_id": "cli-grant",
         }}),
     ];
     let plain = session(&data_root, &[], &requests);
@@ -282,8 +282,6 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
     ));
     std::fs::create_dir_all(&data_root).unwrap();
     let data_root = data_root.canonicalize().unwrap();
-    let input = data_root.join("input.bin");
-    std::fs::write(&input, b"cli input").unwrap();
     let catalog = data_root.join("catalog.sqlite");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/s0/orientation-1.jpg")
@@ -311,11 +309,6 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         }
     };
     let module = "lightwell.capabilities";
-    let mutation = client.mutation("cli-settings");
-    client.ok(
-        "module.settings.set",
-        json!({"module_id": module, "values": {"input-file": input}, "mutation": mutation}),
-    );
     let mutation = client.mutation("cli-profile");
     let profile = client.ok(
         "module.profile.create",
@@ -361,7 +354,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
             Some(_) => panic!("{response}"),
         }
     };
-    assert_eq!(consents, 2, "the file read and this photo's send");
+    assert_eq!(consents, 1, "this photo's send");
     let job = client.finished(&queued["job_id"]);
     assert_eq!(job["status"], "succeeded", "{job}");
     let artifact = job["result"]["artifacts"][0].clone();

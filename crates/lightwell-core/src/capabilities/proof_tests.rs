@@ -1,8 +1,8 @@
 //! The capability proof end to end through the catalog owner's JSON methods, exactly as a client
 //! drives it: discovery, settings and a profile, consent for the resource download, install,
-//! activation, consent for the file read and the per-asset remote send, the task with its sample
-//! grid, the published artifact, its application and the render, against a [`ProofEndpoint`] on
-//! loopback, isolated directories and an in-memory secret store. Nothing here leaves the machine.
+//! activation, consent for the per-asset remote send, the task with its sample grid, the published
+//! artifact, its application and the render, against a [`ProofEndpoint`] on loopback, isolated
+//! directories and an in-memory secret store. Nothing here leaves the machine.
 use super::{
     data::SAMPLE_GRID_BYTES,
     grants::{DENY, GRANT, REVOKE},
@@ -37,7 +37,6 @@ use std::{
 
 const MODULE: &str = "lightwell.capabilities";
 const TASK: &str = "task.generate-proof-tint";
-const INPUT: &[u8] = b"the proof's input file";
 const STRENGTH: f64 = 0.75;
 
 /// A module whose one task publishes an artifact and then fails or succeeds as asked, so a test can
@@ -116,9 +115,9 @@ impl ToolModule for Publisher {
     }
 }
 
-/// A catalog with two imported photos, a settings directory, a resource directory and an input
-/// file under one temporary root, a proof endpoint whose key is a sentinel, and the registry the
-/// owner is started with.
+/// A catalog with two imported photos, a settings directory and a resource directory under one
+/// temporary root, a proof endpoint whose key is a sentinel, and the registry the owner is started
+/// with.
 struct Fixture {
     root: PathBuf,
     endpoint: ProofEndpoint,
@@ -136,7 +135,6 @@ impl Fixture {
         let root = temp(name);
         fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        fs::write(root.join("input.bin"), INPUT).unwrap();
         let key = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
         Self {
             endpoint: ProofEndpoint::start(&key).unwrap(),
@@ -149,10 +147,6 @@ impl Fixture {
 
     fn catalog(&self) -> PathBuf {
         self.root.join("catalog.sqlite")
-    }
-
-    fn input(&self) -> PathBuf {
-        self.root.join("input.bin")
     }
 
     fn registry(&self) -> Arc<ModuleRegistry> {
@@ -435,12 +429,9 @@ struct Ready {
 }
 
 /// Settings, a profile with the endpoint and key, the palette installed under its consent, the
-/// module active, and the file and remote grants for the first photo.
+/// module active, and the remote grant for the first photo.
 fn ready(fixture: &Fixture, owner: &Owner, assets: [AssetId; 2]) -> Ready {
-    owner.set(
-        None,
-        json!({"strength": STRENGTH, "input-file": fixture.input()}),
-    );
+    owner.set(None, json!({"strength": STRENGTH}));
     let created = owner.ok(
         CREATE_PROFILE,
         json!({"module_id": MODULE, "adapter": "proof-echo", "label": "Local", "mutation": owner.mutation()}),
@@ -457,18 +448,15 @@ fn ready(fixture: &Fixture, owner: &Owner, assets: [AssetId; 2]) -> Ready {
     assert_eq!(owner.finished(&installed["job_id"])["status"], "succeeded");
     let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     assert_eq!(owner.finished(&activating["job_id"])["status"], "succeeded");
-    for _ in 0..2 {
-        owner.grant(&owner.task(&assets[0], &profile).unwrap_err());
-    }
+    owner.grant(&owner.task(&assets[0], &profile).unwrap_err());
     Ready { assets, profile }
 }
 
-/// The gains the proof task publishes, computed from the spec: the endpoint's answer over 255, the
-/// palette and the input file's factor multiplied per channel, moved from neutral by the strength.
+/// The gains the proof task publishes, computed from the spec: the endpoint's answer over 255 and
+/// the palette multiplied per channel, moved from neutral by the strength.
 fn expected_gains(rgb: [u8; 3]) -> [f32; 3] {
-    let factor = 0.9 + f32::from(Sha256::digest(INPUT)[0]) / 255.0 * 0.2;
     std::array::from_fn(|channel| {
-        let target = f32::from(rgb[channel]) / 255.0 * PROOF_PALETTE_GAINS[channel] * factor;
+        let target = f32::from(rgb[channel]) / 255.0 * PROOF_PALETTE_GAINS[channel];
         1.0 + STRENGTH as f32 * (target - 1.0)
     })
 }
@@ -574,10 +562,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
         refused.data.unwrap()["requirements"],
         json!([{"kind": "resource", "id": "proof-palette", "state": "not-installed"}])
     );
-    owner.set(
-        None,
-        json!({"strength": STRENGTH, "input-file": fixture.input()}),
-    );
+    owner.set(None, json!({"strength": STRENGTH}));
     let created = owner.ok(
         CREATE_PROFILE,
         json!({"module_id": MODULE, "adapter": "proof-echo", "label": "Local", "mutation": owner.mutation()}),
@@ -629,20 +614,13 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
         "active"
     );
 
-    // The task asks for the file read first, then for sending this photo's grid.
+    // The task asks for consent to send this photo's grid.
     let asset = &assets[0];
     let refused = owner.task(asset, &profile).unwrap_err();
     assert_eq!(refused.code, "consent-required");
     let consent = &refused.data.as_ref().unwrap()["consent"];
-    assert_eq!(consent["capability"], "input");
-    assert_eq!(consent["kind"], "read-user-file");
-    assert_eq!(consent["scope"], json!({"path": fixture.input()}));
-    assert_eq!(consent["disclosure"]["bytes"], INPUT.len());
-    assert_eq!(consent["denied"], false);
-    owner.grant(&refused);
-    let refused = owner.task(asset, &profile).unwrap_err();
-    let consent = &refused.data.as_ref().unwrap()["consent"];
     assert_eq!(consent["capability"], "echo");
+    assert_eq!(consent["denied"], false);
     assert_eq!(
         consent["scope"],
         json!({
@@ -666,8 +644,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
             .all(|request| request.path != "/generate"),
         "nothing is sent before consent"
     );
-    let remote = owner.grant(&refused);
-    assert!(remote["last_used_ms"].is_null());
+    owner.grant(&refused);
     let untinted = owner.state(asset)["current_entry"]["id"].clone();
     let queued = owner.task(asset, &profile).unwrap();
     assert!(queued["job_id"].is_string());
@@ -690,10 +667,6 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
         json!(fixture.endpoint.base_url())
     );
     assert_eq!(result["resource_version"], "1");
-    assert_eq!(
-        result["input_sha256"],
-        json!(format!("{:x}", Sha256::digest(INPUT)))
-    );
 
     // The endpoint received exactly the disclosed body: the grid of the photo's current entry.
     let sent = fixture
@@ -737,16 +710,6 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
     assert_eq!(inspected["module_id"], MODULE);
     assert_eq!(inspected["file"], "present");
     assert_eq!(inspected["references"], 0);
-    let grants = owner.ok("module.permission.list", json!({"module_id": MODULE}))["grants"].clone();
-    assert!(
-        grants
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|grant| grant["kind"] != "download-artifact")
-            .all(|grant| grant["last_used_ms"].is_u64()),
-        "the task's grants record their use: {grants}"
-    );
 
     // Applying it commits one layer; the render is the source tinted in linear light.
     let applied = owner.apply(asset, &artifact);
@@ -834,7 +797,7 @@ fn every_photo_needs_its_own_remote_grant_and_a_denial_is_reported() {
     let Ready { assets, profile } = ready(&fixture, &owner, assets);
     let queued = owner.task(&assets[0], &profile).unwrap();
     assert_eq!(owner.finished(&queued["job_id"])["status"], "succeeded");
-    // The file grant covers the second photo; the send does not.
+    // The remote grant covers only the first photo.
     let refused = owner.task(&assets[1], &profile).unwrap_err();
     assert_eq!(refused.code, "consent-required");
     let consent = refused.data.unwrap()["consent"].clone();
@@ -879,21 +842,16 @@ fn every_photo_needs_its_own_remote_grant_and_a_denial_is_reported() {
             .message,
         "unknown profile profile-missing"
     );
-    // A profile without its key and an empty file setting are listed together, before any grant
-    // is asked for.
+    // A profile without its key is reported, before any grant is asked for.
     owner.ok(
         "module.settings.clear-secret",
         json!({"module_id": MODULE, "profile_id": profile, "setting": "api-key", "mutation": owner.mutation()}),
     );
-    owner.set(None, json!({"input-file": null}));
     let refused = owner.task(&assets[0], &profile).unwrap_err();
     assert_eq!(refused.code, "not-ready");
     assert_eq!(
         refused.data.unwrap()["requirements"],
-        json!([
-            {"kind": "profile", "id": profile, "state": "missing-credentials"},
-            {"kind": "setting", "id": "input-file", "state": "missing"},
-        ])
+        json!([{"kind": "profile", "id": profile, "state": "missing-credentials"}])
     );
     owner.stop();
 }
@@ -1377,8 +1335,8 @@ fn capability_timing() {
     drop(fixture);
 
     // A whole task and a cancelled one, on the first fixture's shape: the owner binds the stack,
-    // the module lane samples the 8 × 8 grid, reads the input file, posts to the loopback
-    // endpoint and publishes the artifact, and the owner records it.
+    // the module lane samples the 8 × 8 grid, posts to the loopback endpoint and publishes the
+    // artifact, and the owner records it.
     let fixture = Fixture::new("proof-timing-task");
     let assets = fixture.import();
     let owner = fixture.start();

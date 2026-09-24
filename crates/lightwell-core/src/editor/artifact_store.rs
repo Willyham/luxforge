@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashSet,
     io,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, atomic::AtomicBool},
 };
 
@@ -222,10 +222,10 @@ impl EditorService {
     /// verified bytes for the caller to hold while it evaluates.
     ///
     /// Each artifact needs a catalog row (else `source-unavailable: artifact <id> is not in this
-    /// catalog`), a usable root (a missing directory is `source-unavailable` naming it and
-    /// `artifact.relocate`; a manifest naming another catalog is `incompatible`) and a present
-    /// object file of the recorded length. Everything one stack binds must fit the prepared cache
-    /// at once, or it is a `resource-limit`. Bytes kept ready under the file's current signature
+    /// catalog`), a usable root (a missing directory is `source-unavailable` naming it; a manifest
+    /// naming another catalog is `incompatible`) and a present object file of the recorded length.
+    /// Everything one stack binds must fit the prepared cache at once, or it is a `resource-limit`.
+    /// Bytes kept ready under the file's current signature
     /// are a hit. On a miss a direct service reads and hashes synchronously; the catalog owner
     /// instead answers `preparation-required` with the missing identities in `data.artifacts`, so a
     /// source job reads them on the worker. A stack without artifacts costs nothing.
@@ -315,7 +315,9 @@ impl EditorService {
             .collect()
     }
 
-    /// Forget every verified artifact kept ready. Jobs keep what they hold.
+    /// Forget every verified artifact kept ready. Jobs keep what they hold. Production code has no
+    /// caller; kept for tests that simulate an eviction.
+    #[cfg(test)]
     pub(crate) fn clear_prepared_artifacts(&self) {
         self.prepared_artifacts.borrow_mut().clear();
         self.checked_manifest.replace(None);
@@ -382,15 +384,11 @@ impl EditorService {
             }
             RootState::Absent => Err(Error::new(
                 ErrorKind::SourceUnavailable,
-                format!(
-                    "artifact directory {root} is missing; move it with the catalog or select it with artifact.relocate"
-                ),
+                format!("artifact directory {root} is missing; move it with the catalog"),
             )),
             RootState::Unmarked => Err(Error::new(
                 ErrorKind::SourceUnavailable,
-                format!(
-                    "artifact directory {root} has no manifest; select the catalog's artifact directory with artifact.relocate"
-                ),
+                format!("artifact directory {root} has no manifest"),
             )),
             RootState::Foreign(detail) => Err(Error::new(ErrorKind::Incompatible, detail)),
         }
@@ -521,68 +519,10 @@ impl EditorService {
         })
     }
 
-    /// Every artifact some entry references, with its recorded length: what a relocation must find
-    /// intact in the directory it is offered.
-    pub(crate) fn referenced_artifacts(&self) -> Result<Vec<(ArtifactId, u64)>, Error> {
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT id,bytes FROM artifacts a WHERE EXISTS
-                 (SELECT 1 FROM artifact_refs r WHERE r.artifact_id=a.id) ORDER BY id",
-            )
-            .map_err(catalog_error)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
-            })
-            .map_err(catalog_error)?;
-        let mut referenced = Vec::new();
-        for row in rows {
-            let (id, bytes) = row.map_err(catalog_error)?;
-            referenced.push((ArtifactId::parse(id)?, bytes));
-        }
-        Ok(referenced)
-    }
-
-    /// The identity a relocated root's manifest must name.
+    /// This catalog's own identity, which its artifact root's manifest must name. Production code
+    /// has no caller; kept for a test that checks the manifest.
+    #[cfg(test)]
     pub(crate) fn catalog_id(&self) -> &str {
         &self.catalog_id
-    }
-
-    /// Record a directory a source job verified as this catalog's artifact root, and forget every
-    /// verified artifact kept ready under the old one. Refused, changing nothing, when an entry now
-    /// references an artifact the job did not verify there.
-    pub(crate) fn adopt_artifact_root(
-        &mut self,
-        root: PathBuf,
-        verified: &[ArtifactId],
-    ) -> Result<Value, Error> {
-        let verified: HashSet<&ArtifactId> = verified.iter().collect();
-        if let Some((id, _)) = self
-            .referenced_artifacts()?
-            .into_iter()
-            .find(|(id, _)| !verified.contains(id))
-        {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                format!(
-                    "artifact {id} was referenced after the directory was verified; relocate again"
-                ),
-            ));
-        }
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(catalog_error)?;
-        tx.execute(
-            "INSERT INTO catalog_meta (key,value) VALUES ('artifact_root',?1)
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [root.to_string_lossy()],
-        )
-        .map_err(catalog_error)?;
-        tx.commit().map_err(catalog_error)?;
-        self.artifact_root = root;
-        self.clear_prepared_artifacts();
-        Ok(json!({"root": self.artifact_root}))
     }
 }

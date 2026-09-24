@@ -8,10 +8,7 @@
 //! "number", "min": 0, "max": 1, "required": false, …}`. Flattening the kind rules out
 //! `deny_unknown_fields` on those two types, so an unknown field there is ignored on read; every
 //! other capability type refuses unknown fields.
-use super::{
-    files::FileMode,
-    transport::{EndpointClass, parse_endpoint},
-};
+use super::transport::{EndpointClass, parse_endpoint};
 use crate::{
     Error, ErrorKind, ModuleDescriptor, ParameterDescriptor, ParameterKind,
     modules::check_parameter_declarations, valid_name,
@@ -76,9 +73,9 @@ pub struct SettingDescriptor {
     /// A missing or invalid value makes the module or profile incomplete.
     #[serde(default)]
     pub required: bool,
-    /// The value a field reads while nothing is stored. A `secret`, `endpoint` or `file` field
-    /// never has one: a secret is never plain data, and a destination or a path is a person's
-    /// choice, never a module's.
+    /// The value a field reads while nothing is stored. A `secret` or `endpoint` field never has
+    /// one: a secret is never plain data, and a destination is a person's choice, never a
+    /// module's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<Value>,
     /// Changing this field deactivates an active module, because what it loaded depends on it.
@@ -115,10 +112,6 @@ pub enum SettingKind {
     Endpoint {
         classes: Vec<EndpointClass>,
     },
-    /// A file or directory that exists when it is set, stored as its canonical path.
-    File {
-        mode: FileMode,
-    },
     /// A credential held only by the secret store.
     Secret {
         max_length: u32,
@@ -135,7 +128,6 @@ impl SettingKind {
             Self::Enum { .. } => "enum",
             Self::Text { .. } => "text",
             Self::Endpoint { .. } => "endpoint",
-            Self::File { .. } => "file",
             Self::Secret { .. } => "secret",
         }
     }
@@ -143,7 +135,7 @@ impl SettingKind {
 
 /// Every setting kind tag, so a descriptor read from JSON names an unknown one precisely.
 const SETTING_KINDS: &[&str] = &[
-    "boolean", "integer", "number", "enum", "text", "endpoint", "file", "secret",
+    "boolean", "integer", "number", "enum", "text", "endpoint", "secret",
 ];
 
 /// Named provider profiles: each profile names one declared adapter and holds its own values of
@@ -262,19 +254,13 @@ pub struct CapabilityDescriptor {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CapabilityKind {
-    /// Read the file or directory a declared module-level `file` setting holds.
-    ReadUserFile { setting: String },
     /// Send one declared data class of one asset to a profile's endpoint through its adapter.
     RemoteImageRequest { adapter: String, data: DataClass },
     /// Install a declared resource from its pinned URL.
     DownloadArtifact { resource: String },
 }
 
-const CAPABILITY_KINDS: &[&str] = &[
-    "read-user-file",
-    "remote-image-request",
-    "download-artifact",
-];
+const CAPABILITY_KINDS: &[&str] = &["remote-image-request", "download-artifact"];
 const UNIMPLEMENTED_CAPABILITY_KINDS: &[&str] = &["managed-storage", "local-runtime"];
 
 /// A pinned file a module may install: exact bytes, hash and origin.
@@ -605,7 +591,6 @@ fn validate_field(field: &SettingDescriptor) -> Result<(), Error> {
                 )));
             }
         }
-        SettingKind::File { .. } => {}
     }
     let Some(default) = &field.default else {
         return Ok(());
@@ -614,8 +599,8 @@ fn validate_field(field: &SettingDescriptor) -> Result<(), Error> {
         SettingKind::Secret { .. } => Err(validation(format!(
             "secret setting {id} declares a default; a secret never has one"
         ))),
-        SettingKind::Endpoint { .. } | SettingKind::File { .. } => Err(validation(format!(
-            "{} setting {id} declares a default; a destination or a path is the person's choice",
+        SettingKind::Endpoint { .. } => Err(validation(format!(
+            "{} setting {id} declares a default; a destination is the person's choice",
             field.kind.name()
         ))),
         _ => check_plain_value(field, default)
@@ -623,9 +608,9 @@ fn validate_field(field: &SettingDescriptor) -> Result<(), Error> {
     }
 }
 
-/// One value of a `boolean`, `integer`, `number`, `enum` or `text` setting. Pure: an endpoint, a
-/// file and a secret need the transport policy, the file system or the secret store, so the
-/// settings store checks those itself.
+/// One value of a `boolean`, `integer`, `number`, `enum` or `text` setting. Pure: an endpoint and a
+/// secret need the transport policy or the secret store, so the settings store checks those
+/// itself.
 pub(crate) fn check_plain_value(field: &SettingDescriptor, value: &Value) -> Result<(), Error> {
     let id = &field.id;
     match &field.kind {
@@ -676,7 +661,7 @@ pub(crate) fn check_plain_value(field: &SettingDescriptor, value: &Value) -> Res
                 )));
             }
         }
-        SettingKind::Endpoint { .. } | SettingKind::File { .. } | SettingKind::Secret { .. } => {
+        SettingKind::Endpoint { .. } | SettingKind::Secret { .. } => {
             return Err(Error::new(
                 ErrorKind::Internal,
                 format!("setting {id} is not a plain value"),
@@ -754,20 +739,6 @@ fn validate_capability<'a>(
     }
     let settings = module.settings.as_ref();
     match &capability.kind {
-        CapabilityKind::ReadUserFile { setting } => {
-            let field = settings
-                .and_then(|settings| settings.field(setting))
-                .ok_or_else(|| {
-                    validation(format!(
-                        "capability {id} names undeclared setting {setting}"
-                    ))
-                })?;
-            if !matches!(field.kind, SettingKind::File { .. }) {
-                return Err(validation(format!(
-                    "capability {id} reads setting {setting}, which is not a file setting"
-                )));
-            }
-        }
         CapabilityKind::RemoteImageRequest { adapter, data } => {
             let declared = settings
                 .and_then(|settings| settings.profiles.as_ref())
@@ -1052,7 +1023,7 @@ mod tests {
             "a secret declares its presence and limit only"
         );
         assert_eq!(
-            value["capabilities"][1],
+            value["capabilities"][0],
             json!({
                 "id": "echo", "kind": "remote-image-request", "adapter": ADAPTER,
                 "data": "sample-grid-8", "purpose": "Ask the echo service for a tint.",
@@ -1153,8 +1124,8 @@ mod tests {
                 "invalid capability identity in put",
             ),
             (
-                |d| d.capabilities[1].id = "input".into(),
-                "duplicate capability input",
+                |d| d.capabilities[1].id = "echo".into(),
+                "duplicate capability echo",
             ),
             (
                 |d| d.resources[0].id = "palette.v1".into(),
@@ -1202,10 +1173,6 @@ mod tests {
             (
                 |d| field(d, "token").default = Some(json!("abc")),
                 "secret setting token declares a default",
-            ),
-            (
-                |d| field(d, "input-file").default = Some(json!("/tmp/x")),
-                "file setting input-file declares a default",
             ),
             (
                 |d| field(d, "local-service").default = Some(json!("http://127.0.0.1/")),
@@ -1358,23 +1325,7 @@ mod tests {
             // Capabilities naming what the module does not declare.
             (
                 |d| {
-                    d.capabilities[0].kind = CapabilityKind::ReadUserFile {
-                        setting: "missing".into(),
-                    }
-                },
-                "capability input names undeclared setting missing",
-            ),
-            (
-                |d| {
-                    d.capabilities[0].kind = CapabilityKind::ReadUserFile {
-                        setting: "note".into(),
-                    }
-                },
-                "capability input reads setting note, which is not a file setting",
-            ),
-            (
-                |d| {
-                    d.capabilities[1].kind = CapabilityKind::RemoteImageRequest {
+                    d.capabilities[0].kind = CapabilityKind::RemoteImageRequest {
                         adapter: "missing".into(),
                         data: DataClass::SampleGrid8,
                     }
@@ -1383,7 +1334,7 @@ mod tests {
             ),
             (
                 |d| {
-                    d.capabilities[2].kind = CapabilityKind::DownloadArtifact {
+                    d.capabilities[1].kind = CapabilityKind::DownloadArtifact {
                         resource: "missing".into(),
                     }
                 },
@@ -1391,7 +1342,7 @@ mod tests {
             ),
             (
                 |d| d.capabilities[0].purpose = String::new(),
-                "capability input declares no purpose",
+                "capability echo declares no purpose",
             ),
             // Resources.
             (
@@ -1552,7 +1503,7 @@ mod tests {
         value["capabilities"][0]["kind"] = json!("open-socket");
         assert_eq!(
             parse_rejection(value),
-            "capability input declares unknown kind open-socket"
+            "capability echo declares unknown kind open-socket"
         );
         let mut value = serde_json::to_value(capability_descriptor()).unwrap();
         value["settings"]["fields"][1]["kind"] = json!("colour");

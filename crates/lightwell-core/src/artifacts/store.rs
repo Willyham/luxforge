@@ -1,7 +1,7 @@
 //! The artifact root on disk: `manifest.json` names the catalog the root belongs to,
 //! `objects/<sha256>` holds each artifact's immutable bytes and `tmp/` stages writes. Publishing,
-//! verified reads, relocation checks and collection run here, on a worker thread or in a direct
-//! service call; the catalog owner only stats files and reads the small manifest.
+//! verified reads and collection run here, on a worker thread or in a direct service call; the
+//! catalog owner only stats files and reads the small manifest.
 use super::{
     ArtifactId, ArtifactMeta, ArtifactRecord, LiveArtifacts, MAX_ARTIFACT_BYTES, PreparedArtifact,
     lock, register_prepared,
@@ -92,21 +92,6 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), Error> {
         Err(Error::new(ErrorKind::Cancelled, "artifact job cancelled"))
     } else {
         Ok(())
-    }
-}
-
-/// The SHA-256 of a whole file, read in bounded chunks with the cancel flag checked between them.
-fn hash_stream(file: &mut File, cancel: &AtomicBool) -> Result<String, Error> {
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0; CHUNK];
-    loop {
-        cancelled(cancel)?;
-        let read = read_chunk(file, &mut buffer)
-            .map_err(|error| access("cannot read artifact", &error))?;
-        if read == 0 {
-            return Ok(format!("{:x}", hasher.finalize()));
-        }
-        hasher.update(&buffer[..read]);
     }
 }
 
@@ -469,65 +454,6 @@ pub(crate) fn read_verified(
     })
 }
 
-/// Check that `directory` can serve as this catalog's artifact root: its manifest names the
-/// catalog and every listed artifact is there with its recorded length and hash. Returns the
-/// canonical path to record. Hashes stream in bounded chunks, so verifying a large root never
-/// holds an artifact in memory; the first bad artifact is named and nothing is changed.
-pub(crate) fn verify_directory(
-    directory: &Path,
-    catalog_id: &str,
-    artifacts: &[(ArtifactId, u64)],
-    cancel: &AtomicBool,
-) -> Result<PathBuf, Error> {
-    let missing_directory = || {
-        Error::new(
-            ErrorKind::SourceUnavailable,
-            format!("artifact directory {} is missing", directory.display()),
-        )
-    };
-    let canonical = directory.canonicalize().map_err(|_| missing_directory())?;
-    match root_state(&canonical, catalog_id)? {
-        RootState::Ready => {}
-        RootState::Absent => return Err(missing_directory()),
-        RootState::Unmarked => {
-            return Err(Error::new(
-                ErrorKind::SourceUnavailable,
-                format!("artifact directory {} has no manifest", canonical.display()),
-            ));
-        }
-        RootState::Foreign(detail) => return Err(Error::new(ErrorKind::Incompatible, detail)),
-    }
-    for (id, length) in artifacts {
-        cancelled(cancel)?;
-        let corrupt = || {
-            Error::new(
-                ErrorKind::SourceUnavailable,
-                format!("artifact {id} in {} is corrupt", canonical.display()),
-            )
-        };
-        let mut file = match File::open(object_path(&canonical, id)) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Err(Error::new(
-                    ErrorKind::SourceUnavailable,
-                    format!("artifact {id} is missing from {}", canonical.display()),
-                ));
-            }
-            Err(error) => return Err(access("cannot read artifact", &error)),
-            Ok(file) => file,
-        };
-        let metadata = file
-            .metadata()
-            .map_err(|error| access("cannot read artifact", &error))?;
-        if !metadata.is_file() || metadata.len() != *length {
-            return Err(corrupt());
-        }
-        if hash_stream(&mut file, cancel)? != id.sha256() {
-            return Err(corrupt());
-        }
-    }
-    Ok(canonical)
-}
-
 /// One collection the catalog owner planned: how many rows it already removed and every artifact
 /// the catalog still records. Any other object file is garbage unless it is live: published while
 /// the service is open.
@@ -793,57 +719,6 @@ mod tests {
             read_verified(&read, &cancel).unwrap_err().kind,
             ErrorKind::Cancelled
         );
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn a_directory_is_verified_by_its_manifest_and_every_listed_hash() {
-        let directory = temp("verify");
-        let root = directory.join("catalog.artifacts");
-        let publish = writer(&root, "catalog-a");
-        let (first, _) = publish
-            .write(b"first verified", meta(), "test.writer")
-            .unwrap();
-        let (second, _) = publish
-            .write(b"second verified", meta(), "test.writer")
-            .unwrap();
-        let listed = [
-            (first.id.clone(), first.bytes),
-            (second.id.clone(), second.bytes),
-        ];
-        let never = AtomicBool::new(false);
-        assert_eq!(
-            verify_directory(&root, "catalog-a", &listed, &never).unwrap(),
-            root.canonicalize().unwrap()
-        );
-        let foreign = verify_directory(&root, "catalog-b", &listed, &never).unwrap_err();
-        assert_eq!(foreign.kind, ErrorKind::Incompatible);
-        // The same length with other bytes is caught by the hash, and names the artifact.
-        let object = object_path(&root, &second.id);
-        let mut damaged = fs::read(&object).unwrap();
-        damaged[0] ^= 1;
-        fs::write(&object, damaged).unwrap();
-        let corrupt = verify_directory(&root, "catalog-a", &listed, &never).unwrap_err();
-        assert_eq!(corrupt.kind, ErrorKind::SourceUnavailable);
-        assert!(
-            corrupt
-                .detail
-                .starts_with(&format!("artifact {} in ", second.id))
-                && corrupt.detail.ends_with("is corrupt"),
-            "{corrupt}"
-        );
-        fs::remove_file(object_path(&root, &first.id)).unwrap();
-        let missing = verify_directory(&root, "catalog-a", &listed, &never).unwrap_err();
-        assert!(
-            missing
-                .detail
-                .starts_with(&format!("artifact {} is missing from", first.id)),
-            "the first bad artifact is named: {missing}"
-        );
-        let absent = verify_directory(&directory.join("elsewhere"), "catalog-a", &listed, &never)
-            .unwrap_err();
-        assert_eq!(absent.kind, ErrorKind::SourceUnavailable);
-        assert!(absent.detail.ends_with("is missing"), "{absent}");
         fs::remove_dir_all(directory).unwrap();
     }
 

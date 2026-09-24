@@ -1,11 +1,11 @@
 //! Developer proof of the shared module capabilities. `lightwell.capabilities` declares a setting
-//! of each plain and file kind, a bearer provider adapter whose profiles hold an endpoint and a
-//! secret key, the three implemented capabilities, one pinned resource its activation loads, and
-//! one worker task that reads the selected file, sends the photo's sample grid to the profile's
-//! endpoint and publishes a tint artifact, which its colour-stage effect applies by multiplying
-//! linear channels. It is a test fixture: the desktop registers it only in developer mode with
-//! `--proof-endpoint`, `lightwell-json` with `--proof-endpoint`, and tests directly, always against
-//! a [`ProofEndpoint`] a harness started. See `docs/design/module-capabilities.md#proof-module`.
+//! of each remaining plain kind, a bearer provider adapter whose profiles hold an endpoint and a
+//! secret key, the two implemented capabilities, one pinned resource its activation loads, and one
+//! worker task that sends the photo's sample grid to the profile's endpoint and publishes a tint
+//! artifact, which its colour-stage effect applies by multiplying linear channels. It is a test
+//! fixture: the desktop registers it only in developer mode with `--proof-endpoint`,
+//! `lightwell-json` with `--proof-endpoint`, and tests directly, always against a [`ProofEndpoint`]
+//! a harness started. See `docs/design/module-capabilities.md#proof-module`.
 mod endpoint;
 
 pub use endpoint::{ProofEndpoint, ProofRequest};
@@ -20,7 +20,6 @@ use crate::{
     capabilities::context::ModuleContext,
 };
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     io::Read,
     path::Path,
@@ -128,11 +127,6 @@ fn read_palette(path: &Path) -> Result<[f32; 3], Error> {
     parse_palette(&bytes)
 }
 
-/// The small factor the input file contributes: 0.9 to 1.1 by the first byte of its SHA-256.
-pub fn input_factor(sha256: &[u8]) -> f32 {
-    0.9 + f32::from(sha256.first().copied().unwrap_or(0)) / 255.0 * 0.2
-}
-
 /// The endpoint's answer, `{"rgb": [r, g, b]}` with three codes of 1 to 255 and nothing else.
 fn parse_answer(body: &[u8]) -> Result<[u8; 3], Error> {
     let refused = || validation("the proof endpoint answered something other than a tint");
@@ -234,12 +228,6 @@ impl CapabilitiesProofModule {
                         "kind": "number", "min": 0.0, "max": 1.0, "step": 0.05, "precision": 2,
                         "required": false, "default": 0.5, "invalidates_activation": false,
                     },
-                    {
-                        "id": "input-file", "label": "Input file",
-                        "help": "Any file; its SHA-256 picks a small factor of the tint",
-                        "kind": "file", "mode": "file",
-                        "required": false, "invalidates_activation": false,
-                    },
                 ],
                 "profiles": {
                     "label": "Endpoint",
@@ -270,10 +258,6 @@ impl CapabilitiesProofModule {
             },
             "capabilities": [
                 {
-                    "id": "input", "kind": "read-user-file", "setting": "input-file",
-                    "purpose": "Read the file you chose; its hash picks a small factor of the tint.",
-                },
-                {
                     "id": "echo", "kind": "remote-image-request", "adapter": PROOF_ADAPTER,
                     "data": "sample-grid-8",
                     "purpose": "Send an 8 × 8 grid of this photo's colours to the proof endpoint, which answers a tint.",
@@ -302,11 +286,11 @@ impl CapabilitiesProofModule {
             "tasks": [{
                 "id": PROOF_TASK,
                 "title": "Generate proof tint",
-                "notes": "Reads the input file, sends this photo's sample grid to the profile's endpoint and publishes a tint of three linear gains for apply-proof-tint.",
+                "notes": "Sends this photo's sample grid to the profile's endpoint and publishes a tint of three linear gains for apply-proof-tint.",
                 "asset": true,
                 "profile": true,
                 "requires_active": true,
-                "uses": ["input", "echo"],
+                "uses": ["echo"],
                 "parameters": [],
                 "apply": {"action": APPLY_PROOF_TINT, "parameter": "artifact"},
             }],
@@ -366,12 +350,12 @@ impl CapabilitiesProofModule {
         )
     }
 
-    /// The gains of one generation: the endpoint's answer over 255, the palette and the input's
-    /// factor multiplied per channel, moved from neutral by `strength`, all in `f32`.
-    fn gains(rgb: [u8; 3], palette: [f32; 3], factor: f32, strength: f32) -> [f32; 3] {
+    /// The gains of one generation: the endpoint's answer over 255 and the palette multiplied per
+    /// channel, moved from neutral by `strength`, all in `f32`.
+    fn gains(rgb: [u8; 3], palette: [f32; 3], strength: f32) -> [f32; 3] {
         let mut gains = [1.0; 3];
         for channel in 0..3 {
-            let target = f32::from(rgb[channel]) / 255.0 * palette[channel] * factor;
+            let target = f32::from(rgb[channel]) / 255.0 * palette[channel];
             gains[channel] = 1.0 + strength * (target - 1.0);
         }
         gains
@@ -582,9 +566,8 @@ impl ToolModule for CapabilitiesProofModule {
         read_palette(path).map(|_| ())
     }
 
-    /// Read the input file, send the sample grid, and publish the tint its answer, the palette, the
-    /// input's factor and the strength setting make. Returns `{gains, input_sha256,
-    /// endpoint_origin, resource_version}`; the artifact is the job's.
+    /// Send the sample grid, and publish the tint its answer, the palette and the strength setting
+    /// make. Returns `{gains, endpoint_origin, resource_version}`; the artifact is the job's.
     fn run_task(
         &self,
         task_id: &str,
@@ -600,9 +583,7 @@ impl ToolModule for CapabilitiesProofModule {
                 "the proof palette is not loaded; activate the module",
             )
         })?;
-        context.progress(Some(0.1), "reading the input file");
-        let digest = Sha256::digest(context.read_file("input")?);
-        context.progress(Some(0.4), "asking the proof endpoint");
+        context.progress(Some(0.2), "asking the proof endpoint");
         let rgb = parse_answer(&context.send("echo")?)?;
         context.checkpoint()?;
         let strength = context
@@ -610,7 +591,7 @@ impl ToolModule for CapabilitiesProofModule {
             .and_then(Value::as_f64)
             .ok_or_else(|| Error::new(ErrorKind::NotReady, "setting strength has no value"))?
             as f32;
-        let gains = Self::gains(rgb, palette, input_factor(&digest), strength);
+        let gains = Self::gains(rgb, palette, strength);
         if !gains.iter().all(|gain| gain.is_finite() && *gain > 0.0) {
             return Err(validation("the tint's gains are not finite and positive"));
         }
@@ -627,7 +608,6 @@ impl ToolModule for CapabilitiesProofModule {
         )?;
         Ok(json!({
             "gains": gains,
-            "input_sha256": format!("{digest:x}"),
             "endpoint_origin": context.origin("echo")?,
             "resource_version": PROOF_RESOURCE_VERSION,
         }))
@@ -638,6 +618,7 @@ impl ToolModule for CapabilitiesProofModule {
 mod tests {
     use super::*;
     use crate::{ModuleRegistry, artifacts::ArtifactId};
+    use sha2::{Digest, Sha256};
 
     fn artifact(kind: &str, bytes: Vec<u8>) -> Arc<PreparedArtifact> {
         let id = ArtifactId::for_hash(&format!("{:x}", Sha256::digest(&bytes))).unwrap();
@@ -721,8 +702,6 @@ mod tests {
                 ErrorKind::Validation
             );
         }
-        assert_eq!(input_factor(&[0]), 0.9);
-        assert_eq!(input_factor(&[255]), 1.1);
     }
 
     #[test]

@@ -406,7 +406,7 @@ fn a_missing_artifact_fails_evaluation_explicitly_and_rewrites_nothing() {
     assert_eq!(
         gone.detail,
         format!(
-            "artifact directory {} is missing; move it with the catalog or select it with artifact.relocate",
+            "artifact directory {} is missing; move it with the catalog",
             root.display()
         )
     );
@@ -621,7 +621,7 @@ fn copying_only_the_catalog_fails_artifact_layers_while_history_reads() {
     assert_eq!(
         error.detail,
         format!(
-            "artifact directory {} is missing; move it with the catalog or select it with artifact.relocate",
+            "artifact directory {} is missing; move it with the catalog",
             copy.join("copy.artifacts").display()
         )
     );

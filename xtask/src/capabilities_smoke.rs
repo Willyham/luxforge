@@ -21,8 +21,6 @@ const MODULE: &str = "lightwell.capabilities";
 const TASK: &str = "generate-proof-tint";
 const TINT_EFFECT: &str = "lightwell.capabilities.tint";
 const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
-/// The file the input setting is pointed at: any small fixture works, its hash picks a factor.
-const INPUT: &str = "fixtures/s0/orientation-6.jpg";
 pub const WINDOW: [&str; 2] = ["1440", "900"];
 /// How long the endpoint holds the palette download and each generation, so a frame can be
 /// captured while the install or the task is still running. Well inside every transfer and adapter
@@ -44,7 +42,7 @@ const LAYOUT: usize = 5;
 
 /// The script, with the sentinel key in its secret steps. Numbered frames follow the one open
 /// frame, so capability step `n` (from 1) is the frame at index `LAYOUT + n` of the run's frames.
-fn script(generate: &str, key: &str, wrong: &str, input: &Path) -> Value {
+fn script(generate: &str, key: &str, wrong: &str) -> Value {
     json!([
         // Layout: the sections that start expanded are collapsed, the proof section is expanded
         // and the panel is scrolled to its end, so the whole capability block is on screen.
@@ -59,7 +57,6 @@ fn script(generate: &str, key: &str, wrong: &str, input: &Path) -> Value {
         step(json!({"profile": {"create": {"adapter": "proof-echo", "label": "Local proof"}}})),
         step(json!({"set": {"field": "endpoint", "value": generate, "profile": 0}})),
         step(json!({"secret": {"field": "api-key", "value": key, "profile": 0}})),
-        step(json!({"file": {"field": "input-file", "path": input}})),
         step(json!({"section": "status"})),
         step(json!({"install": {"resource": "proof-palette"}})),
         step(json!({"consent": "deny"})),
@@ -73,7 +70,7 @@ fn script(generate: &str, key: &str, wrong: &str, input: &Path) -> Value {
         step(json!({"apply": true})),
         step(json!({"secret": {"field": "api-key", "value": wrong, "profile": 0}})),
         step(json!({"task": {"task": TASK}})),
-        step(json!({"revoke": 2})),
+        step(json!({"revoke": 1})),
     ])
 }
 
@@ -140,8 +137,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
     endpoint.set_delay(DELAY);
     endpoint.set_palette_delay(DELAY);
     let fixture = root.join(FIXTURE);
-    let input = root.join(INPUT).canonicalize()?;
-    let script = script(&endpoint.generate_url(), &key, &wrong, &input);
+    let script = script(&endpoint.generate_url(), &key, &wrong);
     // The script with the key lives outside the output directory and goes with this function.
     let scratch = tempfile::tempdir()?;
     let script_file = scratch.path().join("script.json");
@@ -170,9 +166,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
     let mut result = json!({"scenario":"capabilities","status":"failed","command":command,"launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"endpoint":endpoint.base_url()});
     let check = (|| -> Result {
         let fixture_hash = hash(&fixture)?;
-        let input_hash = hash(&input)?;
-        result["fixture_hashes"] =
-            json!({"orientation-1.jpg": fixture_hash, "orientation-6.jpg": input_hash});
+        result["fixture_hashes"] = json!({"orientation-1.jpg": fixture_hash});
         result["binary_sha256"] = json!(hash(bin)?);
         result["lockfile_sha256"] = json!(hash(&root.join("Cargo.lock"))?);
         let mut child = spawn(root, bin, &args, &out.join("subprocess.log"))?;
@@ -194,10 +188,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
         });
         write_json(&evidence.join("capabilities-checks.json"), &checks)?;
         ensure(found.is_empty(), format!("A secret reached {found:?}"))?;
-        ensure(
-            hash(&fixture)? == fixture_hash && hash(&input)? == input_hash,
-            "Source changed",
-        )?;
+        ensure(hash(&fixture)? == fixture_hash, "Source changed")?;
         result["backend"] = app["frames"][0]["state"]["backend"].clone();
         Ok(())
     })();
@@ -210,7 +201,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
     fs::write(
         out.join("reproduce.md"),
         format!(
-            "# Smoke run\n\nScenario: capabilities. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask smoke --scenario capabilities --output NEW_DIR --binary PATH`: the runner starts a loopback proof endpoint in its own process, writes the script (whose secret steps carry a sentinel key) outside the output directory and keeps a redacted copy as `script.json`. On macOS the editor runs from a temporary background-only bundle with `--hidden-window`.\n\nArgument array (the script path was a temporary file):\n\n```json\n{}\n```\n\nActual renderer readback; the native file dialog is replaced by the message its result sends. Synthetic fixtures only.\n",
+            "# Smoke run\n\nScenario: capabilities. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask smoke --scenario capabilities --output NEW_DIR --binary PATH`: the runner starts a loopback proof endpoint in its own process, writes the script (whose secret steps carry a sentinel key) outside the output directory and keeps a redacted copy as `script.json`. On macOS the editor runs from a temporary background-only bundle with `--hidden-window`.\n\nArgument array (the script path was a temporary file):\n\n```json\n{}\n```\n\nActual renderer readback. Synthetic fixtures only.\n",
             result["status"],
             launch::MODE,
             serde_json::to_string_pretty(&command)?
@@ -335,7 +326,7 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         capability(frame(1))["view"] == "settings" && capability(frame(1))["loaded"] == true,
         "The settings sub-view did not open on the read settings",
     )?;
-    // 2–6: each settings write.
+    // 2–5: each settings write.
     ensure(
         settings(2)["fields"]["strength"] == "0.80" && settings(2)["revision"] == 1,
         format!("Strength was not set: {}", settings(2)),
@@ -363,42 +354,31 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         "The profile is not ready with its key",
     )?;
     ensure(
-        settings(6)["fields"]["input-file"]
-            .as_str()
-            .is_some_and(|path| path.ends_with("orientation-6.jpg")),
-        "The input file was not set",
-    )?;
-    ensure(
-        capability(frame(6))["permissions"]["live"] == 1
-            && capability(frame(6))["permissions"]["grants"][0]["kind"] == "read-user-file",
-        "The native pick did not grant exactly the file read",
-    )?;
-    ensure(
-        capability(frame(7))["view"] == "status",
+        capability(frame(6))["view"] == "status",
         "The status sub-view did not open",
     )?;
-    // 8–10: the download's consent, declined, then asked again.
-    let asked = consent(frame(8), "download-artifact")?;
+    // 7–9: the download's consent, declined, then asked again.
+    let asked = consent(frame(7), "download-artifact")?;
     ensure(
         asked["denied"] == false && asked["scope"]["resource"] == "proof-palette",
         format!("Wrong download consent {asked}"),
     )?;
     ensure(
-        notices(frame(8)).contains(&"Allow Capabilities proof to download a resource?".into()),
+        notices(frame(7)).contains(&"Allow Capabilities proof to download a resource?".into()),
         "The download consent notice is not shown",
     )?;
     ensure(
-        capability(frame(9))["consent"].is_null()
-            && capability(frame(9))["permissions"]["denials"] == 1
-            && capability(frame(9))["resources"][0]["state"] == "not-installed",
+        capability(frame(8))["consent"].is_null()
+            && capability(frame(8))["permissions"]["denials"] == 1
+            && capability(frame(8))["resources"][0]["state"] == "not-installed",
         "The denial was not recorded, or something was installed",
     )?;
     ensure(
-        consent(frame(10), "download-artifact")?["denied"] == true,
+        consent(frame(9), "download-artifact")?["denied"] == true,
         "A second ask does not say it was declined before",
     )?;
-    // 11–12: installing, with progress, then installed.
-    let installing = &capability(frame(11))["resources"][0];
+    // 10–11: installing, with progress, then installed.
+    let installing = &capability(frame(10))["resources"][0];
     ensure(
         installing["state"] == "installing"
             && installing["progress"]
@@ -407,7 +387,7 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("The install is not running with progress: {installing}"),
     )?;
     ensure(
-        capability(frame(11))["jobs"]
+        capability(frame(10))["jobs"]
             .as_array()
             .is_some_and(|jobs| {
                 jobs.iter()
@@ -416,18 +396,18 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         "No running install job was tracked",
     )?;
     ensure(
-        capability(frame(12))["resources"][0]["state"] == "installed",
+        capability(frame(11))["resources"][0]["state"] == "installed",
         "The palette was not installed",
     )?;
     ensure(
-        capability(frame(13))["activation"]["state"] == "active",
+        capability(frame(12))["activation"]["state"] == "active",
         format!(
             "The module is not active: {}",
-            capability(frame(13))["activation"]
+            capability(frame(12))["activation"]
         ),
     )?;
-    // 14–16: the photo-data consent, the running task and its result.
-    let asked = consent(frame(14), "remote-image-request")?;
+    // 13–15: the photo-data consent, the running task and its result.
+    let asked = consent(frame(13), "remote-image-request")?;
     ensure(
         asked["scope"]["data"] == "sample-grid-8"
             && asked["scope"]["adapter"] == "proof-echo"
@@ -435,10 +415,10 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("Wrong photo-data consent {asked}"),
     )?;
     ensure(
-        notices(frame(14)).contains(&"Allow Capabilities proof to send photo data?".into()),
+        notices(frame(13)).contains(&"Allow Capabilities proof to send photo data?".into()),
         "The photo-data consent notice is not shown",
     )?;
-    let running = &capability(frame(15))["tasks"][TASK];
+    let running = &capability(frame(14))["tasks"][TASK];
     ensure(
         running["status"] == "running"
             && running["progress"]["fraction"]
@@ -446,7 +426,7 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
                 .is_some_and(|fraction| (0.0..=1.0).contains(&fraction)),
         format!("The task is not running with progress: {running}"),
     )?;
-    let done = &capability(frame(16))["tasks"][TASK];
+    let done = &capability(frame(15))["tasks"][TASK];
     let artifact = done["artifact"]
         .as_str()
         .ok_or_else(|| format!("The task did not succeed: {done}"))?
@@ -456,18 +436,18 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("The task has no result to apply: {done}"),
     )?;
     ensure(
-        tint_layers(frame(16)).is_empty(),
+        tint_layers(frame(15)).is_empty(),
         "A tint was committed before Apply",
     )?;
-    // 17: exactly one tint layer, referencing the task's artifact.
-    let layers = tint_layers(frame(17));
+    // 16: exactly one tint layer, referencing the task's artifact.
+    let layers = tint_layers(frame(16));
     ensure(
         layers.len() == 1,
         "Apply did not commit exactly one tint layer",
     )?;
     ensure(
-        capability(frame(17))["tasks"][TASK]["applied"] == true
-            && capability(frame(16))["tasks"][TASK]["applied"] == false,
+        capability(frame(16))["tasks"][TASK]["applied"] == true
+            && capability(frame(15))["tasks"][TASK]["applied"] == false,
         "The task control does not say its result is applied",
     )?;
     ensure(
@@ -478,12 +458,12 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
             layers[0]
         ),
     )?;
-    // 18–19: a wrong key makes the endpoint refuse, and the failure is shown.
+    // 17–18: a wrong key makes the endpoint refuse, and the failure is shown.
     ensure(
-        profile(18)["fields"]["api-key"] == "set",
+        profile(17)["fields"]["api-key"] == "set",
         "The replaced key does not read set",
     )?;
-    let failed = &capability(frame(19))["tasks"][TASK];
+    let failed = &capability(frame(18))["tasks"][TASK];
     ensure(
         failed["status"] == "failed"
             && failed["error"]["code"] == "read-error"
@@ -493,11 +473,11 @@ fn verify(evidence: &Path, app: &Value, events: &[Value], steps: usize) -> Resul
         format!("The failure is not the endpoint's refusal: {failed}"),
     )?;
     ensure(
-        tint_layers(frame(19)).len() == 1,
+        tint_layers(frame(18)).len() == 1,
         "A failed task changed the recipe",
     )?;
-    // 20: the photo-data grant revoked, in the open permissions list.
-    let permissions = &capability(frame(20))["permissions"];
+    // 19: the photo-data grant revoked, in the open permissions list.
+    let permissions = &capability(frame(19))["permissions"];
     let revoked: Vec<&Value> = permissions["grants"]
         .as_array()
         .into_iter()
@@ -588,7 +568,7 @@ fn window_mean(
 fn render_checks(evidence: &Path, app: &Value, base: &str) -> Result<Value> {
     const WINDOW_FRACTIONS: [f64; 2] = [0.25, 0.75];
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
-    let (before, after) = (&frames[LAYOUT + 16], &frames[LAYOUT + 17]);
+    let (before, after) = (&frames[LAYOUT + 15], &frames[LAYOUT + 16]);
     let before_path = frame_identity(evidence, app, before)?;
     let after_path = frame_identity(evidence, app, after)?;
     // The untinted frame still shows the fixture's exact colours, which locate the photograph; a
@@ -674,7 +654,6 @@ mod tests {
             "http://127.0.0.1:1/generate",
             "planted-key",
             "planted-wrong",
-            Path::new("/tmp/input"),
         );
         let kept = redacted(&script).to_string();
         assert!(!kept.contains("planted-key") && !kept.contains("planted-wrong"));

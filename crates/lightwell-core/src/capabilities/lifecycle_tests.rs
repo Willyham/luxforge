@@ -36,8 +36,8 @@ use std::{
 /// How many lane-test modules each fixture registers: enough to fill the module lane and one more.
 const LANES: usize = LANE_QUEUE + 2;
 
-/// A catalog, a settings directory, a resource directory and two selectable files under one
-/// temporary root, and the registry the owner is started with.
+/// A catalog, a settings directory and a resource directory under one temporary root, and the
+/// registry the owner is started with.
 struct Fixture {
     root: PathBuf,
     secrets: Arc<MemorySecretStore>,
@@ -52,8 +52,6 @@ impl Fixture {
     fn new(name: &str, server: &Server) -> Self {
         let root = temp(name);
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("input.bin"), b"tint").unwrap();
-        fs::write(root.join("other.bin"), b"other tint").unwrap();
         Self {
             root,
             secrets: Arc::new(MemorySecretStore::new()),
@@ -84,10 +82,6 @@ impl Fixture {
             .expect("a declared resource")
             .version;
         self.resources().join(MODULE).join(resource).join(version)
-    }
-
-    fn file(&self, name: &str) -> PathBuf {
-        self.root.join(name).canonicalize().unwrap()
     }
 
     fn registry(&self) -> Arc<ModuleRegistry> {
@@ -518,44 +512,6 @@ fn a_grant_scope_must_be_one_the_module_can_use_now_and_a_retry_returns_the_same
         assert_eq!(error.code, "validation", "{}", error.message);
         error.message
     };
-    // A file grant names the canonical path the setting holds now.
-    let input = fixture.file("input.bin");
-    assert!(
-        refusal(grant("input", json!({"path": input}), "file-0"))
-            .contains("is not the file setting input-file holds now")
-    );
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
-    let first = grant("input", json!({"path": input}), "file-1")
-        .result
-        .unwrap();
-    assert_eq!(first["outcome"], json!("committed"));
-    assert!(
-        refusal(grant(
-            "input",
-            json!({"path": fixture.file("other.bin")}),
-            "file-2"
-        ))
-        .contains("is not the file setting input-file holds now")
-    );
-    assert!(
-        refusal(grant("input", json!({"path": input, "extra": 1}), "file-3"))
-            .contains("unknown field")
-    );
-    // A retry of the same request returns the grant it made; the same identity with another scope
-    // is a conflict.
-    let retry = grant("input", json!({"path": input}), "file-1")
-        .result
-        .unwrap();
-    assert_eq!(retry["deduplicated"], json!(true));
-    assert_eq!(retry["grant"], first["grant"]);
-    let conflict = grant(
-        "input",
-        json!({"path": fixture.file("other.bin")}),
-        "file-1",
-    )
-    .error
-    .unwrap();
-    assert_eq!(conflict.code, "conflict");
     // A download grant names the declared version from the origin of the pinned URL.
     let mut scope = download_scope(&fixture, "palette");
     scope["version"] = json!("2.0.0");
@@ -616,13 +572,13 @@ fn a_grant_scope_must_be_one_the_module_can_use_now_and_a_retry_returns_the_same
         .call(
             owner.admin,
             GRANT,
-            json!({"module_id": "test.missing", "capability": "input", "scope": {"path": input}, "request_id": "x"}),
+            json!({"module_id": "test.missing", "capability": "echo", "scope": {}, "request_id": "x"}),
         )
         .error
         .unwrap();
     assert_eq!(unknown.message, "unknown module test.missing");
     let listed = owner.ok(LIST, json!({"module_id": MODULE}));
-    assert_eq!(listed["grants"].as_array().unwrap().len(), 2);
+    assert_eq!(listed["grants"].as_array().unwrap().len(), 1);
     owner.stop();
 }
 
@@ -687,12 +643,6 @@ fn revoking_a_grant_cancels_its_queued_and_running_jobs_and_nothing_else() {
     let server = stalling(release.clone());
     let fixture = Fixture::new("revoke", &server);
     let owner = fixture.start();
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
-    let file_grant = owner.ok_as(
-        owner.admin,
-        GRANT,
-        json!({"module_id": MODULE, "capability": "input", "scope": {"path": fixture.file("input.bin")}, "request_id": "file"}),
-    );
     let palette = owner.grant_download(&fixture, "palette", "palette");
     let swatch = owner.grant_download(&fixture, "swatches", "swatch");
     let running = owner.ok(
@@ -728,7 +678,7 @@ fn revoking_a_grant_cancels_its_queued_and_running_jobs_and_nothing_else() {
     release.store(true, Ordering::SeqCst);
     fixture.assert_clean("palette", "revoked while running");
     fixture.assert_clean("swatch", "revoked while queued");
-    // Everything else is as it was: the settings, and the grant nothing revoked.
+    // Everything else is as it was: the settings, and no grant besides these two.
     assert_eq!(owner.revision(), revision);
     let listed = owner.ok(LIST, json!({"module_id": MODULE}));
     let live: Vec<&Value> = listed["grants"]
@@ -737,7 +687,7 @@ fn revoking_a_grant_cancels_its_queued_and_running_jobs_and_nothing_else() {
         .iter()
         .filter(|grant| grant.get("revoked").is_none())
         .collect();
-    assert_eq!(live, [&file_grant["grant"]]);
+    assert!(live.is_empty(), "{listed}");
     // A revoked grant cannot be used: the next install asks for consent again.
     assert_eq!(
         owner
@@ -774,12 +724,7 @@ fn changing_what_a_grant_names_revokes_it() {
             .unwrap()["revoked"]["reason"]
             .clone()
     };
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
-    let file = grant("input", json!({"path": fixture.file("input.bin")}));
     let download = grant("palette", download_scope(&fixture, "palette"));
-    let changed = owner.set(json!({"input-file": fixture.root.join("other.bin")}));
-    assert_eq!(changed["revoked"], json!([file]));
-    assert_eq!(reason(&file), json!("selection changed"));
     // Changing another field revokes nothing.
     assert!(
         owner
@@ -813,7 +758,19 @@ fn changing_what_a_grant_names_revokes_it() {
     );
     assert_eq!(removed["revoked"], json!([second]));
     assert_eq!(reason(&second), json!("profile removed"));
-    let other = grant("input", json!({"path": fixture.file("other.bin")}));
+    let created = owner.ok(
+        CREATE_PROFILE,
+        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo 2", "mutation": mutation(owner.revision())}),
+    );
+    let profile2 = created["profile"]["id"].as_str().unwrap().to_owned();
+    owner.ok(
+        SET,
+        json!({"module_id": MODULE, "profile_id": profile2, "values": {"endpoint": "http://127.0.0.1:9/echo"}, "mutation": mutation(owner.revision())}),
+    );
+    let other = grant(
+        "echo",
+        json!({"profile_id": profile2, "adapter": "echo-adapter", "origin": "http://127.0.0.1:9", "data": "sample-grid-8", "asset_id": asset}),
+    );
     let reset = owner.ok(
         RESET,
         json!({"module_id": MODULE, "mutation": mutation(owner.revision())}),
@@ -949,7 +906,7 @@ fn a_running_activation_stops_promptly_and_releases_what_it_loaded() {
     let fixture = Fixture::new("running-cancel", &server);
     fixture.probe.hold.store(true, Ordering::SeqCst);
     let owner = fixture.start();
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
+    owner.set(json!({"label": "tint"}));
     owner.install_from_file(&fixture, "palette", PALETTE);
     let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     owner.until(&queued["job_id"], |job| {
@@ -1014,26 +971,16 @@ fn activation_lists_every_missing_requirement_before_anything_is_queued() {
     assert_eq!(
         refused.data.unwrap()["requirements"],
         json!([
-            {"kind": "setting", "id": "input-file", "state": "missing"},
+            {"kind": "setting", "id": "label", "state": "missing"},
             {"kind": "resource", "id": "palette", "state": "not-installed"},
         ])
     );
     assert!(
         refused
             .message
-            .contains("setting input-file is missing, resource palette is not-installed")
+            .contains("setting label is missing, resource palette is not-installed")
     );
     assert_eq!(owner.handle.capability_threads(), 0, "nothing was queued");
-    // A selected file that has gone is invalid rather than missing.
-    let doomed = fixture.root.join("doomed.bin");
-    fs::write(&doomed, b"x").unwrap();
-    owner.set(json!({"input-file": doomed}));
-    fs::remove_file(&doomed).unwrap();
-    let refused = owner.fail(ACTIVATE, json!({"module_id": MODULE}));
-    assert_eq!(
-        refused.data.unwrap()["requirements"][0],
-        json!({"kind": "setting", "id": "input-file", "state": "invalid"})
-    );
     // A module that declares no activation, or an unknown one, is refused outright.
     let error = owner.fail(ACTIVATE, json!({"module_id": "lightwell.basic"}));
     assert_eq!(
@@ -1058,7 +1005,7 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
     let server = serving();
     let fixture = Fixture::new("activate", &server);
     let owner = fixture.start();
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
+    owner.set(json!({"label": "tint"}));
     owner.ok(
         SET_SECRET,
         json!({"module_id": MODULE, "setting": "token", "value": "worker-only", "mutation": mutation(owner.revision())}),
@@ -1099,10 +1046,6 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
     assert_eq!(
         status["permissions"]["grants"][0]["grant_id"],
         grant["grant"]["grant_id"]
-    );
-    assert!(
-        status["permissions"]["grants"][0]["last_used_ms"].is_u64(),
-        "the install recorded its use of the grant"
     );
     let jobs: Vec<&str> = status["jobs"]
         .as_array()
@@ -1163,7 +1106,7 @@ fn a_failed_activation_reads_failed_and_releases_its_partial_state() {
     let fixture = Fixture::new("failed", &server);
     fixture.probe.fail.store(true, Ordering::SeqCst);
     let owner = fixture.start();
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
+    owner.set(json!({"label": "tint"}));
     owner.install_from_file(&fixture, "palette", PALETTE);
     let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     let failed = owner.finished(&queued["job_id"]);
@@ -1196,14 +1139,14 @@ fn a_settings_change_that_invalidates_activation_deactivates_the_module() {
     let server = serving();
     let fixture = Fixture::new("invalidates", &server);
     let owner = fixture.start();
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
+    owner.set(json!({"label": "tint"}));
     owner.install_from_file(&fixture, "palette", PALETTE);
     let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     owner.finished(&queued["job_id"]);
     // A field that does not invalidate activation leaves the module active.
     owner.set(json!({"strength": 0.25}));
     assert_eq!(owner.status(MODULE)["activation"]["state"], json!("active"));
-    let changed = owner.set(json!({"input-file": fixture.root.join("other.bin")}));
+    let changed = owner.set(json!({"label": "other tint"}));
     assert_eq!(changed["invalidates_activation"], json!(true));
     let status = owner.status(MODULE);
     assert_eq!(status["activation"]["state"], json!("inactive"));
@@ -1463,7 +1406,7 @@ fn what_a_crash_leaves_is_not_installed_and_the_next_install_removes_it() {
         owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}))["resources"][0]["state"],
         json!("not-installed")
     );
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
+    owner.set(json!({"label": "tint"}));
     let refused = owner.fail(ACTIVATE, json!({"module_id": MODULE}));
     assert_eq!(
         refused.data.unwrap()["requirements"],
@@ -1515,7 +1458,7 @@ fn removing_a_required_resource_deactivates_the_module_and_deletes_only_the_reso
     let server = serving();
     let fixture = Fixture::new("remove", &server);
     let owner = fixture.start();
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
+    owner.set(json!({"label": "tint"}));
     owner.install_from_file(&fixture, "palette", PALETTE);
     owner.install_from_file(&fixture, "swatch", SWATCH);
     let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
@@ -1607,7 +1550,7 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
         let status = owner.status(MODULE);
         assert_eq!(status["activation"], json!({"state": "inactive"}));
         assert_eq!(status["settings"]["state"], json!("incomplete"));
-        assert_eq!(status["settings"]["missing"], json!(["input-file"]));
+        assert_eq!(status["settings"]["missing"], json!(["label"]));
         assert_eq!(status["jobs"], json!([]));
         owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}));
         owner.ok(LIST, json!({}));
@@ -1637,7 +1580,7 @@ fn a_sentinel_secret_reaches_the_worker_and_no_observable_surface() {
     let fixture = Fixture::new("sentinel", &server);
     let sentinel = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
     let owner = fixture.start();
-    owner.set(json!({"input-file": fixture.root.join("input.bin")}));
+    owner.set(json!({"label": "tint"}));
     owner.ok(
         SET_SECRET,
         json!({"module_id": MODULE, "setting": "token", "value": sentinel, "mutation": mutation(owner.revision())}),

@@ -2,8 +2,8 @@
 //! The file follows the settings file's discipline: a `format: 1` marker, an advisory lock on
 //! `grants.lock` for writers, a fresh read on every call, a synced temporary file renamed over the
 //! old one, and refusal with `incompatible` of any other shape, which is never rewritten. Nothing
-//! here ever holds a secret: a scope names a path, a resource version, or a profile, adapter,
-//! origin, data class and asset. See `docs/design/module-capabilities.md#capability-and-consent-contract`.
+//! here ever holds a secret: a scope names a resource version, or a profile, adapter, origin, data
+//! class and asset. See `docs/design/module-capabilities.md#capability-and-consent-contract`.
 use super::{
     atomic,
     descriptor::{CapabilityKind, DataClass},
@@ -61,7 +61,6 @@ pub(crate) fn now_ms() -> u64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GrantKind {
-    ReadUserFile,
     DownloadArtifact,
     RemoteImageRequest,
 }
@@ -69,7 +68,6 @@ pub enum GrantKind {
 impl GrantKind {
     pub fn of(kind: &CapabilityKind) -> Self {
         match kind {
-            CapabilityKind::ReadUserFile { .. } => Self::ReadUserFile,
             CapabilityKind::DownloadArtifact { .. } => Self::DownloadArtifact,
             CapabilityKind::RemoteImageRequest { .. } => Self::RemoteImageRequest,
         }
@@ -77,18 +75,10 @@ impl GrantKind {
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::ReadUserFile => "read-user-file",
             Self::DownloadArtifact => "download-artifact",
             Self::RemoteImageRequest => "remote-image-request",
         }
     }
-}
-
-/// `read-user-file`: the canonical path a `file` setting holds.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FileScope {
-    pub path: PathBuf,
 }
 
 /// `download-artifact`: one declared resource version from the origin of its pinned URL.
@@ -112,12 +102,11 @@ pub struct RemoteScope {
     pub asset_id: AssetId,
 }
 
-/// An exact grant scope. Matching is equality: nothing widens a scope, so a grant for one path,
+/// An exact grant scope. Matching is equality: nothing widens a scope, so a grant for one
 /// resource version or asset never covers another.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GrantScope {
-    File(FileScope),
     Download(DownloadScope),
     Remote(RemoteScope),
 }
@@ -125,7 +114,6 @@ pub enum GrantScope {
 impl GrantScope {
     pub fn kind(&self) -> GrantKind {
         match self {
-            Self::File(_) => GrantKind::ReadUserFile,
             Self::Download(_) => GrantKind::DownloadArtifact,
             Self::Remote(_) => GrantKind::RemoteImageRequest,
         }
@@ -139,7 +127,6 @@ impl GrantScope {
                 .map_err(|error| validation(format!("a {} scope is invalid: {error}", kind.name())))
         }
         Ok(match kind {
-            GrantKind::ReadUserFile => Self::File(strict(kind, value)?),
             GrantKind::DownloadArtifact => Self::Download(strict(kind, value)?),
             GrantKind::RemoteImageRequest => Self::Remote(strict(kind, value)?),
         })
@@ -170,8 +157,6 @@ pub struct Grant {
     /// The grant request's identity, by which a retry is recognised.
     pub request_id: String,
     pub created_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked: Option<Revocation>,
 }
@@ -424,7 +409,6 @@ impl GrantsStore {
             actor: actor.to_owned(),
             request_id: request_id.to_owned(),
             created_ms: now_ms(),
-            last_used_ms: None,
             revoked: None,
         };
         document.grants.push(grant.clone());
@@ -517,22 +501,6 @@ impl GrantsStore {
             self.save(&document)?;
         }
         Ok(revoked)
-    }
-
-    /// Record that live work was admitted under these grants.
-    pub(crate) fn touch(&self, grant_ids: &[String]) -> Result<(), Error> {
-        if grant_ids.is_empty() {
-            return Ok(());
-        }
-        let _lock = self.lock()?;
-        let mut document = self.load()?;
-        let ms = now_ms();
-        for grant in &mut document.grants {
-            if grant_ids.contains(&grant.grant_id) {
-                grant.last_used_ms = Some(ms);
-            }
-        }
-        self.save(&document)
     }
 
     fn lock(&self) -> Result<File, Error> {
@@ -634,14 +602,18 @@ mod tests {
         }
     }
 
-    fn file_scope(path: &str) -> GrantScope {
-        GrantScope::File(FileScope { path: path.into() })
+    fn download_scope(resource: &str) -> GrantScope {
+        GrantScope::Download(DownloadScope {
+            resource: resource.into(),
+            version: "1".into(),
+            origin: "https://example.com".into(),
+        })
     }
 
     fn new_grant<'a>(scope: GrantScope, request_id: &'a str) -> NewGrant<'a> {
         NewGrant {
             module_id: MODULE,
-            capability: "input",
+            capability: "download",
             scope,
             actor: "permissions",
             request_id,
@@ -650,10 +622,6 @@ mod tests {
 
     #[test]
     fn scopes_parse_strictly_as_their_kind() {
-        assert_eq!(
-            GrantScope::parse(GrantKind::ReadUserFile, &json!({"path": "/a"})).unwrap(),
-            file_scope("/a")
-        );
         let download = GrantScope::parse(
             GrantKind::DownloadArtifact,
             &json!({"resource": "palette", "version": "1", "origin": "https://example.com"}),
@@ -662,8 +630,8 @@ mod tests {
         assert_eq!(download.kind(), GrantKind::DownloadArtifact);
         for (kind, value, expected) in [
             (
-                GrantKind::ReadUserFile,
-                json!({"path": "/a", "extra": 1}),
+                GrantKind::DownloadArtifact,
+                json!({"resource": "palette", "extra": 1}),
                 "unknown field `extra`",
             ),
             (
@@ -690,19 +658,19 @@ mod tests {
         assert!(!fixture.file().exists(), "reading creates nothing");
         let denial = fixture
             .store
-            .deny(MODULE, "input", file_scope("/a"), "edit")
+            .deny(MODULE, "download", download_scope("/a"), "edit")
             .unwrap();
-        assert_eq!(denial.kind, GrantKind::ReadUserFile);
+        assert_eq!(denial.kind, GrantKind::DownloadArtifact);
         assert_eq!(
             fixture
                 .store
-                .consent(MODULE, "input", &file_scope("/a"))
+                .consent(MODULE, "download", &download_scope("/a"))
                 .unwrap(),
             (None, true)
         );
         let first = fixture
             .store
-            .grant(new_grant(file_scope("/a"), "grant-1"))
+            .grant(new_grant(download_scope("/a"), "grant-1"))
             .unwrap();
         assert_eq!(
             first.outcome,
@@ -713,25 +681,25 @@ mod tests {
         assert_eq!(first.grant.actor, "permissions");
         let (live, denied) = fixture
             .store
-            .consent(MODULE, "input", &file_scope("/a"))
+            .consent(MODULE, "download", &download_scope("/a"))
             .unwrap();
         assert_eq!(live.as_ref(), Some(&first.grant));
         assert!(!denied, "the grant cleared the denial");
         let retry = fixture
             .store
-            .grant(new_grant(file_scope("/a"), "grant-1"))
+            .grant(new_grant(download_scope("/a"), "grant-1"))
             .unwrap();
         assert!(retry.deduplicated);
         assert_eq!(retry.grant, first.grant);
         let error = fixture
             .store
-            .grant(new_grant(file_scope("/b"), "grant-1"))
+            .grant(new_grant(download_scope("/b"), "grant-1"))
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Conflict);
         // Another request for a scope already granted returns the live grant instead of a copy.
         let again = fixture
             .store
-            .grant(new_grant(file_scope("/a"), "grant-2"))
+            .grant(new_grant(download_scope("/a"), "grant-2"))
             .unwrap();
         assert_eq!(again.outcome, super::super::settings::WriteOutcome::NoOp);
         assert_eq!(again.grant.grant_id, first.grant.grant_id);
@@ -751,7 +719,7 @@ mod tests {
         // A retry of the original request still names the grant it made, revoked as it now is.
         let retry = fixture
             .store
-            .grant(new_grant(file_scope("/a"), "grant-1"))
+            .grant(new_grant(download_scope("/a"), "grant-1"))
             .unwrap();
         assert!(retry.deduplicated);
         assert!(!retry.grant.is_live());
@@ -774,13 +742,12 @@ mod tests {
         let live = |index: usize| Grant {
             grant_id: format!("grant-{index}"),
             module_id: MODULE.into(),
-            capability: "input".into(),
-            kind: GrantKind::ReadUserFile,
-            scope: file_scope(&format!("/{index}")),
+            capability: "download".into(),
+            kind: GrantKind::DownloadArtifact,
+            scope: download_scope(&format!("/{index}")),
             actor: "permissions".into(),
             request_id: format!("request-{index}"),
             created_ms: 1,
-            last_used_ms: None,
             revoked: None,
         };
         document.grants = (0..MAX_GRANT_RECORDS).map(live).collect();
@@ -788,12 +755,12 @@ mod tests {
         fixture.store.save(&document).unwrap();
         let error = fixture
             .store
-            .grant(new_grant(file_scope("/new"), "new"))
+            .grant(new_grant(download_scope("/new"), "new"))
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         let error = fixture
             .store
-            .deny(MODULE, "input", file_scope("/new"), "edit")
+            .deny(MODULE, "download", download_scope("/new"), "edit")
             .unwrap_err();
         assert_eq!(
             error.kind,
@@ -812,7 +779,7 @@ mod tests {
         fixture.store.save(&document).unwrap();
         fixture
             .store
-            .grant(new_grant(file_scope("/new"), "new"))
+            .grant(new_grant(download_scope("/new"), "new"))
             .unwrap();
         let grants = fixture.store.list(None).unwrap().grants;
         assert_eq!(grants.len(), MAX_GRANT_RECORDS);
@@ -838,7 +805,7 @@ mod tests {
             (
                 "kind",
                 json!({"format": 1, "grants": [], "denials": [{
-                    "module_id": MODULE, "capability": "input", "kind": "download-artifact",
+                    "module_id": MODULE, "capability": "download", "kind": "download-artifact",
                     "scope": {"path": "/a"}, "actor": "edit", "ms": 1,
                 }]})
                 .to_string(),
@@ -854,7 +821,7 @@ mod tests {
             );
             let error = fixture
                 .store
-                .grant(new_grant(file_scope("/a"), "a"))
+                .grant(new_grant(download_scope("/a"), "a"))
                 .unwrap_err();
             assert_eq!(error.kind, ErrorKind::Incompatible, "{name}");
             let error = fixture
@@ -871,8 +838,8 @@ mod tests {
     }
 
     #[test]
-    fn revoking_nothing_creates_no_file_and_touch_records_use() {
-        let fixture = Fixture::new("grants-touch");
+    fn revoking_nothing_creates_no_file() {
+        let fixture = Fixture::new("grants-revoke-nothing");
         assert!(
             fixture
                 .store
@@ -881,21 +848,13 @@ mod tests {
                 .is_empty()
         );
         assert!(!fixture.root.exists(), "nothing was created");
-        let granted = fixture
-            .store
-            .grant(new_grant(file_scope("/a"), "a"))
-            .unwrap()
-            .grant;
-        assert!(granted.last_used_ms.is_none());
         fixture
             .store
-            .touch(std::slice::from_ref(&granted.grant_id))
+            .grant(new_grant(download_scope("/a"), "a"))
             .unwrap();
-        let listed = fixture.store.list(None).unwrap();
-        assert!(listed.grants[0].last_used_ms.is_some());
         let revoked = fixture
             .store
-            .revoke_matching(|grant| grant.capability == "input", "selection changed")
+            .revoke_matching(|grant| grant.capability == "download", "selection changed")
             .unwrap();
         assert_eq!(revoked.len(), 1);
         assert_eq!(

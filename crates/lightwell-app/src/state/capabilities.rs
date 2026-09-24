@@ -13,7 +13,7 @@ use lightwell_core::{
     AssetId, EditorState, ModuleDescriptor,
     capabilities::{
         consent::Disclosure,
-        descriptor::{AdapterCost, CapabilityKind, SettingDescriptor, SettingKind},
+        descriptor::{AdapterCost, SettingDescriptor, SettingKind},
         grants::{Grant, GrantKind, GrantList},
         host::{ActivationRead, ActivationState, Requirement},
         jobs::{JobRecord, JobStatus},
@@ -24,10 +24,7 @@ use lightwell_core::{
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
-};
+use std::collections::{BTreeMap, BTreeSet};
 use zeroize::Zeroizing;
 
 /// The most jobs one module's state keeps; finished ones go first.
@@ -146,15 +143,6 @@ pub(crate) enum Operation {
         field: String,
         revision: u64,
     },
-    /// A file the native dialog chose: set it, then grant exactly that read, because the pick is
-    /// the person's consent for that path.
-    ChooseFile {
-        field: String,
-        path: PathBuf,
-        /// The `read-user-file` capability that reads this setting, when one is declared.
-        capability: Option<String>,
-        revision: u64,
-    },
     CreateProfile {
         adapter: String,
         label: String,
@@ -201,7 +189,6 @@ impl Operation {
             Self::Set { .. } => "set",
             Self::SetSecret { .. } => "set-secret",
             Self::ClearSecret { .. } => "clear-secret",
-            Self::ChooseFile { .. } => "choose-file",
             Self::CreateProfile { .. } => "create-profile",
             Self::RemoveProfile { .. } => "remove-profile",
             Self::Install { .. } => "install",
@@ -222,7 +209,6 @@ impl Operation {
             Self::Set { profile, field, .. }
             | Self::SetSecret { profile, field, .. }
             | Self::ClearSecret { profile, field, .. } => Some((profile.clone(), field.clone())),
-            Self::ChooseFile { field, .. } => Some((None, field.clone())),
             _ => None,
         }
     }
@@ -529,9 +515,6 @@ pub(crate) enum FieldKindModel {
         typing: Option<String>,
         class: Option<String>,
     },
-    File {
-        path: Option<String>,
-    },
     /// Only `Set`, `Not set` or `Unknown`, and the masked input while replacing.
     Secret {
         state: String,
@@ -793,7 +776,6 @@ fn scope_text(
 ) -> String {
     let text = |key: &str| scope.get(key).and_then(Value::as_str).unwrap_or_default();
     let described = match kind {
-        GrantKind::ReadUserFile => format!("Read {}", text("path")),
         GrantKind::DownloadArtifact => {
             let title = module
                 .resource(text("resource"))
@@ -1044,9 +1026,6 @@ fn field_model(
                 }),
             }
         }
-        SettingKind::File { .. } => FieldKindModel::File {
-            path: value.and_then(Value::as_str).map(str::to_owned),
-        },
         SettingKind::Secret { .. } => FieldKindModel::Secret {
             state: secret_state(read).into(),
             replacing: state
@@ -1257,7 +1236,6 @@ pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
     let disclosure = &consent.disclosure;
     let verb = match consent.kind {
         GrantKind::DownloadArtifact => "download a resource",
-        GrantKind::ReadUserFile => "read a file",
         GrantKind::RemoteImageRequest => "send photo data",
     };
     let mut lines = vec![disclosure.purpose.clone()];
@@ -1266,9 +1244,6 @@ pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
             GrantKind::DownloadArtifact => format!("From {destination}"),
             _ => format!("To {destination}"),
         });
-    }
-    if let Some(source) = &disclosure.source {
-        lines.push(format!("From {source}"));
     }
     let data = capitalised(&disclosure.data);
     lines.push(match disclosure.bytes {
@@ -1304,17 +1279,6 @@ pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
             ("Don't allow".into(), NoticeAction::DenyConsent),
         ],
     })
-}
-
-/// The `read-user-file` capability that reads one module-level file setting, if one is declared.
-pub(crate) fn file_capability(module: &ModuleDescriptor, setting: &str) -> Option<String> {
-    module
-        .capabilities
-        .iter()
-        .find(|capability| {
-            matches!(&capability.kind, CapabilityKind::ReadUserFile { setting: declared } if declared == setting)
-        })
-        .map(|capability| capability.id.clone())
 }
 
 // ---- evidence -----------------------------------------------------------------------------------
@@ -1527,7 +1491,6 @@ fn field_text(kind: &FieldKindModel) -> String {
             .and_then(|index| options.get(index))
             .cloned()
             .unwrap_or_default(),
-        FieldKindModel::File { path } => path.clone().unwrap_or_default(),
         FieldKindModel::Secret { state, .. } => state.to_lowercase(),
     }
 }

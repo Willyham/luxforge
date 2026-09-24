@@ -23,7 +23,7 @@ use super::{
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
     settings::{
         CLEAR_SECRET, CREATE_PROFILE, FieldRead, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET,
-        SettingsRead, SettingsState, SettingsStore, SettingsWrite, ValueSource, WriteOutcome,
+        SettingsRead, SettingsState, SettingsStore, SettingsWrite, WriteOutcome,
     },
     transport::{Endpoint, EndpointClass, TransportConfig, parse_endpoint},
 };
@@ -36,7 +36,7 @@ use serde_json::{Map, Value, json};
 use std::{
     collections::HashMap,
     panic::{self, AssertUnwindSafe},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -51,7 +51,6 @@ pub const STATUS: &str = "module.status";
 
 /// Why grants are revoked or a module deactivated when something they depend on changes.
 pub const ENDPOINT_CHANGED: &str = "endpoint changed";
-pub const SELECTION_CHANGED: &str = "selection changed";
 pub const PROFILE_REMOVED: &str = "profile removed";
 pub const SETTINGS_RESET: &str = "settings reset";
 pub const SETTINGS_CHANGED: &str = "settings changed";
@@ -625,9 +624,8 @@ impl CapabilityHost {
     /// What a committed settings write implies. A changed field declared `invalidates_activation`
     /// deactivates an active or activating module. Grants scoped to a value the write replaced or
     /// removed are revoked, and the jobs running under them are cancelled: a profile's remote
-    /// grants when its endpoint changes or it is removed, a file setting's read grants for the path
-    /// it held, and a reset's file and remote grants. Download grants name a pinned resource, not a
-    /// setting, and survive a reset.
+    /// grants when its endpoint changes or it is removed, and a reset's remote grants. Download
+    /// grants name a pinned resource, not a setting, and survive a reset.
     fn after_settings_write(
         &mut self,
         registry: &Arc<ModuleRegistry>,
@@ -660,8 +658,8 @@ impl CapabilityHost {
         };
         let mut revoked = Vec::new();
         match method {
-            SET => match &result.profile_id {
-                Some(profile) => {
+            SET => {
+                if let Some(profile) = &result.profile_id {
                     let endpoint = result.changed.iter().any(|id| {
                         settings
                             .profiles
@@ -676,36 +674,7 @@ impl CapabilityHost {
                         )?);
                     }
                 }
-                None => {
-                    for id in &result.changed {
-                        let is_file = settings
-                            .field(id)
-                            .is_some_and(|field| matches!(field.kind, SettingKind::File { .. }));
-                        let Some(Value::String(previous)) = write.previous.get(id) else {
-                            continue;
-                        };
-                        if !is_file {
-                            continue;
-                        }
-                        let readers: Vec<&str> = descriptor
-                            .capabilities
-                            .iter()
-                            .filter(|capability| {
-                                matches!(&capability.kind, CapabilityKind::ReadUserFile { setting } if setting == id)
-                            })
-                            .map(|capability| capability.id.as_str())
-                            .collect();
-                        revoked.extend(grants.revoke_matching(
-                            |grant| {
-                                grant.module_id == module_id
-                                    && readers.contains(&grant.capability.as_str())
-                                    && matches!(&grant.scope, GrantScope::File(scope) if scope.path == Path::new(previous))
-                            },
-                            SELECTION_CHANGED,
-                        )?);
-                    }
-                }
-            },
+            }
             REMOVE_PROFILE => {
                 for profile in &write.removed {
                     revoked.extend(
@@ -720,10 +689,7 @@ impl CapabilityHost {
                 revoked.extend(grants.revoke_matching(
                     |grant| {
                         grant.module_id == module_id
-                            && matches!(
-                                grant.kind,
-                                GrantKind::ReadUserFile | GrantKind::RemoteImageRequest
-                            )
+                            && matches!(grant.kind, GrantKind::RemoteImageRequest)
                     },
                     SETTINGS_RESET,
                 )?);
@@ -792,9 +758,9 @@ impl CapabilityHost {
         encode(outcome)
     }
 
-    /// Whether the module can use `scope` now: the file its setting holds, the resource version it
-    /// declares from its pinned origin, or a profile of the capability's adapter whose endpoint has
-    /// that origin, the capability's data class and an asset of this catalog.
+    /// Whether the module can use `scope` now: the resource version it declares from its pinned
+    /// origin, or a profile of the capability's adapter whose endpoint has that origin, the
+    /// capability's data class and an asset of this catalog.
     fn check_usable(
         &self,
         service: &EditorService,
@@ -803,24 +769,6 @@ impl CapabilityHost {
         scope: &GrantScope,
     ) -> Result<(), Error> {
         match (&capability.kind, scope) {
-            (CapabilityKind::ReadUserFile { setting }, GrantScope::File(scope)) => {
-                let read = self.settings()?.read(descriptor, self.secrets())?;
-                let holds = matches!(
-                    read.fields.get(setting),
-                    Some(FieldRead::Value {
-                        value: Value::String(path),
-                        source: ValueSource::User,
-                        valid: true,
-                        ..
-                    }) if Path::new(path) == scope.path
-                );
-                if !holds {
-                    return Err(validation(format!(
-                        "{} is not the file setting {setting} holds now",
-                        scope.path.display()
-                    )));
-                }
-            }
             (CapabilityKind::DownloadArtifact { resource }, GrantScope::Download(scope)) => {
                 let declared = descriptor.resource(resource).ok_or_else(|| {
                     Error::new(
@@ -1553,17 +1501,12 @@ impl CapabilityHost {
                 module_id: descriptor.id.clone(),
                 resource_id: Some(resource.id.clone()),
                 origin: Some(origin.clone()),
-                grants: grants.clone(),
+                grants,
                 admission: Admission::Bounded,
             },
             control,
             Box::new(move || resources::install(job)),
         )?;
-        // When a grant was last used is a record for the person, not a condition of the job, so a
-        // grants file that cannot be written does not refuse an admitted install.
-        if let Some(store) = &self.grants {
-            let _ = store.touch(&grants);
-        }
         Ok(answer(ResourceState::Installing, Some(&record)))
     }
 
@@ -1673,8 +1616,8 @@ fn setting_requirement(read: Option<&SettingsRead>, id: &str) -> Option<&'static
 }
 
 /// The valid, non-null, non-secret module-level values of a settings read that a module may read
-/// as values. A file setting's path and an endpoint are left out: a job reaches them only through
-/// the capability that names them, so a module never holds a path or a URL of its own.
+/// as values. An endpoint is left out: a job reaches it only through the capability that names it,
+/// so a module never holds a URL of its own.
 fn effective_values(
     descriptor: &ModuleDescriptor,
     read: Option<&SettingsRead>,
@@ -1684,12 +1627,7 @@ fn effective_values(
             .settings
             .as_ref()
             .and_then(|settings| settings.field(id))
-            .is_some_and(|field| {
-                !matches!(
-                    field.kind,
-                    SettingKind::File { .. } | SettingKind::Endpoint { .. }
-                )
-            })
+            .is_some_and(|field| !matches!(field.kind, SettingKind::Endpoint { .. }))
     };
     read.map(|read| {
         read.fields
@@ -1849,8 +1787,8 @@ mod tests {
         Arc::new(registry)
     }
 
-    /// A catalog, a settings directory that does not exist yet and a file a setting can select, all
-    /// under one temporary root that is removed at the end.
+    /// A catalog and a settings directory that does not exist yet, under one temporary root that is
+    /// removed at the end.
     struct Fixture {
         root: PathBuf,
         secrets: Arc<MemorySecretStore>,
@@ -1860,7 +1798,6 @@ mod tests {
         fn new(name: &str) -> Self {
             let root = temp(name);
             fs::create_dir_all(&root).unwrap();
-            fs::write(root.join("input.bin"), b"tint").unwrap();
             Self {
                 root,
                 secrets: Arc::new(MemorySecretStore::new()),
@@ -2008,12 +1945,11 @@ mod tests {
     #[test]
     fn settings_persist_across_an_owner_restart_and_only_commits_emit_events() {
         let fixture = Fixture::new("restart");
-        let input = fixture.root.join("input.bin");
         let (owner, join) = fixture.start();
         let client = owner.register();
         let read = ok(&owner, client, "read", READ, json!({"module_id": MODULE}));
         assert_eq!(read["revision"], json!(0));
-        assert_eq!(read["state"], json!("incomplete"), "input-file is required");
+        assert_eq!(read["state"], json!("incomplete"), "label is required");
         assert_eq!(
             read["fields"]["strength"],
             json!({"value": 0.5, "default": 0.5, "source": "default", "valid": true})
@@ -2030,13 +1966,13 @@ mod tests {
             SET,
             json!({
                 "module_id": MODULE,
-                "values": {"mode": "fast", "input-file": input},
+                "values": {"mode": "fast", "label": "tint"},
                 "mutation": mutation(0, "set-1"),
             }),
         );
         assert_eq!(set["outcome"], json!("committed"));
         assert_eq!(set["revision"], json!(1));
-        assert_eq!(set["changed"], json!(["input-file", "mode"]));
+        assert_eq!(set["changed"], json!(["label", "mode"]));
         assert_eq!(set["invalidates_activation"], json!(true));
         assert_eq!(set["settings"]["state"], json!("ready"));
         assert_eq!(set["settings"]["fields"]["mode"]["value"], json!("fast"));
@@ -2068,7 +2004,7 @@ mod tests {
             SET,
             json!({
                 "module_id": MODULE,
-                "values": {"mode": "fast", "input-file": input},
+                "values": {"mode": "fast", "label": "tint"},
                 "mutation": mutation(0, "set-1"),
             }),
         );

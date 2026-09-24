@@ -1,5 +1,5 @@
 //! Derived artifacts through the catalog owner and the JSON methods: preparation as a source job,
-//! pinned preview jobs, corrupt bytes, relocation and collection.
+//! pinned preview jobs, corrupt bytes and collection.
 use super::*;
 use crate::{
     Mutation,
@@ -132,7 +132,6 @@ fn events(owner: &OwnerHandle, client: ClientId) -> Vec<String> {
 fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
     let directory = directory("prepare");
     let catalog = directory.join("catalog.sqlite");
-    let root = directory.join("catalog.artifacts");
     let (asset, _, artifact, expected) = tinted_catalog(&catalog, [0.35, 1.0, 1.0]);
     let (owner, join) = OwnerHandle::start_with(&catalog, TintModule::registry()).unwrap();
     let client = owner.register();
@@ -146,22 +145,11 @@ fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
         ok(&owner, client, "render.sample", sample.clone())["rgba"],
         json!(expected)
     );
-    // A preview job holds what it binds. Relocating to the same verified root clears everything
-    // the owner kept ready, and the job still renders.
+    // A preview job holds what it binds and renders the same bytes.
     let preview = owner
         .preview_job(PreviewRequest::new(client, asset.clone()))
         .unwrap();
     assert_eq!(preview.artifacts[0].id, artifact);
-    let relocated = ok(
-        &owner,
-        client,
-        "artifact.relocate",
-        json!({"directory": root}),
-    );
-    assert_eq!(relocated["status"], "queued");
-    let done = settled(&owner, client, relocated["job_id"].as_str().unwrap());
-    assert_eq!(done["state"], "ready", "{done}");
-    assert_eq!(done["result"]["root"], json!(root));
     let frame = preview
         .source
         .render(
@@ -172,17 +160,6 @@ fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
         .unwrap();
     assert_eq!(frame.pixel(3, 4), Some(expected));
     drop(preview);
-    // The source is still prepared and the artifact is not: the job reads the artifact alone.
-    let refused = failure(&owner, client, "render.sample", sample.clone());
-    assert_eq!(refused.code, "preparation-required");
-    let job = refused.job_id.unwrap();
-    let ready = settled(&owner, client, &job);
-    assert_eq!(ready["state"], "ready");
-    assert_eq!(ready["asset"]["asset"]["id"], json!(asset));
-    assert_eq!(
-        ok(&owner, client, "render.sample", sample)["rgba"],
-        json!(expected)
-    );
     // An analysis of the tinted stack is evaluated with the same bytes.
     let requested = ok(
         &owner,
@@ -205,8 +182,6 @@ fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
         thread::sleep(Duration::from_millis(1));
     };
     assert_eq!(read["status"], "ready", "{read}");
-    // The relocation was announced when it was accepted.
-    assert_eq!(events(&owner, client), ["artifact.relocate"]);
     owner.stop();
     join.join().unwrap();
     fs::remove_dir_all(directory).unwrap();
@@ -317,112 +292,6 @@ fn a_corrupt_artifact_fails_its_preparation_job_and_nothing_is_rewritten() {
     owner.stop();
     join.join().unwrap();
     fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn relocation_verifies_every_hash_before_adopting_a_directory() {
-    let original = directory("relocate-from");
-    let root = original.join("catalog.artifacts");
-    let (asset, entry, artifact, expected) =
-        tinted_catalog(&original.join("catalog.sqlite"), [0.35, 0.35, 1.0]);
-    // Only the SQLite file moves.
-    let copy = directory("relocate-to");
-    fs::copy(original.join("catalog.sqlite"), copy.join("catalog.sqlite")).unwrap();
-    let (owner, join) =
-        OwnerHandle::start_with(&copy.join("catalog.sqlite"), TintModule::registry()).unwrap();
-    let client = owner.register();
-    let default_root = copy.join("catalog.artifacts");
-    let inspected = ok(
-        &owner,
-        client,
-        "history.inspect",
-        json!({"asset_id": asset, "entry_id": entry}),
-    );
-    assert_eq!(
-        inspected["snapshot"]["recipe"]["layers"][0]["artifacts"],
-        json!([artifact])
-    );
-    let sample = json!({"asset_id": asset, "x": 3, "y": 4});
-    let refused = failure(&owner, client, "render.sample", sample.clone());
-    assert_eq!(refused.code, "source-unavailable");
-    assert_eq!(
-        refused.message,
-        format!(
-            "artifact directory {} is missing; move it with the catalog or select it with artifact.relocate",
-            default_root.display()
-        )
-    );
-    let status = ok(&owner, client, "artifact.status", json!({}));
-    assert_eq!(
-        (&status["state"], &status["root"], &status["referenced"]),
-        (&json!("missing"), &json!(default_root), &json!(1))
-    );
-    let relocate = |directory: &Path| {
-        let queued = ok(
-            &owner,
-            client,
-            "artifact.relocate",
-            json!({"directory": directory}),
-        );
-        settled(&owner, client, queued["job_id"].as_str().unwrap())
-    };
-    // A directory whose manifest names another catalog is refused.
-    let foreign = directory("relocate-foreign");
-    fs::create_dir_all(foreign.join("objects")).unwrap();
-    fs::write(
-        foreign.join("manifest.json"),
-        br#"{"format":1,"catalog_id":"another-catalog"}"#,
-    )
-    .unwrap();
-    let failed = relocate(&foreign);
-    assert_eq!(failed["state"], "failed");
-    assert_eq!(failed["error"]["code"], "incompatible");
-    // A copy with one wrong object is refused, naming it.
-    let damaged = directory("relocate-damaged");
-    fs::create_dir_all(damaged.join("objects")).unwrap();
-    fs::copy(root.join("manifest.json"), damaged.join("manifest.json")).unwrap();
-    fs::write(
-        object_path(&damaged, &artifact),
-        TintModule::bytes([7.0, 7.0, 7.0]),
-    )
-    .unwrap();
-    let failed = relocate(&damaged);
-    assert_eq!(failed["state"], "failed");
-    assert_eq!(failed["error"]["code"], "source-unavailable");
-    assert_eq!(
-        failed["error"]["message"],
-        format!("artifact {artifact} in {} is corrupt", damaged.display())
-    );
-    assert_eq!(
-        ok(&owner, client, "artifact.status", json!({}))["root"],
-        json!(default_root),
-        "a refused relocation changes nothing"
-    );
-    // The real directory verifies, is recorded and renders.
-    let adopted = relocate(&root);
-    assert_eq!(adopted["state"], "ready", "{adopted}");
-    let status = ok(&owner, client, "artifact.status", json!({}));
-    assert_eq!(
-        (&status["state"], &status["root"]),
-        (&json!("ready"), &json!(root))
-    );
-    assert_eq!(
-        prepared(&owner, client, "render.sample", sample)["rgba"],
-        json!(expected)
-    );
-    assert_eq!(
-        events(&owner, client),
-        [
-            "artifact.relocate",
-            "artifact.relocate",
-            "artifact.relocate"
-        ]
-    );
-    owner.stop();
-    join.join().unwrap();
-    for directory in [original, copy, foreign, damaged] {
-        fs::remove_dir_all(directory).unwrap();
-    }
 }
 
 #[test]

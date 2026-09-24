@@ -19,7 +19,7 @@ use crate::{
     state::{
         capabilities::{
             CapabilityView, Consent, FieldKey, ModuleCapabilities, ModuleStatus, OpenConsent,
-            Operation, SecretText, TaskPhase, TaskRun, declares, file_capability, task_profile,
+            Operation, SecretText, TaskPhase, TaskRun, declares, task_profile,
         },
         tools,
     },
@@ -29,7 +29,6 @@ use lightwell_core::{
     ApiRequest, AssetId, ClientId, ModuleDescriptor, OwnerHandle,
     capabilities::{
         descriptor::SettingKind,
-        files::FileMode,
         host::Requirement,
         jobs::{JobRecord, JobStatus},
         settings::SettingsRead,
@@ -285,36 +284,6 @@ fn perform(
             let mut params = envelope(module_id, profile.as_ref(), *revision);
             params.insert("setting".into(), json!(field));
             write("module.settings.clear-secret", params, sent)
-        }
-        Operation::ChooseFile {
-            field,
-            path,
-            capability,
-            revision,
-        } => {
-            let mut params = envelope(module_id, None, *revision);
-            params.insert("values".into(), json!({field.as_str(): path}));
-            write("module.settings.set", params, sent).and_then(|answer| {
-                // The native pick is the person's consent for exactly that path: grant the read
-                // of the canonical path the setting now holds, and nothing else.
-                let canonical = answer["settings"]["fields"][field.as_str()]["value"].clone();
-                match (capability, canonical.as_str()) {
-                    (Some(capability), Some(_)) => call(
-                        owner,
-                        client,
-                        "module.permission.grant",
-                        json!({
-                            "module_id": module_id,
-                            "capability": capability,
-                            "scope": {"path": canonical},
-                            "request_id": grant_request(),
-                        }),
-                        sent,
-                    )
-                    .map(|_| answer),
-                    _ => Ok(answer),
-                }
-            })
         }
         Operation::CreateProfile {
             adapter,
@@ -773,57 +742,6 @@ impl Editor {
                     profile,
                     field,
                     value,
-                    revision,
-                });
-            }
-            CapabilityMessage::ChooseFile { module_id, field } => {
-                // An evidence run never opens a native dialog: its script sends what one returns.
-                if self.picker_open || self.evidence.is_some() {
-                    return Task::none();
-                }
-                let directory = matches!(
-                    self.setting_kind(&module_id, None, &field),
-                    Some(SettingKind::File {
-                        mode: FileMode::Directory
-                    })
-                );
-                self.picker_open = true;
-                return Task::perform(
-                    async move {
-                        let dialog = rfd::AsyncFileDialog::new();
-                        let chosen = if directory {
-                            dialog.pick_folder().await
-                        } else {
-                            dialog.pick_file().await
-                        };
-                        chosen.map(|file| file.path().to_path_buf())
-                    },
-                    move |path| {
-                        Message::Capability(CapabilityMessage::FileChosen {
-                            module_id: module_id.clone(),
-                            field: field.clone(),
-                            path,
-                        })
-                    },
-                );
-            }
-            CapabilityMessage::FileChosen {
-                module_id,
-                field,
-                path,
-            } => {
-                self.picker_open = false;
-                let Some(path) = path else {
-                    return Task::none();
-                };
-                let capability = self
-                    .capability_module(&module_id)
-                    .and_then(|module| file_capability(module, &field));
-                let key = (None, field.clone());
-                return self.write_setting(&module_id, key, |revision| Operation::ChooseFile {
-                    field,
-                    path,
-                    capability,
                     revision,
                 });
             }
@@ -1381,7 +1299,6 @@ impl Editor {
             CapabilityAction::Section(view) => *view,
             CapabilityAction::Set { .. }
             | CapabilityAction::Secret { .. }
-            | CapabilityAction::File { .. }
             | CapabilityAction::CreateProfile { .. }
             | CapabilityAction::RemoveProfile(_) => CapabilityView::Settings,
             _ => CapabilityView::Status,
@@ -1513,11 +1430,6 @@ impl Editor {
                     CapabilityMessage::SecretCommit(module_id),
                 ]
             }
-            CapabilityAction::File { field, path } => vec![CapabilityMessage::FileChosen {
-                module_id,
-                field,
-                path: Some(path),
-            }],
             CapabilityAction::CreateProfile { adapter, label } => vec![
                 CapabilityMessage::ProfileAdapter {
                     module_id: module_id.clone(),

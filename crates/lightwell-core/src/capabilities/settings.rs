@@ -10,7 +10,6 @@ use super::{
         AdapterAuth, ProfilesDescriptor, SettingDescriptor, SettingKind, SettingsDescriptor,
         check_plain_value,
     },
-    files,
     secrets::{SecretKey, SecretStore, SecretValue},
     transport::parse_endpoint,
 };
@@ -391,7 +390,7 @@ fn field<'a>(
 }
 
 /// The value to store for one field, or why it is refused. An endpoint is stored as the URL the
-/// transport policy parsed and a file as its canonical path, so what is stored is what is used.
+/// transport policy parsed, so what is stored is what is used.
 fn normalize(field: &SettingDescriptor, value: &Value) -> Result<Value, Error> {
     let id = &field.id;
     let locator = || {
@@ -409,14 +408,6 @@ fn normalize(field: &SettingDescriptor, value: &Value) -> Result<Value, Error> {
             let endpoint = parse_endpoint(locator()?, classes)
                 .map_err(|error| validation(format!("setting {id}: {}", error.detail)))?;
             Ok(Value::String(endpoint.url.as_str().to_owned()))
-        }
-        SettingKind::File { mode } => {
-            let selected = files::select(Path::new(locator()?), *mode)
-                .map_err(|error| validation(format!("setting {id}: {}", error.detail)))?;
-            let canonical = selected.canonical.to_str().ok_or_else(|| {
-                validation(format!("setting {id}: the canonical path is not UTF-8"))
-            })?;
-            Ok(Value::String(canonical.to_owned()))
         }
         SettingKind::Secret { .. } => Err(validation(format!(
             "setting {id} is a secret; set it with module.settings.set-secret"
@@ -1258,7 +1249,6 @@ mod tests {
     #[test]
     fn values_are_validated_by_kind_and_committed_together() {
         let fixture = Fixture::new("kinds");
-        let root = fixture.root.clone();
         let refused = [
             (
                 json!({"strength": 1.5}),
@@ -1295,11 +1285,6 @@ mod tests {
                 "setting local-service: URLs with credentials are not allowed",
             ),
             (
-                json!({"input-file": root.join("missing.bin")}),
-                "setting input-file: cannot resolve",
-            ),
-            (json!({"input-file": root}), "is not a file"),
-            (
                 json!({"token": "abc"}),
                 "setting token is a secret; set it with module.settings.set-secret",
             ),
@@ -1325,7 +1310,7 @@ mod tests {
                 json!({
                     "strength": 0.25, "mode": "fast", "count": 3, "enabled": false, "note": "hello",
                     "local-service": "http://127.0.0.1:8080",
-                    "input-file": root.join("./input.bin"),
+                    "label": "tint",
                 }),
                 0,
                 "all",
@@ -1338,7 +1323,7 @@ mod tests {
             [
                 "count",
                 "enabled",
-                "input-file",
+                "label",
                 "local-service",
                 "mode",
                 "note",
@@ -1347,7 +1332,7 @@ mod tests {
         );
         assert!(
             write.result.invalidates_activation,
-            "input-file invalidates activation"
+            "label invalidates activation"
         );
         assert!(write.previous.values().all(Value::is_null));
         let read = fixture.read();
@@ -1358,11 +1343,9 @@ mod tests {
             (json!("http://127.0.0.1:8080/"), ValueSource::User, true),
             "an endpoint is stored as the URL the policy parsed"
         );
-        let canonical = root.join("input.bin").canonicalize().unwrap();
         assert_eq!(
-            value_of(&read, "input-file"),
-            (json!(canonical), ValueSource::User, true),
-            "a file is stored as its canonical path"
+            value_of(&read, "label"),
+            (json!("tint"), ValueSource::User, true)
         );
         assert_eq!(
             value_of(&read, "count"),
@@ -1379,11 +1362,13 @@ mod tests {
             value_of(&fixture.read(), "strength"),
             (json!(0.5), ValueSource::Default, true)
         );
-        // A selected file that goes away reads as invalid, and a required field makes the module
-        // incomplete until it is set again.
-        fs::remove_file(root.join("input.bin")).unwrap();
+        // A required field returns to unset with `null`, and the module is incomplete until it is
+        // set again.
+        let write = fixture
+            .set(None, json!({"label": null}), 2, "unset-label")
+            .unwrap();
+        assert_eq!(write.result.changed, ["label"]);
         let read = fixture.read();
-        assert!(!value_of(&read, "input-file").2);
         assert_eq!(read.state, SettingsState::Incomplete);
     }
 
@@ -1605,11 +1590,7 @@ mod tests {
             "the profile's secret was cleared"
         );
         let read = fixture.read();
-        assert_eq!(
-            read.state,
-            SettingsState::Incomplete,
-            "input-file is required"
-        );
+        assert_eq!(read.state, SettingsState::Incomplete, "label is required");
         assert_eq!((read.schema, read.stored_schema), (2, None));
         assert!(read.profiles.is_empty());
         assert_eq!(value_of(&read, "mode").1, ValueSource::Default);

@@ -9,7 +9,6 @@ use super::{
         CapabilityKind, DataClass, ProfilesDescriptor, ResourceDescriptor, SettingDescriptor,
         SettingKind, SettingsDescriptor, TaskApply, TaskDescriptor,
     },
-    files::FileMode,
     transport::{Connect, EndpointClass, Resolve},
 };
 use crate::{
@@ -88,9 +87,10 @@ pub(crate) fn adapter() -> AdapterDescriptor {
     }
 }
 
-/// Every setting kind at module level, a bearer adapter whose profiles hold an endpoint, a secret
-/// and a choice, the three implemented capabilities, one resource, an activation that needs the
-/// file and the resource, and one task that uses all three capabilities and applies its artifact.
+/// Every remaining setting kind at module level, a bearer adapter whose profiles hold an endpoint,
+/// a secret and a choice, the two implemented capabilities, one resource, an activation that needs
+/// a required setting and the resource, and one task that uses both capabilities and applies its
+/// artifact.
 pub(crate) fn capability_descriptor() -> ModuleDescriptor {
     let required = |setting: SettingDescriptor| SettingDescriptor {
         required: true,
@@ -158,13 +158,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 setting("note", SettingKind::Text { max_length: 16 }, None),
                 SettingDescriptor {
                     invalidates_activation: true,
-                    ..required(setting(
-                        "input-file",
-                        SettingKind::File {
-                            mode: FileMode::File,
-                        },
-                        None,
-                    ))
+                    ..required(setting("label", SettingKind::Text { max_length: 32 }, None))
                 },
                 setting(
                     "local-service",
@@ -207,13 +201,6 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
         }),
         capabilities: vec![
             CapabilityDescriptor {
-                id: "input".into(),
-                kind: CapabilityKind::ReadUserFile {
-                    setting: "input-file".into(),
-                },
-                purpose: "Read the tint table you chose.".into(),
-            },
-            CapabilityDescriptor {
                 id: "echo".into(),
                 kind: CapabilityKind::RemoteImageRequest {
                     adapter: ADAPTER.into(),
@@ -242,7 +229,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
             redirect_origins: vec!["https://cdn.example.com".into()],
         }],
         activation: Some(ActivationDescriptor {
-            requires_settings: vec!["input-file".into()],
+            requires_settings: vec!["label".into()],
             requires_resources: vec!["palette".into()],
             notes: "Loads the palette.".into(),
         }),
@@ -253,7 +240,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
             asset: true,
             profile: true,
             requires_active: true,
-            uses: vec!["input".into(), "echo".into(), "palette".into()],
+            uses: vec!["echo".into(), "palette".into()],
             parameters: vec![parameter(
                 "gain",
                 ParameterKind::Number { min: 0.0, max: 2.0 },

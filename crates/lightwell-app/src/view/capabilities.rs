@@ -439,26 +439,6 @@ fn field_view<'a>(module_id: &str, field: &'a FieldModel, enabled: bool) -> Elem
                 .width(Length::Fill),
             );
         }
-        FieldKindModel::File { path } => {
-            body = body.push(
-                row![
-                    label(field.label.clone()),
-                    fill(),
-                    text_button(
-                        "Choose…",
-                        false,
-                        enabled.then(|| {
-                            capability(CapabilityMessage::ChooseFile {
-                                module_id: module.clone(),
-                                field: name.clone(),
-                            })
-                        }),
-                    ),
-                ]
-                .align_y(Alignment::Center),
-            );
-            body = body.push(caption(path.clone().unwrap_or_else(|| "Not set".into())));
-        }
         FieldKindModel::Secret { state, replacing } => {
             body = body.push(
                 row![

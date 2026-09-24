@@ -185,12 +185,6 @@ enum SourceTaskKind {
     Develop(RawDevelopment),
     /// The asset's source is already prepared; only its artifacts need reading.
     Artifacts(AssetId),
-    /// Verify a directory as this catalog's artifact root: its manifest and every referenced hash.
-    Relocate {
-        directory: PathBuf,
-        catalog_id: String,
-        artifacts: Vec<(ArtifactId, u64)>,
-    },
     /// Remove the object files the owner's collection left unrecorded, and stale staged files.
     Collect(Collection),
 }
@@ -199,10 +193,6 @@ enum SourceResult {
     File(PreparedFile, Vec<VerifiedArtifact>),
     Develop(RawDevelopment, RawPrepared, Vec<VerifiedArtifact>),
     Artifacts(AssetId, Vec<VerifiedArtifact>),
-    Relocated {
-        root: PathBuf,
-        verified: Vec<ArtifactId>,
-    },
     Collected(Collected),
 }
 
@@ -219,7 +209,7 @@ enum SourceState {
     Queued,
     Preparing,
     Ready(Box<EditorState>),
-    /// A job whose result is not an asset: a relocation or a collection.
+    /// A job whose result is not an asset: a collection.
     Finished(Value),
     Failed(Error),
 }
@@ -292,8 +282,7 @@ impl SourceJobs {
         self.submit(client, key, kind, artifacts, None, true)
     }
 
-    /// A relocation or a collection: work a client asked for explicitly, which another request
-    /// never joins.
+    /// A collection: work a client asked for explicitly, which another request never joins.
     fn enqueue_maintenance(
         &mut self,
         client: ClientId,
@@ -602,15 +591,6 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
             asset_id: Some(asset_id.clone()),
             job_id: Some(task.id.clone()),
         },
-        SourceTaskKind::Relocate { directory, .. } => ActivitySpec {
-            kind: "artifacts.relocate",
-            label: "Verifying the artifact directory",
-            detail: directory
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned()),
-            asset_id: None,
-            job_id: Some(task.id.clone()),
-        },
         SourceTaskKind::Collect(_) => ActivitySpec {
             kind: "artifacts.collect",
             label: "Removing unused artifacts",
@@ -729,15 +709,6 @@ fn source_worker(
             }),
             SourceTaskKind::Artifacts(asset_id) => read_artifacts(&task.artifacts, &task.cancelled)
                 .map(|verified| SourceResult::Artifacts(asset_id, verified)),
-            SourceTaskKind::Relocate {
-                directory,
-                catalog_id,
-                artifacts,
-            } => artifacts::verify_directory(&directory, &catalog_id, &artifacts, &task.cancelled)
-                .map(|root| SourceResult::Relocated {
-                    root,
-                    verified: artifacts.into_iter().map(|(id, _)| id).collect(),
-                }),
             SourceTaskKind::Collect(collection) => {
                 artifacts::collect_files(&collection, &task.cancelled).map(SourceResult::Collected)
             }
@@ -749,9 +720,7 @@ fn source_worker(
                     _ => None,
                 },
                 SourceResult::Develop(_, raw, _) => Some(raw),
-                SourceResult::Artifacts(..)
-                | SourceResult::Relocated { .. }
-                | SourceResult::Collected(_) => None,
+                SourceResult::Artifacts(..) | SourceResult::Collected(_) => None,
             };
             if let Some(raw) = raw.and_then(|raw| raw.linear.as_ref()) {
                 live_planes
@@ -792,12 +761,6 @@ struct SourceParams {
     asset_id: AssetId,
     entry_id: Option<EntryId>,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RelocateParams {
-    directory: PathBuf,
-}
-
 fn parse_params<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, Error> {
     serde_json::from_value(value.clone())
         .map_err(|e| Error::new(ErrorKind::Validation, e.to_string()))
@@ -813,23 +776,6 @@ fn no_params(method: &str, value: &Value) -> Result<(), Error> {
             format!("{method} takes no parameters"),
         )),
     }
-}
-
-/// `artifact.relocate`: queue a source job that verifies the directory's manifest and every
-/// referenced artifact's hash there. The owner records the directory only when the job succeeds.
-fn queue_relocation(
-    service: &EditorService,
-    jobs: &mut SourceJobs,
-    client: ClientId,
-    params: &Value,
-) -> Result<String, Error> {
-    let params: RelocateParams = parse_params(params)?;
-    let kind = SourceTaskKind::Relocate {
-        directory: params.directory.clone(),
-        catalog_id: service.catalog_id().to_owned(),
-        artifacts: service.referenced_artifacts()?,
-    };
-    jobs.enqueue_maintenance(client, params.directory, kind)
 }
 
 /// `artifact.collect`: remove the collectable rows now, in one catalog transaction, and queue a
@@ -1130,9 +1076,6 @@ fn owner_loop(
                             service.adopt_artifacts(verified);
                             Ok(Completed::Asset(Box::new(service.state(&asset_id)?), false))
                         }
-                        SourceResult::Relocated { root, verified } => service
-                            .adopt_artifact_root(root, &verified)
-                            .map(Completed::Value),
                         SourceResult::Collected(collected) => serde_json::to_value(collected)
                             .map(Completed::Value)
                             .map_err(|error| Error::new(ErrorKind::Internal, error.to_string())),
@@ -1251,7 +1194,6 @@ fn owner_loop(
                         | "job.adopt"
                         | "job.cancel"
                         | "source.prepare"
-                        | "artifact.relocate"
                         | "artifact.collect"
                 ) {
                     let answer: Result<Value, Error> = match call.request.method.as_str() {
@@ -1336,10 +1278,6 @@ fn owner_loop(
                                 )
                             })
                             .map(|id| json!({"job_id":id,"state":"queued"})),
-                        "artifact.relocate" => {
-                            queue_relocation(&service, &mut jobs, call.client, &call.request.params)
-                                .map(|id| json!({"job_id":id,"status":"queued"}))
-                        }
                         "artifact.collect" => queue_collection(
                             &mut service,
                             &mut jobs,
@@ -1349,14 +1287,9 @@ fn owner_loop(
                         .map(|id| json!({"job_id":id,"status":"queued"})),
                         _ => unreachable!(),
                     };
-                    // A relocation or a collection is a mutation the moment it is accepted, as an
-                    // import is: other clients learn of it from the event log.
-                    if answer.is_ok()
-                        && matches!(
-                            call.request.method.as_str(),
-                            "artifact.relocate" | "artifact.collect"
-                        )
-                    {
+                    // A collection is a mutation the moment it is accepted, as an import is: other
+                    // clients learn of it from the event log.
+                    if answer.is_ok() && call.request.method.as_str() == "artifact.collect" {
                         sequence = sequence.saturating_add(1);
                         if events.len() == EVENT_CAPACITY {
                             events.pop_front();

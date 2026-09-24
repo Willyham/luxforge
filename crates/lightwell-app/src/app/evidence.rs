@@ -632,11 +632,6 @@ pub(crate) enum CapabilityAction {
         value: SecretText,
         profile: Option<usize>,
     },
-    /// What the native file dialog would return for a file field.
-    File {
-        field: String,
-        path: PathBuf,
-    },
     CreateProfile {
         adapter: String,
         label: String,
@@ -658,9 +653,9 @@ pub(crate) enum CapabilityAction {
 }
 
 /// The keys of a capability step's one gesture.
-const CAPABILITY_ACTIONS: [&str; 14] = [
-    "section", "set", "secret", "file", "profile", "install", "remove", "activate", "task",
-    "consent", "apply", "cancel", "revoke", "settle",
+const CAPABILITY_ACTIONS: [&str; 13] = [
+    "section", "set", "secret", "profile", "install", "remove", "activate", "task", "consent",
+    "apply", "cancel", "revoke", "settle",
 ];
 
 impl CapabilityStep {
@@ -683,9 +678,6 @@ impl CapabilityStep {
                     *profile,
                 ),
             ),
-            CapabilityAction::File { field, path } => {
-                ("file", json!({"field": field, "path": path}))
-            }
             CapabilityAction::CreateProfile { adapter, label } => (
                 "profile",
                 json!({"create": {"adapter": adapter, "label": label}}),
@@ -4643,13 +4635,6 @@ fn parse_capability(value: &Value) -> Result<CapabilityStep, String> {
                         .to_owned(),
                 ),
                 profile: profile(object, "secret")?,
-            }
-        }
-        "file" => {
-            let object = fields("file", &["field", "path"])?;
-            CapabilityAction::File {
-                field: required_text(object, "field", "capability file")?,
-                path: PathBuf::from(required_text(object, "path", "capability file")?),
             }
         }
         "profile" => {

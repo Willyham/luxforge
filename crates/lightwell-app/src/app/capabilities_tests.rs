@@ -40,7 +40,6 @@ struct Proof {
     editor: Editor,
     endpoint: ProofEndpoint,
     root: PathBuf,
-    input: PathBuf,
     key: String,
     asset: AssetId,
 }
@@ -57,8 +56,6 @@ impl Proof {
         let root = std::env::temp_dir().join(format!("lightwell-desktop-capabilities-{unique}"));
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        let input = root.join("input.bin");
-        std::fs::write(&input, b"the desktop's input file").unwrap();
         let registry = super::registry(&[], true, Some(&endpoint.base_url())).unwrap();
         let host = HostConfig {
             config_dir: Some(root.join("config")),
@@ -118,7 +115,6 @@ impl Proof {
             editor,
             endpoint,
             root,
-            input,
             key,
             asset,
         }
@@ -224,12 +220,6 @@ impl Proof {
             text: SecretText::new(self.key.clone()),
         });
         self.send(CapabilityMessage::SecretCommit(MODULE.into()));
-        self.answer();
-        self.send(CapabilityMessage::FileChosen {
-            module_id: MODULE.into(),
-            field: "input-file".into(),
-            path: Some(self.input.clone()),
-        });
         self.answer();
         self.send(CapabilityMessage::Install {
             module_id: MODULE.into(),
@@ -438,19 +428,6 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
         "set"
     );
     assert_eq!(summary["settings"]["profiles"][0]["status"], "ready");
-    // The native pick sets the file and grants exactly that read.
-    proof.send(CapabilityMessage::FileChosen {
-        module_id: MODULE.into(),
-        field: "input-file".into(),
-        path: Some(proof.input.clone()),
-    });
-    let sent = proof.answer();
-    assert_eq!(sent[1]["method"], "module.permission.grant");
-    assert_eq!(sent[1]["params"]["capability"], "input");
-    assert_eq!(
-        sent[1]["params"]["scope"],
-        json!({"path": proof.input.canonicalize().unwrap()})
-    );
     // Install is refused for consent: the notice names what would happen.
     proof.send(CapabilityMessage::Install {
         module_id: MODULE.into(),
@@ -485,7 +462,7 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
             .section()
             .capability
             .as_ref()
-            .is_some_and(|model| model.permissions.summary == "1 permission · 1 declined")
+            .is_some_and(|model| model.permissions.summary == "0 permissions · 1 declined")
     );
     proof.send(CapabilityMessage::Install {
         module_id: MODULE.into(),
@@ -509,13 +486,30 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     assert_eq!(sent[1]["method"], "module.resource.install");
     assert!(proof.editor.capabilities.live(), "the install is followed");
     assert!(proof.editor.capability_poll_subscription().is_some());
-    let installing = proof.section().capability.clone().unwrap().resources[0].clone();
-    assert!(installing.state.starts_with("Installing"), "{installing:?}");
-    assert!(
-        installing
+    // The transfer lane reports its first progress asynchronously; poll briefly rather than
+    // assuming it has already done so by the time the status round trip above answered.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let installing = loop {
+        let installing = proof.section().capability.clone().unwrap().resources[0].clone();
+        if installing
             .progress
             .is_some_and(|fraction| (0.0..=1.0).contains(&fraction))
-    );
+        {
+            break installing;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the install never reported progress: {installing:?}"
+        );
+        let polled = poll(
+            &proof.editor.owner,
+            proof.editor.client,
+            proof.editor.capabilities.live_jobs(),
+        );
+        proof.send(CapabilityMessage::Polled(polled));
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(installing.state.starts_with("Installing"), "{installing:?}");
     proof.endpoint.set_palette_delay(Duration::ZERO);
     proof.finish_jobs();
     assert!(proof.editor.capability_poll_subscription().is_none());
@@ -582,7 +576,7 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     assert_eq!(summary["tasks"][TASK]["status"], "succeeded");
     assert_eq!(summary["tasks"][TASK]["artifact"], artifact.as_str());
     assert_eq!(summary["tasks"][TASK]["apply_available"], true);
-    assert_eq!(summary["permissions"]["live"], 3);
+    assert_eq!(summary["permissions"]["live"], 2);
     // Apply is the ordinary edit path: one command with the task's artifact, the request an
     // independent client sends.
     let request = proof
@@ -620,7 +614,7 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
         true
     );
     // A revocation is shown in the permissions list.
-    let grant = proof.state().grants()[2].grant_id.clone();
+    let grant = proof.state().grants()[1].grant_id.clone();
     proof.send(CapabilityMessage::Revoke {
         module_id: MODULE.into(),
         grant,
@@ -744,7 +738,6 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
             {"capability": {"module": MODULE, "set": {"field": "strength", "value": 0.8}}},
             {"capability": {"module": MODULE, "set": {"field": "endpoint", "value": "http://127.0.0.1:1/generate", "profile": 0}}},
             {"capability": {"module": MODULE, "secret": {"field": "api-key", "value": "script-sentinel", "profile": 0}}},
-            {"capability": {"module": MODULE, "file": {"field": "input-file", "path": "/tmp/input.bin"}}},
             {"capability": {"module": MODULE, "profile": {"create": {"adapter": "proof-echo", "label": "Local"}}}},
             {"capability": {"module": MODULE, "profile": {"remove": 0}}},
             {"capability": {"module": MODULE, "install": {"resource": "proof-palette"}}},
@@ -760,7 +753,7 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
         .to_string(),
     )
     .expect("a valid script");
-    assert_eq!(steps.len(), 16);
+    assert_eq!(steps.len(), 15);
     let Step::Capability(secret) = &steps[3] else {
         panic!("a capability step");
     };
@@ -783,7 +776,7 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
     .expect("a valid script");
     assert_eq!(raw[0].record()["api"]["params"]["value"], "<redacted>");
     assert_eq!(
-        steps[11].record(),
+        steps[10].record(),
         json!({"capability": {"module": MODULE, "consent": "allow", "wait": false}})
     );
     for (script, expected) in [

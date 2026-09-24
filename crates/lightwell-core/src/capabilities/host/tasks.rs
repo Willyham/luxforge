@@ -9,29 +9,29 @@
 //! `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
 use super::{
     ActivationState, CapabilityHost, Requirement, asset_exists, effective_values, profile_endpoint,
-    secret_fields, setting_requirement, validation,
+    secret_fields, validation,
 };
 use crate::{
     AssetId, Availability, EditorService, Error, ErrorKind, JobId, ModuleDescriptor,
     capabilities::{
-        consent::{consent_required, file_disclosure, remote_disclosure},
+        consent::{consent_required, remote_disclosure},
         context::{GrantedSend, ModuleContext, ProfileView, TaskOutcome},
         data::DisclosedData,
         descriptor::{
             AdapterAuth, AdapterDescriptor, CapabilityDescriptor, CapabilityKind, DataClass,
             SettingKind,
         },
-        grants::{FileScope, GrantScope, RemoteScope},
+        grants::{GrantScope, RemoteScope},
         jobs::{Admission, JobControl, JobKind, JobStatus, NewJob, Origin, Work},
         resources::ResourceState,
-        settings::{FieldRead, ProfileRead, ProfileStatus, SettingsRead},
+        settings::{FieldRead, ProfileRead, ProfileStatus},
         transport::Endpoint,
     },
     modules::check_declared_values,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 /// Every generated task method is this prefix and the task's identity: task `generate-proof-tint`
 /// is `task.generate-proof-tint`.
@@ -85,18 +85,6 @@ fn profile_status(status: ProfileStatus) -> &'static str {
         ProfileStatus::Incomplete => "incomplete",
         ProfileStatus::MissingCredentials => "missing-credentials",
         ProfileStatus::Incompatible => "incompatible",
-    }
-}
-
-/// The canonical path a module-level file setting holds now, when it holds a valid one.
-fn selected_path(settings: Option<&SettingsRead>, setting: &str) -> Option<PathBuf> {
-    match settings?.fields.get(setting)? {
-        FieldRead::Value {
-            value: Value::String(path),
-            valid: true,
-            ..
-        } => Some(PathBuf::from(path)),
-        _ => None,
     }
 }
 
@@ -265,15 +253,6 @@ impl CapabilityHost {
         let mut resources = Vec::new();
         for capability in &capabilities {
             match &capability.kind {
-                CapabilityKind::ReadUserFile { setting } => {
-                    if let Some(state) = setting_requirement(settings.as_ref(), setting) {
-                        missing.push(Requirement {
-                            kind: "setting".into(),
-                            id: setting.clone(),
-                            state: state.into(),
-                        });
-                    }
-                }
                 // A task that uses a resource's capability reads the installed resource; the
                 // install asked for the download grant.
                 CapabilityKind::DownloadArtifact { resource } => {
@@ -318,15 +297,6 @@ impl CapabilityHost {
         let mut granted = Vec::new();
         for capability in &capabilities {
             let (scope, endpoint) = match &capability.kind {
-                CapabilityKind::ReadUserFile { setting } => {
-                    let path = selected_path(settings.as_ref(), setting).ok_or_else(|| {
-                        Error::new(
-                            ErrorKind::Internal,
-                            format!("setting {setting} was checked but holds no path"),
-                        )
-                    })?;
-                    (GrantScope::File(FileScope { path }), None)
-                }
                 CapabilityKind::RemoteImageRequest { adapter, data } => {
                     let (Some(profile), Some(asset_id)) = (profile, &asset_id) else {
                         return Err(Error::new(
@@ -352,7 +322,6 @@ impl CapabilityHost {
             let (grant, denied) = self.grants()?.consent(module_id, &capability.id, &scope)?;
             let Some(grant) = grant else {
                 let disclosure = match &scope {
-                    GrantScope::File(scope) => file_disclosure(descriptor, capability, &scope.path),
                     GrantScope::Remote(scope) => remote_disclosure(
                         descriptor,
                         capability,
@@ -406,11 +375,8 @@ impl CapabilityHost {
             grant_id,
         } in granted
         {
-            grant_ids.push(grant_id.clone());
+            grant_ids.push(grant_id);
             context = match (scope, endpoint) {
-                (GrantScope::File(scope), _) => {
-                    context.with_file(&capability.id, scope.path, grant_id)
-                }
                 (GrantScope::Remote(scope), Some(endpoint)) => {
                     // The disclosed data is the asset's current entry as it is now, bound here and
                     // sampled on the worker: a point through a spatial layer evaluates a whole
@@ -432,7 +398,6 @@ impl CapabilityHost {
                             adapter,
                             credential,
                             data,
-                            grant_id,
                         },
                     )
                 }
@@ -486,11 +451,10 @@ impl CapabilityHost {
         Ok(json!({"job_id": job.job_id, "status": job.status}))
     }
 
-    /// A task's result as its job should record it. The grants it acted under are marked used
-    /// whatever happened. A success that arrives after the task was asked to stop is `cancelled`;
-    /// otherwise every artifact it published is recorded in the catalog before the job reads
-    /// succeeded, and a recording that fails fails the job. A failed or cancelled task records
-    /// nothing, so what it wrote stays an unreferenced file.
+    /// A task's result as its job should record it. A success that arrives after the task was asked
+    /// to stop is `cancelled`; otherwise every artifact it published is recorded in the catalog
+    /// before the job reads succeeded, and a recording that fails fails the job. A failed or
+    /// cancelled task records nothing, so what it wrote stays an unreferenced file.
     pub(super) fn task_result(
         &mut self,
         service: &mut EditorService,
@@ -500,10 +464,6 @@ impl CapabilityHost {
         let Some(run) = self.tasks.remove(job_id) else {
             return result;
         };
-        // When a grant was last used is a record for the person, not a condition of the task.
-        if let Some(grants) = &self.grants {
-            let _ = grants.touch(&run.outcome.used());
-        }
         let running = self
             .jobs
             .read(job_id)

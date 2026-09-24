@@ -1,21 +1,18 @@
 //! What a module receives on the capability worker: the host's view of its settings, the secrets
-//! it declares, the resources its job was given, the files it may read, the requests it may send,
-//! the artifacts it may publish, and the job's progress and cancellation. It is the only way module
-//! code reaches anything the host owns, and it enforces what the job runs under: a module never
-//! names a key, a path or a URL of its own. See
-//! `docs/design/module-capabilities.md#outcome-and-boundary`.
+//! it declares, the resources its job was given, the requests it may send, the artifacts it may
+//! publish, and the job's progress and cancellation. It is the only way module code reaches
+//! anything the host owns, and it enforces what the job runs under: a module never names a key or
+//! a URL of its own. See `docs/design/module-capabilities.md#outcome-and-boundary`.
 //!
 //! The host builds one per job on the owner, where settings are read and grants are checked, and
 //! moves it to the worker. Each capability a job is granted adds one field and one method here, set
-//! by the host with a `with_*` builder before the job is queued: a task's profile, the selected
-//! file each granted `read-user-file` names, the endpoint, adapter and disclosed data of each
-//! granted `remote-image-request`, and the artifact writer a task publishes through. Every
-//! capability call checks the job's cancel flag first. Module code only ever receives what the host
-//! checked.
+//! by the host with a `with_*` builder before the job is queued: a task's profile, the endpoint,
+//! adapter and disclosed data of each granted `remote-image-request`, and the artifact writer a
+//! task publishes through. Every capability call checks the job's cancel flag first. Module code
+//! only ever receives what the host checked.
 use super::{
     data::DisclosedData,
     descriptor::{AdapterAuth, AdapterDescriptor},
-    files::{self, DEFAULT_MAX_FILE_BYTES, FileMode},
     jobs::JobControl,
     resources::SharedTransport,
     secrets::{SecretKey, SecretStore, SecretValue},
@@ -52,34 +49,22 @@ pub struct ProfileView {
     pub values: Map<String, Value>,
 }
 
-/// The selected file a granted `read-user-file` capability reads: the canonical path its grant
-/// names.
-#[derive(Clone, Debug)]
-pub(crate) struct GrantedFile {
-    pub path: PathBuf,
-    pub max_bytes: u64,
-    pub grant_id: String,
-}
-
 /// What a granted `remote-image-request` capability sends: the endpoint, the adapter whose limits,
-/// timeout and authentication apply, the profile's credential field when the adapter is bearer,
-/// the disclosed data the host builds the body from, and the grant it is sent under.
+/// timeout and authentication apply, the profile's credential field when the adapter is bearer, and
+/// the disclosed data the host builds the body from.
 pub(crate) struct GrantedSend {
     pub transport: Arc<SharedTransport>,
     pub endpoint: Endpoint,
     pub adapter: AdapterDescriptor,
     pub credential: Option<String>,
     pub data: DisclosedData,
-    pub grant_id: String,
 }
 
 /// What a task's worker hands back to the owner beside its result: the artifacts it published,
-/// which the owner records only when the task succeeds, and the grants it acted under, whose
-/// `last_used_ms` the owner updates whatever the outcome.
+/// which the owner records only when the task succeeds.
 #[derive(Debug, Default)]
 pub(crate) struct TaskOutcome {
     published: Mutex<Vec<(ArtifactRecord, Arc<PreparedArtifact>)>>,
-    used: Mutex<Vec<String>>,
 }
 
 impl TaskOutcome {
@@ -94,18 +79,6 @@ impl TaskOutcome {
     /// Everything published, for the owner to record.
     pub(crate) fn take_published(&self) -> Vec<(ArtifactRecord, Arc<PreparedArtifact>)> {
         std::mem::take(&mut *lock(&self.published))
-    }
-
-    /// The grants the task acted under.
-    pub(crate) fn used(&self) -> Vec<String> {
-        lock(&self.used).clone()
-    }
-
-    fn record_use(&self, grant_id: &str) {
-        let mut used = lock(&self.used);
-        if !used.iter().any(|used| used == grant_id) {
-            used.push(grant_id.to_owned());
-        }
     }
 }
 
@@ -127,8 +100,6 @@ pub struct ModuleContext {
     secrets: Arc<dyn SecretStore>,
     /// The installed resources the job was given, by resource identity.
     resources: BTreeMap<String, PathBuf>,
-    /// The files the job may read, by capability.
-    files: BTreeMap<String, GrantedFile>,
     /// The requests the job may send, by capability.
     sends: BTreeMap<String, GrantedSend>,
     /// Where a task publishes artifacts; `None` for a job that publishes none.
@@ -145,7 +116,6 @@ impl std::fmt::Debug for ModuleContext {
             .field("values", &self.values)
             .field("profile", &self.profile.as_ref().map(|profile| &profile.id))
             .field("resources", &self.resources.keys().collect::<Vec<_>>())
-            .field("files", &self.files.keys().collect::<Vec<_>>())
             .field("sends", &self.sends.keys().collect::<Vec<_>>())
             .field("publishes", &self.writer.is_some())
             .finish_non_exhaustive()
@@ -166,7 +136,6 @@ impl ModuleContext {
             profile_secret_fields: Vec::new(),
             secrets,
             resources: BTreeMap::new(),
-            files: BTreeMap::new(),
             sends: BTreeMap::new(),
             writer: None,
             outcome: Arc::default(),
@@ -198,24 +167,6 @@ impl ModuleContext {
         self
     }
 
-    /// The canonical path a live `read-user-file` grant of `capability_id` names.
-    pub(crate) fn with_file(
-        mut self,
-        capability_id: &str,
-        path: PathBuf,
-        grant_id: String,
-    ) -> Self {
-        self.files.insert(
-            capability_id.to_owned(),
-            GrantedFile {
-                path,
-                max_bytes: DEFAULT_MAX_FILE_BYTES,
-                grant_id,
-            },
-        );
-        self
-    }
-
     /// The request a live `remote-image-request` grant of `capability_id` allows.
     pub(crate) fn with_send(mut self, capability_id: &str, send: GrantedSend) -> Self {
         self.sends.insert(capability_id.to_owned(), send);
@@ -237,8 +188,8 @@ impl ModuleContext {
         &self.module_id
     }
 
-    /// Every valid, non-secret module-level value, defaults included. A file setting's path and an
-    /// endpoint are not values a module reads: `read_file` and `send` use them.
+    /// Every valid, non-secret module-level value, defaults included. An endpoint is not a value a
+    /// module reads: `send` uses it.
     pub fn values(&self) -> &Map<String, Value> {
         &self.values
     }
@@ -308,28 +259,6 @@ impl ModuleContext {
         )
     }
 
-    /// Read the file a granted `read-user-file` capability names, at most 64 MiB of it. The host
-    /// selects the granted canonical path again: a path that no longer resolves to it, because a
-    /// link or a directory on the way changed, is a `conflict`, and so is a file that changes while
-    /// it is read. Only a capability the task declared in `uses` and was granted when it was queued
-    /// can be read.
-    pub fn read_file(&self, capability_id: &str) -> Result<Vec<u8>, Error> {
-        self.checkpoint()?;
-        let granted = self
-            .files
-            .get(capability_id)
-            .ok_or_else(|| self.not_granted(capability_id))?;
-        let selected = files::select(&granted.path, FileMode::File)?;
-        if selected.canonical != granted.path {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                "the selected file no longer resolves to the path that was allowed",
-            ));
-        }
-        self.outcome.record_use(&granted.grant_id);
-        files::read_bounded(&selected, granted.max_bytes)
-    }
-
     /// Send the data a granted `remote-image-request` capability discloses to the profile's
     /// endpoint, and return the response body. The host builds the body from the data the consent
     /// notice disclosed, as the entry was when the task was requested — for `sample-grid-8` it
@@ -369,7 +298,6 @@ impl ModuleContext {
             headers,
             body,
         };
-        self.outcome.record_use(&granted.grant_id);
         let timeout = Duration::from_millis(adapter.timeout_ms);
         let control = &self.control;
         let mut response = Vec::new();
@@ -560,12 +488,9 @@ mod tests {
     }
 
     #[test]
-    fn a_granted_file_is_read_by_its_capability_only_while_it_resolves_to_the_granted_path() {
-        let root = temp("context-file");
-        fs::create_dir_all(root.join("real")).unwrap();
-        fs::write(root.join("real/input.bin"), b"input bytes").unwrap();
-        fs::write(root.join("other.bin"), b"other bytes").unwrap();
-        let granted = root.join("real/input.bin").canonicalize().unwrap();
+    fn a_context_publishes_bounded_deduplicated_artifacts_and_checks_cancellation_first() {
+        let root = temp("context-publish");
+        fs::create_dir_all(&root).unwrap();
         let control = JobControl::new();
         let outcome = Arc::new(TaskOutcome::default());
         let writer = EditorService::open(&root.join("catalog.sqlite"))
@@ -577,13 +502,7 @@ mod tests {
             Arc::new(MemorySecretStore::new()),
             control.clone(),
         )
-        .with_file("input", granted.clone(), "grant-file".into())
         .with_artifacts(writer, outcome.clone());
-        assert_eq!(context.read_file("input").unwrap(), b"input bytes");
-        assert_eq!(outcome.used(), ["grant-file"]);
-        let refused = context.read_file("other").unwrap_err();
-        assert_eq!(refused.kind, ErrorKind::Validation);
-        assert!(refused.detail.contains("not granted"), "{}", refused.detail);
         assert_eq!(
             context.send("echo").unwrap_err().kind,
             ErrorKind::Validation
@@ -592,14 +511,6 @@ mod tests {
             context.origin("echo").unwrap_err().kind,
             ErrorKind::Validation
         );
-        // A path that now leads somewhere else through a link is not the granted file.
-        #[cfg(unix)]
-        {
-            fs::rename(root.join("real"), root.join("moved")).unwrap();
-            std::os::unix::fs::symlink(root.join("moved"), root.join("real")).unwrap();
-            let error = context.read_file("input").unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Conflict, "{}", error.detail);
-        }
         // Publishing is bounded and deduplicated; the same bytes are one artifact.
         let meta = ArtifactMeta {
             kind: "test".into(),
@@ -632,7 +543,6 @@ mod tests {
         // Every capability call checks the cancel flag first.
         control.cancel("the job was cancelled");
         for error in [
-            context.read_file("input").unwrap_err(),
             context.send("echo").unwrap_err(),
             context.publish_artifact(b"late", meta).unwrap_err(),
         ] {
@@ -712,7 +622,6 @@ mod tests {
                             DataClass::SampleGrid8,
                             service.sample_plan(&asset).unwrap(),
                         ),
-                        grant_id: "grant-remote".into(),
                     },
                 )
         };

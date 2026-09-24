@@ -23,9 +23,6 @@ pub struct Disclosure {
     /// Where data goes, or where a download comes from: an origin or a URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
-    /// The file read: its canonical path.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
     /// What is read, sent or downloaded, in words.
     pub data: String,
     /// How many bytes are read, sent or downloaded, when known.
@@ -48,7 +45,6 @@ impl Disclosure {
             module: module.title.clone(),
             purpose: capability.purpose.clone(),
             destination: None,
-            source: None,
             data,
             bytes: None,
             storage: None,
@@ -56,24 +52,6 @@ impl Disclosure {
             retention: None,
             cost: AdapterCost::Free,
         }
-    }
-}
-
-/// `read-user-file`: the selected file's path, its name and its current length. The length is one
-/// metadata call; a file that has gone reports no length.
-pub fn file_disclosure(
-    module: &ModuleDescriptor,
-    capability: &CapabilityDescriptor,
-    path: &Path,
-) -> Disclosure {
-    let name = path.file_name().map_or_else(
-        || path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    Disclosure {
-        source: Some(path.display().to_string()),
-        bytes: std::fs::metadata(path).ok().map(|metadata| metadata.len()),
-        ..Disclosure::new(module, capability, format!("the contents of {name}"))
     }
 }
 
@@ -160,7 +138,7 @@ mod tests {
     use crate::{
         AssetId,
         capabilities::{
-            grants::{DownloadScope, FileScope, RemoteScope},
+            grants::{DownloadScope, RemoteScope},
             testing::{MODULE, adapter, capability_descriptor, temp},
         },
     };
@@ -170,24 +148,18 @@ mod tests {
         let module = capability_descriptor();
         let root = temp("disclosure");
         std::fs::create_dir_all(&root).unwrap();
-        let file = root.join("table.bin");
-        std::fs::write(&file, b"twelve bytes").unwrap();
-        let read = file_disclosure(&module, &module.capabilities[0], &file);
-        assert_eq!(read.module, "Capabilities test");
-        assert_eq!(read.purpose, "Read the tint table you chose.");
-        assert_eq!(read.data, "the contents of table.bin");
-        assert_eq!(read.source.as_deref(), Some(file.to_str().unwrap()));
-        assert_eq!(read.bytes, Some(12));
-        assert_eq!(read.cost, AdapterCost::Free);
 
         let resource = &module.resources[0];
         let download =
-            download_disclosure(&module, &module.capabilities[2], resource, &root.join("v"));
+            download_disclosure(&module, &module.capabilities[1], resource, &root.join("v"));
+        assert_eq!(download.module, "Capabilities test");
+        assert_eq!(download.purpose, "Install the tint palette.");
         assert_eq!(download.destination.as_deref(), Some(resource.url.as_str()));
         assert_eq!(download.data, "Tint palette 1.0.0");
         assert_eq!(download.bytes, Some(12));
         assert_eq!(download.license.as_deref(), Some("CC0-1.0"));
         assert!(download.storage.as_deref().unwrap().ends_with("v"));
+        assert_eq!(download.cost, AdapterCost::Free);
 
         let scope = RemoteScope {
             profile_id: "profile-1".into(),
@@ -196,7 +168,7 @@ mod tests {
             data: crate::capabilities::descriptor::DataClass::SampleGrid8,
             asset_id: AssetId::new(),
         };
-        let remote = remote_disclosure(&module, &module.capabilities[1], &adapter(), &scope);
+        let remote = remote_disclosure(&module, &module.capabilities[0], &adapter(), &scope);
         assert_eq!(
             remote.destination.as_deref(),
             Some("https://echo.example.com")
@@ -215,12 +187,18 @@ mod tests {
             Some("The echo service keeps nothing.")
         );
 
-        let scope = GrantScope::Download(DownloadScope {
+        let download_scope = GrantScope::Download(DownloadScope {
             resource: "palette".into(),
             version: "1.0.0".into(),
             origin: "https://example.com".into(),
         });
-        let error = consent_required(&module, &module.capabilities[2], &scope, download, true);
+        let error = consent_required(
+            &module,
+            &module.capabilities[1],
+            &download_scope,
+            download,
+            true,
+        );
         assert_eq!(error.kind, ErrorKind::ConsentRequired);
         assert!(error.detail.contains("was not allowed"), "{}", error.detail);
         let consent = &error.data.as_ref().unwrap()["consent"];
@@ -230,8 +208,14 @@ mod tests {
         assert_eq!(consent["scope"]["version"], "1.0.0");
         assert_eq!(consent["denied"], true);
         assert_eq!(consent["disclosure"]["cost"], "free");
-        let file_scope = GrantScope::File(FileScope { path: file.clone() });
-        let error = consent_required(&module, &module.capabilities[0], &file_scope, read, false);
+        let remote_scope = GrantScope::Remote(scope);
+        let error = consent_required(
+            &module,
+            &module.capabilities[0],
+            &remote_scope,
+            remote,
+            false,
+        );
         assert!(!error.detail.contains("not allowed"));
         let _ = std::fs::remove_dir_all(root);
     }

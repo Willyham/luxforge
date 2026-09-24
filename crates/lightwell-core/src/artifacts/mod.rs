@@ -10,7 +10,7 @@ mod store;
 pub use store::ArtifactWriter;
 pub(crate) use store::{
     ArtifactRead, Collected, Collection, MANIFEST, RootState, VerifiedArtifact, collect_files,
-    object_path, read_verified, root_state, verify_directory,
+    object_path, read_verified, root_state,
 };
 #[cfg(test)]
 pub(crate) mod testing;
@@ -348,6 +348,7 @@ impl PreparedArtifacts {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();

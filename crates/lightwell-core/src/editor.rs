@@ -364,8 +364,8 @@ pub struct EditorService {
     registry: Arc<ModuleRegistry>,
     /// This catalog's own identity, which its artifact root's manifest must name.
     catalog_id: String,
-    /// Where this catalog's artifacts live: `<catalog stem>.artifacts` beside the catalog file, or
-    /// the directory `artifact.relocate` verified and recorded.
+    /// Where this catalog's artifacts live: `<catalog stem>.artifacts` beside the catalog file. It
+    /// moves with the catalog.
     artifact_root: PathBuf,
     /// Verified artifact bytes kept ready for evaluation, bounded and least recently used first out.
     prepared_artifacts: RefCell<PreparedArtifacts>,
@@ -435,12 +435,8 @@ impl EditorService {
                 "catalog has no identity; choose a new catalog path",
             )
         })?;
-        // The default root follows the catalog file, so moving both together keeps it; a relocated
-        // root is recorded as the canonical directory the relocation verified.
-        let artifact_root = match meta("artifact_root")? {
-            Some(root) => PathBuf::from(root),
-            None => default_artifact_root(path),
-        };
+        // The root follows the catalog file, so moving both together keeps it valid.
+        let artifact_root = default_artifact_root(path);
         Ok(Self {
             connection,
             source_cache: RefCell::new(None),
@@ -3334,9 +3330,9 @@ fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
 /// Every path that writes a history entry comes through here, inside its own transaction, so the
 /// entry's artifact references are checked and recorded with it or not at all: a snapshot can
 /// never point at an artifact the catalog does not hold.
-/// The artifact directory a catalog uses when nothing has relocated it: `<stem>.artifacts` beside
-/// the catalog file. One rule, so anything writing an entry without an open service — a test on the
-/// production write path — names the same directory the service would.
+/// The artifact directory a catalog uses: `<stem>.artifacts` beside the catalog file. One rule, so
+/// anything writing an entry without an open service — a test on the production write path —
+/// names the same directory the service would.
 fn default_artifact_root(catalog: &Path) -> PathBuf {
     let canonical = catalog
         .canonicalize()
