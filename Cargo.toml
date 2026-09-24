@@ -24,6 +24,10 @@ roxmltree = "=0.20.0"
 # and the operating system's own certificate verifier for platform trust.
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.0"
+# The module transport's HTTP/1.1: ureq's sans-IO protocol crate (httparse for the response head,
+# its own request writer and body framing). Only `client`; the transport keeps its own sockets, TLS
+# and address policy, and no second TLS stack, pool, proxy or redirect handling comes with it.
+ureq-proto = { version = "=0.6.4", default-features = false, features = ["client"] }
 # The macOS Keychain for module secrets. Only the keychain item APIs are used, so no TLS feature is
 # asked for.
 security-framework = { version = "=3.7.0", default-features = false }

@@ -1234,6 +1234,17 @@ Discovery, registration and catalog reopen start no worker thread and create no 
 
 The whole launch difference is in the part before the process runs, which for these background launches includes copying the executable into a temporary bundle: the executable is 4.3 MB larger (rustls, ring and the platform verifier) and now links Security.framework. Process start to first frame is unchanged. The core `editor-performance` rows (transforms, crop, Basic colour stacks, proxy renders, the histogram and the picker) moved by a few percent in either direction depending on which build ran second while the load rose from 5 to 11.6, so they show no difference attributable to the framework; the render path gained only an early return for stacks without artifacts. The full `verify` tier on `5f77f58` passed every provisional target except the empty-shell launch p95 (1012 ms against 1 s), which the baseline also misses under the same bundle copy.
 
+### Transport on `ureq-proto`
+
+Release builds (`cargo xtask build --release`) of `2f972b0` and of the change moving the transport's HTTP/1.1 onto `ureq-proto`, back to back in one worktree on the M4, 2026-09-24. Size only; nothing was timed.
+
+| Measurement | Before | After |
+| --- | --- | --- |
+| Executable size | 28,499,744 bytes (28.5 MB) | 28,665,072 bytes (28.7 MB), 161 KiB larger |
+| `Cargo.lock` packages | 495 | 499: `ureq-proto`, `http`, `httparse` and `base64` |
+
+The 24.8 MB above is the executable at `5f77f58`; the features added since account for the rest of the difference to 28.5 MB.
+
 ## Performance section, activity board and resource counters
 
 Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds, 2026-09-23, on a host shared with other sessions: one-minute load averages are given per run. The baseline is commit 9fb1fbb, the tree before this work, built in its own worktree.

@@ -19,6 +19,7 @@ rustls-platform-verifier.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+ureq-proto.workspace = true
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true

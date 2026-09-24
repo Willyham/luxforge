@@ -1,10 +1,12 @@
 //! The host's only network path: endpoint classification, resolution checks, redirects, limits and
 //! TLS. See `docs/design/module-capabilities.md#transport`.
 //!
-//! A request connects directly to an address it checked. Proxy settings, including the
-//! `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` environment variables, are deliberately ignored: a
-//! proxy would choose the address after the check and could read or rewrite the request.
-mod http;
+//! A request connects directly to an address it checked, over this module's own socket and TLS
+//! session; `ureq-proto` only writes the request and frames the response on that connection. Proxy
+//! settings, including the `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` environment variables, are
+//! deliberately ignored: a proxy would choose the address after the check and could read or
+//! rewrite the request.
+mod exchange;
 mod net;
 pub mod policy;
 #[cfg(test)]
@@ -42,15 +44,6 @@ fn refused(detail: impl Into<String>) -> Error {
 pub enum Method {
     Get,
     Post,
-}
-
-impl Method {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Get => "GET",
-            Self::Post => "POST",
-        }
-    }
 }
 
 /// One request. Its `Debug` shows the origin, header names and body length, never a header value
@@ -121,7 +114,8 @@ pub struct SendOptions<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportResponse {
     pub status: u16,
-    /// Header fields with lowercased names, at most 100 of them within 64 KiB.
+    /// Header fields with lowercased names, at most 100 of them within 64 KiB, in the order
+    /// received with a repeated name's values together.
     pub headers: Vec<(String, String)>,
     /// The URL that answered, after any redirects.
     pub final_url: Url,
@@ -234,7 +228,7 @@ impl Transport {
                     .ok_or_else(|| refused("a redirect origin is not a valid origin"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        http::check_headers(&request.headers)?;
+        exchange::check_headers(&request.headers)?;
         if request.method == Method::Get && !request.body.is_empty() {
             return Err(refused("a GET request has no body"));
         }
@@ -254,9 +248,9 @@ impl Transport {
         let mut followed = 0;
         loop {
             if cancel() {
-                return Err(http::cancelled());
+                return Err(exchange::cancelled());
             }
-            let head = http::request_head(method, &endpoint.url, &headers, body.len())?;
+            let prepared = exchange::prepare(method, &endpoint.url, &headers, body.len())?;
             let server_name = match endpoint.url.scheme() {
                 "https" => Some(tls::server_name(&endpoint)?),
                 _ => None,
@@ -270,21 +264,20 @@ impl Transport {
                 deadline,
             )?;
             slice(&socket, &name)?;
-            let stream: Box<dyn http::Stream> = match server_name {
+            let stream: Box<dyn exchange::Stream> = match server_name {
                 Some(server_name) => Box::new(tls::wrap(&self.tls, server_name, socket)?),
                 None => Box::new(socket),
             };
-            let pace = http::Pace {
+            let pace = exchange::Pace {
                 name: &name,
                 idle: read_timeout,
                 deadline,
                 cancel,
             };
-            let mut exchange = http::Exchange::new(stream, pace);
-            exchange.send(&head, body)?;
-            let (status, fields) = exchange.read_head()?;
-            if REDIRECT_STATUSES.contains(&status) {
-                let target = redirect(&endpoint, &fields, redirects.max, followed, &origins)?;
+            let mut exchange = exchange::Exchange::new(stream, pace);
+            let mut head = exchange.send(prepared, body)?;
+            if REDIRECT_STATUSES.contains(&head.status) {
+                let target = redirect(&endpoint, &head.fields, redirects.max, followed, &origins)?;
                 if target.origin() != endpoint.origin() {
                     headers
                         .to_mut()
@@ -296,11 +289,10 @@ impl Transport {
                 followed += 1;
                 continue;
             }
-            let framing = exchange.framing(status, &fields)?;
-            let received = exchange.read_body(framing, max_response_bytes, sink, progress)?;
+            let received = exchange.read_body(&mut head, max_response_bytes, sink, progress)?;
             return Ok(TransportResponse {
-                status,
-                headers: fields,
+                status: head.status,
+                headers: head.fields,
                 final_url: endpoint.url,
                 received,
             });
@@ -308,13 +300,13 @@ impl Transport {
     }
 }
 
-/// Make every blocking read and write on `socket` return after `http::SLICE`, so the exchange can
-/// check cancellation and its deadlines while a server is silent.
+/// Make every blocking read and write on `socket` return after `exchange::SLICE`, so the exchange
+/// can check cancellation and its deadlines while a server is silent.
 fn slice(socket: &TcpStream, name: &str) -> Result<(), Error> {
     socket
         .set_nodelay(true)
-        .and_then(|()| socket.set_read_timeout(Some(http::SLICE)))
-        .and_then(|()| socket.set_write_timeout(Some(http::SLICE)))
+        .and_then(|()| socket.set_read_timeout(Some(exchange::SLICE)))
+        .and_then(|()| socket.set_write_timeout(Some(exchange::SLICE)))
         .map_err(|error| {
             Error::new(
                 ErrorKind::FileAccess,

@@ -1,6 +1,6 @@
 //! End-to-end transport tests against loopback servers, a fake resolver and a connector that routes
 //! chosen public addresses to those servers. Nothing here leaves the machine.
-use super::{http::Stream, *};
+use super::{exchange::Stream, *};
 use rustls::{
     ServerConfig, ServerConnection, StreamOwned,
     pki_types::{PrivateKeyDer, pem::PemObject},
@@ -394,7 +394,7 @@ fn a_remote_https_download_resolves_once_and_cannot_be_rebound() {
     assert_eq!(resolver.calls(), 1, "one lookup per connection");
     assert_eq!(routes.attempts(), vec![public], "only the checked address");
     let seen = server.requests();
-    assert!(seen[0].starts_with("GET /models/palette.bin HTTP/1.1\r\nHost: downloads.example\r\n"));
+    assert!(seen[0].starts_with("GET /models/palette.bin HTTP/1.1\r\nhost: downloads.example\r\n"));
 
     let again = fetch(&transport, &download, &Plan::default());
     assert_eq!(again.code(), "validation");
@@ -456,9 +456,10 @@ fn loopback_http_get_streams_a_content_length_body() {
     );
     assert_eq!(fetched.progress.last(), Some(&(11, Some(11))));
     let seen = &server.requests()[0];
+    // Header names are case-insensitive; the client writes them lowercased.
     let expected = format!(
-        "GET /v1/status?verbose=1 HTTP/1.1\r\nHost: {}\r\nUser-Agent: Lightwell/{}\r\n\
-         Accept-Encoding: identity\r\nConnection: close\r\n\r\n",
+        "GET /v1/status?verbose=1 HTTP/1.1\r\nhost: {}\r\nuser-agent: Lightwell/{}\r\n\
+         accept-encoding: identity\r\nconnection: close\r\n\r\n",
         server.address,
         env!("CARGO_PKG_VERSION")
     );
@@ -490,8 +491,8 @@ fn loopback_http_post_sends_a_host_framed_body_and_decodes_a_chunked_reply() {
     assert_eq!(fetched.progress.last(), Some(&(11, None)));
     let seen = &server.requests()[0];
     assert!(seen.starts_with("POST /v1/run HTTP/1.1\r\n"), "{seen}");
-    assert!(seen.contains("\r\nContent-Length: 16\r\n"));
-    assert!(seen.contains("\r\nAuthorization: Bearer sentinel-token\r\n"));
+    assert!(seen.contains("\r\ncontent-length: 16\r\n"), "{seen}");
+    assert!(seen.contains("\r\nauthorization: Bearer sentinel-token\r\n"));
     assert!(seen.ends_with("\r\n\r\n{\"grid\":[1,2,3]}"));
 }
 
@@ -621,21 +622,76 @@ fn a_response_head_over_its_bounds_is_refused() {
         "HTTP/1.1 200 OK\r\n{}Content-Length: 0\r\n\r\n",
         "X-Field: v\r\n".repeat(101)
     );
-    let server = Server::canned(vec![long.into_bytes(), many.into_bytes()]);
+    let far_too_many = format!(
+        "HTTP/1.1 200 OK\r\n{}Content-Length: 0\r\n\r\n",
+        "X-Field: v\r\n".repeat(200)
+    );
+    // Interim responses count towards the head they precede.
+    let interim = format!(
+        "{}HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        format!(
+            "HTTP/1.1 103 Early Hints\r\nLink: {}\r\n\r\n",
+            "l".repeat(1000)
+        )
+        .repeat(70)
+    );
+    let trailers = format!(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n{}\r\n",
+        "X-Trailer: t\r\n".repeat(6000)
+    );
+    let long_trailer = format!(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\nX-Trailer: {}\r\n\r\n",
+        "t".repeat(70 * 1024)
+    );
+    let cases = [
+        ("long", long),
+        ("many", many),
+        ("far too many", far_too_many),
+        ("interim", interim),
+        ("trailers", trailers),
+        ("long trailer", long_trailer),
+    ];
+    let server = Server::canned(
+        cases
+            .iter()
+            .map(|(_, bytes)| bytes.clone().into_bytes())
+            .collect(),
+    );
     let transport = loopback();
-    for _ in 0..2 {
+    for (name, _) in cases {
         let fetched = fetch(
             &transport,
             &request(Method::Get, &server.url("/")),
             &Plan::default(),
         );
-        assert_eq!(fetched.code(), "resource-limit");
+        assert_eq!(fetched.code(), "resource-limit", "{name}");
     }
 }
 
 #[test]
+fn interim_responses_are_skipped_and_identical_lengths_accepted() {
+    let server = Server::canned(vec![
+        b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n\
+          HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Length: 3\r\n\r\nabc"
+            .to_vec(),
+    ]);
+    let fetched = fetch(
+        &loopback(),
+        &request(Method::Get, &server.url("/")),
+        &Plan::default(),
+    );
+    assert_eq!(fetched.ok().status, 200);
+    assert_eq!(fetched.body, b"abc");
+    assert_eq!(
+        fetched.ok().header("link"),
+        None,
+        "interim fields are not the response's"
+    );
+}
+
+#[test]
 fn ambiguous_malformed_or_encoded_responses_are_read_errors() {
-    let cases: [(&str, &[u8]); 8] = [
+    let cases: [(&str, &[u8]); 11] = [
         (
             "both",
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
@@ -647,6 +703,9 @@ fn ambiguous_malformed_or_encoded_responses_are_read_errors() {
         ("status", b"HTTP/1.1 2x0 OK\r\nContent-Length: 0\r\n\r\n"),
         ("bare line feed", b"HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n"),
         ("chunk", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nabc\r\n0\r\n\r\n"),
+        ("coding on HTTP/1.0", b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"),
+        ("switched", b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"),
+        ("status range", b"HTTP/1.1 600 Beyond\r\nContent-Length: 0\r\n\r\n"),
     ];
     let server = Server::canned(cases.iter().map(|(_, bytes)| bytes.to_vec()).collect());
     let transport = loopback();
@@ -807,7 +866,7 @@ fn localhost_is_resolved_by_the_system_resolver_to_loopback_addresses() {
     let fetched = fetch(&loopback(), &request(Method::Get, &url), &Plan::default());
     assert_eq!(fetched.body, b"local");
     assert!(server.requests()[0].contains(&format!(
-        "\r\nHost: localhost:{}\r\n",
+        "\r\nhost: localhost:{}\r\n",
         server.address.port()
     )));
 }
@@ -852,15 +911,17 @@ fn a_redirect_to_a_listed_origin_is_followed_with_get_and_without_authorization(
     let fetched = fetch(&loopback(), &post, &plan);
     assert_eq!(fetched.body, b"done");
     assert_eq!(fetched.ok().final_url.as_str(), target.url("/next"));
-    assert!(origin.requests()[0].contains("Authorization: Bearer sentinel-token"));
+    assert!(origin.requests()[0].contains("\r\nauthorization: Bearer sentinel-token\r\n"));
     let followed = &target.requests()[0];
     assert!(followed.starts_with("GET /next HTTP/1.1\r\n"), "{followed}");
-    assert!(followed.contains("\r\nX-Request: kept\r\n"));
+    assert!(followed.contains("\r\nx-request: kept\r\n"), "{followed}");
     assert!(
         !followed.to_ascii_lowercase().contains("authorization"),
         "{followed}"
     );
-    assert!(!followed.contains("Content-Length") && !followed.contains("payload"));
+    assert!(
+        !followed.to_ascii_lowercase().contains("content-length") && !followed.contains("payload")
+    );
 }
 
 #[test]
@@ -884,7 +945,7 @@ fn a_same_origin_redirect_keeps_authorization() {
         "{}",
         seen[1]
     );
-    assert!(seen[1].contains("Authorization: Bearer sentinel-token"));
+    assert!(seen[1].contains("\r\nauthorization: Bearer sentinel-token\r\n"));
 }
 
 #[test]
@@ -969,6 +1030,36 @@ fn loopback_https_works_with_the_test_roots_and_fails_with_platform_trust() {
     assert_eq!(fetched.code(), "read-error");
     assert!(
         fetched.error().detail.contains("certificate"),
+        "{}",
+        fetched.error()
+    );
+}
+
+#[test]
+fn a_tls_body_that_ends_without_the_close_signal_is_refused() {
+    // Answers with a close-delimited body and then drops the connection without `close_notify`,
+    // so the body's end cannot be told from a truncation.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let config = server_tls();
+    thread::spawn(move || {
+        for socket in listener.incoming() {
+            let Ok(socket) = socket else { return };
+            let session = ServerConnection::new(Arc::clone(&config)).unwrap();
+            let mut stream = StreamOwned::new(session, socket);
+            if read_request(&mut stream).is_some() {
+                reply(&mut stream, b"HTTP/1.1 200 OK\r\n\r\npartial");
+            }
+        }
+    });
+    let fetched = fetch(
+        &loopback(),
+        &request(Method::Get, &format!("https://{address}/")),
+        &Plan::default(),
+    );
+    assert_eq!(fetched.code(), "read-error");
+    assert!(
+        fetched.error().detail.contains("ended early"),
         "{}",
         fetched.error()
     );
