@@ -2386,7 +2386,7 @@
     {
       "id": "TASK-040",
       "description": "Present the displayed preview through one `Presenter` with one `Frame` type, and draw the clipping overlay, mask overlays and the crop input stage on the photo surface.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-039"
       ],
@@ -2409,12 +2409,6 @@
         },
         {
           "kind": "file",
-          "label": "Draft photo",
-          "target": "crates/lightwell-app/src/draft_photo.rs",
-          "relevance": "A second frame path."
-        },
-        {
-          "kind": "file",
           "label": "Photo surface",
           "target": "crates/lightwell-ui/src/photo_surface.rs",
           "relevance": "The GPU surface."
@@ -2430,6 +2424,12 @@
           "label": "Develop workspace design",
           "target": "docs/design/develop-workspace.md",
           "relevance": "The desktop architecture."
+        },
+        {
+          "kind": "file",
+          "label": "Presenter",
+          "target": "crates/lightwell-app/src/app/presenter.rs",
+          "relevance": "The one holder of what is displayed."
         }
       ],
       "acceptance_criteria": [
