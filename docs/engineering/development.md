@@ -333,9 +333,16 @@ For each module the suite checks, in process: every neutral spelling of the payl
 field at its default, each field alone at its default, zero defaults written as `-0`) compiles to no
 units, is reported neutral and `Neutral`, renders the source's own allocation and changes no byte on
 the linear path; each field moved alone and each whole payload has exactly the consequences of the
-module's own neutrality rule; a stored layer of an undeclared format, an unknown field, an
-out-of-range value and a non-object payload are refused by name without being rewritten; and two
-global layers of the effect are refused by rendering and sampling. Then, through the JSON method
+module's own neutrality rule; every field reads at both ends of its declared range and in an integer
+spelling, while a value just outside it, a string, a non-object payload, another effect's payload and
+an undeclared format are refused by name without being rewritten; a patch plans a commit only for a
+non-neutral layer holding the canonical payload, merges over the stored layer and updates it in
+place, is a no-op when it changes nothing however it is spelled, drops a field set back to its
+default, and a reset keeps the layer and stores `{}`; two layers for one target refuse planning,
+rendering and sampling by name; history labels follow the declared rules (one field by its value, a
+group's reset preset as `Reset <group>`, the module reset, a field count, none for an empty patch);
+and a layer reports every field with its defaults filled and describes its moved fields in declared
+order. Then, through the JSON method
 table as independent clients: discovery (`module.list` serves the registry's descriptor, and
 `schema.list` lists the patch's fields as optional in declared order, the reset with none, the mask
 target exactly when the effect is maskable, and every host method the journey uses); a neutral first
@@ -356,9 +363,10 @@ readable and refusing sampling, analysis and a new edit by name; and a reopen re
 revision, entry, layer and mask identities, rows, pixels and analysis identity. The original's bytes
 are unchanged throughout.
 
-A module's own numerics against its frozen reference and its unique behaviour — Basic's neutral
-picker, Presence's halos and tiling, the vignette's recentring against its frozen reference — stay
-in that module's own tests under `crates/lightwell-core/tests/` and `src/modules/`, and Basic's
+A module's own declaration (its descriptor and the words its history labels use for each field),
+its numerics against its frozen reference and its unique behaviour — Basic's neutral picker,
+Presence's halos and tiling, the vignette's recentring against its frozen reference — stay in that
+module's own tests under `crates/lightwell-core/tests/` and `src/modules/`, and Basic's
 numerics on the photo fixture in the Basic and histogram chapter. The placement of Presence, the
 mixer and the vignette is `editor-acceptance`'s Presence, mixer and vignette chapter
 (`xtask/src/presence_mixer_vignette_acceptance.rs`, under `presence_mixer_vignette` in

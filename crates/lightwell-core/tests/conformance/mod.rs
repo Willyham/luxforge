@@ -18,6 +18,7 @@
 //! xtask's acceptance chapters use.
 mod journey;
 pub mod pixels;
+mod rules;
 pub mod shape;
 
 pub use lightwell_testkit::client::{Checked, ensure, within};
@@ -139,6 +140,13 @@ fn check(
     evidence.record(
         "every neutral spelling compiles to nothing, is reported neutral and Neutral, renders the shared source allocation and changes no byte on the linear path; each field alone and each whole payload has exactly the consequences of the module's own neutrality rule",
         payloads,
+    );
+    let rules = within("the field-patch rules", || {
+        rules::rules(registry, module, sources.stage())
+    })?;
+    evidence.record(
+        "every field reads at both ends of its range and in an integer spelling while a value just outside it, a string, a non-object, another effect and an undeclared format are refused by name; a patch commits only a non-neutral layer holding the canonical payload, merges over the stored layer in place, is a no-op when it changes nothing however spelled, drops a field set back to its default, and a reset keeps the layer and stores {}; two layers for one target refuse planning by name; labels and descriptions follow the declared rules and values fill every default",
+        rules,
     );
     let refusals = within("stored payloads", || {
         pixels::stored_refusals(registry, module, sources)

@@ -1,6 +1,7 @@
 //! Every field-patch module the built-in registry holds passes the one conformance suite in
 //! `tests/conformance/`: discovery, neutral payloads compiling to nothing and sharing the source,
-//! one layer per target, drafts, no-ops, deduplication, resets that keep the layer's identity,
+//! the field-patch rules (which payloads read, how a patch and a reset plan, labels, descriptions
+//! and values), one layer per target, drafts, no-ops, deduplication, resets that keep the layer's identity,
 //! history, sample equal to render on the byte and linear paths and through a straightened crop,
 //! an unavailable provider and reopen. `cargo xtask editor-acceptance` runs the same function in
 //! release and records what it returns as evidence.

@@ -190,11 +190,11 @@ impl FieldPatch for Vignette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Layer;
     use crate::modules::check_parameters;
     use crate::modules::{
         ActionInput, ActionPlan, Control, FixedStage, ParameterKind, ResetAction, ToolModule,
     };
-    use crate::{ErrorKind, Layer, LayerId};
     use serde_json::json;
     use serde_json::{Map, Value};
 
@@ -202,17 +202,6 @@ mod tests {
         width: 480,
         height: 320,
     };
-
-    fn vignette_layer(payload: Value) -> Layer {
-        Layer {
-            id: LayerId::new(),
-            effect_id: VIGNETTE_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
-            payload,
-            mask: None,
-            artifacts: Vec::new(),
-        }
-    }
 
     fn planned(action: &str, parameters: Value, layers: &[Layer]) -> Result<ActionPlan, Error> {
         let module = VignetteModule::new();
@@ -228,21 +217,6 @@ mod tests {
                 .reading([0, 0, 0, 255])
                 .context(layers, &crate::ModuleRegistry::builtin()),
         )
-    }
-
-    fn committed(plan: ActionPlan) -> Layer {
-        match plan {
-            // The layer the host stores for the plan: a commit's effect and payload, or the
-            // updated layer's identity with its new payload.
-            ActionPlan::Commit(new) => Layer::new(new.effect_id, new.payload),
-            ActionPlan::Update(update) => Layer {
-                id: update.id,
-                ..Layer::new(VIGNETTE_EFFECT, update.payload)
-            },
-            ActionPlan::NoOp => panic!("expected a layer, not a no-op"),
-            ActionPlan::Compose(_) => panic!("expected a layer, not a composite"),
-            ActionPlan::Edits(_) => panic!("expected a layer, not several edits"),
-        }
     }
 
     #[test]
@@ -382,185 +356,37 @@ mod tests {
         assert_eq!(plan, ActionPlan::NoOp);
     }
 
-    #[test]
-    fn a_first_set_with_non_zero_amount_commits_at_the_end_of_the_stack() {
-        let plan = planned(SET_VIGNETTE, json!({"amount": -35.0}), &[]).expect("a plan");
-        let layer = committed(plan);
-        assert_eq!(layer.effect_id, VIGNETTE_EFFECT);
-        assert_eq!(
-            layer.payload,
-            json!({"amount": -35.0}),
-            "midpoint/roundness/feather are omitted at their own default"
-        );
-    }
-
-    #[test]
-    fn a_later_set_updates_the_existing_layer_in_place() {
-        let existing = vignette_layer(json!({"amount": -35.0}));
-        let id = existing.id.clone();
-        let plan = planned(
-            SET_VIGNETTE,
-            json!({"amount": -35.0, "feather": 80.0}),
-            &[existing],
-        )
-        .expect("a plan");
-        match plan {
-            ActionPlan::Update(layer) => {
-                assert_eq!(layer.id, id);
-                assert_eq!(layer.payload, json!({"amount": -35.0, "feather": 80.0}));
-            }
-            other => panic!("expected an update, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_equal_merged_payload_is_a_no_op() {
-        let existing = vignette_layer(json!({"amount": -35.0, "feather": 80.0}));
-        // Sending the field already at its stored value, and sending feather at its default (80
-        // is already stored so this checks the "sent equals stored" case, not a default fill).
-        let plan = planned(SET_VIGNETTE, json!({"amount": -35.0}), &[existing]).expect("a plan");
-        assert_eq!(plan, ActionPlan::NoOp);
-    }
-
-    #[test]
-    fn missing_keys_default_away_from_zero_for_midpoint_and_feather() {
-        // A payload with only amount set must still describe midpoint=50 and feather=50, not 0.
-        let existing = vignette_layer(json!({"amount": -20.0}));
-        let values = VignetteModule::new()
-            .values(VIGNETTE_EFFECT, EFFECT_FORMAT, &existing.payload)
-            .expect("values");
-        assert_eq!(values["amount"], json!(-20.0));
-        assert_eq!(values["midpoint"], json!(50.0));
-        assert_eq!(values["roundness"], json!(0.0));
-        assert_eq!(values["feather"], json!(50.0));
-    }
-
-    #[test]
-    fn reset_returns_an_existing_layer_to_all_defaults_keeping_identity() {
-        let existing = vignette_layer(json!({"amount": -35.0, "midpoint": 80.0}));
-        let id = existing.id.clone();
-        let plan = planned(RESET_VIGNETTE, json!({}), &[existing]).expect("a plan");
-        match plan {
-            ActionPlan::Update(layer) => {
-                assert_eq!(layer.id, id);
-                assert_eq!(layer.payload, json!({}));
-            }
-            other => panic!("expected an update, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn reset_without_a_layer_or_already_default_is_a_no_op() {
-        assert_eq!(
-            planned(RESET_VIGNETTE, json!({}), &[]).expect("a plan"),
-            ActionPlan::NoOp
-        );
-        let already_default = vignette_layer(json!({}));
-        assert_eq!(
-            planned(RESET_VIGNETTE, json!({}), &[already_default]).expect("a plan"),
-            ActionPlan::NoOp
-        );
-    }
-
     // ------------------------------------------------------------------------------------------
     // Labels
     // ------------------------------------------------------------------------------------------
 
+    /// The words a history label and the recipe row use for each field, with its declared decimals,
+    /// sign and unit. The rules that choose a label — a group reset, the module reset, a field count
+    /// — are the shared field-patch rules the conformance suite proves for every module.
     #[test]
-    fn labels_match_the_declared_forms() {
+    fn each_field_is_named_by_its_own_history_words() {
         let module = VignetteModule::new();
-        let label = |action: &str, parameters: Value| {
-            module.label(&ActionInput {
-                action_id: action.into(),
-                parameters: parameters.as_object().cloned().unwrap_or_default(),
-            })
-        };
-        assert_eq!(
-            label(SET_VIGNETTE, json!({"amount": -35.0})),
-            Some("Vignette amount -35".into())
-        );
-        assert_eq!(
-            label(SET_VIGNETTE, json!({"midpoint": 60.0})),
-            Some("Vignette midpoint 60".into())
-        );
-        assert_eq!(
-            label(SET_VIGNETTE, json!({"roundness": 20.0})),
-            Some("Vignette roundness +20".into())
-        );
-        assert_eq!(
-            label(SET_VIGNETTE, json!({"feather": 40.0})),
-            Some("Vignette feather 40".into())
-        );
-        assert_eq!(
-            label(RESET_VIGNETTE, json!({})),
-            Some("Reset Vignette".into())
-        );
-        assert_eq!(
-            label(
-                SET_VIGNETTE,
-                json!({"amount": 0.0, "midpoint": 50.0, "roundness": 0.0, "feather": 50.0})
-            ),
-            Some("Reset Vignette".into()),
-            "the group's own reset sends a full-default patch"
-        );
-        assert_eq!(
-            label(SET_VIGNETTE, json!({"amount": -10.0, "midpoint": 60.0})),
-            Some("Vignette (2 fields)".into())
-        );
-        assert_eq!(label(SET_VIGNETTE, json!({})), None);
+        for (parameters, expected) in [
+            (json!({"amount": -35.0}), "Vignette amount -35"),
+            (json!({"midpoint": 60.0}), "Vignette midpoint 60"),
+            (json!({"roundness": 20.0}), "Vignette roundness +20"),
+            (json!({"feather": 40.0}), "Vignette feather 40"),
+        ] {
+            let label = module.label(&ActionInput {
+                action_id: SET_VIGNETTE.to_owned(),
+                parameters: parameters.as_object().cloned().unwrap(),
+            });
+            assert_eq!(label.as_deref(), Some(expected), "{parameters}");
+        }
     }
 
     // ------------------------------------------------------------------------------------------
     // Validation
     // ------------------------------------------------------------------------------------------
 
-    #[test]
-    fn validate_payload_refuses_unknown_keys_and_out_of_range_values() {
-        let module = VignetteModule::new();
-        let unknown = module.validate_payload(VIGNETTE_EFFECT, EFFECT_FORMAT, &json!({"foo": 1}));
-        assert_eq!(unknown.unwrap_err().kind, ErrorKind::Validation);
-        for (name, value) in [
-            (AMOUNT, 101.0),
-            (AMOUNT, -101.0),
-            (MIDPOINT, -1.0),
-            (MIDPOINT, 101.0),
-            (ROUNDNESS, 101.0),
-            (FEATHER, -1.0),
-        ] {
-            let error = module
-                .validate_payload(VIGNETTE_EFFECT, EFFECT_FORMAT, &json!({ name: value }))
-                .unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Validation, "{name}={value}");
-        }
-        assert!(
-            module
-                .validate_payload(VIGNETTE_EFFECT, EFFECT_FORMAT, &json!({"amount": 50.0}))
-                .is_ok()
-        );
-        let wrong_format = module.validate_payload(VIGNETTE_EFFECT, 2, &json!({}));
-        assert_eq!(wrong_format.unwrap_err().kind, ErrorKind::Incompatible);
-    }
-
     // ------------------------------------------------------------------------------------------
     // describe_layer / compile
     // ------------------------------------------------------------------------------------------
-
-    #[test]
-    fn describe_layer_reports_neutral_or_the_non_default_fields() {
-        let module = VignetteModule::new();
-        assert_eq!(
-            module
-                .describe_layer(VIGNETTE_EFFECT, EFFECT_FORMAT, &json!({}))
-                .unwrap(),
-            "Neutral"
-        );
-        assert_eq!(
-            module
-                .describe_layer(VIGNETTE_EFFECT, EFFECT_FORMAT, &json!({"amount": -35.0}))
-                .unwrap(),
-            "Vignette amount -35"
-        );
-    }
 
     #[test]
     fn compile_of_a_zero_amount_payload_is_the_neutral_colour_operation() {

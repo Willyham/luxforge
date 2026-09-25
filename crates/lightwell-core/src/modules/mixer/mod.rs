@@ -74,10 +74,6 @@ const LUMINANCE_GROUP: &str = "Luminance";
 /// The neutral value of every mixer field.
 const NEUTRAL: f64 = 0.0;
 
-/// The one ambiguity message, shared by planning and by the host's whole-stack compile check.
-#[cfg(test)]
-pub(crate) const AMBIGUOUS: &str = "ambiguous Colour mixer layers";
-
 /// A declared field's range index and property, parsed from its `<range>-<property>` name.
 fn parse_field(name: &str) -> Option<(usize, &'static str)> {
     let (range_name, property) = name.split_once('-')?;
@@ -265,62 +261,15 @@ impl FieldPatch for Mixer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::{
-        ActionInput, ActionPlan, Control, FixedStage, ParameterKind, ResetAction, ToolModule,
-    };
-    use crate::{BASIC_EFFECT, modules::check_parameters};
-    use crate::{ErrorKind, Layer, LayerId};
+    use crate::modules::{ActionInput, Control, ParameterKind, ResetAction, ToolModule};
+
+    use serde_json::Map;
     use serde_json::json;
-    use serde_json::{Map, Value};
 
     const STAGE: Stage = Stage {
         width: 4,
         height: 4,
     };
-
-    fn mixer_layer(payload: Value) -> Layer {
-        Layer {
-            id: LayerId::new(),
-            effect_id: MIXER_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
-            payload,
-            mask: None,
-            artifacts: Vec::new(),
-        }
-    }
-
-    /// Plan one request the way the host does: generic parameter check, module parse, then plan
-    /// against a stack whose stage questions are answered from constants.
-    fn planned(action: &str, parameters: Value, layers: &[Layer]) -> Result<ActionPlan, Error> {
-        let module = MixerModule::new();
-        let declared = module
-            .descriptor()
-            .action(action)
-            .expect("a declared action");
-        let checked = check_parameters(declared, &parameters)?;
-        let input = module.parse(action, &checked)?;
-        module.plan(
-            &input,
-            &FixedStage::new(STAGE)
-                .reading([0, 0, 0, 255])
-                .context(layers, &crate::ModuleRegistry::builtin()),
-        )
-    }
-
-    fn committed(plan: ActionPlan) -> Layer {
-        match plan {
-            // The layer the host stores for the plan: a commit's effect and payload, or the
-            // updated layer's identity with its new payload.
-            ActionPlan::Commit(new) => Layer::new(new.effect_id, new.payload),
-            ActionPlan::Update(update) => Layer {
-                id: update.id,
-                ..Layer::new(MIXER_EFFECT, update.payload)
-            },
-            ActionPlan::NoOp => panic!("expected a layer, not a no-op"),
-            ActionPlan::Compose(_) => panic!("expected a layer, not a composite"),
-            ActionPlan::Edits(_) => panic!("expected a layer, not several edits"),
-        }
-    }
 
     #[test]
     fn the_descriptor_declares_one_colour_effect_at_order_ten_two_actions_and_three_groups() {
@@ -457,223 +406,26 @@ mod tests {
         }
     }
 
+    /// The words a history label and the recipe row use for each field, with its declared decimals,
+    /// sign and unit. The rules that choose a label — a group reset, the module reset, a field count
+    /// — are the shared field-patch rules the conformance suite proves for every module.
     #[test]
-    fn a_payload_is_refused_by_shape_format_field_and_range_without_being_rewritten() {
+    fn each_field_is_named_by_its_own_history_words() {
         let module = MixerModule::new();
-        let refused = |format: u32, payload: Value| {
-            module
-                .validate_payload(MIXER_EFFECT, format, &payload)
-                .expect_err("an invalid payload")
-        };
-        for payload in [
-            json!({}),
-            json!({"red-hue": 0}),
-            json!({"red-hue": -100.0}),
-            json!({"red-hue": 100.0}),
-            json!({"aqua-saturation": -100.0, "aqua-luminance": 30.0}),
-        ] {
-            module
-                .validate_payload(MIXER_EFFECT, 1, &payload)
-                .unwrap_or_else(|error| panic!("{payload} should be valid: {error}"));
-        }
-
-        let format = refused(2, json!({"red-hue": 1.0}));
-        assert_eq!(format.kind, ErrorKind::Incompatible);
-        assert!(format.detail.contains("unsupported effect format 2"));
-
-        let effect = module
-            .validate_payload(BASIC_EFFECT, 1, &json!({}))
-            .expect_err("another effect");
-        assert_eq!(effect.kind, ErrorKind::Incompatible);
-
-        for (case, payload, needle) in [
-            ("a list", json!([1.0]), "must be a JSON object"),
-            ("a number", json!(1.0), "must be a JSON object"),
+        for (parameters, expected) in [
+            (json!({"red-hue": 20.0}), "Red hue +20"),
+            (json!({"aqua-luminance": -15.0}), "Aqua luminance -15"),
             (
-                "an unknown key",
-                json!({"red-gamma": 10.0}),
-                "unknown mixer field red-gamma",
-            ),
-            (
-                "a string value",
-                json!({"red-hue": "10"}),
-                "must be a finite number",
-            ),
-            (
-                "below the range",
-                json!({"red-hue": -100.001}),
-                "within -100..=100",
-            ),
-            (
-                "above the range",
-                json!({"red-hue": 100.001}),
-                "within -100..=100",
+                json!({"magenta-saturation": -100.0}),
+                "Magenta saturation -100",
             ),
         ] {
-            let error = refused(1, payload);
-            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
-            assert!(error.detail.contains(needle), "{case}: {}", error.detail);
+            let label = module.label(&ActionInput {
+                action_id: SET_MIXER.to_owned(),
+                parameters: parameters.as_object().cloned().unwrap(),
+            });
+            assert_eq!(label.as_deref(), Some(expected), "{parameters}");
         }
-    }
-
-    #[test]
-    fn the_canonical_neutral_payload_is_the_empty_object_and_compares_equal_to_an_explicit_zero() {
-        let committed_layer = committed(planned(SET_MIXER, json!({"red-hue": 20.0}), &[]).unwrap());
-        assert_eq!(committed_layer.payload, json!({"red-hue": 20.0}));
-        assert_eq!(committed_layer.effect_id, MIXER_EFFECT);
-        assert_eq!(committed_layer.effect_format, 1);
-
-        let neutralized = committed(
-            planned(
-                SET_MIXER,
-                json!({"red-hue": 0.0}),
-                &[mixer_layer(json!({"red-hue": 20.0}))],
-            )
-            .unwrap(),
-        );
-        assert_eq!(neutralized.payload, json!({}));
-
-        for stored in [json!({}), json!({"red-hue": 0.0})] {
-            assert_eq!(
-                planned(
-                    SET_MIXER,
-                    json!({"red-hue": 0.0}),
-                    &[mixer_layer(stored.clone())]
-                )
-                .unwrap(),
-                ActionPlan::NoOp,
-                "setting neutral on a {stored} layer changes nothing"
-            );
-            assert_eq!(
-                planned(RESET_MIXER, json!({}), &[mixer_layer(stored.clone())]).unwrap(),
-                ActionPlan::NoOp,
-                "resetting a {stored} layer changes nothing"
-            );
-        }
-        assert_eq!(
-            planned(SET_MIXER, json!({}), &[]).unwrap(),
-            ActionPlan::NoOp,
-            "a neutral first set has nothing to commit"
-        );
-        assert_eq!(
-            planned(RESET_MIXER, json!({}), &[]).unwrap(),
-            ActionPlan::NoOp,
-            "resetting with no layer at all is a no-op"
-        );
-    }
-
-    #[test]
-    fn plan_commits_updates_and_no_ops_exactly_like_set_basic() {
-        // First non-neutral set commits.
-        let commit = planned(SET_MIXER, json!({"aqua-saturation": -40.0}), &[]).unwrap();
-        let layer = committed(commit);
-        assert_eq!(layer.payload, json!({"aqua-saturation": -40.0}));
-
-        // A later set on an existing layer merges and updates in place.
-        let update = committed(
-            planned(
-                SET_MIXER,
-                json!({"aqua-luminance": 15.0}),
-                std::slice::from_ref(&layer),
-            )
-            .unwrap(),
-        );
-        assert_eq!(update.id, layer.id);
-        assert_eq!(
-            update.payload,
-            json!({"aqua-saturation": -40.0, "aqua-luminance": 15.0})
-        );
-
-        // An unchanged merge is a no-op.
-        assert_eq!(
-            planned(
-                SET_MIXER,
-                json!({"aqua-saturation": -40.0}),
-                std::slice::from_ref(&layer)
-            )
-            .unwrap(),
-            ActionPlan::NoOp
-        );
-
-        // Two layers are refused before this module ever plans against them: `locate` reports the
-        // ambiguity itself, matching the host's own whole-stack check.
-        let error =
-            planned(SET_MIXER, json!({"red-hue": 1.0}), &[layer.clone(), layer]).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Validation);
-        assert_eq!(error.detail, AMBIGUOUS);
-    }
-
-    #[test]
-    fn labels_name_one_field_a_group_reset_the_module_reset_or_the_field_count() {
-        let module = MixerModule::new();
-        let label = |action: &str, parameters: Value| {
-            module
-                .label(&ActionInput {
-                    action_id: action.into(),
-                    parameters: parameters.as_object().unwrap().clone(),
-                })
-                .unwrap_or_default()
-        };
-        assert_eq!(label(SET_MIXER, json!({"red-hue": 20.0})), "Red hue +20");
-        assert_eq!(
-            label(SET_MIXER, json!({"aqua-luminance": -15.0})),
-            "Aqua luminance -15"
-        );
-        let hue_neutral: Value = FIELDS[0..8]
-            .iter()
-            .map(|name| (name.to_string(), json!(0.0)))
-            .collect::<Map<_, _>>()
-            .into();
-        assert_eq!(label(SET_MIXER, hue_neutral), "Reset Hue");
-        let saturation_neutral: Value = FIELDS[8..16]
-            .iter()
-            .map(|name| (name.to_string(), json!(0.0)))
-            .collect::<Map<_, _>>()
-            .into();
-        assert_eq!(label(SET_MIXER, saturation_neutral), "Reset Saturation");
-        let luminance_neutral: Value = FIELDS[16..24]
-            .iter()
-            .map(|name| (name.to_string(), json!(0.0)))
-            .collect::<Map<_, _>>()
-            .into();
-        assert_eq!(label(SET_MIXER, luminance_neutral), "Reset Luminance");
-        assert_eq!(
-            module.label(&ActionInput {
-                action_id: RESET_MIXER.into(),
-                parameters: Map::new(),
-            }),
-            Some("Reset Colour mixer".into())
-        );
-        assert_eq!(
-            label(SET_MIXER, json!({"red-hue": 1.0, "blue-saturation": 2.0})),
-            "Colour mixer (2 fields)"
-        );
-        assert_eq!(
-            module.label(&ActionInput {
-                action_id: SET_MIXER.into(),
-                parameters: Map::new(),
-            }),
-            None
-        );
-    }
-
-    #[test]
-    fn values_reports_every_field_and_describe_layer_lists_non_neutral_ones() {
-        let module = MixerModule::new();
-        let payload = json!({"red-hue": 20.0, "aqua-luminance": -15.0});
-        let values = module.values(MIXER_EFFECT, 1, &payload).unwrap();
-        assert_eq!(values.len(), 24);
-        assert_eq!(values["red-hue"], json!(20.0));
-        assert_eq!(values["magenta-luminance"], json!(0.0));
-
-        assert_eq!(
-            module.describe_layer(MIXER_EFFECT, 1, &payload).unwrap(),
-            "Red hue +20, Aqua luminance -15"
-        );
-        assert_eq!(
-            module.describe_layer(MIXER_EFFECT, 1, &json!({})).unwrap(),
-            "Neutral"
-        );
     }
 
     #[test]

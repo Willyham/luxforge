@@ -54,10 +54,6 @@ const GROUP: &str = "Presence";
 /// The neutral value of every Presence field.
 const NEUTRAL: f64 = 0.0;
 
-/// The one ambiguity message, shared by planning and by the host's whole-stack compile check.
-#[cfg(test)]
-pub(crate) const AMBIGUOUS: &str = "ambiguous Presence layers";
-
 /// One Presence field: -100..100, step 1, no display decimals, no unit, a zero hint, on a plain
 /// rail, because none of the three has a colour a gradient could show.
 fn presence_field(name: &'static str, label: &str, notes: &str) -> Field {
@@ -173,11 +169,8 @@ pub(crate) fn presence_halo(long_side: u32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::{
-        ActionInput, ActionPlan, Control, FixedStage, ParameterKind, ResetAction, ToolModule,
-    };
-    use crate::{BASIC_EFFECT, modules::check_parameters};
-    use crate::{ErrorKind, Layer, LayerId};
+    use crate::modules::{ActionInput, Control, ParameterKind, ResetAction, ToolModule};
+
     use serde_json::json;
     use serde_json::{Map, Value};
 
@@ -185,50 +178,6 @@ mod tests {
         width: 24,
         height: 24,
     };
-
-    fn presence_layer(payload: Value) -> Layer {
-        Layer {
-            id: LayerId::new(),
-            effect_id: PRESENCE_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
-            payload,
-            mask: None,
-            artifacts: Vec::new(),
-        }
-    }
-
-    /// Plan one request the way the host does: generic parameter check, module parse, then plan
-    /// against a stack whose stage questions are answered from constants.
-    fn planned(action: &str, parameters: Value, layers: &[Layer]) -> Result<ActionPlan, Error> {
-        let module = PresenceModule::new();
-        let declared = module
-            .descriptor()
-            .action(action)
-            .expect("a declared action");
-        let checked = check_parameters(declared, &parameters)?;
-        let input = module.parse(action, &checked)?;
-        module.plan(
-            &input,
-            &FixedStage::new(STAGE)
-                .reading([0, 0, 0, 255])
-                .context(layers, &crate::ModuleRegistry::builtin()),
-        )
-    }
-
-    fn committed(plan: ActionPlan) -> Layer {
-        match plan {
-            // The layer the host stores for the plan: a commit's effect and payload, or the
-            // updated layer's identity with its new payload.
-            ActionPlan::Commit(new) => Layer::new(new.effect_id, new.payload),
-            ActionPlan::Update(update) => Layer {
-                id: update.id,
-                ..Layer::new(PRESENCE_EFFECT, update.payload)
-            },
-            ActionPlan::NoOp => panic!("expected a layer, not a no-op"),
-            ActionPlan::Compose(_) => panic!("expected a layer, not a composite"),
-            ActionPlan::Edits(_) => panic!("expected a layer, not several edits"),
-        }
-    }
 
     #[test]
     fn the_descriptor_declares_one_spatial_effect_two_actions_and_one_group() {
@@ -322,216 +271,23 @@ mod tests {
         );
     }
 
+    /// The words a history label and the recipe row use for each field, with its declared decimals,
+    /// sign and unit. The rules that choose a label — a group reset, the module reset, a field count
+    /// — are the shared field-patch rules the conformance suite proves for every module.
     #[test]
-    fn a_payload_is_refused_by_shape_format_field_and_range_without_being_rewritten() {
+    fn each_field_is_named_by_its_own_history_words() {
         let module = PresenceModule::new();
-        let refused = |format: u32, payload: Value| {
-            module
-                .validate_payload(PRESENCE_EFFECT, format, &payload)
-                .expect_err("an invalid payload")
-        };
-        for payload in [
-            json!({}),
-            json!({"texture": 0}),
-            json!({"texture": -100.0}),
-            json!({"clarity": 100.0}),
-            json!({"dehaze": 40.0, "texture": -20.0}),
+        for (parameters, expected) in [
+            (json!({"texture": 40.0}), "Texture +40"),
+            (json!({"clarity": -20.0}), "Clarity -20"),
+            (json!({"dehaze": 15.0}), "Dehaze +15"),
         ] {
-            module
-                .validate_payload(PRESENCE_EFFECT, 1, &payload)
-                .unwrap_or_else(|error| panic!("{payload} should be valid: {error}"));
+            let label = module.label(&ActionInput {
+                action_id: SET_PRESENCE.to_owned(),
+                parameters: parameters.as_object().cloned().unwrap(),
+            });
+            assert_eq!(label.as_deref(), Some(expected), "{parameters}");
         }
-
-        let format = refused(2, json!({"texture": 1.0}));
-        assert_eq!(format.kind, ErrorKind::Incompatible);
-        assert!(format.detail.contains("unsupported effect format 2"));
-
-        let effect = module
-            .validate_payload(BASIC_EFFECT, 1, &json!({}))
-            .expect_err("another effect");
-        assert_eq!(effect.kind, ErrorKind::Incompatible);
-
-        for (case, payload, needle) in [
-            ("a list", json!([1.0]), "must be a JSON object"),
-            ("a number", json!(1.0), "must be a JSON object"),
-            (
-                "an unknown key",
-                json!({"structure": 10.0}),
-                "unknown presence field structure",
-            ),
-            (
-                "a string value",
-                json!({"texture": "10"}),
-                "must be a finite number",
-            ),
-            (
-                "below the range",
-                json!({"clarity": -100.001}),
-                "within -100..=100",
-            ),
-            (
-                "above the range",
-                json!({"dehaze": 100.001}),
-                "within -100..=100",
-            ),
-        ] {
-            let error = refused(1, payload);
-            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
-            assert!(error.detail.contains(needle), "{case}: {}", error.detail);
-        }
-    }
-
-    #[test]
-    fn plan_commits_updates_and_no_ops_exactly_like_set_basic() {
-        let commit = planned(SET_PRESENCE, json!({"texture": 40.0}), &[]).unwrap();
-        let layer = committed(commit);
-        assert_eq!(layer.payload, json!({"texture": 40.0}));
-        assert_eq!(layer.effect_id, PRESENCE_EFFECT);
-        assert_eq!(layer.effect_format, 1);
-
-        let update = committed(
-            planned(
-                SET_PRESENCE,
-                json!({"dehaze": 15.0}),
-                std::slice::from_ref(&layer),
-            )
-            .unwrap(),
-        );
-        assert_eq!(update.id, layer.id);
-        assert_eq!(update.payload, json!({"texture": 40.0, "dehaze": 15.0}));
-
-        assert_eq!(
-            planned(
-                SET_PRESENCE,
-                json!({"texture": 40.0}),
-                std::slice::from_ref(&layer)
-            )
-            .unwrap(),
-            ActionPlan::NoOp,
-            "an unchanged merge is a no-op"
-        );
-
-        // The canonical neutral payload is the empty object, and `{}` and an explicit zero are the
-        // same state written differently.
-        let neutralized = committed(
-            planned(
-                SET_PRESENCE,
-                json!({"texture": 0.0}),
-                std::slice::from_ref(&update),
-            )
-            .unwrap(),
-        );
-        assert_eq!(neutralized.payload, json!({"dehaze": 15.0}));
-        for stored in [json!({}), json!({"clarity": 0.0})] {
-            assert_eq!(
-                planned(
-                    SET_PRESENCE,
-                    json!({"clarity": 0.0}),
-                    &[presence_layer(stored.clone())]
-                )
-                .unwrap(),
-                ActionPlan::NoOp,
-                "setting neutral on a {stored} layer changes nothing"
-            );
-            assert_eq!(
-                planned(RESET_PRESENCE, json!({}), &[presence_layer(stored.clone())]).unwrap(),
-                ActionPlan::NoOp,
-                "resetting a {stored} layer changes nothing"
-            );
-        }
-        assert_eq!(
-            planned(SET_PRESENCE, json!({}), &[]).unwrap(),
-            ActionPlan::NoOp,
-            "a neutral first set has nothing to commit"
-        );
-        assert_eq!(
-            planned(RESET_PRESENCE, json!({}), &[]).unwrap(),
-            ActionPlan::NoOp,
-            "resetting with no layer at all is a no-op"
-        );
-
-        // `reset-presence` updates an edited layer in place, keeping its identity.
-        let reset =
-            committed(planned(RESET_PRESENCE, json!({}), std::slice::from_ref(&layer)).unwrap());
-        assert_eq!(reset.id, layer.id);
-        assert_eq!(reset.payload, json!({}));
-
-        // Two layers are refused before this module ever plans against them.
-        let error = planned(
-            SET_PRESENCE,
-            json!({"texture": 1.0}),
-            &[layer.clone(), layer],
-        )
-        .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Validation);
-        assert_eq!(error.detail, AMBIGUOUS);
-    }
-
-    #[test]
-    fn labels_name_one_field_the_module_reset_or_the_field_count() {
-        let module = PresenceModule::new();
-        let label = |action: &str, parameters: Value| {
-            module
-                .label(&ActionInput {
-                    action_id: action.into(),
-                    parameters: parameters.as_object().unwrap().clone(),
-                })
-                .unwrap_or_default()
-        };
-        assert_eq!(label(SET_PRESENCE, json!({"texture": 40.0})), "Texture +40");
-        assert_eq!(
-            label(SET_PRESENCE, json!({"clarity": -20.0})),
-            "Clarity -20"
-        );
-        assert_eq!(label(SET_PRESENCE, json!({"dehaze": 15.0})), "Dehaze +15");
-        assert_eq!(
-            module.label(&ActionInput {
-                action_id: RESET_PRESENCE.into(),
-                parameters: Map::new(),
-            }),
-            Some("Reset Presence".into())
-        );
-        assert_eq!(
-            label(SET_PRESENCE, json!({"texture": 1.0, "clarity": 2.0})),
-            "Presence (2 fields)"
-        );
-        assert_eq!(
-            label(
-                SET_PRESENCE,
-                json!({"texture": 0.0, "clarity": 0.0, "dehaze": 0.0})
-            ),
-            "Reset Presence",
-            "the group's reset sends every field at neutral and is named as the module reset is"
-        );
-        assert_eq!(
-            module.label(&ActionInput {
-                action_id: SET_PRESENCE.into(),
-                parameters: Map::new(),
-            }),
-            None
-        );
-    }
-
-    #[test]
-    fn values_reports_every_field_and_describe_layer_lists_non_neutral_ones() {
-        let module = PresenceModule::new();
-        let payload = json!({"texture": 40.0, "dehaze": -15.0});
-        let values = module.values(PRESENCE_EFFECT, 1, &payload).unwrap();
-        assert_eq!(values.len(), 3);
-        assert_eq!(values["texture"], json!(40.0));
-        assert_eq!(values["clarity"], json!(0.0));
-        assert_eq!(values["dehaze"], json!(-15.0));
-
-        assert_eq!(
-            module.describe_layer(PRESENCE_EFFECT, 1, &payload).unwrap(),
-            "Texture +40, Dehaze -15"
-        );
-        assert_eq!(
-            module
-                .describe_layer(PRESENCE_EFFECT, 1, &json!({}))
-                .unwrap(),
-            "Neutral"
-        );
     }
 
     #[test]
