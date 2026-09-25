@@ -306,6 +306,12 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
   if (meta->cfa_width==6 && (meta->width<120 || meta->height<120)) {
     error(err,err_len,"X-Trans sensor below native tile minimum"); return 4;
   }
+  // The pinned Bayer border pass fills a 9 px band from each pixel's 3x3
+  // neighbourhood without bounding the band's far side, so a side below
+  // 10 px would index outside its rows. Qualified sensors exceed this.
+  if (meta->cfa_width==2 && (meta->width<10 || meta->height<10)) {
+    error(err,err_len,"Bayer sensor below native border minimum"); return 4;
+  }
   for(size_t i=0;i<patch_count;++i) {
     if(patches[i].index>=count || (i && patches[i-1].index>=patches[i].index)) {
       error(err,err_len,"invalid sparse mosaic correction ordering"); return 1;

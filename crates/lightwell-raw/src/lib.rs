@@ -1405,6 +1405,32 @@ mod tests {
     }
 
     #[test]
+    fn bayer_frames_below_the_border_minimum_fail_explicitly() {
+        let never = AtomicBool::new(false);
+        let never_context = (&never as *const AtomicBool).cast_mut().cast();
+        for (width, height) in [(1, 1), (8, 8), (9, 40), (40, 9)] {
+            let (samples, meta) = synthetic_bayer(width, height, [0, 1, 1, 2]);
+            let executor = traced(&never, 0);
+            for trace in [None, Some(&executor)] {
+                let (code, output) = run_bayer(
+                    &samples,
+                    &meta,
+                    [1.0; 3],
+                    trace,
+                    cancelled,
+                    never_context,
+                    0,
+                );
+                assert!(
+                    matches!(native_error(code, &[0; 1]), RawError::ResourceLimit(_)),
+                    "{width}x{height}"
+                );
+                assert!(output.iter().all(|value| value.is_nan()));
+            }
+        }
+    }
+
+    #[test]
     fn rcd_job_faults_join_and_release_scratch() {
         let never = AtomicBool::new(false);
         let never_context = (&never as *const AtomicBool).cast_mut().cast();
