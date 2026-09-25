@@ -1259,6 +1259,102 @@ mod tests {
         (code, output)
     }
 
+    /// An X-Trans mosaic with the same edges, ramps and noise as
+    /// [`synthetic_bayer`], and a per-site black pattern.
+    fn synthetic_xtrans(width: usize, height: usize) -> (Vec<u16>, NativeMetadata) {
+        const XTRANS: [u8; 36] = [
+            1, 1, 0, 1, 1, 2, 1, 1, 2, 1, 1, 0, 2, 0, 1, 0, 2, 1, 1, 1, 2, 1, 1, 0, 1, 1, 0, 1, 1,
+            2, 0, 2, 1, 2, 0, 1,
+        ];
+        let mut meta = RawSource::blank_native();
+        meta.width = width as u32;
+        meta.height = height as u32;
+        meta.cfa_width = 6;
+        meta.cfa_height = 6;
+        meta.cfa[..36].copy_from_slice(&XTRANS);
+        meta.black_cfa[..36].copy_from_slice(&XTRANS);
+        meta.black_base = 64.0;
+        meta.black_channels = [1.0, 2.0, 3.0, 0.0];
+        meta.black_repeat_width = 2;
+        meta.black_repeat_height = 2;
+        meta.black_repeat[..4].copy_from_slice(&[0.0, 1.0, 2.0, 3.0]);
+        meta.white = 16383.0;
+        meta.rgb_cam = [
+            1.6, -0.5, -0.1, 0.0, -0.2, 1.4, -0.2, 0.0, 0.0, -0.4, 1.4, 0.0,
+        ];
+        let mut state = 0x85eb_ca6b_u32 ^ (width * 17 + height) as u32;
+        let samples = (0..width * height)
+            .map(|index| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let (x, y) = (index % width, index / width);
+                let edge = if (x / 9 + y / 5) % 4 == 0 { 11000 } else { 900 };
+                let ramp = (x * 5 + y * 3) % 3000;
+                ((edge + ramp + (state >> 20) as usize) % 16384) as u16
+            })
+            .collect();
+        (samples, meta)
+    }
+
+    fn bits_digest(values: &[f32]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for value in values {
+            hash.update(value.to_bits().to_le_bytes());
+        }
+        format!("{:x}", hash.finalize())
+    }
+
+    /// The complete developed planes of synthetic Bayer and X-Trans mosaics,
+    /// serial and on the pool, keep the bits they had before the RAW
+    /// preparation clean-ups. The digests were captured on the owner's M4;
+    /// other architectures still compare serial against pooled.
+    #[test]
+    fn synthetic_developments_keep_their_pinned_bits() {
+        let never = AtomicBool::new(false);
+        let never_context = (&never as *const AtomicBool).cast_mut().cast();
+        let cases = [
+            synthetic_bayer(317, 221, [0, 1, 1, 2]),
+            synthetic_bayer(1057, 883, [1, 2, 0, 1]),
+            synthetic_xtrans(245, 251),
+        ];
+        let mut digests = Vec::new();
+        for (samples, meta) in &cases {
+            let (code, serial) = run_bayer(
+                samples,
+                meta,
+                [1.7, 1.0, 1.3],
+                None,
+                cancelled,
+                never_context,
+                0,
+            );
+            assert_eq!(code, 0);
+            let trace = traced(&never, 0);
+            let (code, pooled) = run_bayer(
+                samples,
+                meta,
+                [1.7, 1.0, 1.3],
+                Some(&trace),
+                cancelled,
+                never_context,
+                0,
+            );
+            assert_eq!(code, 0);
+            assert_eq!(first_difference(&serial, &pooled), None);
+            digests.push(bits_digest(&serial));
+        }
+        println!("{digests:?}");
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(
+            digests,
+            [
+                "1615fc4434e4acd26d976b8582f4b34665e2896060d6323dbd050dd1c6f773c7",
+                "89a21095c15688a98dc8f6afc0c9ea88842515f4cbd423145050698d88881ebe",
+                "5baf47b7568dc1658785c71da5e0e09b3145a744c9834a89f1ee18d2e563e25f",
+            ]
+        );
+    }
+
     fn first_difference(left: &[f32], right: &[f32]) -> Option<usize> {
         assert_eq!(left.len(), right.len());
         left.iter()

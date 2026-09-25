@@ -604,6 +604,98 @@ mod tests {
         );
     }
 
+    /// The production preparation of each supplied RAW file — decode, development, DNG
+    /// corrections and the camera conversion — at its as-shot gains and at a custom white balance,
+    /// and the sensor neutral picker over a grid of upright points, keep the bits they had before
+    /// the RAW preparation clean-ups. The digests were captured on the owner's M4; elsewhere the
+    /// test prints them. Set `LIGHTWELL_RAW_OWNER_DIR` to the directory holding the files and run
+    /// in release:
+    ///
+    /// ```text
+    /// LIGHTWELL_RAW_OWNER_DIR=/path/to/raw cargo test --release -p lightwell-core --lib \
+    ///   supplied_raw_preparation -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "requires the supplied RAW files; run in release"]
+    fn supplied_raw_preparation_keeps_its_pinned_bits() {
+        let owner = std::env::var("LIGHTWELL_RAW_OWNER_DIR").expect("RAW fixture directory");
+        let digest = |values: &mut dyn Iterator<Item = u32>| {
+            let mut hash = Sha256::new();
+            for value in values {
+                hash.update(value.to_le_bytes());
+            }
+            format!("{:x}", hash.finalize())
+        };
+        let mut observed = Vec::new();
+        for name in ["nikon_z6.NEF", "fujifilm_x100vi.RAF", "mavic_air_2s.DNG"] {
+            let bytes = std::fs::read(format!("{owner}/{name}")).expect("read supplied RAW");
+            let fingerprint = format!("{:x}", Sha256::digest(&bytes));
+            let cancel = AtomicBool::new(false);
+            let prepared = RawPrepared::decode(bytes, fingerprint.clone(), None, &cancel).unwrap();
+            let as_shot = prepared.linear.as_ref().unwrap();
+            let as_shot_planes = digest(&mut as_shot.planes().iter().map(|v| v.to_bits()));
+            let gains = prepared.gains;
+            let custom = RawPrepared::develop(
+                prepared.sensor.clone(),
+                fingerprint,
+                [gains[0] * 1.15, 1.0, gains[2] * 0.85],
+                &cancel,
+            )
+            .unwrap();
+            let custom_planes = digest(
+                &mut custom
+                    .linear
+                    .as_ref()
+                    .unwrap()
+                    .planes()
+                    .iter()
+                    .map(|v| v.to_bits()),
+            );
+            let (width, height) = PreparedSource::Raw(prepared.clone()).dimensions();
+            let mut picks = Vec::new();
+            for row in 0..12 {
+                for column in 0..16 {
+                    let x = (2 * column + 1) * width / 32;
+                    let y = (2 * row + 1) * height / 24;
+                    match neutral_at(&prepared, x, y) {
+                        Ok(gains) => picks.extend(gains.map(f32::to_bits)),
+                        Err(error) => {
+                            picks.push(u32::MAX);
+                            picks.extend(error.kind.code().bytes().map(u32::from));
+                        }
+                    }
+                }
+            }
+            let neutral = digest(&mut picks.into_iter());
+            println!(
+                "{}",
+                json!({"source": name, "as_shot": as_shot_planes, "custom": custom_planes, "neutral": neutral})
+            );
+            observed.push([as_shot_planes, custom_planes, neutral]);
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(
+            observed,
+            [
+                [
+                    "8cb2c7a72d150de508fc801a6945e3d8a6317f149dfe7540dab646d8960b4c2f",
+                    "a921eb188f52eb40a2cd3f33b1eadce18d5c4176cff4dae0c392ebeb4de46f1e",
+                    "8786b2a8eac76f9d5c0d84cbe76538a39052a477829b8026cf1381e1b74f5e73",
+                ],
+                [
+                    "cd03c8a9f1ffecb61e6eb727e1cc8193c3e9d11e0be89d0f007fee9fa725390b",
+                    "db1e6e74a5243b569e5ac01b77799a9c820eb42014546aadaa333ac6e2ff30de",
+                    "fb954d5ec310f1f8c2044c716c4c713c0185fc70f35b090e1f81ba9adb273372",
+                ],
+                [
+                    "3c18cd41eada46ea4defa9853e3eb4912748ddd5df137abb9ece6bfad8880992",
+                    "34c57a2fce8b02b77c1d8440dc62b13bfde7cf690a138c4c089eafe0cf1bc5af",
+                    "2367f81e4ede5c1586c5b73b44422f5d7b1d035f681ad4414f480790528b407b",
+                ],
+            ]
+        );
+    }
+
     /// How far one 8-bit rendition is from another, and where the differences sit.
     fn compare(approximate: &crate::Raster, exact: &crate::Raster) -> (Value, Vec<u8>) {
         assert_eq!(

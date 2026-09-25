@@ -878,6 +878,54 @@ mod tests {
         }
     }
 
+    /// Gain, warp and vignette in both stage orders, serial and on the pool,
+    /// keep the bits they had before the RAW preparation clean-ups. Captured
+    /// on the owner's M4; elsewhere serial and pooled are still compared above.
+    #[test]
+    fn corrected_planes_keep_their_pinned_bits() {
+        use sha2::{Digest, Sha256};
+        let cancel = AtomicBool::new(false);
+        let mut digests = Vec::new();
+        for (width, height) in [(17, 13), (1001, 1003)] {
+            let (mut correction, original) = row_fixture(width, height);
+            for reverse in [false, true] {
+                if reverse {
+                    correction.stages.reverse();
+                }
+                for parallel in [false, true] {
+                    let mut image = PlanarRgb {
+                        width: original.width,
+                        height: original.height,
+                        data: original.data.clone(),
+                    };
+                    correction
+                        .apply_rows(&mut image, &cancel, parallel)
+                        .unwrap();
+                    let mut hash = Sha256::new();
+                    for value in &image.data {
+                        hash.update(value.to_bits().to_le_bytes());
+                    }
+                    digests.push(format!("{:x}", hash.finalize()));
+                }
+            }
+        }
+        println!("{digests:?}");
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(
+            digests,
+            [
+                "fcd5f7cc99dbb927a41c2bfe0274524bf699becb6645ca32acbd805d0864a7b0",
+                "fcd5f7cc99dbb927a41c2bfe0274524bf699becb6645ca32acbd805d0864a7b0",
+                "7d0b57f288344e1fa2ff23b2f883125bc687455f72ba4dc274788b51cf395a97",
+                "7d0b57f288344e1fa2ff23b2f883125bc687455f72ba4dc274788b51cf395a97",
+                "2cfc47d24cafa7b70ac50887d2c16e91bd9567beb1ed01a2b25bab4f635a3620",
+                "2cfc47d24cafa7b70ac50887d2c16e91bd9567beb1ed01a2b25bab4f635a3620",
+                "aadb5173d355eee114f8b86c8d2446cb4bbfcf6b9bcbabdd4933edfbe99a63c9",
+                "aadb5173d355eee114f8b86c8d2446cb4bbfcf6b9bcbabdd4933edfbe99a63c9",
+            ]
+        );
+    }
+
     #[test]
     fn correction_rows_report_cancellation_and_overflow() {
         for parallel in [false, true] {
