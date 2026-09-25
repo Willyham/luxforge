@@ -1,73 +1,29 @@
-//! The colour mixer module (`lightwell.mixer`) end to end, following `basic_colour.rs`'s
-//! patterns: the frozen fixtures through the real render path and the RAW linear path, and grey
-//! invariance. What the mixer shares with every field-patch module — discovery, neutral payloads,
-//! drafts, history, one layer per target, sample equal to render through a crop, an unavailable
-//! provider and reopen — is proved once, for every such module, by `field_patch_conformance.rs`,
-//! and its order after Basic by the Presence, mixer and vignette chapter of `editor-acceptance`.
+//! The colour mixer module (`lightwell.mixer`) end to end: the frozen fixtures through the real
+//! render path and the RAW linear path, and grey invariance. What the mixer shares with every
+//! field-patch module is proved once, for every such module, by the conformance suite
+//! (`field_patch`), and its order after Basic by the Presence, mixer and vignette chapter of
+//! `editor-acceptance`.
 //!
 //! Numerical rule, from `docs/design/mixer-study.md`'s frozen tolerance: a rendered code must
 //! equal the f64 reference's code exactly, except where the reference's linear value sits within
 //! `1e-5 + 1e-5 * |threshold|` of the exact linear threshold between two codes, where one code of
 //! difference is permitted. Identity stacks and byte sharing are exact with no tolerance at all.
 
-mod reference;
-
 use lightwell_core::{
-    EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, MIXER_EFFECT, ModuleRegistry,
-    RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render, render_linear, sample, sample_linear,
+    Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry, SnapshotId, render, render_linear, sample,
+    sample_linear,
 };
-use reference::mixer::RANGE_NAMES;
+use lightwell_reference::{self as reference, mixer::RANGE_NAMES};
+use lightwell_testkit::fixtures::{self, linear_source_of, recipe, source_of};
 use serde_json::{Map, Value, json};
 use std::fs;
 
-// -------------------------------------------------------------------------------------------
-// Shared helpers, matching `basic_colour.rs`'s patterns.
-// -------------------------------------------------------------------------------------------
+/// The mixer contract's relative band around a code threshold.
+const CODE_BAND: f64 = 1e-5;
 
-fn source_of(width: u32, height: u32, pixels: &[[u8; 3]]) -> SourceImage {
-    assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
-    let mut rgba = Vec::with_capacity(pixels.len() * 4);
-    for pixel in pixels {
-        rgba.extend_from_slice(pixel);
-        rgba.push(255);
-    }
-    SourceImage {
-        width,
-        height,
-        rgba: rgba.into(),
-        fingerprint: "sha256:mixer-module-fixture".into(),
-        orientation: 1,
-    }
-}
-
-/// A planar linear-sRGB source built from a row of `[r, g, b]` triples: R plane, then G, then B.
-fn linear_source_of(pixels: &[[f64; 3]]) -> LinearImage {
-    let width = pixels.len() as u32;
-    let mut planes = Vec::with_capacity(pixels.len() * 3);
-    for channel in 0..3 {
-        planes.extend(pixels.iter().map(|pixel| pixel[channel] as f32));
-    }
-    LinearImage::with_fingerprint(width, 1, planes, "sha256:mixer-module-linear-fixture").unwrap()
-}
-
-fn mixer_layer(payload: Value) -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: MIXER_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload,
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
-fn recipe(layers: Vec<Layer>) -> Recipe {
-    Recipe {
-        format: RECIPE_FORMAT,
-        layers,
-        masks: Vec::new(),
-        ..Recipe::default()
-    }
+/// A global mixer layer holding `payload`.
+fn layer(payload: Value) -> Layer {
+    fixtures::layer(MIXER_EFFECT, payload)
 }
 
 /// Every declared mixer field, `<range>-<property>` in the module's payload order (hue group,
@@ -83,32 +39,6 @@ fn fields() -> Vec<String> {
                 .map(move |range| format!("{range}-{property}"))
         })
         .collect()
-}
-
-/// The declared tolerance: an exact code, unless the reference's linear value sits within
-/// `1e-5 + 1e-5 * |threshold|` of the threshold between the two codes, where one code of
-/// difference is permitted.
-fn assert_colour_code(actual: u8, expected: u8, linear: f64, case: &str) {
-    if actual == expected {
-        return;
-    }
-    let difference = i32::from(actual) - i32::from(expected);
-    assert!(
-        difference.abs() <= 1,
-        "{case}: rendered {actual}, reference {expected}"
-    );
-    let crossed = actual.max(expected);
-    assert!(
-        crossed >= 1,
-        "{case}: code 0 has no lower threshold to sit on"
-    );
-    let threshold = reference::code_threshold(crossed);
-    let tolerance = 1e-5 + 1e-5 * threshold.abs();
-    assert!(
-        (linear.clamp(0.0, 1.0) - threshold).abs() <= tolerance,
-        "{case}: rendered {actual} against {expected}, but the reference value {linear} is not \
-         within {tolerance} of the code threshold {threshold}"
-    );
 }
 
 // -------------------------------------------------------------------------------------------
@@ -129,7 +59,7 @@ fn greys_stay_byte_invariant_under_every_slider_on_a_rendered_ramp() {
                 &registry,
                 &source,
                 SnapshotId::new(),
-                &recipe(vec![mixer_layer(json!({field.clone(): value}))]),
+                &recipe(vec![layer(json!({field.clone(): value}))]),
             )
             .unwrap_or_else(|error| panic!("{field} at {value}: {error}"));
             for x in 0..256u32 {
@@ -224,15 +154,11 @@ fn every_saturation_slider_at_minus_100_renders_exact_greys() {
     let registry = ModuleRegistry::builtin();
     let (width, height, pixels) = colourful_image();
     let source = source_of(width, height, &pixels);
-    let linear = {
-        let decode = |code: u8| reference::srgb_to_linear(code) as f32;
-        let mut planes = Vec::with_capacity(pixels.len() * 3);
-        for channel in 0..3 {
-            planes.extend(pixels.iter().map(|pixel| decode(pixel[channel])));
-        }
-        LinearImage::with_fingerprint(width, height, planes, "sha256:mixer-module-colourful")
-            .unwrap()
-    };
+    let decoded: Vec<[f64; 3]> = pixels
+        .iter()
+        .map(|pixel| pixel.map(reference::srgb_to_linear))
+        .collect();
+    let linear = linear_source_of(width, height, &decoded);
     let mut desaturated = Map::new();
     for range in RANGE_NAMES {
         desaturated.insert(format!("{range}-saturation"), json!(-100.0));
@@ -242,7 +168,7 @@ fn every_saturation_slider_at_minus_100_renders_exact_greys() {
         lit.insert(format!("{range}-luminance"), json!(40.0));
     }
     for payload in [Value::Object(desaturated), Value::Object(lit)] {
-        let stack = recipe(vec![mixer_layer(payload.clone())]);
+        let stack = recipe(vec![layer(payload.clone())]);
         let jpeg_path = render(&registry, &source, SnapshotId::new(), &stack).unwrap();
         let raw_path = render_linear(
             &registry,
@@ -310,7 +236,7 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                 }
             }
         }
-        let layer = mixer_layer(Value::Object(payload));
+        let layer = layer(Value::Object(payload));
 
         let own_cases: Vec<&Value> = cases
             .iter()
@@ -355,10 +281,11 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                 for channel in 0..3 {
                     let linear = expected[channel].as_f64().unwrap();
                     let code = reference::linear_to_srgb_code(linear);
-                    assert_colour_code(
+                    fixtures::assert_code_near_threshold(
                         pixel[channel],
                         code,
                         linear,
+                        CODE_BAND,
                         &format!("{name} channel {channel}"),
                     );
                     let deviation = (i32::from(pixel[channel]) - i32::from(code)).unsigned_abs();
@@ -396,7 +323,7 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                     ]
                 })
                 .collect();
-            let source = linear_source_of(&pixels);
+            let source = linear_source_of(pixels.len() as u32, 1, &pixels);
             let rendered = render_linear(
                 &registry,
                 &source,
@@ -412,10 +339,11 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
                 for channel in 0..3 {
                     let reference_linear = expected[channel].as_f64().unwrap();
                     let code = reference::linear_to_srgb_code(reference_linear);
-                    assert_colour_code(
+                    fixtures::assert_code_near_threshold(
                         pixel[channel],
                         code,
                         reference_linear,
+                        CODE_BAND,
                         &format!("{name} channel {channel}"),
                     );
                     let deviation = (i32::from(pixel[channel]) - i32::from(code)).unsigned_abs();

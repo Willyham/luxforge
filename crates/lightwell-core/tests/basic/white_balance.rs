@@ -9,97 +9,20 @@
 //! of the exact threshold between two codes. Identity stacks, byte sharing, the picker's own
 //! integer answers and history behaviour are exact with no tolerance at all.
 
-mod reference;
-
+use super::basic_layer;
 use lightwell_core::{
-    ApiRequest, BASIC_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, OwnerHandle,
-    RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render, sample,
+    ApiRequest, BASIC_EFFECT, EFFECT_FORMAT, ModuleRegistry, OwnerHandle, SnapshotId, render,
+    sample,
 };
-use reference::white_balance::{self, RejectReason};
-use reference::{code_threshold, srgb_to_linear};
+use lightwell_reference::srgb_to_linear;
+use lightwell_reference::white_balance::{self, RejectReason};
+use lightwell_testkit::client::{call, import, refused};
+use lightwell_testkit::fixtures::{self, recipe, source_of};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
-// ---------------------------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------------------------
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures")
-        .join(name)
-}
-
-fn source_of(width: u32, height: u32, pixels: &[[u8; 3]]) -> SourceImage {
-    assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
-    let mut rgba = Vec::with_capacity(pixels.len() * 4);
-    for pixel in pixels {
-        rgba.extend_from_slice(pixel);
-        rgba.push(255);
-    }
-    SourceImage {
-        width,
-        height,
-        rgba: rgba.into(),
-        fingerprint: "sha256:basic-white-balance-fixture".into(),
-        orientation: 1,
-    }
-}
-
-fn basic_layer(payload: Value) -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload,
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
-fn recipe(layers: Vec<Layer>) -> Recipe {
-    Recipe {
-        format: RECIPE_FORMAT,
-        layers,
-        masks: Vec::new(),
-        ..Recipe::default()
-    }
-}
-
-fn temp(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "lightwell-wb-{name}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = fs::remove_file(&path);
-    path
-}
-
-/// The declared tolerance: an exact code, unless the reference's linear value sits within
-/// `1e-6 + 1e-6 · |threshold|` of the threshold between the two codes.
-fn assert_code(actual: u8, expected: u8, linear: f64, case: &str) {
-    if actual == expected {
-        return;
-    }
-    let difference = i32::from(actual) - i32::from(expected);
-    assert!(
-        difference.abs() <= 1,
-        "{case}: rendered {actual}, reference {expected}"
-    );
-    let crossed = actual.max(expected);
-    assert!(crossed >= 1, "{case}: code 0 has no lower threshold");
-    let threshold = code_threshold(crossed);
-    let tolerance = 1e-6 + 1e-6 * threshold.abs();
-    assert!(
-        (linear.clamp(0.0, 1.0) - threshold).abs() <= tolerance,
-        "{case}: rendered {actual} against {expected}, but the reference value {linear} is not \
-         within {tolerance} of the code threshold {threshold}"
-    );
-}
+/// The pointwise contract's relative band around a code threshold, which white balance takes.
+const CODE_BAND: f64 = 1e-6;
 
 /// The committed solver corpus, so the integration tests use the same frozen patches the unit does.
 #[derive(serde::Deserialize)]
@@ -115,7 +38,7 @@ fn solver_cases() -> Vec<SolverCase> {
     struct Cases {
         solver_cases: Vec<SolverCase>,
     }
-    let raw = fs::read_to_string(fixture("basic/white-balance-cases.json"))
+    let raw = fs::read_to_string(fixtures::fixture("basic/white-balance-cases.json"))
         .expect("the committed corpus");
     serde_json::from_str::<Cases>(&raw)
         .expect("white-balance cases")
@@ -151,7 +74,7 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
     struct Cases {
         transform_cases: Vec<TransformCase>,
     }
-    let raw = fs::read_to_string(fixture("basic/white-balance-cases.json"))
+    let raw = fs::read_to_string(fixtures::fixture("basic/white-balance-cases.json"))
         .expect("the committed corpus");
     let cases = serde_json::from_str::<Cases>(&raw)
         .expect("cases")
@@ -181,11 +104,12 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
             let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
             assert_eq!(pixel[3], 255, "alpha is never touched");
             for (channel, linear) in case.expected_linear_f64.into_iter().enumerate() {
-                let expected = reference::linear_to_code(linear);
-                assert_code(
+                let expected = lightwell_reference::linear_to_code(linear);
+                fixtures::assert_code_near_threshold(
                     pixel[channel],
                     expected,
                     linear,
+                    CODE_BAND,
                     &format!(
                         "{:?} channel {channel} at ({temperature}, {tint})",
                         case.input_rgb_u8
@@ -285,10 +209,11 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
         let balanced = white_balance::apply(60.0, -25.0, linear);
         let exposed = balanced.map(|value| value * 4.0);
         for (channel, value) in exposed.into_iter().enumerate() {
-            assert_code(
+            fixtures::assert_code_near_threshold(
                 rendered.pixel(index as u32, 0).expect("a pixel")[channel],
-                reference::linear_to_code(value),
+                lightwell_reference::linear_to_code(value),
                 value,
+                CODE_BAND,
                 &format!("{input:?} channel {channel}"),
             );
         }
@@ -331,7 +256,7 @@ fn write_cast_image(name: &str) -> CastImage {
     block(&mut image, 0, 0, [255, 255, 255]);
     block(&mut image, 48, 0, [12, 12, 12]);
     block(&mut image, 0, 48, [230, 30, 30]);
-    let path = temp(&format!("{name}.jpg"));
+    let path = fixtures::temp_path(&format!("basic-wb-{name}.jpg"));
     let mut file = std::io::BufWriter::new(fs::File::create(&path).expect("the JPEG file"));
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, 100)
         .encode_image(&image)
@@ -348,83 +273,6 @@ fn write_cast_image(name: &str) -> CastImage {
     }
 }
 
-fn call(
-    owner: &OwnerHandle,
-    client: lightwell_core::ClientId,
-    method: &str,
-    params: Value,
-) -> Value {
-    let response = owner
-        .call(
-            client,
-            ApiRequest {
-                id: method.into(),
-                method: method.into(),
-                params,
-                token: None,
-            },
-        )
-        .expect("the owner answered");
-    assert!(response.error.is_none(), "{method}: {:?}", response.error);
-    response.result.expect("a result")
-}
-
-/// Import an original and adopt it: the owner acknowledges with a bounded source job, the worker
-/// prepares the file, and `job.adopt` hands the asset state back to this client.
-fn import_asset(
-    owner: &OwnerHandle,
-    client: lightwell_core::ClientId,
-    path: &std::path::Path,
-) -> Value {
-    let queued = call(
-        owner,
-        client,
-        "catalog.import",
-        json!({"path": path, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}),
-    );
-    let job_id = queued["job_id"]
-        .as_str()
-        .expect("an import job id")
-        .to_owned();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let status = call(owner, client, "job.status", json!({"job_id": job_id}));
-        match status["status"].as_str() {
-            Some("ready") => break,
-            Some("queued" | "running") => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the import never became ready: {status}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            other => panic!("unexpected import job {other:?}: {status}"),
-        }
-    }
-    call(owner, client, "job.adopt", json!({"job_id": job_id}))["asset"].clone()
-}
-
-fn call_error(
-    owner: &OwnerHandle,
-    client: lightwell_core::ClientId,
-    method: &str,
-    params: Value,
-) -> lightwell_core::ApiFailure {
-    owner
-        .call(
-            client,
-            ApiRequest {
-                id: method.into(),
-                method: method.into(),
-                params,
-                token: None,
-            },
-        )
-        .expect("the owner answered")
-        .error
-        .expect("an error")
-}
-
 /// The 8-bit codes a query answered with, and the settings the independent f64 reference solves
 /// from exactly those codes. The picker's own answer must equal the reference's, whatever the JPEG
 /// decoder produced.
@@ -439,12 +287,12 @@ fn reference_settings(result: &Value) -> Result<(i32, i32), RejectReason> {
 #[test]
 fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
     let image = write_cast_image("apply");
-    let catalog = temp("apply.sqlite");
+    let catalog = fixtures::temp_catalog("basic-wb-apply");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
 
     // Discovery: the query, its generated method and the canvas mode it puts on the strip.
-    let modules = call(&owner, client, "module.list", json!({}));
+    let modules = call(&owner, client, "module.list", json!({})).unwrap();
     let basic = modules["modules"]
         .as_array()
         .expect("the modules")
@@ -469,7 +317,7 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
             "shortcut": "W",
         })
     );
-    let schema = call(&owner, client, "schema.list", json!({}));
+    let schema = call(&owner, client, "schema.list", json!({})).unwrap();
     assert_eq!(
         schema["methods"]["query.neutral-sample"]["mutates"],
         json!(false)
@@ -482,18 +330,20 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
             client,
             "workspace.set",
             json!({"mode": "lightwell.basic"})
-        )["workspace"]["mode"],
+        )
+        .unwrap()["workspace"]["mode"],
         json!("lightwell.basic")
     );
 
-    let asset = import_asset(&owner, client, &image.path)["asset"]["id"].clone();
+    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let (x, y) = image.neutral;
     let picked = call(
         &owner,
         client,
         "query.neutral-sample",
         json!({"asset_id": asset, "x": x, "y": y}),
-    );
+    )
+    .unwrap();
 
     // The patch it read, and the settings it solved from exactly those codes.
     assert_eq!(
@@ -538,14 +388,16 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
             "temperature": temperature,
             "tint": tint,
         }),
-    );
+    )
+    .unwrap();
     assert_eq!(applied["outcome"], json!("applied"));
     let sampled = call(
         &owner,
         client,
         "render.sample",
         json!({"asset_id": asset, "x": x, "y": y}),
-    );
+    )
+    .unwrap();
     let rgba: Vec<i64> = serde_json::from_value(sampled["rgba"].clone()).expect("a pixel");
     let spread = rgba[..3].iter().max().unwrap() - rgba[..3].iter().min().unwrap();
     assert!(
@@ -565,13 +417,13 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
 #[test]
 fn the_picker_reads_the_stage_before_the_basic_layer() {
     let image = write_cast_image("before");
-    let catalog = temp("before.sqlite");
+    let catalog = fixtures::temp_catalog("basic-wb-before");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-    let asset = import_asset(&owner, client, &image.path)["asset"]["id"].clone();
+    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let (x, y) = image.neutral;
     let params = json!({"asset_id": asset, "x": x, "y": y});
-    let before = call(&owner, client, "query.neutral-sample", params.clone());
+    let before = call(&owner, client, "query.neutral-sample", params.clone()).unwrap();
 
     // A strong white balance, then a pixel replacement and a quarter turn on top of it.
     call(
@@ -583,7 +435,8 @@ fn the_picker_reads_the_stage_before_the_basic_layer() {
             "mutation": {"expected_revision": 0, "request_id": "strong", "actor": "test"},
             "temperature": 90, "tint": 70,
         }),
-    );
+    )
+    .unwrap();
     call(
         &owner,
         client,
@@ -593,8 +446,9 @@ fn the_picker_reads_the_stage_before_the_basic_layer() {
             "mutation": {"expected_revision": 1, "request_id": "turn", "actor": "test"},
             "transform": "rotate-right",
         }),
-    );
-    let after = call(&owner, client, "query.neutral-sample", params);
+    )
+    .unwrap();
+    let after = call(&owner, client, "query.neutral-sample", params).unwrap();
     assert_eq!(
         after, before,
         "the pick sees the stage the Basic layer receives, not its own correction"
@@ -612,10 +466,10 @@ fn the_picker_reads_the_stage_before_the_basic_layer() {
 #[test]
 fn edges_are_clipped_and_bad_patches_are_refused_with_their_reason() {
     let image = write_cast_image("edges");
-    let catalog = temp("edges.sqlite");
+    let catalog = fixtures::temp_catalog("basic-wb-edges");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-    let asset = import_asset(&owner, client, &image.path)["asset"]["id"].clone();
+    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let pick = |x: i64, y: i64| json!({"asset_id": asset, "x": x, "y": y});
 
     // The four corners of the stage, and one edge: the patch shrinks and says which rectangle it
@@ -701,26 +555,24 @@ fn edges_are_clipped_and_bad_patches_are_refused_with_their_reason() {
             "outside the stage:",
         ),
     ] {
-        let error = call_error(
+        let error = refused(
             &owner,
             client,
             "query.neutral-sample",
             pick(i64::from(x), i64::from(y)),
-        );
-        assert_eq!(error.code, "validation", "{case}");
-        assert!(error.message.starts_with(prefix), "{case}: {error:?}");
+        )
+        .unwrap();
+        assert_eq!(error.0, "validation", "{case}");
+        assert!(error.1.starts_with(prefix), "{case}: {error:?}");
     }
     // A coordinate outside the declared parameter range is refused by the generic check.
-    let error = call_error(&owner, client, "query.neutral-sample", pick(-1, 0));
-    assert_eq!(error.code, "validation");
-    let error = call_error(&owner, client, "query.neutral-sample", pick(0, 99_999));
-    assert!(
-        error.message.contains("must be an integer within"),
-        "{error:?}"
-    );
+    let error = refused(&owner, client, "query.neutral-sample", pick(-1, 0)).unwrap();
+    assert_eq!(error.0, "validation");
+    let error = refused(&owner, client, "query.neutral-sample", pick(0, 99_999)).unwrap();
+    assert!(error.1.contains("must be an integer within"), "{error:?}");
     // No refusal wrote anything.
     assert_eq!(
-        call(&owner, client, "asset.state", json!({"asset_id": asset}))["revision"],
+        call(&owner, client, "asset.state", json!({"asset_id": asset})).unwrap()["revision"],
         json!(0)
     );
 
@@ -737,17 +589,18 @@ fn edges_are_clipped_and_bad_patches_are_refused_with_their_reason() {
 #[test]
 fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
     let image = write_cast_image("locate");
-    let catalog = temp("locate.sqlite");
+    let catalog = fixtures::temp_catalog("basic-wb-locate");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-    let asset = import_asset(&owner, client, &image.path)["asset"]["id"].clone();
+    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let (content_x, content_y) = image.neutral;
     let direct = call(
         &owner,
         client,
         "query.neutral-sample",
         json!({"asset_id": asset, "x": content_x, "y": content_y}),
-    );
+    )
+    .unwrap();
 
     call(
         &owner,
@@ -758,7 +611,8 @@ fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
             "mutation": {"expected_revision": 0, "request_id": "turn", "actor": "test"},
             "transform": "rotate-right",
         }),
-    );
+    )
+    .unwrap();
     call(
         &owner,
         client,
@@ -768,8 +622,9 @@ fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
             "mutation": {"expected_revision": 1, "request_id": "crop", "actor": "test"},
             "angle": 10.0, "x": 0.15, "y": 0.15, "width": 0.6, "height": 0.6,
         }),
-    );
-    let state = call(&owner, client, "asset.state", json!({"asset_id": asset}));
+    )
+    .unwrap();
+    let state = call(&owner, client, "asset.state", json!({"asset_id": asset})).unwrap();
     assert_eq!(state["revision"], json!(2));
 
     // Find the rendered pixel whose content pixel is the one picked before the geometry existed.
@@ -778,7 +633,8 @@ fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
         client,
         "recipe.describe",
         json!({"asset_id": asset}),
-    );
+    )
+    .unwrap();
     assert!(
         rendered["layers"].as_array().expect("layers").len() >= 2,
         "the stack carries the turn and the crop"
@@ -820,7 +676,8 @@ fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
             "x": point["content_x"],
             "y": point["content_y"],
         }),
-    );
+    )
+    .unwrap();
     assert_eq!(
         located, direct,
         "the pick at view ({view_x}, {view_y}) reads the same content patch as the direct \
@@ -839,31 +696,32 @@ fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
 #[test]
 fn a_query_is_read_only_and_two_clients_agree() {
     let image = write_cast_image("shared");
-    let catalog = temp("shared.sqlite");
+    let catalog = fixtures::temp_catalog("basic-wb-shared");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let first = owner.register();
     let second = owner.register();
-    let asset = import_asset(&owner, first, &image.path)["asset"]["id"].clone();
+    let asset = import(&owner, first, &image.path, "test").unwrap()["asset"]["id"].clone();
     let entries_before = call(
         &owner,
         first,
         "history.list",
         json!({"asset_id": asset, "limit": 50}),
-    )["entries"]
+    )
+    .unwrap()["entries"]
         .as_array()
         .expect("entries")
         .len();
     let sequence_before =
-        call(&owner, first, "events.since", json!({"after": 0}))["current_sequence"]
+        call(&owner, first, "events.since", json!({"after": 0})).unwrap()["current_sequence"]
             .as_u64()
             .expect("a sequence");
 
     let (x, y) = image.neutral;
     let params = json!({"asset_id": asset, "x": x, "y": y});
-    let one = call(&owner, first, "query.neutral-sample", params.clone());
-    let two = call(&owner, second, "query.neutral-sample", params.clone());
+    let one = call(&owner, first, "query.neutral-sample", params.clone()).unwrap();
+    let two = call(&owner, second, "query.neutral-sample", params.clone()).unwrap();
     assert_eq!(one, two, "two clients read the same stack the same way");
-    let again = call(&owner, first, "query.neutral-sample", params.clone());
+    let again = call(&owner, first, "query.neutral-sample", params.clone()).unwrap();
     assert_eq!(again, one, "the same question answers the same way twice");
 
     assert_eq!(
@@ -872,14 +730,15 @@ fn a_query_is_read_only_and_two_clients_agree() {
             first,
             "history.list",
             json!({"asset_id": asset, "limit": 50})
-        )["entries"]
+        )
+        .unwrap()["entries"]
             .as_array()
             .expect("entries")
             .len(),
         entries_before,
         "a query adds no history entry"
     );
-    let events = call(&owner, first, "events.since", json!({"after": 0}));
+    let events = call(&owner, first, "events.since", json!({"after": 0})).unwrap();
     assert_eq!(
         events["current_sequence"].as_u64().expect("a sequence"),
         sequence_before,
@@ -888,7 +747,7 @@ fn a_query_is_read_only_and_two_clients_agree() {
 
     // A commit by one client does not change what a query of the entry before it answers: a query
     // names the entry it asks about, and a read-only client on a historical entry may still pick.
-    let state = call(&owner, first, "asset.state", json!({"asset_id": asset}));
+    let state = call(&owner, first, "asset.state", json!({"asset_id": asset})).unwrap();
     let original_entry = state["current_entry"]["id"].clone();
     call(
         &owner,
@@ -899,15 +758,17 @@ fn a_query_is_read_only_and_two_clients_agree() {
             "mutation": {"expected_revision": 0, "request_id": "strong", "actor": "test"},
             "temperature": 80,
         }),
-    );
+    )
+    .unwrap();
     call(
         &owner,
         second,
         "preview.select",
         json!({"asset_id": asset, "entry_id": original_entry}),
-    );
+    )
+    .unwrap();
     assert_eq!(
-        call(&owner, second, "query.neutral-sample", params.clone()),
+        call(&owner, second, "query.neutral-sample", params.clone()).unwrap(),
         one,
         "a historical selection answers about that entry"
     );
@@ -917,12 +778,13 @@ fn a_query_is_read_only_and_two_clients_agree() {
             first,
             "query.neutral-sample",
             json!({"asset_id": asset, "entry_id": original_entry, "x": x, "y": y})
-        ),
+        )
+        .unwrap(),
         one,
         "naming the entry explicitly answers the same way"
     );
     // An edit from a read-only selection is still refused; a query is not.
-    let refused = call_error(
+    let (code, _) = refused(
         &owner,
         second,
         "edit.set-basic",
@@ -931,8 +793,9 @@ fn a_query_is_read_only_and_two_clients_agree() {
             "mutation": {"expected_revision": 1, "request_id": "nope", "actor": "test"},
             "temperature": 10,
         }),
-    );
-    assert_eq!(refused.code, "conflict");
+    )
+    .unwrap();
+    assert_eq!(code, "conflict");
 
     owner.disconnect(first);
     owner.disconnect(second);

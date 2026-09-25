@@ -92,6 +92,15 @@ seconds. Building dependencies at opt-level 3 saved no test time and cost anothe
 first build. To step through code in a debugger, build that once with `--config profile.dev.opt-level=0`.
 A dev build is not a timing build; timing uses release.
 
+Every integration-test binary links the whole of `lightwell-core`, so the core's integration tests
+are grouped into one binary per area, one module per file: `basic` (Exposure, white balance, Tone,
+Colour), `modules` (the mixer, Presence, the vignette, the controls proof, presets and the
+field-patch conformance suite), `cancellation`, `resources_cost` and the mask binaries. Narrow a run
+with the module path, for example `cargo test -p lightwell-core --test basic white_balance::`.
+Helpers tests share live in `lightwell-testkit` (`client`, `fixtures`, `JsonProcess`); the
+independent references and their studies live in `lightwell-reference`
+(`cargo test -p lightwell-reference --test studies tone::`).
+
 Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
 itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a
 build inheriting them would rebuild `ring`, `rustls`, `lightwell-core` and everything above them
@@ -319,12 +328,12 @@ and are referenced rather than duplicated.
 
 Basic, Presence, the colour mixer and the vignette are one declarative field-patch module each, and
 the host behaviour they share is proved once, for every module the built-in registry holds in that
-shape, by one suite in `crates/lightwell-core/tests/conformance/`. The suite finds the modules from
-their descriptors — one effect, one `patch` action whose parameters are all numbers with defaults,
-and the parameterless action the module reset names — and derives every payload it sends from the
-declared field table, so a new field-patch module is checked the day it is registered. It refuses to
-run when it no longer recognises one of the four built-in ones. The same function runs twice: as the
-core's `field_patch_conformance` integration test in the dev profile, and in release inside
+shape, by one suite in `crates/lightwell-core/tests/modules/conformance/`. The suite finds the
+modules from their descriptors — one effect, one `patch` action whose parameters are all numbers
+with defaults, and the parameterless action the module reset names — and derives every payload
+it sends from the declared field table, so a new field-patch module is checked the day it is
+registered. It refuses to run when it no longer recognises one of the four built-in ones. The
+same function runs twice: as the core's `modules` integration test (`field_patch`) in the dev profile, and in release inside
 `editor-acceptance`, which records what it returns under `field_patch_conformance` in `result.json`.
 Each module runs against its own new catalog under the run's `field-patch-conformance` directory, and
 a failure names the module, the step and the property that broke.

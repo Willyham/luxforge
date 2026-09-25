@@ -1,93 +1,33 @@
-//! The `lightwell.vignette` module (TASK-008) end to end: real layers through the real host
-//! pipeline (`ModuleRegistry`, `render`, `EditorService`), matching the pattern `basic_tone.rs` and
-//! `basic_colour.rs` set for Basic.
+//! The `lightwell.vignette` module end to end: real layers through the real host pipeline
+//! (`ModuleRegistry`, `render`, `EditorService`).
 //!
-//! Descriptor shape, plan semantics (commit at the end, update in place, no-op, reset, the
-//! missing-key-means-default rule), labels, `values`, `validate_payload` refusals, `describe_layer`
-//! and `compile`'s neutral/non-neutral split are exercised in-crate, next to the module, in
+//! The descriptor, the amount-0 neutrality rule, history label words and `compile`'s
+//! neutral/non-neutral split are exercised in-crate, next to the module, in
 //! `crates/lightwell-core/src/modules/vignette/mod.rs` and `unit.rs`. What the vignette shares with
-//! every field-patch module — neutral payloads sharing the source, one layer per target, sample
-//! equal to render on both paths and through a resampling crop, drafts, history, an unavailable
-//! provider and reopen — is proved once by `field_patch_conformance.rs`, and the vignette recentring
-//! after a crop update through the JSON method table by the Presence, mixer and vignette chapter of
-//! `editor-acceptance`. This file covers the rest of what is the vignette's own: placement at the
-//! end of the stack through rotations, mirrors and a crop, recentring on the stage a crop produces
-//! against the frozen reference, production against every frozen oracle fixture through `render`,
-//! and mirror/flip symmetry on rendered bytes.
-
-mod reference;
+//! every field-patch module — the field-patch rules, neutral payloads sharing the source, one layer
+//! per target, sample equal to render on both paths and through a resampling crop, drafts, history,
+//! an unavailable provider and reopen — is proved once by the conformance suite (`field_patch`),
+//! and the vignette recentring after a crop update through the JSON method table by the Presence,
+//! mixer and vignette chapter of `editor-acceptance`. This module covers the rest of what is the
+//! vignette's own: placement at the end of the stack through rotations, mirrors and a crop,
+//! recentring on the stage a crop produces against the frozen reference, production against every
+//! frozen oracle fixture through `render`, and mirror/flip symmetry on rendered bytes.
 
 use lightwell_core::{
-    AssetId, CropPayload, EFFECT_FORMAT, EditorService, Layer, LayerId, ModuleRegistry, Mutation,
-    Orientation, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, Transform, VIGNETTE_EFFECT,
-    render,
+    AssetId, CropPayload, EditorService, Layer, ModuleRegistry, Mutation, Orientation, SnapshotId,
+    Transform, VIGNETTE_EFFECT, render,
 };
+use lightwell_reference as reference;
+use lightwell_testkit::fixtures::{self, recipe, source_of};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
 
-// -------------------------------------------------------------------------------------------
-// Shared helpers, matching the other Basic/vignette test files' own copies.
-// -------------------------------------------------------------------------------------------
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures")
-        .join(name)
-}
-
-fn jpeg() -> PathBuf {
-    fixture("s0/orientation-1.jpg")
-}
-
-fn catalog(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "lightwell-vignette-module-{name}-{}.sqlite",
-        std::process::id()
-    ))
+/// A global vignette layer holding `payload`.
+fn layer(payload: Value) -> Layer {
+    fixtures::layer(VIGNETTE_EFFECT, payload)
 }
 
 fn mutation(revision: u64, request: &str) -> Mutation {
-    Mutation {
-        expected_revision: revision,
-        request_id: request.into(),
-        actor: "vignette-module-test".into(),
-    }
-}
-
-fn source_of(width: u32, height: u32, pixels: &[[u8; 3]]) -> SourceImage {
-    assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
-    let mut rgba = Vec::with_capacity(pixels.len() * 4);
-    for pixel in pixels {
-        rgba.extend_from_slice(pixel);
-        rgba.push(255);
-    }
-    SourceImage {
-        width,
-        height,
-        rgba: rgba.into(),
-        fingerprint: "sha256:vignette-module-fixture".into(),
-        orientation: 1,
-    }
-}
-
-fn vignette_layer(payload: Value) -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: VIGNETTE_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload,
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
-fn recipe(layers: Vec<Layer>) -> Recipe {
-    Recipe {
-        format: RECIPE_FORMAT,
-        layers,
-        masks: Vec::new(),
-        ..Recipe::default()
-    }
+    fixtures::mutation(revision, request, "vignette-test")
 }
 
 fn layers_of(service: &EditorService, asset: &AssetId) -> Vec<Layer> {
@@ -109,9 +49,13 @@ fn layers_of(service: &EditorService, asset: &AssetId) -> Vec<Layer> {
 /// therefore keeps recentring on whatever the tail produces.
 #[test]
 fn a_vignette_layer_stays_last_through_rotate_mirror_and_crop() {
-    let path = catalog("placement");
+    let path = fixtures::temp_catalog("vignette-placement");
     let mut service = EditorService::open(&path).expect("a catalog");
-    let asset = service.import(&jpeg()).expect("an import").asset.id;
+    let asset = service
+        .import(&fixtures::jpeg())
+        .expect("an import")
+        .asset
+        .id;
 
     service
         .apply_action(
@@ -192,7 +136,7 @@ fn the_vignette_recentres_on_the_stage_a_crop_produces() {
     });
     let amount = -100.0;
     let params = json!({"amount": amount, "midpoint": 50.0, "roundness": 0.0, "feather": 50.0});
-    let stack = recipe(vec![crop, vignette_layer(params)]);
+    let stack = recipe(vec![crop, layer(params)]);
 
     let rendered = render(&registry, &source, SnapshotId::new(), &stack).expect("a render");
     assert_eq!((rendered.width, rendered.height), (24, 16));
@@ -259,7 +203,7 @@ fn the_vignette_recentres_on_the_stage_a_crop_produces() {
 #[test]
 fn production_matches_every_amount_case_through_the_real_render_path() {
     let registry = ModuleRegistry::builtin();
-    let raw = std::fs::read_to_string(fixture("vignette/amount-cases.json"))
+    let raw = std::fs::read_to_string(fixtures::fixture("vignette/amount-cases.json"))
         .expect("fixtures/vignette/amount-cases.json");
     let cases: Vec<Value> = serde_json::from_str(&raw).expect("a JSON array");
     assert_eq!(cases.len(), 60);
@@ -284,7 +228,7 @@ fn production_matches_every_amount_case_through_the_real_render_path() {
 
         let pixels = vec![byte; (width * height) as usize];
         let source = source_of(width, height, &pixels);
-        let stack = recipe(vec![vignette_layer(json!({
+        let stack = recipe(vec![layer(json!({
             "amount": amount,
             "midpoint": params["midpoint"],
             "roundness": params["roundness"],
@@ -315,7 +259,7 @@ fn production_matches_every_amount_case_through_the_real_render_path() {
 #[test]
 fn production_matches_every_mask_case_geometry_through_the_real_render_path() {
     let registry = ModuleRegistry::builtin();
-    let raw = std::fs::read_to_string(fixture("vignette/mask-cases.json"))
+    let raw = std::fs::read_to_string(fixtures::fixture("vignette/mask-cases.json"))
         .expect("fixtures/vignette/mask-cases.json");
     let cases: Vec<Value> = serde_json::from_str(&raw).expect("a JSON array");
     assert_eq!(cases.len(), 202);
@@ -334,7 +278,7 @@ fn production_matches_every_mask_case_geometry_through_the_real_render_path() {
 
         let pixels = vec![[grey_byte; 3]; (width * height) as usize];
         let source = source_of(width, height, &pixels);
-        let stack = recipe(vec![vignette_layer(json!({
+        let stack = recipe(vec![layer(json!({
             "amount": amount,
             "midpoint": params["midpoint"],
             "roundness": params["roundness"],
@@ -403,7 +347,7 @@ fn production_is_exactly_mirror_and_flip_symmetric() {
         &registry,
         &source,
         SnapshotId::new(),
-        &recipe(vec![vignette_layer(params.clone())]),
+        &recipe(vec![layer(params.clone())]),
     )
     .expect("a plain render");
 
@@ -413,7 +357,7 @@ fn production_is_exactly_mirror_and_flip_symmetric() {
         SnapshotId::new(),
         &recipe(vec![
             Layer::orientation(Orientation::of(Transform::MirrorHorizontal)),
-            vignette_layer(params.clone()),
+            layer(params.clone()),
         ]),
     )
     .expect("a render after mirror");
@@ -425,7 +369,7 @@ fn production_is_exactly_mirror_and_flip_symmetric() {
         SnapshotId::new(),
         &recipe(vec![
             Layer::orientation(Orientation::of(Transform::FlipVertical)),
-            vignette_layer(params),
+            layer(params),
         ]),
     )
     .expect("a render after flip");

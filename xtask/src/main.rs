@@ -3,7 +3,7 @@ mod basic_smoke;
 mod capabilities_smoke;
 /// The field-patch conformance suite the core's own integration test runs, compiled in rather than
 /// copied, so `editor-acceptance` records the evidence of exactly the checks `cargo test` makes.
-#[path = "../../crates/lightwell-core/tests/conformance/mod.rs"]
+#[path = "../../crates/lightwell-core/tests/modules/conformance/mod.rs"]
 mod conformance;
 mod controls_smoke;
 mod crop_smoke;

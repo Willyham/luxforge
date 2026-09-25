@@ -1,129 +1,27 @@
 //! The Basic module's Exposure parameter end to end: the compiled colour unit against the
 //! independent f64 corpus, mixed geometry/replacement order, and the placement of the one Basic
-//! layer before the geometry tail. What Basic shares with every field-patch module — discovery,
-//! neutral payloads, drafts, no-ops, deduplication, resets, history, one layer per target, stored
-//! payload refusals, an unavailable provider and reopen — is proved once by
-//! `field_patch_conformance.rs`.
+//! layer before the geometry tail.
 //!
-//! Numerical rule, from the design's numerical contract and `fixtures/basic/README.md`: a rendered
-//! code must equal the f64 reference's code exactly, except where the reference's linear value sits
-//! within `1e-6 + 1e-6 · |threshold|` of the exact linear threshold between two codes, where one
-//! code of difference is permitted because production decodes and multiplies in f32. Identity
-//! stacks, byte sharing and history behaviour are exact with no tolerance at all.
+//! Numerical rule, from the design's numerical contract and `fixtures/basic/README.md`: the band
+//! around a code threshold within which one code of difference is permitted is
+//! `1e-6 + 1e-6 · |threshold|`, because production decodes and multiplies in f32.
 
-mod reference;
-
+use super::{basic_layer, mutation};
 use lightwell_core::{
-    BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, EditorService, Layer, LayerId, ModuleRegistry,
-    Mutation, MutationOutcome, ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, RECIPE_FORMAT,
-    Recipe, SnapshotId, SourceImage, Transform, render,
+    BASIC_EFFECT, CROP_EFFECT, EditorService, Layer, LayerId, ModuleRegistry, MutationOutcome,
+    ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, SnapshotId, SourceImage, Transform, render,
 };
-use reference::{RefOp, code_threshold, evaluate_pixel, exposure, srgb_to_linear};
+use lightwell_reference::{RefOp, evaluate_pixel, exposure, srgb_to_linear};
+use lightwell_testkit::fixtures::{self, recipe, source_of};
 use serde::Deserialize;
-use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use serde_json::json;
+use std::{collections::BTreeMap, fs};
 
-// ---------------------------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------------------------
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures")
-        .join(name)
-}
-
-fn jpeg() -> PathBuf {
-    fixture("s0/orientation-1.jpg")
-}
-
-/// A synthetic opaque source: exact 8-bit codes, so a rendered byte can be compared with the f64
-/// reference without a decoder's own rounding in the way.
-fn source_of(width: u32, height: u32, pixels: &[[u8; 3]]) -> SourceImage {
-    assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
-    let mut rgba = Vec::with_capacity(pixels.len() * 4);
-    for pixel in pixels {
-        rgba.extend_from_slice(pixel);
-        rgba.push(255);
-    }
-    SourceImage {
-        width,
-        height,
-        rgba: rgba.into(),
-        fingerprint: "sha256:basic-exposure-fixture".into(),
-        orientation: 1,
-    }
-}
-
-fn basic_layer(payload: Value) -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload,
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
+/// The Exposure contract's relative band around a code threshold.
+const CODE_BAND: f64 = 1e-6;
 
 fn exposure_layer(ev: f64) -> Layer {
     basic_layer(json!({ "exposure": ev }))
-}
-
-fn recipe(layers: Vec<Layer>) -> Recipe {
-    Recipe {
-        format: RECIPE_FORMAT,
-        layers,
-        masks: Vec::new(),
-        ..Recipe::default()
-    }
-}
-
-fn mutation(revision: u64, request: &str) -> Mutation {
-    Mutation {
-        expected_revision: revision,
-        request_id: request.into(),
-        actor: "basic-exposure-test".into(),
-    }
-}
-
-fn catalog(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "lightwell-basic-{name}-{}.sqlite",
-        std::process::id()
-    ));
-    let _ = fs::remove_file(&path);
-    path
-}
-
-/// The declared tolerance: an exact code, unless the reference's linear value sits within
-/// `1e-6 + 1e-6 · |threshold|` of the threshold between the two codes, where one code of
-/// difference is permitted.
-fn assert_code(actual: u8, expected: u8, linear: f64, case: &str) {
-    if actual == expected {
-        return;
-    }
-    let difference = i32::from(actual) - i32::from(expected);
-    assert!(
-        difference.abs() <= 1,
-        "{case}: rendered {actual}, reference {expected}"
-    );
-    let crossed = actual.max(expected);
-    assert!(
-        crossed >= 1,
-        "{case}: code 0 has no lower threshold to sit on"
-    );
-    let threshold = code_threshold(crossed);
-    let tolerance = 1e-6 + 1e-6 * threshold.abs();
-    assert!(
-        (linear.clamp(0.0, 1.0) - threshold).abs() <= tolerance,
-        "{case}: rendered {actual} against {expected}, but the reference value {linear} is not \
-         within {tolerance} of the code threshold {threshold}"
-    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -145,7 +43,8 @@ struct ExposureCase {
 /// codes and the explicit clip and floor boundaries.
 #[test]
 fn every_corpus_case_renders_through_a_real_basic_layer() {
-    let raw = fs::read_to_string(fixture("basic/exposure-cases.json")).expect("the corpus");
+    let raw =
+        fs::read_to_string(fixtures::fixture("basic/exposure-cases.json")).expect("the corpus");
     let cases: Vec<ExposureCase> = serde_json::from_str(&raw).expect("a corpus of cases");
     assert!(cases.len() >= 132, "the committed corpus has 132 cases");
     // One render per distinct EV, with every input code of that EV as a pixel of one row, so the
@@ -182,10 +81,11 @@ fn every_corpus_case_renders_through_a_real_basic_layer() {
             );
             for (channel, input) in case.input.iter().enumerate() {
                 let linear = exposure(srgb_to_linear(*input), ev);
-                assert_code(
+                fixtures::assert_code_near_threshold(
                     pixel[channel],
                     case.expected[channel],
                     linear,
+                    CODE_BAND,
                     &format!("input {:?} channel {channel} at {ev} EV", case.input),
                 );
             }
@@ -257,7 +157,8 @@ struct MixedCase {
 /// processed by it, one after it is not, and an exact mirror commutes with the colour operation.
 #[test]
 fn mixed_order_cases_reproduce_exactly_through_real_layers() {
-    let raw = fs::read_to_string(fixture("basic/mixed-order.json")).expect("the mixed-order file");
+    let raw = fs::read_to_string(fixtures::fixture("basic/mixed-order.json"))
+        .expect("the mixed-order file");
     let file: MixedOrder = serde_json::from_str(&raw).expect("mixed-order cases");
     let source = SourceImage {
         width: file.width,
@@ -302,9 +203,13 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
 /// colour insertion index before that tail, and every later set updates it in place.
 #[test]
 fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update_it() {
-    let path = catalog("place");
+    let path = fixtures::temp_catalog("basic-place");
     let mut service = EditorService::open(&path).expect("a catalog");
-    let asset = service.import(&jpeg()).expect("an import").asset.id;
+    let asset = service
+        .import(&fixtures::jpeg())
+        .expect("an import")
+        .asset
+        .id;
 
     service
         .apply_action(

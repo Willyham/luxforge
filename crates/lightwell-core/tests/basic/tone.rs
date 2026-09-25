@@ -1,61 +1,17 @@
 //! The Basic module's Tone controls (Contrast, Highlights, Shadows, Whites, Blacks) end to end:
-//! monotonicity through the whole production pipeline, sample/render agreement, the declared
-//! internal evaluation order against exposure. Neutral payloads sharing the source, stored-payload
-//! refusals and reopen are proved for every field-patch module by `field_patch_conformance.rs`.
+//! monotonicity through the whole production pipeline, sample/render agreement, and the declared
+//! internal evaluation order against exposure.
 //!
 //! The frozen per-pixel numerical proof against `fixtures/basic/tone-cases.json` lives in
 //! `crates/lightwell-core/src/modules/basic/tone.rs`, next to the production unit it checks; this
-//! file only exercises the unit through the real host pipeline (`ModuleRegistry`, `render`,
-//! `sample`, `EditorService`), matching `basic_exposure.rs`'s own split.
+//! module only exercises the unit through the real host pipeline (`ModuleRegistry`, `render`,
+//! `sample`), as the Exposure module does.
 
-mod reference;
-
-use lightwell_core::{
-    BASIC_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId,
-    SourceImage, render,
-};
-use reference::tone::ToneParams;
+use super::basic_layer;
+use lightwell_core::{ModuleRegistry, SnapshotId, render};
+use lightwell_reference::tone::ToneParams;
+use lightwell_testkit::fixtures::{recipe, source_of};
 use serde_json::{Value, json};
-
-// ---------------------------------------------------------------------------------------------
-// Shared helpers (each Basic integration test file keeps its own copy; see basic_exposure.rs)
-// ---------------------------------------------------------------------------------------------
-
-fn source_of(width: u32, height: u32, pixels: &[[u8; 3]]) -> SourceImage {
-    assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
-    let mut rgba = Vec::with_capacity(pixels.len() * 4);
-    for pixel in pixels {
-        rgba.extend_from_slice(pixel);
-        rgba.push(255);
-    }
-    SourceImage {
-        width,
-        height,
-        rgba: rgba.into(),
-        fingerprint: "sha256:basic-tone-fixture".into(),
-        orientation: 1,
-    }
-}
-
-fn basic_layer(payload: Value) -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload,
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
-fn recipe(layers: Vec<Layer>) -> Recipe {
-    Recipe {
-        format: RECIPE_FORMAT,
-        layers,
-        masks: Vec::new(),
-        ..Recipe::default()
-    }
-}
 
 fn tone_payload(params: ToneParams) -> Value {
     json!({
@@ -67,7 +23,7 @@ fn tone_payload(params: ToneParams) -> Value {
     })
 }
 
-/// The 32 corners of the 5-parameter +-100 cube, matching `basic_tone_reference.rs`'s
+/// The 32 corners of the 5-parameter +-100 cube, matching the tone study's
 /// `cube_corners`, kept as this file's own independent copy.
 fn cube_corners() -> Vec<ToneParams> {
     (0u32..32)
@@ -147,7 +103,7 @@ fn standard_deviation(codes: &[u8]) -> f64 {
 /// 256-code grey ramp rendered through a real Basic layer, `-c` pulls the output codes together and
 /// `+c` pushes them apart (the rendered codes' standard deviation falls below and rises above the
 /// source's), and a dark and a light midtone move toward the pivot at `-c` and away from it at
-/// `+c`. `+-10` moves no 8-bit grey code (see `basic_tone_reference.rs`), so this starts at 50.
+/// `+c`. `+-10` moves no 8-bit grey code (see the tone study), so this starts at 50.
 #[test]
 fn negative_contrast_renders_flatter_than_the_source_and_positive_contrast_steeper() {
     let codes: Vec<u8> = (0u8..=255).collect();
@@ -273,20 +229,20 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
     let actual = rendered.pixel(0, 0).expect("the pixel");
 
     let linear_in = [
-        reference::srgb_to_linear(input[0]),
-        reference::srgb_to_linear(input[1]),
-        reference::srgb_to_linear(input[2]),
+        lightwell_reference::srgb_to_linear(input[0]),
+        lightwell_reference::srgb_to_linear(input[1]),
+        lightwell_reference::srgb_to_linear(input[2]),
     ];
 
     // The declared order: exposure, then tone.
     let exposed = [
-        reference::exposure(linear_in[0], ev),
-        reference::exposure(linear_in[1], ev),
-        reference::exposure(linear_in[2], ev),
+        lightwell_reference::exposure(linear_in[0], ev),
+        lightwell_reference::exposure(linear_in[1], ev),
+        lightwell_reference::exposure(linear_in[2], ev),
     ];
-    let expected_in_order = reference::tone::tone_pixel(exposed, params);
+    let expected_in_order = lightwell_reference::tone::tone_pixel(exposed, params);
     for (channel, expected_linear) in expected_in_order.iter().enumerate() {
-        let expected_code = reference::linear_to_srgb_code(*expected_linear);
+        let expected_code = lightwell_reference::linear_to_srgb_code(*expected_linear);
         let difference = i32::from(actual[channel]) - i32::from(expected_code);
         assert!(
             difference.abs() <= 1,
@@ -297,11 +253,11 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
 
     // The reverse order (tone, then exposure) must differ measurably for this case, or the proof
     // above would hold vacuously (either order giving the same answer).
-    let toned_first = reference::tone::tone_pixel(linear_in, params);
+    let toned_first = lightwell_reference::tone::tone_pixel(linear_in, params);
     let reverse_order = [
-        reference::linear_to_srgb_code(reference::exposure(toned_first[0], ev)),
-        reference::linear_to_srgb_code(reference::exposure(toned_first[1], ev)),
-        reference::linear_to_srgb_code(reference::exposure(toned_first[2], ev)),
+        lightwell_reference::linear_to_srgb_code(lightwell_reference::exposure(toned_first[0], ev)),
+        lightwell_reference::linear_to_srgb_code(lightwell_reference::exposure(toned_first[1], ev)),
+        lightwell_reference::linear_to_srgb_code(lightwell_reference::exposure(toned_first[2], ev)),
     ];
     assert_ne!(
         [actual[0], actual[1], actual[2]],

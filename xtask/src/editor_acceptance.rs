@@ -421,7 +421,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
         let basic_ms = basic_started.elapsed().as_secs_f64() * 1000.0;
 
         // The field-patch conformance suite: the same function the core's
-        // `field_patch_conformance` test runs, here in release, over every field-patch module the
+        // `modules` test runs as `field_patch`, here in release, over every field-patch module the
         // registry holds, each as its own independent JSON client against its own catalog in its
         // own directory. What it returns is this chapter's evidence.
         let conformance_started = Instant::now();

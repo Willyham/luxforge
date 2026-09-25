@@ -2,67 +2,12 @@
 //! method table, persistence and identity render are exercised through the same public paths as
 //! an independent JSON client.
 use lightwell_core::{
-    ApiRequest, CONTROLS_EFFECT, ClientId, ControlsModule, EFFECT_FORMAT, Layer, LayerId,
-    ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render,
+    CONTROLS_EFFECT, ControlsModule, ModuleRegistry, OwnerHandle, SnapshotId, render,
 };
-use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
-fn call(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Value {
-    let response = owner
-        .call(
-            client,
-            ApiRequest {
-                id: method.into(),
-                method: method.into(),
-                params,
-                token: None,
-            },
-        )
-        .expect("owner answered");
-    assert!(response.error.is_none(), "{method}: {:?}", response.error);
-    response.result.expect("result")
-}
-
-fn error(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> String {
-    owner
-        .call(
-            client,
-            ApiRequest {
-                id: method.into(),
-                method: method.into(),
-                params,
-                token: None,
-            },
-        )
-        .expect("owner answered")
-        .error
-        .expect("error")
-        .code
-}
-
-fn import_asset(owner: &OwnerHandle, client: ClientId) -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg");
-    let job = call(owner, client, "catalog.import", json!({"path": path, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}))["job_id"].clone();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let status = call(owner, client, "job.status", json!({"job_id":job}));
-        match status["status"].as_str() {
-            Some("ready") => break,
-            Some("queued" | "running") => {
-                assert!(Instant::now() < deadline, "import timed out: {status}");
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            other => panic!("import failed: {other:?}: {status}"),
-        }
-    }
-    call(owner, client, "job.adopt", json!({"job_id":job}))["asset"]["asset"]["id"].clone()
-}
+use lightwell_testkit::client::{call, import, refused};
+use lightwell_testkit::fixtures::{self, recipe, source_of};
+use serde_json::json;
+use std::{fs, sync::Arc};
 
 #[test]
 fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
@@ -76,14 +21,10 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
     registry
         .register(Arc::new(ControlsModule::new()))
         .expect("proof module registers");
-    let catalog = std::env::temp_dir().join(format!(
-        "lightwell-controls-proof-{}.sqlite",
-        std::process::id()
-    ));
-    let _ = fs::remove_file(&catalog);
+    let catalog = fixtures::temp_catalog("controls-proof");
     let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).expect("owner");
     let client = owner.register();
-    let modules = call(&owner, client, "module.list", json!({}));
+    let modules = call(&owner, client, "module.list", json!({})).unwrap();
     let proof = modules["modules"]
         .as_array()
         .unwrap()
@@ -97,7 +38,7 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
     );
     assert_eq!(proof["controls"][0]["reset"], proof["reset"]);
 
-    let schema = call(&owner, client, "schema.list", json!({}));
+    let schema = call(&owner, client, "schema.list", json!({})).unwrap();
     let set = &schema["methods"]["edit.set-controls"];
     assert_eq!(set["patch"], true);
     assert_eq!(set["parameters"].as_array().unwrap().len(), 11);
@@ -111,7 +52,7 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
         false
     );
 
-    let asset = import_asset(&owner, client);
+    let asset = import(&owner, client, &fixtures::jpeg(), "test").unwrap()["asset"]["id"].clone();
     let fields = [
         ("amount", json!(2.5)),
         ("coordinate", json!(72.0)),
@@ -131,12 +72,12 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
             "mutation":{"expected_revision":index,"request_id":format!("field-{index}"),"actor":"independent-json-client"}
         });
         request[name] = value.clone();
-        let result = call(&owner, client, "edit.set-controls", request);
+        let result = call(&owner, client, "edit.set-controls", request).unwrap();
         assert_eq!(result["outcome"], "applied", "{name}");
         assert_eq!(result["revision"], index + 1, "{name}");
-        let state = call(&owner, client, "asset.state", json!({"asset_id":asset}));
+        let state = call(&owner, client, "asset.state", json!({"asset_id":asset})).unwrap();
         assert_eq!(state["revision"], index + 1, "{name} persisted");
-        let described = call(&owner, client, "recipe.describe", json!({"asset_id":asset}));
+        let described = call(&owner, client, "recipe.describe", json!({"asset_id":asset})).unwrap();
         let layer = described["layers"]
             .as_array()
             .unwrap()
@@ -161,7 +102,9 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         assert_eq!(
-            error(&owner, client, "edit.set-controls", request),
+            refused(&owner, client, "edit.set-controls", request)
+                .unwrap()
+                .0,
             "validation"
         );
     }
@@ -172,21 +115,24 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
         json!({
             "asset_id":asset,"master":[[0.0,0.0],[0.5,1.0],[1.0,1.0]]
         }),
-    );
+    )
+    .unwrap();
     let points = sampled["points"].as_array().expect("sample points");
     assert_eq!(points.len(), 257);
     assert_eq!(points[0], json!([0.0, 0.0]));
     assert_eq!(points[128], json!([0.5, 1.0]));
     assert_eq!(points[256], json!([1.0, 1.0]));
     assert_eq!(
-        error(
+        refused(
             &owner,
             client,
             "query.sample-controls-curve",
             json!({
                 "asset_id":asset,"master":[[0.0,0.0],[1.0,1.0]],"red":[[0.0,0.0],[1.0,1.0]]
             })
-        ),
+        )
+        .unwrap()
+        .0,
         "validation"
     );
     let reset = call(
@@ -196,10 +142,10 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
         json!({
             "asset_id":asset,"mutation":{"expected_revision":fields.len(),"request_id":"reset","actor":"independent-json-client"}
         }),
-    );
+    ).unwrap();
     assert_eq!(reset["outcome"], "applied");
     assert_eq!(reset["revision"], fields.len() + 1);
-    let reset_recipe = call(&owner, client, "recipe.describe", json!({"asset_id":asset}));
+    let reset_recipe = call(&owner, client, "recipe.describe", json!({"asset_id":asset})).unwrap();
     let reset_layer = reset_recipe["layers"]
         .as_array()
         .unwrap()
@@ -223,33 +169,13 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
 fn proof_layer_is_byte_exact_and_shares_the_source_allocation() {
     let mut registry = ModuleRegistry::builtin();
     registry.register(Arc::new(ControlsModule::new())).unwrap();
-    let source = SourceImage {
-        width: 2,
-        height: 1,
-        rgba: vec![11, 22, 33, 255, 240, 80, 16, 255].into(),
-        fingerprint: "sha256:controls-fixture".into(),
-        orientation: 1,
-    };
-    let layer = Layer {
-        id: LayerId::new(),
-        effect_id: CONTROLS_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload: json!({"amount":2.5,"rgb":[20,40,60],"master":[[0.0,0.0],[0.4,0.8],[1.0,1.0]]}),
-        mask: None,
-        artifacts: Vec::new(),
-    };
-    let raster = render(
-        &registry,
-        &source,
-        SnapshotId::new(),
-        &Recipe {
-            format: RECIPE_FORMAT,
-            layers: vec![layer],
-            masks: Vec::new(),
-            ..Recipe::default()
-        },
-    )
-    .expect("identity controls render");
+    let source = source_of(2, 1, &[[11, 22, 33], [240, 80, 16]]);
+    let layer = fixtures::layer(
+        CONTROLS_EFFECT,
+        json!({"amount":2.5,"rgb":[20,40,60],"master":[[0.0,0.0],[0.4,0.8],[1.0,1.0]]}),
+    );
+    let raster = render(&registry, &source, SnapshotId::new(), &recipe(vec![layer]))
+        .expect("identity controls render");
     assert_eq!(raster.rgba.as_ref(), source.rgba.as_ref());
     assert!(Arc::ptr_eq(&raster.rgba, &source.rgba));
 }

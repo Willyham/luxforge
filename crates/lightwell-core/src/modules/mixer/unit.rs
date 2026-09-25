@@ -805,7 +805,7 @@ mod tests {
     /// frozen tolerance `1e-5 + 1e-5 * |reference|`. The 8-bit inputs are decoded in f64 exactly as
     /// the reference decodes them and cast to f32, so what this measures is the unit's own f32
     /// error and nothing else; the quantization boundary is checked through the real render path in
-    /// `tests/mixer_module.rs`.
+    /// `tests/modules/mixer.rs`.
     #[test]
     fn production_matches_every_frozen_fixture_case_within_the_frozen_tolerance() {
         let file = fixture_file();

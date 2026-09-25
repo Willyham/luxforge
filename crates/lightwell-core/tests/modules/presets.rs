@@ -14,45 +14,21 @@ use lightwell_core::{
     ParameterDescriptor, ParameterKind, Processing, Recipe, Stage, StageContext, ToolModule,
     mask::commands::{self, MaskTarget},
 };
+use lightwell_testkit::fixtures::{self, jpeg};
 use serde_json::{Map, Value, json};
-use std::{
-    fs,
-    path::PathBuf,
-    sync::Arc,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{fs, path::PathBuf, sync::Arc};
 
 // -------------------------------------------------------------------------------------------
 // Shared helpers.
 // -------------------------------------------------------------------------------------------
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
-
-fn jpeg() -> PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-}
-
-fn catalog(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "lightwell-presets-module-{name}-{}-{}.sqlite",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = fs::remove_file(&path);
-    path
-}
-
 fn mutation(revision: u64, request: &str) -> Mutation {
-    Mutation {
-        expected_revision: revision,
-        request_id: request.into(),
-        actor: "presets-module-test".into(),
-    }
+    fixtures::mutation(revision, request, "presets-test")
 }
 
 /// A service over a fresh catalog with the JPEG fixture imported.
 fn opened(name: &str, registry: Option<ModuleRegistry>) -> (EditorService, AssetId, PathBuf) {
-    let path = catalog(name);
+    let path = fixtures::temp_catalog(&format!("presets-{name}"));
     let mut service = match registry {
         Some(registry) => EditorService::open_with(&path, Arc::new(registry)),
         None => EditorService::open(&path),

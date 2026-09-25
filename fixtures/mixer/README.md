@@ -5,7 +5,7 @@ Synthetic-only, small, deterministic oracle data for the frozen colour mixer uni
 [Presence, colour mixer and vignette design](../../docs/design/presence-mixer-vignette.md). Nothing
 here comes from a photograph; no private originals are committed. The production unit
 (`crates/lightwell-core/src/modules/mixer/unit.rs`) is checked against every case directly, and
-`crates/lightwell-core/tests/mixer_module.rs` checks every case again through the real render path.
+`crates/lightwell-core/tests/modules/mixer.rs` checks every case again through the real render path.
 
 ## `mixer-cases.json`
 

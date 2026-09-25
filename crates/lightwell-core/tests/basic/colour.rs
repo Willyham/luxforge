@@ -1,89 +1,19 @@
 //! The Basic module's Vibrance and Saturation parameters end to end: real layers, real rendering
 //! and sampling, and the frozen internal order against the independent f64 reference composed the
-//! same way. Neutral payloads sharing the source, stored-payload refusals, reopen, history labels and
-//! values are proved for every field-patch module by `field_patch_conformance.rs`, and Basic's own
-//! label words in `modules::basic`'s unit tests.
+//! same way. Basic's own label words are in `modules::basic`'s unit tests.
 //!
-//! Numerical rule, from `docs/design/basic-colour.md`'s frozen tolerance: a rendered code must
-//! equal the f64 reference's code exactly, except where the reference's linear value sits within
-//! `1e-5 + 1e-5 · |threshold|` of the exact linear threshold between two codes, where one code of
-//! difference is permitted because production decodes, converts through Oklab and multiplies in
-//! f32. Identity stacks and byte sharing are exact with no tolerance at all.
+//! Numerical rule, from `docs/design/basic-colour.md`'s frozen tolerance: the band around a code
+//! threshold within which one code of difference is permitted is `1e-5 + 1e-5 · |threshold|`,
+//! because production decodes, converts through Oklab and multiplies in f32.
 
-mod reference;
+use super::basic_layer;
+use lightwell_core::{ModuleRegistry, SnapshotId, render};
+use lightwell_reference::{RefOp, evaluate_pixel, exposure, srgb_to_linear};
+use lightwell_testkit::fixtures::{self, recipe, source_of};
+use serde_json::json;
 
-use lightwell_core::{
-    BASIC_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId,
-    SourceImage, render,
-};
-use reference::{RefOp, code_threshold, evaluate_pixel, exposure, srgb_to_linear};
-use serde_json::{Value, json};
-
-// ---------------------------------------------------------------------------------------------
-// Shared helpers, matching `basic_exposure.rs`'s patterns.
-// ---------------------------------------------------------------------------------------------
-
-fn source_of(width: u32, height: u32, pixels: &[[u8; 3]]) -> SourceImage {
-    assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
-    let mut rgba = Vec::with_capacity(pixels.len() * 4);
-    for pixel in pixels {
-        rgba.extend_from_slice(pixel);
-        rgba.push(255);
-    }
-    SourceImage {
-        width,
-        height,
-        rgba: rgba.into(),
-        fingerprint: "sha256:basic-colour-fixture".into(),
-        orientation: 1,
-    }
-}
-
-fn basic_layer(payload: Value) -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload,
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
-fn recipe(layers: Vec<Layer>) -> Recipe {
-    Recipe {
-        format: RECIPE_FORMAT,
-        layers,
-        masks: Vec::new(),
-        ..Recipe::default()
-    }
-}
-
-/// The declared tolerance: an exact code, unless the reference's linear value sits within
-/// `1e-5 + 1e-5 · |threshold|` of the threshold between the two codes, where one code of
-/// difference is permitted.
-fn assert_colour_code(actual: u8, expected: u8, linear: f64, case: &str) {
-    if actual == expected {
-        return;
-    }
-    let difference = i32::from(actual) - i32::from(expected);
-    assert!(
-        difference.abs() <= 1,
-        "{case}: rendered {actual}, reference {expected}"
-    );
-    let crossed = actual.max(expected);
-    assert!(
-        crossed >= 1,
-        "{case}: code 0 has no lower threshold to sit on"
-    );
-    let threshold = code_threshold(crossed);
-    let tolerance = 1e-5 + 1e-5 * threshold.abs();
-    assert!(
-        (linear.clamp(0.0, 1.0) - threshold).abs() <= tolerance,
-        "{case}: rendered {actual} against {expected}, but the reference value {linear} is not \
-         within {tolerance} of the code threshold {threshold}"
-    );
-}
+/// The Colour contract's relative band around a code threshold.
+const CODE_BAND: f64 = 1e-5;
 
 /// The eight representative hues the combined-order test sweeps: primaries, secondaries, one
 /// skin-like patch (named in the task) and mid grey.
@@ -204,15 +134,16 @@ fn combined_vibrance_saturation_with_exposure_matches_the_reference_in_frozen_or
             for channel in &mut channels {
                 *channel = exposure(*channel, ev);
             }
-            channels = reference::colour::apply_vibrance(channels, v);
-            channels = reference::colour::apply_saturation(channels, s);
+            channels = lightwell_reference::colour::apply_vibrance(channels, v);
+            channels = lightwell_reference::colour::apply_saturation(channels, s);
             for (channel, (&reference_byte, &linear)) in
                 reference_bytes.iter().zip(channels.iter()).enumerate()
             {
-                assert_colour_code(
+                fixtures::assert_code_near_threshold(
                     pixel[channel],
                     reference_byte,
                     linear,
+                    CODE_BAND,
                     &format!("input {input:?} channel {channel} ev={ev} v={v} s={s}"),
                 );
             }

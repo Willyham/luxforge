@@ -11,7 +11,7 @@
 //!
 //! The suite is written against the public API only and returns its evidence instead of
 //! asserting, so the same code runs as the core's integration test
-//! (`tests/field_patch_conformance.rs`, in the dev profile) and inside `cargo xtask
+//! (`tests/modules/field_patch.rs`, in the dev profile) and inside `cargo xtask
 //! editor-acceptance` (compiled into `xtask` through a `#[path]` module, in release), which writes
 //! what it returns as the acceptance evidence. The two cannot diverge because they are one
 //! function. The JSON client it drives the owner with is `lightwell_testkit::client`, the one

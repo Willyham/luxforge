@@ -1,9 +1,7 @@
-//! The Presence module (`lightwell.presence`) end to end, following `mixer_module.rs`'s patterns:
-//! the independent `f64` reference through the real render path on the byte and the RAW linear
-//! paths, and achromatic invariance. What Presence shares with every field-patch module —
-//! discovery, neutral payloads, drafts, history, one layer per target, sample equal to render
-//! through a crop, an unavailable provider and reopen — is proved once, for every such module, by
-//! `field_patch_conformance.rs`, and its place after the colour run by the Presence, mixer and
+//! The Presence module (`lightwell.presence`) end to end: the independent `f64` reference through
+//! the real render path on the byte and the RAW linear paths, and achromatic invariance. What
+//! Presence shares with every field-patch module is proved once, for every such module, by the
+//! conformance suite (`field_patch`), and its place after the colour run by the Presence, mixer and
 //! vignette chapter of `editor-acceptance`.
 //!
 //! Numerical rule, from `docs/design/presence-study.md`'s frozen tolerance: production matches the
@@ -14,69 +12,23 @@
 //! `modules::presence::oracle`, which can read the units' `f32` output before the host quantizes it.
 //! Identity stacks and byte sharing are exact with no tolerance at all.
 
-mod reference;
-
 use lightwell_core::{
-    EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, PRESENCE_EFFECT,
-    RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render, render_linear, sample, sample_linear,
+    Layer, LinearImage, LinearSettings, ModuleRegistry, PRESENCE_EFFECT, SnapshotId, SourceImage,
+    render, render_linear, sample, sample_linear,
 };
-use reference::presence::{PresenceParams, Rgb, apply_presence};
+use lightwell_reference::{
+    self as reference,
+    presence::{PresenceParams, Rgb, apply_presence},
+};
+use lightwell_testkit::fixtures::{self, linear_source_of, recipe, source_of};
 use serde_json::{Value, json};
-use std::hash::{DefaultHasher, Hash, Hasher};
 
-// -------------------------------------------------------------------------------------------
-// Shared helpers.
-// -------------------------------------------------------------------------------------------
+/// The frozen production tolerance's relative band, in linear light.
+const CODE_BAND: f64 = 2e-4;
 
-fn presence_layer(payload: Value) -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: PRESENCE_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload,
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
-fn recipe(layers: Vec<Layer>) -> Recipe {
-    Recipe {
-        format: RECIPE_FORMAT,
-        layers,
-        masks: Vec::new(),
-        ..Recipe::default()
-    }
-}
-
-/// The frozen production tolerance in linear light.
-fn tolerance(reference: f64) -> f64 {
-    2e-4 + 2e-4 * reference.abs()
-}
-
-/// The declared tolerance as the quantized frame shows it: an exact code, unless the reference's
-/// linear value sits within the frozen tolerance of the threshold between the two codes, where one
-/// code of difference is permitted.
-fn assert_presence_code(actual: u8, expected: u8, linear: f64, case: &str) {
-    if actual == expected {
-        return;
-    }
-    let difference = i32::from(actual) - i32::from(expected);
-    assert!(
-        difference.abs() <= 1,
-        "{case}: rendered {actual}, reference {expected}"
-    );
-    let crossed = actual.max(expected);
-    assert!(
-        crossed >= 1,
-        "{case}: code 0 has no lower threshold to sit on"
-    );
-    let threshold = reference::code_threshold(crossed);
-    assert!(
-        (linear.clamp(0.0, 1.0) - threshold).abs() <= tolerance(threshold),
-        "{case}: rendered {actual} against {expected}, but the reference value {linear} is not \
-         within {} of the code threshold {threshold}",
-        tolerance(threshold)
-    );
+/// A global Presence layer holding `payload`.
+fn layer(payload: Value) -> Layer {
+    fixtures::layer(PRESENCE_EFFECT, payload)
 }
 
 // -------------------------------------------------------------------------------------------
@@ -164,53 +116,28 @@ fn greys(width: i64, height: i64) -> Vec<[f64; 3]> {
     pixels
 }
 
-/// A fingerprint that names these exact contents, as a real source's does. The host keys what it
-/// caches for a source — Dehaze's stored atmospheric light among it — by the fingerprint, so two
-/// different pictures of one size must never share one.
-fn content_fingerprint(kind: &str, contents: impl Hash) -> String {
-    let mut hasher = DefaultHasher::new();
-    contents.hash(&mut hasher);
-    format!("sha256:presence-module-{kind}-{:016x}", hasher.finish())
-}
-
 /// One 8-bit source from linear pixels, and the linear values it actually decodes to, which is what
 /// the reference must be evaluated on for the byte path.
 fn byte_source(width: i64, height: i64, pixels: &[[f64; 3]]) -> (SourceImage, Vec<[f64; 3]>) {
-    let mut rgba = Vec::with_capacity(pixels.len() * 4);
-    let mut decoded = Vec::with_capacity(pixels.len());
-    for pixel in pixels {
-        let codes = pixel.map(reference::linear_to_srgb_code);
-        rgba.extend_from_slice(&codes);
-        rgba.push(255);
-        decoded.push(codes.map(reference::srgb_to_linear));
-    }
-    let fingerprint = content_fingerprint("fixture", (width, height, &rgba));
-    (
-        SourceImage {
-            width: width as u32,
-            height: height as u32,
-            rgba: rgba.into(),
-            fingerprint,
-            orientation: 1,
-        },
-        decoded,
-    )
+    let codes: Vec<[u8; 3]> = pixels
+        .iter()
+        .map(|pixel| pixel.map(reference::linear_to_srgb_code))
+        .collect();
+    let decoded = codes
+        .iter()
+        .map(|code| code.map(reference::srgb_to_linear))
+        .collect();
+    (source_of(width as u32, height as u32, &codes), decoded)
 }
 
 /// One planar linear source, and the `f32`-rounded values the reference must be evaluated on.
 fn linear_source(width: i64, height: i64, pixels: &[[f64; 3]]) -> (LinearImage, Vec<[f64; 3]>) {
-    let mut planes = Vec::with_capacity(pixels.len() * 3);
-    for channel in 0..3 {
-        planes.extend(pixels.iter().map(|pixel| pixel[channel] as f32));
-    }
     let rounded = pixels
         .iter()
         .map(|pixel| pixel.map(|value| f64::from(value as f32)))
         .collect();
-    let bits: Vec<u32> = planes.iter().map(|value| value.to_bits()).collect();
-    let fingerprint = content_fingerprint("linear-fixture", (width, height, bits));
     (
-        LinearImage::with_fingerprint(width as u32, height as u32, planes, fingerprint).unwrap(),
+        linear_source_of(width as u32, height as u32, pixels),
         rounded,
     )
 }
@@ -288,7 +215,7 @@ fn production_matches_the_reference_through_both_render_paths() {
         let (byte_image, decoded) = byte_source(width, height, pixels);
         let (linear_image, rounded) = linear_source(width, height, pixels);
         for (set_name, payload, params) in parameter_sets() {
-            let stack = recipe(vec![presence_layer(payload.clone())]);
+            let stack = recipe(vec![layer(payload.clone())]);
             let case = format!("{image_name} {set_name}");
 
             let expected = expected_frame(width, height, &decoded, params);
@@ -304,10 +231,11 @@ fn production_matches_the_reference_through_both_render_paths() {
                     for channel in 0..3 {
                         let linear = reference[channel];
                         let code = reference::linear_to_srgb_code(linear);
-                        assert_presence_code(
+                        fixtures::assert_code_near_threshold(
                             pixel[channel],
                             code,
                             linear,
+                            CODE_BAND,
                             &format!("{case} byte pixel ({x}, {y}) channel {channel}"),
                         );
                         let deviation = (i32::from(pixel[channel]) - i32::from(code)).abs();
@@ -345,10 +273,11 @@ fn production_matches_the_reference_through_both_render_paths() {
                     for channel in 0..3 {
                         let linear = reference[channel];
                         let code = reference::linear_to_srgb_code(linear);
-                        assert_presence_code(
+                        fixtures::assert_code_near_threshold(
                             pixel[channel],
                             code,
                             linear,
+                            CODE_BAND,
                             &format!("{case} linear pixel ({x}, {y}) channel {channel}"),
                         );
                         let deviation = (i32::from(pixel[channel]) - i32::from(code)).abs();
@@ -398,7 +327,7 @@ fn achromatic_pixels_stay_achromatic_under_texture_and_clarity() {
             &registry,
             &source,
             SnapshotId::new(),
-            &recipe(vec![presence_layer(payload.clone())]),
+            &recipe(vec![layer(payload.clone())]),
         )
         .unwrap_or_else(|error| panic!("{payload}: {error}"));
         for y in 0..height {
