@@ -2329,7 +2329,7 @@
     {
       "id": "TASK-039",
       "description": "Split the desktop's `app/mod.rs` along its seams with nested message enums, and enforce that `state/` never imports `app/` in the repository check.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-032"
       ],
@@ -2386,7 +2386,7 @@
     {
       "id": "TASK-040",
       "description": "Present the displayed preview through one `Presenter` with one `Frame` type, and draw the clipping overlay, mask overlays and the crop input stage on the photo surface.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-039"
       ],
@@ -2455,7 +2455,7 @@
     {
       "id": "TASK-041",
       "description": "Poll events silently while idle through a subscription that yields only on events, give the desktop one owner-task helper with no sleep-poll loops on the executor, and remove per-message waste in derive and view.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-039"
       ],
@@ -2525,7 +2525,7 @@
     {
       "id": "TASK-042",
       "description": "Build each control's request once with a declared commit-on-pick, walk the control tree with one walker and one `NumberSpec`, make the gallery page desktop-local, and have the Performance panel parse the core's report types.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-039"
       ],
@@ -2551,7 +2551,7 @@
         {
           "kind": "file",
           "label": "Fields",
-          "target": "crates/lightwell-app/src/app/fields.rs",
+          "target": "crates/lightwell-app/src/state/fields.rs",
           "relevance": "Control fields."
         },
         {
