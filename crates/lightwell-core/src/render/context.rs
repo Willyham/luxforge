@@ -29,6 +29,10 @@ struct Shared {
     scratch: ScratchBudget,
     spatial: SpatialBudget,
     estimates: EstimateStore,
+    /// How many stacks [`super::render`] compiled in this context, for the tests that prove a
+    /// preview job compiles once per stage it renders at.
+    #[cfg(test)]
+    compiles: AtomicU64,
 }
 
 impl RenderContext {
@@ -38,6 +42,8 @@ impl RenderContext {
             scratch: ScratchBudget::new(DEFAULT_SCRATCH_BYTES),
             spatial: SpatialBudget::new(SPATIAL_BUDGET_BYTES),
             estimates: EstimateStore::default(),
+            #[cfg(test)]
+            compiles: AtomicU64::new(0),
         }))
     }
 
@@ -54,6 +60,17 @@ impl RenderContext {
     /// The prepared global estimates of spatial units.
     pub(crate) fn estimates(&self) -> &EstimateStore {
         &self.0.estimates
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_compile(&self) {
+        self.0.compiles.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many stacks the entry point has compiled in this context.
+    #[cfg(test)]
+    pub(crate) fn compiles(&self) -> u64 {
+        self.0.compiles.load(Ordering::Relaxed)
     }
 }
 

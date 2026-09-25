@@ -8,7 +8,7 @@ use super::{
     TransformModule, VignetteModule,
 };
 use crate::{
-    Error, ErrorKind, Layer, Mask, MaskId, ProxyApproximation, Recipe,
+    Error, ErrorKind, Layer, Mask, MaskId, Recipe,
     artifacts::ArtifactTable,
     capabilities::descriptor::TaskDescriptor,
     mask_field::{MaskField, MaskSampling},
@@ -719,8 +719,8 @@ impl ModuleRegistry {
     /// the output stage, so the same recipe compiles unchanged against a smaller content stage and
     /// produces the same picture at display size. A spatial-stage effect is eligible too, but its
     /// neighbourhoods scale with the stage, so its proxy frame is an approximation of the exact
-    /// render at display size rather than the same picture; [`Self::proxy_approximation`] says when
-    /// a stack renders that way, and the exact phase still produces every number. A pixel-stage
+    /// render at display size rather than the same picture; [`crate::Render::approximation`] says
+    /// when a stack renders that way, and the exact phase still produces every number. A pixel-stage
     /// effect is not eligible: its payload addresses content pixels, which a rescaled stage no
     /// longer has. An effect no provider declares is ineligible too, because nothing can say what
     /// stage it addresses.
@@ -755,43 +755,6 @@ impl ModuleRegistry {
             }
         }
         Ok(())
-    }
-
-    /// Why a proxy render of this stack at this source size is an approximation, which is the
-    /// answer a frame is reported with.
-    ///
-    /// Two reasons, both read from a compilation at exactly the dimensions the proxy phase renders
-    /// — the same compilation, so what is reported and what is drawn cannot disagree:
-    ///
-    /// - **A spatial operation.** Its neighbourhoods scale with the stage it is rendered at, so its
-    ///   display-size frame is close to the exact render but not the same picture. It is what the
-    ///   stack compiles to that decides, not which stages its effects declare: a neutral spatial
-    ///   layer, such as a reset Presence layer, compiles to no operation at all, so its frame is the
-    ///   exact recipe at proxy size and is not labelled.
-    /// - **A thin mask.** A mask's geometry is normalized, so whether it draws a feature the proxy's
-    ///   pixel grid can resolve is a fact about that grid.
-    ///
-    /// It costs `O(layers + components)` and reads no pixels. A stack that does not compile at that
-    /// size has no proxy frame at all, and the caller has already declined it with its own reason,
-    /// so there is nothing here to add.
-    pub fn proxy_approximation(
-        &self,
-        recipe: &Recipe,
-        source_width: u32,
-        source_height: u32,
-    ) -> ProxyApproximation {
-        match self.compile_sampled(
-            source_width,
-            source_height,
-            recipe,
-            MaskSampling::ThinFeature,
-        ) {
-            Ok(compiled) => ProxyApproximation {
-                spatial: compiled.evaluates_spatial(),
-                mask: compiled.supersampled_masks(),
-            },
-            Err(_) => ProxyApproximation::default(),
-        }
     }
 
     /// The provider that can evaluate this effect, or `None` when none is registered or the

@@ -333,10 +333,15 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         "The full Basic layer changed the output stage",
     )?;
     let full_basic_render = distribution(full_basic_samples);
-    let plan = colour_job
-        .source
-        .proxy_plan(&colour_registry, &full_basic, PROXY_DISPLAY)?
-        .ok_or("The photo-sized source needs no proxy for a 2880x1800 display")?;
+    let plan = render(
+        &colour_registry,
+        &colour_job.source,
+        &full_basic,
+        RenderOptions::default(),
+        &RenderContext::new(),
+    )?
+    .proxy_plan(PROXY_DISPLAY)
+    .ok_or("The photo-sized source needs no proxy for a 2880x1800 display")?;
     let mut proxy_build = Vec::with_capacity(samples);
     let mut proxy_source = None;
     for _ in 0..samples {

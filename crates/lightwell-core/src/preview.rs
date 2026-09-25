@@ -1,7 +1,8 @@
 use crate::{
     Cancel, Component, ComponentId, ComponentMode, EntryId, Error, ErrorKind, HistoryEntry,
     LinearImage, LinearSettings, Mask, MaskId, ModuleRegistry, ProxyApproximation, ProxyBounds,
-    ProxyCache, ProxyKey, Raster, Recipe, RenderContext, RenderOptions, RenderSource, SourceImage,
+    ProxyCache, ProxyKey, Raster, Recipe, Render, RenderContext, RenderOptions, RenderSource,
+    SourceImage,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, MaskOverlay, MaskPixels, Report},
     latest::{Latest, Running},
@@ -377,13 +378,14 @@ pub struct PreviewResult {
     /// Milliseconds of wall-clock time the preview worker spent producing this phase's result, and
     /// nothing else.
     ///
-    /// - [`PreviewPhase::Proxy`]: planning the proxy, building its source when this job built it
-    ///   ([`Self::proxy_built`]), and rendering the recipe against it. A cache hit costs the plan
-    ///   and the render.
+    /// - [`PreviewPhase::Proxy`]: compiling the job's stack, planning the proxy from it, building
+    ///   its source when this job built it ([`Self::proxy_built`]), and compiling and rendering the
+    ///   recipe against it. A cache hit costs the compiles, the plan and the render.
     /// - [`PreviewPhase::Exact`]: rendering the prepared source, plus reducing the frame into
     ///   [`Self::report`] and filling [`Self::mask_overlay`]'s coverage grid when the job asked for
-    ///   them. A proxy phase that was attempted and declined is not counted here; it produced no
-    ///   frame.
+    ///   them. The job compiles its stack once for both phases, and that compile is counted here
+    ///   only when no proxy frame came before. A proxy phase that was attempted and declined is not
+    ///   counted here; it produced no frame.
     ///
     /// It excludes everything outside the worker's own work on this phase: the wait in the queue's
     /// pending slot, preparing or redeveloping the source on the source worker, the other phase of
@@ -594,9 +596,10 @@ impl PreviewQueue {
 
 /// Whether this job has a proxy phase, and against which source.
 ///
-/// Cost is `O(layers)`: `proxy_eligible` reads stages and `proxy_plan` compiles the recipe, and
-/// neither reads a pixel. It runs on the preview worker, as does building the proxy itself.
-fn plan_proxy(job: &PreviewJob) -> ProxyStep {
+/// Cost is `O(layers)`: `proxy_eligible` reads stages and the plan reads the output stage of the
+/// job's exact compilation, which it does not repeat. Neither reads a pixel. It runs on the preview
+/// worker, as does building the proxy itself.
+fn plan_proxy(job: &PreviewJob, exact: &Result<Render<'_>, Error>) -> ProxyStep {
     let Some(bounds) = job.proxy else {
         return ProxyStep::Skipped;
     };
@@ -610,7 +613,7 @@ fn plan_proxy(job: &PreviewJob) -> ProxyStep {
     if let Err(error) = job.registry.proxy_eligible(&job.recipe) {
         return ProxyStep::Declined(error.detail);
     }
-    match job.source.proxy_plan(&job.registry, &job.recipe, bounds) {
+    match exact.as_ref().map(|exact| exact.proxy_plan(bounds)) {
         Ok(Some(plan)) => ProxyStep::Planned(ProxyKey {
             identity: job.source.identity(),
             plan,
@@ -618,7 +621,7 @@ fn plan_proxy(job: &PreviewJob) -> ProxyStep {
         Ok(None) => ProxyStep::Declined(
             "the proxy scale is 1: the stage already fits the display bounds".into(),
         ),
-        Err(error) => ProxyStep::Declined(error.detail),
+        Err(error) => ProxyStep::Declined(error.detail.clone()),
     }
 }
 
@@ -671,12 +674,25 @@ fn run(
     });
     let recipe = prefix.as_ref().unwrap_or(&job.recipe);
 
+    // The job's one compilation at the exact stage. The proxy plan reads its output stage, the
+    // exact phase renders it and the coverage grid composes its geometry tail, so none of them
+    // compiles the stack again. It is charged to the first phase that hands over a frame.
+    let compile_started = Instant::now();
+    let exact = render(
+        &job.registry,
+        job.source.input(),
+        recipe,
+        RenderOptions::exact(exact_cancel),
+        &job.context,
+    );
+    let mut compile_ms = Some(milliseconds_since(compile_started));
+
     // Nothing in the proxy phase is fatal. A plan, a build or a render that fails — including a
     // cancel — records its reason on the exact result and the exact phase runs as it always does,
     // so a job never loses its frame because the shortcut did not work out. Nothing is logged.
     // The proxy phase's own clock: the plan, the build when this job builds, then the render.
     let started = Instant::now();
-    let declined = match plan_proxy(&job) {
+    let declined = match plan_proxy(&job, &exact) {
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
         ProxyStep::Planned(key) => {
@@ -693,6 +709,9 @@ fn run(
                 Err(error) => Some(error.detail),
                 Ok((source, fresh)) => {
                     let dimensions = (key.plan.width, key.plan.height);
+                    // The proxy stage's one compilation: the frame and the reason it is
+                    // approximate both come from it, so what is reported and what is drawn cannot
+                    // disagree.
                     let rendered = render(
                         &job.registry,
                         source.input(),
@@ -700,7 +719,9 @@ fn run(
                         RenderOptions::proxy(proxy_cancel),
                         &job.context,
                     )
-                    .and_then(|render| render.frame(snapshot_id.clone()));
+                    .and_then(|proxy| {
+                        Ok((proxy.frame(snapshot_id.clone())?, proxy.approximation()))
+                    });
                     // The proxy this job built belongs to the worker whether or not its frame is
                     // still wanted: the next job at the same bounds is a hit either way.
                     if fresh {
@@ -708,7 +729,7 @@ fn run(
                     }
                     match rendered {
                         Err(error) => Some(error.detail),
-                        Ok(raster) => {
+                        Ok((raster, proxy_approximation)) => {
                             let proxy = PreviewResult {
                                 generation,
                                 entry_id: entry_id.clone(),
@@ -728,16 +749,13 @@ fn run(
                                 proxy_dimensions: Some(dimensions),
                                 proxy_declined: None,
                                 proxy_built: fresh,
-                                // Read at exactly the dimensions this frame was rendered against,
-                                // because whether a mask draws a feature the proxy's pixel grid
-                                // can resolve is a fact about that grid.
-                                proxy_approximation: job.registry.proxy_approximation(
-                                    &job.recipe,
-                                    dimensions.0,
-                                    dimensions.1,
-                                ),
+                                // Read from the compilation at exactly the dimensions this frame
+                                // was rendered against, because whether a mask draws a feature the
+                                // proxy's pixel grid can resolve is a fact about that grid.
+                                proxy_approximation,
                                 approximate_white_balance,
-                                render_ms: milliseconds_since(started),
+                                render_ms: compile_ms.take().unwrap_or(0.0)
+                                    + milliseconds_since(started),
                                 queue_wait_ms,
                             };
                             // A proxy nobody will ever see — the queue was cancelled or dropped —
@@ -759,14 +777,10 @@ fn run(
     // The exact phase's own clock starts here, after the proxy phase has handed over its frame, so
     // the two phases' times never overlap and neither includes the other.
     let started = Instant::now();
-    let rendered = render(
-        &job.registry,
-        job.source.input(),
-        recipe,
-        RenderOptions::exact(exact_cancel),
-        &job.context,
-    )
-    .and_then(|render| render.frame(snapshot_id));
+    let rendered = exact
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|exact| exact.frame(snapshot_id));
     // The histogram is reduced from the frame this worker just produced, in place and without a
     // second render or a copy. A failed reduction leaves no report rather than reporting zeroes; a
     // cancelled one means the job was superseded mid-reduce, and the frame it describes is as stale
@@ -785,10 +799,10 @@ fn run(
     // it, so the two travel together under one generation. It reads no pixel of that frame and
     // allocates one byte per display cell; a mask that reads pixels reads them from the input of its
     // own first bound layer instead, one point query per cell.
-    let (mask_overlay, mask_overlay_absent) = match (&result, &job.mask_overlay) {
-        (Ok(_), Some(request)) => mask_overlay_for(
+    let (mask_overlay, mask_overlay_absent) = match (&result, &exact, &job.mask_overlay) {
+        (Ok(_), Ok(exact), Some(request)) => mask_overlay_for(
             &job.registry,
-            &job.source,
+            exact,
             recipe,
             request,
             exact_cancel,
@@ -796,7 +810,7 @@ fn run(
         ),
         _ => (None, None),
     };
-    let render_ms = milliseconds_since(started);
+    let render_ms = compile_ms.unwrap_or(0.0) + milliseconds_since(started);
     // A superseded or abandoned exact phase answers `Cancelled`, so its activity ends cancelled.
     if let Some(activity) = activity {
         activity.finish(Outcome::of(&result));
@@ -838,7 +852,7 @@ fn run(
 /// waiting for it is correct.
 fn mask_overlay_for(
     registry: &ModuleRegistry,
-    source: &PreviewSource,
+    frame: &Render<'_>,
     recipe: &Recipe,
     request: &MaskOverlayRequest,
     cancel: &Cancel,
@@ -873,10 +887,9 @@ fn mask_overlay_for(
             }
         },
     };
-    let (width, height) = source.dimensions();
     // `O(layers)`: it composes the geometry tail of the stack already compiled for this frame and
     // reads no pixel.
-    let transform = match crate::stage_transform(registry, width, height, recipe) {
+    let transform = match frame.transform() {
         Ok(transform) => transform,
         Err(error) => return refused(error),
     };
@@ -901,7 +914,7 @@ fn mask_overlay_for(
         MaskPixels::Unavailable("this mask reads no pixel")
     } else {
         match crate::mask::commands::input_layer_index(recipe, &request.mask).and_then(|layer| {
-            crate::render::layer_input(registry, source.input(), recipe, layer, context)
+            crate::render::layer_input(registry, frame.source(), recipe, layer, context)
         }) {
             // Two different stages would be two different coverage fields, and `coverage_grid`
             // refuses that mismatch for the frame; it is refused here for the operation, in the same
@@ -1490,6 +1503,39 @@ mod tests {
             "the exact phase renders the prepared source, not the proxy: {:?} against {proxy_size:?}",
             (frame.width, frame.height)
         );
+    }
+
+    /// A job compiles its stack once at each stage it renders at: once at the exact stage, whose
+    /// compilation plans the proxy, renders the exact frame and gives the coverage grid its
+    /// geometry, and once at the proxy stage, whose compilation renders the proxy frame and says
+    /// whether it is approximate. A job without a proxy phase compiles once.
+    #[test]
+    fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
+        let mask = gradient_mask(0.5);
+        let request = MaskOverlayRequest {
+            mask: mask.id.clone(),
+            component: None,
+            cells_w: 8,
+            cells_h: 6,
+        };
+        let mut queue = PreviewQueue::default();
+        for (proxy, phases, compiles) in [(Some(bounds(40, 40)), 2, 2), (None, 1, 1)] {
+            let mut job =
+                stacked_with_masks(64, 48, masked_basic(&mask), vec![mask.clone()], proxy)
+                    .with_mask_overlay(request.clone())
+                    .expect("the stack holds the mask");
+            let context = RenderContext::new();
+            job.context = context.clone();
+            queue.request(job);
+            let results = drain_all(&mut queue);
+            assert_eq!(results.len(), phases, "{proxy:?}");
+            let exact = results.last().expect("an exact phase");
+            assert!(
+                exact.result.is_ok() && exact.mask_overlay.is_some(),
+                "{proxy:?}"
+            );
+            assert_eq!(context.compiles(), compiles, "{proxy:?}");
+        }
     }
 
     /// A mask whose narrowest feature spans `length x stage.height` pixels. The gradient runs down
@@ -2514,9 +2560,17 @@ mod tests {
                 cells_w: 8,
                 cells_h: 6,
             };
-            let (grid, reason) = mask_overlay_for(
+            let frame = render(
                 &job.registry,
                 &job.source,
+                &job.recipe,
+                RenderOptions::default(),
+                &job.context,
+            )
+            .expect("the stack compiles");
+            let (grid, reason) = mask_overlay_for(
+                &job.registry,
+                &frame,
                 &job.recipe,
                 &request,
                 &Cancel::never(),
@@ -2604,10 +2658,19 @@ mod tests {
                         cells_w,
                         cells_h,
                     };
+                    let context = crate::render::testing::context();
+                    let frame = crate::render(
+                        &registry,
+                        &source,
+                        &recipe,
+                        RenderOptions::default(),
+                        context,
+                    )
+                    .expect("the stack compiles");
                     let started = Instant::now();
                     let (grid, absent) = mask_overlay_for(
                         &registry,
-                        &source,
+                        &frame,
                         &recipe,
                         &request,
                         &Cancel::never(),

@@ -17,8 +17,8 @@ use super::{
     transform_of,
 };
 use crate::{
-    Error, ErrorKind, ModuleRegistry, ProxyApproximation, Recipe, SnapshotId, SourceImage,
-    mask_field::MaskSampling,
+    Error, ErrorKind, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan, Recipe,
+    SnapshotId, SourceImage, mask_field::MaskSampling,
 };
 use std::borrow::Cow;
 
@@ -87,7 +87,7 @@ impl RenderPhase {
 pub struct RenderOptions {
     pub phase: RenderPhase,
     /// Read once per row or chunk by every rasterizing pass and once per batch of spatial tiles. A
-    /// token already cancelled when the render is entered costs no compile and no frame.
+    /// token already cancelled when a frame is asked for costs no frame.
     pub cancel: Cancel,
     /// The spatial tile size: [`PRODUCTION_TILE`] everywhere but in the tests that prove a frame
     /// and a sample do not depend on it.
@@ -142,11 +142,11 @@ pub struct Render<'a> {
 
 /// Enter rendering: compile `recipe` against `source` for the phase `options` name.
 ///
-/// This is the one entry point. It refuses what no evaluation of the stack could accept — a
-/// cancelled token, a source buffer of the wrong length, RAW settings out of range, a stack the
-/// host cannot compile, or a linear stack with more than one resample — before any pixel is read,
-/// and allocates nothing but the compiled operation lists. The catalog owner may therefore call it
-/// to learn a stack's output stage.
+/// This is the one entry point. It refuses what no evaluation of the stack could accept — a source
+/// buffer of the wrong length, RAW settings out of range, a stack the host cannot compile, or a
+/// linear stack with more than one resample — before any pixel is read, and allocates nothing but
+/// the compiled operation lists. The catalog owner may therefore call it to learn a stack's output
+/// stage, and a preview job compiles its stack once here before either of its phases.
 pub fn render<'a>(
     registry: &ModuleRegistry,
     source: impl Into<RenderSource<'a>>,
@@ -155,7 +155,6 @@ pub fn render<'a>(
     context: &'a RenderContext,
 ) -> Result<Render<'a>, Error> {
     let source = source.into();
-    options.cancel.check()?;
     match source {
         RenderSource::Byte(image) => check_source(image)?,
         RenderSource::Linear { settings, .. } => {
@@ -163,6 +162,8 @@ pub fn render<'a>(
         }
     }
     let (width, height) = source.dimensions();
+    #[cfg(test)]
+    context.note_compile();
     let compiled = registry.compile_sampled(width, height, recipe, options.phase.sampling())?;
     Render::compiled(source, compiled, options, context)
 }
@@ -300,10 +301,19 @@ impl<'a> Render<'a> {
     /// a spatial operation, whose neighbourhoods scale with the stage, and a mask the proxy phase
     /// supersampled. `O(layers + components)`, no pixel read.
     pub fn approximation(&self) -> ProxyApproximation {
-        ProxyApproximation {
-            spatial: self.compiled.evaluates_spatial(),
-            mask: self.compiled.supersampled_masks(),
-        }
+        self.compiled.approximation()
+    }
+
+    /// The proxy of this render's source that fits `bounds`, planned from this compilation's
+    /// output stage, or `None` when no proxy strictly smaller than the source would fit
+    /// ([`ProxyPlan::fit`]).
+    pub fn proxy_plan(&self, bounds: ProxyBounds) -> Option<ProxyPlan> {
+        ProxyPlan::fit(self.source.dimensions(), self.stage(), bounds)
+    }
+
+    /// The source this render reads.
+    pub(crate) fn source(&self) -> RenderSource<'a> {
+        self.source
     }
 
     fn byte(&self, image: &'a SourceImage) -> Evaluation<'_> {

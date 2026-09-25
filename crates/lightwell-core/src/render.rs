@@ -1059,6 +1059,16 @@ impl Compiled {
         })
     }
 
+    /// Why a frame of this compilation is an approximation of the exact render at its size: a
+    /// spatial operation, whose neighbourhoods scale with the stage, and a mask the proxy phase
+    /// supersampled. `O(layers + components)`, no pixel read.
+    pub(crate) fn approximation(&self) -> crate::ProxyApproximation {
+        crate::ProxyApproximation {
+            spatial: self.evaluates_spatial(),
+            mask: self.supersampled_masks(),
+        }
+    }
+
     /// Whether answering one pixel of this compilation evaluates a spatial segment.
     ///
     /// A spatial point query is the declared exception to [performance rule
@@ -2162,6 +2172,45 @@ pub(crate) mod testing {
             y: u32,
         ) -> Result<Sample, Error> {
             enter(registry, self, recipe, RenderOptions::default(), context())?.sample(x, y)
+        }
+    }
+
+    impl crate::PreviewSource {
+        /// The proxy plan for `recipe` over this source at `bounds`, from a compile of its
+        /// dimensions alone: a test may plan over a source that holds no pixels.
+        pub(crate) fn proxy_plan(
+            &self,
+            registry: &ModuleRegistry,
+            recipe: &Recipe,
+            bounds: crate::ProxyBounds,
+        ) -> Result<Option<crate::ProxyPlan>, Error> {
+            let (width, height) = self.dimensions();
+            let stage = registry.compile(width, height, recipe)?.stage();
+            Ok(crate::ProxyPlan::fit(
+                (width, height),
+                (stage.width, stage.height),
+                bounds,
+            ))
+        }
+    }
+
+    impl ModuleRegistry {
+        /// What a proxy-phase render of `recipe` over a `width` × `height` source reports, from a
+        /// compile of the dimensions alone; the default when the stack does not compile there.
+        pub(crate) fn proxy_approximation(
+            &self,
+            recipe: &Recipe,
+            width: u32,
+            height: u32,
+        ) -> crate::ProxyApproximation {
+            self.compile_sampled(
+                width,
+                height,
+                recipe,
+                crate::mask_field::MaskSampling::ThinFeature,
+            )
+            .map(|compiled| compiled.approximation())
+            .unwrap_or_default()
         }
     }
 
