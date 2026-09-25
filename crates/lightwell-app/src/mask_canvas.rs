@@ -9,14 +9,15 @@
 //! Unlike the crop canvas it draws over the **current** render rather than a truncated prefix: a
 //! mask does not change the stage, so the picture under the handles is the one the release will
 //! commit against. Positions are mapped locally, through the affine `render.transform` answered once
-//! when the gesture opened and the [`OutputView`] the photograph is drawn with — never through a
+//! when the gesture opened and the [`CanvasView`] the output stage is drawn with — never through a
 //! `render.locate` per move, which would put a runtime hop on the input path.
 use crate::{
     app::message::{MaskMessage, MaskPointer, Message},
+    canvas_view::{self, CanvasView},
     mask_draft::{ContentMap, MaskDraft, MaskHandle, MaskShape},
 };
 use iced::{
-    Point, Rectangle, Renderer, Size, Theme, Vector,
+    Point, Rectangle, Renderer, Theme,
     mouse::{self, Cursor},
     widget::canvas::{self, Action, Event, Frame, Geometry, Path, Stroke},
 };
@@ -29,76 +30,13 @@ const HANDLE_RADIUS: f32 = 5.0;
 /// output stage's diagonal. A gradient's lines are infinite; this is enough to leave the frame from
 /// any position and angle the legal range allows.
 const LINE_REACH: f64 = 2.0;
-/// How many segments one drawn ellipse is built from. Fixed, so a figure costs the same at every
-/// zoom, and fine enough that the boundary reads as a curve on a full-screen radial.
-const ELLIPSE_STEPS: usize = 96;
-
-/// Where the output stage is drawn inside this canvas, in logical pixels. Fit centres it, a
-/// percentage zoom draws it at its own size with the origin at the corner and the surrounding
-/// scrollable handles the offset — exactly the two cases the photo surface itself draws.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct OutputView {
-    /// Output pixels to logical pixels.
-    pub(crate) scale: f32,
-    /// Where output (0, 0) sits inside the canvas, in logical pixels.
-    pub(crate) origin: Vector,
-}
-
-impl OutputView {
-    /// Fit: the largest scale that shows the whole output stage, centred in `available`.
-    pub(crate) fn fit(output: (f64, f64), available: Size) -> Option<Self> {
-        let (width, height) = (output.0 as f32, output.1 as f32);
-        if !(width > 0.0 && height > 0.0 && available.width > 0.0 && available.height > 0.0) {
-            return None;
-        }
-        let scale = (available.width / width).min(available.height / height);
-        (scale.is_finite() && scale > 0.0).then_some(Self {
-            scale,
-            origin: Vector::new(
-                (available.width - width * scale) / 2.0,
-                (available.height - height * scale) / 2.0,
-            ),
-        })
-    }
-
-    /// A percentage zoom: `value / 100 / display scale`, the same arithmetic the plain image path
-    /// uses, so 100% keeps one output pixel per physical pixel.
-    pub(crate) fn percent(value: f32, scale_factor: f32) -> Option<Self> {
-        let scale = value / 100.0 / scale_factor;
-        (scale.is_finite() && scale > 0.0).then_some(Self {
-            scale,
-            origin: Vector::new(0.0, 0.0),
-        })
-    }
-
-    /// Canvas-local logical pixels to output-stage pixels.
-    pub(crate) fn output_point(self, point: Point) -> (f64, f64) {
-        (
-            f64::from((point.x - self.origin.x) / self.scale),
-            f64::from((point.y - self.origin.y) / self.scale),
-        )
-    }
-
-    /// Output-stage pixels to canvas-local logical pixels.
-    pub(crate) fn canvas_point(self, x: f64, y: f64) -> Point {
-        Point::new(
-            self.origin.x + x as f32 * self.scale,
-            self.origin.y + y as f32 * self.scale,
-        )
-    }
-
-    /// The hit radius in output pixels, so a handle is the same size on screen at every zoom.
-    fn tolerance(self) -> f64 {
-        f64::from(HIT_RADIUS / self.scale)
-    }
-}
-
 /// Content-normalized to canvas-local, and back: the map and the view composed, which is the whole
 /// of what a pointer move costs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Placement {
     pub(crate) map: ContentMap,
-    pub(crate) view: OutputView,
+    /// The output stage as it is drawn in this canvas.
+    pub(crate) view: CanvasView,
 }
 
 impl Placement {
@@ -108,14 +46,14 @@ impl Placement {
     }
 
     pub(crate) fn content_point(self, point: Point) -> (f64, f64) {
-        let (ox, oy) = self.view.output_point(point);
+        let (ox, oy) = self.view.stage_point(point);
         self.map.to_content(ox, oy)
     }
 
     /// The hit radius in normalized content units: the pixel radius through the view, then through
     /// the affine.
     pub(crate) fn tolerance(self) -> f64 {
-        self.map.tolerance(self.view.tolerance())
+        self.map.tolerance(self.view.tolerance(HIT_RADIUS))
     }
 }
 
@@ -285,26 +223,29 @@ impl<'a> MaskCanvas<'a> {
     ///
     /// Mask space is defined in terms of the content stage's height on both axes, so the circle is
     /// an ellipse in normalized coordinates and a circle again once the affine has been applied —
-    /// the same construction the radial's own ellipse takes, and for the same reason.
+    /// the same construction the radial's own ellipse takes, through the same helper.
     fn brush_circle(&self, centre: (f64, f64), radius: f64, dashed: bool) -> Path {
+        self.mask_ellipse(centre, (radius, radius), 0.0, dashed)
+    }
+
+    /// An ellipse of mask space — `radii` in mask-space units about a normalized content `centre`,
+    /// turned by `angle` degrees — mapped through the affine and the view, so it follows a crop or a
+    /// quarter turn with the picture and stays a circle in pixels at any aspect ratio.
+    fn mask_ellipse(
+        &self,
+        centre: (f64, f64),
+        radii: (f64, f64),
+        angle: f64,
+        dashed: bool,
+    ) -> Path {
         let aspect = self.draft.aspect();
-        let point = |step: usize| {
-            let t = step as f64 / ELLIPSE_STEPS as f64 * std::f64::consts::TAU;
-            self.placement.canvas_point(
-                (centre.0 * aspect + radius * t.cos()) / aspect,
-                centre.1 + radius * t.sin(),
-            )
-        };
-        Path::new(|builder| {
-            builder.move_to(point(0));
-            for step in 1..=ELLIPSE_STEPS {
-                if dashed && step % 2 == 0 {
-                    builder.move_to(point(step));
-                } else {
-                    builder.line_to(point(step));
-                }
-            }
-        })
+        canvas_view::ellipse(
+            (centre.0 * aspect, centre.1),
+            radii,
+            angle * std::f64::consts::PI / 180.0,
+            dashed,
+            |u, v| self.placement.canvas_point(u / aspect, v),
+        )
     }
 
     /// A mask-space radius in canvas-local logical pixels, measured through the same map the figure
@@ -319,40 +260,18 @@ impl<'a> MaskCanvas<'a> {
     }
 
     /// One ellipse of the radial's family, at `scale` of its radii, as a closed canvas path.
-    ///
-    /// `ELLIPSE_STEPS` segments is what a bounded figure costs: the path is rebuilt per frame like
-    /// every other canvas figure, and a fixed step count keeps that cost independent of zoom.
     fn ellipse_path(
         &self,
         radial: lightwell_core::mask::RadialGradient,
         scale: f64,
         dashed: bool,
     ) -> Path {
-        let aspect = self.draft.aspect();
-        let theta = radial.angle * std::f64::consts::PI / 180.0;
-        let (ca, sa) = (theta.cos(), theta.sin());
-        let point = |step: usize| {
-            let t = step as f64 / ELLIPSE_STEPS as f64 * std::f64::consts::TAU;
-            let (a, b) = (
-                scale * radial.radius_x * t.cos(),
-                scale * radial.radius_y * t.sin(),
-            );
-            let (du, dv) = (ca * a - sa * b, sa * a + ca * b);
-            self.placement
-                .canvas_point((radial.x * aspect + du) / aspect, radial.y + dv)
-        };
-        Path::new(|builder| {
-            builder.move_to(point(0));
-            for step in 1..=ELLIPSE_STEPS {
-                // A dashed ring is drawn as alternate segments rather than with a dash pattern, so
-                // the feather ring reads as the softer of the two figures at every zoom.
-                if dashed && step % 2 == 0 {
-                    builder.move_to(point(step));
-                } else {
-                    builder.line_to(point(step));
-                }
-            }
-        })
+        self.mask_ellipse(
+            (radial.x, radial.y),
+            (scale * radial.radius_x, scale * radial.radius_y),
+            radial.angle,
+            dashed,
+        )
     }
 }
 
@@ -518,6 +437,7 @@ fn tint(alpha: f32) -> iced::Color {
 mod tests {
     use super::*;
     use crate::mask_draft::{BRUSH, LINEAR, MaskDraft, NEUTRAL_BRUSH, RADIAL};
+    use iced::Size;
     use lightwell_core::{StageSize, StageTransform};
 
     fn placement(output: (u32, u32), available: Size) -> Placement {
@@ -535,27 +455,9 @@ mod tests {
         };
         Placement {
             map: ContentMap::new(&transform).expect("a drawable stage"),
-            view: OutputView::fit((f64::from(output.0), f64::from(output.1)), available)
+            view: CanvasView::fit((f64::from(output.0), f64::from(output.1)), available)
                 .expect("a fitted view"),
         }
-    }
-
-    #[test]
-    fn fit_centres_the_output_stage_and_maps_pointers_through_it_both_ways() {
-        // A 200x100 stage in a 400x400 surface: scale 2, centred vertically like the image path.
-        let view = OutputView::fit((200.0, 100.0), Size::new(400.0, 400.0)).expect("a view");
-        assert_eq!(view.scale, 2.0);
-        assert_eq!(view.origin, Vector::new(0.0, 100.0));
-        assert_eq!(view.output_point(Point::new(0.0, 100.0)), (0.0, 0.0));
-        assert_eq!(view.output_point(Point::new(400.0, 300.0)), (200.0, 100.0));
-        for (x, y) in [(0.0, 0.0), (37.0, 91.0), (200.0, 100.0)] {
-            assert_eq!(view.output_point(view.canvas_point(x, y)), (x, y));
-        }
-        assert!(OutputView::fit((0.0, 100.0), Size::new(400.0, 400.0)).is_none());
-        assert!(OutputView::percent(0.0, 1.0).is_none());
-        // The hit radius is constant on screen: it grows in stage units as the view shrinks.
-        let zoomed = OutputView::percent(400.0, 1.0).expect("a percent view");
-        assert_eq!(zoomed.tolerance(), f64::from(HIT_RADIUS) / 4.0);
     }
 
     /// A handle is drawn where a press on it lands. That is the whole correctness condition for
@@ -661,7 +563,7 @@ mod tests {
         };
         Placement {
             map: ContentMap::new(&transform).expect("a drawable stage"),
-            view: OutputView::fit((f64::from(output.0), f64::from(output.1)), available)
+            view: CanvasView::fit((f64::from(output.0), f64::from(output.1)), available)
                 .expect("a fitted view"),
         }
     }

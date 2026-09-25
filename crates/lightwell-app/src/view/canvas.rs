@@ -10,8 +10,9 @@ use crate::{
         crop::SURFACE_ID,
         message::{CapabilityMessage, CropMessage, DraftMessage, Message},
     },
-    crop_canvas::{CropCanvas, Mode, Part, View},
-    mask_canvas::{MaskCanvas, OutputView as MaskView, Placement},
+    canvas_view::CanvasView,
+    crop_canvas::{CropCanvas, Mode, Part},
+    mask_canvas::{MaskCanvas, Placement},
     state::canvas::{
         CanvasModel, DraftBar, Notice, NoticeAction, NoticeTone, PhotoView, SurfaceMode, ZoomView,
     },
@@ -357,7 +358,7 @@ fn plain<'a>(
                 // the same contained rectangle the photograph is drawn into.
                 if let (Some(draft), Some(map)) = (mask_draft, mask_map)
                     && let Some(rect) = fit_rect((width, height), available)
-                    && let Some(view) = MaskView::fit(map.output(), rect.size())
+                    && let Some(view) = CanvasView::fit(map.output(), rect.size())
                 {
                     layers.push(
                         iced::widget::container(
@@ -424,7 +425,7 @@ fn plain<'a>(
                 );
             }
             if let (Some(draft), Some(map)) = (mask_draft, mask_map)
-                && let Some(view) = MaskView::percent(value, model.scale_factor)
+                && let Some(view) = CanvasView::percent(value, model.scale_factor)
             {
                 layers.push(
                     canvas(MaskCanvas::new(draft, Placement { map, view }))
@@ -469,32 +470,36 @@ fn crop_surface<'a>(
     let option = model.option;
     // Two stacked canvases: the toolkit paints every image of one layer over every mesh of that
     // layer, so the frame, thirds, handles and guide need the layer the stack gives its second child.
-    let parts =
-        move |handle: crate::draft_photo::DraftPhoto, view: View, width: Length, height: Length| {
-            stack([Part::Photo, Part::Overlay].map(|part| {
-                canvas(CropCanvas::new(
-                    draft,
-                    handle.clone(),
-                    view,
-                    mode,
-                    option,
-                    part,
-                ))
-                .width(width)
-                .height(height)
-                .into()
-            }))
-        };
+    let parts = move |handle: crate::draft_photo::DraftPhoto,
+                      view: CanvasView,
+                      width: Length,
+                      height: Length| {
+        stack([Part::Photo, Part::Overlay].map(|part| {
+            canvas(CropCanvas::new(
+                draft,
+                handle.clone(),
+                view,
+                mode,
+                option,
+                part,
+            ))
+            .width(width)
+            .height(height)
+            .into()
+        }))
+    };
     match model.zoom {
-        ZoomView::Fit => responsive(move |available| match View::fit(box_size, available) {
-            Some(view) => parts(handle.clone(), view, Length::Fill, Length::Fill).into(),
-            None => container(text("The surface is too small to draw the crop").size(12))
-                .center(Length::Fill)
-                .into(),
-        })
+        ZoomView::Fit => responsive(
+            move |available| match CanvasView::fit(box_size, available) {
+                Some(view) => parts(handle.clone(), view, Length::Fill, Length::Fill).into(),
+                None => container(text("The surface is too small to draw the crop").size(12))
+                    .center(Length::Fill)
+                    .into(),
+            },
+        )
         .into(),
         ZoomView::Percent(value) => {
-            let Some(view) = View::percent(value, model.scale_factor) else {
+            let Some(view) = CanvasView::percent(value, model.scale_factor) else {
                 return container(text("Zoom is out of range").size(12))
                     .center(Length::Fill)
                     .into();

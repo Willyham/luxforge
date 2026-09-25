@@ -9,11 +9,12 @@
 //! render is the reference. The canvas never rasterizes a pixel itself.
 use crate::{
     app::message::{CropMessage, CropPointer, Message},
+    canvas_view::CanvasView,
     crop_draft::{Corner, CropDraft, Handle, edge_midpoint},
     draft_photo::{self, DraftPhoto},
 };
 use iced::{
-    Color, Point, Radians, Rectangle, Renderer, Size, Theme, Vector,
+    Color, Point, Radians, Rectangle, Renderer, Size, Theme,
     mouse::{self, Cursor},
     widget::{
         canvas::{self, Action, Event, Frame, Geometry, Image, Path, Stroke},
@@ -40,81 +41,6 @@ pub(crate) enum Mode {
     Guide,
 }
 
-/// The mapping between canvas-local logical pixels and box pixels. Fit centres the box in the
-/// available space; a percentage zoom draws the box at its own size with the origin at the corner,
-/// and the surrounding scrollable handles the offset.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct View {
-    /// Box pixels to logical pixels.
-    pub(crate) scale: f32,
-    /// Where box (0, 0) sits inside the canvas, in logical pixels.
-    pub(crate) origin: Vector,
-}
-
-impl View {
-    /// Fit: the largest scale that shows the whole rotated box, centred in `available`.
-    pub(crate) fn fit(box_size: (f64, f64), available: Size) -> Option<Self> {
-        let (box_width, box_height) = (box_size.0 as f32, box_size.1 as f32);
-        if !(box_width > 0.0 && box_height > 0.0 && available.width > 0.0 && available.height > 0.0)
-        {
-            return None;
-        }
-        let scale = (available.width / box_width).min(available.height / box_height);
-        if !(scale.is_finite() && scale > 0.0) {
-            return None;
-        }
-        Some(Self {
-            scale,
-            origin: Vector::new(
-                (available.width - box_width * scale) / 2.0,
-                (available.height - box_height * scale) / 2.0,
-            ),
-        })
-    }
-
-    /// A percentage zoom: `value / 100 / display scale`, so 100% keeps one input pixel per physical
-    /// pixel exactly as the plain image path does.
-    pub(crate) fn percent(value: f32, scale_factor: f32) -> Option<Self> {
-        let scale = value / 100.0 / scale_factor;
-        (scale.is_finite() && scale > 0.0).then_some(Self {
-            scale,
-            origin: Vector::new(0.0, 0.0),
-        })
-    }
-
-    /// Canvas-local logical pixels to box pixels.
-    pub(crate) fn box_point(&self, point: Point) -> (f64, f64) {
-        (
-            f64::from((point.x - self.origin.x) / self.scale),
-            f64::from((point.y - self.origin.y) / self.scale),
-        )
-    }
-
-    /// Box pixels to canvas-local logical pixels.
-    pub(crate) fn canvas_point(&self, x: f64, y: f64) -> Point {
-        Point::new(
-            self.origin.x + x as f32 * self.scale,
-            self.origin.y + y as f32 * self.scale,
-        )
-    }
-
-    pub(crate) fn canvas_rect(&self, rect: &BoxRect) -> Rectangle {
-        let origin = self.canvas_point(rect.x, rect.y);
-        Rectangle::new(
-            origin,
-            Size::new(
-                rect.width as f32 * self.scale,
-                rect.height as f32 * self.scale,
-            ),
-        )
-    }
-
-    /// The hit radius in box pixels, so a handle is the same size on screen at every zoom.
-    fn tolerance(&self) -> f64 {
-        f64::from(HIT_RADIUS / self.scale)
-    }
-}
-
 /// Which half of the crop frame a canvas draws. Iced's renderer paints every image of one layer
 /// over every mesh of that layer, whatever order they were built in, so the frame, thirds, handles
 /// and guide have to live in a canvas of their own that the host stacks above the photo. The two
@@ -138,7 +64,8 @@ pub(crate) struct CropCanvas<'a> {
     /// The crop layer's input stage as the preview worker rendered it, in the tiles it was uploaded
     /// as.
     photo: DraftPhoto,
-    view: View,
+    /// The crop box as it is drawn in this canvas: the shared canvas view, over box pixels.
+    view: CanvasView,
     mode: Mode,
     /// Option (Alt) is held, so a handle scales uniformly about the centre.
     option: bool,
@@ -149,7 +76,7 @@ impl<'a> CropCanvas<'a> {
     pub(crate) fn new(
         draft: &'a CropDraft,
         photo: DraftPhoto,
-        view: View,
+        view: CanvasView,
         mode: Mode,
         option: bool,
         part: Part,
@@ -207,9 +134,10 @@ impl<'a> CropCanvas<'a> {
         match self.mode {
             Mode::Guide => Handle::Guide,
             Mode::Pan => Handle::Move,
-            Mode::Frame => self
-                .draft
-                .hit(self.view.box_point(point), self.view.tolerance()),
+            Mode::Frame => self.draft.hit(
+                self.view.stage_point(point),
+                self.view.tolerance(HIT_RADIUS),
+            ),
         }
     }
 
@@ -246,7 +174,7 @@ impl canvas::Program<Message> for CropCanvas<'_> {
                     return Some(Action::capture());
                 }
                 let handle = self.handle_at(point);
-                let (x, y) = self.view.box_point(point);
+                let (x, y) = self.view.stage_point(point);
                 Some(self.pointer(CropPointer::Begin { handle, x, y }))
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -265,7 +193,7 @@ impl canvas::Program<Message> for CropCanvas<'_> {
                 if !self.draft.dragging() {
                     return None;
                 }
-                let (x, y) = self.view.box_point(point);
+                let (x, y) = self.view.stage_point(point);
                 Some(self.pointer(CropPointer::Drag {
                     x,
                     y,
@@ -294,7 +222,10 @@ impl canvas::Program<Message> for CropCanvas<'_> {
         _cursor: Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let rect = self.view.canvas_rect(&self.draft.rect);
+        let box_rect = &self.draft.rect;
+        let rect = self
+            .view
+            .canvas_rect(box_rect.x, box_rect.y, box_rect.width, box_rect.height);
         if self.part == Part::Photo {
             // The whole stage, dimmed, then the crop rectangle at full opacity over it.
             self.draw_photo(&mut frame, DIM_OPACITY);
@@ -414,64 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn fit_maps_pointers_through_the_centred_contained_box() {
-        // A 200x100 box in a 400x400 surface: scale 2, centred vertically like the image path.
-        let view = View::fit((200.0, 100.0), Size::new(400.0, 400.0)).expect("a fitted view");
-        assert_eq!(view.scale, 2.0);
-        assert_eq!(view.origin, Vector::new(0.0, 100.0));
-        assert_eq!(view.box_point(Point::new(0.0, 100.0)), (0.0, 0.0));
-        assert_eq!(view.box_point(Point::new(400.0, 300.0)), (200.0, 100.0));
-        assert_eq!(
-            view.box_point(Point::new(200.0, 200.0)),
-            (100.0, 50.0),
-            "the centre of the surface is the centre of the box"
-        );
-        // The mapping is invertible, so a drawn handle sits where a press on it lands.
-        for (x, y) in [(0.0, 0.0), (37.0, 91.0), (200.0, 100.0)] {
-            assert_eq!(view.box_point(view.canvas_point(x, y)), (x, y));
-        }
-        let rect = view.canvas_rect(&BoxRect {
-            x: 10.0,
-            y: 20.0,
-            width: 30.0,
-            height: 40.0,
-        });
-        assert_eq!(
-            rect,
-            Rectangle::new(Point::new(20.0, 140.0), Size::new(60.0, 80.0))
-        );
-        // A degenerate box or surface has no view rather than a nonsense one.
-        assert!(View::fit((0.0, 100.0), Size::new(400.0, 400.0)).is_none());
-        assert!(View::fit((200.0, 100.0), Size::new(0.0, 400.0)).is_none());
-    }
-
-    #[test]
-    fn a_percentage_zoom_keeps_one_input_pixel_per_physical_pixel_at_one_hundred() {
-        // 100% on a 2x display draws every box pixel at half a logical pixel, which is one
-        // physical pixel: the same arithmetic the plain percent image path uses.
-        let view = View::percent(100.0, 2.0).expect("a percent view");
-        assert_eq!(view.scale, 0.5);
-        assert_eq!(view.origin, Vector::new(0.0, 0.0));
-        assert_eq!(view.box_point(Point::new(0.0, 0.0)), (0.0, 0.0));
-        assert_eq!(view.box_point(Point::new(50.0, 25.0)), (100.0, 50.0));
-        // Inside the scrollable the reported point is already content space, so no pan enters here.
-        let view = View::percent(200.0, 1.0).expect("a percent view");
-        assert_eq!(view.scale, 2.0);
-        assert_eq!(view.box_point(Point::new(317.0, 9.0)), (158.5, 4.5));
-        assert!(View::percent(0.0, 1.0).is_none());
-        assert!(View::percent(100.0, 0.0).is_none());
-        assert!(View::percent(f32::NAN, 1.0).is_none());
-    }
-
-    #[test]
-    fn the_hit_radius_is_constant_on_screen_at_every_zoom() {
-        let zoomed = View::percent(400.0, 1.0).expect("a percent view");
-        assert_eq!(zoomed.tolerance(), f64::from(HIT_RADIUS) / 4.0);
-        let shrunk = View::percent(25.0, 1.0).expect("a percent view");
-        assert_eq!(shrunk.tolerance(), f64::from(HIT_RADIUS) * 4.0);
-    }
-
-    #[test]
     fn the_image_is_placed_so_its_rotated_bounds_are_the_box() {
         // Iced rotates about the bounds centre and reports the rotated bounding box, which is
         // exactly the geometry contract's box: place the unrotated stage on the box centre.
@@ -480,7 +353,7 @@ mod tests {
             draft.set_angle(angle);
             assert_eq!(draft.stage.angle, angle);
             let (box_width, box_height) = draft.stage.bounding_box();
-            let view = View::percent(100.0, 1.0).expect("a percent view");
+            let view = CanvasView::percent(100.0, 1.0).expect("a percent view");
             let canvas = CropCanvas::new(
                 &draft,
                 DraftPhoto::unallocated(480, 320),
@@ -532,7 +405,7 @@ mod tests {
     fn only_the_overlay_part_answers_pointers() {
         use canvas::Program;
         let draft = CropDraft::neutral(stage(480, 320, 0.0), 0, 0);
-        let view = View::percent(100.0, 1.0).expect("a percent view");
+        let view = CanvasView::percent(100.0, 1.0).expect("a percent view");
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
         let cursor = Cursor::Available(Point::new(10.0, 10.0));

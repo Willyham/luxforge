@@ -5,6 +5,7 @@
 #![recursion_limit = "256"]
 
 mod app;
+mod canvas_view;
 mod crop_canvas;
 mod crop_draft;
 mod diagnostics;
