@@ -2218,7 +2218,7 @@
     {
       "id": "TASK-037",
       "description": "Describe capability settings with the module parameter vocabulary, so settings and parameters share one vocabulary and one schema emitter.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-030",
         "TASK-033"
