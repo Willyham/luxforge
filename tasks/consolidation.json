@@ -2145,7 +2145,7 @@
     {
       "id": "TASK-036",
       "description": "Let the mask component-kind table carry each kind's compile and validate, give the desktop a `ShapeEditor` per drawn kind, share the host's mask rules with the Masks panel, and share one canvas view and ellipse helper between crop and mask.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-035"
       ],
