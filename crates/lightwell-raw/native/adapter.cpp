@@ -366,8 +366,14 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
                               (x % meta->black_repeat_width);
             black += meta->black_repeat[ix];
           }
-          // Sensor scale 65535 is the established numerical contract.
-          // No pre-demosaic clamp: sampled under-black and over-white latitude is retained.
+          // Sensor scale 65535 is the established numerical contract. This
+          // normalization clamps nothing, but the pinned RCD reads each Bayer
+          // site as LIM01(value / 65536): a gained site is clipped to
+          // [0, 65536/65535] of sensor white before interpolation, except in
+          // the 9 px border band the border pass fills from this unclamped
+          // input. Markesteijn has no input clamp, so X-Trans keeps both
+          // under-black and over-white values (TASK-017; the lightwell-raw
+          // test bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not).
           const float denominator = meta->white - black;
           if (!std::isfinite(denominator) || denominator <= 0.f) {
             error(err, err_len, "invalid black/white denominator");

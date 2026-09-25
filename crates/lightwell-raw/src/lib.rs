@@ -1374,6 +1374,100 @@ mod tests {
         );
     }
 
+    /// Known bug TASK-017 pins the current behaviour, not the documented
+    /// intent it replaced: the vendored RCD clamps its input with
+    /// `LIM01(rawData / 65536)`, so a Bayer site's black-subtracted,
+    /// white-normalised and gained value is clipped to [0, 65536/65535] of
+    /// sensor white before the demosaic. Over-white and under-black latitude
+    /// survives only in the 9 px border band, which the border pass fills from
+    /// the unclamped input. Markesteijn has no such clamp: an X-Trans mosaic
+    /// keeps both. Retaining the Bayer latitude is an owner decision with a
+    /// measured rendering change; until then this test fails if it changes.
+    #[test]
+    fn bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not() {
+        let never = AtomicBool::new(false);
+        let never_context = (&never as *const AtomicBool).cast_mut().cast();
+        let gains = [2.0, 1.0, 1.5];
+        let (width, height) = (64, 48);
+        let n = width * height;
+        let (_, mut bayer) = synthetic_bayer(width, height, [0, 1, 1, 2]);
+        bayer.black_base = 64.0;
+        bayer.black_channels = [0.0; 4];
+        let (_, mut xtrans) = synthetic_xtrans(126, 126);
+        xtrans.black_base = 64.0;
+        xtrans.black_channels = [0.0; 4];
+        xtrans.black_repeat_width = 0;
+        xtrans.black_repeat_height = 0;
+        let clip = 65536.0_f32 / 65535.0;
+        let interior = |width: usize, height: usize, border: usize| {
+            (border..height - border)
+                .flat_map(move |y| (border..width - border).map(move |x| y * width + x))
+        };
+
+        // Every site at sensor white: the gained value is 2 x white for red
+        // and 1.5 x white for blue, which RCD clips to its input ceiling, so
+        // every channel develops to white, as the ungained green does, give or
+        // take the interpolation's rounding.
+        let white = vec![bayer.white as u16; n];
+        let (code, planes) = run_bayer(&white, &bayer, gains, None, cancelled, never_context, 0);
+        assert_eq!(code, 0);
+        for index in interior(width, height, 9) {
+            for channel in 0..3 {
+                let value = planes[channel * n + index];
+                assert!(
+                    (value - clip).abs() < 1e-4,
+                    "Bayer {channel} at {index}: {value}"
+                );
+            }
+        }
+        // The border band keeps the gained value: (0, 0) is a red site.
+        assert!((planes[0] - 2.0).abs() < 1e-5, "{}", planes[0]);
+
+        // Every site 64 codes under black clips to zero inside, stays negative
+        // in the border band.
+        let under = vec![0_u16; n];
+        let (code, planes) = run_bayer(&under, &bayer, gains, None, cancelled, never_context, 0);
+        assert_eq!(code, 0);
+        for index in interior(width, height, 9) {
+            for channel in 0..3 {
+                assert_eq!(
+                    planes[channel * n + index],
+                    0.0,
+                    "Bayer under black at {index}"
+                );
+            }
+        }
+        assert!(planes[0] < 0.0);
+
+        // X-Trans keeps the latitude through the demosaic.
+        let n = 126 * 126;
+        let white = vec![xtrans.white as u16; n];
+        let (code, planes) = run_bayer(&white, &xtrans, gains, None, cancelled, never_context, 0);
+        assert_eq!(code, 0);
+        for index in interior(126, 126, 12) {
+            for (channel, gain) in gains.iter().enumerate() {
+                let value = planes[channel * n + index];
+                assert!(
+                    (value - gain).abs() < 1e-4,
+                    "X-Trans {channel} at {index}: {value}"
+                );
+            }
+        }
+        let under = vec![0_u16; n];
+        let (code, planes) = run_bayer(&under, &xtrans, gains, None, cancelled, never_context, 0);
+        assert_eq!(code, 0);
+        for index in interior(126, 126, 12) {
+            for (channel, gain) in gains.iter().enumerate() {
+                let expected = -64.0 / (xtrans.white - 64.0) * gain;
+                let value = planes[channel * n + index];
+                assert!(
+                    (value - expected).abs() < 1e-4,
+                    "X-Trans {channel} at {index}: {value}"
+                );
+            }
+        }
+    }
+
     fn first_difference(left: &[f32], right: &[f32]) -> Option<usize> {
         assert_eq!(left.len(), right.len());
         left.iter()

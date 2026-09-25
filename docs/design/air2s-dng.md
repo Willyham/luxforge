@@ -29,7 +29,7 @@ The file requires OpcodeList3 GainMap (9) and WarpRectilinear (1). Both must be 
 
 ## Clipping boundary
 
-The existing [RAW pixel/color contract](initial-raw.md#pixel-and-color-contract) requires finite negative values and highlight headroom to survive until terminal display. Air 2S support inherits that contract; it does not introduce an early clipping stage. The supplied GainMap reaches roughly 4.1–4.7 depending on channel, so per-opcode clipping would discard detail before the existing exposure operation. The interpretation explicitly names unclipped evaluation. Independent references distinguish it from the normative clipped DNG variant; this is a neutral Lightwell development, not a strict Adobe rendering match.
+The existing [RAW pixel/color contract](initial-raw.md#pixel-and-color-contract) requires finite negative values and highlight headroom to survive until terminal display. Air 2S support inherits that contract; it does not introduce an early clipping stage. The sensor is Bayer, so its RCD demosaic has already clipped each gained site at sensor white before these corrections run ([initial RAW](initial-raw.md#pixel-and-color-contract)). The supplied GainMap reaches roughly 4.1–4.7 depending on channel, so per-opcode clipping would discard detail before the existing exposure operation. The interpretation explicitly names unclipped evaluation. Independent references distinguish it from the normative clipped DNG variant; this is a neutral Lightwell development, not a strict Adobe rendering match.
 
 ## Coordinates, calibration and bounded evaluation
 
