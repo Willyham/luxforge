@@ -20,6 +20,7 @@
 use crate::{AssetId, Error, ErrorKind};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
@@ -43,7 +44,7 @@ pub const MAX_RECENT: usize = 16;
 pub const RECENT_THRESHOLD: Duration = Duration::from_millis(250);
 
 /// How one piece of work ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
     Completed,
@@ -107,27 +108,31 @@ impl ActivityProgress {
 
 /// What an active or a recent entry says about its work. Absent optional fields are left out of the
 /// JSON rather than written as `null`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+///
+/// The board's own entries borrow their publisher's static words; an entry a client reads back
+/// from `activity.list` owns them. Either way it is this one type, so a client parses the answer
+/// into exactly what the board wrote.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ActivityEntry {
     /// Unique on this board and increasing in the order the work began.
     pub id: u64,
-    pub kind: &'static str,
-    pub label: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Cow<'static, str>,
+    pub label: Cow<'static, str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_id: Option<AssetId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
     /// The phase the work reported last; a finished entry keeps the one it ended in.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub phase: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Cow<'static, str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<ActivityProgress>,
 }
 
 /// One piece of work still running.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ActiveActivity {
     #[serde(flatten)]
     pub entry: ActivityEntry,
@@ -136,7 +141,7 @@ pub struct ActiveActivity {
 }
 
 /// One piece of work that finished after running at least the board's recent threshold.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecentActivity {
     #[serde(flatten)]
     pub entry: ActivityEntry,
@@ -148,7 +153,7 @@ pub struct RecentActivity {
 }
 
 /// The board at one moment, as `activity.list` returns it.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ActivitySnapshot {
     /// Changes exactly when the contents do, so a poller can skip a snapshot it has already seen.
     pub sequence: u64,
@@ -236,8 +241,8 @@ impl ActivityBoard {
         // moves the entry into space it already has.
         let mut entry = ActivityEntry {
             id: 0,
-            kind: spec.kind,
-            label: spec.label,
+            kind: Cow::Borrowed(spec.kind),
+            label: Cow::Borrowed(spec.label),
             detail: spec.detail,
             asset_id: spec.asset_id,
             job_id: spec.job_id,
@@ -307,8 +312,8 @@ impl ActivityBoard {
         let Some(entry) = board.running(id) else {
             return;
         };
-        if entry.phase != Some(phase) {
-            entry.phase = Some(phase);
+        if entry.phase.as_deref() != Some(phase) {
+            entry.phase = Some(Cow::Borrowed(phase));
             board.changed();
         }
     }
@@ -474,19 +479,19 @@ mod tests {
         let entry = &running.active[0].entry;
         assert_eq!(entry.id, 1, "ids start at one");
         assert_eq!(
-            (entry.kind, entry.label),
+            (&*entry.kind, &*entry.label),
             ("source.prepare", "Preparing original")
         );
         assert_eq!(entry.detail.as_deref(), Some("DSC_0412.NEF"));
         assert_eq!(entry.asset_id.as_ref(), Some(&asset));
         assert_eq!(entry.job_id.as_deref(), Some("source-job-7"));
-        assert_eq!((entry.phase, entry.progress.clone()), (None, None));
+        assert_eq!((entry.phase.clone(), entry.progress.clone()), (None, None));
 
         activity.phase("decode");
         activity.progress(Some(0.3), "3 of 10");
         let reported = board.snapshot();
         let entry = &reported.active[0].entry;
-        assert_eq!(entry.phase, Some("decode"));
+        assert_eq!(entry.phase.as_deref(), Some("decode"));
         assert_eq!(
             entry.progress,
             Some(ActivityProgress {
@@ -503,7 +508,7 @@ mod tests {
         assert_eq!(recent.outcome, Outcome::Completed);
         assert_eq!(recent.entry.id, 1);
         assert_eq!(
-            recent.entry.phase,
+            recent.entry.phase.as_deref(),
             Some("decode"),
             "a finished entry keeps its last phase"
         );
@@ -518,6 +523,17 @@ mod tests {
         // Ids keep increasing across entries.
         board.begin(spec("next")).finish(Outcome::Failed);
         assert_eq!(board.snapshot().recent[0].entry.id, 2);
+
+        // A client reads `activity.list` back into this same type, and gets exactly the board.
+        let running = board.begin(spec("running"));
+        running.phase("decode");
+        let snapshot = board.snapshot();
+        assert_eq!(
+            serde_json::from_value::<ActivitySnapshot>(serde_json::to_value(&snapshot).unwrap())
+                .unwrap(),
+            snapshot
+        );
+        running.finish(Outcome::Completed);
     }
 
     #[test]

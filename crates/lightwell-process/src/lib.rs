@@ -9,7 +9,7 @@
 //!
 //! Every time and byte counter here is cumulative or a current level taken at the call; a rate
 //! comes from two reads and the caller's own monotonic clock.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[cfg(target_os = "linux")]
@@ -44,7 +44,7 @@ impl fmt::Display for Unavailable {
 
 /// Which measure [`Memory::bytes`] is. Each platform reports the one its own monitor shows, so the
 /// figure can be compared with what the owner sees there; they are not interchangeable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryKind {
     /// macOS physical footprint: Activity Monitor's Memory column. On unified memory it includes

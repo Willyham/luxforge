@@ -571,16 +571,18 @@ mod tests {
         workspace.derive(&scene.inputs());
         assert_eq!(workspace.performance.version, version);
 
-        let sample: performance::ResourceSample = serde_json::from_value(json!({
+        let budget = json!({"target_bytes": 0, "in_use_bytes": 0, "peak_bytes": 0});
+        let sample: lightwell_core::resources::ResourceReport = serde_json::from_value(json!({
             "monotonic_ns": 1,
             "cpu": {"time_ns": 5, "logical_cpus": 14},
             "memory": {"kind": "footprint", "bytes": 1_523_000_000_u64},
-            "gpu": {"time_ns": 1}
+            "gpu": {"time_ns": 1},
+            "budgets": {"colour_scratch": budget, "spatial": budget}
         }))
         .unwrap();
         scene
             .performance
-            .push(sample, performance::ActivityList::default());
+            .push(sample, lightwell_core::ActivitySnapshot::default());
         workspace.derive(&scene.inputs());
         assert_ne!(workspace.performance.version, version);
         assert_eq!(workspace.performance.metrics[0].value, "1.42");

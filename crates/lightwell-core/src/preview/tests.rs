@@ -1287,14 +1287,14 @@ fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it
             snapshot
                 .active
                 .first()
-                .is_some_and(|active| active.entry.phase == Some("proxy"))
+                .is_some_and(|active| active.entry.phase.as_deref() == Some("proxy"))
         },
         "the proxy phase never reached its gate",
     );
     assert_eq!(running.active.len(), 1);
     let entry = &running.active[0].entry;
     assert_eq!(
-        (entry.kind, entry.label),
+        (&*entry.kind, &*entry.label),
         ("preview.render", "Rendering preview")
     );
     assert_eq!(entry.asset_id.as_ref(), Some(&asset));
@@ -1318,7 +1318,7 @@ fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it
     let recent = &ended.recent[0];
     assert_eq!(recent.entry.kind, "preview.render");
     assert_eq!(
-        recent.entry.phase,
+        recent.entry.phase.as_deref(),
         Some("exact"),
         "the job moved on to its exact phase"
     );
@@ -1343,7 +1343,7 @@ fn a_superseded_jobs_activity_ends_cancelled() {
             snapshot
                 .active
                 .first()
-                .is_some_and(|active| active.entry.phase == Some("exact"))
+                .is_some_and(|active| active.entry.phase.as_deref() == Some("exact"))
         },
         "the exact phase never reached its gate",
     );

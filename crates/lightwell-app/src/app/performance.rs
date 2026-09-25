@@ -16,9 +16,10 @@ use crate::{
         message::{Message, PerformanceMessage},
         tasks::{PerformanceRead, performance_task},
     },
-    state::performance::{ActivityList, PerformanceHistory, ResourceSample},
+    state::performance::PerformanceHistory,
 };
 use iced::Task;
+use lightwell_core::{ActivitySnapshot, resources::ResourceReport};
 use serde_json::{Value, json};
 use std::{collections::VecDeque, time::Duration};
 
@@ -77,12 +78,13 @@ impl Sampler {
         self.error = None;
     }
 
-    /// Take up one read: parse both answers the way any API client would and add them to the
-    /// window. An answer that does not parse changes nothing but the error it leaves.
+    /// Take up one read: parse both answers into the core's own report types, the way any Rust
+    /// API client would, and add them to the window. An answer that does not parse changes nothing
+    /// but the error it leaves.
     fn adopt(&mut self, read: PerformanceRead) -> Result<(), String> {
-        let sample: ResourceSample = serde_json::from_value(read.resources.clone())
+        let sample: ResourceReport = serde_json::from_value(read.resources.clone())
             .map_err(|error| format!("resources.read: {error}"))?;
-        let activity: ActivityList = serde_json::from_value(read.activity.clone())
+        let activity: ActivitySnapshot = serde_json::from_value(read.activity.clone())
             .map_err(|error| format!("activity.list: {error}"))?;
         self.history.push(sample, activity);
         if self.raw.len() == 2 {
@@ -297,10 +299,10 @@ mod tests {
     #[test]
     fn expanding_clears_the_history_and_reads_at_once() {
         let (mut editor, catalog) = boot_collapsed();
-        editor
-            .performance
-            .history
-            .push(ResourceSample::default(), ActivityList::default());
+        editor.performance.history.push(
+            lightwell_core::resources::read(&lightwell_core::RenderContext::new()),
+            ActivitySnapshot::default(),
+        );
         let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(editor.performance.expanded);
         assert_eq!(editor.performance.history.len(), 0, "a fresh window");

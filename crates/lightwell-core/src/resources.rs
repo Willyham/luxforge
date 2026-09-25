@@ -8,8 +8,9 @@
 use crate::RenderContext;
 pub use lightwell_process::MemoryKind;
 use lightwell_process::{Counters, Sampler, Unavailable};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     sync::{Mutex, MutexGuard, OnceLock, PoisonError},
     time::Instant,
@@ -44,15 +45,16 @@ pub fn declare_gpu_presenter() {
     shared().sampler.enable_gpu_allocations();
 }
 
-/// The counters a platform cannot give, by key, each with its reason.
-pub type Reasons = BTreeMap<&'static str, &'static str>;
+/// The counters a platform cannot give, by key, each with its reason. The sampler's own reasons
+/// are static words; a report a client reads back from `resources.read` owns them.
+pub type Reasons = BTreeMap<Cow<'static, str>, Cow<'static, str>>;
 
 /// One `resources.read`. Every time and byte counter is cumulative or a level at the read, so a
 /// rate comes from two reports: CPU percent of one core is
 /// `100 × Δcpu.time_ns / Δmonotonic_ns`, and GPU percent is the same over `gpu.time_ns`. A counter
 /// the platform cannot give is omitted and named, with its reason, in its object's `unavailable`,
 /// which is itself omitted when nothing is missing.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceReport {
     /// Nanoseconds on a monotonic clock, taken immediately before the counters. Only a difference
     /// between two reports means anything.
@@ -63,18 +65,18 @@ pub struct ResourceReport {
     pub budgets: BudgetsReport,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuReport {
     /// User plus system CPU time of every thread since the process started.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_ns: Option<u64>,
     /// The ceiling a CPU rate is read against: 14 logical CPUs can reach 1400% of one core.
     pub logical_cpus: u32,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unavailable: Reasons,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryReport {
     /// Which measure `bytes` is: the one the platform's own monitor shows.
     pub kind: MemoryKind,
@@ -84,11 +86,11 @@ pub struct MemoryReport {
     pub peak_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resident_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unavailable: Reasons,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuReport {
     /// GPU time spent on this process's work since it started. It never decreases.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,18 +101,18 @@ pub struct GpuReport {
     /// when no device was read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unified_memory: Option<bool>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unavailable: Reasons,
 }
 
 /// A render context's working-memory budgets: exact, and free to read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetsReport {
     pub colour_scratch: BudgetReport,
     pub spatial: BudgetReport,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetReport {
     pub target_bytes: u64,
     pub in_use_bytes: u64,
@@ -160,7 +162,7 @@ fn report(monotonic_ns: u64, counters: Counters, budgets: BudgetsReport) -> Reso
         match value {
             Ok(value) => Some(value),
             Err(Unavailable(reason)) => {
-                unavailable.insert(key, reason);
+                unavailable.insert(Cow::Borrowed(key), Cow::Borrowed(reason));
                 None
             }
         }
@@ -346,15 +348,21 @@ mod tests {
                 unified_memory: None,
             },
         };
-        let value = serde_json::to_value(report(
+        let reported = report(
             81_234_567_000,
             counters,
             BudgetsReport {
                 colour_scratch: budget,
                 spatial: budget,
             },
-        ))
-        .unwrap();
+        );
+        let value = serde_json::to_value(&reported).unwrap();
+        // A client reads the answer back into this same type, omitted counters and reasons
+        // included, which is how the desktop's Performance section reads it.
+        assert_eq!(
+            serde_json::from_value::<ResourceReport>(value.clone()).unwrap(),
+            reported
+        );
         assert_eq!(
             value,
             json!({

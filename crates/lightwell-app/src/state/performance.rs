@@ -9,8 +9,12 @@
 //! the elapsed and ended times each board snapshot carries — so nothing here reads a clock and
 //! every rule can be tested with made-up samples.
 use crate::state::Inputs;
-use serde::Deserialize;
-use std::collections::{BTreeMap, VecDeque};
+use lightwell_core::{
+    ActivitySnapshot,
+    activity::{ActiveActivity, Outcome, RecentActivity},
+    resources::{MemoryKind, ResourceReport},
+};
+use std::collections::VecDeque;
 
 /// The sparklines' window: one sample a second for a minute.
 pub(crate) const WINDOW: usize = 60;
@@ -46,93 +50,13 @@ const MEMORY_HEADROOM: f64 = 1.1;
 /// GPU time is drawn against one GPU's worth of time.
 const GPU_SCALE: f64 = 100.0;
 
-/// One `resources.read` answer, as much of it as the section reads. The core's report types are
-/// serialise-only, so the answer is read here the way any API client would read it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-pub(crate) struct ResourceSample {
-    /// Only meaningful as the difference between two samples.
-    pub(crate) monotonic_ns: u64,
-    pub(crate) cpu: CpuCounters,
-    pub(crate) memory: MemoryCounters,
-    pub(crate) gpu: GpuCounters,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-pub(crate) struct CpuCounters {
-    pub(crate) time_ns: Option<u64>,
-    pub(crate) logical_cpus: u32,
-    /// The platform's reason for each counter it cannot give, by key.
-    #[serde(default)]
-    pub(crate) unavailable: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-pub(crate) struct MemoryCounters {
-    /// Which measure `bytes` is: `footprint`, `resident` or `private`.
-    pub(crate) kind: String,
-    pub(crate) bytes: Option<u64>,
-    pub(crate) peak_bytes: Option<u64>,
-    pub(crate) resident_bytes: Option<u64>,
-    #[serde(default)]
-    pub(crate) unavailable: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-pub(crate) struct GpuCounters {
-    pub(crate) time_ns: Option<u64>,
-    pub(crate) allocated_bytes: Option<u64>,
-    /// Whether GPU allocations are part of `memory.bytes`.
-    pub(crate) unified_memory: Option<bool>,
-    #[serde(default)]
-    pub(crate) unavailable: BTreeMap<String, String>,
-}
-
-/// One `activity.list` answer, as much of it as the section reads: the rows need labels, details,
-/// phases, progress and times, never an entry's kind, identity or job.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-pub(crate) struct ActivityList {
-    /// Oldest first.
-    pub(crate) active: Vec<ActiveJob>,
-    /// Newest first.
-    pub(crate) recent: Vec<RecentJob>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-pub(crate) struct ActiveJob {
-    pub(crate) label: String,
-    pub(crate) detail: Option<String>,
-    pub(crate) phase: Option<String>,
-    pub(crate) progress: Option<JobProgress>,
-    /// Milliseconds since the work began, at the moment of the snapshot.
-    pub(crate) elapsed_ms: u64,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-pub(crate) struct RecentJob {
-    pub(crate) label: String,
-    /// `completed`, `cancelled` or `failed`.
-    pub(crate) outcome: String,
-    pub(crate) duration_ms: u64,
-    /// Milliseconds since it ended, at the moment of the snapshot.
-    pub(crate) ended_ms_ago: u64,
-}
-
-/// The one progress model every activity on the board carries
-/// (`lightwell_core::activity::ActivityProgress`): a fraction of 0 to 1 and a short message. The
-/// section does not yet display the message; it is read so the shape round-trips exactly.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-pub(crate) struct JobProgress {
-    pub(crate) fraction: Option<f64>,
-    pub(crate) message: Option<String>,
-}
-
 /// The sampler's window of raw samples and the board it read last. It is bounded to
 /// [`MAX_SAMPLES`] small samples, and its version moves with every change, so the section is
 /// re-derived — and its sparklines re-tessellated — once per sample rather than once per message.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PerformanceHistory {
-    samples: VecDeque<ResourceSample>,
-    activity: Option<ActivityList>,
+    samples: VecDeque<ResourceReport>,
+    activity: Option<ActivitySnapshot>,
     version: u64,
 }
 
@@ -146,7 +70,7 @@ impl PerformanceHistory {
     }
 
     /// Record one read of the counters and the board, dropping the oldest sample past the bound.
-    pub(crate) fn push(&mut self, sample: ResourceSample, activity: ActivityList) {
+    pub(crate) fn push(&mut self, sample: ResourceReport, activity: ActivitySnapshot) {
         if self.samples.len() == MAX_SAMPLES {
             self.samples.pop_front();
         }
@@ -159,11 +83,11 @@ impl PerformanceHistory {
         self.samples.len()
     }
 
-    pub(crate) fn samples(&self) -> &VecDeque<ResourceSample> {
+    pub(crate) fn samples(&self) -> &VecDeque<ResourceReport> {
         &self.samples
     }
 
-    pub(crate) fn activity(&self) -> Option<&ActivityList> {
+    pub(crate) fn activity(&self) -> Option<&ActivitySnapshot> {
         self.activity.as_ref()
     }
 
@@ -253,7 +177,7 @@ pub(crate) fn derive(expanded: bool, history: &PerformanceHistory) -> Performanc
             ..PerformanceModel::default()
         };
     }
-    let samples: Vec<&ResourceSample> = history.samples().iter().collect();
+    let samples: Vec<&ResourceReport> = history.samples().iter().collect();
     let jobs = jobs(history.activity());
     PerformanceModel {
         expanded,
@@ -273,8 +197,8 @@ pub(crate) fn derive(expanded: bool, history: &PerformanceHistory) -> Performanc
 /// which either sample lacks the counter. A counter that went backwards — which a cumulative counter
 /// should never do — reads as no work rather than negative work.
 pub(crate) fn rates(
-    samples: &[&ResourceSample],
-    counter: impl Fn(&ResourceSample) -> Option<u64>,
+    samples: &[&ResourceReport],
+    counter: impl Fn(&ResourceReport) -> Option<u64>,
 ) -> Vec<f64> {
     samples
         .windows(2)
@@ -388,37 +312,42 @@ fn waiting(label: &'static str) -> MetricRow {
 }
 
 /// A counter the platform cannot give: a dash, the baseline alone, and the platform's reason.
-fn unavailable(label: &'static str, reason: Option<&String>) -> MetricRow {
+fn unavailable(label: &'static str, reason: Option<&str>) -> MetricRow {
     MetricRow {
         label,
         value: DASH.to_owned(),
         unit: "",
         available: false,
         series: Vec::new(),
-        tooltip: reason
-            .cloned()
-            .unwrap_or_else(|| format!("{label} is not reported on this platform")),
+        tooltip: reason.map_or_else(
+            || format!("{label} is not reported on this platform"),
+            str::to_owned,
+        ),
     }
+}
+
+/// The platform's reason one counter is missing, when it gave one.
+fn reason<'a>(reasons: &'a lightwell_core::resources::Reasons, key: &str) -> Option<&'a str> {
+    reasons.get(key).map(|reason| reason.as_ref())
 }
 
 /// What a memory kind measures, in words: Activity Monitor's own column on macOS.
-pub(crate) fn memory_kind_words(kind: &str) -> String {
+pub(crate) fn memory_kind_words(kind: MemoryKind) -> &'static str {
     match kind {
-        "footprint" => "Memory footprint, as Activity Monitor's Memory column".to_owned(),
-        "resident" => "Resident memory".to_owned(),
-        "private" => "Private bytes".to_owned(),
-        other => format!("Memory ({other})"),
+        MemoryKind::Footprint => "Memory footprint, as Activity Monitor's Memory column",
+        MemoryKind::Resident => "Resident memory",
+        MemoryKind::Private => "Private bytes",
     }
 }
 
-fn memory_row(samples: &[&ResourceSample]) -> MetricRow {
+fn memory_row(samples: &[&ResourceReport]) -> MetricRow {
     const LABEL: &str = "Memory";
     let Some(latest) = samples.last() else {
         return waiting(LABEL);
     };
     let memory = &latest.memory;
     let Some(bytes) = memory.bytes else {
-        return unavailable(LABEL, memory.unavailable.get("bytes"));
+        return unavailable(LABEL, reason(&memory.unavailable, "bytes"));
     };
     let window: Vec<u64> = samples
         .iter()
@@ -427,7 +356,7 @@ fn memory_row(samples: &[&ResourceSample]) -> MetricRow {
     let window = newest(&window);
     let scale = memory_scale(window);
     let values: Vec<f64> = window.iter().map(|bytes| *bytes as f64).collect();
-    let mut tooltip = vec![memory_kind_words(&memory.kind)];
+    let mut tooltip = vec![memory_kind_words(memory.kind).to_owned()];
     if let Some(peak) = memory.peak_bytes {
         tooltip.push(format!("peak {} since launch", bytes_phrase(peak)));
     }
@@ -455,7 +384,7 @@ fn memory_row(samples: &[&ResourceSample]) -> MetricRow {
 
 /// How long the rates shown span, for a tooltip: `the last minute` once the window is full, and
 /// the span of the samples behind them until then.
-fn window_phrase(samples: &[&ResourceSample], rates: usize) -> String {
+fn window_phrase(samples: &[&ResourceReport], rates: usize) -> String {
     if rates >= WINDOW {
         return "the last minute".to_owned();
     }
@@ -467,17 +396,17 @@ fn window_phrase(samples: &[&ResourceSample], rates: usize) -> String {
 }
 
 /// The samples the newest [`WINDOW`] rates were computed from: one more than the rates.
-fn rate_samples<'a, 'b>(samples: &'a [&'b ResourceSample]) -> &'a [&'b ResourceSample] {
+fn rate_samples<'a, 'b>(samples: &'a [&'b ResourceReport]) -> &'a [&'b ResourceReport] {
     &samples[samples.len().saturating_sub(MAX_SAMPLES)..]
 }
 
-fn cpu_row(samples: &[&ResourceSample]) -> MetricRow {
+fn cpu_row(samples: &[&ResourceReport]) -> MetricRow {
     const LABEL: &str = "CPU";
     let Some(latest) = samples.last() else {
         return waiting(LABEL);
     };
     if latest.cpu.time_ns.is_none() {
-        return unavailable(LABEL, latest.cpu.unavailable.get("time_ns"));
+        return unavailable(LABEL, reason(&latest.cpu.unavailable, "time_ns"));
     }
     let samples = rate_samples(samples);
     let rates = rates(samples, |sample| sample.cpu.time_ns);
@@ -510,14 +439,14 @@ fn cpu_row(samples: &[&ResourceSample]) -> MetricRow {
     }
 }
 
-fn gpu_row(samples: &[&ResourceSample]) -> MetricRow {
+fn gpu_row(samples: &[&ResourceReport]) -> MetricRow {
     const LABEL: &str = "GPU";
     let Some(latest) = samples.last() else {
         return waiting(LABEL);
     };
     let gpu = &latest.gpu;
     if gpu.time_ns.is_none() {
-        return unavailable(LABEL, gpu.unavailable.get("time_ns"));
+        return unavailable(LABEL, reason(&gpu.unavailable, "time_ns"));
     }
     let samples = rate_samples(samples);
     let rates = rates(samples, |sample| sample.gpu.time_ns);
@@ -560,7 +489,7 @@ fn gpu_row(samples: &[&ResourceSample]) -> MetricRow {
 /// [`RECENT_JOB_MS`], dimmed, with its duration and how it ended. Otherwise one dimmed `No
 /// background work` row, so there is always one job line and the section's height changes only
 /// when two long jobs overlap. Before the first snapshot there is nothing running to show either.
-pub(crate) fn jobs(activity: Option<&ActivityList>) -> Jobs {
+pub(crate) fn jobs(activity: Option<&ActivitySnapshot>) -> Jobs {
     let quiet = || Jobs {
         rows: vec![JobRow {
             label: "No background work".to_owned(),
@@ -572,7 +501,7 @@ pub(crate) fn jobs(activity: Option<&ActivityList>) -> Jobs {
     let Some(activity) = activity else {
         return quiet();
     };
-    let long: Vec<&ActiveJob> = activity
+    let long: Vec<&ActiveActivity> = activity
         .active
         .iter()
         .filter(|job| job.elapsed_ms >= LONG_JOB_MS)
@@ -605,18 +534,19 @@ pub(crate) fn jobs(activity: Option<&ActivityList>) -> Jobs {
 }
 
 /// A running job: its elapsed time, and its detail and phase joined on the line under it.
-fn running(job: &ActiveJob) -> JobRow {
-    let parts: Vec<String> = job
+fn running(job: &ActiveActivity) -> JobRow {
+    let entry = &job.entry;
+    let parts: Vec<String> = entry
         .detail
         .iter()
         .cloned()
-        .chain(job.phase.iter().map(|phase| format!("{phase} phase")))
+        .chain(entry.phase.iter().map(|phase| format!("{phase} phase")))
         .collect();
     JobRow {
-        label: job.label.clone(),
+        label: entry.label.to_string(),
         trailing: format_elapsed(job.elapsed_ms),
         detail: (!parts.is_empty()).then(|| parts.join(" \u{b7} ")),
-        progress: job
+        progress: entry
             .progress
             .as_ref()
             .and_then(|progress| progress.fraction)
@@ -627,15 +557,15 @@ fn running(job: &ActiveJob) -> JobRow {
 
 /// A finished job: its duration, and how and when it ended. The time is whole seconds and at least
 /// one, because "0 s ago" reads as a mistake.
-fn finished(job: &RecentJob) -> JobRow {
-    let how = match job.outcome.as_str() {
-        "cancelled" => "Cancelled",
-        "failed" => "Failed",
-        _ => "Finished",
+fn finished(job: &RecentActivity) -> JobRow {
+    let how = match job.outcome {
+        Outcome::Completed => "Finished",
+        Outcome::Cancelled => "Cancelled",
+        Outcome::Failed => "Failed",
     };
     let ago = job.ended_ms_ago.saturating_add(500) / 1000;
     JobRow {
-        label: job.label.clone(),
+        label: job.entry.label.to_string(),
         trailing: format_elapsed(job.duration_ms),
         detail: Some(format!("{how} {} s ago", ago.max(1))),
         progress: None,
@@ -646,39 +576,61 @@ fn finished(job: &RecentJob) -> JobRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lightwell_core::{
+        activity::{ActivityEntry, ActivityProgress},
+        resources::{BudgetReport, BudgetsReport, CpuReport, GpuReport, MemoryReport, Reasons},
+    };
     use serde_json::json;
 
     const MS: u64 = 1_000_000;
 
     /// A sample at `at_ms` on the monotonic clock with the given counters.
-    fn sample(at_ms: u64, cpu_ms: u64, gpu_ms: u64, bytes: u64) -> ResourceSample {
-        ResourceSample {
+    fn sample(at_ms: u64, cpu_ms: u64, gpu_ms: u64, bytes: u64) -> ResourceReport {
+        let budget = BudgetReport {
+            target_bytes: 0,
+            in_use_bytes: 0,
+            peak_bytes: 0,
+        };
+        ResourceReport {
             monotonic_ns: at_ms * MS,
-            cpu: CpuCounters {
+            cpu: CpuReport {
                 time_ns: Some(cpu_ms * MS),
                 logical_cpus: 14,
-                unavailable: BTreeMap::new(),
+                unavailable: Reasons::new(),
             },
-            memory: MemoryCounters {
-                kind: "footprint".into(),
+            memory: MemoryReport {
+                kind: MemoryKind::Footprint,
                 bytes: Some(bytes),
                 peak_bytes: Some(2_011_000_000),
                 resident_bytes: Some(980 * (1 << 20)),
-                unavailable: BTreeMap::new(),
+                unavailable: Reasons::new(),
             },
-            gpu: GpuCounters {
+            gpu: GpuReport {
                 time_ns: Some(gpu_ms * MS),
                 allocated_bytes: Some(312 * (1 << 20)),
                 unified_memory: Some(true),
-                unavailable: BTreeMap::new(),
+                unavailable: Reasons::new(),
+            },
+            budgets: BudgetsReport {
+                colour_scratch: budget,
+                spatial: budget,
             },
         }
     }
 
-    fn history(samples: impl IntoIterator<Item = ResourceSample>) -> PerformanceHistory {
+    /// A board holding these entries, as `activity.list` would answer.
+    fn board(active: Vec<ActiveActivity>, recent: Vec<RecentActivity>) -> ActivitySnapshot {
+        ActivitySnapshot {
+            active,
+            recent,
+            ..ActivitySnapshot::default()
+        }
+    }
+
+    fn history(samples: impl IntoIterator<Item = ResourceReport>) -> PerformanceHistory {
         let mut history = PerformanceHistory::default();
         for sample in samples {
-            history.push(sample, ActivityList::default());
+            history.push(sample, ActivitySnapshot::default());
         }
         history
     }
@@ -800,7 +752,7 @@ mod tests {
             sample(2_500, 8_000, 510, 0), // the counter went backwards: zero
             sample(3_000, 8_016, 520, 0),
         ];
-        let refs: Vec<&ResourceSample> = samples.iter().collect();
+        let refs: Vec<&ResourceReport> = samples.iter().collect();
         let cpu = rates(&refs, |sample| sample.cpu.time_ns);
         assert_eq!(cpu.len(), samples.len() - 2, "one pair skipped");
         assert!((cpu[0] - 38.0).abs() < 1e-9);
@@ -812,13 +764,13 @@ mod tests {
         assert_eq!(gpu[1], 0.0);
         // A clock that went backwards is no pair at all.
         let backwards = [sample(2_000, 0, 0, 0), sample(1_000, 100, 0, 0)];
-        let refs: Vec<&ResourceSample> = backwards.iter().collect();
+        let refs: Vec<&ResourceReport> = backwards.iter().collect();
         assert!(rates(&refs, |sample| sample.cpu.time_ns).is_empty());
         // A pair missing the counter in either sample is skipped.
         let mut missing = sample(1_000, 0, 0, 0);
         missing.cpu.time_ns = None;
         let pair = [sample(0, 0, 0, 0), missing];
-        let refs: Vec<&ResourceSample> = pair.iter().collect();
+        let refs: Vec<&ResourceReport> = pair.iter().collect();
         assert!(rates(&refs, |sample| sample.cpu.time_ns).is_empty());
     }
 
@@ -909,7 +861,7 @@ mod tests {
         );
         // Resident memory on another platform, with no unified GPU allocations to mention.
         let mut linux = sample(0, 0, 0, 1 << 30);
-        linux.memory.kind = "resident".into();
+        linux.memory.kind = MemoryKind::Resident;
         linux.memory.peak_bytes = None;
         linux.gpu.unified_memory = None;
         let model = derive(true, &history([linux]));
@@ -917,7 +869,7 @@ mod tests {
             row(&model, "Memory").tooltip,
             "Resident memory \u{b7} resident 980 MB"
         );
-        assert_eq!(memory_kind_words("private"), "Private bytes");
+        assert_eq!(memory_kind_words(MemoryKind::Private), "Private bytes");
     }
 
     /// A counter the platform cannot give reads a dash with no unit, draws the baseline alone and
@@ -926,18 +878,18 @@ mod tests {
     fn an_unavailable_counter_reads_a_dash_and_names_its_reason() {
         let linux = |at: u64, cpu: u64| {
             let mut sample = sample(at, cpu, 0, 700 << 20);
-            sample.gpu = GpuCounters {
+            sample.gpu = GpuReport {
                 time_ns: None,
                 allocated_bytes: None,
                 unified_memory: None,
-                unavailable: BTreeMap::from([
+                unavailable: Reasons::from([
                     (
-                        "time_ns".to_owned(),
-                        "GPU time is not reported on Linux yet".to_owned(),
+                        "time_ns".into(),
+                        "GPU time is not reported on Linux yet".into(),
                     ),
                     (
-                        "allocated_bytes".to_owned(),
-                        "GPU allocations are not reported on Linux yet".to_owned(),
+                        "allocated_bytes".into(),
+                        "GPU allocations are not reported on Linux yet".into(),
                     ),
                 ]),
             };
@@ -953,7 +905,7 @@ mod tests {
                 unit: "",
                 available: false,
                 series: Vec::new(),
-                tooltip: "GPU time is not reported on Linux yet".to_owned(),
+                tooltip: "GPU time is not reported on Linux yet".into(),
             }
         );
         assert_eq!(row(&model, "CPU").value, "5.0");
@@ -970,27 +922,29 @@ mod tests {
         assert_eq!(memory.tooltip, "no footprint here");
     }
 
-    /// The core's own JSON reads into these types, unavailable keys included, and an optional key
-    /// the section does not read is ignored rather than refused.
+    /// The core's own JSON reads into the core's own report types, unavailable keys included.
     #[test]
     fn the_api_answers_parse_as_documented() {
-        let resources: ResourceSample = serde_json::from_value(json!({
+        let budget = json!({"target_bytes": 1, "in_use_bytes": 0, "peak_bytes": 0});
+        let resources: ResourceReport = serde_json::from_value(json!({
             "monotonic_ns": 81_234_567_000_u64,
             "cpu": {"time_ns": 5_231_200_000_u64, "logical_cpus": 14},
             "memory": {"kind": "resident", "bytes": 980, "resident_bytes": 980,
                 "unavailable": {"peak_bytes": "no peak here"}},
             "gpu": {"unavailable": {"time_ns": "GPU time is not reported on Linux yet"}},
-            "budgets": {"spatial": {"target_bytes": 1, "in_use_bytes": 0, "peak_bytes": 0}}
+            "budgets": {"colour_scratch": budget, "spatial": budget}
         }))
         .unwrap();
         assert_eq!(resources.cpu.time_ns, Some(5_231_200_000));
+        assert_eq!(resources.memory.kind, MemoryKind::Resident);
         assert_eq!(resources.memory.peak_bytes, None);
         assert_eq!(resources.memory.unavailable["peak_bytes"], "no peak here");
         assert_eq!(resources.gpu.time_ns, None);
-        let activity: ActivityList = serde_json::from_value(json!({
+        let asset = lightwell_core::AssetId::new();
+        let activity: ActivitySnapshot = serde_json::from_value(json!({
             "sequence": 812,
             "active": [{"id": 41, "kind": "source.develop", "label": "Developing RAW",
-                "detail": "DSC_0412.NEF", "asset_id": "a", "job_id": "source-job-7",
+                "detail": "DSC_0412.NEF", "asset_id": asset, "job_id": "source-job-7",
                 "elapsed_ms": 1204}],
             "recent": [{"id": 40, "kind": "preview.render", "label": "Rendering preview",
                 "phase": "exact", "outcome": "completed", "duration_ms": 1610,
@@ -998,23 +952,32 @@ mod tests {
             "untracked": 0
         }))
         .unwrap();
-        assert_eq!(activity.active[0].detail.as_deref(), Some("DSC_0412.NEF"));
+        assert_eq!(
+            activity.active[0].entry.detail.as_deref(),
+            Some("DSC_0412.NEF")
+        );
+        assert_eq!(activity.active[0].entry.asset_id.as_ref(), Some(&asset));
         assert_eq!(activity.recent[0].duration_ms, 1610);
-        assert_eq!(activity.recent[0].outcome, "completed");
+        assert_eq!(activity.recent[0].outcome, Outcome::Completed);
     }
 
-    fn active(label: &str, elapsed_ms: u64) -> ActiveJob {
-        ActiveJob {
-            label: label.into(),
+    fn active(label: &str, elapsed_ms: u64) -> ActiveActivity {
+        ActiveActivity {
+            entry: ActivityEntry {
+                label: label.to_owned().into(),
+                ..ActivityEntry::default()
+            },
             elapsed_ms,
-            ..ActiveJob::default()
         }
     }
 
-    fn recent(label: &str, outcome: &str, duration_ms: u64, ended_ms_ago: u64) -> RecentJob {
-        RecentJob {
-            label: label.into(),
-            outcome: outcome.into(),
+    fn recent(label: &str, outcome: &str, duration_ms: u64, ended_ms_ago: u64) -> RecentActivity {
+        RecentActivity {
+            entry: ActivityEntry {
+                label: label.to_owned().into(),
+                ..ActivityEntry::default()
+            },
+            outcome: serde_json::from_value(json!(outcome)).expect("an outcome"),
             duration_ms,
             ended_ms_ago,
         }
@@ -1025,17 +988,17 @@ mod tests {
     #[test]
     fn long_running_work_is_listed_oldest_first_with_its_detail_and_phase() {
         let mut develop = active("Developing RAW", 1_204);
-        develop.detail = Some("DSC_0412.NEF".into());
+        develop.entry.detail = Some("DSC_0412.NEF".into());
         let mut preview = active("Rendering preview", 700);
-        preview.phase = Some("exact".into());
+        preview.entry.phase = Some("exact".into());
         let mut both = active("Preparing original", 500);
-        both.detail = Some("a.jpg".into());
-        both.phase = Some("decode".into());
+        both.entry.detail = Some("a.jpg".into());
+        both.entry.phase = Some("decode".into());
         let short = active("Measuring histogram", 499);
-        let jobs = jobs(Some(&ActivityList {
-            active: vec![develop, preview, both, short],
-            recent: vec![recent("Developing RAW", "completed", 1_600, 100)],
-        }));
+        let jobs = jobs(Some(&board(
+            vec![develop, preview, both, short],
+            vec![recent("Developing RAW", "completed", 1_600, 100)],
+        )));
         assert_eq!(jobs.caption.as_deref(), Some("3 jobs"));
         assert_eq!(jobs.more, None);
         assert_eq!(
@@ -1070,41 +1033,40 @@ mod tests {
     #[test]
     fn one_long_job_is_one_job_and_its_progress_is_a_fraction() {
         let mut export = active("Exporting", 64_000);
-        export.progress = Some(JobProgress {
+        export.entry.progress = Some(ActivityProgress {
             fraction: Some(0.375),
             message: None,
         });
         let mut unknown = active("Exporting", 400);
-        unknown.progress = Some(JobProgress {
+        unknown.entry.progress = Some(ActivityProgress {
             fraction: None,
             message: Some("preparing".into()),
         });
-        let listed = jobs(Some(&ActivityList {
+        let listed = jobs(Some(&ActivitySnapshot {
             active: vec![export, unknown],
-            ..ActivityList::default()
+            ..ActivitySnapshot::default()
         }));
         assert_eq!(listed.caption.as_deref(), Some("1 job"));
         assert_eq!(listed.rows.len(), 1);
         assert_eq!(listed.rows[0].trailing, "1 min 4 s");
         assert_eq!(listed.rows[0].progress, Some(0.375));
         assert_eq!(listed.rows[0].detail, None, "neither a detail nor a phase");
-        let no_fraction = running(&ActiveJob {
-            progress: Some(JobProgress {
-                fraction: None,
-                message: Some("preparing".into()),
-            }),
-            ..active("x", 900)
+        let mut preparing = active("x", 900);
+        preparing.entry.progress = Some(ActivityProgress {
+            fraction: None,
+            message: Some("preparing".into()),
         });
+        let no_fraction = running(&preparing);
         assert_eq!(no_fraction.progress, None, "no truthful fraction, no bar");
     }
 
     #[test]
     fn more_than_four_long_jobs_end_in_a_caption() {
-        let listed = jobs(Some(&ActivityList {
+        let listed = jobs(Some(&ActivitySnapshot {
             active: (1..=6)
                 .map(|index| active("Rendering preview", 2_000 - index * 100))
                 .collect(),
-            ..ActivityList::default()
+            ..ActivitySnapshot::default()
         }));
         assert_eq!(listed.rows.len(), MAX_JOB_ROWS);
         assert_eq!(
@@ -1119,14 +1081,14 @@ mod tests {
     /// dimmed, with its duration and how it ended.
     #[test]
     fn a_recent_long_job_is_shown_finished_when_nothing_long_runs() {
-        let listed = jobs(Some(&ActivityList {
-            active: vec![active("Rendering preview", 120)],
-            recent: vec![
+        let listed = jobs(Some(&board(
+            vec![active("Rendering preview", 120)],
+            vec![
                 recent("Rendering preview", "completed", 300, 200), // too short
                 recent("Developing RAW", "completed", 1_610, 4_020),
                 recent("Preparing original", "completed", 2_000, 6_000), // older
             ],
-        }));
+        )));
         assert_eq!(listed.caption, None, "no long work is running");
         assert_eq!(
             listed.rows,
@@ -1166,14 +1128,14 @@ mod tests {
         };
         for activity in [
             None,
-            Some(ActivityList::default()),
-            Some(ActivityList {
-                active: vec![active("Rendering preview", 499)],
-                recent: vec![
+            Some(ActivitySnapshot::default()),
+            Some(board(
+                vec![active("Rendering preview", 499)],
+                vec![
                     recent("Developing RAW", "completed", 1_600, 10_001), // too long ago
                     recent("Rendering preview", "completed", 499, 10),    // too short
                 ],
-            }),
+            )),
         ] {
             let listed = jobs(activity.as_ref());
             assert_eq!(listed.rows, vec![quiet.clone()], "{activity:?}");
@@ -1186,13 +1148,13 @@ mod tests {
     /// and a running one with or without a detail are all the same height.
     #[test]
     fn one_job_line_keeps_room_for_its_detail() {
-        let with = |active: Vec<ActiveJob>| {
+        let with = |active: Vec<ActiveActivity>| {
             let mut history = PerformanceHistory::default();
             history.push(
                 sample(0, 0, 0, 1 << 30),
-                ActivityList {
+                ActivitySnapshot {
                     active,
-                    ..ActivityList::default()
+                    ..ActivitySnapshot::default()
                 },
             );
             derive(true, &history)
@@ -1200,7 +1162,7 @@ mod tests {
         assert!(with(Vec::new()).reserve_detail, "the quiet row");
         assert!(with(vec![active("Measuring histogram", 900)]).reserve_detail);
         let mut develop = active("Developing RAW", 900);
-        develop.detail = Some("DSC_0412.NEF".into());
+        develop.entry.detail = Some("DSC_0412.NEF".into());
         assert!(
             !with(vec![develop.clone()]).reserve_detail,
             "its own detail fills it"
@@ -1219,9 +1181,9 @@ mod tests {
         let mut history = history([sample(0, 0, 0, 1 << 30)]);
         history.push(
             sample(1_000, 900, 0, 1 << 30),
-            ActivityList {
+            ActivitySnapshot {
                 active: vec![active("Developing RAW", 900)],
-                ..ActivityList::default()
+                ..ActivitySnapshot::default()
             },
         );
         let collapsed = derive(false, &history);
@@ -1241,7 +1203,7 @@ mod tests {
         let mut history = PerformanceHistory::default();
         let start = history.version();
         for index in 0..(MAX_SAMPLES as u64 + 5) {
-            history.push(sample(index, 0, 0, 0), ActivityList::default());
+            history.push(sample(index, 0, 0, 0), ActivitySnapshot::default());
         }
         assert_eq!(history.len(), MAX_SAMPLES);
         assert_eq!(history.samples().front().unwrap().monotonic_ns, 5 * MS);
