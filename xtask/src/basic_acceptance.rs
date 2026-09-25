@@ -15,13 +15,13 @@
 //! reported count is compared with a second implementation.
 use crate::*;
 use lightwell_core::{
-    ApiRequest, BASIC_EFFECT, ClientId, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe,
-    SnapshotId, SourceImage, render as core_render,
+    BASIC_EFFECT, ClientId, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe, SnapshotId,
+    SourceImage, render as core_render,
 };
 use lightwell_reference as reference;
+use lightwell_testkit::client::{self, analyse, as_str, call};
 use std::{
     cell::RefCell,
-    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -39,100 +39,18 @@ const CODE_TOLERANCE: i32 = 1;
 /// linear-light bilinear sampler, on top of the Basic stage that fed it.
 const RESAMPLE_TOLERANCE: i32 = 2;
 
-/// Request ids are unique per process run so a retry is deliberate, never accidental.
-static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+/// Who this chapter's mutations and imports name.
+const ACTOR: &str = "xtask-basic-acceptance";
 
-fn next_id(method: &str) -> String {
-    format!("{method}-{}", NEXT_REQUEST.fetch_add(1, Ordering::Relaxed))
-}
-
-/// One JSON call that must succeed.
-pub(crate) fn call(
-    owner: &OwnerHandle,
-    client: ClientId,
-    method: &str,
-    params: Value,
-) -> Result<Value> {
-    let response = owner.call(
-        client,
-        ApiRequest {
-            id: next_id(method),
-            method: method.into(),
-            params,
-            token: None,
-        },
-    )?;
-    match response.error {
-        Some(error) => Err(format!("{method} failed: {} {}", error.code, error.message).into()),
-        None => response
-            .result
-            .ok_or_else(|| format!("{method} answered neither a result nor an error").into()),
-    }
-}
-
-/// One JSON call that must be refused, answering `(code, message)`.
-pub(crate) fn refused(
-    owner: &OwnerHandle,
-    client: ClientId,
-    method: &str,
-    params: Value,
-) -> Result<(String, String)> {
-    let response = owner.call(
-        client,
-        ApiRequest {
-            id: next_id(method),
-            method: method.into(),
-            params,
-            token: None,
-        },
-    )?;
-    match response.error {
-        Some(error) => Ok((error.code, error.message)),
-        None => Err(format!("{method} was accepted; a refusal was required").into()),
-    }
-}
-
-/// The mutation envelope every asset change carries.
+/// The mutation envelope every asset change of the acceptance chapters carries, with the request
+/// identity the caller chose, so a deliberate retry can reuse it.
 pub(crate) fn mutation(revision: u64, request: &str) -> Value {
-    json!({"expected_revision": revision, "request_id": request, "actor": "xtask-basic-acceptance"})
+    client::mutation(revision, request, ACTOR)
 }
 
-pub(crate) fn as_u64(value: &Value, what: &str) -> Result<u64> {
-    value
-        .as_u64()
-        .ok_or_else(|| format!("{what} is not a number: {value}").into())
-}
-
-pub(crate) fn as_str(value: &Value, what: &str) -> Result<String> {
-    value
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{what} is not a string: {value}").into())
-}
-
-/// Import one file and wait for the asset. The import is a source job, so this is the same
-/// `catalog.import` then `job.status` loop any independent client runs.
+/// Import one file through the source job an independent client waits on, answering the asset.
 pub(crate) fn import(owner: &OwnerHandle, client: ClientId, path: &Path) -> Result<Value> {
-    let request = json!({"request_id": next_id("import"), "actor": "xtask-basic-acceptance"});
-    let queued = call(
-        owner,
-        client,
-        "catalog.import",
-        json!({"path": path, "mutation": request}),
-    )?;
-    let job_id = queued["job_id"].clone();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let status = call(owner, client, "job.status", json!({"job_id": job_id}))?;
-        match status["status"].as_str() {
-            Some("ready") => return Ok(status["asset"].clone()),
-            Some("queued" | "running") => {
-                ensure(Instant::now() < deadline, "The import never became ready")?;
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            other => return Err(format!("Unexpected import status {other:?}: {status}").into()),
-        }
-    }
+    Ok(client::import(owner, client, path, ACTOR)?)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -477,27 +395,6 @@ impl Counts {
 // Small journey helpers.
 // ---------------------------------------------------------------------------------------------
 
-/// The committed recipe of the asset's current entry, as the API reports it.
-pub(crate) fn current_recipe(
-    owner: &OwnerHandle,
-    client: ClientId,
-    asset: &Value,
-) -> Result<Recipe> {
-    let state = call(owner, client, "asset.state", json!({"asset_id": asset}))?;
-    Ok(serde_json::from_value(
-        state["current_entry"]["snapshot"]["recipe"].clone(),
-    )?)
-}
-
-pub(crate) fn current_revision(
-    owner: &OwnerHandle,
-    client: ClientId,
-    asset: &Value,
-) -> Result<u64> {
-    let state = call(owner, client, "asset.state", json!({"asset_id": asset}))?;
-    as_u64(&state["revision"], "revision")
-}
-
 /// Compare a reported effective-values object with the reference parameters numerically, so a whole
 /// number written as `40` and as `40.0` is one value rather than two JSON shapes.
 fn expect_values(values: &Value, expected: &Basic, what: &str) -> Result {
@@ -542,31 +439,6 @@ pub(crate) fn render(source: &SourceImage, recipe: &Recipe) -> Result<lightwell_
     Ok(core_render(&registry, source, SnapshotId::new(), recipe)?)
 }
 
-/// Wait for a source job to leave the queue. A freshly opened catalog has no verified source in
-/// its cache, so the first evaluating call answers `preparation-required` with a job to wait on.
-pub(crate) fn settle_source(owner: &OwnerHandle, client: ClientId, job_id: &str) -> Result<Value> {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let status = call(owner, client, "job.status", json!({"job_id": job_id}))?;
-        match status["status"].as_str() {
-            Some("queued" | "running") => {
-                ensure(Instant::now() < deadline, "A source job never settled")?;
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            _ => return Ok(status),
-        }
-    }
-}
-
-/// Prepare the verified source so an evaluating call is answered rather than deferred.
-pub(crate) fn prepare_source(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Result {
-    let prepared = call(owner, client, "source.prepare", json!({"asset_id": asset}))?;
-    if let Some(job_id) = prepared["job_id"].as_str() {
-        settle_source(owner, client, job_id)?;
-    }
-    Ok(())
-}
-
 /// An independent reduction of an independent render of one recipe. The counts a reduction
 /// produces are exact integers over exact bytes, so they are compared with the rendered raster
 /// rather than with the f64 reference: the raster itself is proved against that reference
@@ -579,38 +451,6 @@ fn reduce_render(
     let raster = render(source, recipe)?;
     let counts = reduce(&raster.rgba, raster.width, raster.height);
     Ok((counts, raster))
-}
-
-/// One `analysis.request` followed by `analysis.read` until it settles.
-pub(crate) fn analyse(
-    owner: &OwnerHandle,
-    client: ClientId,
-    asset: &Value,
-    target: Value,
-) -> Result<Value> {
-    let requested = call(
-        owner,
-        client,
-        "analysis.request",
-        json!({"asset_id": asset, "target": target}),
-    )?;
-    let job_id = requested["job_id"].clone();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let read = call(owner, client, "analysis.read", json!({"job_id": job_id}))?;
-        match read["status"].as_str() {
-            Some("queued" | "running") => {
-                ensure(Instant::now() < deadline, "An analysis job never settled")?;
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            _ => {
-                let mut read = read;
-                read["job_id"] = job_id;
-                read["requested_identity"] = requested["identity"].clone();
-                return Ok(read);
-            }
-        }
-    }
 }
 
 /// A settled analysis that must be `ready`, answering its report.
@@ -682,7 +522,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             .ok_or("edit.set-basic declares no parameters")?
             .iter()
             .map(|parameter| as_str(&parameter["name"], "parameter name"))
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<client::Checked<Vec<_>>>()?;
         ensure(
             declared
                 == [
@@ -747,7 +587,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             basic_index == 0,
             "The one Basic layer is not the first layer",
         )?;
-        let exposed = render(&source, &current_recipe(&owner, editor, &asset)?)?;
+        let exposed = render(&source, &client::recipe(&owner, editor, &asset)?)?;
         let expected = plus_one.raster(&source.rgba);
         let (difference, at_pixel) = largest_difference(&exposed.rgba, &expected)?;
         ensure(
@@ -827,7 +667,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "The full patch replaced the Basic layer instead of updating it",
         )?;
         expect_values(&values, &full, "the merged layer")?;
-        let composed = render(&source, &current_recipe(&owner, editor, &asset)?)?;
+        let composed = render(&source, &client::recipe(&owner, editor, &asset)?)?;
         let expected_full = full.raster(&source.rgba);
         let (difference, at_pixel) = largest_difference(&composed.rgba, &expected_full)?;
         ensure(
@@ -889,7 +729,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             exposure: 2.0,
             ..full
         };
-        let mut drafted_recipe = current_recipe(&owner, editor, &asset)?;
+        let mut drafted_recipe = client::recipe(&owner, editor, &asset)?;
         for layer in &mut drafted_recipe.layers {
             if layer.effect_id == BASIC_EFFECT {
                 layer.payload = drafted_basic.patch();
@@ -928,12 +768,12 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             &owner,
             editor,
             "edit.reset-basic",
-            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "reset-before-analysis")}),
+            json!({"asset_id": asset, "mutation": mutation(client::revision(&owner, editor, &asset)?, "reset-before-analysis")}),
         )?;
 
         // 9. Analysis of the current stack and of a historical entry, each against an independent
         //    reduction of that entry's own render.
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         let contrasted = Basic {
             contrast: 60.0,
             ..Basic::default()
@@ -952,7 +792,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "the current stack",
         )?;
         let (current_counts, current_raster) =
-            reduce_render(&source, &current_recipe(&owner, editor, &asset)?)?;
+            reduce_render(&source, &client::recipe(&owner, editor, &asset)?)?;
         let (contrast_difference, _) =
             largest_difference(&current_raster.rgba, &contrasted.raster(&source.rgba))?;
         ensure(
@@ -992,7 +832,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
 
         // 10. The cropped population: a Basic layer that clips the border, and a crop that removes
         //     it. The counts follow the composition after crop, so the clipped border is gone.
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         let clipping = Basic {
             exposure: 4.0,
             ..Basic::default()
@@ -1009,7 +849,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "the clipping stack before the crop",
         )?;
         let (full_counts, clipped_raster) =
-            reduce_render(&source, &current_recipe(&owner, editor, &asset)?)?;
+            reduce_render(&source, &client::recipe(&owner, editor, &asset)?)?;
         let (clipping_difference, _) =
             largest_difference(&clipped_raster.rgba, &clipping.raster(&source.rgba))?;
         ensure(
@@ -1033,7 +873,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "width": f64::from(width - 2 * margin) / f64::from(width),
             "height": f64::from(height - 2 * margin) / f64::from(height),
         });
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         let mut params = crop.clone();
         params["asset_id"] = asset.clone();
         params["mutation"] = mutation(revision, "crop-the-border-away");
@@ -1075,14 +915,14 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             &owner,
             editor,
             "history.restore",
-            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "restore-original"), "entry_id": original}),
+            json!({"asset_id": asset, "mutation": mutation(client::revision(&owner, editor, &asset)?, "restore-original"), "entry_id": original}),
         )?;
         ensure(
             restore["outcome"] == json!("applied"),
             format!("The restore answered {restore}"),
         )?;
         ensure(
-            current_recipe(&owner, editor, &asset)?.layers.is_empty(),
+            client::recipe(&owner, editor, &asset)?.layers.is_empty(),
             "Restoring the Original left layers behind",
         )?;
 
@@ -1092,26 +932,26 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             saturation: 30.0,
             ..Basic::default()
         };
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         let mut params = straighten.patch();
         params["asset_id"] = asset.clone();
         params["mutation"] = mutation(revision, "basic-before-crop");
         call(&owner, editor, "edit.set-basic", params)?;
         let basic_stage = straighten.raster(&source.rgba);
-        let stage_render = render(&source, &current_recipe(&owner, editor, &asset)?)?;
+        let stage_render = render(&source, &client::recipe(&owner, editor, &asset)?)?;
         let (stage_difference, _) = largest_difference(&stage_render.rgba, &basic_stage)?;
         ensure(
             stage_difference <= CODE_TOLERANCE,
             format!("The pre-crop Basic stage differs by {stage_difference} codes"),
         )?;
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         call(
             &owner,
             editor,
             "edit.crop-fit",
             json!({"asset_id": asset, "mutation": mutation(revision, "straighten-10"), "aspect": "16:9", "angle": 10.0}),
         )?;
-        let recipe = current_recipe(&owner, editor, &asset)?;
+        let recipe = client::recipe(&owner, editor, &asset)?;
         let order: Vec<String> = recipe
             .layers
             .iter()
@@ -1167,12 +1007,12 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             &owner,
             editor,
             "history.restore",
-            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "restore-for-pixels"), "entry_id": original}),
+            json!({"asset_id": asset, "mutation": mutation(client::revision(&owner, editor, &asset)?, "restore-for-pixels"), "entry_id": original}),
         )?;
         let before_point = (10u32, 10u32);
         let after_point = (20u32, 20u32);
         let literal = [10u8, 20, 30];
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         call(
             &owner,
             editor,
@@ -1183,21 +1023,21 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             exposure: 1.0,
             ..Basic::default()
         };
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         call(
             &owner,
             editor,
             "edit.set-basic",
             json!({"asset_id": asset, "mutation": mutation(revision, "basic-between-pixels"), "exposure": 1.0}),
         )?;
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         call(
             &owner,
             editor,
             "edit.set-pixel",
             json!({"asset_id": asset, "mutation": mutation(revision, "pixel-after"), "x": after_point.0, "y": after_point.1, "rgb": literal}),
         )?;
-        let recipe = current_recipe(&owner, editor, &asset)?;
+        let recipe = client::recipe(&owner, editor, &asset)?;
         let order: Vec<String> = recipe
             .layers
             .iter()
@@ -1244,23 +1084,23 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             &owner,
             editor,
             "history.restore",
-            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "restore-for-orientation"), "entry_id": original}),
+            json!({"asset_id": asset, "mutation": mutation(client::revision(&owner, editor, &asset)?, "restore-for-orientation"), "entry_id": original}),
         )?;
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         call(
             &owner,
             editor,
             "edit.set-basic",
             json!({"asset_id": asset, "mutation": mutation(revision, "basic-under-orientation"), "exposure": -1.0, "vibrance": 50.0}),
         )?;
-        let revision = current_revision(&owner, editor, &asset)?;
+        let revision = client::revision(&owner, editor, &asset)?;
         call(
             &owner,
             editor,
             "edit.transform",
             json!({"asset_id": asset, "mutation": mutation(revision, "rotate-right"), "transform": "rotate-right"}),
         )?;
-        let recipe = current_recipe(&owner, editor, &asset)?;
+        let recipe = client::recipe(&owner, editor, &asset)?;
         let order: Vec<String> = recipe
             .layers
             .iter()
@@ -1310,7 +1150,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "the selected historical entry",
         )?;
         let selected_job = selected_report["job_id"].clone();
-        let revision = current_revision(&owner, agent, &asset)?;
+        let revision = client::revision(&owner, agent, &asset)?;
         call(
             &owner,
             agent,

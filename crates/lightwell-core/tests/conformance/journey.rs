@@ -3,14 +3,13 @@
 //! unavailable and reopened. Every step names what it shows, so a failure says which property of
 //! which module broke.
 use super::{
-    Checked, Evidence,
-    client::{Owner, mutation, registry_without},
-    ensure,
+    ACTOR, Checked, Evidence, ensure, mutation,
     pixels::{self, Sources},
     shape::{Field, FieldPatch},
     within,
 };
 use lightwell_core::{ClientId, LayerId, ModuleRegistry, Recipe};
+use lightwell_testkit::client::{Owner, registry_without};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
@@ -325,7 +324,7 @@ pub fn journey(
     evidence: &mut Evidence,
 ) -> Checked<Final> {
     let registry = ModuleRegistry::builtin();
-    let owner = Owner::start(catalog, ModuleRegistry::builtin())?;
+    let owner = Owner::start(catalog, ModuleRegistry::builtin(), ACTOR)?;
     let editor = owner.client();
     let agent = owner.client();
     let set = module.set.as_str();
@@ -1386,7 +1385,7 @@ pub fn journey(
 /// The same catalog served with the module registered unavailable: its layers stay stored and
 /// readable, and rendering, sampling, analysis and a new edit are each refused by name.
 pub fn unavailable(module: &FieldPatch, catalog: &Path, state: &Final) -> Checked<Value> {
-    let owner = Owner::start(catalog, registry_without(&module.id)?)?;
+    let owner = Owner::start(catalog, registry_without(&module.id)?, ACTOR)?;
     let client = owner.client();
     let asset = &state.asset;
     owner.prepare(client, asset)?;
@@ -1480,7 +1479,7 @@ pub fn unavailable(module: &FieldPatch, catalog: &Path, state: &Final) -> Checke
 /// The catalog reopened with every module available returns the same revision, entry, layer and
 /// mask identities, rows and pixels, and the same analysis identity.
 pub fn reopen(catalog: &Path, state: &Final) -> Checked<Value> {
-    let owner = Owner::start(catalog, ModuleRegistry::builtin())?;
+    let owner = Owner::start(catalog, ModuleRegistry::builtin(), ACTOR)?;
     let client = owner.client();
     let asset = &state.asset;
     owner.prepare(client, asset)?;

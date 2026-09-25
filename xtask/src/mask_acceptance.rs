@@ -12,10 +12,12 @@
 //! state live. This chapter is the other half of the same pillar — that every one of those gestures
 //! has a discoverable programmatic equivalent, that the equivalent produces the stacks, history,
 //! pixels and refusals the design states, and that the failure paths behave with masks in the recipe.
-use crate::basic_acceptance::{as_str, as_u64, call, import, mutation, prepare_source, refused};
-use crate::conformance::client::registry_without;
+use crate::basic_acceptance::{import, mutation};
 use crate::*;
 use lightwell_core::{OwnerHandle, mask::commands as mask_commands};
+use lightwell_testkit::client::{
+    Checked, as_str, as_u64, call, prepare, refused, registry_without,
+};
 use std::{cell::RefCell, sync::Arc, time::Instant};
 
 /// The fixture this chapter runs on: the 480x320 synthetic quadrant pattern every other chapter
@@ -59,7 +61,7 @@ fn sample(
     client: lightwell_core::ClientId,
     asset: &Value,
     at: (u32, u32),
-) -> Result<Vec<u64>> {
+) -> Checked<Vec<u64>> {
     let read = call(
         owner,
         client,
@@ -161,7 +163,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
 
         let imported = import(&owner, editor, &fixture)?;
         let asset = imported["asset"]["id"].clone();
-        prepare_source(&owner, editor, &asset)?;
+        prepare(&owner, editor, &asset)?;
         let unmasked_inside = sample(&owner, editor, &asset, INSIDE)?;
         let unmasked_outside = sample(&owner, editor, &asset, OUTSIDE)?;
 
@@ -250,7 +252,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                     as_str(&component["kind"], "kind")?
                 ))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Checked<Vec<_>>>()?;
         ensure(
             composed_kinds
                 == [
@@ -297,7 +299,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             .iter()
             .filter(|layer| !layer["mask"].is_null())
             .map(|layer| as_str(&layer["mask"], "mask"))
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Checked<Vec<_>>>()?;
         ensure(
             masked_rows == [gradient_mask.clone()],
             format!("recipe.describe reports masked layers {masked_rows:?}"),
@@ -433,7 +435,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 .ok_or("The brush component lists no strokes")?
                 .iter()
                 .map(|stroke| as_str(stroke, "stroke address"))
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Checked<Vec<_>>>()?;
         ensure(
             strokes.len() == 2,
             format!("The brush component holds {} strokes", strokes.len()),
@@ -747,7 +749,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             .map(|at| {
                 Ok(json!({"x": at.0, "y": at.1, "rgb": sample(&owner, editor, &asset, *at)?}))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Checked<Vec<_>>>()?;
         let identities: Vec<Value> = final_masks["masks"]
             .as_array()
             .ok_or("No masks listed")?
@@ -775,7 +777,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             OwnerHandle::start_with(&catalog, Arc::new(registry_without("lightwell.presence")?))?;
         let limited_detail = (|| -> Result<Value> {
             let client = limited.register();
-            prepare_source(&limited, client, &asset)?;
+            prepare(&limited, client, &asset)?;
             let masks = call(&limited, client, "mask.list", json!({"asset_id": asset}))?;
             ensure(
                 masks["masks"].as_array().map(Vec::len)
@@ -832,7 +834,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 let client = staged_owner.register();
                 let staged_imported = import(&staged_owner, client, &staged)?;
                 let staged_asset = staged_imported["asset"]["id"].clone();
-                prepare_source(&staged_owner, client, &staged_asset)?;
+                prepare(&staged_owner, client, &staged_asset)?;
                 let created = call(
                     &staged_owner,
                     client,
@@ -919,7 +921,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         let (reopened, reopened_join) = OwnerHandle::start(&catalog)?;
         let restart = (|| -> Result<Value> {
             let client = reopened.register();
-            prepare_source(&reopened, client, &asset)?;
+            prepare(&reopened, client, &asset)?;
             let state = call(&reopened, client, "asset.state", json!({"asset_id": asset}))?;
             ensure(
                 as_u64(&state["revision"], "revision")? == final_revision
@@ -950,7 +952,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 .map(|at| {
                     Ok(json!({"x": at.0, "y": at.1, "rgb": sample(&reopened, client, &asset, *at)?}))
                 })
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Checked<Vec<_>>>()?;
             ensure(
                 reopened_samples == final_samples,
                 format!(

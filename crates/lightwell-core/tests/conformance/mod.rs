@@ -14,26 +14,26 @@
 //! (`tests/field_patch_conformance.rs`, in the dev profile) and inside `cargo xtask
 //! editor-acceptance` (compiled into `xtask` through a `#[path]` module, in release), which writes
 //! what it returns as the acceptance evidence. The two cannot diverge because they are one
-//! function.
-pub mod client;
+//! function. The JSON client it drives the owner with is `lightwell_testkit::client`, the one
+//! xtask's acceptance chapters use.
 mod journey;
 pub mod pixels;
 pub mod shape;
 
+pub use lightwell_testkit::client::{Checked, ensure, within};
+
 use lightwell_core::ModuleRegistry;
+use lightwell_testkit::client::request_id;
 use serde_json::{Value, json};
 use std::{fs, path::Path, time::Instant};
 
-/// A check's result: its evidence, or what it found broken.
-pub type Checked<T = ()> = Result<T, String>;
+/// Who the suite's mutations name.
+pub const ACTOR: &str = "field-patch-conformance";
 
-pub fn ensure(ok: bool, message: impl Into<String>) -> Checked {
-    if ok { Ok(()) } else { Err(message.into()) }
-}
-
-/// Run one named step, prefixing what it found broken with the step's name.
-pub fn within<T>(what: &str, step: impl FnOnce() -> Checked<T>) -> Checked<T> {
-    step().map_err(|error| format!("{what}: {error}"))
+/// The mutation envelope every asset change the suite makes carries, with a request identity new
+/// to this process.
+pub fn mutation(revision: u64, tag: &str) -> Value {
+    lightwell_testkit::client::mutation(revision, &request_id(tag), ACTOR)
 }
 
 /// What one module's run showed, step by step.

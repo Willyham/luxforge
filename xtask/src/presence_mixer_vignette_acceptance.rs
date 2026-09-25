@@ -9,14 +9,13 @@
 //! unavailable provider and reopen — is the field-patch conformance chapter's
 //! ([`crate::conformance`]), which runs the same suite the core's own test does. Their numerics
 //! against their frozen references are the core's tests.
-use crate::basic_acceptance::{
-    FIXTURE, call, current_recipe, current_revision, import, mutation, render,
-};
+use crate::basic_acceptance::{FIXTURE, import, mutation, render};
 use crate::*;
 use lightwell_core::{
     BASIC_EFFECT, ClientId, MIXER_EFFECT, ORIENTATION_EFFECT, OwnerHandle, PRESENCE_EFFECT,
     SourceImage, VIGNETTE_EFFECT,
 };
+use lightwell_testkit::client::{self, call};
 use std::time::Instant;
 
 /// The centre of the fixture's blue quadrant (`xtask/src/fixtures.rs`'s pattern), where the mixer's
@@ -96,7 +95,7 @@ fn restore_to_original(
     original: &Value,
     request_id: &str,
 ) -> Result {
-    let revision = current_revision(owner, client, asset)?;
+    let revision = client::revision(owner, client, asset)?;
     call(
         owner,
         client,
@@ -104,7 +103,7 @@ fn restore_to_original(
         json!({"asset_id": asset, "mutation": mutation(revision, request_id), "entry_id": original}),
     )?;
     ensure(
-        current_recipe(owner, client, asset)?.layers.is_empty(),
+        client::recipe(owner, client, asset)?.layers.is_empty(),
         "Restoring the Original entry left layers behind",
     )
 }
@@ -142,13 +141,13 @@ fn presence_placement(
             &format!("placement-reset-{tag}"),
         )?;
         for action in order {
-            let revision = current_revision(owner, editor, asset)?;
+            let revision = client::revision(owner, editor, asset)?;
             let mut params = payload_for(action);
             params["asset_id"] = asset.clone();
             params["mutation"] = mutation(revision, &format!("placement-{tag}-{action}"));
             call(owner, editor, &format!("edit.{action}"), params)?;
         }
-        let revision = current_revision(owner, editor, asset)?;
+        let revision = client::revision(owner, editor, asset)?;
         call(
             owner,
             editor,
@@ -219,12 +218,12 @@ fn mixer_order(
             &format!("order-{case}-reset"),
         )?;
         let ordering_asset = asset.clone();
-        let revision = current_revision(owner, editor, &ordering_asset)?;
+        let revision = client::revision(owner, editor, &ordering_asset)?;
         let mut params = first_field;
         params["asset_id"] = ordering_asset.clone();
         params["mutation"] = mutation(revision, &format!("order-{case}-first"));
         call(owner, editor, first_action, params)?;
-        let revision = current_revision(owner, editor, &ordering_asset)?;
+        let revision = client::revision(owner, editor, &ordering_asset)?;
         let mut params = second_field;
         params["asset_id"] = ordering_asset.clone();
         params["mutation"] = mutation(revision, &format!("order-{case}-second"));
@@ -282,7 +281,7 @@ fn vignette_recentring(
     // over. The centre is invariant on either stage (mask 0), a corner darkens on either stage, and
     // this holds again after the crop moves.
     let recentre_asset = asset.clone();
-    let revision = current_revision(owner, editor, &recentre_asset)?;
+    let revision = client::revision(owner, editor, &recentre_asset)?;
     call(
         owner,
         editor,
@@ -293,7 +292,7 @@ fn vignette_recentring(
     // guess: the JSON API has no dedicated "current stage size" method, and `render.sample`
     // itself refuses an out-of-range pixel, so a wrong guess would fail loudly rather than
     // silently, but the render is authoritative and needs no guess at all.
-    let stage_a_raster = render(source, &current_recipe(owner, editor, &recentre_asset)?)?;
+    let stage_a_raster = render(source, &client::recipe(owner, editor, &recentre_asset)?)?;
     let (stage_a_w, stage_a_h) = (
         u64::from(stage_a_raster.width),
         u64::from(stage_a_raster.height),
@@ -315,7 +314,7 @@ fn vignette_recentring(
     )?["rgba"]
         .clone();
 
-    let revision = current_revision(owner, editor, &recentre_asset)?;
+    let revision = client::revision(owner, editor, &recentre_asset)?;
     call(
         owner,
         editor,
@@ -359,7 +358,7 @@ fn vignette_recentring(
     )?;
 
     // Move the crop: the vignette stays last and recentres on the new stage.
-    let revision = current_revision(owner, editor, &recentre_asset)?;
+    let revision = client::revision(owner, editor, &recentre_asset)?;
     call(
         owner,
         editor,
@@ -377,7 +376,7 @@ fn vignette_recentring(
         recentre_layers.last().ok_or("no layers")?["effect"] == json!(VIGNETTE_EFFECT),
         format!("The vignette is no longer last after the crop moved: {recentre_layers:?}"),
     )?;
-    let stage_b_raster = render(source, &current_recipe(owner, editor, &recentre_asset)?)?;
+    let stage_b_raster = render(source, &client::recipe(owner, editor, &recentre_asset)?)?;
     let (stage_b_w, stage_b_h) = (
         u64::from(stage_b_raster.width),
         u64::from(stage_b_raster.height),
@@ -401,7 +400,7 @@ fn vignette_recentring(
 
     // The amount-0 baseline for the *new* stage, so the comparison is against the stage the
     // crop update actually produced, not the pre-crop 96x64-style stage from before.
-    let revision = current_revision(owner, editor, &recentre_asset)?;
+    let revision = client::revision(owner, editor, &recentre_asset)?;
     call(
         owner,
         editor,
