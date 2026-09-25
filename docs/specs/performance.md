@@ -1329,6 +1329,143 @@ latency distribution.
 The local evidence is under `artifacts/performance-first-wave/`; the implementation and
 performance review checklist are in [isolated rendering performance](../design/isolated-performance.md).
 
+## Source preparation and exact rendering
+
+The source worker develops a cold known RAW directly at the validated requested white balance.
+DNG optical corrections share the process pool across disjoint rows; native demosaic is still serial.
+Texture and Clarity skip unused global reductions; Dehaze reuses its atmosphere across strength edits.
+Its cache distinguishes upstream masks and sampling, source development/view, exposure and approximate
+white balance. Terminal encoding indexes the exact code boundaries, retaining the RAW boundary guard;
+source-only RAW rendering resolves the planar view once per row. Clipping reduces display grids into
+one output allocation, with at most 4 MiB of fixed partial scratch for tiny grids that would otherwise
+underfill the pool. The [implementation contract](../design/performance-second-wave.md) contains the
+resource and correctness checklist.
+
+Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins,
+25 September 2026. Baseline production source `3890a5b`; integrated source `75cca64`.
+All agent builds/tests were paused during timing. Each reported distribution combines 15 observations
+per leg in before/after/after/before order: 30 per variant, with no tails removed. Kernel leg-start
+one-minute load was 10.2–16.9, including the benchmarks themselves, above the harness's 8.0 threshold.
+These are relative live-host comparisons, not passed absolute latency budgets. Raw observations,
+commands, hashes and load are retained locally in `artifacts/performance-second-wave/`.
+
+### Prepared rendering and native DNG development
+
+Core render times include output allocation/drop and exclude source preparation, histogram reduction,
+queue delay and presentation. Generated JPEGs are 6000 × 4000 and 10000 × 6000. The prepared linear
+workload converts those JPEG pixels into planar floats before timing and applies +0.7 EV; it does not
+measure camera decoding. Full Basic uses ten non-neutral fields; Mixer uses red hue +30, orange
+saturation +20 and blue luminance −30. The proxy is 2700 × 1800, prepared outside timing.
+Only the Air 2S row develops an actual retained native mosaic, including required optical corrections;
+it excludes file read/unpack. Gains overlap and must not be added.
+
+| Workload | Before p50 / p95 | After p50 / p95 | Median time saved |
+| --- | --- | --- | --- |
+| Air 2S, native retained-mosaic development | 1318.3 / 1325.3 ms | 350.3 / 360.9 ms | 73.4% |
+| 24 MP prepared linear, source exposure | 60.1 / 63.0 ms | 21.4 / 23.9 ms | 64.3% |
+| 60 MP prepared linear, source exposure | 162.6 / 178.5 ms | 58.3 / 60.9 ms | 64.2% |
+| 24 MP full Basic | 123.3 / 145.7 ms | 110.8 / 120.3 ms | 10.1% |
+| 60 MP full Basic | 325.6 / 371.3 ms | 277.6 / 284.8 ms | 14.7% |
+| 24 MP Mixer | 129.5 / 134.5 ms | 112.0 / 136.6 ms | 13.5% |
+| 60 MP Mixer | 311.9 / 320.4 ms | 268.2 / 275.7 ms | 14.0% |
+| 24 MP source, full Basic proxy | 26.6 / 30.6 ms | 22.8 / 24.8 ms | 14.4% |
+
+Every full RGBA hash and the complete native planar-float hash matches before/after. The 24 MP
+Mixer p95 is slightly worse despite its median gain; no tail improvement is claimed there. Serial/pool
+DNG tests preserve every float bit, stage/channel order, active-area borders, failures and cancellation.
+A separate ten-observation threshold diagnostic gives median 56.7 / 6.8 ms serial/pool at one megapixel
+and 170.3 / 19.5 ms at three megapixels for synthetic gain/warp/vignette; inputs below one megapixel
+remain serial. This small diagnostic is threshold feedback, not a p95 distribution.
+
+### Spatial amount edits and clipping
+
+A spatial row is one public point sample, including its bounded tile, immediately after changing only
+the named strength from 60 to 61 on an already-sampled recipe. Linear inputs are prepared from JPEGs.
+Texture/Clarity need no reduction even on the first sample; Dehaze still builds an atmosphere on a cold
+cache or changed input. These savings do not remove the tile or move its work off the owner.
+
+| Workload | Before p50 / p95 | After p50 / p95 | Median time saved |
+| --- | --- | --- | --- |
+| 24 MP JPEG, Clarity | 27.2 / 28.5 ms | 12.6 / 12.9 ms | 53.5% |
+| 24 MP JPEG, Dehaze | 19.5 / 20.6 ms | 5.7 / 6.0 ms | 70.7% |
+| 24 MP linear, Clarity | 40.3 / 42.8 ms | 14.7 / 15.0 ms | 63.5% |
+| 24 MP linear, Dehaze | 32.2 / 34.3 ms | 6.8 / 7.1 ms | 78.8% |
+| 60 MP JPEG, Clarity | 53.8 / 57.0 ms | 19.1 / 19.6 ms | 64.5% |
+| 60 MP JPEG, Dehaze | 43.0 / 48.2 ms | 7.0 / 7.3 ms | 83.7% |
+| 60 MP linear, Clarity | 86.0 / 89.2 ms | 22.5 / 22.9 ms | 73.8% |
+| 60 MP linear, Dehaze | 72.7 / 76.2 ms | 8.4 / 9.5 ms | 88.5% |
+
+The clipping rows include reduction and output allocation, excluding decode, painting, upload and
+queueing. Every cell matches the retained baseline. A 4096 × 2458 grid holds 9.6 MiB; it is no longer
+replicated per parallel fold. Tiny grids remain essentially flat (within 0.2 ms in these medians).
+
+| Workload | Before p50 / p95 | After p50 / p95 | Median time saved |
+| --- | --- | --- | --- |
+| 24 MP → 1716 × 1144 grid | 30.5 / 36.3 ms | 1.9 / 2.8 ms | 93.8% |
+| 60 MP → 1716 × 1030 grid | 30.9 / 36.6 ms | 4.3 / 4.5 ms | 86.1% |
+| 60 MP → 4096 × 2458 capped grid | 276.8 / 319.0 ms | 4.3 / 4.8 ms | 98.4% |
+| 60 MP → 1 × 1 grid | 4.4 / 4.8 ms | 4.4 / 4.6 ms | -0.6% |
+| 60 MP → 8 × 8 grid | 4.2 / 4.6 ms | 4.4 / 4.7 ms | -3.8% |
+
+### Integrated editor diagnostic
+
+The official `editor-performance` comparison also uses 30 observations per variant and size in ABBA
+order. These recipes include the harness’s composed transforms and 10° crop, so their values are
+separate from bare kernels. Source-preservation checks pass. Leg-start load was 7.1–15.4; untouched
+geometry/histogram medians move by roughly 0–4%, so smaller shifts are not attributed to a change.
+
+| Workload | Before p50 / p95 | After p50 / p95 |
+| --- | --- | --- |
+| 24 MP source, Full Basic + geometry | 80.4 / 93.3 ms | 72.3 / 78.8 ms |
+| 24 MP source, Exposure + geometry | 37.8 / 43.3 ms | 31.0 / 33.1 ms |
+| 24 MP source, Full Basic proxy + geometry | 48.9 / 50.6 ms | 44.2 / 47.7 ms |
+| 24 MP source, Build display-bounded proxy | 22.2 / 28.7 ms | 14.8 / 19.7 ms |
+| 60 MP source, Full Basic + geometry | 189.7 / 197.8 ms | 173.8 / 178.9 ms |
+| 60 MP source, Exposure + geometry | 89.7 / 94.5 ms | 72.0 / 78.2 ms |
+| 60 MP source, Full Basic proxy + geometry | 52.7 / 62.7 ms | 46.5 / 50.7 ms |
+| 60 MP source, Build display-bounded proxy | 33.1 / 36.7 ms | 24.4 / 30.0 ms |
+
+### Cold saved-white-balance preparation
+
+Every observation restarts the owner and source cache, with the filesystem cache warm, and opens an
+existing catalog whose RAW has a saved custom red gain (1.1 × as-shot). The timer starts immediately
+before `catalog.import` and ends when a strict exact-source `PreviewJob` is available, including job
+waiting and adoption. Owner startup/catalog open, float hashing, final rendering and desktop
+presentation are excluded. Full planar float bits are hashed after **every** observation. Source jobs
+fall from two to one in every sample; hashes match for every before/after sample. Leg-start load
+was 3.1–14.4.
+
+| Source | Before p50 / p95 | After p50 / p95 | Median time saved |
+| --- | --- | --- | --- |
+| Fujifilm X100VI | 2950.1 / 3013.8 ms | 1552.4 / 1605.4 ms | 1397.7 ms, 47.4% |
+| DJI Air 2S | 2824.9 / 2859.5 ms | 485.8 / 517.2 ms | 2339.1 ms, 82.8% |
+
+The Air 2S saving combines removal of its redundant development with parallel optical correction;
+it must not be added to the isolated development saving above. Native correctness regressions also
+cover Nikon Z6, new as-shot import, two distinct custom historical/current WB targets, source and
+interpretation mismatch, same-target deduplication, different-target cancellation and a WB edit
+while loading. Old gains never satisfy a strict request for the newer edit.
+
+### Native qualification
+
+All 38 verification components have passing evidence: workspace/API checks, 30 rendered scenarios,
+RAW numerical references, three actual editor/open/edit/reopen trials per supplied Nikon, Fuji and DJI
+file, and timing journeys. The initial full run passed 36 components. Its GPU-counter test read a
+cached client list before its measured queue existed and could stop on a bookkeeping increment;
+the fixture now warms that queue before a fresh sampler discovers it and waits for the existing
+numerical lower bound. The bounds, timeout and allocation checks remain unchanged. The focused test
+and final quick tier pass. The other failure was mask-range's draft-frame assertion during the
+three-scenario pool: exact draft renders were cancelled by later inputs while pixel/state checks
+passed. The isolated scenario passes on the identical production binary, displaying 11 drafted
+frames. Original failures and focused reruns are retained in the local evidence, with a combined
+`qualification.json`; passing native components were not rerun without a code change.
+
+Final native Presence sample/render tests also pass on all three originals. DJI reopen, Presence and
+mask/range captures were visually inspected alongside state and event checks. The full run's standard
+timing components started above load 8.0 and their absolute target verdicts remain **unreliable**.
+Empty-shell startup, GPU colour, larger tiles and native demosaic parallelism remain separate work;
+Windows/Linux numerical and native GPU qualification are not established by this M4 evidence.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

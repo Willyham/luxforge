@@ -83,6 +83,10 @@ Store enough interpretation/algorithm identity to reject unsupported data and in
 
 Persist small interpretation/settings records, not decoded frames per history entry. Preserve request IDs, expected revisions, actors, atomic commits, versions, branches, undo/redo, Restore and read-only historical preview. Source loss/change never deletes or rewrites any of them.
 
+A cold known source carries the requested entry’s immutable interpretation and resolved sensor gains into the bounded file job. The worker checks the original fingerprint and freshly unpacked interpretation before developing directly at those gains. A new import still develops as shot. Same-target requests share a flight; differing gains do not. A white-balance change during preparation cannot make the old completion current: the strict development check requires a retained-mosaic redevelopment for the new gains.
+
+A source-only RAW render resolves its planar view once per row, including source orientation and active crop, then uses the same source adjustments and terminal code boundaries. Recipe compilation still validates the entire stack; content operations or recipe geometry take the general evaluator. No extra frame buffer or approximate committed path is introduced.
+
 ## Pixel and color contract
 
 The processing order is:
