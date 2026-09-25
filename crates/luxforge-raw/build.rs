@@ -99,6 +99,12 @@ fn main() {
         .include(&out)
         .include(rt.join("src/include"))
         .define("LIBRTPROCESS_STATIC", None)
+        // libraw is compiled directly into this static library, never as a
+        // DLL and never consumed as one. On MSVC, libraw.h auto-enables
+        // LIBRAW_WIN32_DLLDEFS, which makes exported symbols dllimport
+        // unless told otherwise, and MSVC rejects defining a dllimport
+        // function. LIBRAW_NODLL disables that path on all platforms.
+        .define("LIBRAW_NODLL", None)
         .file(manifest.join("native/adapter.cpp"));
     // No USE_ZLIB/JPEG/RAWSPEED/DNGSDK/LCMS or OpenMP features.
     // The qualified NEF/RAF/DNG decoding paths do not require them.
