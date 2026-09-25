@@ -157,10 +157,10 @@ impl Editor {
                         .as_ref()
                         .is_some_and(|state| state.current_entry.id == read.recipe.entry_id)
                     {
-                        self.current_recipe = Some(read.recipe.clone());
+                        *self.current_recipe = Some(read.recipe.clone());
                     }
-                    self.recipe = Some(read.recipe);
-                    self.masks = Some(read.masks);
+                    *self.recipe = Some(read.recipe);
+                    *self.masks = Some(read.masks);
                     self.seed_values();
                 }
                 Err(error) => {
@@ -211,9 +211,9 @@ impl Editor {
                 self.modules_ready = true;
                 match result {
                     Ok(modules) => {
-                        self.fields = Fields::seeded(&modules);
+                        *self.fields = Fields::seeded(&modules);
                         self.event("modules_loaded", module_summary(&modules));
-                        self.modules = modules;
+                        *self.modules = modules;
                         // A photograph that opened before discovery answered already has its
                         // recipe rows: seed the new fields from them.
                         self.seed_values();
@@ -380,18 +380,18 @@ impl Editor {
         }
         self.adopt(refresh.session);
         match refresh.history {
-            Some(history) => self.history = history,
+            Some(history) => *self.history = history,
             None => merge_current_entry(
                 &mut self.history,
                 HistoryRow::from(&refresh.state.current_entry),
             ),
         }
         if let Some(versions) = refresh.versions {
-            self.versions = versions;
+            *self.versions = versions;
         }
         match refresh.lineage {
             Some(lineage) => {
-                self.lineage = lineage
+                *self.lineage = lineage
                     .steps
                     .iter()
                     .map(|step| step.entry_id.clone())
@@ -411,13 +411,13 @@ impl Editor {
         if refresh.original.is_some() {
             self.original_entry = refresh.original;
         }
-        self.current_recipe = Some(
+        *self.current_recipe = Some(
             refresh
                 .current_recipe
                 .unwrap_or_else(|| refresh.recipe.clone()),
         );
-        self.recipe = Some(refresh.recipe);
-        self.masks = Some(refresh.masks);
+        *self.recipe = Some(refresh.recipe);
+        *self.masks = Some(refresh.masks);
         self.recipe_failed = false;
         let revision = refresh.state.revision;
         let entry = refresh.state.current_entry.id.clone();
@@ -455,7 +455,7 @@ impl Editor {
         // module" and nothing would be seeded at all.
         let target = self.section_target().cloned();
         let modules = std::mem::take(&mut self.modules);
-        for module in &modules {
+        for module in modules.iter() {
             let mut layers = recipe
                 .layers
                 .iter()

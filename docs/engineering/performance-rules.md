@@ -70,6 +70,7 @@ Accepted or pending decisions. Do not "fix" them without the referenced scope.
 | Accept loop sleeping 10 ms in a non-blocking spin | Blocking `accept` woken by one loopback connection on shutdown |
 | Desktop tasks sleeping 50 ms between `job.status` reads while a source job prepares or the source queue is full, through four call helpers and a capability copy of them | One owner task and one call helper; `OwnerHandle::wait_source` blocks until the owner says a job ended |
 | Owner tasks moved to the async runtime's blocking pool (`spawn_blocking`) | Tried and reverted: each answer then reached the screen a displayed frame later (slider release to committed frame p50 about 28 against 20 ms on 24 MP) |
+| Derive every region of the workspace after every message, copying every module list, history row and unchanged tools section again | Per-region keys from `Tracked` stamps and small inputs; a region is derived only when its key moved, and an unchanged tools section is moved back, not copied |
 | A 500 ms timer that woke the desktop to read `events.since` whenever an asset was open, whether or not anything had changed | The owner wakes the desktop when another client's change reaches the log; its own changes wake nothing, since their answers read them back |
 | Debug build as the default development launch | Release-profile `develop`; explicit `--debug` for debugging only |
 | Tiny fixture as the only timing evidence | `editor-performance` on generated 24 MP and 60 MP inputs |

@@ -164,3 +164,24 @@ fn a_section_toggle_is_local_and_a_mode_change_is_session_state() {
     );
     finish(editor, catalog);
 }
+
+/// A message that changes nothing the screen shows builds no section of it, and one that changes a
+/// single input builds the sections that read it and no others.
+#[test]
+fn a_message_that_changes_nothing_builds_no_section() {
+    let (mut editor, catalog) = boot();
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    let built = editor.built.builds;
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert_eq!(editor.built.builds, built, "an idle poll builds nothing");
+
+    editor.status = "Something happened".into();
+    editor.rederive();
+    assert_eq!(
+        editor.built.builds,
+        built + 1,
+        "a status line is the status bar's alone"
+    );
+    assert_eq!(editor.workspace.status.message, "Something happened");
+    finish(editor, catalog);
+}

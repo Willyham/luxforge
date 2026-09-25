@@ -404,7 +404,7 @@ fn a_point_pick_commits_only_when_its_module_declares_it() {
     editor.busy = false;
 
     // Without the declaration the same pick fills the coordinates and commits nothing.
-    for module in &mut editor.modules {
+    for module in editor.modules.iter_mut() {
         if let Some(lightwell_core::CanvasInteraction::PointPick { commit, .. }) =
             module.canvas.as_mut()
             && module.id == mode

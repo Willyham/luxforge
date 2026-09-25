@@ -34,7 +34,7 @@ impl Editor {
                 // The page is this desktop's own view state, so opening, turning and closing the
                 // board is local and immediate: nothing is sent to the owner.
                 self.palette_open = false;
-                self.menu = None;
+                *self.menu = None;
                 self.gallery = page;
             }
             ViewMessage::CopyStatus => {
@@ -124,8 +124,8 @@ impl Editor {
                 // generic catch-up in `sync_mode`, so the same field is never asked for twice.
                 return workspace_task(self.owner.clone(), self.client, json!({ "mode": mode }));
             }
-            ViewMessage::OpenMenu(target) => self.menu = Some(target),
-            ViewMessage::CloseMenu => self.menu = None,
+            ViewMessage::OpenMenu(target) => *self.menu = Some(target),
+            ViewMessage::CloseMenu => *self.menu = None,
             ViewMessage::FocusNext => return operation::focus_next(),
             ViewMessage::FocusPrevious => return operation::focus_previous(),
             ViewMessage::Zoom(value) => self.zoom = value,

@@ -531,11 +531,19 @@ impl ToolsModel {
             } else {
                 &mut sections
             };
+            // The section's last model is taken rather than copied: an unchanged one is moved
+            // back as it is.
             let previous = self
                 .sections
                 .iter()
-                .chain(self.developer.iter())
-                .find(|section| section.module_id == module.id);
+                .position(|section| section.module_id == module.id)
+                .map(|index| self.sections.swap_remove(index))
+                .or_else(|| {
+                    self.developer
+                        .iter()
+                        .position(|section| section.module_id == module.id)
+                        .map(|index| self.developer.swap_remove(index))
+                });
             target.push(section(module, inputs, previous));
         }
         self.sections = sections;
@@ -552,7 +560,7 @@ impl ToolsModel {
 fn section(
     module: &ModuleDescriptor,
     inputs: &Inputs<'_>,
-    previous: Option<&SectionModel>,
+    previous: Option<SectionModel>,
 ) -> SectionModel {
     let expanded = expanded(module, inputs);
     let unavailable = match &module.availability {
@@ -564,11 +572,11 @@ fn section(
     let active = active(module, inputs);
     let layout = section_layout(module, inputs);
     let digest = digest(module, inputs, expanded, enabled, active, layout);
-    if let Some(previous) = previous
-        && previous.digest == digest
-    {
-        return previous.clone();
-    }
+    let version = match previous {
+        Some(previous) if previous.digest == digest => return previous,
+        Some(previous) => previous.version + 1,
+        None => 1,
+    };
     let mut controls = Vec::new();
     // A declared crop frame is a host interaction, not a control: the host renders its draft panel
     // here and the module's own controls, Reset crop included, still come below.
@@ -620,7 +628,7 @@ fn section(
         controls,
         layout,
         status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
-        version: previous.map(|previous| previous.version + 1).unwrap_or(1),
+        version,
         enabled,
         disabled_reason,
         digest,

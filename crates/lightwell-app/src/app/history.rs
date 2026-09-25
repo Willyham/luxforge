@@ -24,7 +24,7 @@ impl Editor {
                 self.busy = false;
                 match result {
                     Ok((versions, request)) => {
-                        self.versions = versions;
+                        *self.versions = versions;
                         self.read_back(request);
                         self.version_name.clear();
                         self.status = "Versions updated".into();
