@@ -15,8 +15,9 @@ use super::{
 };
 use crate::{
     ActionDescriptor, ArtifactId, AssetId, ComponentId, DraftId, EditorService, EntryId, Error,
-    ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome, PresetId, Zoom,
-    capabilities::{descriptor::TaskDescriptor, host::TASK_PREFIX},
+    ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome,
+    ParameterDescriptor, PresetId, Zoom,
+    capabilities::host::TASK_PREFIX,
     mask::commands::{self as mask_commands, MaskCommand, MaskTarget},
     path,
 };
@@ -41,13 +42,6 @@ pub(super) struct MethodSpec {
     pub params: &'static ParamSchema,
     pub notes: &'static str,
     pub handler: Handler,
-}
-
-impl MethodSpec {
-    /// A method mutates exactly when it carries a mutation envelope.
-    pub(super) fn mutates(&self) -> bool {
-        self.params.envelope != Envelope::None
-    }
 }
 
 /// One service method: its handler takes the struct its schema was generated from, parsed from the
@@ -665,152 +659,159 @@ pub(super) fn mutates(method: &Method, result: Option<&Value>) -> bool {
         })
 }
 
-/// One host method's schema entry, generated from its declared parameters.
-fn host_schema(spec: &MethodSpec) -> Value {
-    let optional: Map<String, Value> = spec
-        .params
-        .optional
-        .iter()
-        .map(|(name, meaning)| ((*name).to_owned(), json!(meaning)))
-        .collect();
+/// One method's entry in `schema.list`: the one shape every method is listed in, whether the host,
+/// a module's action, query or task, or a mask command declares it. Whether it mutates and the
+/// envelope it names are [`Method::envelope`], the envelope dispatch requires. `required` and
+/// `optional` are the method's own top-level fields; a generated method also lists its `declared`
+/// parameters and, when it is an action or a mask command, whether it is a `patch`.
+///
+/// A declared parameter is required exactly when the method is not a patch, the descriptor declares
+/// it required and it carries no default: a patch carries whichever fields the caller names, and a
+/// default is what a client seeds or resets the field to. Every other one is optional.
+fn method_schema(
+    method: &Method,
+    mut required: Vec<Value>,
+    mut optional: Map<String, Value>,
+    notes: &str,
+    declared: Option<&[ParameterDescriptor]>,
+    patch: Option<bool>,
+) -> Value {
+    for parameter in declared.unwrap_or_default() {
+        if patch != Some(true) && parameter.required && parameter.default.is_none() {
+            required.push(json!(parameter.name));
+        } else {
+            optional.insert(parameter.name.clone(), json!(parameter.notes));
+        }
+    }
+    let envelope = method.envelope();
     let mut schema = json!({
-        "mutates": spec.mutates(),
-        "required": spec.params.required,
+        "mutates": method.mutates(),
+        "required": required,
         "optional": optional,
-        "notes": spec.notes,
+        "notes": notes,
     });
-    if let Some(envelope) = spec.params.envelope.name() {
-        schema["mutation"] = json!(envelope);
+    if let Some(parameters) = declared {
+        schema["parameters"] = json!(parameters);
+    }
+    if let Some(name) = envelope.name() {
+        schema["mutation"] = json!(name);
+    }
+    if let Some(patch) = patch {
+        schema["patch"] = json!(patch);
     }
     schema
 }
 
-/// One generated method description: the envelope every action shares plus the action's own
-/// declared parameters, so a client needs no hand-maintained list.
-///
-/// `maskable` says whether this action belongs to a module that declares a maskable effect, in which
-/// case the host's one optional `mask` field is listed with the envelope. It is listed here rather
-/// than declared as a parameter because it is the host's and no module parses it: sending it to any
-/// other action is a validation error naming that action.
-fn action_schema(action: &ActionDescriptor, maskable: bool) -> Value {
-    let mut required = vec![json!("asset_id"), json!("mutation")];
-    let mut optional = Map::new();
-    if maskable {
-        optional.insert(
-            "mask".to_owned(),
-            json!(
-                "the mask this edit applies through; omit it to edit the layer that applies \
-                 everywhere. The global layer and each mask are distinct targets, so this action \
-                 commits or updates one layer per target"
-            ),
-        );
-    }
-    for parameter in &action.parameters {
-        // A patch carries whichever fields the caller names, so none of them is required however
-        // the parameter is declared; its default is what a client seeds or resets the field to.
-        if !action.patch && parameter.required && parameter.default.is_none() {
-            required.push(json!(parameter.name));
-        } else {
-            optional.insert(parameter.name.clone(), json!(parameter.notes));
-        }
-    }
-    json!({
-        "mutates": true,
-        "mutation": Envelope::Revision.name(),
-        "patch": action.patch,
-        "required": required,
-        "optional": optional,
-        "notes": action.notes,
-        "parameters": action.parameters,
-    })
-}
-
-/// One generated query description. `asset_id` is the envelope, `entry_id` selects the stack to ask
-/// about and defaults to the session's selection, and the remaining top-level fields are the
-/// query's own declared parameters. A query mutates nothing.
-fn query_schema(query: &ActionDescriptor) -> Value {
-    let mut required = vec![json!("asset_id")];
-    let mut optional = Map::new();
-    optional.insert(
-        "entry_id".to_owned(),
-        json!("entry to ask about; default the session's selection"),
-    );
-    for parameter in &query.parameters {
-        if parameter.required && parameter.default.is_none() {
-            required.push(json!(parameter.name));
-        } else {
-            optional.insert(parameter.name.clone(), json!(parameter.notes));
-        }
-    }
-    json!({
-        "mutates": false,
-        "required": required,
-        "optional": optional,
-        "notes": query.notes,
-        "parameters": query.parameters,
-    })
-}
-
-/// One generated task description. `mutation` is the `request` envelope, `asset_id` and
-/// `profile_id` are the envelope when the task declares them, and the remaining top-level fields are
-/// its own declared parameters. The request queues a task job and answers `{job_id, status}`; a
-/// retry answers the first job.
-fn task_schema(task: &TaskDescriptor) -> Value {
-    let mut required = vec![json!("mutation")];
-    if task.asset {
-        required.push(json!("asset_id"));
-    }
-    if task.profile {
-        required.push(json!("profile_id"));
-    }
-    let mut optional = Map::new();
-    for parameter in &task.parameters {
-        if parameter.required && parameter.default.is_none() {
-            required.push(json!(parameter.name));
-        } else {
-            optional.insert(parameter.name.clone(), json!(parameter.notes));
-        }
-    }
-    json!({
-        "mutates": true,
-        "mutation": Envelope::Request.name(),
-        "required": required,
-        "optional": optional,
-        "notes": format!(
-            "{} Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {{job_id, status, deduplicated}}, and a retry with the same request_id returns the first job and starts none; module.job.read reports {{result, artifacts}} when it succeeds",
-            task.notes
-        ),
-        "parameters": task.parameters,
-    })
-}
-
 pub fn schemas(registry: &ModuleRegistry) -> Value {
+    // The host's own methods, from the parameters each one declares.
     let mut methods: Map<String, Value> = METHODS
         .iter()
-        .map(|spec| (spec.name.to_owned(), host_schema(spec)))
+        .map(|spec| {
+            let required = spec
+                .params
+                .required
+                .iter()
+                .map(|name| json!(name))
+                .collect();
+            let optional = spec
+                .params
+                .optional
+                .iter()
+                .map(|(name, meaning)| ((*name).to_owned(), json!(meaning)))
+                .collect();
+            let schema = method_schema(
+                &Method::Host(spec),
+                required,
+                optional,
+                spec.notes,
+                None,
+                None,
+            );
+            (spec.name.to_owned(), schema)
+        })
         .collect();
     // The host's own `mask.*` family, declared from the same descriptor types, so a client
     // discovers a mask command and a module action from one listing.
     for command in mask_commands::all() {
-        let mut schema = command.schema();
-        if let Some(envelope) = Method::Mask(command).envelope().name() {
-            schema["mutation"] = json!(envelope);
-        }
+        let (required, optional) = command.envelope_fields();
+        let schema = method_schema(
+            &Method::Mask(command),
+            required,
+            optional,
+            &command.action.notes,
+            Some(&command.action.parameters),
+            Some(command.action.patch),
+        );
         methods.insert(command.method.to_owned(), schema);
     }
     let descriptors = registry.descriptors();
     for descriptor in &descriptors {
         // One maskable effect makes this module's actions carry the target field; the registry
-        // answers the same question the same way for dispatch.
+        // answers the same question the same way for dispatch. The `mask` field is the host's and
+        // no module parses it, so it is listed with the envelope rather than declared as a
+        // parameter: sending it to any other action is a validation error naming that action.
         let maskable = descriptor.effects.iter().any(|effect| effect.maskable);
         for action in &descriptor.actions {
-            methods.insert(action_method(&action.id), action_schema(action, maskable));
+            let mut optional = Map::new();
+            if maskable {
+                optional.insert(
+                    "mask".to_owned(),
+                    json!(
+                        "the mask this edit applies through; omit it to edit the layer that \
+                         applies everywhere. The global layer and each mask are distinct targets, \
+                         so this action commits or updates one layer per target"
+                    ),
+                );
+            }
+            let schema = method_schema(
+                &Method::Action(action.id.clone()),
+                vec![json!("asset_id"), json!("mutation")],
+                optional,
+                &action.notes,
+                Some(&action.parameters),
+                Some(action.patch),
+            );
+            methods.insert(action_method(&action.id), schema);
         }
+        // A query reads the stack of `entry_id`, the session's selection by default.
         for query in &descriptor.queries {
-            methods.insert(query_method(&query.id), query_schema(query));
+            let mut optional = Map::new();
+            optional.insert(
+                "entry_id".to_owned(),
+                json!("entry to ask about; default the session's selection"),
+            );
+            let schema = method_schema(
+                &Method::Query(query.id.clone()),
+                vec![json!("asset_id")],
+                optional,
+                &query.notes,
+                Some(&query.parameters),
+                None,
+            );
+            methods.insert(query_method(&query.id), schema);
         }
+        // A task carries the `request` envelope, and `asset_id` and `profile_id` are its envelope
+        // when it declares them. The request queues a task job and answers `{job_id, status}`; a
+        // retry answers the first job.
         for task in &descriptor.tasks {
-            methods.insert(task_method(&task.id), task_schema(task));
+            let required = std::iter::once((true, "mutation"))
+                .chain([(task.asset, "asset_id"), (task.profile, "profile_id")])
+                .filter(|(declared, _)| *declared)
+                .map(|(_, field)| json!(field))
+                .collect();
+            let notes = format!(
+                "{} Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {{job_id, status, deduplicated}}, and a retry with the same request_id returns the first job and starts none; module.job.read reports {{result, artifacts}} when it succeeds",
+                task.notes
+            );
+            let schema = method_schema(
+                &Method::Task,
+                required,
+                Map::new(),
+                &notes,
+                Some(&task.parameters),
+                None,
+            );
+            methods.insert(task_method(&task.id), schema);
         }
     }
     json!({
@@ -2146,7 +2147,12 @@ mod tests {
                 spec.name
             );
             // A method mutates exactly when it carries a mutation envelope, and says which.
-            assert_eq!(schema["mutates"], json!(spec.mutates()), "{}", spec.name);
+            assert_eq!(
+                schema["mutates"],
+                json!(Method::Host(spec).mutates()),
+                "{}",
+                spec.name
+            );
             assert_eq!(
                 schema.get("mutation").cloned(),
                 spec.params.envelope.name().map(|name| json!(name)),
@@ -2155,7 +2161,7 @@ mod tests {
             );
             assert_eq!(
                 spec.params.required.contains(&"mutation"),
-                spec.mutates(),
+                Method::Host(spec).mutates(),
                 "{} carries its envelope as the required mutation field",
                 spec.name
             );

@@ -13,7 +13,7 @@
 //! - [`controls`] declares the panel widgets over those same parameters with the same [`Control`]
 //!   type, so there is one control-generation path and a client renders a mask's number fields,
 //!   toggles and mode selector with the widgets it already has.
-//! - `schema.list` lists every command from this table through [`MaskCommand::schema`], so discovery
+//! - `schema.list` lists every command from this table through the one schema emitter, so discovery
 //!   and dispatch cannot drift apart.
 //! - A command commits through the editor's one mutation path, `EditorService::mutate`, so the
 //!   mutation envelope, the input-hash deduplication, the revision check, the admission of the
@@ -279,10 +279,10 @@ impl MaskCommand {
         Ok(())
     }
 
-    /// This command's entry in `schema.list`, in the shape a generated action method uses: the
-    /// envelope first, then the command's own declared parameters, then the descriptors themselves so
-    /// a client generates its controls from the same declaration the host validates against.
-    pub fn schema(&self) -> Value {
+    /// The top-level fields this command's `schema.list` entry lists before its declared
+    /// parameters, required and optional: `asset_id`, then `mutation` for a mutating command or
+    /// `entry_id` for a read, then the mask, component, name and stroke it addresses.
+    pub(crate) fn envelope_fields(&self) -> (Vec<Value>, Map<String, Value>) {
         let mut required = vec![json!("asset_id")];
         let mut optional = Map::new();
         if self.mutates {
@@ -320,21 +320,7 @@ impl MaskCommand {
                 Need::None => {}
             }
         }
-        for parameter in &self.action.parameters {
-            if !self.action.patch && parameter.required && parameter.default.is_none() {
-                required.push(json!(parameter.name));
-            } else {
-                optional.insert(parameter.name.clone(), json!(parameter.notes));
-            }
-        }
-        json!({
-            "mutates": self.mutates,
-            "patch": self.action.patch,
-            "required": required,
-            "optional": optional,
-            "notes": self.action.notes,
-            "parameters": self.action.parameters,
-        })
+        (required, optional)
     }
 }
 
@@ -3575,9 +3561,14 @@ mod tests {
         );
     }
 
+    /// A command's `schema.list` entry, as a client reads it.
+    fn schema(method: &str) -> Value {
+        crate::schemas(&registry())["methods"][method].clone()
+    }
+
     #[test]
     fn the_schema_of_each_command_states_its_envelope_and_its_parameters() {
-        let create = find("mask.create-linear").unwrap().schema();
+        let create = schema("mask.create-linear");
         assert_eq!(create["mutates"], json!(true));
         assert_eq!(
             create["required"],
@@ -3587,19 +3578,19 @@ mod tests {
         // And a radial's create declares its own fields and none of the linear's, which is the whole
         // point of generating a method per kind.
         assert_eq!(
-            find("mask.create-radial").unwrap().schema()["required"],
+            schema("mask.create-radial")["required"],
             json!([
                 "asset_id", "mutation", "x", "y", "radius_x", "radius_y", "angle", "feather"
             ])
         );
         assert_eq!(
-            find("mask.add-radial").unwrap().schema()["required"],
+            schema("mask.add-radial")["required"],
             json!([
                 "asset_id", "mutation", "mask", "mode", "x", "y", "radius_x", "radius_y", "angle",
                 "feather"
             ])
         );
-        let patch = find("mask.set-linear").unwrap().schema();
+        let patch = schema("mask.set-linear");
         assert_eq!(patch["patch"], json!(true));
         assert_eq!(
             patch["required"],
@@ -3615,7 +3606,7 @@ mod tests {
             ["x0", "x1", "y0", "y1"],
             "every field of a patch is optional, whatever it declares"
         );
-        let list = find(LIST).unwrap().schema();
+        let list = schema(LIST);
         assert_eq!(list["mutates"], json!(false));
         assert_eq!(list["required"], json!(["asset_id"]));
         assert_eq!(
@@ -3626,7 +3617,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["entry_id"]
         );
-        let rename = find("mask.rename").unwrap().schema();
+        let rename = schema("mask.rename");
         assert_eq!(
             rename["required"],
             json!(["asset_id", "mutation", "mask", "name"])
