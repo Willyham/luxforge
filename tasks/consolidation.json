@@ -2999,7 +2999,8 @@
         "Reference implementations live in the core's test tree and can import the code they check; a `lightwell-reference` crate that cannot depend on `lightwell-core` makes them independent by construction.",
         "Per-module field-patch tests remain in `basic`, `mixer`, `presence` and `vignette` beside the shared field-patch conformance suite.",
         "`tests/basic_tone.rs` and `tests/basic_colour.rs` compare against values saved before an earlier change, which the current-shapes rule forbids.",
-        "xtask's `basic_acceptance.rs` has its own JSON helpers beside the conformance suite's client."
+        "xtask's `basic_acceptance.rs` has its own JSON helpers beside the conformance suite's client.",
+        "Done except merging the mask test binaries, which waits for the masking task's changes to those tests."
       ],
       "context_links": [
         {
@@ -3017,20 +3018,20 @@
         {
           "kind": "file",
           "label": "Field-patch conformance",
-          "target": "crates/lightwell-core/tests/field_patch_conformance.rs",
+          "target": "crates/lightwell-core/tests/modules/field_patch.rs",
           "relevance": "The shared suite."
         },
         {
           "kind": "file",
-          "label": "Basic tone test",
-          "target": "crates/lightwell-core/tests/basic_tone.rs",
-          "relevance": "A historical-parity test."
+          "label": "Basic Tone tests",
+          "target": "crates/lightwell-core/tests/basic/tone.rs",
+          "relevance": "The Basic Tone tests that remain after the historical-parity tests were deleted."
         },
         {
           "kind": "file",
-          "label": "Basic colour test",
-          "target": "crates/lightwell-core/tests/basic_colour.rs",
-          "relevance": "A historical-parity test."
+          "label": "Basic colour tests",
+          "target": "crates/lightwell-core/tests/basic/colour.rs",
+          "relevance": "The Basic colour tests that remain after the historical-parity tests were deleted."
         },
         {
           "kind": "file",
