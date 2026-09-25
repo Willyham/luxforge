@@ -331,11 +331,49 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
       &input_rows, &rrows, &grows, &brows
     };
     const size_t batches = (h + kNormalizeRowBatch - 1) / kNormalizeRowBatch;
+    const bool parallel_bayer_normalization =
+        executor && meta->cfa_width == 2 && count >= kNormalizeParallelPixelThreshold && batches > 1;
     int executor_status = 0;
-    if (executor && meta->cfa_width == 2 && count >= kNormalizeParallelPixelThreshold && batches > 1) {
+    if (parallel_bayer_normalization) {
       executor_status = executor(executor_context, batches, normalize_rows, &normalization);
     } else {
-      for (size_t batch = 0; batch < batches; ++batch) normalize_rows(&normalization, batch);
+      size_t patch_index = 0;
+      for (size_t y = 0; y < h; ++y) {
+        input_rows[y] = mosaic.data() + y * w;
+        rrows[y] = red + y * w;
+        grows[y] = green + y * w;
+        brows[y] = blue + y * w;
+        if (cancel && y % 128 == 0 && cancel(cancel_context)) {
+          error(err, err_len, "cancelled");
+          return 2;
+        }
+        for (size_t x = 0; x < w; ++x) {
+          const unsigned channel = meta->cfa_width == 2 ? bayer[y % 2][x % 2] : xtrans[y % 6][x % 6];
+          const unsigned black_channel = meta->cfa_width == 2
+              ? meta->black_cfa[(y % 2) * 2 + (x % 2)]
+              : meta->black_cfa[(y % 6) * 6 + (x % 6)];
+          if (channel > 2) { error(err, err_len, "invalid CFA channel"); return 5; }
+          if (black_channel > 3) { error(err, err_len, "invalid black CFA channel"); return 5; }
+          float black = meta->black_base + meta->black_channels[black_channel];
+          if (meta->black_repeat_width && meta->black_repeat_height) {
+            const size_t ix = (y % meta->black_repeat_height) * meta->black_repeat_width +
+                              (x % meta->black_repeat_width);
+            black += meta->black_repeat[ix];
+          }
+          // Sensor scale 65535 is the established numerical contract.
+          // No pre-demosaic clamp: sampled under-black and over-white latitude is retained.
+          const float denominator = meta->white - black;
+          if (!std::isfinite(denominator) || denominator <= 0.f) {
+            error(err, err_len, "invalid black/white denominator");
+            return 5;
+          }
+          uint16_t sample = samples[y * w + x];
+          if (patch_index < patch_count && patches[patch_index].index == y * w + x) {
+            sample = patches[patch_index++].value;
+          }
+          mosaic[y * w + x] = (float(sample) - black) * (65535.f / denominator) * gains[channel];
+        }
+      }
     }
     if (diagnostics) {
       diagnostics->normalization_ns = static_cast<uint64_t>(
