@@ -3,7 +3,7 @@
 //! layer receives.
 //!
 //! This file is the production transcription of that block and of the `linear_coverage` function of
-//! the independent `f64` reference at `crates/lightwell-core/tests/reference/mask.rs`. The
+//! the independent `f64` reference at `crates/lightwell-reference/src/mask.rs`. The
 //! per-pixel expression is written in the reference's form and the reference's order, so it is
 //! bit-identical to it rather than merely within tolerance: `u0, v0, du, dv, l2` are hoisted to
 //! compile time because they do not depend on the pixel, and `l2` stays a **divisor** rather than

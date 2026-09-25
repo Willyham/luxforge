@@ -3557,7 +3557,7 @@ pub(crate) mod tests {
     /// A tile entirely outside a mask's bounds is copied, and no unit of the operation is evaluated
     /// over it: the claim that makes a small masked Presence layer affordable on a 60 MP frame. The
     /// unit counts its own evaluations, so this is a counted fact on both paths and not an argument;
-    /// `tests/masked_spatial.rs` shows through the public API that the copied tiles hold the
+    /// `tests/mask/masked_spatial.rs` shows through the public API that the copied tiles hold the
     /// operation's input.
     #[test]
     fn a_tile_the_mask_cannot_reach_evaluates_no_unit() {

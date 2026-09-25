@@ -14,7 +14,7 @@
 //! a rasterizing pass and `render.sample` both call; `Stage::position_uv` maps a
 //! stored normalized payload coordinate to mask space and is what compiling a
 //! component calls. They agree mathematically and to within the frozen
-//! tolerance, but not bit for bit (measured in `mask_reference.rs`), so each
+//! tolerance, but not bit for bit (measured in the core's `tests/mask/study.rs`), so each
 //! caller uses the one for its own input.
 //!
 //! Domain: every function takes and returns plain `f64` and validates nothing.
@@ -223,7 +223,7 @@ pub fn linear_coverage(linear: &Linear, stage: &Stage, u: f64, v: f64) -> f64 {
 /// The clamped one-branch spelling of the smooth case is bit-identical to the
 /// design's three-branch form (`1` inside `r0`, `0` beyond `1`, `smooth((1 - r)
 /// / span)` between), because `smooth` returns exactly `0.0` and exactly `1.0`
-/// at the clamp's ends; `mask_reference.rs` asserts that equality rather than
+/// at the clamp's ends; the core's `tests/mask/study.rs` asserts that equality rather than
 /// assuming it.
 ///
 /// `angle` rotates the ellipse clockwise as drawn, because `v` increases down
@@ -250,7 +250,7 @@ pub fn radial_coverage(radial: &Radial, stage: &Stage, u: f64, v: f64) -> f64 {
 }
 
 /// The design's literal three-branch radial spelling, kept only so
-/// `mask_reference.rs` can prove it equals [`radial_coverage`] bit for bit. No
+/// the core's `tests/mask/study.rs` can prove it equals [`radial_coverage`] bit for bit. No
 /// production unit transcribes this one.
 pub fn radial_coverage_branch_form(radial: &Radial, stage: &Stage, u: f64, v: f64) -> f64 {
     let (cu, cv) = stage.position_uv(radial.x, radial.y);
@@ -642,7 +642,7 @@ pub fn capsule_profile(stroke: &BrushStroke, d: f64) -> f64 {
 /// **The minimum distance, not the maximum profile.** The two are the same
 /// number — the profile is nonincreasing in `d`, so the largest profile over the
 /// segments is the profile of the smallest distance — and
-/// `mask_brush_reference.rs` proves that equality bit for bit against
+/// the core's `tests/mask/brush_study.rs` proves that equality bit for bit against
 /// [`stroke_coverage_max_form`] rather than assuming it. This spelling is the
 /// frozen one because it evaluates one `sqrt` and one `smooth` per stroke
 /// instead of one per segment.
@@ -676,7 +676,7 @@ pub fn stroke_coverage(
 }
 
 /// The design's "the maximum over its segments of a capsule profile" spelling,
-/// kept only so `mask_brush_reference.rs` can prove it equals
+/// kept only so the core's `tests/mask/brush_study.rs` can prove it equals
 /// [`stroke_coverage`] bit for bit. No production unit transcribes this one.
 pub fn stroke_coverage_max_form(
     stroke: &BrushStroke,

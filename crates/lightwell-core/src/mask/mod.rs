@@ -19,7 +19,7 @@
 //!
 //! Transcription. This file is the production transcription of the frozen mathematics in
 //! `docs/design/mask-study.md` and of the independent `f64` reference at
-//! `crates/lightwell-core/tests/reference/mask.rs`; the three must be read together, and every
+//! `crates/lightwell-reference/src/mask.rs`; the three must be read together, and every
 //! expression on the per-pixel path is written in the same form and the same order as the
 //! reference's, so coverage is not merely within tolerance of it but **bit-identical** for the same
 //! payloads, stage and pixel. The study's rule that makes that checkable is that any value which

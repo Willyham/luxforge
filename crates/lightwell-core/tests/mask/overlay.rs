@@ -7,6 +7,7 @@
 //! the frames come from the real [`PreviewQueue`], so nothing is proved against a hand-built job.
 //! The expected bytes are computed from [`CompiledMask`] directly, not from the unit that filled
 //! the grid.
+use super::*;
 use lightwell_core::{
     ApiRequest, ApiResponse, AssetId, ClientId, ComponentId, MaskId, MaskOverlayRequest,
     OwnerHandle, PreviewPhase, PreviewQueue, PreviewRequest, PreviewResult, Recipe, Stage,
@@ -17,33 +18,10 @@ use lightwell_core::{
 };
 use serde_json::{Value, json};
 use std::{
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    path::PathBuf,
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-
-/// The pixel value a geometric component is handed and ignores (proposal P12 of
-/// `docs/design/range-study.md`). These masks hold gradients and brushes, whose coverage is a
-/// function of position alone, so the value here is arbitrary and the same at every call;
-/// `mask_range.rs` proves that ignoring it is exact rather than approximate.
-const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
-
-static NEXT: AtomicU64 = AtomicU64::new(1);
-
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "lightwell-mask-overlay-{}-{}-{name}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-}
 
 struct Fixture {
     owner: OwnerHandle,
@@ -58,7 +36,7 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(fixture(), &source).unwrap();
+        std::fs::copy(lightwell_testkit::fixtures::jpeg(), &source).unwrap();
         let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
         let client = owner.register();
         let queued = ok(

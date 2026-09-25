@@ -3,7 +3,7 @@
 //! metric, multi-sample combination and refine mapping.
 //!
 //! This binary shares no code with `lightwell-core`'s production sources. The
-//! frozen equations live in `tests/reference/range.rs`; the mathematics, the
+//! frozen equations live in `crates/lightwell-reference/src/range.rs`; the mathematics, the
 //! rejected alternatives, the honest limits and every measured figure quoted
 //! below are written out in full in `docs/design/range-study.md`, which this
 //! file's test names track.
@@ -11,15 +11,14 @@
 //! The study's dense figures are printed by the one ignored test at the end:
 //!
 //! ```sh
-//! cargo test --release --locked --package lightwell-core --test range_reference \
+//! cargo test --release --locked --package lightwell-core --test mask \
 //!     -- --ignored --nocapture range_study_figures
 //! ```
 
-mod reference;
-
-use reference::colour::{self, Oklab};
-use reference::mask::smooth;
-use reference::range::{
+use super::*;
+use lightwell_reference::colour::{self, Oklab};
+use lightwell_reference::mask::smooth;
+use lightwell_reference::range::{
     Axis, ColourRange, CompiledColourRange, CompiledLuminanceRange, FEATHER_MAX, FEATHER_MIN,
     LuminanceRange, MAX_SAMPLES, Metric, PLATEAU, RADIUS_MAX, RADIUS_MIN, SPAN, axis_value,
     colour_coverage, colour_coverage_at, colour_coverage_max_form, colour_coverage_product_form,
@@ -27,41 +26,11 @@ use reference::range::{
     luminance_coverage, luminance_coverage_at, luminance_coverage_branch_form,
     luminance_range_is_legal, oklab_distance, refine_is_legal, refine_radius, refine_radius_linear,
 };
-use reference::{linear_to_code, srgb_to_linear};
+use lightwell_reference::{linear_to_code, srgb_to_linear};
 
 // ---------------------------------------------------------------------------
-// Test-only helpers, kept local to this file per the reference tree's
-// convention (see `mask_reference.rs` and `vignette_reference.rs`).
+// The study's own inputs.
 // ---------------------------------------------------------------------------
-
-/// SplitMix64: dependency-free and fully reproducible, so every fixed-seed
-/// figure below is the same on any machine and any Rust version.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    /// Two uniforms summed and centred: a bounded, reproducible stand-in for
-    /// sensor noise, with no distribution claim beyond "symmetric about zero".
-    fn next_noise(&mut self) -> f64 {
-        self.next_range(-1.0, 1.0) + self.next_range(-1.0, 1.0)
-    }
-}
 
 /// The widely published sRGB renderings of the 24-patch reflective colour
 /// chart (BabelColor's averaged values). They are used here because they are
@@ -836,7 +805,7 @@ fn a_hard_band_speckles_on_a_noisy_shadow_and_a_soft_one_does_not() {
         let total = 200_000u32;
         for _ in 0..total {
             let code = 40.0 + 2.0 * rng.next_noise();
-            let linear = reference::srgb_decode(code.clamp(0.0, 255.0).round() as u8);
+            let linear = lightwell_reference::srgb_decode(code.clamp(0.0, 255.0).round() as u8);
             let c = luminance_coverage(&band, [linear, linear, linear]);
             if let Some(p) = previous
                 && (c - p).abs() > 0.5
@@ -1053,8 +1022,9 @@ fn the_frozen_tolerance_is_under_one_output_code_at_every_legal_payload() {
         let mut worst = 0.0f64;
         for code in 0u8..=255 {
             let input = srgb_to_linear(code);
-            let blend =
-                |c: f64| 255.0 * reference::srgb_encode((1.0 - c) * input + c * 2.0 * input);
+            let blend = |c: f64| {
+                255.0 * lightwell_reference::srgb_encode((1.0 - c) * input + c * 2.0 * input)
+            };
             worst = worst.max((blend(0.5 + coverage_error) - blend(0.5)).abs());
         }
         worst

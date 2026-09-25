@@ -48,6 +48,13 @@ pub fn temp_path(name: &str) -> PathBuf {
     path
 }
 
+/// A new, empty scratch directory at a [`temp_path`].
+pub fn temp_dir(name: &str) -> PathBuf {
+    let path = temp_path(name);
+    std::fs::create_dir_all(&path).expect("a scratch directory");
+    path
+}
+
 /// A new catalog path, as [`temp_path`] makes one.
 pub fn temp_catalog(label: &str) -> PathBuf {
     temp_path(&format!("{label}.sqlite"))

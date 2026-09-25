@@ -1,8 +1,8 @@
 //! TASK-005: the masked colour primitive through the public pipeline, on the JPEG byte path and on
 //! the RAW linear path, against the independent `f64` reference.
 //!
-//! The oracle is `tests/reference/mask.rs` — the frozen coverage mathematics, which shares no code
-//! with `lightwell-core` — composed with `tests/reference/mod.rs`'s sRGB and exposure reference and
+//! The oracle is `crates/lightwell-reference/src/mask.rs` — the frozen coverage mathematics, which shares no code
+//! with `lightwell-core` — composed with `lightwell-reference`'s sRGB and exposure reference and
 //! that module's own `blend`, `out = (1 − M)·in + M·effect(in)`. Production reaches the same numbers
 //! through `CompiledMask` and the host's colour run; the two meet only in the assertions here.
 //!
@@ -12,117 +12,19 @@
 //! and blends in `f32`. The two **endpoints** of the blend carry no tolerance at all: `M = 0` is the
 //! unmasked input frame byte for byte and `M = 1` is the unmasked effect's frame byte for byte.
 
-mod reference;
-
-use lightwell_core::{
-    BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, LinearImage,
-    LinearSettings, Mask, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
-};
+use super::*;
+use lightwell_core::{Layer, LinearSettings, ModuleRegistry, SnapshotId};
+use lightwell_reference::mask::{Algebra, Mask as RefMask, Stage as RefStage, blend, coverage};
+use lightwell_reference::{linear_to_srgb_code, srgb_to_linear};
 use lightwell_testkit::fixtures::{render, render_linear, sample, sample_linear};
-use reference::mask::{
-    Algebra, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, Stage as RefStage,
-    blend, coverage,
-};
-use reference::{code_threshold, linear_to_srgb_code, srgb_to_linear};
-use serde_json::{Value, json};
+use serde_json::json;
 
 // ---------------------------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------------------------
 
-const WIDTH: u32 = 24;
-const HEIGHT: u32 = 16;
-
-/// A source whose bytes vary on both axes and in all three channels, so a wrong row, a dropped
-/// channel or a mask read at the wrong coordinate is visible in the comparison.
-fn byte_source() -> SourceImage {
-    let mut rgba = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
-    for y in 0..HEIGHT {
-        for x in 0..WIDTH {
-            rgba.extend([
-                (x * 9 + 3) as u8,
-                (y * 13 + 40) as u8,
-                (x * 5 + y * 7 + 90) as u8,
-                255,
-            ]);
-        }
-    }
-    SourceImage {
-        width: WIDTH,
-        height: HEIGHT,
-        rgba: rgba.into(),
-        fingerprint: "sha256:masked-colour-fixture".into(),
-        orientation: 1,
-    }
-}
-
-/// The same picture as a planar scene-linear source, decoded from the byte fixture's own codes so the
-/// two paths carry the same values and a disagreement is the path's and not the fixture's.
-fn linear_source() -> LinearImage {
-    let source = byte_source();
-    let mut planes = Vec::with_capacity((WIDTH * HEIGHT * 3) as usize);
-    for channel in 0..3 {
-        for pixel in source.rgba.chunks_exact(4) {
-            planes.push(srgb_to_linear(pixel[channel]) as f32);
-        }
-    }
-    LinearImage::with_fingerprint(WIDTH, HEIGHT, planes, "sha256:masked-colour-linear").unwrap()
-}
-
-fn basic_layer(payload: Value) -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: BASIC_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload,
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
 fn exposure_layer(ev: f64) -> Layer {
     basic_layer(json!({ "exposure": ev }))
-}
-
-fn masked(layer: Layer, mask: &Mask) -> Layer {
-    Layer {
-        mask: Some(mask.id.clone()),
-        ..layer
-    }
-}
-
-fn recipe(layers: Vec<Layer>, masks: Vec<Mask>) -> Recipe {
-    Recipe {
-        format: RECIPE_FORMAT,
-        layers,
-        masks,
-        ..Recipe::default()
-    }
-}
-
-/// One mask of one `add` linear gradient, and the reference's own description of the same thing. The
-/// two are built side by side from the same four numbers, which is what makes the comparison a
-/// comparison of implementations rather than of payloads.
-fn gradient_mask(x0: f64, y0: f64, x1: f64, y1: f64, amount: f64) -> (Mask, RefMask) {
-    let mut mask = Mask::new("Mask 1");
-    mask.amount = amount;
-    let name = mask.next_component_name("linear");
-    mask.components.push(Component::new(
-        name,
-        ComponentMode::Add,
-        "linear",
-        json!({"x0": x0, "y0": y0, "x1": x1, "y1": y1}),
-    ));
-    let oracle = RefMask {
-        amount,
-        invert: false,
-        components: vec![RefComponent {
-            mode: Mode::Add,
-            invert: false,
-            kind: Kind::Linear(Linear { x0, y0, x1, y1 }),
-        }],
-    };
-    (mask, oracle)
 }
 
 /// The reference's coverage at one content-stage pixel centre, through the frozen algebra.
@@ -130,28 +32,6 @@ fn reference_coverage(oracle: &RefMask, x: u32, y: u32) -> f64 {
     let stage = RefStage::new(WIDTH, HEIGHT);
     let (u, v) = stage.pixel_uv(x, y);
     coverage(oracle, Algebra::Zadeh, &stage, u, v)
-}
-
-/// The colour-study tolerance: an exact code everywhere except within `1e-6 + 1e-6·|threshold|` of a
-/// code boundary, where one code of difference is allowed.
-fn assert_code(actual: u8, expected: u8, linear: f64, case: &str) {
-    if actual == expected {
-        return;
-    }
-    let difference = i32::from(actual) - i32::from(expected);
-    assert!(
-        difference.abs() <= 1,
-        "{case}: rendered {actual} against reference {expected}"
-    );
-    let crossed = actual.max(expected);
-    assert!(crossed >= 1, "{case}: code 0 has no lower threshold");
-    let threshold = code_threshold(crossed);
-    let tolerance = 1e-6 + 1e-6 * threshold.abs();
-    assert!(
-        (linear - threshold).abs() <= tolerance,
-        "{case}: rendered {actual} against {expected} is not within {tolerance} of the threshold \
-         {threshold} (reference linear {linear})"
-    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -168,7 +48,7 @@ fn assert_code(actual: u8, expected: u8, linear: f64, case: &str) {
 fn the_mask_endpoints_are_byte_identical_to_the_unmasked_frames_on_both_paths() {
     let registry = ModuleRegistry::builtin();
     let source = byte_source();
-    let linear = linear_source();
+    let linear = decoded(&byte_source());
     let identity = recipe(Vec::new(), Vec::new());
     let unmasked = recipe(vec![exposure_layer(1.5)], Vec::new());
 
@@ -233,7 +113,7 @@ fn the_mask_endpoints_are_byte_identical_to_the_unmasked_frames_on_both_paths() 
 fn a_half_covered_frame_matches_the_stepwise_reference_on_both_paths() {
     let registry = ModuleRegistry::builtin();
     let source = byte_source();
-    let linear = linear_source();
+    let linear = decoded(&byte_source());
     let (mask, oracle) = gradient_mask(0.2, 0.15, 0.8, 0.85, 80.0);
     // One global Basic layer and one bound to the mask: two layers of one single-layer effect are
     // legal because they are two targets, and the masked one follows the global one.
@@ -303,7 +183,7 @@ fn a_half_covered_frame_matches_the_stepwise_reference_on_both_paths() {
 fn a_masked_sample_equals_the_rendered_byte_at_every_pixel_on_both_paths() {
     let registry = ModuleRegistry::builtin();
     let source = byte_source();
-    let linear = linear_source();
+    let linear = decoded(&byte_source());
     // A gradient over part of the frame, so the frame holds a feather band, a fully covered region
     // and a region outside the bounds rectangle.
     let (mask, oracle) = gradient_mask(0.5, 0.35, 0.5, 0.65, 100.0);
@@ -363,7 +243,7 @@ fn a_masked_sample_equals_the_rendered_byte_at_every_pixel_on_both_paths() {
 fn a_mask_travels_through_a_quarter_turn_on_both_paths() {
     let registry = ModuleRegistry::builtin();
     let source = byte_source();
-    let linear = linear_source();
+    let linear = decoded(&byte_source());
     let (mask, _) = gradient_mask(0.5, 0.3, 0.5, 0.7, 100.0);
     let layer = masked(exposure_layer(1.5), &mask);
     let turn = Layer::orientation(lightwell_core::Orientation::of(

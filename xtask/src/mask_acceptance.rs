@@ -55,7 +55,7 @@ struct Refusal {
 /// therefore has addresses and no points, so rendering one outside the catalog that holds the store
 /// is refused by name — which is the retention contract working, not a gap. The owner has the store,
 /// so the owner is asked. `render.sample` equalling the rendered byte for every component kind on
-/// both paths is proved by `masked_colour.rs` and `masked_spatial.rs`.
+/// both paths is proved by `mask/masked_colour.rs` and `mask/masked_spatial.rs`.
 fn sample(
     owner: &OwnerHandle,
     client: lightwell_core::ClientId,

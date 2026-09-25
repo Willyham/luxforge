@@ -2,63 +2,28 @@
 //! space, the component composition algebra and the linear and radial falloffs.
 //!
 //! This binary shares no code with `lightwell-core`'s production sources. The
-//! frozen equations live in `tests/reference/mask.rs`; the mathematics, the
+//! frozen equations live in `crates/lightwell-reference/src/mask.rs`; the mathematics, the
 //! rejected alternatives and every measured figure quoted below are written out
 //! in full in `docs/design/mask-study.md`, which this file's test names track.
 //!
 //! The study's 24 MP figures are printed by the one ignored test at the end:
 //!
 //! ```sh
-//! cargo test --release --locked --package lightwell-core --test mask_reference \
+//! cargo test --release --locked --package lightwell-core --test mask \
 //!     -- --ignored --nocapture mask_study_figures
 //! ```
 
-mod reference;
-
-use reference::linear_to_code;
-use reference::mask::{
+use super::*;
+use lightwell_reference::linear_to_code;
+use lightwell_reference::mask::{
     Algebra, Component, DISTANCE_MAX, DISTANCE_MIN, Easing, Kind, Linear, Mask, Mode, Radial,
     Stage, axis_is_legal, blend, combine, component_coverage, coverage, distance_is_legal, ease,
     linear_coverage, radial_coverage, radial_coverage_branch_form, smooth,
 };
 
 // ---------------------------------------------------------------------------
-// Test-only helpers, kept local to this file per the reference tree's
-// convention (see `vignette_reference.rs` and `basic_tone_reference.rs`): a
-// parallel study's own copy merges cleanly with no shared mutable state.
+// The study's own inputs.
 // ---------------------------------------------------------------------------
-
-/// SplitMix64: dependency-free and fully reproducible, so every fixed-seed
-/// figure below is the same on any machine and any Rust version.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    fn next_bool(&mut self) -> bool {
-        self.next_u64() & 1 == 1
-    }
-}
-
-/// The two stages every geometric claim is checked on: a 3:2 landscape frame and
-/// its portrait transpose, both at 24 MP.
-const LANDSCAPE: Stage = Stage::new(6000, 4000);
-const PORTRAIT: Stage = Stage::new(4000, 6000);
 
 /// The frozen tolerance, `1e-6 + 1e-6·|reference|` in coverage units.
 fn tolerance(reference: f64) -> f64 {

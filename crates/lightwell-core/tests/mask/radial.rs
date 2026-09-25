@@ -1,8 +1,8 @@
 //! TASK-012: the production `radial` component kind against the frozen `f64` reference.
 //!
-//! `tests/reference/mask.rs` shares no code with `lightwell-core`'s sources, and
+//! `crates/lightwell-reference/src/mask.rs` shares no code with `lightwell-core`'s sources, and
 //! `docs/design/mask-study.md` freezes the mathematics both write. The bar here is the same as the
-//! linear kind's in `mask_unit.rs`: **bit-identity** rather than a tolerance, because the production
+//! linear kind's in `mask/unit.rs`: **bit-identity** rather than a tolerance, because the production
 //! unit transcribes the reference's expressions in the reference's order. A failure of these tests
 //! is a rewritten expression, not float noise — the study's Transcription section lists what a
 //! rewrite costs, and every item in it is within tolerance and not bit-identical.
@@ -10,62 +10,16 @@
 //! What the study does not freeze is verified here by exhaustive evaluation on small stages instead:
 //! the conservative `bounds` rectangle of a rotated ellipse, and `min_feature_px`.
 
-mod reference;
-
+use super::*;
 use lightwell_core::{
-    Component, ComponentMode, Mask, Stage,
+    Component, ComponentMode, Mask,
     mask::{CompiledMask, RadialGradient},
 };
-use reference::mask::{
-    Algebra, Component as RefComponent, Kind, Mask as RefMask, Mode, Radial, Stage as RefStage,
-    coverage, radial_coverage,
+use lightwell_reference::mask::{
+    Algebra, Component as RefComponent, Kind, Mask as RefMask, Mode, Radial, coverage,
+    radial_coverage,
 };
 use serde_json::json;
-
-/// The pixel value a geometric component is handed and ignores (proposal P12 of
-/// `docs/design/range-study.md`). These masks hold gradients, whose coverage is a function of
-/// position alone, so the value here is arbitrary and the same at every call; `mask_range.rs`
-/// proves that ignoring it is exact rather than approximate.
-const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
-
-/// SplitMix64, the same dependency-free generator the study's own figures use, so every sweep below
-/// is reproducible on any machine from its stated seed.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    fn next_bool(&mut self) -> bool {
-        self.next_u64() & 1 == 1
-    }
-}
-
-/// The stages every sweep runs on: a 3:2 landscape frame, its portrait transpose, a square and a
-/// wide one, so the aspect ratio in `u = x · W/H` is never incidental.
-const STAGES: [(u32, u32); 4] = [(6000, 4000), (4000, 6000), (2048, 2048), (7000, 1400)];
-
-fn stage(width: u32, height: u32) -> Stage {
-    Stage { width, height }
-}
-
-fn ref_stage(width: u32, height: u32) -> RefStage {
-    RefStage::new(width, height)
-}
 
 /// A legal radial payload: a centre anywhere in the widened `[-1, 2]` range, both radii inside the
 /// study's legal distance range, any angle, and a feather that lands on each of the three cases the
@@ -116,14 +70,6 @@ fn payload(radial: RadialGradient) -> serde_json::Value {
         "angle": radial.angle,
         "feather": radial.feather,
     })
-}
-
-fn mode_of(index: usize) -> (ComponentMode, Mode) {
-    match index {
-        0 => (ComponentMode::Add, Mode::Add),
-        1 => (ComponentMode::Subtract, Mode::Subtract),
-        _ => (ComponentMode::Intersect, Mode::Intersect),
-    }
 }
 
 /// One randomized radial mask in both spellings: the stored model the host compiles, and the
@@ -272,13 +218,13 @@ fn a_mixed_radial_and_linear_mask_is_bit_identical() {
     let mut rng = SplitMix64(0x4A5C_0014);
     for _ in 0..60 {
         let radial = sample_radial(&mut rng);
-        let linear = reference::mask::Linear {
+        let linear = lightwell_reference::mask::Linear {
             x0: rng.next_range(0.0, 1.0),
             y0: rng.next_range(0.0, 1.0),
             x1: rng.next_range(0.0, 1.0),
             y1: rng.next_range(0.0, 1.0),
         };
-        if !reference::mask::axis_is_legal(&linear, &ref_stage(64, 48)) {
+        if !lightwell_reference::mask::axis_is_legal(&linear, &ref_stage(64, 48)) {
             continue;
         }
         let mut mask = Mask::new("Mask 1");

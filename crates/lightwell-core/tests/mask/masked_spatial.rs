@@ -2,10 +2,10 @@
 //! to a mask, on the JPEG byte path and on the RAW linear path.
 //!
 //! What this file proves, and what it deliberately does not. The Presence filter itself is frozen
-//! elsewhere: `presence_reference.rs`, `presence_module.rs` and `tests/reference/presence.rs` are
+//! elsewhere: `lightwell-reference`'s `studies/presence.rs`, `tests/modules/presence.rs` and `crates/lightwell-reference/src/presence.rs` are
 //! the evidence that the units are right, and they pass unmodified because a mask changes nothing
 //! about a unit, a halo, a tile or a global estimate. The blend algebra is frozen by
-//! `masked_colour.rs` against the independent `f64` oracle. What is new here is the *write*, so
+//! `mask/masked_colour.rs` against the independent `f64` oracle. What is new here is the *write*, so
 //! this file asserts the write:
 //!
 //! - **The two endpoints carry no tolerance at all.** `M = 0` renders the operation's input frame
@@ -17,21 +17,15 @@
 //! - **A sample equals the rendered byte** inside the mask, outside it and on the bounds edge, on
 //!   both paths, which is the delivered one-tile exception and not a second one.
 //! - A partially covered frame lies strictly between the two endpoint frames, which is what a
-//!   blend is; where it lands between them is the oracle's business and `masked_colour.rs` asserts
+//!   blend is; where it lands between them is the oracle's business and `mask/masked_colour.rs` asserts
 //!   it there.
 
-mod reference;
-
+use super::*;
 use lightwell_core::{
-    Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, Mask,
-    ModuleRegistry, PRESENCE_EFFECT, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
+    Layer, LinearImage, LinearSettings, ModuleRegistry, PRESENCE_EFFECT, SnapshotId, SourceImage,
 };
+use lightwell_reference::mask::{Algebra, Mask as RefMask, Stage as RefStage, coverage};
 use lightwell_testkit::fixtures::{render, render_linear, sample, sample_linear};
-use reference::mask::{
-    Algebra, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, Stage as RefStage,
-    coverage,
-};
-use reference::srgb_to_linear;
 use serde_json::json;
 
 /// The spatial budget and the estimate store are process-wide, so the tests in this binary run one
@@ -59,24 +53,18 @@ const TILED: (u32, u32) = (600, 550);
 /// channel or a mask read at the wrong coordinate is visible in the comparison. It also varies
 /// fast enough that a neighbourhood filter actually changes it.
 fn byte_source((width, height): (u32, u32)) -> SourceImage {
-    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height {
-        for x in 0..width {
-            rgba.extend([
-                (x * 9 + 3 + (y % 5) * 17) as u8,
-                (y * 13 + 40 + (x % 7) * 11) as u8,
-                (x * 5 + y * 7 + 90) as u8,
-                255,
-            ]);
-        }
-    }
-    SourceImage {
-        width,
-        height,
-        rgba: rgba.into(),
-        fingerprint: format!("sha256:masked-spatial-{width}x{height}"),
-        orientation: 1,
-    }
+    let pixels: Vec<[u8; 3]> = (0..height)
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                [
+                    (x * 9 + 3 + (y % 5) * 17) as u8,
+                    (y * 13 + 40 + (x % 7) * 11) as u8,
+                    (x * 5 + y * 7 + 90) as u8,
+                ]
+            })
+        })
+        .collect();
+    lightwell_testkit::fixtures::source_of(width, height, &pixels)
 }
 
 /// The same picture as a planar scene-linear source, decoded from the byte fixture's own codes.
@@ -86,72 +74,12 @@ fn byte_source((width, height): (u32, u32)) -> SourceImage {
 /// began as an `f32` survives that round trip exactly and the operation's input frame is the frame
 /// the identity stack produces, bit for bit.
 fn linear_source(size: (u32, u32)) -> LinearImage {
-    let source = byte_source(size);
-    let mut planes = Vec::with_capacity((size.0 * size.1 * 3) as usize);
-    for channel in 0..3 {
-        for pixel in source.rgba.chunks_exact(4) {
-            planes.push(srgb_to_linear(pixel[channel]) as f32);
-        }
-    }
-    LinearImage::with_fingerprint(
-        size.0,
-        size.1,
-        planes,
-        format!("sha256:masked-spatial-linear-{}x{}", size.0, size.1),
-    )
-    .unwrap()
+    decoded(&byte_source(size))
 }
 
 /// One Presence layer with a clarity amount large enough that every pixel of the fixture moves.
 fn presence_layer() -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: PRESENCE_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload: json!({"clarity": 80.0, "texture": 60.0}),
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
-fn masked(layer: Layer, mask: &Mask) -> Layer {
-    Layer {
-        mask: Some(mask.id.clone()),
-        ..layer
-    }
-}
-
-fn recipe(layers: Vec<Layer>, masks: Vec<Mask>) -> Recipe {
-    Recipe {
-        format: RECIPE_FORMAT,
-        layers,
-        masks,
-        ..Recipe::default()
-    }
-}
-
-/// One mask of one `add` linear gradient, and the reference's own description of the same thing,
-/// built side by side from the same four numbers.
-fn gradient_mask(x0: f64, y0: f64, x1: f64, y1: f64, amount: f64) -> (Mask, RefMask) {
-    let mut mask = Mask::new("Mask 1");
-    mask.amount = amount;
-    let name = mask.next_component_name("linear");
-    mask.components.push(Component::new(
-        name,
-        ComponentMode::Add,
-        "linear",
-        json!({"x0": x0, "y0": y0, "x1": x1, "y1": y1}),
-    ));
-    let oracle = RefMask {
-        amount,
-        invert: false,
-        components: vec![RefComponent {
-            mode: Mode::Add,
-            invert: false,
-            kind: Kind::Linear(Linear { x0, y0, x1, y1 }),
-        }],
-    };
-    (mask, oracle)
+    lightwell_testkit::fixtures::layer(PRESENCE_EFFECT, json!({"clarity": 80.0, "texture": 60.0}))
 }
 
 /// The reference's coverage at one content-stage pixel centre, through the frozen algebra.
@@ -377,7 +305,7 @@ fn a_sample_equals_the_rendered_byte_through_a_masked_spatial_layer() {
 
 /// Where coverage is partial the frame lies between the operation's input and the unmasked effect,
 /// per channel, and somewhere it lies strictly between them. Which value it takes between them is
-/// the blend algebra's, and `masked_colour.rs` freezes that against the independent `f64` oracle;
+/// the blend algebra's, and `mask/masked_colour.rs` freezes that against the independent `f64` oracle;
 /// what this asserts is that the spatial write reaches the same interpolation rather than either
 /// endpoint or something outside the pair.
 #[test]

@@ -2,13 +2,13 @@
 
 Status: frozen, and transcribed. This document, the independent [`f64`
 reference](../../crates/lightwell-reference/src/range.rs) and its
-[proofs](../../crates/lightwell-core/tests/range_reference.rs) are the complete specification the
+[proofs](../../crates/lightwell-core/tests/mask/range_study.rs) are the complete specification the
 luminance-range and colour-range units of the [masking design](masking.md) are checked against,
 answering its [phase-D component section](masking.md#luminance-range-and-colour-range-phase-d). It
 is the value-based companion to the [mask study](mask-study.md), which froze the position-based
 components; that study named the range metrics as **not** frozen by it, and this one freezes them.
 The production transcription is `crates/lightwell-core/src/mask/range.rs`, checked against the
-reference **bit for bit** by `crates/lightwell-core/tests/mask_range.rs`.
+reference **bit for bit** by `crates/lightwell-core/tests/mask/range.rs`.
 
 What is frozen here: the luminance axis, the band and its shoulders, the Oklab colour metric, the
 multi-sample combination, the refine mapping and the tolerance. **Not frozen here**, and named so
@@ -530,7 +530,7 @@ Every measured number above comes from the reference's own tests. The dense figu
 test, because the tables do not belong in an ordinary run:
 
 ```sh
-cargo test --release --locked --package lightwell-core --test range_reference \
+cargo test --release --locked --package lightwell-core --test mask \
     -- --ignored --nocapture range_study_figures
 ```
 
@@ -543,10 +543,10 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 | --- | --- |
 | `docs/design/range-study.md` | This document. |
 | [`crates/lightwell-reference/src/range.rs`](../../crates/lightwell-reference/src/range.rs) | The frozen `f64` reference: the luminance axis, the band, the legality rules, the colour metric, the refine mapping and the multi-sample combination. Reuses `reference/tone.rs`'s luminance and OETF, `reference/colour.rs`'s Oklab and `reference/mask.rs`'s `smooth` unchanged. |
-| [`crates/lightwell-core/tests/range_reference.rs`](../../crates/lightwell-core/tests/range_reference.rs) | The proofs and measurements above, the scenes chosen to fail, and the ignored figures test. |
+| [`crates/lightwell-core/tests/mask/range_study.rs`](../../crates/lightwell-core/tests/mask/range_study.rs) | The proofs and measurements above, the scenes chosen to fail, and the ignored figures test. |
 | [`crates/lightwell-reference/src/lib.rs`](../../crates/lightwell-reference/src/lib.rs) | Declares `pub mod range;` beside the other studies' references. |
 | [`crates/lightwell-core/src/mask/range.rs`](../../crates/lightwell-core/src/mask/range.rs) | The production transcription: both kinds' payloads, legality rules, declared parameters, compiled terms and per-pixel coverage, and the two answers a value-based component gives about the frame. |
-| [`crates/lightwell-core/tests/mask_range.rs`](../../crates/lightwell-core/tests/mask_range.rs) | The bit-identity sweeps, P12's condition on the geometric components, the byte and RAW linear renders, the sampled byte against the rendered byte, the composition with a gradient and a subtract brush, P13's answers, the whole-stage measurement, and `a_value_based_kind_is_exactly_one_that_reads_the_pixel`, which holds the kind table's own `value_based` column against every compiled kind's `reads_pixels` so a client can name the limits before a component has been drawn. |
+| [`crates/lightwell-core/tests/mask/range.rs`](../../crates/lightwell-core/tests/mask/range.rs) | The bit-identity sweeps, P12's condition on the geometric components, the byte and RAW linear renders, the sampled byte against the rendered byte, the composition with a gradient and a subtract brush, P13's answers, the whole-stage measurement, and `a_value_based_kind_is_exactly_one_that_reads_the_pixel`, which holds the kind table's own `value_based` column against every compiled kind's `reads_pixels` so a client can name the limits before a component has been drawn. |
 | [`xtask/src/mask_range_smoke.rs`](../../xtask/src/mask_range_smoke.rs) | The `mask-range` smoke scenario: this study's own failures rendered in the editor on the M4 Mac, read from the photograph with an adjustment applied through the mask, and read again from the coverage overlay — the composed mask's grid checked patch by patch against the frame the masked adjustment produced, and the band's own grid showing it taking the grey card that the picked colour range's does not. |
 | `xtask/src/fixtures.rs`, `fixtures/generated/range.jpg` | The twelve flat patches that scenario is measured over, which are this study's own surfaces: the 24-patch chart's sRGB renderings, laid out so the sky and the grey card, the two skins, the five neutrals and a sky/foliage boundary are each one probe apart. |
 

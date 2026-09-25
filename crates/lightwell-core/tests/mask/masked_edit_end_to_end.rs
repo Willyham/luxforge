@@ -7,35 +7,12 @@
 //! Both are honest, and together they still leave the question a person actually asks — *does
 //! dragging a gradient and raising exposure change one part of the picture and not the other* —
 //! unanswered. It is answered here, over the same service every client reaches.
+use super::*;
 use lightwell_core::{
-    AssetId, BASIC_EFFECT, EditorService, MaskId, Mutation, Raster,
+    AssetId, BASIC_EFFECT, EditorService, MaskId, Mutation,
     mask::commands::{self, MaskTarget},
 };
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT: AtomicU64 = AtomicU64::new(1);
-
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "lightwell-masked-edit-{}-{}-{name}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-}
-
-/// The luminance of one pixel, for comparing a lifted region against an untouched one.
-fn luma(raster: &Raster, x: u32, y: u32) -> f64 {
-    let p = raster.pixel(x, y).expect("pixel inside the stage");
-    0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2])
-}
 
 struct Fixture {
     service: EditorService,
@@ -46,7 +23,7 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(fixture(), &source).unwrap();
+        std::fs::copy(lightwell_testkit::fixtures::jpeg(), &source).unwrap();
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
         let asset = service.import(&source).unwrap().asset.id;
         Self { service, asset }
@@ -194,7 +171,8 @@ fn a_global_and_a_masked_layer_of_one_effect_coexist_in_mask_order() {
 /// masked primitive's tests call the service directly. The envelope is where `mask` is stripped
 /// before a module sees it, so it deserves its own proof.
 mod json_client {
-    use super::{fixture, temp};
+    use super::temp;
+
     use lightwell_core::{ApiRequest, ClientId, OwnerHandle};
     use serde_json::{Value, json};
 
@@ -209,7 +187,7 @@ mod json_client {
         fn open(name: &str) -> Self {
             let dir = temp(name);
             let source = dir.join("orientation-1.jpg");
-            std::fs::copy(fixture(), &source).unwrap();
+            std::fs::copy(lightwell_testkit::fixtures::jpeg(), &source).unwrap();
             let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
             let client = owner.register();
             let queued = Self::call(&owner, client, "catalog.import", json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}))

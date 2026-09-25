@@ -1,7 +1,7 @@
 //! TASK-018: the brush component against the frozen study.
 //!
 //! The mathematics is `docs/design/mask-study.md#the-brush` and the oracle is the independent `f64`
-//! reference at `tests/reference/mask.rs`, which shares no code with production. What is asserted
+//! reference at `crates/lightwell-reference/src/mask.rs`, which shares no code with production. What is asserted
 //! here is **bit-identity**, not a tolerance: the production unit transcribes the study's
 //! expressions in the study's order, so the two agree in their last bits or the transcription is
 //! wrong.
@@ -11,58 +11,21 @@
 //! accumulation properties the design claims; the conservative rectangle, exhaustively on small
 //! stages; the occupancy cap; and the measurement that the grid index is doing its job.
 
-mod reference;
-
+use super::*;
 use lightwell_core::{
-    Component, ComponentMode, ErrorKind, Mask, Stage,
+    Component, ComponentMode, ErrorKind, Mask,
     mask::{CompiledMask, SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT},
     path::{Stroke, StrokeTable},
 };
-use reference::mask::{
+use lightwell_reference::mask::{
     Brush, BrushStroke, ColourLimit as RefColourLimit, Stage as RefStage, brush_coverage,
     brush_segments, stroke_coverage,
 };
 use serde_json::json;
 
-/// The pixel value a geometric component is handed and ignores (proposal P12 of
-/// `docs/design/range-study.md`). Most masks here hold gradients and unlimited brushes, whose
-/// coverage is a function of position alone, so the value is arbitrary and the same at every call;
-/// `mask_range.rs` proves that ignoring it is exact rather than approximate. The strokes that *are*
-/// limited to a colour have their own tests at the end of this file, and those pass real pixels.
-const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    fn next_bool(&mut self) -> bool {
-        self.next_u64() & 1 == 1
-    }
-}
-
-fn stage(width: u32, height: u32) -> Stage {
-    Stage { width, height }
-}
 
 /// The reference's view of the **stored** stroke, which is what production evaluates: the positions
 /// snapped to the path grid and decimated there, and the radius quantized to the same grid. Feeding
@@ -776,7 +739,7 @@ fn a_brush_combines_with_a_gradient_through_the_frozen_algebra() {
     let brush = Brush {
         strokes: vec![as_reference(&stroke)],
     };
-    let linear = reference::mask::Linear {
+    let linear = lightwell_reference::mask::Linear {
         x0: 0.0,
         y0: 0.0,
         x1: 1.0,
@@ -786,7 +749,7 @@ fn a_brush_combines_with_a_gradient_through_the_frozen_algebra() {
         for x in 0..size.width {
             let (u, v) = reference_stage.pixel_uv(x, y);
             let c = brush_coverage(&brush, &reference_stage, u, v, ANY_PIXEL);
-            let g = reference::mask::linear_coverage(&linear, &reference_stage, u, v);
+            let g = lightwell_reference::mask::linear_coverage(&linear, &reference_stage, u, v);
             assert_eq!(
                 compiled.coverage(x, y, ANY_PIXEL).to_bits(),
                 c.min(g).to_bits()

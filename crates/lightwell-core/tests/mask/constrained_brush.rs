@@ -2,7 +2,7 @@
 //! service every client reaches.
 //!
 //! The mathematics is `docs/design/mask-study.md#the-colour-constraint` and the oracle is the
-//! independent `f64` reference at `tests/reference/mask.rs`, which shares no code with production.
+//! independent `f64` reference at `crates/lightwell-reference/src/mask.rs`, which shares no code with production.
 //! What is asserted is **bit-identity** and not a tolerance: the similarity is the frozen colour
 //! range's own falloff at one sample, written in the reference's order, so the two agree in their
 //! last bits or the transcription is wrong.
@@ -22,58 +22,27 @@
 //!   crosses *and* paints the same colour on the far side of the frame, which is the difference the
 //!   user guide states in one sentence.
 
-mod reference;
-
+use super::*;
 use lightwell_core::{
     AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
-    Mask, ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, Stage,
+    Mask, ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
     mask::{
         CompiledMask,
         commands::{self, MaskTarget},
     },
     path::{ColourLimit, Stroke, StrokeTable},
 };
-use lightwell_testkit::fixtures::{render, sample};
-use reference::mask::{
+use lightwell_reference::mask::{
     Brush as RefBrush, BrushStroke, ColourLimit as RefColourLimit, Stage as RefStage,
     brush_coverage, colour_similarity,
 };
-use reference::srgb_to_linear;
+use lightwell_reference::srgb_to_linear;
+use lightwell_testkit::fixtures::{render, sample};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const WIDTH: u32 = 24;
-const HEIGHT: u32 = 16;
-
-/// The exposure the masked layer applies, in EV: large enough that a coverage difference of one part
-/// in a thousand shows in the output codes rather than disappearing into the quantizer.
-const MASKED_EV: f64 = 2.0;
-
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-}
-
-fn stage(width: u32, height: u32) -> Stage {
-    Stage { width, height }
-}
 
 /// One stroke, captured the way the host captures it, optionally limited to a colour.
 fn stroke_of(points: &[[f64; 2]], limit: Option<ColourLimit>) -> Stroke {
@@ -480,23 +449,6 @@ fn a_sampled_byte_equals_the_rendered_byte_through_a_limited_stroke() {
 // The host seeds the stroke, end to end
 // ---------------------------------------------------------------------------
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
-
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "lightwell-constrained-brush-{}-{}-{name}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("a catalog directory");
-    dir
-}
-
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-}
-
 struct Fixture {
     service: EditorService,
     asset: AssetId,
@@ -507,7 +459,7 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(fixture(), &source).expect("the fixture copies");
+        std::fs::copy(lightwell_testkit::fixtures::jpeg(), &source).expect("the fixture copies");
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).expect("a catalog");
         let asset = service
             .import(&source)

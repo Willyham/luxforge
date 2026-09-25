@@ -6,31 +6,12 @@
 //!
 //! The second test is the other half of the same claim over time: a reopened catalog gives back the
 //! masks, their components, the layers bound to them and the history, with the identities it wrote.
+use super::*;
 use lightwell_core::{
     AssetId, EditorService, EntryId, MaskId, Mutation, Raster, StageTransform, Transform,
     mask::commands,
 };
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
-
-static NEXT: AtomicU64 = AtomicU64::new(1);
-
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "lightwell-mask-geometry-{}-{}-{name}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-}
 
 /// The gradient this test draws: coverage 0 above `Y0` of the content stage, 1 below `Y1`.
 const Y0: f64 = 0.30;
@@ -91,7 +72,7 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(fixture(), &source).unwrap();
+        std::fs::copy(lightwell_testkit::fixtures::jpeg(), &source).unwrap();
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
         let asset = service.import(&source).unwrap().asset.id;
         Self {
@@ -303,7 +284,7 @@ fn a_reopened_catalog_gives_back_the_masks_their_components_and_the_layers_bound
     let dir = temp("reopen");
     let catalog = dir.join("catalog.sqlite");
     let source = dir.join("orientation-1.jpg");
-    std::fs::copy(fixture(), &source).unwrap();
+    std::fs::copy(lightwell_testkit::fixtures::jpeg(), &source).unwrap();
 
     let (asset, mask, component, layer, entries, label) = {
         let mut service = EditorService::open(&catalog).unwrap();

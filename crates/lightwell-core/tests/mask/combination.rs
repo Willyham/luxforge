@@ -4,7 +4,7 @@
 //!
 //! 1. A mask holding components of *several kinds*, in every mode, with inversions at both levels,
 //!    a whole-mask amount and a whole-mask inversion, **renders** exactly as the independent `f64`
-//!    reference composes it. `mask_unit.rs` and `mask_radial.rs` compare the coverage *field*
+//!    reference composes it. `mask/unit.rs` and `mask/radial.rs` compare the coverage *field*
 //!    against that reference; this compares the frame a person would see, over randomized component
 //!    lists, through the same public render path a client reaches.
 //! 2. A **radial gradient** goes end to end: created, added to as a second kind, patched on a
@@ -13,104 +13,31 @@
 //!    close — until they existed the radial was evaluable and not creatable — and it is proved with
 //!    bytes rather than with a stack listing.
 //!
-//! The oracle is `tests/reference/mask.rs`, which shares no code with `lightwell-core`, composed
-//! with `tests/reference/mod.rs`'s sRGB and exposure reference and that module's own `blend`,
+//! The oracle is `crates/lightwell-reference/src/mask.rs`, which shares no code with `lightwell-core`, composed
+//! with `lightwell-reference`'s sRGB and exposure reference and its mask module's own `blend`,
 //! `out = (1 − M)·in + M·effect(in)`. The numerical rule is the delivered colour studies': a
 //! rendered code equals the reference's code exactly, except where the reference's linear value sits
 //! within `1e-6 + 1e-6·|threshold|` of a code threshold, where one code is permitted because
 //! production decodes, multiplies and blends in `f32`.
 
-mod reference;
-
+use super::*;
 use lightwell_core::{
     AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
-    Mask, MaskId, ModuleRegistry, Mutation, RECIPE_FORMAT, Raster, Recipe, SnapshotId, SourceImage,
+    Mask, MaskId, ModuleRegistry, Mutation, RECIPE_FORMAT, Raster, Recipe, SnapshotId,
     mask::commands::{self, MaskTarget},
     path::Stroke,
 };
-use lightwell_testkit::fixtures::render;
-use reference::mask::{
+use lightwell_reference::mask::{
     Algebra, Brush, BrushStroke, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode,
     Radial, Stage as RefStage, axis_is_legal, blend, brush_coverage, combine, coverage,
 };
-use reference::{code_threshold, linear_to_srgb_code, srgb_to_linear};
+use lightwell_reference::{linear_to_srgb_code, srgb_to_linear};
+use lightwell_testkit::fixtures::render;
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// The pixel value a geometric component is handed and ignores (proposal P12 of
-/// `docs/design/range-study.md`). These masks hold gradients and brushes, whose coverage is a
-/// function of position alone, so the value here is arbitrary and the same at every call;
-/// `mask_range.rs` proves that ignoring it is exact rather than approximate.
-const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
 
 // ---------------------------------------------------------------------------------------------
 // Randomized mixed-kind composition, rendered
 // ---------------------------------------------------------------------------------------------
-
-const WIDTH: u32 = 24;
-const HEIGHT: u32 = 16;
-/// The exposure the masked layer applies, in EV. Large enough that a coverage difference of one part
-/// in a thousand is visible in the output codes rather than lost in the quantizer.
-const MASKED_EV: f64 = 2.0;
-
-/// SplitMix64, the same dependency-free generator the mask study's own figures use, so every sweep
-/// below is reproducible on any machine from its stated seed.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    fn next_bool(&mut self) -> bool {
-        self.next_u64() & 1 == 1
-    }
-}
-
-/// A source whose bytes vary on both axes and in all three channels, so a wrong row, a dropped
-/// channel or a mask read at the wrong coordinate is visible in the comparison.
-fn byte_source() -> SourceImage {
-    let mut rgba = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
-    for y in 0..HEIGHT {
-        for x in 0..WIDTH {
-            rgba.extend([
-                (x * 9 + 3) as u8,
-                (y * 13 + 40) as u8,
-                (x * 5 + y * 7 + 90) as u8,
-                255,
-            ]);
-        }
-    }
-    SourceImage {
-        width: WIDTH,
-        height: HEIGHT,
-        rgba: rgba.into(),
-        fingerprint: "sha256:mask-combination-fixture".into(),
-        orientation: 1,
-    }
-}
-
-fn mode_of(index: usize) -> (ComponentMode, Mode) {
-    match index {
-        0 => (ComponentMode::Add, Mode::Add),
-        1 => (ComponentMode::Subtract, Mode::Subtract),
-        _ => (ComponentMode::Intersect, Mode::Intersect),
-    }
-}
 
 /// One randomized linear gradient whose axis is legal on the fixture's stage.
 fn sample_linear(rng: &mut SplitMix64) -> Linear {
@@ -192,28 +119,6 @@ fn sample_pair(rng: &mut SplitMix64, components: usize) -> (Mask, RefMask) {
         });
     }
     (mask, reference)
-}
-
-/// The colour-study tolerance: an exact code everywhere except within `1e-6 + 1e-6·|threshold|` of a
-/// code boundary, where one code of difference is allowed.
-fn assert_code(actual: u8, expected: u8, linear: f64, case: &str) {
-    if actual == expected {
-        return;
-    }
-    let difference = i32::from(actual) - i32::from(expected);
-    assert!(
-        difference.abs() <= 1,
-        "{case}: rendered {actual} against reference {expected}"
-    );
-    let crossed = actual.max(expected);
-    assert!(crossed >= 1, "{case}: code 0 has no lower threshold");
-    let threshold = code_threshold(crossed);
-    let tolerance = 1e-6 + 1e-6 * threshold.abs();
-    assert!(
-        (linear - threshold).abs() <= tolerance,
-        "{case}: rendered {actual} against {expected} is not within {tolerance} of the threshold \
-         {threshold} (reference linear {linear})"
-    );
 }
 
 /// A mask of several components of different kinds renders exactly as the reference composes them,
@@ -411,27 +316,6 @@ fn invert_applies_before_amount_and_the_reference_agrees() {
 // The radial, end to end, in pixels
 // ---------------------------------------------------------------------------------------------
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
-
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "lightwell-mask-combination-{}-{}-{name}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-}
-
-fn luma(raster: &Raster, x: u32, y: u32) -> f64 {
-    let p = raster.pixel(x, y).expect("pixel inside the stage");
-    0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2])
-}
-
 /// The masked edit these journeys make. It **darkens**, deliberately: the fixture's middle is a
 /// clipped white sky, so lifting it would change nothing there and a test that claimed otherwise
 /// would be reading the clamp rather than the mask. Every pixel of the fixture is above black, so a
@@ -456,7 +340,7 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(fixture(), &source).unwrap();
+        std::fs::copy(lightwell_testkit::fixtures::jpeg(), &source).unwrap();
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
         let asset = service.import(&source).unwrap().asset.id;
         Self { service, asset }
@@ -860,7 +744,7 @@ fn sample_stroke(rng: &mut SplitMix64, erase: bool) -> Stroke {
 /// that wrongly excluded a covered span would show here as an unblended pixel and nowhere in a
 /// coverage test — and the blend itself.
 ///
-/// The oracle is `tests/reference/mask.rs`, which shares no code with `lightwell-core`: its
+/// The oracle is `crates/lightwell-reference/src/mask.rs`, which shares no code with `lightwell-core`: its
 /// `brush_coverage` over the same stored strokes, its `radial_coverage`, and its own `combine`.
 #[test]
 fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes_it() {
@@ -929,7 +813,8 @@ fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes
                 let (u, v) = reference_stage.pixel_uv(x, y);
                 // The composition, in the reference's own spelling: the gradient into an empty
                 // mask, then the brush taken out of it.
-                let gradient = reference::mask::radial_coverage(&radial, &reference_stage, u, v);
+                let gradient =
+                    lightwell_reference::mask::radial_coverage(&radial, &reference_stage, u, v);
                 let painted = brush_coverage(&brush, &reference_stage, u, v, ANY_PIXEL);
                 let m = combine(
                     Algebra::Zadeh,

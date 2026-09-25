@@ -1,7 +1,7 @@
 //! TASK-023: the production luminance-range and colour-range components against the frozen `f64`
 //! reference, and the contract change that made a value-based component possible at all.
 //!
-//! `tests/reference/range.rs` shares no code with `lightwell-core`'s sources, and
+//! `crates/lightwell-reference/src/range.rs` shares no code with `lightwell-core`'s sources, and
 //! `docs/design/range-study.md` freezes the mathematics both write. The bar is **bit-identity**
 //! rather than the study's tolerance, and it is reachable because production widens the incoming
 //! `[f32; 3]` once and then evaluates the reference's own `f64` expressions in the reference's own
@@ -24,11 +24,10 @@
 //! * **P13's answer.** The conservative rectangle is the whole stage, the smallest feature is
 //!   infinite, and a range mask is therefore never supersampled and never reported approximate.
 
-mod reference;
-
+use super::*;
 use lightwell_core::{
     AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
-    Mask, ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, Stage,
+    Mask, ModuleRegistry, Mutation, RECIPE_FORMAT, Recipe, SnapshotId,
     mask::{
         CompiledMask,
         commands::{self, MaskTarget},
@@ -36,60 +35,20 @@ use lightwell_core::{
     path::{Stroke, StrokeTable},
 };
 use lightwell_core::{LinearImage, LinearSettings};
-use lightwell_testkit::fixtures::{render, render_linear, sample, sample_linear};
-use reference::mask::{
+use lightwell_reference::mask::{
     Brush as RefBrush, BrushStroke, Linear, Stage as RefStage, brush_coverage, linear_coverage,
 };
-use reference::range::{
+use lightwell_reference::range::{
     ColourRange as RefColourRange, LuminanceRange as RefLuminanceRange, colour_coverage,
     compile_colour_range, compile_luminance_range, luminance_coverage,
 };
-use reference::{code_threshold, linear_to_srgb_code, srgb_to_linear};
+use lightwell_reference::{linear_to_srgb_code, srgb_to_linear};
+use lightwell_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One component's reference coverage at one linear pixel, boxed so a sweep can hold whichever of
 /// the two kinds it drew this round.
 type Oracle = Box<dyn Fn([f64; 3]) -> f64>;
-
-const WIDTH: u32 = 24;
-const HEIGHT: u32 = 16;
-
-/// The exposure the masked layer applies, in EV. Large enough that a coverage difference of one part
-/// in a thousand is visible in the output codes rather than lost in the quantizer.
-const MASKED_EV: f64 = 2.0;
-
-/// SplitMix64, the dependency-free generator every study's figures use, so each sweep below is
-/// reproducible on any machine from its stated seed.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    fn next_bool(&mut self) -> bool {
-        self.next_u64() & 1 == 1
-    }
-}
-
-fn stage(width: u32, height: u32) -> Stage {
-    Stage { width, height }
-}
 
 fn no_strokes() -> StrokeTable {
     StrokeTable::default()
@@ -575,52 +534,6 @@ fn too_many_samples_are_refused_by_the_declared_limit() {
 // The render, and the sample that must equal it
 // ---------------------------------------------------------------------------
 
-/// A source whose bytes vary on both axes and in all three channels, so a wrong row, a dropped
-/// channel or a mask read at the wrong pixel is visible in the comparison.
-fn byte_source() -> SourceImage {
-    let mut rgba = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
-    for y in 0..HEIGHT {
-        for x in 0..WIDTH {
-            rgba.extend([
-                (x * 9 + 3) as u8,
-                (y * 13 + 40) as u8,
-                (x * 5 + y * 7 + 90) as u8,
-                255,
-            ]);
-        }
-    }
-    SourceImage {
-        width: WIDTH,
-        height: HEIGHT,
-        rgba: rgba.into(),
-        fingerprint: "sha256:mask-range-fixture".into(),
-        orientation: 1,
-    }
-}
-
-/// The colour-study tolerance: an exact code everywhere except within `1e-6 + 1e-6·|threshold|` of a
-/// code boundary, where one code of difference is allowed because production decodes, multiplies and
-/// blends in `f32`.
-fn assert_code(actual: u8, expected: u8, linear: f64, case: &str) {
-    if actual == expected {
-        return;
-    }
-    let difference = i32::from(actual) - i32::from(expected);
-    assert!(
-        difference.abs() <= 1,
-        "{case}: rendered {actual} against reference {expected}"
-    );
-    let crossed = actual.max(expected);
-    assert!(crossed >= 1, "{case}: code 0 has no lower threshold");
-    let threshold = code_threshold(crossed);
-    let tolerance = 1e-6 + 1e-6 * threshold.abs();
-    assert!(
-        (linear - threshold).abs() <= tolerance,
-        "{case}: rendered {actual} against {expected} is not within {tolerance} of the threshold \
-         {threshold} (reference linear {linear})"
-    );
-}
-
 /// A one-layer stack whose masked Basic layer lifts exposure by [`MASKED_EV`].
 fn masked_stack(mask: Mask) -> Recipe {
     Recipe {
@@ -924,7 +837,7 @@ fn a_range_selection_reads_the_operations_input_on_the_raw_linear_path() {
 ///
 /// The three components are of three different kinds, two position-based and one value-based, and
 /// the expected value is the study's own Zadeh fold transcribed here over three *independent*
-/// references — `reference::mask`'s linear and brush coverage and `reference::range`'s band — so
+/// references — `lightwell_reference::mask`'s linear and brush coverage and `lightwell_reference::range`'s band — so
 /// nothing in the expectation comes from the code under test.
 #[test]
 fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
@@ -1048,23 +961,6 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
 // The API: creating, patching and sampling a range component
 // ---------------------------------------------------------------------------
 
-static CASE: AtomicU64 = AtomicU64::new(0);
-
-fn temp(name: &str) -> PathBuf {
-    let case = CASE.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "lightwell-mask-range-{name}-{}-{case}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("a catalog directory");
-    dir
-}
-
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-}
-
 /// The generated methods carry both kinds end to end: created, patched on a field, sampled by the
 /// numbers a canvas pick reads, and a swatch removed on its own — each as one history entry, through
 /// the same `mask.*` family every other kind reaches.
@@ -1076,7 +972,7 @@ fn fixture() -> PathBuf {
 fn the_generated_methods_create_patch_sample_and_unsample_a_range() {
     let dir = temp("api");
     let source = dir.join("orientation-1.jpg");
-    std::fs::copy(fixture(), &source).expect("the fixture copies");
+    std::fs::copy(lightwell_testkit::fixtures::jpeg(), &source).expect("the fixture copies");
     let mut service = EditorService::open(&dir.join("catalog.sqlite")).expect("a catalog");
     let asset: AssetId = service
         .import(&source)
@@ -1214,7 +1110,7 @@ fn the_generated_methods_create_patch_sample_and_unsample_a_range() {
 /// skip most of the frame.
 ///
 /// Ignored by default because it is a measurement and not a pass/fail property. Run it with
-/// `cargo test --release --locked --package lightwell-core --test mask_range --
+/// `cargo test --release --locked --package lightwell-core --test mask --
 /// --ignored --nocapture the_cost_of_a_whole_stage_rectangle`, and record the host's one-minute
 /// load average beside the figure.
 #[test]

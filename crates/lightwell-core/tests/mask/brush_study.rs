@@ -3,7 +3,7 @@
 //! and the multiply-complement for erase strokes.
 //!
 //! This binary shares no code with `lightwell-core`'s production sources. The
-//! frozen equations live in `tests/reference/mask.rs` beside the gradients'; the
+//! frozen equations live in `crates/lightwell-reference/src/mask.rs` beside the gradients'; the
 //! mathematics, the rejected spellings and every measured figure quoted below
 //! are written out in full in `docs/design/mask-study.md#the-brush`, which this
 //! file's test names track.
@@ -11,59 +11,22 @@
 //! The study's dense figures are printed by the one ignored test at the end:
 //!
 //! ```sh
-//! cargo test --release --locked --package lightwell-core --test mask_brush_reference \
+//! cargo test --release --locked --package lightwell-core --test mask \
 //!     -- --ignored --nocapture brush_study_figures
 //! ```
 
-mod reference;
-
-use reference::mask::{
+use super::*;
+use lightwell_reference::mask::{
     Brush, BrushStroke, ColourLimit, DISTANCE_MAX, DISTANCE_MIN, Stage, accumulate, brush_bounds,
     brush_coverage, brush_segments, brush_size_is_legal, capsule_profile, colour_similarity,
     colour_similarity_as_range, segment_distance2, smooth, stroke_coverage,
     stroke_coverage_max_form,
 };
-use reference::range::{PLATEAU, RADIUS_MIN, refine_radius};
-
-/// The pixel a stroke with no colour constraint is handed and ignores. Every
-/// geometric claim below is made on unconstrained strokes, so the value is
-/// arbitrary and the same at every call — exactly as the range study's
-/// `a_geometric_component_ignores_the_pixel_it_is_handed` establishes for the
-/// position-only component kinds.
-const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+use lightwell_reference::range::{PLATEAU, RADIUS_MIN, refine_radius};
 
 // ---------------------------------------------------------------------------
-// Test-only helpers, kept local to this file per the reference tree's
-// convention: a parallel study's own copy merges cleanly with no shared state.
+// The study's own inputs.
 // ---------------------------------------------------------------------------
-
-/// SplitMix64: dependency-free and fully reproducible, so every fixed-seed
-/// figure below is the same on any machine and any Rust version.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        (self.next_u64() % bound as u64) as usize
-    }
-}
-
-/// The two stages every geometric claim is checked on: a 3:2 landscape frame and
-/// its portrait transpose, both at 24 MP, exactly as the gradients' proofs use.
-const LANDSCAPE: Stage = Stage::new(6000, 4000);
-const PORTRAIT: Stage = Stage::new(4000, 6000);
 
 /// A random stroke with a usable radius: `[0.01, 0.2]` mask-space units is the
 /// range a brush is actually drawn at, well inside the legal `[1e-4, 64]`.
@@ -855,8 +818,8 @@ fn shifted(seed: [f64; 3], distance: f64) -> [f64; 3] {
         ]
     };
     let metric = |rgb: [f64; 3]| -> f64 {
-        let a = reference::colour::to_oklab(seed);
-        let b = reference::colour::to_oklab(rgb);
+        let a = lightwell_reference::colour::to_oklab(seed);
+        let b = lightwell_reference::colour::to_oklab(rgb);
         ((b.a - a.a) * (b.a - a.a) + (b.b - a.b) * (b.b - a.b)).sqrt()
     };
     let (mut lo, mut hi) = (0.0f64, 1.0f64);

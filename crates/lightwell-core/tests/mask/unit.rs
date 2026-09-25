@@ -1,6 +1,6 @@
 //! TASK-004: the production compiled mask against the frozen `f64` reference.
 //!
-//! `tests/reference/mask.rs` shares no code with `lightwell-core`'s sources, and
+//! `crates/lightwell-reference/src/mask.rs` shares no code with `lightwell-core`'s sources, and
 //! `docs/design/mask-study.md` freezes the mathematics both write. The bar here is **bit-identity**
 //! rather than a tolerance: the production unit transcribes the reference's expressions in the
 //! reference's order, so the same payloads, stage and pixel must produce the same `f64` bits. A
@@ -10,63 +10,18 @@
 //! The `bounds` rectangle and `min_feature_px` are not frozen by the study, so they are verified
 //! here by exhaustive evaluation on small stages rather than against an oracle.
 
-mod reference;
-
+use super::*;
 use lightwell_core::{
-    Component, ComponentMode, Mask, Stage,
+    Component, ComponentMode, Mask,
     mask::{CompiledMask, LinearGradient},
 };
-use reference::mask::{
-    Algebra, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, Stage as RefStage,
-    axis_is_legal, coverage,
+use lightwell_reference::mask::{
+    Algebra, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, axis_is_legal,
+    coverage,
 };
 use serde_json::json;
 
-/// The pixel value a geometric component is handed and ignores (proposal P12 of
-/// `docs/design/range-study.md`). These masks hold gradients and brushes, whose coverage is a
-/// function of position alone, so the value here is arbitrary and the same at every call;
-/// `mask_range.rs` proves that ignoring it is exact rather than approximate.
-const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
 const ANY_PIXEL_F32: [f32; 3] = [0.25, 0.5, 0.75];
-
-/// SplitMix64, the same dependency-free generator the study's own figures use, so every sweep below
-/// is reproducible on any machine from its stated seed.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    fn next_bool(&mut self) -> bool {
-        self.next_u64() & 1 == 1
-    }
-}
-
-/// The stages every sweep runs on: a 3:2 landscape frame, its portrait transpose, a square, and a
-/// wide one, so the aspect ratio in `u = x · W/H` is never incidental.
-const STAGES: [(u32, u32); 4] = [(6000, 4000), (4000, 6000), (2048, 2048), (7000, 1400)];
-
-fn stage(width: u32, height: u32) -> Stage {
-    Stage { width, height }
-}
-
-fn ref_stage(width: u32, height: u32) -> RefStage {
-    RefStage::new(width, height)
-}
 
 /// A stored position anywhere in the legal `[-1, 2]` range, so the widened range is swept rather
 /// than assumed.
@@ -97,14 +52,6 @@ fn as_reference(gradient: LinearGradient) -> Linear {
 
 fn payload(gradient: LinearGradient) -> serde_json::Value {
     json!({"x0": gradient.x0, "y0": gradient.y0, "x1": gradient.x1, "y1": gradient.y1})
-}
-
-fn mode_of(index: usize) -> (ComponentMode, Mode) {
-    match index {
-        0 => (ComponentMode::Add, Mode::Add),
-        1 => (ComponentMode::Subtract, Mode::Subtract),
-        _ => (ComponentMode::Intersect, Mode::Intersect),
-    }
 }
 
 /// One randomized mask in both spellings: the stored model the host compiles, and the reference's

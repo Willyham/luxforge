@@ -2,7 +2,7 @@
 //! `docs/design/range-study.md`, compiled against the content stage their mask's layer receives.
 //!
 //! This file is the production transcription of that study and of the independent `f64` reference at
-//! `crates/lightwell-core/tests/reference/range.rs`. The per-pixel expressions are written in the
+//! `crates/lightwell-reference/src/range.rs`. The per-pixel expressions are written in the
 //! reference's form and the reference's order, so coverage is bit-identical to it rather than merely
 //! within tolerance: `lo`, `hi`, `lo_feather`, `hi_feather`, each sample's Oklab `(a, b)` pair and
 //! the refine radius are hoisted to compile time because they do not depend on the pixel, the

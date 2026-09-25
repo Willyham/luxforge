@@ -3,7 +3,7 @@
 //!
 //! This file is the production transcription of that block and of the `brush_coverage`,
 //! `stroke_coverage`, `segment_distance2` and `capsule_profile` functions of the independent `f64`
-//! reference at `crates/lightwell-core/tests/reference/mask.rs`. The per-pixel expressions are
+//! reference at `crates/lightwell-reference/src/mask.rs`. The per-pixel expressions are
 //! written in the reference's form and the reference's order, so coverage is bit-identical to it
 //! rather than merely within tolerance: a stroke's `R`, `band`, `hard` and `amount` and each
 //! segment's `ax, ay, ex, ey, len2` are hoisted to compile time because they do not depend on the
