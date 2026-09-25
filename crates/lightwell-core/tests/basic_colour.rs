@@ -1,8 +1,8 @@
 //! The Basic module's Vibrance and Saturation parameters end to end: real layers, real rendering
-//! and sampling, the frozen internal order against the independent f64 reference composed the
-//! same way, and reopen compatibility with the exposure-only payloads TASK-003 shipped. Neutral
-//! payloads sharing the source, history labels and values are proved for every field-patch module
-//! by `field_patch_conformance.rs`, and Basic's own label words in `modules::basic`'s unit tests.
+//! and sampling, and the frozen internal order against the independent f64 reference composed the
+//! same way. Neutral payloads sharing the source, stored-payload refusals, reopen, history labels and
+//! values are proved for every field-patch module by `field_patch_conformance.rs`, and Basic's own
+//! label words in `modules::basic`'s unit tests.
 //!
 //! Numerical rule, from `docs/design/basic-colour.md`'s frozen tolerance: a rendered code must
 //! equal the f64 reference's code exactly, except where the reference's linear value sits within
@@ -13,26 +13,15 @@
 mod reference;
 
 use lightwell_core::{
-    BASIC_EFFECT, EFFECT_FORMAT, EditorService, ErrorKind, Layer, LayerId, ModuleRegistry,
-    Mutation, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render,
+    BASIC_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId,
+    SourceImage, render,
 };
 use reference::{RefOp, code_threshold, evaluate_pixel, exposure, srgb_to_linear};
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf};
 
 // ---------------------------------------------------------------------------------------------
 // Shared helpers, matching `basic_exposure.rs`'s patterns.
 // ---------------------------------------------------------------------------------------------
-
-fn fixture(name: &str) -> PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures")
-        .join(name)
-}
-
-fn jpeg() -> PathBuf {
-    fixture("s0/orientation-1.jpg")
-}
 
 fn source_of(width: u32, height: u32, pixels: &[[u8; 3]]) -> SourceImage {
     assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
@@ -68,23 +57,6 @@ fn recipe(layers: Vec<Layer>) -> Recipe {
         masks: Vec::new(),
         ..Recipe::default()
     }
-}
-
-fn mutation(revision: u64, request: &str) -> Mutation {
-    Mutation {
-        expected_revision: revision,
-        request_id: request.into(),
-        actor: "basic-colour-test".into(),
-    }
-}
-
-fn catalog(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "lightwell-basic-colour-{name}-{}.sqlite",
-        std::process::id()
-    ));
-    let _ = fs::remove_file(&path);
-    path
 }
 
 /// The declared tolerance: an exact code, unless the reference's linear value sits within
@@ -275,100 +247,4 @@ fn an_out_of_gamut_positive_exposure_stays_finite_and_renders_with_vibrance_and_
         // render produced one at all instead of failing with `resource-limit`.
         let _ = pixel[0] as u32 + pixel[1] as u32 + pixel[2] as u32;
     }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Reopen compatibility
-// ---------------------------------------------------------------------------------------------
-
-/// An exposure-only payload, saved before Vibrance and Saturation existed in a running process,
-/// still opens, still renders the same bytes, and reports the new fields at neutral through
-/// `values`.
-#[test]
-fn reopen_of_an_exposure_only_payload_is_unaffected_by_the_new_colour_fields() {
-    let path = catalog("reopen");
-    let mut service = EditorService::open(&path).expect("a catalog");
-    let asset = service.import(&jpeg()).expect("an import").asset.id;
-    service
-        .apply_action(
-            &asset,
-            mutation(0, "expose"),
-            "set-basic",
-            json!({"exposure": 0.75}),
-        )
-        .expect("an exposure-only set");
-    let rendered = service.render_current(&asset).expect("a render");
-
-    drop(service);
-    let reopened = EditorService::open(&path).expect("the reopened catalog");
-    assert_eq!(
-        reopened.render_current(&asset).expect("after reopen").rgba,
-        rendered.rgba,
-        "an exposure-only payload evaluates the same bytes with vibrance/saturation implemented"
-    );
-    let (module, _) = reopened
-        .registry()
-        .effect(BASIC_EFFECT)
-        .expect("the Basic provider");
-    let stored = &reopened
-        .describe_entry(&asset, None)
-        .expect("a description")
-        .layers;
-    let row = stored
-        .iter()
-        .find(|layer| layer.effect == BASIC_EFFECT)
-        .expect("the Basic row");
-    assert_eq!(
-        row.values,
-        json!({
-            "temperature": 0.0,
-            "tint": 0.0,
-            "exposure": 0.75,
-            "contrast": 0.0,
-            "highlights": 0.0,
-            "shadows": 0.0,
-            "whites": 0.0,
-            "blacks": 0.0,
-            "vibrance": 0.0,
-            "saturation": 0.0,
-        })
-        .as_object()
-        .cloned()
-        .unwrap(),
-        "values includes the new fields at neutral for an exposure-only stored payload"
-    );
-    let _ = module;
-
-    drop(reopened);
-    fs::remove_file(path).expect("the catalog is removed");
-}
-
-/// A stored payload of an unsupported format is refused, whether or not it holds colour fields.
-#[test]
-fn format_2_is_refused_for_a_payload_holding_colour_fields() {
-    let registry = ModuleRegistry::builtin();
-    let future = Layer {
-        effect_format: 2,
-        ..basic_layer(json!({"vibrance": 50.0, "saturation": 20.0}))
-    };
-    let error = registry
-        .validate_layer(&future)
-        .expect_err("an unsupported format");
-    assert_eq!(error.kind, ErrorKind::Incompatible);
-    assert!(error.detail.contains("unsupported effect format 2"));
-
-    let source = source_of(2, 1, &[[10, 20, 30], [40, 50, 60]]);
-    let render_error = render(
-        &registry,
-        &source,
-        SnapshotId::new(),
-        &recipe(vec![future.clone()]),
-    )
-    .expect_err("an unsupported format never renders");
-    assert_eq!(render_error.kind, ErrorKind::Incompatible);
-    assert_eq!(
-        future.payload,
-        json!({"vibrance": 50.0, "saturation": 20.0}),
-        "unchanged"
-    );
 }

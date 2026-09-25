@@ -1,8 +1,7 @@
 //! The Basic module's Tone controls (Contrast, Highlights, Shadows, Whites, Blacks) end to end:
 //! monotonicity through the whole production pipeline, sample/render agreement, the declared
-//! internal evaluation order against exposure, and an exposure-only payload reopening unchanged.
-//! Neutral payloads sharing the source and stored-payload refusals are proved for every field-patch
-//! module by `field_patch_conformance.rs`.
+//! internal evaluation order against exposure. Neutral payloads sharing the source, stored-payload
+//! refusals and reopen are proved for every field-patch module by `field_patch_conformance.rs`.
 //!
 //! The frozen per-pixel numerical proof against `fixtures/basic/tone-cases.json` lives in
 //! `crates/lightwell-core/src/modules/basic/tone.rs`, next to the production unit it checks; this
@@ -17,21 +16,10 @@ use lightwell_core::{
 };
 use reference::tone::ToneParams;
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------------------------
 // Shared helpers (each Basic integration test file keeps its own copy; see basic_exposure.rs)
 // ---------------------------------------------------------------------------------------------
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures")
-        .join(name)
-}
-
-fn jpeg() -> PathBuf {
-    fixture("s0/orientation-1.jpg")
-}
 
 fn source_of(width: u32, height: u32, pixels: &[[u8; 3]]) -> SourceImage {
     assert_eq!(pixels.len() as u64, u64::from(width) * u64::from(height));
@@ -320,42 +308,4 @@ fn set_basic_with_exposure_and_tone_fields_evaluates_in_the_declared_internal_or
         reverse_order,
         "exposure-then-tone and tone-then-exposure must give different codes for this case"
     );
-}
-
-// ---------------------------------------------------------------------------------------------
-// A pre-existing exposure-only payload
-// ---------------------------------------------------------------------------------------------
-
-/// A payload holding only `"exposure"`, exactly as it would already exist in a catalog saved before
-/// this task's five Tone fields existed, reopens (renders) with identical output: adding optional
-/// keys to the payload format never changes an existing interpretation.
-#[test]
-fn an_exposure_only_payload_saved_before_this_change_reopens_with_identical_output() {
-    let registry = ModuleRegistry::builtin();
-    let inputs: [[u8; 3]; 4] = [
-        [10, 20, 30],
-        [100, 120, 140],
-        [200, 210, 220],
-        [250, 252, 254],
-    ];
-    let source = source_of(inputs.len() as u32, 1, &inputs);
-    let layer = basic_layer(json!({"exposure": 0.5}));
-    let rendered = render(&registry, &source, SnapshotId::new(), &recipe(vec![layer]))
-        .expect("a rendered exposure");
-    for (index, input) in inputs.iter().enumerate() {
-        let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
-        for (channel, code) in input.iter().enumerate() {
-            let linear = reference::exposure(reference::srgb_to_linear(*code), 0.5);
-            let expected = reference::linear_to_srgb_code(linear);
-            let difference = i32::from(pixel[channel]) - i32::from(expected);
-            assert!(
-                difference.abs() <= 1,
-                "channel {channel}: rendered {} expected {expected}",
-                pixel[channel]
-            );
-        }
-    }
-    // A whole real asset renders unchanged too, not just a synthetic pixel row.
-    let real = image::open(jpeg()).expect("the fixture decodes");
-    assert!(real.width() > 0 && real.height() > 0);
 }
