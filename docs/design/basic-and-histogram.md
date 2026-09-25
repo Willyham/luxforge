@@ -116,7 +116,7 @@ Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<Dr
 
 ### Ownership of the shared files
 
-`modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `modules/registry.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs`, `api/owner.rs` and `api/mod.rs` are changed by the integrator tasks (draft lifecycle and field patch; pointwise colour stage; analysis jobs) in that order. Algorithm units live in `modules/basic/`, the reducer and predicates in `analysis.rs`, the f64 references and hand-counted fixtures under `crates/lightwell-reference/src/` and `fixtures/basic/`. The desktop's `app/`, `state/` and `view/` layers change only in the slider gesture driver, the histogram model and view, and the generic submit rule above.
+`modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `modules/registry/mod.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs`, `api/owner.rs` and `api/mod.rs` are changed by the integrator tasks (draft lifecycle and field patch; pointwise colour stage; analysis jobs) in that order. Algorithm units live in `modules/basic/`, the reducer and predicates in `analysis.rs`, the f64 references and hand-counted fixtures under `crates/lightwell-reference/src/` and `fixtures/basic/`. The desktop's `app/`, `state/` and `view/` layers change only in the slider gesture driver, the histogram model and view, and the generic submit rule above.
 
 ### What this contract does not decide
 

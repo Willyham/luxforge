@@ -159,7 +159,7 @@
         {
           "kind": "file",
           "label": "Registry",
-          "target": "crates/lightwell-core/src/modules/registry.rs",
+          "target": "crates/lightwell-core/src/modules/registry/mod.rs",
           "relevance": "`proxy_approximate`."
         },
         {
@@ -1043,7 +1043,7 @@
         {
           "kind": "file",
           "label": "Registry",
-          "target": "crates/lightwell-core/src/modules/registry.rs",
+          "target": "crates/lightwell-core/src/modules/registry/mod.rs",
           "relevance": "`builtin`, single-layer checks and placement."
         },
         {
@@ -1395,7 +1395,7 @@
         {
           "kind": "file",
           "label": "Registry",
-          "target": "crates/lightwell-core/src/modules/registry.rs",
+          "target": "crates/lightwell-core/src/modules/registry/mod.rs",
           "relevance": "Where compile resolves artifacts."
         },
         {
@@ -2273,7 +2273,7 @@
     {
       "id": "TASK-038",
       "description": "Move capability methods behind their own trait off `ToolModule`, and split `registry.rs` into lookups, placement and compile.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-035",
         "TASK-037"
@@ -2292,7 +2292,7 @@
         {
           "kind": "file",
           "label": "Registry",
-          "target": "crates/lightwell-core/src/modules/registry.rs",
+          "target": "crates/lightwell-core/src/modules/registry/mod.rs",
           "relevance": "The file to split."
         },
         {
