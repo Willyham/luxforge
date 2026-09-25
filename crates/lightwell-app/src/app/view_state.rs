@@ -1,5 +1,6 @@
-//! Per-client view state the owner holds in the session: zoom and pan, the side panels, thirds,
-//! the canvas mode, the developer gallery page, and the local focus, menu and window facts.
+//! Per-client view state the owner holds in the session: zoom and pan, the side panels, thirds and
+//! the canvas mode; and this desktop's own: the developer gallery page and the local focus, menu
+//! and window facts.
 use super::{
     Editor,
     evidence::Settle,
@@ -30,13 +31,11 @@ impl Editor {
                     self.status = "Finish the current operation before opening Components".into();
                     return Task::none();
                 }
+                // The page is this desktop's own view state, so opening, turning and closing the
+                // board is local and immediate: nothing is sent to the owner.
                 self.palette_open = false;
                 self.menu = None;
-                return workspace_task(
-                    self.owner.clone(),
-                    self.client,
-                    json!({"component_gallery": page}),
-                );
+                self.gallery = page;
             }
             ViewMessage::CopyStatus => {
                 // While the status still reads an import's summary, Copy copies its whole report.
@@ -207,8 +206,6 @@ impl Editor {
     }
 
     pub(super) fn gallery_page(&self) -> Option<usize> {
-        self.developer
-            .then_some(self.session.workspace.component_gallery)
-            .flatten()
+        self.developer.then_some(self.gallery).flatten()
     }
 }

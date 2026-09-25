@@ -182,10 +182,11 @@ The desktop registers `lightwell.capabilities`, the capability proof described i
 
 ## Developer workspace
 
-The developer components gallery is per-client workspace state, exposed by `workspace.set` and
-`session.state` as `component_gallery`: pages 0–9, or `null` for the editor. It requires no asset,
-changes no recipe and submits no rendering job. Normal optimized desktops keep the diagnostic
-button and board hidden; debug builds and `--developer` runs expose them.
+The developer components gallery is the desktop's own view state, not core session state: which
+page is shown is held by that desktop, and neither `workspace.set` nor `session.state` carries it
+(a `component_gallery` field is refused as unknown). It requires no asset, changes no recipe and
+submits no request or rendering job. Normal optimized desktops keep the diagnostic button and
+board hidden; debug builds and `--developer` runs expose them.
 
 ## Missing effects
 

@@ -246,7 +246,8 @@ Debug builds expose the title-bar **Developer** button automatically. To inspect
 an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
 Its page chooser and Previous/Next controls browse ten pages; Back to editor or Escape returns.
 The `gallery` smoke covers all 78 reference states and the return to the unchanged editor via
-the same `workspace.set` path as the button.
+the same view message as the button; the page is desktop view state, so the session's workspace
+stays unchanged throughout.
 
 ## Rendered evidence
 

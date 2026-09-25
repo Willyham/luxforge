@@ -290,6 +290,10 @@ pub(crate) struct Editor {
     pub(crate) modules_ready: bool,
     /// Proof and diagnostic modules are listed only when the run asked for them.
     pub(crate) developer: bool,
+    /// The developer components gallery page shown instead of the workspace, or `None` for the
+    /// editor. It is this desktop's own view state: no other client sees it and the owner does not
+    /// hold it.
+    pub(crate) gallery: Option<usize>,
     /// The text typed into each generated field, by (action id, parameter name).
     pub(crate) fields: Fields,
     /// Local presentation state of generated controls; authoritative values stay in the recipe.
@@ -527,6 +531,7 @@ impl Editor {
             modules: Vec::new(),
             modules_ready: false,
             developer: config.developer,
+            gallery: None,
             fields: Fields::default(),
             controls_ui: tools::ControlsUi::default(),
             curve_sample_sequence: 0,

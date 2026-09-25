@@ -287,9 +287,8 @@ mod tests {
         assert!(editor.performance_sampling());
         // The component gallery replaces the workspace, panel and all.
         editor.developer = true;
-        session.workspace.component_gallery = Some(2);
-        session.revision += 1;
-        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
+        let _ = editor.update(Message::View(ViewMessage::Gallery(Some(2))));
+        assert_eq!(editor.gallery_page(), Some(2));
         assert!(!editor.performance_sampling());
         finish(editor, catalog);
     }

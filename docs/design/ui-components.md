@@ -116,12 +116,14 @@ reference states and do not edit the photograph; the Controls proof provides liv
 Opening is disabled during an active draft, import or Compare hold. Photo shortcuts are suppressed
 while the board is shown. The editor retains its photo, recipe, selection, panels and controls.
 
-Navigation uses the shared command service: `workspace.set {"component_gallery": 0}` opens the
-first page, pages 0–9 select a page, and `{"component_gallery": null}` returns to the editor.
-Omitting the field preserves it; invalid pages are refused atomically. `session.state` reports this
-per-client preference. The API accepts the preference independently of the developer UI flag;
-normal optimized desktops do not show the board. Navigation creates no edit, preview job or timer.
-The gallery smoke uses these same navigation messages and verifies the return to the editor.
+The page shown is the desktop's own view state, decided by the owner: it is not in the core
+session, `workspace.set` does not accept it and `session.state` does not report it, because the
+board is a developer view of this build's widgets rather than a preference another client could
+act on. Opening, turning and closing it is local and immediate; normal optimized desktops do not
+show the board. Navigation creates no edit, request, preview job or timer. The gallery smoke drives
+the same navigation messages through the evidence script's `gallery` step, records the page in each
+frame's state, and verifies that the session's workspace is unchanged throughout and that the
+return leaves the editor as it opened.
 
 ## Desktop mapping and gesture rules
 

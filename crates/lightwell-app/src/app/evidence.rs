@@ -1858,8 +1858,11 @@ impl Editor {
         if page.is_some() && !self.workspace.title.can_open_gallery {
             return self.fail_step("gallery cannot interrupt the current operation");
         }
-        self.await_step(Settle::Session);
-        self.update(Message::View(ViewMessage::Gallery(page)))
+        // The page is desktop view state, so the board is on screen as soon as the message is
+        // handled, and the next frame is its capture.
+        let task = self.update(Message::View(ViewMessage::Gallery(page)));
+        self.capture_next_frame();
+        task
     }
 
     /// Ask nothing of the editor until `ms` have passed; the evidence tick captures the frame then.

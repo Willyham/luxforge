@@ -7,8 +7,10 @@ use super::{
 };
 use lightwell_core::{CropStage, POINTER_MODE};
 
+/// The gallery page is this desktop's own view state: opening a page needs no photograph, sends
+/// nothing to the owner and leaves the session exactly as it was.
 #[test]
-fn gallery_uses_session_state_without_a_photo_and_respects_developer_mode() {
+fn gallery_is_desktop_view_state_without_a_photo_and_respects_developer_mode() {
     let (mut editor, catalog) = boot();
     assert!(!editor.workspace.title.developer);
     assert!(editor.gallery_page().is_none());
@@ -16,17 +18,21 @@ fn gallery_uses_session_state_without_a_photo_and_respects_developer_mode() {
     editor.rederive();
     assert!(editor.workspace.title.can_open_gallery);
     assert!(editor.state.is_none());
-    assert_eq!(
-        view::gallery_page_info(0).unwrap().count,
-        lightwell_core::COMPONENT_GALLERY_PAGE_COUNT
-    );
-    let mut session = editor.session.clone();
-    session.workspace.component_gallery = Some(6);
-    session.revision += 1;
-    let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
+    let pages = view::gallery_page_info(0).unwrap().count;
+    assert!(view::gallery_page_info(pages).is_none());
+    let before = editor.session.clone();
+    let _ = editor.update(Message::View(ViewMessage::Gallery(Some(6))));
     assert_eq!(editor.gallery_page(), Some(6));
     assert_eq!(editor.snapshot()["gallery"]["page"], json!(6));
-    let before = editor.session.clone();
+    assert_eq!(editor.session, before, "the page is not session state");
+    assert!(
+        editor.snapshot()["workspace"]
+            .get("component_gallery")
+            .is_none()
+    );
+    // A page the board does not have is ignored.
+    let _ = editor.update(Message::View(ViewMessage::Gallery(Some(pages))));
+    assert_eq!(editor.gallery_page(), Some(6));
     let generation = editor.activity.requested;
     let _ = editor.update(Message::View(ViewMessage::GalleryPreview));
     assert_eq!(editor.session, before);

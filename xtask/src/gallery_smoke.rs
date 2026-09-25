@@ -85,10 +85,13 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         let frame = launch.at(&page_step(page))?;
         let info = &frame["state"]["gallery"];
         ensure(
-            info["page"] == page
-                && info["count"] == PAGES
-                && frame["state"]["workspace"]["component_gallery"] == page,
+            info["page"] == page && info["count"] == PAGES,
             format!("Gallery capture {page} describes another page: {info}"),
+        )?;
+        // The page is the desktop's own view state, so the session's workspace is untouched.
+        ensure(
+            frame["state"]["workspace"] == initial["state"]["workspace"],
+            format!("Gallery capture {page} changed the session workspace"),
         )?;
         let count = info["state_count"]
             .as_u64()

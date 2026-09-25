@@ -8,8 +8,7 @@
 //! a method here, calls its handler and records the event a change announces; nothing is routed any
 //! other way.
 use super::{
-    COMPONENT_GALLERY_PAGE_COUNT, ClientSession, MASK_MODE, MaskOverlayColour, MaskOverlayMode,
-    POINTER_MODE, PROTOCOL,
+    ClientSession, MASK_MODE, MaskOverlayColour, MaskOverlayMode, POINTER_MODE, PROTOCOL,
     owner::{self, Call, Owner},
     params::{self, Envelope, HostParams, NoParams, ParamSchema, host_params, parse},
 };
@@ -19,7 +18,7 @@ use crate::{
     PixelSample, PresetId, Zoom, capabilities::host::TASK_PREFIX, editor::PointPlan,
     mask::commands::MaskTarget, path,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 /// A method the editor service answers with the caller's session.
@@ -444,7 +443,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "workspace.set",
         WorkspaceSet,
         workspace_set,
-        "per-client screen preference: panels, canvas mode, overlays and diagnostic components page; needs no asset and changes no history or frame; returns the session"
+        "per-client screen preference: panels, canvas mode and overlays; needs no asset and changes no history or frame; returns the session"
     ),
     service!(
         "session.state",
@@ -1044,15 +1043,6 @@ host_params! {
     }
 }
 
-/// A normal `Option<Option<T>>` deserializer cannot distinguish a missing field from explicit
-/// JSON null. `workspace.set` needs that distinction: omission preserves, null closes the board.
-fn present_nullable_page<'de, D>(deserializer: D) -> Result<Option<Option<usize>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<usize>::deserialize(deserializer).map(Some)
-}
-
 host_params! {
     pub(super) struct WorkspaceSet {
         state_panel: Option<bool> = "bool",
@@ -1065,8 +1055,6 @@ host_params! {
         // is, rather than with serde's report of an unmatched variant.
         mask_overlay: Option<String> = "off, tint, mask-on-black or image-on-black; what the canvas draws of the selected mask",
         mask_overlay_colour: Option<String> = "green or white; the tint the mask overlay is drawn in",
-        #[serde(default, deserialize_with = "present_nullable_page")]
-        component_gallery: Option<Option<usize>> = "null closes the diagnostic components board; integer 0..9 selects a page",
     }
 }
 
@@ -1524,17 +1512,6 @@ fn workspace_set(
             )
         })?),
     };
-    if let Some(Some(page)) = p.component_gallery
-        && page >= COMPONENT_GALLERY_PAGE_COUNT
-    {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            format!(
-                "component_gallery must be null or an integer 0..{}",
-                COMPONENT_GALLERY_PAGE_COUNT - 1
-            ),
-        ));
-    }
     if let Some(mode) = p.mode {
         session.workspace.mode = mode;
     }
@@ -1561,9 +1538,6 @@ fn workspace_set(
     }
     if let Some(colour) = mask_overlay_colour {
         session.workspace.mask_overlay_colour = colour;
-    }
-    if let Some(page) = p.component_gallery {
-        session.workspace.component_gallery = page;
     }
     session.touch();
     session_value(service, session)
@@ -3122,7 +3096,6 @@ mod tests {
                 "clip_highlights": false,
                 "mask_overlay": "off",
                 "mask_overlay_colour": "green",
-                "component_gallery": null,
             }),
             "a fresh session opens with both panels, the pointer and no overlay"
         );
@@ -3143,7 +3116,6 @@ mod tests {
                 "clip_highlights": false,
                 "mask_overlay": "off",
                 "mask_overlay_colour": "green",
-                "component_gallery": null,
             })
         );
         assert_eq!(set["revision"], json!(1), "a session change is a revision");
@@ -3255,7 +3227,7 @@ mod tests {
     }
 
     #[test]
-    fn component_gallery_page_is_a_validated_per_client_workspace_preference() {
+    fn the_components_gallery_page_is_not_session_state() {
         let catalog = std::env::temp_dir().join(format!(
             "lightwell-methods-gallery-{}.sqlite",
             std::process::id()
@@ -3264,79 +3236,24 @@ mod tests {
         let mut service = EditorService::open(&catalog).unwrap();
         let mut session = ClientSession::default();
 
+        // The developer components gallery is the desktop's own view state: `workspace.set`
+        // declares no page, the session reports none, and a page sent anyway is refused as an
+        // unknown field without changing the session.
         let listed = ok(&mut service, &mut session, "schema.list", json!({}));
-        let gallery = &listed["methods"]["workspace.set"];
-        assert_eq!(gallery["mutates"], json!(false));
-        assert!(
-            gallery["optional"]["component_gallery"]
-                .as_str()
-                .unwrap()
-                .contains("integer 0..9")
-        );
-        assert!(
-            gallery["notes"]
-                .as_str()
-                .unwrap()
-                .contains("needs no asset")
-        );
-
-        let opened = ok(
+        let workspace_set = &listed["methods"]["workspace.set"];
+        assert_eq!(workspace_set["mutates"], json!(false));
+        assert!(workspace_set["optional"].get("component_gallery").is_none());
+        let state = ok(&mut service, &mut session, "session.state", json!({}));
+        assert!(state["workspace"].get("component_gallery").is_none());
+        let preserved = session.clone();
+        let rejected = call(
             &mut service,
             &mut session,
             "workspace.set",
             json!({"component_gallery": 0, "tools_panel": false}),
         );
-        assert_eq!(opened["workspace"]["component_gallery"], json!(0));
-        assert_eq!(opened["workspace"]["tools_panel"], json!(false));
-        assert_eq!(opened["workspace"]["state_panel"], json!(true));
-        assert_eq!(session.preview, crate::PreviewSession::default());
-
-        let switched = ok(
-            &mut service,
-            &mut session,
-            "workspace.set",
-            json!({"component_gallery": COMPONENT_GALLERY_PAGE_COUNT - 1}),
-        );
-        assert_eq!(switched["workspace"]["component_gallery"], json!(9));
-        assert_eq!(switched["workspace"]["tools_panel"], json!(false));
-        let preserved = session.clone();
-        for (case, params) in [
-            (
-                "above last page",
-                json!({"component_gallery": 10, "state_panel": false}),
-            ),
-            (
-                "negative page",
-                json!({"component_gallery": -1, "state_panel": false}),
-            ),
-            (
-                "fractional page",
-                json!({"component_gallery": 1.5, "state_panel": false}),
-            ),
-            (
-                "string page",
-                json!({"component_gallery": "0", "state_panel": false}),
-            ),
-        ] {
-            let rejected = call(&mut service, &mut session, "workspace.set", params);
-            assert_eq!(rejected.error.unwrap().code, "validation", "{case}");
-            assert_eq!(
-                session, preserved,
-                "{case} must change no workspace field or revision"
-            );
-        }
-        let unchanged = ok(&mut service, &mut session, "workspace.set", json!({}));
-        assert_eq!(unchanged["workspace"]["component_gallery"], json!(9));
-        let closed = ok(
-            &mut service,
-            &mut session,
-            "workspace.set",
-            json!({"component_gallery": null}),
-        );
-        assert_eq!(closed["workspace"]["component_gallery"], json!(null));
-        assert_eq!(closed["workspace"]["tools_panel"], json!(false));
-        assert_eq!(closed["workspace"]["state_panel"], json!(true));
-        assert_eq!(session.preview, crate::PreviewSession::default());
+        assert_eq!(rejected.error.unwrap().code, "validation");
+        assert_eq!(session, preserved, "a refused page changes nothing");
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

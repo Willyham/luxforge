@@ -63,8 +63,8 @@ Previous/Next, then **Back to editor** or Escape to return. A photo is not requi
 and its edits are preserved. Finish an active draft before opening the gallery.
 
 These are reference previews. For live control interactions, expand the Controls proof in the
-tools panel in developer mode. Gallery navigation is also exposed as
-`workspace.set {"component_gallery": 0}` (pages 0–9); use `null` to return to the editor.
+tools panel in developer mode. Which page is shown belongs to that desktop window alone: it is not
+session state, and no API method opens or reports it.
 
 ### Presets
 

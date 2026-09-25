@@ -248,7 +248,7 @@ The desktop is split into layers with hard boundaries. The boundaries are enforc
 
 RAW, Basic, transform, pixel and the controls proof use the same descriptor-driven widgets; there are no per-module slider implementations. Crop retains its own draft logic and composes the shared chips, number fields, stepper and toggle. Number fields, RGB/hex inputs, curve coordinates and zoom share one editable-input primitive, and curve channels use the shared segmented control.
 
-Debug builds and `--developer` runs expose a Developer button in the title bar for the [components gallery](ui-components.md#developer-gallery); it preserves the workspace and returns with Back to editor or Escape.
+Debug builds and `--developer` runs expose a Developer button in the title bar for the [components gallery](ui-components.md#developer-gallery); it preserves the workspace and returns with Back to editor or Escape. The page shown is this desktop's own view state, not core session state, so `workspace.set` and `session.state` do not carry it.
 
 The delivered control kinds and gesture rules are specified in [UI components](ui-components.md). Continuous patch controls share the existing draft driver, built around the [provisional slider budget](../specs/performance.md#provisional-budgets); discrete controls commit once, numeric fields commit on Enter, and scrolling never edits. Canvas geometry is cached by model version, including selection, drag and histogram changes. The [component companion board](develop-workspace/components-ui.svg) covers the added states; `text`, `pad` and `string` remain deferred.
 
