@@ -30,11 +30,6 @@ mod presets_smoke;
 mod raw;
 mod raw_editor;
 mod raw_panel_smoke;
-/// The independent f64 colour reference the core's own numerical tests use, compiled in rather
-/// than copied, so the acceptance journey checks production against one written-from-the-formulas
-/// oracle that production code can never import.
-#[path = "../../crates/lightwell-core/tests/reference/mod.rs"]
-mod reference;
 mod repository;
 mod scenario;
 mod smoke;

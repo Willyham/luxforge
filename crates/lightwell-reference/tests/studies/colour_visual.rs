@@ -6,14 +6,12 @@
 //! one-time (and re-run-on-demand) design review, not a fixture.
 //!
 //! ```sh
-//! cargo test --package lightwell-core --test basic_colour_visual \
+//! cargo test --package lightwell-reference --test studies \
 //!     -- --ignored --nocapture
 //! ```
 
-mod reference;
-
 use image::{ImageBuffer, Rgb, RgbImage};
-use reference::colour::{self, Oklab};
+use lightwell_reference::colour::{self, Oklab};
 use std::path::{Path, PathBuf};
 
 fn code_to_linear(code: u8) -> f64 {

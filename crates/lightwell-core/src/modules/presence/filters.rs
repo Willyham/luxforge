@@ -3,7 +3,7 @@
 //! the radius and halo rules, and the compressive gain.
 //!
 //! This file is the `f32` production transcription of `docs/design/presence-study.md` and of the
-//! independent `f64` reference at `crates/lightwell-core/tests/reference/presence.rs`; the three
+//! independent `f64` reference at `crates/lightwell-reference/src/presence.rs`; the three
 //! must be read together, and every constant here is named identically to the constant of the same
 //! name there. The sRGB working domain, luminance and the luminance-ratio reconstruction are not
 //! restated: the units use [`crate::colour`]'s, which are the analytically continued transfer

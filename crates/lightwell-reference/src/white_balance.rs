@@ -282,10 +282,6 @@ pub enum RejectReason {
 /// Gather up to 5x5 = 25 pixels centred on `(center_x, center_y)`, dropping any position that
 /// falls outside `[0, width) x [0, height)` — "clipped at the image edges": a corner patch may
 /// return as few as one pixel (the centre itself), never zero for an in-bounds centre.
-///
-/// Used by `basic_white_balance_reference.rs`; not every test binary that includes this reference
-/// module needs it, hence the `allow` (each `tests/*.rs` file compiles `reference/` afresh).
-#[allow(dead_code)]
 pub fn gather_patch(
     width: u32,
     height: u32,

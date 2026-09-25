@@ -1,7 +1,7 @@
 # Vignette study: the frozen mask and amount equations
 
 Status: frozen and implemented by the `lightwell.vignette` module, which is checked against it. This
-document, the independent [`f64` reference](../../crates/lightwell-core/tests/reference/vignette.rs)
+document, the independent [`f64` reference](../../crates/lightwell-reference/src/vignette.rs)
 and the checked-in [oracle fixtures](../../fixtures/vignette/README.md) are the complete
 specification a future `lightwell.vignette` unit is checked against. It answers the ["Vignette:
 one positional unit"](presence-mixer-vignette.md#vignette-one-positional-unit) section of the
@@ -134,7 +134,7 @@ and `feather < 100` where the corner mask is measurably below `1` on a small fra
 example: `20x20`, roundness 0, midpoint 90, feather 90 gives `r1 = 0.99 > r_corner = 0.95`, and
 the corner mask is `≈0.9942`, not `1` (worked in full below). `reference::vignette::mask`'s
 `corner_mask_reaches_one_exactly_when_the_derived_saturation_condition_holds` test in
-`vignette_reference.rs` asserts this "if and only if" directly, across every frozen aspect ratio,
+`studies/vignette.rs` asserts this "if and only if" directly, across every frozen aspect ratio,
 every roundness and a `6x6` grid of `midpoint`/`feather` including this exact boundary case.
 
 **The property is real and useful within a verified range.** For `midpoint <= 75` and `feather <=
@@ -347,17 +347,17 @@ results, not re-derived from first principles.
 ## Files
 
 - `docs/design/vignette-study.md` -- this document.
-- [`crates/lightwell-core/tests/reference/vignette.rs`](../../crates/lightwell-core/tests/reference/vignette.rs)
+- [`crates/lightwell-reference/src/vignette.rs`](../../crates/lightwell-reference/src/vignette.rs)
   -- the literal `f64` transcription of the equations above (`VignetteParams`, `mask`, `apply`,
   `vignette_pixel`, and the private `pixel_uv`/`shape_radius`/`smoothstep`/`falloff` helpers, plus
   the closed-form `corner_radius`).
-- [`crates/lightwell-core/tests/reference/tone.rs`](../../crates/lightwell-core/tests/reference/tone.rs)
+- [`crates/lightwell-reference/src/tone.rs`](../../crates/lightwell-reference/src/tone.rs)
   -- unchanged except for making `encode_srgb_extended`/`decode_srgb_extended` `pub` so this
   study's positive-amount branch can reuse them instead of duplicating the sRGB OETF a third time
   in this test tree; no formula in that file changed.
-- [`crates/lightwell-core/tests/reference/mod.rs`](../../crates/lightwell-core/tests/reference/mod.rs)
+- [`crates/lightwell-reference/src/lib.rs`](../../crates/lightwell-reference/src/lib.rs)
   -- unchanged; already declared `pub mod vignette;` ahead of this task.
-- [`crates/lightwell-core/tests/vignette_reference.rs`](../../crates/lightwell-core/tests/vignette_reference.rs)
+- [`crates/lightwell-reference/tests/studies/vignette.rs`](../../crates/lightwell-reference/tests/studies/vignette.rs)
   -- the independent proofs (identity, mirror/flip symmetry, monotonicity along a ray, the corner
   saturation condition and its safe grid, centre invariance stated precisely, corners black at
   amount -100 under that same condition, positive amount never exceeding encoded white for a

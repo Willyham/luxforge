@@ -29,6 +29,7 @@ security-framework.workspace = true
 
 [dev-dependencies]
 lightwell-raw = { path = "../lightwell-raw", features = ["performance-diagnostics"] }
+lightwell-reference = { path = "../lightwell-reference" }
 lightwell-testkit = { path = "../lightwell-testkit" }
 
 [lints]

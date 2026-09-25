@@ -133,11 +133,11 @@ const PRESENCE_EDGE_HIGH: u8 = 210;
 const PRESENCE_CHECKER_LOW: u8 = 118;
 const PRESENCE_CHECKER_HIGH: u8 = 138;
 /// The checker cell width in source pixels (an 8 px light/dark period): measured against the
-/// frozen units directly (`cargo test --package lightwell-core --test presence_reference`, a
+/// frozen units directly (`cargo test --package lightwell-reference --test studies`, a
 /// temporary local probe of `band_gain` at this fixture's 1440 px long side), the widest gain the
 /// fine (1 px) and coarse (2 px) guided radii produce together falls at a 6–8 px period; a 2 px
 /// period is not a usable probe at all (`texture_is_a_medium_frequency_band` in
-/// `presence_reference.rs` notes a period-2 sinusoid samples to a constant on an integer grid).
+/// `studies/presence.rs` notes a period-2 sinusoid samples to a constant on an integer grid).
 const PRESENCE_CHECKER_PERIOD: u32 = 4;
 
 fn presence_fixture(w: u32, h: u32) -> RgbImage {

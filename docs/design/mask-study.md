@@ -1,7 +1,7 @@
 # Mask coverage mathematics
 
 Status: frozen. No production mask code exists: this document, the independent [`f64`
-reference](../../crates/lightwell-core/tests/reference/mask.rs) and its
+reference](../../crates/lightwell-reference/src/mask.rs) and its
 [proofs](../../crates/lightwell-core/tests/mask_reference.rs) are the complete specification the
 mask units of the [masking design](masking.md) are checked against, answering its "What a mask is",
 "Composition", "Mask space" and "Component kinds" sections. It settles that design's proposals P2
@@ -733,10 +733,10 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 | File | Purpose |
 | --- | --- |
 | `docs/design/mask-study.md` | This document. |
-| [`crates/lightwell-core/tests/reference/mask.rs`](../../crates/lightwell-core/tests/reference/mask.rs) | The frozen `f64` reference: `Stage`, the distance rules, `smooth`, the linear and radial fields, both algebras, `coverage`, and the brush's segments, capsule profile, colour constraint, accumulation and support box. |
+| [`crates/lightwell-reference/src/mask.rs`](../../crates/lightwell-reference/src/mask.rs) | The frozen `f64` reference: `Stage`, the distance rules, `smooth`, the linear and radial fields, both algebras, `coverage`, and the brush's segments, capsule profile, colour constraint, accumulation and support box. |
 | [`crates/lightwell-core/tests/mask_reference.rs`](../../crates/lightwell-core/tests/mask_reference.rs) | The mask-space, composition and gradient proofs, and the ignored 24 MP figures test. |
 | [`crates/lightwell-core/tests/mask_brush_reference.rs`](../../crates/lightwell-core/tests/mask_brush_reference.rs) | The brush proofs and measurements above, and the ignored `brush_study_figures` test. |
-| [`crates/lightwell-core/tests/reference/mod.rs`](../../crates/lightwell-core/tests/reference/mod.rs) | Declares `pub mod mask;` beside the other studies' references. |
+| [`crates/lightwell-reference/src/lib.rs`](../../crates/lightwell-reference/src/lib.rs) | Declares `pub mod mask;` beside the other studies' references. |
 | [`crates/lightwell-core/src/mask/brush.rs`](../../crates/lightwell-core/src/mask/brush.rs) | The production transcription of the brush: the compiled strokes, the grid index, the colour constraint and the per-pixel fold. |
 
 ## References

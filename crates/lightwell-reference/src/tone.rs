@@ -101,7 +101,7 @@ pub fn luminance(rgb: [f64; 3]) -> f64 {
 /// `pub` (not private) so the vignette reference (TASK-004) can reuse the same
 /// analytically-continued sRGB OETF for its positive-amount mapping instead of
 /// duplicating it; see `docs/design/presence-mixer-vignette.md`'s "Vignette:
-/// one positional unit" and `tests/reference/vignette.rs`.
+/// one positional unit" and `crates/lightwell-reference/src/vignette.rs`.
 pub fn encode_srgb_extended(l: f64) -> f64 {
     if l <= 0.003_130_8 {
         12.92 * l

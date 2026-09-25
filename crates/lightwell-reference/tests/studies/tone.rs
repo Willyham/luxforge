@@ -1,20 +1,20 @@
 //! TASK-011: independent proofs for the frozen global Tone algorithm, and the
 //! oracle fixture a later production implementation is checked against.
 //!
-//! This binary shares no code with `lightwell-core`'s production sources. The
-//! frozen equations live in `tests/reference/tone.rs`; the maths and every
+//! This study shares no code with `lightwell-core`'s production sources. The
+//! frozen equations live in `crates/lightwell-reference/src/tone.rs`; the maths and every
 //! constant used below are written out in full in `docs/design/basic-tone.md`,
 //! which this file's test names and comments track.
 
-mod reference;
-
-use reference::tone::{ToneParams, luminance, tone_curve, tone_pixel};
+use super::approximately_equal;
+use lightwell_reference::SplitMix64;
+use lightwell_reference::tone::{ToneParams, luminance, tone_curve, tone_pixel};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// Test-only helpers. Private to this file, independent of `reference::tone`'s
-// own private srgb helpers, on purpose (see AGENTS.md and the task brief: each
-// file keeps its own copy so parallel reference work merges cleanly).
+// The study's own sRGB conversions, independent of `lightwell_reference::tone`'s
+// private helpers on purpose, so the conversions that build the inputs are not
+// the ones under test.
 // ---------------------------------------------------------------------------
 
 /// The standard, clamped sRGB OETF, used only to quantize a *finished* linear
@@ -37,26 +37,6 @@ fn decode_srgb_u8(code: u8) -> f64 {
         encoded / 12.92
     } else {
         ((encoded + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// A tiny, dependency-free, fully reproducible PRNG (SplitMix64) so the
-/// "random sample of 200 combinations with a fixed seed" needs no new crate
-/// and is byte-for-byte reproducible across machines and Rust versions.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
     }
 }
 
@@ -1080,19 +1060,6 @@ fn build_tone_cases() -> Vec<ToneCase> {
     cases
 }
 
-/// A JSON text/parse round trip is not guaranteed bit-for-bit identical to the
-/// `f64` a fresh computation produces (the written text is the shortest
-/// string that round-trips to the written value, but the parser's correctly-
-/// rounded result can land one ULP away in rare cases). `1e-12` relative is
-/// four orders of magnitude tighter than the production-vs-reference
-/// tolerance this fixture exists to police, so it still catches any real
-/// staleness while tolerating that round trip.
-const FIXTURE_ROUND_TRIP_TOLERANCE: f64 = 1e-12;
-
-fn approximately_equal(a: f64, b: f64) -> bool {
-    (a - b).abs() <= FIXTURE_ROUND_TRIP_TOLERANCE + FIXTURE_ROUND_TRIP_TOLERANCE * b.abs()
-}
-
 #[test]
 fn committed_tone_case_fixture_matches_the_reference() {
     let path = fixture_path();
@@ -1105,7 +1072,7 @@ fn committed_tone_case_fixture_matches_the_reference() {
         committed.len(),
         fresh.len(),
         "the committed fixture has a different case count than the reference produces; \
-         regenerate it with `cargo test --test basic_tone_reference -- --ignored \
+         regenerate it with `cargo test -p lightwell-reference --test studies -- --ignored \
          regenerate_committed_tone_case_fixture`"
     );
     for (committed_case, fresh_case) in committed.iter().zip(fresh.iter()) {
@@ -1140,7 +1107,7 @@ fn committed_tone_case_fixture_matches_the_reference() {
 
 #[test]
 #[ignore = "regenerates the committed oracle fixture; run explicitly after changing the frozen \
-            equations in tests/reference/tone.rs, and re-freeze docs/design/basic-tone.md to match"]
+            equations in crates/lightwell-reference/src/tone.rs, and re-freeze docs/design/basic-tone.md to match"]
 fn regenerate_committed_tone_case_fixture() {
     let cases = build_tone_cases();
     let json = serde_json::to_string_pretty(&cases).expect("serializable");

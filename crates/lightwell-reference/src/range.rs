@@ -3,8 +3,8 @@
 //!
 //! This module shares no code with production — there is no production range
 //! code yet, and when there is, this file is the oracle it cannot influence,
-//! matching the convention `tests/reference/mask.rs` and
-//! `tests/reference/vignette.rs` set. The frozen equations, every constant's
+//! matching the convention `crates/lightwell-reference/src/mask.rs` and
+//! `crates/lightwell-reference/src/vignette.rs` set. The frozen equations, every constant's
 //! justification and every measured figure are written out in full in
 //! `docs/design/range-study.md`; this file is their literal transcription, in
 //! the same order and the same spelling, and the two must be read together. A

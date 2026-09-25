@@ -1,11 +1,9 @@
-//! Cross-checks the independent f64 `reference` module (see `tests/reference/mod.rs`) against
+//! Cross-checks the independent f64 `reference` module (see `crates/lightwell-reference/src/lib.rs`) against
 //! `fixtures/basic/exposure-cases.json`, an independently computed corpus (inline `python3` f64
 //! implementation of the same formulas, not the Rust module). Agreement between the two proves
 //! neither independent implementation has a one-off formula mistake.
 
-mod reference;
-
-use reference::{RefOp, evaluate_pixel};
+use lightwell_reference::{RefOp, evaluate_pixel};
 use serde::Deserialize;
 use std::{fs, path::Path};
 

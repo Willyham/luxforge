@@ -3,17 +3,15 @@
 //!
 //! No production code exists yet for Temperature, Tint or the neutral picker; this file is the
 //! numerical study's evidence, run ahead of that implementation. `cargo test -p lightwell-core
-//! --test basic_white_balance_reference -- --ignored regenerate_white_balance_fixtures` rewrites
+//! -p lightwell-reference --test studies -- --ignored regenerate_white_balance_fixtures` rewrites
 //! the checked-in fixture from the current reference; the non-ignored fixture test below reloads
 //! it and recomputes every case, so a constant change that is not also reflected in the fixture
 //! (or vice versa) fails the suite.
 
-mod reference;
-
-use reference::white_balance::{
+use lightwell_reference::white_balance::{
     self, PARAMETER_RANGE, RejectReason, apply, average_patch, gains, gather_patch, solve_neutral,
 };
-use reference::{srgb_decode, srgb_encode, srgb_quantize};
+use lightwell_reference::{srgb_decode, srgb_encode, srgb_quantize};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -253,7 +251,7 @@ fn solver_round_trips_over_grid_within_one_unit() {
     }
 }
 
-use reference::white_balance::solve_from_patch;
+use lightwell_reference::white_balance::solve_from_patch;
 
 /// Build a 5x5 patch whose 25 samples' linear-light *average* has the chromaticity that is
 /// exactly the target for `(temperature, tint)`, at a luminance safe from both rejection

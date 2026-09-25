@@ -232,6 +232,49 @@ fn boundaries(root: &Path) -> Result<usize> {
     Ok(checked)
 }
 
+/// The references are independent by construction: `lightwell-reference` depends on no workspace
+/// crate, so nothing it builds against can reach the core it checks, directly or through a crate
+/// that depends on it. Every dependency table (normal, dev, build or target-specific) is read.
+const REFERENCE_MANIFEST: &str = "crates/lightwell-reference/Cargo.toml";
+
+/// Fail on the first dependency of the reference crate that names a `lightwell` crate or a path,
+/// naming the line; answer how many dependency lines were read.
+fn independent_references(root: &Path) -> Result<usize> {
+    let path = root.join(REFERENCE_MANIFEST);
+    let text = fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut table = String::new();
+    let mut checked = 0;
+    for (number, line) in text.lines().enumerate() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            table = line.trim_matches(['[', ']']).to_owned();
+        }
+        if !table.contains("dependencies") {
+            continue;
+        }
+        let names_a_crate = line.contains("lightwell");
+        let is_a_path = line.split(['{', ',', '}']).any(|part| {
+            part.split('=')
+                .next()
+                .is_some_and(|key| key.trim() == "path")
+        });
+        ensure(
+            !names_a_crate && !is_a_path,
+            format!(
+                "{}:{}: lightwell-reference may depend on no workspace crate, so it can never \
+                 reach lightwell-core: {line}",
+                path.display(),
+                number + 1
+            ),
+        )?;
+        checked += 1;
+    }
+    Ok(checked)
+}
+
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -294,6 +337,10 @@ pub fn check(root: &Path) -> Result {
     println!(
         "PASS desktop layer boundaries ({} files)",
         boundaries(root)?
+    );
+    println!(
+        "PASS independent references ({} dependency lines, no workspace crate)",
+        independent_references(root)?
     );
     Ok(())
 }
@@ -366,6 +413,49 @@ mod tests {
                 .contains("lightwell-ui")
         );
     }
+    #[test]
+    fn the_reference_crate_may_depend_on_no_workspace_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join(REFERENCE_MANIFEST);
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"lightwell-reference\"\n\n[dependencies]\n\n\
+                     [dev-dependencies]\nserde.workspace = true # not lightwell\n";
+        fs::write(&manifest, clean).unwrap();
+        assert_eq!(independent_references(tmp.path()).unwrap(), 3);
+        for (what, extra) in [
+            (
+                "the core",
+                "[dependencies]\nlightwell-core = { path = \"../lightwell-core\" }\n",
+            ),
+            (
+                "a crate that depends on the core",
+                "[dev-dependencies]\nlightwell-testkit.workspace = true\n",
+            ),
+            (
+                "the core under another name",
+                "[dependencies]\ncore = { package = \"lightwell-core\", version = \"0\" }\n",
+            ),
+            (
+                "a table naming the core",
+                "[target.'cfg(unix)'.dependencies.lightwell-core]\nversion = \"0\"\n",
+            ),
+            (
+                "any path",
+                "[build-dependencies]\nhelper = { path = \"../helper\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}\n{extra}")).unwrap();
+            let error = independent_references(tmp.path())
+                .err()
+                .unwrap_or_else(|| panic!("{what} was accepted"))
+                .to_string();
+            assert!(
+                error.contains("Cargo.toml:") && error.contains("no workspace crate"),
+                "{what}: {error}"
+            );
+        }
+    }
+
     fn minimal_plan(id: &str) -> Value {
         json!({
             "schema_version":"1.0", "plan_id":id, "title":"Local plan",

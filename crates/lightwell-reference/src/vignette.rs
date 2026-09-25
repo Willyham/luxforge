@@ -1,7 +1,7 @@
 //! Independent f64 reference for the frozen post-crop vignette (TASK-004).
 //!
 //! This module shares no code with production, matching the convention set by
-//! `tests/reference/tone.rs`: it exists so a later production implementation of
+//! `crates/lightwell-reference/src/tone.rs`: it exists so a later production implementation of
 //! the `lightwell.vignette` module has an oracle it cannot influence. The
 //! frozen equations are written out in full in `docs/design/vignette-study.md`;
 //! this file is their literal transcription and the two must be read together.
@@ -11,7 +11,7 @@
 //! positive-amount branch works in the same analytically-continued sRGB
 //! working domain the Tone study already froze (see `docs/design/basic-tone.md`
 //! "Working tone domain"), so this file reuses `encode_srgb_extended` and
-//! `decode_srgb_extended` from `tests/reference/tone.rs` rather than
+//! `decode_srgb_extended` from `crates/lightwell-reference/src/tone.rs` rather than
 //! duplicating the sRGB OETF a third time in this test tree; it does not reuse
 //! any of Tone's curve stages, which are unrelated to the vignette.
 //!

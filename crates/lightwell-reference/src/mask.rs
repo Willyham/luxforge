@@ -2,7 +2,7 @@
 //!
 //! This module shares no code with production — there is no production mask
 //! code yet, and when there is, this file is the oracle it cannot influence,
-//! matching the convention `tests/reference/vignette.rs` set. The frozen
+//! matching the convention `crates/lightwell-reference/src/vignette.rs` set. The frozen
 //! equations are written out in full in `docs/design/mask-study.md`; this file
 //! is their literal transcription, in the same order and the same spelling, and
 //! the two must be read together. A later production unit that writes the same
@@ -21,7 +21,7 @@
 //! Legality of a stored payload is [`distance_is_legal`] and [`axis_is_legal`],
 //! which state the frozen rules but are not applied automatically; production
 //! rejects an illegal payload before any of this is reached, exactly as
-//! `tests/reference/vignette.rs` states for its own inputs. Given finite inputs
+//! `crates/lightwell-reference/src/vignette.rs` states for its own inputs. Given finite inputs
 //! that satisfy those rules, every step below is finite: the only divisions are
 //! by an axis length or a radius the rules bound away from zero, and by a
 //! feather span guarded by an explicit hard-edge branch.
@@ -121,7 +121,7 @@ pub fn axis_is_legal(linear: &Linear, stage: &Stage) -> bool {
 ///
 /// This is the same falloff the delivered vignette froze (written there as
 /// `3t² − 2t³`, the same polynomial in the cheaper Horner-free form used here
-/// and in `tests/reference/vignette.rs`).
+/// and in `crates/lightwell-reference/src/vignette.rs`).
 pub fn smooth(s: f64) -> f64 {
     s * s * (3.0 - 2.0 * s)
 }

@@ -172,7 +172,7 @@ fn every_corpus_case_renders_through_a_real_basic_layer() {
         for (index, case) in group.iter().enumerate() {
             let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
             assert_eq!(pixel[3], 255, "alpha is never touched");
-            // The Rust reference agrees with the corpus (proved in `basic_reference.rs`); this
+            // The Rust reference agrees with the corpus (proved in `studies/exposure.rs`); this
             // asserts against the committed file itself.
             assert_eq!(
                 evaluate_pixel(case.input, &[RefOp::Exposure(ev)]),

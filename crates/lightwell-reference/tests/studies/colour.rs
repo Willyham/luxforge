@@ -1,5 +1,5 @@
 //! Fixture generation and reload for the frozen Saturation/Vibrance
-//! reference in `tests/reference/colour.rs`. The property proofs
+//! reference in `crates/lightwell-reference/src/colour.rs`. The property proofs
 //! themselves live as unit tests inside that module; this file only builds
 //! and checks `fixtures/basic/colour-cases.json`.
 //!
@@ -7,7 +7,7 @@
 //! running the ignored `generate_colour_fixtures` test once:
 //!
 //! ```sh
-//! cargo test --package lightwell-core --test basic_colour_reference \
+//! cargo test --package lightwell-reference --test studies \
 //!     -- --ignored generate_colour_fixtures
 //! ```
 //!
@@ -16,9 +16,7 @@
 //! same reference, so a silent drift between the file and the frozen
 //! formulas fails the build instead of going unnoticed.
 
-mod reference;
-
-use reference::colour;
+use lightwell_reference::colour;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -47,10 +45,9 @@ impl Input {
     }
 }
 
-// `tests/reference/mod.rs` keeps its sRGB helpers module-private so several
-// numerical-task branches can each add their own without a merge conflict;
-// this file recomputes the one conversion it needs from the published sRGB
-// constants directly, matching `reference::srgb_decode` exactly.
+// The study recomputes the one conversion it needs from the published sRGB
+// constants directly, matching `lightwell_reference::srgb_decode` exactly, so
+// its inputs do not go through the reference it checks.
 fn reference_code_to_linear(code: u8) -> f64 {
     let encoded = f64::from(code) / 255.0;
     if encoded <= 0.04045 {
@@ -173,7 +170,7 @@ fn vibrance_saturation_combinations() -> Vec<(f64, f64)> {
 }
 
 fn fixture_path() -> PathBuf {
-    // CARGO_MANIFEST_DIR is crates/lightwell-core; fixtures/ is repo-root-level.
+    // CARGO_MANIFEST_DIR is crates/lightwell-reference; fixtures/ is repo-root-level.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
@@ -202,9 +199,9 @@ fn generate_colour_fixtures() {
 
     let file = FixtureFile {
         generated_by:
-            "crates/lightwell-core/tests/basic_colour_reference.rs generate_colour_fixtures"
+            "crates/lightwell-reference/tests/studies/colour.rs generate_colour_fixtures"
                 .to_string(),
-        note: "Independent f64 reference (tests/reference/colour.rs). expected_linear is linear \
+        note: "Independent f64 reference (crates/lightwell-reference/src/colour.rs). expected_linear is linear \
                sRGB after vibrance then saturation (the frozen order), full f64 precision, \
                unclamped. Production is compared against this file within the tolerance frozen \
                in docs/design/basic-colour.md."
@@ -225,7 +222,7 @@ fn colour_fixtures_match_reference() {
     let json = fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!(
             "{} is missing ({err}); run `cargo test --package lightwell-core \
-             --test basic_colour_reference -- --ignored generate_colour_fixtures` \
+             -p lightwell-reference --test studies -- --ignored generate_colour_fixtures` \
              to (re)create it",
             path.display()
         )

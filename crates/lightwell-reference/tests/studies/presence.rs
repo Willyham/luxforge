@@ -1,5 +1,5 @@
 //! Property proofs, measurements and fixtures for the frozen Presence reference in
-//! `tests/reference/presence.rs`.
+//! `crates/lightwell-reference/src/presence.rs`.
 //!
 //! The frozen equations, constants, halos and figures are recorded in
 //! `docs/design/presence-study.md`; this file is what makes them reproducible.
@@ -14,7 +14,7 @@
 //! Both are produced by the ignored generator:
 //!
 //! ```sh
-//! cargo test --package lightwell-core --test presence_reference \
+//! cargo test --package lightwell-reference --test studies \
 //!     -- --ignored generate_presence_fixtures
 //! ```
 //!
@@ -22,9 +22,7 @@
 //! reload the committed files and recompute every value from the same reference, so a
 //! silent drift between the files and the frozen formulas fails the build.
 
-mod reference;
-
-use reference::presence::{
+use lightwell_reference::presence::{
     self as presence, Atmosphere, PresenceParams, Rect, Rgb, T_FLOOR, decode_srgb_extended,
     encode_srgb_extended, luminance,
 };
@@ -1620,9 +1618,9 @@ fn generate_presence_fixtures() {
 
     let cases = CaseFile {
         generated_by:
-            "crates/lightwell-core/tests/presence_reference.rs generate_presence_fixtures"
+            "crates/lightwell-reference/tests/studies/presence.rs generate_presence_fixtures"
                 .to_string(),
-        note: "Independent f64 reference (tests/reference/presence.rs). Each case names a \
+        note: "Independent f64 reference (crates/lightwell-reference/src/presence.rs). Each case names a \
                deterministic image spec, the stage long side the radii scale by, the three \
                amounts, and the resulting linear sRGB output at full f64 precision, unclamped, \
                in the frozen unit order dehaze, texture, clarity. Production is compared \
@@ -1640,7 +1638,7 @@ fn generate_presence_fixtures() {
 
     let measurements = MeasurementFile {
         generated_by:
-            "crates/lightwell-core/tests/presence_reference.rs generate_presence_fixtures"
+            "crates/lightwell-reference/tests/studies/presence.rs generate_presence_fixtures"
                 .to_string(),
         note: "Every figure quoted in docs/design/presence-study.md, recomputed from the same \
                reference by measurements_match_reference on each test run."
@@ -1666,7 +1664,7 @@ fn presence_fixtures_match_reference() {
     let json = fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!(
             "{} is missing ({err}); run `cargo test --package lightwell-core \
-             --test presence_reference -- --ignored generate_presence_fixtures` to (re)create it",
+             -p lightwell-reference --test studies -- --ignored generate_presence_fixtures` to (re)create it",
             path.display()
         )
     });
@@ -1711,7 +1709,7 @@ fn measurements_match_reference() {
     let json = fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!(
             "{} is missing ({err}); run `cargo test --package lightwell-core \
-             --test presence_reference -- --ignored generate_presence_fixtures` to (re)create it",
+             -p lightwell-reference --test studies -- --ignored generate_presence_fixtures` to (re)create it",
             path.display()
         )
     });

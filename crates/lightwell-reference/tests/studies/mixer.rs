@@ -1,12 +1,12 @@
 //! Property proofs, dense measurements and fixtures for the frozen colour
-//! mixer reference in `tests/reference/mixer.rs`.
+//! mixer reference in `crates/lightwell-reference/src/mixer.rs`.
 //!
 //! Every figure quoted in `docs/design/mixer-study.md` is produced here. The
 //! bounds asserted below are the frozen ones; the exact measured values are
 //! printed by the ignored `mixer_study_figures` test:
 //!
 //! ```sh
-//! cargo test --package lightwell-core --test mixer_reference \
+//! cargo test --package lightwell-reference --test studies \
 //!     -- --ignored --nocapture mixer_study_figures
 //! ```
 //!
@@ -14,7 +14,7 @@
 //! the ignored generator once:
 //!
 //! ```sh
-//! cargo test --package lightwell-core --test mixer_reference \
+//! cargo test --package lightwell-reference --test studies \
 //!     -- --ignored generate_mixer_fixtures
 //! ```
 //!
@@ -22,10 +22,8 @@
 //! and recomputes every case with the same reference, so a silent drift
 //! between the file and the frozen formulas fails the build.
 
-mod reference;
-
-use reference::colour::{self, Oklab};
-use reference::mixer::{
+use lightwell_reference::colour::{self, Oklab};
+use lightwell_reference::mixer::{
     self, CENTRE_HUES_DEG, CHROMA_RAMP_EDGE, HUE_REACH, HueWarp, MixerParams, RANGE_COUNT,
     RANGE_NAMES, RANGE_REFERENCE_CODES,
 };
@@ -35,9 +33,8 @@ use std::fs;
 use std::path::PathBuf;
 
 /// Decoded from the published sRGB constants directly, matching
-/// `reference::srgb_decode`; `tests/reference/mod.rs` keeps its helpers
-/// module-private so each numerical study can add its own without a merge
-/// conflict.
+/// `lightwell_reference::srgb_decode`, so the study's inputs do not go through the reference it
+/// checks.
 fn code_to_linear(code: u8) -> f64 {
     let encoded = f64::from(code) / 255.0;
     if encoded <= 0.04045 {
@@ -1232,7 +1229,7 @@ fn mixer_study_figures() {
             out[0],
             out[1],
             out[2],
-            out.map(reference::linear_to_srgb_code)
+            out.map(lightwell_reference::linear_to_srgb_code)
         );
     }
 }
@@ -1417,7 +1414,7 @@ fn fixture_parameter_sets() -> Vec<ParameterSet> {
 }
 
 fn fixture_path() -> PathBuf {
-    // CARGO_MANIFEST_DIR is crates/lightwell-core; fixtures/ is repo-root-level.
+    // CARGO_MANIFEST_DIR is crates/lightwell-reference; fixtures/ is repo-root-level.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
@@ -1444,9 +1441,9 @@ fn generate_mixer_fixtures() {
     }
 
     let file = FixtureFile {
-        generated_by: "crates/lightwell-core/tests/mixer_reference.rs generate_mixer_fixtures"
+        generated_by: "crates/lightwell-reference/tests/studies/mixer.rs generate_mixer_fixtures"
             .to_string(),
-        note: "Independent f64 reference (tests/reference/mixer.rs). expected_linear is linear \
+        note: "Independent f64 reference (crates/lightwell-reference/src/mixer.rs). expected_linear is linear \
                sRGB after the frozen mixer unit (hue warp, then chroma, then luminance), full f64 \
                precision, unclamped. Production is compared against this file within the \
                tolerance frozen in docs/design/mixer-study.md."
@@ -1469,7 +1466,7 @@ fn mixer_fixtures_match_reference() {
     let json = fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!(
             "{} is missing ({err}); run `cargo test --package lightwell-core \
-             --test mixer_reference -- --ignored generate_mixer_fixtures` to (re)create it",
+             -p lightwell-reference --test studies -- --ignored generate_mixer_fixtures` to (re)create it",
             path.display()
         )
     });

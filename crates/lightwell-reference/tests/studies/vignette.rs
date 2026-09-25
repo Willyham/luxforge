@@ -2,46 +2,20 @@
 //! amount equations, and the oracle fixtures a later production implementation
 //! is checked against.
 //!
-//! This binary shares no code with `lightwell-core`'s production sources. The
-//! frozen equations live in `tests/reference/vignette.rs`; the maths and every
+//! This study shares no code with `lightwell-core`'s production sources. The
+//! frozen equations live in `crates/lightwell-reference/src/vignette.rs`; the maths and every
 //! constant used below are written out in full in
 //! `docs/design/vignette-study.md`, which this file's test names and comments
 //! track.
 
-mod reference;
-
-use reference::vignette::{VignetteParams, apply, corner_radius, mask, vignette_pixel};
+use super::approximately_equal;
+use lightwell_reference::SplitMix64;
+use lightwell_reference::vignette::{VignetteParams, apply, corner_radius, mask, vignette_pixel};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// Test-only helpers, kept local to this file per the reference tree's
-// convention (see `basic_tone_reference.rs`): a parallel study's own copy
-// merges cleanly with no shared mutable state.
+// The study's own inputs.
 // ---------------------------------------------------------------------------
-
-/// A tiny, dependency-free, fully reproducible PRNG (SplitMix64), the same
-/// generator `basic_tone_reference.rs` uses, so fixed-seed samples below are
-/// byte-for-byte reproducible across machines and Rust versions.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_range(&mut self, lo: f64, hi: f64) -> f64 {
-        let u = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + u * (hi - lo)
-    }
-
-    fn next_u32(&mut self, bound: u32) -> u32 {
-        (self.next_u64() % u64::from(bound)) as u32
-    }
-}
 
 /// The three aspect ratios the study fixes: 3:2, 2:3 and 1:1, at the small
 /// sizes the task brief names.
@@ -959,12 +933,6 @@ fn build_amount_cases() -> Vec<AmountCase> {
     cases
 }
 
-const FIXTURE_ROUND_TRIP_TOLERANCE: f64 = 1e-12;
-
-fn approximately_equal(a: f64, b: f64) -> bool {
-    (a - b).abs() <= FIXTURE_ROUND_TRIP_TOLERANCE + FIXTURE_ROUND_TRIP_TOLERANCE * b.abs()
-}
-
 #[test]
 fn committed_mask_case_fixture_matches_the_reference() {
     let path = mask_fixture_path();
@@ -977,7 +945,7 @@ fn committed_mask_case_fixture_matches_the_reference() {
         committed.len(),
         fresh.len(),
         "the committed mask fixture has a different case count than the reference produces; \
-         regenerate it with `cargo test --test vignette_reference -- --ignored \
+         regenerate it with `cargo test -p lightwell-reference --test studies -- --ignored \
          regenerate_committed_vignette_fixtures`"
     );
     for (committed_case, fresh_case) in committed.iter().zip(fresh.iter()) {
@@ -1028,7 +996,7 @@ fn committed_amount_case_fixture_matches_the_reference() {
         committed.len(),
         fresh.len(),
         "the committed amount fixture has a different case count than the reference produces; \
-         regenerate it with `cargo test --test vignette_reference -- --ignored \
+         regenerate it with `cargo test -p lightwell-reference --test studies -- --ignored \
          regenerate_committed_vignette_fixtures`"
     );
     for (committed_case, fresh_case) in committed.iter().zip(fresh.iter()) {
@@ -1068,7 +1036,7 @@ fn committed_amount_case_fixture_matches_the_reference() {
 
 #[test]
 #[ignore = "regenerates the committed oracle fixtures; run explicitly after changing the frozen \
-            equations in tests/reference/vignette.rs, and re-freeze \
+            equations in crates/lightwell-reference/src/vignette.rs, and re-freeze \
             docs/design/vignette-study.md to match"]
 fn regenerate_committed_vignette_fixtures() {
     let mask_cases = build_mask_cases();

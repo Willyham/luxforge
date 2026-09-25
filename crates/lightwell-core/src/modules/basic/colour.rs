@@ -1,6 +1,6 @@
 //! The Basic module's colour unit: `ColourAdjust`, fusing Vibrance and Saturation, sharing the
 //! Oklab conversion frozen in `docs/design/basic-colour.md` and the independent f64 reference at
-//! `crates/lightwell-core/tests/reference/colour.rs`. Both parameters scale Oklab `a`/`b` about
+//! `crates/lightwell-reference/src/colour.rs`. Both parameters scale Oklab `a`/`b` about
 //! the achromatic axis and leave `L` untouched; neither clamps internally, per the design's gamut
 //! policy. Vibrance's gain and saturation's gain compose into one factor before either is applied,
 //! so one pixel converts to Oklab and back exactly once instead of once per parameter — the two

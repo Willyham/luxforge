@@ -20,7 +20,7 @@ here is computed at load time.
   output bytes, so every count and predicate in these files must match a correct implementation
   bit for bit.
 - **The f64 colour reference** (`exposure-cases.json`, and the `reference` module under
-  `crates/lightwell-core/tests/reference/`): exact to the stated formula (standard sRGB transfer
+  `crates/lightwell-reference/src/`): exact to the stated formula (standard sRGB transfer
   constants: threshold 0.04045/0.0031308, 12.92, 1.055, 0.055, exponent 2.4; exposure
   `out = in * 2^EV`), computed in f64 with no intermediate clamping between colour operations.
 - **Production tolerance** (for later tasks, not tested here): float colour output must agree
@@ -94,7 +94,7 @@ grey ramp (0, 32, 64, 96, 128, 160, 192, 224, 255) and the six saturated primari
 code 0; 16 at -5 EV stays at output code 1 rather than flooring; 10 at -1 EV stays well below
 1.0).
 
-`crates/lightwell-core/tests/basic_reference.rs` loads this file and asserts the Rust
+`crates/lightwell-reference/tests/studies/exposure.rs` loads this file and asserts the Rust
 `reference` module's `evaluate_pixel` agrees with every `expected` value, cross-checking the two
 independent implementations.
 

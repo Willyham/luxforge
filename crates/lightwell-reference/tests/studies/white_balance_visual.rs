@@ -3,13 +3,11 @@
 //! cast image, and separately checks the neutral picker on a known synthetic cast.
 //!
 //! Not run by `cargo test` (both tests are `#[ignore]`d) and commits no images: run explicitly
-//! with `cargo test -p lightwell-core --test basic_white_balance_visual_review -- --ignored`,
+//! with `cargo test -p lightwell-reference --test studies -- --ignored`,
 //! look at the PNGs it writes under a temp directory, and record findings in the design doc.
 
-mod reference;
-
-use reference::white_balance::{apply, solve_from_patch};
-use reference::{srgb_decode, srgb_encode, srgb_quantize};
+use lightwell_reference::white_balance::{apply, solve_from_patch};
+use lightwell_reference::{srgb_decode, srgb_encode, srgb_quantize};
 use std::path::PathBuf;
 
 const SETTINGS: [(f64, f64, &str); 6] = [

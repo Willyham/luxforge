@@ -20,7 +20,7 @@
 //! frame edge; reads outside the held rectangle panic. A caller that asks for an
 //! output rectangle while holding only the rectangle plus the declared halo therefore
 //! gets bit-identical results to the whole-frame evaluation, or a panic — never a
-//! silently different answer. `presence_reference.rs` uses exactly that to prove the
+//! silently different answer. `studies/presence.rs` uses exactly that to prove the
 //! declared halos are sufficient.
 //!
 //! The sRGB transfer function is transcribed here from the standard constants rather

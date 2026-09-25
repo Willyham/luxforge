@@ -11,7 +11,7 @@
 //! apart.
 //!
 //! The property proofs and the dense measurements quoted in the study note
-//! live in `crates/lightwell-core/tests/mixer_reference.rs`, which also
+//! live in `crates/lightwell-reference/tests/studies/mixer.rs`, which also
 //! generates and re-verifies `fixtures/mixer/mixer-cases.json`.
 
 use super::colour::{self, Oklab};
@@ -41,7 +41,7 @@ pub const RANGE_REFERENCE_CODES: [[u8; 3]; RANGE_COUNT] = [
 /// Frozen range centres: the Oklab hue angle (degrees, `[0, 360)`) of each
 /// [`RANGE_REFERENCE_CODES`] entry decoded through the reference sRGB transfer
 /// function and converted by [`super::colour::to_oklab`]. `centres_match_the_reference_colours`
-/// in `mixer_reference.rs` recomputes every one of these from the 8-bit codes
+/// in `studies/mixer.rs` recomputes every one of these from the 8-bit codes
 /// and holds it to 1e-9, so these literals are frozen *and* checked, never
 /// merely asserted.
 pub const CENTRE_HUES_DEG: [f64; RANGE_COUNT] = [

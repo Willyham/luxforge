@@ -5,8 +5,8 @@ study](../../docs/design/vignette-study.md) of the [Presence, colour mixer and
 vignette](../../docs/design/presence-mixer-vignette.md) design, which the production
 `lightwell.vignette` module is checked against. Nothing here is a raster image; every case is a discrete `(pixel, parameters)`
 sample computed by the independent `f64` reference in
-`crates/lightwell-core/tests/reference/vignette.rs`, reloaded and checked bit-close against a
-fresh computation on every `cargo test --package lightwell-core --test vignette_reference` run
+`crates/lightwell-reference/src/vignette.rs`, reloaded and checked bit-close against a
+fresh computation on every `cargo test --package lightwell-reference --test studies` run
 (`committed_mask_case_fixture_matches_the_reference`,
 `committed_amount_case_fixture_matches_the_reference`).
 
@@ -66,7 +66,7 @@ directly (not just via the committed-fixture round trip) by
 `hand_computed_example_two_ellipse_near_centre_at_defaults_is_zero`,
 `hand_computed_example_three_boundary_case_corner_mask_below_one` and
 `hand_computed_example_four_amount_application_at_mask_one_and_mask_half` in
-`crates/lightwell-core/tests/vignette_reference.rs`.
+`crates/lightwell-reference/tests/studies/vignette.rs`.
 
 ## What is not here
 
@@ -75,6 +75,6 @@ images: every case is a scalar mask value or a single output pixel, not a render
 frame sizes here are chosen only to fix `width`/`height` for the coordinate formulas, not to
 exercise tiling, streaming or any per-frame concern. No real-photo provenance, since these
 fixtures are entirely synthetic. Regenerate both files with `cargo test --package lightwell-core
---test vignette_reference -- --ignored regenerate_committed_vignette_fixtures` after changing the
-frozen equations in `crates/lightwell-core/tests/reference/vignette.rs`, and re-freeze the study
+-p lightwell-reference --test studies -- --ignored regenerate_committed_vignette_fixtures` after changing the
+frozen equations in `crates/lightwell-reference/src/vignette.rs`, and re-freeze the study
 note to match.

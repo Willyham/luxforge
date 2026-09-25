@@ -12,7 +12,7 @@
 //! ```
 //!
 //! Frozen in `docs/design/presence-study.md` and transcribed in `f64` at
-//! `crates/lightwell-core/tests/reference/presence.rs`. Structure finer than `r_fine` survives both
+//! `crates/lightwell-reference/src/presence.rs`. Structure finer than `r_fine` survives both
 //! smoothers and cancels in the difference; structure coarser than `r_coarse` is reproduced by both
 //! and cancels too; a strong edge drives both filters' `a` toward 1, so both reproduce it and the
 //! band collapses there, which is what keeps the overshoot bounded.

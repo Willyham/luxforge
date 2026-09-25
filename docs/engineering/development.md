@@ -293,7 +293,7 @@ own wording, with `(proxy)` exactly when the frame on screen is the proxy.
 `editor-acceptance` ends with a chapter that drives the whole Basic and histogram surface through
 the JSON method table with `OwnerHandle::call`, exactly as an independent client reaches it, against
 its own catalog inside the run's output directory. Its oracle is the independent f64 reference under
-`crates/lightwell-core/tests/reference/`, compiled into `xtask` through a `#[path]` module rather
+`crates/lightwell-reference/src/`, compiled into `xtask` through a `#[path]` module rather
 than copied, so the acceptance journey and the core's own numerical tests check production against
 one written-from-the-formulas implementation that production code can never import; the crop
 sampler, the exact quarter turn and the histogram reduction the chapter compares against are written

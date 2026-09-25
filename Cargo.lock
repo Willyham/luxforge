@@ -1918,6 +1918,7 @@ dependencies = [
  "image",
  "lightwell-process",
  "lightwell-raw",
+ "lightwell-reference",
  "lightwell-testkit",
  "moxcms",
  "rayon",
@@ -1965,6 +1966,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "lightwell-reference"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4833,6 +4843,7 @@ dependencies = [
  "image",
  "lightwell-core",
  "lightwell-evidence",
+ "lightwell-reference",
  "lightwell-testkit",
  "percent-encoding",
  "regex",

@@ -4,20 +4,21 @@
 //! an independent client reaches it: `catalog.import`, `edit.set-basic`, `draft.*`, `render.sample`,
 //! `analysis.*`, `history.*` and `recipe.describe`. No desktop, no window and no pointer.
 //!
-//! The oracle is the independent f64 reference under `crates/lightwell-core/tests/reference/`,
-//! compiled into this binary through [`crate::reference`] rather than copied, so the acceptance
-//! journey and the core's own numerical tests check production against one written-from-the-formulas
-//! implementation that production code can never import. This file composes the frozen unit order —
-//! white balance, exposure, tone, vibrance, saturation — quantizes once at the output boundary, and
-//! implements the crop spec's rotated-box mapping and linear-light bilinear sampler from
-//! `docs/specs/single-image.md` so a mixed stack is checked stepwise rather than against itself.
+//! The oracle is the independent f64 reference crate `lightwell-reference`, the one the core's own
+//! numerical tests use, so the acceptance journey and those tests check production against one
+//! written-from-the-formulas implementation that cannot depend on the core it checks. This file
+//! composes the frozen unit order — white balance, exposure, tone, vibrance, saturation —
+//! quantizes once at the output boundary, and implements the crop spec's rotated-box mapping and
+//! linear-light bilinear sampler from `docs/specs/single-image.md` so a mixed stack is checked
+//! stepwise rather than against itself.
 //! The histogram reduction below is a plain serial loop written here, not `analysis::reduce`, so a
 //! reported count is compared with a second implementation.
-use crate::{reference, *};
+use crate::*;
 use lightwell_core::{
     ApiRequest, BASIC_EFFECT, ClientId, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe,
     SnapshotId, SourceImage, render as core_render,
 };
+use lightwell_reference as reference;
 use std::{
     cell::RefCell,
     sync::atomic::{AtomicU64, Ordering},
@@ -1428,7 +1429,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "basic_layer_id": basic_layer,
             "code_tolerance": CODE_TOLERANCE,
             "resample_tolerance": RESAMPLE_TOLERANCE,
-            "oracle": "crates/lightwell-core/tests/reference, compiled into xtask; the crop sampler and the histogram reduction are written here from docs/specs/single-image.md and the histogram contract",
+            "oracle": "crates/lightwell-reference, which cannot depend on the core; the crop sampler and the histogram reduction are written here from docs/specs/single-image.md and the histogram contract",
             "generic": "the host behaviour Basic shares with every field-patch module (discovery, drafts, no-ops, deduplication, resets, one layer per target, history, sample equal to render, an unavailable provider and reopen) is proved under field_patch_conformance",
             "reused_unit_tests": [
                 "lightwell_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest",

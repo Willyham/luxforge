@@ -3,7 +3,7 @@
 //! receives.
 //!
 //! This file is the production transcription of that study and of the independent `f64` reference
-//! at `crates/lightwell-core/tests/reference/vignette.rs`; the three must be read together, and
+//! at `crates/lightwell-reference/src/vignette.rs`; the three must be read together, and
 //! every constant and expression below is written in the same form and the same order as the
 //! reference's, so the mask is not merely close to it but bit-identical for the same
 //! `(x, y, width, height, parameters)`.
@@ -280,7 +280,7 @@ mod tests {
     /// Every committed mask case: the production `f64` mask against the oracle. The two are
     /// written in the same form and the same order, so this is exact for the great majority of
     /// cases and within a couple of ULP (at most `~1.11e-16`) for a handful of smoothstep values
-    /// near `1` — the same order-of-operations nondeterminism `vignette_reference.rs`'s own
+    /// near `1` — the same order-of-operations nondeterminism `studies/vignette.rs`'s own
     /// `committed_mask_case_fixture_matches_the_reference` already tolerates up to `1e-12` between
     /// two separate compilations of the *identical* reference code. The assertion below is stated
     /// at the frozen `1e-6 + 1e-6*|reference|` tolerance; the observed worst case is printed so a
