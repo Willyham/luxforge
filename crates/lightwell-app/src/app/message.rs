@@ -569,7 +569,7 @@ pub(crate) enum Message {
     OlderLoaded(Result<HistoryPage, String>),
     /// Poll the owner for events while an asset is open.
     Sync,
-    /// Poll the preview queue while a job is in flight.
+    /// Take up what the preview and overlay workers have finished. Their wake produces it.
     Poll,
     /// One derived clipping overlay reached the GPU. The generation says which photograph it
     /// belongs to, so an overlay for a replaced frame is dropped instead of drawn over the new one.

@@ -8,14 +8,15 @@
 //!
 //! Nothing here runs on the catalog owner thread except bookkeeping: building a job costs a state
 //! read, a cached source verification and an `O(layers)` plan and compile. The render and the
-//! reduction happen on the worker, which sends its report back through the owner's own channel, so
-//! no timer and no polling loop is involved.
+//! reduction happen on the worker, which wakes the owner through its own channel, so no timer and
+//! no polling loop is involved.
 
-use super::{DOMAIN, Report, deserialize_domain, reduce_raster};
+use super::{DOMAIN, Report, deserialize_domain, reduce_raster_cancellable};
 use crate::{
     AssetId, ClientId, DraftStamp, EntryId, Error, ErrorKind, HistoryEntry, JobId, JobStatus,
     ModuleRegistry, PreviewSource, Recipe, SnapshotId,
     activity::{ActivityBoard, ActivitySpec, Outcome},
+    latest::{Latest, Running, WAITING_RESULTS},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -154,31 +155,58 @@ impl std::fmt::Debug for AnalysisJob {
     }
 }
 
-/// One worker thread with one active job and one replaceable pending job, modelled on
-/// [`crate::PreviewQueue`]. Unlike the preview queue nothing polls it: the worker posts its result
-/// back into the catalog owner's own message channel through the `deliver` callback the owner
-/// installed, and the owner starts the pending job when it handles that message.
+/// One analysis job as the worker receives it: the job, and the activity board it is published on.
+struct AnalysisTask {
+    job: AnalysisJob,
+    board: Option<Arc<ActivityBoard>>,
+}
+
+/// How one analysis job ended, as [`AnalysisQueue::poll`] delivers it. A job withdrawn while it
+/// ran ends [`ErrorKind::Cancelled`].
+#[derive(Debug)]
+pub struct AnalysisOutcome {
+    pub job_id: JobId,
+    pub result: Result<Report, Error>,
+}
+
+/// How many job ids [`AnalysisQueue`] remembers the generation of. The worker holds at most one
+/// running job, one pending job and [`WAITING_RESULTS`] undelivered outcomes, and a job dropped from
+/// the pending slot is forgotten at once, so the running and pending jobs — the only ones a lookup is
+/// for — are always among this many newest.
+const HELD_JOBS: usize = WAITING_RESULTS + 2;
+
+/// The analysis worker: one persistent [`Latest`] worker with one active job and one replaceable
+/// pending job, globally. Nothing polls it on a timer: the worker calls the waker the catalog owner
+/// installed, which posts into the owner's own message channel, and the owner takes the outcomes
+/// with [`Self::poll`] when it handles that message. The worker starts the pending job itself when
+/// the active one ends.
+///
+/// A newer request does not interrupt the running job, because a client may still want it. Only
+/// [`Self::withdraw`] does: the render and the reduction read the job's abandoned token at chunk
+/// granularity, so a withdrawn analysis stops within a chunk and ends cancelled.
 pub struct AnalysisQueue {
-    deliver: Arc<dyn Fn(JobId, Result<Report, Error>) + Send + Sync>,
-    active: Option<JobId>,
-    pending: Option<AnalysisJob>,
+    worker: Latest<AnalysisTask, AnalysisOutcome>,
     activity: Option<Arc<ActivityBoard>>,
+    /// The generation each recent job was requested under, oldest first, bounded by
+    /// [`HELD_JOBS`], so a job id can be withdrawn and its slot read.
+    generations: VecDeque<(JobId, u64)>,
 }
 
 impl AnalysisQueue {
-    /// `deliver` posts a finished job back to the owner loop. It is called from the worker thread.
-    pub fn new(deliver: Arc<dyn Fn(JobId, Result<Report, Error>) + Send + Sync>) -> Self {
+    /// `waker` tells the owner loop an outcome is ready. It is called from the worker thread.
+    pub fn new(waker: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let worker = Latest::new("lightwell-analysis", analyse);
+        worker.set_waker(waker);
         Self {
-            deliver,
-            active: None,
-            pending: None,
+            worker,
             activity: None,
+            generations: VecDeque::new(),
         }
     }
 
-    /// Publish every job this queue runs to `board` as an `analysis.histogram` activity, from the
-    /// moment its worker starts to the moment it has a result. A queue without a board publishes
-    /// nothing.
+    /// Publish every job submitted from now on to `board` as an `analysis.histogram` activity, from
+    /// the moment the worker starts it to the moment it has an outcome. A queue without a board
+    /// publishes nothing.
     pub fn set_activity(&mut self, board: Arc<ActivityBoard>) {
         self.activity = Some(board);
     }
@@ -186,93 +214,114 @@ impl AnalysisQueue {
     /// Hand a job to the worker, or into the one pending slot. Returns the job id that was
     /// displaced from that slot, which the caller marks `superseded`.
     pub fn submit(&mut self, job: AnalysisJob) -> Option<JobId> {
-        if self.active.is_some() {
-            let displaced = self.pending.replace(job);
-            displaced.map(|job| job.job_id)
-        } else {
-            self.start(job);
-            None
-        }
-    }
-
-    /// The active job reported back: release the worker and start the pending job, if any.
-    pub fn finished(&mut self, job_id: &JobId) {
-        if self.active.as_ref() == Some(job_id) {
-            self.active = None;
-            if let Some(job) = self.pending.take() {
-                self.start(job);
-            }
-        }
-    }
-
-    /// Drop the pending job when it is this one, because nobody is interested any more. Returns
-    /// whether it was dropped.
-    pub fn drop_pending(&mut self, job_id: &JobId) -> bool {
-        if self.pending.as_ref().map(|job| &job.job_id) == Some(job_id) {
-            self.pending = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn is_active(&self, job_id: &JobId) -> bool {
-        self.active.as_ref() == Some(job_id)
-    }
-
-    pub fn is_pending(&self, job_id: &JobId) -> bool {
-        self.pending.as_ref().map(|job| &job.job_id) == Some(job_id)
-    }
-
-    fn start(&mut self, job: AnalysisJob) {
-        self.active = Some(job.job_id.clone());
-        let deliver = self.deliver.clone();
-        let board = self.activity.clone();
-        std::thread::spawn(move || {
-            let AnalysisJob {
-                job_id,
-                identity,
-                source,
-                registry,
-                recipe,
-            } = job;
-            let activity = board.map(|board| {
-                board.begin(ActivitySpec {
-                    kind: "analysis.histogram",
-                    label: "Measuring histogram",
-                    detail: None,
-                    asset_id: Some(identity.asset_id.clone()),
-                    job_id: Some(job_id.to_string()),
-                })
-            });
-            let result = source
-                .render(&registry, identity.snapshot_id.clone(), &recipe)
-                .and_then(|raster| {
-                    let report = reduce_raster(&raster);
-                    // No per-result raster is retained: the frame is released here, before the
-                    // bounded report travels back to the owner.
-                    drop(raster);
-                    report
-                });
-            // The render has compiled the stack; the artifacts it was bound with go with it.
-            drop(recipe);
-            // The activity ends before the result is posted, so a client that reads the job as
-            // finished never still finds it listed as running.
-            if let Some(activity) = activity {
-                activity.finish(Outcome::of(&result));
-            }
-            deliver(job_id, result);
+        let job_id = job.job_id.clone();
+        let requested = self.worker.request(AnalysisTask {
+            job,
+            board: self.activity.clone(),
         });
+        let displaced = requested.replaced.map(|(generation, task)| {
+            self.generations.retain(|(_, other)| *other != generation);
+            task.job.job_id
+        });
+        if self.generations.len() == HELD_JOBS {
+            self.generations.pop_front();
+        }
+        self.generations.push_back((job_id, requested.generation));
+        displaced
+    }
+
+    /// Nobody is interested in this job any more: drop it when it waits in the pending slot, or
+    /// abandon it when it runs, which stops its render within a chunk and delivers it cancelled.
+    /// Returns whether the worker still held it.
+    pub fn withdraw(&mut self, job_id: &JobId) -> bool {
+        let Some(generation) = self.generation_of(job_id) else {
+            return false;
+        };
+        let pending = self.worker.pending_generation() == Some(generation);
+        let withdrawn = self.worker.withdraw(generation);
+        // A job dropped from the slot never delivers, so nothing will prune it; a running one
+        // is pruned when its cancelled outcome is taken.
+        if pending {
+            self.generations.retain(|(_, other)| *other != generation);
+        }
+        withdrawn
+    }
+
+    /// Whether this job waits in the pending slot. A job submitted and not yet finished that does
+    /// not wait there is the running one.
+    pub fn is_pending(&self, job_id: &JobId) -> bool {
+        self.generation_of(job_id)
+            .is_some_and(|generation| self.worker.pending_generation() == Some(generation))
+    }
+
+    /// The oldest outcome the worker has delivered and the owner has not taken yet.
+    pub fn poll(&mut self) -> Option<AnalysisOutcome> {
+        let (generation, outcome) = self.worker.poll()?;
+        // Outcomes arrive in generation order, so a job at or below this one that has not
+        // delivered never will: it was displaced, or withdrawn before it started.
+        self.generations.retain(|(_, other)| *other > generation);
+        Some(outcome)
+    }
+
+    fn generation_of(&self, job_id: &JobId) -> Option<u64> {
+        self.generations
+            .iter()
+            .find(|(held, _)| held == job_id)
+            .map(|(_, generation)| *generation)
     }
 }
 
 impl std::fmt::Debug for AnalysisQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AnalysisQueue")
-            .field("active", &self.active)
-            .field("pending", &self.pending.as_ref().map(|job| &job.job_id))
+            .field("active", &self.worker.active_generation())
+            .field("pending", &self.worker.pending_generation())
+            .field("generations", &self.generations)
             .finish()
     }
+}
+
+/// One analysis job, on the analysis worker: render the effective recipe and reduce it, both under
+/// the job's abandoned token.
+fn analyse(
+    task: AnalysisTask,
+    running: &Running<'_, AnalysisTask, AnalysisOutcome>,
+) -> Option<AnalysisOutcome> {
+    let AnalysisTask { job, board } = task;
+    let AnalysisJob {
+        job_id,
+        identity,
+        source,
+        registry,
+        recipe,
+    } = job;
+    let activity = board.map(|board| {
+        board.begin(ActivitySpec {
+            kind: "analysis.histogram",
+            label: "Measuring histogram",
+            detail: None,
+            asset_id: Some(identity.asset_id.clone()),
+            job_id: Some(job_id.to_string()),
+        })
+    });
+    let cancel = running.abandoned();
+    let result = source
+        .render_cancellable(&registry, identity.snapshot_id.clone(), &recipe, cancel)
+        .and_then(|raster| {
+            let report = reduce_raster_cancellable(&raster, cancel);
+            // No per-result raster is retained: the frame is released here, before the bounded
+            // report travels back to the owner.
+            drop(raster);
+            report
+        });
+    // The render has compiled the stack; the artifacts it was bound with go with it.
+    drop(recipe);
+    // The activity ends before the outcome is handed over, so a client that reads the job as
+    // finished never still finds it listed as running.
+    if let Some(activity) = activity {
+        activity.finish(Outcome::of(&result));
+    }
+    Some(AnalysisOutcome { job_id, result })
 }
 
 #[derive(Debug)]
@@ -286,14 +335,14 @@ enum JobState {
 }
 
 impl JobState {
-    /// The shared [`JobStatus`] this record reads as. `Pending` alone cannot say whether the
-    /// worker holds the job or it still waits in the queue's one replaceable slot, so it asks
-    /// `queue`, the same distinction [`AnalysisQueue::is_active`] and [`AnalysisQueue::is_pending`]
-    /// already draw.
+    /// The shared [`JobStatus`] this record reads as. `Pending` alone cannot say whether the job
+    /// still waits in the worker's one replaceable slot or the worker has taken it, so it asks
+    /// `queue`: a pending record the slot does not hold is running, or its outcome is on its way
+    /// to the owner.
     fn status(&self, job_id: &JobId, queue: &AnalysisQueue) -> JobStatus {
         match self {
-            Self::Pending if queue.is_active(job_id) => JobStatus::Running,
-            Self::Pending => JobStatus::Queued,
+            Self::Pending if queue.is_pending(job_id) => JobStatus::Queued,
+            Self::Pending => JobStatus::Running,
             Self::Ready(_) => JobStatus::Ready,
             Self::Failed(_) => JobStatus::Failed,
             Self::Superseded => JobStatus::Superseded,
@@ -620,6 +669,10 @@ mod tests {
     use super::*;
     use crate::{AssetId, Layer, Snapshot};
     use serde_json::json;
+    use std::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::{Duration, Instant},
+    };
 
     fn entry(asset: &AssetId) -> HistoryEntry {
         let snapshot = Snapshot::original(asset.clone());
@@ -651,10 +704,10 @@ mod tests {
         report
     }
 
-    /// A queue with no worker behind it, for tests that drive `AnalysisStore` directly and never
+    /// A queue that is never given a job, for tests that drive `AnalysisStore` directly and never
     /// read a job while it is genuinely `Pending` — only `JobState::status` ever consults it.
     fn queue() -> AnalysisQueue {
-        AnalysisQueue::new(Arc::new(|_, _| {}))
+        AnalysisQueue::new(Arc::new(|| {}))
     }
 
     #[test]
@@ -774,6 +827,124 @@ mod tests {
         }
         assert!(store.len() <= MAX_JOB_RECORDS, "{}", store.len());
         assert!(store.reports() <= MAX_READY_REPORTS);
+    }
+
+    /// A 64 x 48 analysis of one held colour layer, whose render reaches `gate` once per row.
+    fn held_job(gate: &Arc<crate::modules::RenderGate>) -> AnalysisJob {
+        let asset = AssetId::new();
+        let entry = entry(&asset);
+        let recipe = Recipe {
+            layers: vec![Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::modules::HELD_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: json!({}),
+                mask: None,
+                artifacts: Vec::new(),
+            }],
+            ..entry.snapshot.recipe.clone()
+        };
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(crate::modules::HeldModule::shared(gate.clone()))
+            .expect("a valid holding module");
+        let (width, height) = (64, 48);
+        AnalysisJob {
+            job_id: JobId::new(),
+            identity: AnalysisIdentity::of(
+                &asset,
+                "sha256:test",
+                &entry,
+                &recipe,
+                None,
+                Some((width, height)),
+            )
+            .unwrap(),
+            source: PreviewSource::Jpeg(crate::SourceImage {
+                width,
+                height,
+                rgba: [40, 90, 160, 255].repeat((width * height) as usize).into(),
+                fingerprint: "sha256:test".into(),
+                orientation: 1,
+            }),
+            registry: Arc::new(registry),
+            recipe,
+        }
+    }
+
+    /// The outcome of the one job a fresh queue ran, once the worker has woken the owner for it.
+    fn outcome_after_wake(queue: &mut AnalysisQueue, wakes: &AtomicU64) -> AnalysisOutcome {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while wakes.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the worker never woke the owner");
+            std::thread::yield_now();
+        }
+        queue.poll().expect("the outcome the waker announced")
+    }
+
+    /// A withdrawn analysis stops within a chunk of its render instead of running to the end.
+    ///
+    /// The render is held at its gate inside the first chunk of its colour pass when the job is
+    /// withdrawn, so the withdrawal lands mid-render. The gate counts every row the render
+    /// evaluates: the withdrawn job ends `cancelled` through its token having evaluated fewer rows
+    /// than the frame has, where the same job left alone evaluates every row and reports.
+    #[test]
+    fn a_withdrawn_analysis_stops_within_a_chunk_and_ends_cancelled() {
+        let rows = 48;
+        let board = crate::ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let gate = crate::modules::RenderGate::open_gate();
+        let wakes = Arc::new(AtomicU64::new(0));
+        let counter = wakes.clone();
+        let mut queue = AnalysisQueue::new(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        queue.set_activity(board.clone());
+        gate.shut();
+        let job = held_job(&gate);
+        let job_id = job.job_id.clone();
+        assert_eq!(queue.submit(job), None, "nothing was pending");
+        assert!(!queue.is_pending(&job_id), "the worker took it");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while gate.reached() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the render never reached its gate"
+            );
+            std::thread::yield_now();
+        }
+        assert!(queue.withdraw(&job_id), "the worker still held it");
+        gate.open();
+        let outcome = outcome_after_wake(&mut queue, &wakes);
+        assert_eq!(outcome.job_id, job_id);
+        let error = outcome
+            .result
+            .expect_err("a withdrawn analysis carries no report");
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        let evaluated = gate.reached();
+        assert!(
+            evaluated < rows,
+            "the render stopped at the chunk after the withdrawal, {evaluated} of {rows} rows in"
+        );
+        let recent = board.snapshot().recent;
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].entry.kind, "analysis.histogram");
+        assert_eq!(recent[0].outcome, Outcome::Cancelled);
+
+        // The same job left alone evaluates every row and reports.
+        let gate = crate::modules::RenderGate::open_gate();
+        let wakes = Arc::new(AtomicU64::new(0));
+        let counter = wakes.clone();
+        let mut queue = AnalysisQueue::new(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        let job = held_job(&gate);
+        let job_id = job.job_id.clone();
+        let _ = queue.submit(job);
+        let outcome = outcome_after_wake(&mut queue, &wakes);
+        assert_eq!(outcome.job_id, job_id);
+        let report = outcome.result.expect("an analysis left alone reports");
+        assert_eq!(report.r.iter().sum::<u64>(), rows * 64);
+        assert_eq!(gate.reached(), rows, "every row was evaluated");
     }
 
     #[test]

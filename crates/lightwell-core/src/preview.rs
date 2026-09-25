@@ -5,19 +5,13 @@ use crate::{
     ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, MaskOverlay, MaskPixels, Report},
+    latest::{Latest, Running},
     mask::CompiledMask,
     modules::Stage,
     render, render_cancellable, render_linear, render_linear_cancellable, stage_transform,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc,
-        mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
-    },
-    time::Instant,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -530,8 +524,8 @@ pub struct PreviewResult {
     /// the failure that building or rendering the proxy returned. `None` on the proxy phase, and on
     /// an exact phase whose job either asked for no proxy or got one.
     pub proxy_declined: Option<String>,
-    /// Whether this proxy frame's source was built by the worker rather than taken from the queue's
-    /// cache. Always `false` on the exact phase.
+    /// Whether this proxy frame's source was built for this job rather than taken from the
+    /// worker's cache. Always `false` on the exact phase.
     pub proxy_built: bool,
     /// Whether this proxy frame is an approximation of the exact render at display size, and why:
     /// a spatial-stage layer whose neighbourhoods scale with the stage, a mask drawing a feature
@@ -548,9 +542,9 @@ pub struct PreviewResult {
     /// Milliseconds of wall-clock time the preview worker spent producing this phase's result, and
     /// nothing else.
     ///
-    /// - [`PreviewPhase::Proxy`]: building the proxy source when this job built it
-    ///   ([`Self::proxy_built`]), plus rendering the recipe against it. A cache hit costs only the
-    ///   render.
+    /// - [`PreviewPhase::Proxy`]: planning the proxy, building its source when this job built it
+    ///   ([`Self::proxy_built`]), and rendering the recipe against it. A cache hit costs the plan
+    ///   and the render.
     /// - [`PreviewPhase::Exact`]: rendering the prepared source, plus reducing the frame into
     ///   [`Self::report`] and filling [`Self::mask_overlay`]'s coverage grid when the job asked for
     ///   them. A proxy phase that was attempted and declined is not counted here; it produced no
@@ -563,8 +557,8 @@ pub struct PreviewResult {
     /// render", not "how long after the request did it appear".
     pub render_ms: f64,
     /// Present only when the caller explicitly opted into phase diagnostics. Time from the queue
-    /// request to the preview worker starting; includes queue planning and time behind an active
-    /// preview, and never changes the default queue path.
+    /// request to the preview worker starting this job, which is the time it waited behind the
+    /// active one. It never changes the default queue path.
     pub queue_wait_ms: Option<f64>,
 }
 
@@ -585,58 +579,40 @@ impl PreviewResult {
     }
 }
 
-/// What the worker sends back: one result, and the proxy source it built for it, which the queue
-/// inserts into its cache on the thread that owns it.
-struct WorkerMessage {
-    result: PreviewResult,
-    built: Option<(ProxyKey, PreviewSource)>,
-}
-
-/// Optional services and diagnostics captured by one preview worker.
-struct WorkerContext {
-    waker: Option<Arc<dyn Fn() + Send + Sync>>,
+/// One preview job as the worker receives it: the job, the activity board it is published on, and
+/// the moment it was requested when the caller opted into phase timing.
+struct PreviewTask {
+    job: PreviewJob,
     board: Option<Arc<ActivityBoard>>,
     requested_at: Option<Instant>,
 }
 
-/// What the proxy phase of one job should do, decided on the thread that asked rather than on the
-/// worker, because the cache lives in the queue and no worker can borrow it.
+/// What one [`PreviewQueue::request_replacing`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct Queued {
+    /// The generation the new job, and both of its results, are tagged with.
+    pub generation: u64,
+    /// The job this request took the pending slot from. It never started and never will, so it
+    /// delivers nothing at all: this answer is the only moment its end is known.
+    pub replaced: Option<u64>,
+}
+
+/// What the proxy phase of one job should do. Decided on the worker, which owns the proxy cache,
+/// at the start of the job.
 enum ProxyStep {
     /// The job asked for no proxy phase.
     Skipped,
     /// The job asked, and this is why it has none.
     Declined(String),
-    /// Render this plan, against the cached source when the key already held one.
-    Planned {
-        key: ProxyKey,
-        /// Boxed: a source carries its linear settings, which make it far larger than the other
-        /// variants, and this step is moved onto the worker once per job.
-        cached: Option<Box<PreviewSource>>,
-    },
+    /// Render against the proxy source this key names, from the cache or built on a miss.
+    Planned(ProxyKey),
 }
 
-struct Active {
-    generation: u64,
-    receiver: Receiver<WorkerMessage>,
-    /// Stops the proxy phase. Set by [`PreviewQueue::cancel`] only: a newer request never stops a
-    /// proxy render, because that frame is newer than anything on screen and will be delivered.
-    proxy_cancel: Cancel,
-    /// Stops the exact phase. Set by [`PreviewQueue::cancel`] and by every superseding
-    /// [`PreviewQueue::request`], so a full-resolution render nobody is waiting for stops competing
-    /// for the shared Rayon pool with the job that replaced it.
-    exact_cancel: Cancel,
-}
-
-/// The order results are delivered in: within one generation the proxy frame precedes the exact
-/// one, and a generation never goes backwards.
-fn rank(phase: PreviewPhase) -> u8 {
-    match phase {
-        PreviewPhase::Proxy => 0,
-        PreviewPhase::Exact => 1,
-    }
-}
-
-/// One active job and one replaceable pending job, results tagged with a generation.
+/// The preview worker: one persistent [`Latest`] worker that renders each job's proxy phase and
+/// then its exact phase, with one active job and one replaceable pending job, results tagged with a
+/// generation. It owns the one cached proxy source, so planning a job's proxy phase, building its
+/// source and caching it all happen on the worker.
 ///
 /// # What is delivered
 ///
@@ -648,9 +624,10 @@ fn rank(phase: PreviewPhase) -> u8 {
 /// - [`Self::cancel`] raises the floor to the generation it returns, so everything in flight at
 ///   that moment is stale. It is the only thing that invalidates an in-flight result, which is what
 ///   an asset or selection change needs.
-/// - `poll` delivers a result whose generation is above the floor and whose `(generation, phase)`
-///   is strictly after the last delivered one, so an older frame never follows a newer one on
-///   screen and a job's exact phase still follows its own proxy phase.
+/// - [`Self::poll`] delivers results in the order the worker produced them, which is
+///   `(generation, phase)` order: jobs run one at a time and a pending job is always newer than the
+///   active one, so an older frame never follows a newer one on screen and a job's exact phase
+///   follows its own proxy phase.
 /// - An exact phase that answered [`ErrorKind::Cancelled`] carries no frame, and is delivered all
 ///   the same, under the same rules, as that outcome ([`PreviewResult::cancelled`]). So every job
 ///   that starts delivers exactly one exact-phase outcome above the floor — a frame, a failure or
@@ -658,239 +635,179 @@ fn rank(phase: PreviewPhase) -> u8 {
 ///
 /// Newest-wins survives where it belongs: a newer request replaces the pending job, so at most one
 /// job waits and the newest value is the one that runs next. A replaced job never starts and has
-/// nothing to deliver; [`Self::pending_generation`] names it before the request that replaces it.
-#[derive(Default)]
+/// nothing to deliver; [`Self::request_replacing`] names it.
+///
+/// # The two phases and the two tokens
+///
+/// The proxy phase reads the job's **abandoned** token and the exact phase its **superseded** one
+/// ([`crate::latest`]). A newer request supersedes the active job, which stops its exact phase —
+/// nothing is waiting for that full-resolution frame, and it would compete for the Rayon pool with
+/// the render that replaced it — but leaves its proxy phase running, because that frame is still
+/// newer than what is on screen and stopping it is what starves a drag. [`Self::cancel`] abandons
+/// the job, which stops both.
+///
+/// # When the next job starts
+///
+/// The worker takes the pending job itself as soon as the active one has handed over its exact
+/// phase, so the next proxy render never waits for the consumer to poll.
 pub struct PreviewQueue {
-    generation: u64,
-    active: Option<Active>,
-    pending: Option<(u64, PreviewJob, Option<Instant>)>,
-    /// One proxy source, keyed by source identity and plan. Bounded by construction: a new plan
-    /// replaces the old entry rather than accumulating beside it.
-    cache: ProxyCache,
-    waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    worker: Latest<PreviewTask, PreviewResult>,
     /// Where each job is published as a `preview.render` activity; `None` publishes nothing.
     activity: Option<Arc<ActivityBoard>>,
-    /// Results at or below this generation are stale, whatever they carry.
-    floor: u64,
-    last_delivered: u64,
-    last_delivered_rank: u8,
+}
+
+impl Default for PreviewQueue {
+    fn default() -> Self {
+        // One proxy source, keyed by source identity and plan, held by the worker alone. Bounded by
+        // construction: a new plan replaces the old entry rather than accumulating beside it.
+        let mut cache = ProxyCache::default();
+        Self {
+            worker: Latest::new("lightwell-preview", move |task, running| {
+                run(&mut cache, task, running)
+            }),
+            activity: None,
+        }
+    }
 }
 
 impl PreviewQueue {
+    /// Queue `job` as the newest request and return its generation. The active job's exact phase
+    /// is stopped; its proxy phase runs on.
     pub fn request(&mut self, job: PreviewJob) -> u64 {
+        self.request_replacing(job).generation
+    }
+
+    /// [`Self::request`], also naming the job it replaced in the pending slot. That job never
+    /// starts and delivers nothing at all, so this answer is the only way to learn that it ended.
+    /// It is given in the same step as the request: asking [`Self::pending_generation`] first
+    /// would race the worker, which takes the pending job by itself when the active one ends.
+    pub fn request_replacing(&mut self, job: PreviewJob) -> Queued {
         self.request_inner(job, None)
     }
 
-    /// Request a preview with opt-in timing from this call until its worker starts. The normal
-    /// request method does not read the clock.
-    pub fn request_timed(&mut self, job: PreviewJob) -> (u64, Instant) {
+    /// [`Self::request_replacing`] with opt-in timing from this call until the worker starts the
+    /// job, reported as [`PreviewResult::queue_wait_ms`]. The other request methods do not read the
+    /// clock.
+    pub fn request_timed(&mut self, job: PreviewJob) -> (Queued, Instant) {
         let requested_at = Instant::now();
         (self.request_inner(job, Some(requested_at)), requested_at)
     }
 
-    fn request_inner(&mut self, job: PreviewJob, requested_at: Option<Instant>) -> u64 {
-        self.generation = self.generation.saturating_add(1);
-        let generation = self.generation;
-        // The superseded job's exact phase is stopped: nothing is waiting for that frame and it
-        // would compete with the render that replaced it. Its proxy phase runs on, because that
-        // frame is still newer than what is on screen and stopping it is what starves a drag.
-        if let Some(active) = &self.active {
-            active.exact_cancel.cancel();
+    fn request_inner(&mut self, job: PreviewJob, requested_at: Option<Instant>) -> Queued {
+        let requested = self.worker.request(PreviewTask {
+            job,
+            board: self.activity.clone(),
+            requested_at,
+        });
+        Queued {
+            generation: requested.generation,
+            replaced: requested.replaced.map(|(generation, _)| generation),
         }
-        if self.active.is_some() {
-            self.pending = Some((generation, job, requested_at));
-        } else {
-            self.start(generation, job, requested_at);
-        }
-        generation
     }
 
     /// Abandon the preview: drop the pending job, stop both phases of the active one and raise the
     /// delivery floor, so no frame planned before this call reaches the display.
     pub fn cancel(&mut self) -> u64 {
-        self.generation = self.generation.saturating_add(1);
-        self.pending = None;
-        if let Some(active) = &self.active {
-            active.proxy_cancel.cancel();
-            active.exact_cancel.cancel();
-        }
-        self.floor = self.generation;
-        self.generation
+        self.worker.cancel()
     }
 
-    /// Call this after every result is sent, so nothing has to wake on a timer to find out. It runs
-    /// on the worker thread, never on the catalog owner thread, and it must do nothing but post a
-    /// message.
+    /// Call this after every result is handed over, so nothing has to wake on a timer to find out.
+    /// It runs on the worker thread, never on the catalog owner thread, and it must do nothing but
+    /// post a message.
     pub fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
-        self.waker = Some(waker);
+        self.worker.set_waker(waker);
     }
 
-    /// Publish every job to `board` as a `preview.render` activity, from the moment its worker
-    /// starts to the end of its exact phase, with its phase as it moves from `proxy` to `exact`. The
-    /// entry ends before the exact result is sent, so by the time [`Self::poll`] releases a job its
-    /// activity has already ended. A queue without a board publishes nothing.
+    /// Publish every job requested from now on to `board` as a `preview.render` activity, from the
+    /// moment the worker starts it to the end of its exact phase, with its phase as it moves from
+    /// `proxy` to `exact`. The entry ends before the exact result is handed over, so by the time
+    /// [`Self::poll`] delivers it the activity has already ended. A queue without a board
+    /// publishes nothing.
     pub fn set_activity(&mut self, board: Arc<ActivityBoard>) {
         self.activity = Some(board);
     }
 
-    /// The generation of the job waiting in the pending slot. The next [`Self::request`] replaces
-    /// that job, and a replaced job never starts, so it delivers nothing at all: asking here, just
-    /// before requesting, is the only way to learn that it has ended.
+    /// The generation of the job waiting in the pending slot. It starts by itself when the active
+    /// job has handed over its exact phase, so a caller that is about to request learns what that
+    /// request replaced from [`Self::request_replacing`] instead.
     pub fn pending_generation(&self) -> Option<u64> {
-        self.pending.as_ref().map(|(generation, _, _)| *generation)
+        self.worker.pending_generation()
     }
 
     /// The generation of the last result [`Self::poll`] delivered, so a caller can correlate its
     /// frames and outcomes with the request that produced them. `0` before anything is delivered.
     pub fn last_delivered(&self) -> u64 {
-        self.last_delivered
+        self.worker.last_delivered()
     }
 
-    /// Whether this job has a proxy phase, and against which source.
-    ///
-    /// Cost is `O(layers)`: `proxy_eligible` reads stages and `proxy_plan` compiles the recipe, and
-    /// neither reads a pixel. Building a proxy is frame work and stays on the worker below.
-    fn plan_proxy(&self, job: &PreviewJob) -> ProxyStep {
-        let Some(bounds) = job.proxy else {
-            return ProxyStep::Skipped;
-        };
-        if job.layer_count.is_some() {
-            // A truncated job renders a layer prefix, and the plan describes the whole stack's
-            // output stage, so the prefix has no proxy phase at all.
-            return ProxyStep::Declined(
-                "a truncated preview renders a layer prefix, which has no proxy phase".into(),
-            );
-        }
-        if let Err(error) = job.registry.proxy_eligible(&job.recipe) {
-            return ProxyStep::Declined(error.detail);
-        }
-        match job.source.proxy_plan(&job.registry, &job.recipe, bounds) {
-            Ok(Some(plan)) => {
-                let key = ProxyKey {
-                    identity: job.source.identity(),
-                    plan,
-                };
-                // The cache holds pixels; the settings a RAW development layer asks for come from
-                // this job's recipe, so a drafted exposure renders against the cached planes.
-                let cached = self
-                    .cache
-                    .get(&key)
-                    .map(|source| Box::new(source.with_settings_of(&job.source)));
-                ProxyStep::Planned { key, cached }
-            }
-            Ok(None) => ProxyStep::Declined(
-                "the proxy scale is 1: the stage already fits the display bounds".into(),
-            ),
-            Err(error) => ProxyStep::Declined(error.detail),
-        }
-    }
-
-    fn start(&mut self, generation: u64, job: PreviewJob, requested_at: Option<Instant>) {
-        let step = self.plan_proxy(&job);
-        let proxy_cancel = Cancel::new();
-        let exact_cancel = Cancel::new();
-        let tokens = (proxy_cancel.clone(), exact_cancel.clone());
-        let waker = self.waker.clone();
-        let board = self.activity.clone();
-        // Two results per job at most, so the worker never blocks on the desktop draining the
-        // proxy frame before it can answer with the exact one.
-        let (sender, receiver) = sync_channel(2);
-        let context = WorkerContext {
-            waker,
-            board,
-            requested_at,
-        };
-        std::thread::spawn(move || run(job, generation, step, tokens, sender, context));
-        self.active = Some(Active {
-            generation,
-            receiver,
-            proxy_cancel,
-            exact_cancel,
-        });
-    }
-
+    /// Whether a job is active or pending, or a result waits for [`Self::poll`].
     pub fn is_busy(&self) -> bool {
-        self.active.is_some() || self.pending.is_some()
+        self.worker.is_busy()
     }
 
-    /// At most one result per call. A job's second result of the same generation stays queued for
-    /// the next call; a stale result is dropped here rather than returned, and draining it is what
-    /// lets a pending job start.
-    ///
-    /// The active job is held until its final — exact — result arrives or its channel disconnects,
-    /// which is also what [`Self::is_busy`] reports. What counts as stale is on [`PreviewQueue`].
+    /// Whether a result waits for [`Self::poll`].
+    pub fn ready(&self) -> bool {
+        self.worker.ready()
+    }
+
+    /// The oldest result waiting, or nothing. What counts as stale is on [`PreviewQueue`]; a stale
+    /// result is never handed over at all.
     pub fn poll(&mut self) -> Option<PreviewResult> {
-        loop {
-            let (generation, received) = match self.active.as_ref() {
-                Some(active) => (active.generation, active.receiver.try_recv()),
-                None => return None,
-            };
-            let message = match received {
-                Ok(message) => message,
-                Err(TryRecvError::Empty) => return None,
-                Err(TryRecvError::Disconnected) => {
-                    self.finish_active();
-                    return None;
-                }
-            };
-            // The proxy this job built belongs to the queue, whether or not its frame is still
-            // wanted: the next job at the same bounds is a hit either way.
-            if let Some((key, source)) = message.built {
-                self.cache.insert(key, source);
-            }
-            let result = message.result;
-            if result.phase == PreviewPhase::Exact {
-                self.finish_active();
-            }
-            let rank = rank(result.phase);
-            let newer = (generation, rank) > (self.last_delivered, self.last_delivered_rank);
-            // A cancelled exact phase carries no frame, but it is this generation's outcome, so it
-            // is delivered like any other: without it a caller waiting for the generation would
-            // wait forever.
-            if generation > self.floor && newer {
-                self.last_delivered = generation;
-                self.last_delivered_rank = rank;
-                return Some(result);
-            }
-        }
-    }
-
-    /// The active job has nothing further to send: release it and start whatever waited.
-    fn finish_active(&mut self) {
-        self.active = None;
-        if let Some((generation, job, requested_at)) = self.pending.take() {
-            self.start(generation, job, requested_at);
-        }
+        self.worker.poll().map(|(_, result)| result)
     }
 }
 
-/// One preview job, on its own thread: the proxy phase when the job has one, then the exact phase.
+/// Whether this job has a proxy phase, and against which source.
 ///
-/// The two tokens are `(proxy, exact)`. Both phases read a token per row or chunk; only the exact
-/// one is stopped by a superseding request, so a drag keeps presenting proxy frames while the
-/// full-resolution renders behind them are abandoned.
+/// Cost is `O(layers)`: `proxy_eligible` reads stages and `proxy_plan` compiles the recipe, and
+/// neither reads a pixel. It runs on the preview worker, as does building the proxy itself.
+fn plan_proxy(job: &PreviewJob) -> ProxyStep {
+    let Some(bounds) = job.proxy else {
+        return ProxyStep::Skipped;
+    };
+    if job.layer_count.is_some() {
+        // A truncated job renders a layer prefix, and the plan describes the whole stack's output
+        // stage, so the prefix has no proxy phase at all.
+        return ProxyStep::Declined(
+            "a truncated preview renders a layer prefix, which has no proxy phase".into(),
+        );
+    }
+    if let Err(error) = job.registry.proxy_eligible(&job.recipe) {
+        return ProxyStep::Declined(error.detail);
+    }
+    match job.source.proxy_plan(&job.registry, &job.recipe, bounds) {
+        Ok(Some(plan)) => ProxyStep::Planned(ProxyKey {
+            identity: job.source.identity(),
+            plan,
+        }),
+        Ok(None) => ProxyStep::Declined(
+            "the proxy scale is 1: the stage already fits the display bounds".into(),
+        ),
+        Err(error) => ProxyStep::Declined(error.detail),
+    }
+}
+
+/// One preview job, on the preview worker: the proxy phase when the job has one, handed over as
+/// soon as it is rendered, then the exact phase, returned as the job's last result.
+///
+/// The proxy phase reads the job's `abandoned` token and the exact phase its `superseded` one, so
+/// a drag keeps presenting proxy frames while the full-resolution renders behind them are
+/// abandoned.
 fn run(
-    job: PreviewJob,
-    generation: u64,
-    step: ProxyStep,
-    (proxy_cancel, exact_cancel): (Cancel, Cancel),
-    sender: SyncSender<WorkerMessage>,
-    context: WorkerContext,
-) {
-    let WorkerContext {
-        waker,
+    cache: &mut ProxyCache,
+    task: PreviewTask,
+    running: &Running<'_, PreviewTask, PreviewResult>,
+) -> Option<PreviewResult> {
+    let PreviewTask {
+        job,
         board,
         requested_at,
-    } = context;
-    let queue_wait_ms = requested_at
-        .map(|requested| Instant::now().duration_since(requested).as_secs_f64() * 1000.0);
-    let wake = || {
-        if let Some(waker) = &waker {
-            waker();
-        }
-    };
-    // One activity spans both phases. A job abandoned mid-way, its queue gone before a result could
-    // be sent, drops the guard, which records it as cancelled.
+    } = task;
+    let queue_wait_ms = requested_at.map(|requested| requested.elapsed().as_secs_f64() * 1000.0);
+    let generation = running.generation();
+    let (proxy_cancel, exact_cancel) = (running.abandoned(), running.superseded());
+    // One activity spans both phases. A job abandoned mid-way, its results stale before its exact
+    // phase could be handed over, drops the guard, which records it as cancelled.
     let activity = board.map(|board| {
         board.begin(ActivitySpec {
             kind: "preview.render",
@@ -922,69 +839,75 @@ fn run(
     // Nothing in the proxy phase is fatal. A plan, a build or a render that fails — including a
     // cancel — records its reason on the exact result and the exact phase runs as it always does,
     // so a job never loses its frame because the shortcut did not work out. Nothing is logged.
-    let declined = match step {
+    // The proxy phase's own clock: the plan, the build when this job builds, then the render.
+    let started = Instant::now();
+    let declined = match plan_proxy(&job) {
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
-        ProxyStep::Planned { key, cached } => {
+        ProxyStep::Planned(key) => {
             if let Some(activity) = &activity {
                 activity.phase("proxy");
             }
-            // The proxy phase's own clock: the build when this job builds, then the render.
-            let started = Instant::now();
-            let built = match cached {
-                Some(source) => Ok((*source, false)),
+            // The cache holds pixels; the settings a RAW development layer asks for come from this
+            // job's recipe, so a drafted exposure renders against the cached planes.
+            let built = match cache.get(&key) {
+                Some(cached) => Ok((cached.with_settings_of(&job.source), false)),
                 None => job.source.proxy(key.plan).map(|source| (source, true)),
             };
             match built {
                 Err(error) => Some(error.detail),
                 Ok((source, fresh)) => {
                     let dimensions = (key.plan.width, key.plan.height);
-                    match source.render_proxy_cancellable(
+                    let rendered = source.render_proxy_cancellable(
                         &job.registry,
                         snapshot_id.clone(),
                         &job.recipe,
-                        &proxy_cancel,
-                    ) {
+                        proxy_cancel,
+                    );
+                    // The proxy this job built belongs to the worker whether or not its frame is
+                    // still wanted: the next job at the same bounds is a hit either way.
+                    if fresh {
+                        cache.insert(key, source);
+                    }
+                    match rendered {
                         Err(error) => Some(error.detail),
                         Ok(raster) => {
-                            let message = WorkerMessage {
-                                result: PreviewResult {
-                                    generation,
-                                    entry_id: entry_id.clone(),
-                                    identity: job.identity.clone(),
-                                    draft_revision,
-                                    result: Ok(raster),
-                                    // A proxy raster is never reduced: every number the histogram
-                                    // and the clipping counters report is the exact phase's. The
-                                    // mask overlay rides with the same frame for the same reason —
-                                    // the proxy phase is what a drag presents, and the histogram,
-                                    // the overlays and the 100% view follow the exact one
-                                    // (performance rule 11).
-                                    report: None,
-                                    mask_overlay: None,
-                                    mask_overlay_absent: None,
-                                    phase: PreviewPhase::Proxy,
-                                    proxy_dimensions: Some(dimensions),
-                                    proxy_declined: None,
-                                    proxy_built: fresh,
-                                    // Read at exactly the dimensions this frame was rendered
-                                    // against, because whether a mask draws a feature the proxy's
-                                    // pixel grid can resolve is a fact about that grid.
-                                    proxy_approximation: job.registry.proxy_approximation(
-                                        &job.recipe,
-                                        dimensions.0,
-                                        dimensions.1,
-                                    ),
-                                    approximate_white_balance,
-                                    render_ms: milliseconds_since(started),
-                                    queue_wait_ms,
-                                },
-                                built: fresh.then_some((key, source)),
+                            let proxy = PreviewResult {
+                                generation,
+                                entry_id: entry_id.clone(),
+                                identity: job.identity.clone(),
+                                draft_revision,
+                                result: Ok(raster),
+                                // A proxy raster is never reduced: every number the histogram and
+                                // the clipping counters report is the exact phase's. The mask
+                                // overlay rides with the same frame for the same reason — the
+                                // proxy phase is what a drag presents, and the histogram, the
+                                // overlays and the 100% view follow the exact one (performance
+                                // rule 11).
+                                report: None,
+                                mask_overlay: None,
+                                mask_overlay_absent: None,
+                                phase: PreviewPhase::Proxy,
+                                proxy_dimensions: Some(dimensions),
+                                proxy_declined: None,
+                                proxy_built: fresh,
+                                // Read at exactly the dimensions this frame was rendered against,
+                                // because whether a mask draws a feature the proxy's pixel grid
+                                // can resolve is a fact about that grid.
+                                proxy_approximation: job.registry.proxy_approximation(
+                                    &job.recipe,
+                                    dimensions.0,
+                                    dimensions.1,
+                                ),
+                                approximate_white_balance,
+                                render_ms: milliseconds_since(started),
+                                queue_wait_ms,
                             };
-                            if sender.send(message).is_err() {
-                                return;
+                            // A proxy nobody will ever see — the queue was cancelled or dropped —
+                            // means the exact phase is not wanted either.
+                            if !running.send(proxy) {
+                                return None;
                             }
-                            wake();
                             None
                         }
                     }
@@ -996,19 +919,19 @@ fn run(
     if let Some(activity) = &activity {
         activity.phase("exact");
     }
-    // The exact phase's own clock starts here, after the proxy phase has sent its frame, so the
-    // two phases' times never overlap and neither includes the other.
+    // The exact phase's own clock starts here, after the proxy phase has handed over its frame, so
+    // the two phases' times never overlap and neither includes the other.
     let started = Instant::now();
     let rendered = job
         .source
-        .render_cancellable(&job.registry, snapshot_id, recipe, &exact_cancel);
+        .render_cancellable(&job.registry, snapshot_id, recipe, exact_cancel);
     // The histogram is reduced from the frame this worker just produced, in place and without a
     // second render or a copy. A failed reduction leaves no report rather than reporting zeroes; a
     // cancelled one means the job was superseded mid-reduce, and the frame it describes is as stale
     // as the reduction, so the phase answers cancelled rather than a frame nothing will adopt.
     let (result, report) = match rendered {
         Ok(raster) if analyse => {
-            match crate::analysis::reduce_raster_cancellable(&raster, &exact_cancel) {
+            match crate::analysis::reduce_raster_cancellable(&raster, exact_cancel) {
                 Ok(report) => (Ok(raster), Some(report)),
                 Err(error) if error.kind == ErrorKind::Cancelled => (Err(error), None),
                 Err(_) => (Ok(raster), None),
@@ -1022,7 +945,7 @@ fn run(
     // own first bound layer instead, one point query per cell.
     let (mask_overlay, mask_overlay_absent) = match (&result, &job.mask_overlay) {
         (Ok(_), Some(request)) => {
-            mask_overlay_for(&job.registry, &job.source, recipe, request, &exact_cancel)
+            mask_overlay_for(&job.registry, &job.source, recipe, request, exact_cancel)
         }
         _ => (None, None),
     };
@@ -1031,30 +954,24 @@ fn run(
     if let Some(activity) = activity {
         activity.finish(Outcome::of(&result));
     }
-    let sent = sender.send(WorkerMessage {
-        result: PreviewResult {
-            generation,
-            entry_id,
-            identity: job.identity,
-            draft_revision,
-            result,
-            report,
-            mask_overlay,
-            mask_overlay_absent,
-            phase: PreviewPhase::Exact,
-            proxy_dimensions: None,
-            proxy_declined: declined,
-            proxy_built: false,
-            proxy_approximation: ProxyApproximation::default(),
-            approximate_white_balance,
-            render_ms,
-            queue_wait_ms,
-        },
-        built: None,
-    });
-    if sent.is_ok() {
-        wake();
-    }
+    Some(PreviewResult {
+        generation,
+        entry_id,
+        identity: job.identity,
+        draft_revision,
+        result,
+        report,
+        mask_overlay,
+        mask_overlay_absent,
+        phase: PreviewPhase::Exact,
+        proxy_dimensions: None,
+        proxy_declined: declined,
+        proxy_built: false,
+        proxy_approximation: ProxyApproximation::default(),
+        approximate_white_balance,
+        render_ms,
+        queue_wait_ms,
+    })
 }
 
 /// One mask's coverage grid over the frame `recipe` just produced against `source`.
@@ -1266,34 +1183,69 @@ mod tests {
         }
     }
 
+    /// [`entry`] with one held colour layer after its pixel layer, so its render waits at `gate`
+    /// while the gate is shut and otherwise renders the same picture.
+    fn held_entry(gate: &Arc<crate::modules::RenderGate>, color: u8) -> PreviewJob {
+        let mut job = entry(color);
+        job.recipe.layers.push(Layer {
+            id: LayerId::new(),
+            effect_id: crate::modules::HELD_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({}),
+            artifacts: Vec::new(),
+            mask: None,
+        });
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(crate::modules::HeldModule::shared(gate.clone()))
+            .expect("a valid holding module");
+        job.registry = Arc::new(registry);
+        job
+    }
+
     /// The pending slot is still newest-wins: three rapid requests run at most two jobs, the second
-    /// is replaced by the third, and the third is what the display ends on. The first job may or
-    /// may not have finished before it was superseded; if it did, its frame is delivered, because a
-    /// frame newer than what is on screen is never thrown away — that is what starves a drag — and
-    /// if it did not, its cancelled exact phase is delivered in the frame's place. Either way each
-    /// job that started delivers one exact outcome, in increasing order, and the replaced one,
-    /// which the queue names before replacing it, delivers nothing.
+    /// is replaced by the third, and the third is what the display ends on. The first job is held
+    /// at its gate inside the one chunk of its one-pixel render, so it is still running when the
+    /// others are requested, and past the last point that render reads its token: it finishes
+    /// although superseded, and its frame is delivered, because a frame newer than what is on
+    /// screen is never thrown away — that is what starves a drag. Each job that started delivers
+    /// one exact outcome, in increasing order, and the replaced one, which the request that
+    /// replaced it names, delivers nothing.
     #[test]
     fn newest_preview_wins_with_one_active_and_one_pending() {
+        let gate = crate::modules::RenderGate::open_gate();
         let mut queue = PreviewQueue::default();
-        let first = queue.request(entry(1));
+        gate.shut();
+        let first = queue.request(held_entry(&gate, 1));
         assert_eq!(queue.pending_generation(), None, "the first job started");
-        let replaced = queue.request(entry(2));
+        // Inside the render, past its first check: a job superseded before it begins rendering
+        // stops at once and would let the next one start.
+        gate_until(&gate, 1, "the first render never reached its gate");
+        let replaced = queue.request(held_entry(&gate, 2));
         assert_eq!(queue.pending_generation(), Some(replaced));
-        let wanted = queue.request(entry(3));
+        let Queued {
+            generation: wanted,
+            replaced: displaced,
+        } = queue.request_replacing(held_entry(&gate, 3));
+        assert_eq!(
+            displaced,
+            Some(replaced),
+            "the request names what it replaced"
+        );
         assert_eq!(
             queue.pending_generation(),
             Some(wanted),
             "the third request replaced the second"
         );
+        gate.open();
         let deadline = Instant::now() + DEADLINE;
-        let mut delivered: Vec<u64> = Vec::new();
+        let mut delivered: Vec<(u64, bool)> = Vec::new();
         loop {
             if let Some(result) = queue.poll() {
                 assert!(
                     delivered
                         .last()
-                        .is_none_or(|last| *last < result.generation),
+                        .is_none_or(|(last, _)| *last < result.generation),
                     "deliveries must strictly increase: {delivered:?} then {}",
                     result.generation
                 );
@@ -1303,7 +1255,7 @@ mod tests {
                     PreviewPhase::Exact,
                     "no job had a proxy phase"
                 );
-                delivered.push(result.generation);
+                delivered.push((result.generation, result.cancelled()));
                 if result.generation == wanted {
                     assert_eq!(result.result.unwrap().pixel(0, 0), Some([3, 0, 0, 255]));
                     break;
@@ -1314,9 +1266,9 @@ mod tests {
         }
         assert_eq!(
             delivered,
-            vec![first, wanted],
-            "the first job's one outcome, then the third's; the second was replaced in the pending \
-             slot and never ran"
+            vec![(first, false), (wanted, false)],
+            "the first job's frame, then the third's; the second was replaced in the pending slot \
+             and never ran"
         );
     }
 
@@ -1848,13 +1800,13 @@ mod tests {
         );
 
         let mut measured = PreviewQueue::default();
-        let (generation, requested_at) = measured.request_timed(stacked(
+        let (queued, requested_at) = measured.request_timed(stacked(
             64,
             48,
             eligible_layers(64, 48),
             Some(bounds(16, 16)),
         ));
-        assert_eq!(generation, 1);
+        assert_eq!(queued.generation, 1);
         assert!(requested_at <= Instant::now());
         let measured_results = drain_all(&mut measured);
         assert!(
@@ -2321,6 +2273,85 @@ mod tests {
                 (older, crate::activity::Outcome::Cancelled),
             ],
             "newest first: the job that replaced it completed"
+        );
+    }
+
+    /// Wait until the job held at `gate` has reached it at least `rows` times.
+    fn gate_until(gate: &crate::modules::RenderGate, rows: u64, what: &str) {
+        let deadline = Instant::now() + DEADLINE;
+        while gate.reached() < rows {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::yield_now();
+        }
+    }
+
+    /// The two-phase rule under the persistent worker: a newer request arrives while the older
+    /// job's proxy render is held at its gate. The proxy phase is not interrupted — its frame is
+    /// still newer than anything on screen — and is delivered as a frame; the exact phase behind it
+    /// was superseded before it began, so it answers cancelled; and the newer job then runs both of
+    /// its phases.
+    #[test]
+    fn a_superseded_jobs_exact_phase_is_cancelled_but_its_proxy_is_not() {
+        let gate = crate::modules::RenderGate::open_gate();
+        let mut queue = PreviewQueue::default();
+        gate.shut();
+        let older = queue.request(held(&gate, Some(bounds(16, 16))));
+        gate_until(&gate, 1, "the proxy render never reached its gate");
+        let newer = queue.request(held(&gate, Some(bounds(16, 16))));
+        gate.open();
+        let delivered = drain_until(&mut queue, newer, PreviewPhase::Exact);
+        assert_eq!(
+            delivered,
+            vec![
+                (older, PreviewPhase::Proxy, false),
+                (older, PreviewPhase::Exact, true),
+                (newer, PreviewPhase::Proxy, false),
+                (newer, PreviewPhase::Exact, false),
+            ],
+            "the superseded job's proxy frame, its cancelled exact phase, then the newer job"
+        );
+    }
+
+    /// The worker takes the pending job itself when the active one ends: nothing here polls, and
+    /// the pending job still runs to the end while the first job's outcome waits undelivered.
+    #[test]
+    fn the_next_job_starts_without_a_poll() {
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let gate = crate::modules::RenderGate::open_gate();
+        let mut queue = PreviewQueue::default();
+        queue.set_activity(board.clone());
+        gate.shut();
+        let first = queue.request(held(&gate, None));
+        let second = queue.request(held(&gate, None));
+        assert_eq!(queue.pending_generation(), Some(second));
+        gate.open();
+        let ended = board_until(
+            &board,
+            |snapshot| snapshot.active.is_empty() && snapshot.recent.len() == 2,
+            "the pending job never ran without a poll",
+        );
+        assert_eq!(
+            ended
+                .recent
+                .iter()
+                .map(|recent| recent.outcome)
+                .collect::<Vec<_>>(),
+            [
+                crate::activity::Outcome::Completed,
+                crate::activity::Outcome::Cancelled
+            ],
+            "newest first: the pending job completed, the first was superseded"
+        );
+        assert_eq!(queue.pending_generation(), None);
+        assert_eq!(queue.last_delivered(), 0, "nothing was polled");
+        assert!(queue.ready());
+        let delivered = drain_until(&mut queue, second, PreviewPhase::Exact);
+        assert_eq!(
+            delivered,
+            vec![
+                (first, PreviewPhase::Exact, true),
+                (second, PreviewPhase::Exact, false)
+            ]
         );
     }
 

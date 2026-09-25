@@ -10,6 +10,9 @@ mod command_contracts;
 mod draft;
 mod editor;
 mod error;
+/// One persistent worker that runs the newest job, behind the preview, the analysis and the
+/// desktop's clipping overlay.
+pub mod latest;
 /// The host's compiled mask and the component kinds this build can evaluate.
 pub mod mask;
 mod mask_field;

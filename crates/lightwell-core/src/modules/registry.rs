@@ -1586,6 +1586,8 @@ pub(crate) mod tests {
     pub(crate) struct RenderGate {
         shut: std::sync::Mutex<bool>,
         opened: std::sync::Condvar,
+        /// How many times anything has reached the gate: one per row a render evaluates through it.
+        reached: std::sync::atomic::AtomicU64,
     }
 
     impl RenderGate {
@@ -1594,7 +1596,13 @@ pub(crate) mod tests {
             Arc::new(Self {
                 shut: std::sync::Mutex::new(false),
                 opened: std::sync::Condvar::new(),
+                reached: std::sync::atomic::AtomicU64::new(0),
             })
+        }
+        /// How many times anything has reached the gate, held or not. A render reaches it once per
+        /// row, so this counts the rows a render has evaluated through the held layer.
+        pub(crate) fn reached(&self) -> u64 {
+            self.reached.load(std::sync::atomic::Ordering::SeqCst)
         }
         /// Hold every render that reaches this gate from now on.
         pub(crate) fn shut(&self) {
@@ -1608,6 +1616,8 @@ pub(crate) mod tests {
         /// Wait here while the gate is shut. A render reaches it through its colour unit; a test
         /// that holds other work, such as a source preparation, calls it from a hook in that work.
         pub(crate) fn pass(&self) {
+            self.reached
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut shut = self.shut.lock().expect("the render gate");
             while *shut {
                 shut = self.opened.wait(shut).expect("the render gate");

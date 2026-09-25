@@ -1,4 +1,4 @@
-//! The clipping overlay's worker queue.
+//! The clipping overlay's worker.
 //!
 //! The histogram and clipping contract forbids a full-resolution mask and forbids doing this work
 //! on the UI thread, so the overlay is derived from the **retained** raster of the displayed frame
@@ -6,18 +6,17 @@
 //! back. Turning a toggle on, zooming or panning re-derives it from that same raster: no second
 //! render happens, and the histogram is not reduced again.
 //!
-//! The queue has the same bounds as [`lightwell_core::PreviewQueue`] — one active job and one
-//! replaceable pending job, results tagged with a generation — so a fast sequence of zoom steps
-//! costs one worker at a time and every stale result is dropped.
+//! The worker is the same primitive as the preview's, [`lightwell_core::latest::Latest`] — one
+//! persistent thread, one active job and one replaceable pending job, results tagged with a
+//! generation — so a fast sequence of zoom steps costs one worker at a time. Unlike a preview
+//! frame, an overlay that a newer request superseded is dropped rather than delivered.
 use lightwell_core::{
     Error, Raster,
     analysis::{OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay},
+    latest::Latest,
 };
 use lightwell_ui::theme;
-use std::sync::{
-    Arc,
-    mpsc::{Receiver, TryRecvError, sync_channel},
-};
+use std::sync::Arc;
 
 /// What one overlay job should derive: which flags are on, and the cell grid to reduce into.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,102 +93,82 @@ pub(crate) fn paint(cells: &[u8], shadows: bool, highlights: bool) -> Vec<u8> {
     rgba
 }
 
-struct Active {
-    generation: u64,
-    receiver: Receiver<OverlayResult>,
+/// One overlay derivation: the retained raster of the frame on screen and what to derive from it.
+type OverlayJob = (Arc<Raster>, OverlayRequest);
+
+/// Derive one overlay on the worker. The reduction is bounded by the cell grid and reads the
+/// raster in place.
+fn derive((raster, request): OverlayJob) -> OverlayResult {
+    let result = overlay(
+        raster.rgba.as_ref(),
+        raster.width,
+        raster.height,
+        request.cells_w,
+        request.cells_h,
+    )
+    .map(|cells| paint(&cells, request.shadows, request.highlights));
+    OverlayResult {
+        width: request.cells_w,
+        height: request.cells_h,
+        request,
+        result,
+    }
 }
 
-/// One active job and one replaceable pending job, globally. `generation` counts requests, not
-/// previews: it is what decides which result is still wanted.
-#[derive(Default)]
+/// The overlay worker. Its generations count requests, not previews: they are what decides which
+/// result is still wanted, and only the newest request's is.
 pub(crate) struct OverlayQueue {
-    sequence: u64,
-    active: Option<Active>,
-    pending: Option<(u64, Arc<Raster>, OverlayRequest)>,
-    /// Called on the worker thread once a result is sent, so nothing has to wake on a timer to find
-    /// out. It shares the preview queue's own channel: one subscription serves both.
-    waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    worker: Latest<OverlayJob, OverlayResult>,
+    /// The generation of the newest request; a result from before it is dropped when it arrives.
+    newest: u64,
+}
+
+impl Default for OverlayQueue {
+    fn default() -> Self {
+        Self {
+            worker: Latest::new("lightwell-overlay", |job, _| Some(derive(job))),
+            newest: 0,
+        }
+    }
 }
 
 impl OverlayQueue {
-    /// Install the waker every finished job posts. Same shape as `PreviewQueue::set_waker`.
+    /// Install the waker every finished job posts. It shares the preview worker's own channel: one
+    /// subscription serves both.
     pub(crate) fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
-        self.waker = Some(waker);
+        self.worker.set_waker(waker);
     }
 
     /// Ask for one overlay over `raster`. Replacing the pending job drops it: a zoom that is
     /// already superseded is never computed.
     pub(crate) fn request(&mut self, raster: Arc<Raster>, request: OverlayRequest) {
-        self.sequence = self.sequence.saturating_add(1);
-        let sequence = self.sequence;
-        if self.active.is_some() {
-            self.pending = Some((sequence, raster, request));
-        } else {
-            self.start(sequence, raster, request);
-        }
+        self.newest = self.worker.request((raster, request)).generation;
     }
 
     /// Forget every outstanding job: the overlay is off, or the frame it belonged to is gone.
     pub(crate) fn cancel(&mut self) {
-        self.sequence = self.sequence.saturating_add(1);
-        self.pending = None;
-    }
-
-    fn start(&mut self, sequence: u64, raster: Arc<Raster>, request: OverlayRequest) {
-        let (sender, receiver) = sync_channel(1);
-        let waker = self.waker.clone();
-        std::thread::spawn(move || {
-            let result = overlay(
-                raster.rgba.as_ref(),
-                raster.width,
-                raster.height,
-                request.cells_w,
-                request.cells_h,
-            )
-            .map(|cells| paint(&cells, request.shadows, request.highlights));
-            let sent = sender.send(OverlayResult {
-                width: request.cells_w,
-                height: request.cells_h,
-                request,
-                result,
-            });
-            if sent.is_ok()
-                && let Some(waker) = waker
-            {
-                waker();
-            }
-        });
-        self.active = Some(Active {
-            generation: sequence,
-            receiver,
-        });
+        self.newest = self.worker.cancel();
     }
 
     pub(crate) fn is_busy(&self) -> bool {
-        self.active.is_some() || self.pending.is_some()
+        self.worker.is_busy()
     }
 
-    /// The newest finished overlay, or nothing. A result whose request has been superseded is
-    /// dropped even though the work is already done, exactly as a stale preview frame is.
+    /// Whether a result waits for [`Self::poll`].
+    pub(crate) fn ready(&self) -> bool {
+        self.worker.ready()
+    }
+
+    /// The newest request's finished overlay, or nothing. A result whose request has been
+    /// superseded is dropped even though the work is already done: only the newest describes the
+    /// view on screen.
     pub(crate) fn poll(&mut self) -> Option<OverlayResult> {
-        let active = self.active.as_ref()?;
-        let result = match active.receiver.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => {
-                self.active = None;
-                if let Some((sequence, raster, request)) = self.pending.take() {
-                    self.start(sequence, raster, request);
-                }
-                return None;
+        while let Some((generation, result)) = self.worker.poll() {
+            if generation == self.newest {
+                return Some(result);
             }
-        };
-        let wanted = active.generation == self.sequence;
-        self.active = None;
-        if let Some((sequence, raster, request)) = self.pending.take() {
-            self.start(sequence, raster, request);
         }
-        wanted.then_some(result)
+        None
     }
 }
 

@@ -11,8 +11,9 @@
 //! is gone is buffered in the same way and delivered to the next one.
 //!
 //! The signal carries no payload and the channel holds one: a full channel already says "there is
-//! something to poll", and `Message::Poll` is idempotent, so coalescing costs nothing. The waker
-//! runs on a worker thread, never on the catalog owner thread, and does nothing but post it.
+//! something to poll", and `Message::Poll` is idempotent and asks for itself again while a worker
+//! still holds a finished result, so coalescing loses nothing. The waker runs on a worker thread,
+//! never on the catalog owner thread, and does nothing but post it.
 use crate::app::message::Message;
 use iced::futures::{
     Stream,
@@ -67,8 +68,8 @@ impl Stream for Wakes {
                 .map(|signal| signal.map(|()| Message::Poll)),
             // The receiver is already lent out, which the gating makes impossible: the subscription
             // is dropped — returning it — before it can be started again. Ending the stream is the
-            // honest answer if it ever happens; the `Poll` issued after a request from idle is what
-            // keeps the queue draining.
+            // honest answer if it ever happens; the `Poll` issued after a request from idle and
+            // the one issued while a result still waits are what keep results reaching the desktop.
             None => Poll::Ready(None),
         }
     }

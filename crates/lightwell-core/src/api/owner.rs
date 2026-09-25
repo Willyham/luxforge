@@ -70,12 +70,10 @@ enum OwnerMessage {
         request: PreviewRequest,
         response: SyncSender<Result<PreviewJob, Error>>,
     },
-    /// The analysis worker finished a job. Nothing polls for this: the worker posts it into the
-    /// owner's own channel, so the owner stays asleep until there is something to do.
-    AnalysisFinished {
-        job_id: JobId,
-        result: Result<Box<Report>, Error>,
-    },
+    /// The analysis worker has an outcome for the owner to take. Nothing polls for this: the
+    /// worker posts it into the owner's own channel, so the owner stays asleep until there is
+    /// something to do.
+    AnalysisReady,
     /// A report the desktop's preview worker already produced for this identity, so an API request
     /// for the same identity is a cache hit and no second render happens.
     AnalysisSubmitted {
@@ -1047,12 +1045,10 @@ fn owner_loop(
     activity: Arc<ActivityBoard>,
 ) {
     // One analysis worker with one active and one replaceable pending job, globally. The worker
-    // sends its report back into this loop; nothing here waits on it or polls for it.
-    let mut queue = AnalysisQueue::new(Arc::new(move |job_id, result| {
-        let _ = completions.send(OwnerMessage::AnalysisFinished {
-            job_id,
-            result: result.map(Box::new),
-        });
+    // wakes this loop when it has an outcome and starts its pending job itself; nothing here waits
+    // on it or polls for it.
+    let mut queue = AnalysisQueue::new(Arc::new(move || {
+        let _ = completions.send(OwnerMessage::AnalysisReady);
     }));
     queue.set_activity(activity.clone());
     let mut owner = Owner {
@@ -1103,13 +1099,12 @@ fn owner_loop(
                 }
             }
             OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
-            OwnerMessage::AnalysisFinished { job_id, result } => {
-                if owner.analyses.awaits(&job_id) {
-                    owner
-                        .analyses
-                        .complete(&job_id, result.map(|report| *report));
+            OwnerMessage::AnalysisReady => {
+                while let Some(outcome) = owner.queue.poll() {
+                    if owner.analyses.awaits(&outcome.job_id) {
+                        owner.analyses.complete(&outcome.job_id, outcome.result);
+                    }
                 }
-                owner.queue.finished(&job_id);
             }
             OwnerMessage::AnalysisSubmitted { identity, report } => {
                 owner.analyses.submit(*identity, *report);
@@ -1327,12 +1322,12 @@ impl Owner {
     }
 
     /// Forget a client's session. A gone client releases its analysis interests exactly as a
-    /// cancel does; a job nobody else wants is dropped from the pending slot, or its result is
-    /// discarded when it arrives from the worker.
+    /// cancel does; a job nobody else wants is dropped from the pending slot, or stopped on the
+    /// worker within a chunk.
     fn disconnect(&mut self, client: ClientId) {
         self.sessions.remove(&client);
         for job_id in self.analyses.disconnect(client) {
-            self.queue.drop_pending(&job_id);
+            self.queue.withdraw(&job_id);
             self.analyses.cancel(&job_id);
         }
         self.latest_import.remove(&client);
@@ -1600,16 +1595,15 @@ pub(super) fn analysis_read(
     )
 }
 
-/// `analysis.cancel`. Dropping the last interest drops a pending job outright; an active render is
-/// not interrupted mid-way — it runs to completion on the worker and its result is discarded on
-/// arrival, which costs nothing the render was not already spending.
+/// `analysis.cancel`. Dropping the last interest drops a pending job outright and stops a running
+/// one within a chunk of its render or reduction; its cancelled outcome is discarded on arrival.
 pub(super) fn analysis_cancel(
     owner: &mut Owner,
     call: &Call<'_>,
     params: AnalysisJobParams,
 ) -> Result<Value, Error> {
     if owner.analyses.release(&params.job_id, call.client)? == crate::analysis::Release::Cancelled {
-        owner.queue.drop_pending(&params.job_id);
+        owner.queue.withdraw(&params.job_id);
         owner.analyses.cancel(&params.job_id);
     }
     Ok(json!({"cancelled": true}))
