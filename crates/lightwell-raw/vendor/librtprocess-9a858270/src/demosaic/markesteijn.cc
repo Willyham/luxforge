@@ -20,7 +20,11 @@
 ////////////////////////////////////////////////////////////////
 
 #include <float.h>
+#include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <stdexcept>
 
 #include "librtprocess.h"
 #include "LUT.h"
@@ -46,8 +50,8 @@ void cielab (const float (*rgb)[3], float* l, float* a, float *b, const int widt
     static LUTf cbrt(0x14000);
 
     if (!rgb) {
-        static bool cbrtinit = false;
-        if(!cbrtinit) {
+        static std::once_flag cbrtinit;
+        std::call_once(cbrtinit, [&] {
             //sRGB epsilon and kappa
             constexpr double eps = 216.0 / 24389.0;
             constexpr double kappa = 24389.0 / 27.0;
@@ -56,8 +60,7 @@ void cielab (const float (*rgb)[3], float* l, float* a, float *b, const int widt
                 cbrt[i] = r > eps ? std::cbrt(r) : (kappa * r + 16.0) / 116.0;
             }
 
-            cbrtinit = true;
-        }
+        });
 
         return;
     }
@@ -119,6 +122,27 @@ void cielab (const float (*rgb)[3], float* l, float* a, float *b, const int widt
 }
 }
 
+namespace {
+struct MarkWorkerCall {
+    std::function<void(size_t)> run;
+    std::atomic<rpError> *error;
+};
+
+extern "C" void run_mark_worker(void *context, size_t slot) noexcept
+{
+    auto *call = static_cast<MarkWorkerCall *>(context);
+    try {
+        call->run(slot);
+    } catch (const std::bad_alloc &) {
+        rpError expected = RP_NO_ERROR;
+        call->error->compare_exchange_strong(expected, RP_MEMORY_ERROR);
+    } catch (...) {
+        rpError expected = RP_NO_ERROR;
+        call->error->compare_exchange_strong(expected, RP_WORKER_ERROR);
+    }
+}
+}
+
 
 /*
    Frank Markesteijn's algorithm for Fuji X-Trans sensors
@@ -126,7 +150,7 @@ void cielab (const float (*rgb)[3], float* l, float* a, float *b, const int widt
 */
 
 using namespace librtprocess;
-rpError markesteijn_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure)
+rpError markesteijn_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext, unsigned testFault)
 {
     BENCHFUN
     std::unique_ptr<StopWatch> stop;
@@ -208,7 +232,6 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
     setProgCancel(progress);
 
 
-    double progressInc = 36.0 * (1.0 - progress) / ((height * width) / ((ts - 16) * (ts - 16)));
     const int ndir = 4 << (passes > 1);
     cielab (nullptr, nullptr, nullptr, nullptr, 0, 0, 0, nullptr);
     struct s_minmaxgreen {
@@ -229,27 +252,36 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
         RightShift[row] = (greencount == 2);
     }
 
-#ifdef _OPENMP
-    #pragma omp parallel
-#endif
-    {
-        int progressCounter = 0;
-        float dcolor[3][6];
-
-        float *buffer = (float *) malloc ((ts * ts * (ndir * 4 + 3) + 128) * sizeof(float));
-
-#ifdef _OPENMP
-        #pragma omp critical
-#endif
-        {
-            if(!buffer) {
-                rc = RP_MEMORY_ERROR;
+    // The original 98-pixel tile origins and retained interiors are unchanged.
+    // A worker processes each assigned row's tiles left-to-right: the pinned
+    // final-column code reuses scratch from its preceding tile. The last two
+    // rows stay together because the partial final row starts from the prior
+    // row's scratch. Full-size first tiles initialize the read regions.
+    const size_t tileRows = height > 22 ? size_t((height - 23) / (ts - 16) + 1) : 0;
+    const size_t tileCols = width > 22 ? size_t((width - 23) / (ts - 16) + 1) : 0;
+    const size_t tileCount = tileRows * tileCols;
+    const size_t rowGroups = tileRows > 1 ? tileRows - 1 : tileRows;
+    std::atomic<size_t> nextRow{0};
+    std::atomic<rpError> tileError{RP_NO_ERROR};
+    MarkWorkerCall call{
+        [&](size_t slot) {
+            float dcolor[3][6];
+            // Private adapter tests inject these failures without provoking
+            // process-wide OOM or exposing a user-facing control.
+            if (testFault == 1 && slot == 0) {
+                rpError expected = RP_NO_ERROR;
+                tileError.compare_exchange_strong(expected, RP_MEMORY_ERROR);
+                return;
             }
-        }
-#ifdef _OPENMP
-        #pragma omp barrier
-#endif
-        if(!rc) {
+            if (testFault == 2 && slot == 0) throw std::runtime_error("native tile test fault");
+            std::unique_ptr<float, decltype(&free)> scratch(
+                (float *)malloc((ts * ts * (ndir * 4 + 3) + 128) * sizeof(float)), &free);
+            float *buffer = scratch.get();
+            if (!buffer) {
+                rpError expected = RP_NO_ERROR;
+                tileError.compare_exchange_strong(expected, RP_MEMORY_ERROR);
+                return;
+            }
             float (*rgb)[ts][ts][3] = (float(*)[ts][ts][3]) buffer;
             float (*lab)[ts - 8][ts - 8] = (float (*)[ts - 8][ts - 8])(buffer + ts * ts * (ndir * 3));
             float (*drv)[ts - 10][ts - 10] = (float (*)[ts - 10][ts - 10])   (buffer + ts * ts * (ndir * 3 + 3));
@@ -258,12 +290,27 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
             uint8_t (*homosum)[ts][ts] = (uint8_t (*)[ts][ts]) (drv); // we can reuse the drv-buffer because they are not used together
             uint8_t (*homosummax)[ts] = (uint8_t (*)[ts]) homo[ndir - 1]; // we can reuse the homo-buffer because they are not used together
 
-#ifdef _OPENMP
-            #pragma omp for collapse(2) schedule(dynamic, chunkSize) nowait
-#endif
-
-            for (int top = 3; top < height - 19; top += ts - 16)
-                for (int left = 3; left < width - 19; left += ts - 16) {
+            for (;;) {
+                if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) break;
+                if (shouldCancel && shouldCancel(cancelContext)) {
+                    rpError expected = RP_NO_ERROR;
+                    tileError.compare_exchange_strong(expected, RP_CANCELLED);
+                    break;
+                }
+                const size_t group = nextRow.fetch_add(1, std::memory_order_relaxed);
+                if (group >= rowGroups) break;
+                const size_t groupEnd = group == rowGroups - 1 ? tileRows : group + 1;
+                for (size_t tileRow = group; tileRow < groupEnd; ++tileRow) {
+                for (size_t tileCol = 0; tileCol < tileCols; ++tileCol) {
+                if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) return;
+                if (shouldCancel && shouldCancel(cancelContext)) {
+                    rpError expected = RP_NO_ERROR;
+                    tileError.compare_exchange_strong(expected, RP_CANCELLED);
+                    return;
+                }
+                const int top = 3 + int(tileRow) * (ts - 16);
+                const int left = 3 + int(tileCol) * (ts - 16);
+                {
                     int mrow = std::min(top + ts, height - 3);
                     int mcol = std::min(left + ts, width - 3);
 
@@ -901,22 +948,27 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
                             blue[row + top][col + left] = avg[2] / avg[3];
                         }
 
-                    if((++progressCounter) % 32 == 0) {
-#ifdef _OPENMP
-                        #pragma omp critical (xtransdemosaic)
-#endif
-                        {
-                            progress += progressInc;
-                            progress = min(1.0, progress);
-                            setProgCancel(progress);
-                        }
-                    }
-
-
                 }
-        }
-        free(buffer);
+                }
+                }
+            }
+        },
+        &tileError
+    };
+    if (tileCount) {
+        // The executor joins all callbacks before returning. The serial call
+        // follows the same tile function and supplies the exact oracle.
+        const size_t jobs = width >= 120 && tileRows > 1 && tileCount > 4 &&
+                            passes == 1 && !useCieLab ? rowGroups : 1;
+        const int result = executor
+                               ? executor(executorContext, jobs, run_mark_worker, &call)
+                               : (run_mark_worker(&call, 0), 0);
+        if (result == 2) return RP_CANCELLED;
+        if (result != 0) return RP_WORKER_ERROR;
+        rc = tileError.load(std::memory_order_relaxed);
+        if (rc != RP_NO_ERROR) return rc;
     }
+    if (shouldCancel && shouldCancel(cancelContext)) return RP_CANCELLED;
     xtransborder_demosaic(width, height, 8, rawData, red, green, blue, xtrans);
     return rc;
 }

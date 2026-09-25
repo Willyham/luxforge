@@ -1,0 +1,210 @@
+//! Synchronous admission to the existing Rayon pool for native X-Trans tiles.
+
+use std::{
+    ffi::{c_int, c_void},
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{
+        Condvar, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
+// One-pass Markesteijn allocates 988,208 scratch bytes per admitted slot.
+// Eight slots across *all* RawSource callers add at most 7,905,664 explicit
+// scratch bytes; there is no full-frame allocation per slot.
+const MAX_SCRATCH_SLOTS: usize = 8;
+static SLOTS: OnceLock<(Mutex<usize>, Condvar)> = OnceLock::new();
+#[cfg(test)]
+static PEAK_SLOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub(super) struct ExecutorContext<'a> {
+    pub cancel: &'a AtomicBool,
+    /// Zero chooses the available shared-pool width; nonzero is an exactness
+    /// test override. The process-wide scratch cap still applies.
+    pub worker_limit: usize,
+}
+
+pub(super) type TileWorker = extern "C" fn(*mut c_void, usize);
+pub(super) type TileExecutor = extern "C" fn(*mut c_void, usize, TileWorker, *mut c_void) -> c_int;
+
+struct ScratchPermit {
+    count: usize,
+    slots: &'static (Mutex<usize>, Condvar),
+}
+
+impl Drop for ScratchPermit {
+    fn drop(&mut self) {
+        let mut active = self.slots.0.lock().unwrap_or_else(|e| e.into_inner());
+        *active -= self.count;
+        self.slots.1.notify_all();
+    }
+}
+
+fn admit(desired: usize, cancel: &AtomicBool) -> Result<ScratchPermit, c_int> {
+    let slots = SLOTS.get_or_init(|| (Mutex::new(0), Condvar::new()));
+    let mut active = slots.0.lock().unwrap_or_else(|e| e.into_inner());
+    while *active == MAX_SCRATCH_SLOTS {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(2);
+        }
+        if rayon::current_thread_index().is_some() {
+            // A Rayon caller must help run queued jobs. Blocking every pool
+            // thread here can starve the permit owner's scoped workers.
+            drop(active);
+            if matches!(rayon::yield_now(), Some(rayon::Yield::Idle)) {
+                // No current work to help with; avoid a hot spin while an
+                // external caller owns the slots, but retry promptly.
+                std::thread::park_timeout(Duration::from_millis(1));
+            }
+            active = slots.0.lock().unwrap_or_else(|e| e.into_inner());
+        } else {
+            active = slots
+                .1
+                .wait_timeout(active, Duration::from_millis(20))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(2);
+    }
+    let count = desired.min(MAX_SCRATCH_SLOTS - *active);
+    *active += count;
+    #[cfg(test)]
+    PEAK_SLOTS.fetch_max(*active, Ordering::Relaxed);
+    Ok(ScratchPermit { count, slots })
+}
+
+/// # Safety contract
+///
+/// C++ supplies a live immutable job context and a no-throw worker entry.
+/// Each slot calls that entry once, owns its own scratch, and fetches disjoint
+/// tile indices from the job's atomic counter. A scratch permit is held only
+/// while a native worker executes, never by a Rayon scope waiting for children.
+/// Rayon scope joins every entry before borrowed context or image buffers drop.
+/// This trampoline catches Rust panics so none crosses the C ABI.
+pub(super) extern "C" fn execute(
+    context: *mut c_void,
+    tile_count: usize,
+    worker: TileWorker,
+    worker_context: *mut c_void,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: lw_raw_develop receives this stack context and calls the
+        // executor synchronously; Markesteijn stores neither pointer.
+        let state = unsafe { &*context.cast::<ExecutorContext<'_>>() };
+        let width = rayon::current_num_threads();
+        let desired = tile_count
+            .min(width)
+            .min(if state.worker_limit == 0 {
+                width
+            } else {
+                state.worker_limit
+            })
+            .clamp(1, MAX_SCRATCH_SLOTS);
+        // Raw pointers are converted to integer addresses solely to satisfy
+        // Rayon closure Send bounds. The scope is synchronous and C++ joins
+        // before the stack-backed job and buffers can be released.
+        let worker_context = worker_context as usize;
+        let status = std::sync::atomic::AtomicI32::new(0);
+        let run_slot = |slot| {
+            if status.load(Ordering::Relaxed) != 0 {
+                return;
+            }
+            match admit(1, state.cancel) {
+                Ok(_permit) => worker(worker_context as *mut c_void, slot),
+                Err(code) => status.store(code, Ordering::Relaxed),
+            }
+        };
+        rayon::scope(|scope| {
+            for slot in 1..desired {
+                let run_slot = &run_slot;
+                scope.spawn(move |_| run_slot(slot));
+            }
+            run_slot(0);
+        });
+        status.load(Ordering::Relaxed)
+    }));
+    result.unwrap_or(3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    static TEST_BUDGET_LOCK: Mutex<()> = Mutex::new(());
+
+    extern "C" fn count_worker(context: *mut c_void, _slot: usize) {
+        // SAFETY: both execute calls join before this local counter drops.
+        let count = unsafe { &*context.cast::<std::sync::atomic::AtomicUsize>() };
+        count.fetch_add(1, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    #[test]
+    fn rayon_waiter_runs_queued_permit_release_in_a_one_thread_pool() {
+        let _test_guard = TEST_BUDGET_LOCK.lock().unwrap();
+        let cancel = AtomicBool::new(false);
+        let permit = admit(MAX_SCRATCH_SLOTS, &cancel).unwrap();
+        assert_eq!(permit.count, MAX_SCRATCH_SLOTS);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            pool.spawn_fifo(move || drop(permit));
+            let acquired = admit(1, &cancel).unwrap();
+            assert_eq!(acquired.count, 1);
+        });
+        assert_eq!(PEAK_SLOTS.load(Ordering::Relaxed), MAX_SCRATCH_SLOTS);
+    }
+
+    #[test]
+    fn nested_develop_executors_share_slots_in_a_small_rayon_pool() {
+        let _test_guard = TEST_BUDGET_LOCK.lock().unwrap();
+        let cancel = AtomicBool::new(false);
+        let held = admit(MAX_SCRATCH_SLOTS - 1, &cancel).unwrap();
+        let context = ExecutorContext {
+            cancel: &cancel,
+            worker_limit: 2,
+        };
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            rayon::join(
+                || {
+                    assert_eq!(
+                        execute(
+                            (&context as *const ExecutorContext<'_>).cast_mut().cast(),
+                            2,
+                            count_worker,
+                            (&count as *const std::sync::atomic::AtomicUsize)
+                                .cast_mut()
+                                .cast(),
+                        ),
+                        0
+                    );
+                },
+                || {
+                    assert_eq!(
+                        execute(
+                            (&context as *const ExecutorContext<'_>).cast_mut().cast(),
+                            2,
+                            count_worker,
+                            (&count as *const std::sync::atomic::AtomicUsize)
+                                .cast_mut()
+                                .cast(),
+                        ),
+                        0
+                    );
+                },
+            );
+        });
+        drop(held);
+        assert!(count.load(Ordering::Relaxed) >= 2);
+        assert!(PEAK_SLOTS.load(Ordering::Relaxed) <= MAX_SCRATCH_SLOTS);
+    }
+}
