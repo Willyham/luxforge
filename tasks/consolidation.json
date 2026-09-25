@@ -2273,7 +2273,7 @@
     {
       "id": "TASK-038",
       "description": "Move capability methods behind their own trait off `ToolModule`, and split `registry.rs` into lookups, placement and compile.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-035",
         "TASK-037"
@@ -2329,7 +2329,7 @@
     {
       "id": "TASK-039",
       "description": "Split the desktop's `app/mod.rs` along its seams with nested message enums, and enforce that `state/` never imports `app/` in the repository check.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-032"
       ],
@@ -2681,7 +2681,7 @@
     {
       "id": "TASK-044",
       "description": "Give rendering one entry point with options and a render context in place of process globals, compile once per preview job, split `preview.rs` with a phase-typed `PreviewResult`, and keep one proxy box downscale.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-032"
       ],

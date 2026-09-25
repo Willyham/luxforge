@@ -52,7 +52,7 @@
     {
       "id": "TASK-002",
       "description": "Answer `render.sample` through a spatial layer off the catalog owner thread, so a pointer readout never delays another client's request.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "A point sample through a spatial layer now evaluates only the tile that contains its pixel on both paths, equal to the render by construction: about 20 ms with Clarity and 38 ms with Clarity and Dehaze on the Z6 and X100VI, 11 and 34 ms on a 24 MP JPEG. It still runs on the owner, so while another client samples in a loop every other owner call, the desktop's synchronous `draft.set` included, waits up to one sample: p50 19 to 20 ms against 0.3 ms idle, one to three frames at 120 Hz during a drag.",
