@@ -1,8 +1,8 @@
 # Mask coverage mathematics
 
 Status: frozen. No production mask code exists: this document, the independent [`f64`
-reference](../../crates/lightwell-core/tests/reference/mask.rs) and its
-[proofs](../../crates/lightwell-core/tests/mask_reference.rs) are the complete specification the
+reference](../../crates/luxforge-core/tests/reference/mask.rs) and its
+[proofs](../../crates/luxforge-core/tests/mask_reference.rs) are the complete specification the
 mask units of the [masking design](masking.md) are checked against, answering its "What a mask is",
 "Composition", "Mask space" and "Component kinds" sections. It settles that design's proposals P2
 (the composition algebra), P3 (what a radial selects) and P4 (the brush's build-up rule, and the
@@ -23,7 +23,7 @@ constrained brush as not frozen by it, and this section freezes it.
 
 No formula below claims Lightroom or darktable numeric equivalence. Where a choice differs from
 Lightroom's — a radial selecting inside rather than outside — the difference is stated as
-Lightwell's own, with its reason.
+Luxforge's own, with its reason.
 
 ## Mask space
 
@@ -306,7 +306,7 @@ clamped form is frozen because it is one branch instead of three on the per-pixe
 
 **`feather = 0` is an explicit hard edge, not a limit.** `hard` is set from the computed span being
 exactly zero, following the vignette unit's own
-[`hard_step` discipline](../../crates/lightwell-core/src/modules/vignette/unit.rs), so no division
+[`hard_step` discipline](../../crates/luxforge-core/src/modules/vignette/unit.rs), so no division
 by a vanishing span is ever evaluated. The test that this is a case and not an accident
 (`feather_zero_is_a_hard_edge_and_no_vanishing_span_is_divided_by`) also covers the second route to
 the same branch: a feather so small that `1 - feather/100` rounds to exactly `1.0` — `1e-16`, `1e-18`
@@ -347,7 +347,7 @@ stated in the design and in the user guide, not smoothed over.
 
 ## The brush
 
-Payload `{strokes: [address, …]}`: the reserved [`strokes` field](../../crates/lightwell-core/src/path.rs) and
+Payload `{strokes: [address, …]}`: the reserved [`strokes` field](../../crates/luxforge-core/src/path.rs) and
 nothing else, holding the component's strokes **in order** as content addresses into the host's
 stroke store. No coordinate is ever written into a component payload. Each referenced stroke carries
 its own path and the brush it was drawn with:
@@ -387,7 +387,7 @@ segment `A → A`**, and the normalization above is what makes "the distance to 
 fall out of the same expression a real segment takes: with `ex = ey = 0` and `len2 = 1` the
 projection evaluates `t = 0/1 = 0` and `q = A` exactly, so there is no branch on the per-pixel path
 and no division by a vanishing length. It absorbs a repeated position too, which a stored path
-cannot hold — [`decimate`](../../crates/lightwell-core/src/path.rs) drops repeats on the grid — but
+cannot hold — [`decimate`](../../crates/luxforge-core/src/path.rs) drops repeats on the grid — but
 which the mathematics must still be total on.
 
 ### The capsule profile
@@ -657,7 +657,7 @@ results, exactly as the vignette study states for its own bound.
 **A production unit transcribes the blocks above expression for expression and in the same order, so
 it is bit-identical to this reference rather than merely within tolerance of it.** The reference's
 module documentation says the same thing from the other side, as
-[the vignette unit's does](../../crates/lightwell-core/src/modules/vignette/unit.rs). The rule that
+[the vignette unit's does](../../crates/luxforge-core/src/modules/vignette/unit.rs). The rule that
 makes this checkable: **any value that does not depend on the pixel may be precomputed, and no
 arithmetic on the per-pixel path may be rewritten.** Precomputing changes nothing because the value
 is identical; rewriting changes the last bits. Specifically forbidden, each of which is within
@@ -719,9 +719,9 @@ Every measured number above comes from the reference's own tests. The 24 MP comp
 ignored test, because a 24 million pixel sweep does not belong in an ordinary run:
 
 ```sh
-cargo test --release --locked --package lightwell-core --test mask_reference \
+cargo test --release --locked --package luxforge-core --test mask_reference \
     -- --ignored --nocapture mask_study_figures
-cargo test --release --locked --package lightwell-core --test mask_brush_reference \
+cargo test --release --locked --package luxforge-core --test mask_brush_reference \
     -- --ignored --nocapture brush_study_figures
 ```
 
@@ -733,16 +733,16 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 | File | Purpose |
 | --- | --- |
 | `docs/design/mask-study.md` | This document. |
-| [`crates/lightwell-core/tests/reference/mask.rs`](../../crates/lightwell-core/tests/reference/mask.rs) | The frozen `f64` reference: `Stage`, the distance rules, `smooth`, the linear and radial fields, both algebras, `coverage`, and the brush's segments, capsule profile, colour constraint, accumulation and support box. |
-| [`crates/lightwell-core/tests/mask_reference.rs`](../../crates/lightwell-core/tests/mask_reference.rs) | The mask-space, composition and gradient proofs, and the ignored 24 MP figures test. |
-| [`crates/lightwell-core/tests/mask_brush_reference.rs`](../../crates/lightwell-core/tests/mask_brush_reference.rs) | The brush proofs and measurements above, and the ignored `brush_study_figures` test. |
-| [`crates/lightwell-core/tests/reference/mod.rs`](../../crates/lightwell-core/tests/reference/mod.rs) | Declares `pub mod mask;` beside the other studies' references. |
-| [`crates/lightwell-core/src/mask/brush.rs`](../../crates/lightwell-core/src/mask/brush.rs) | The production transcription of the brush: the compiled strokes, the grid index, the colour constraint and the per-pixel fold. |
+| [`crates/luxforge-core/tests/reference/mask.rs`](../../crates/luxforge-core/tests/reference/mask.rs) | The frozen `f64` reference: `Stage`, the distance rules, `smooth`, the linear and radial fields, both algebras, `coverage`, and the brush's segments, capsule profile, colour constraint, accumulation and support box. |
+| [`crates/luxforge-core/tests/mask_reference.rs`](../../crates/luxforge-core/tests/mask_reference.rs) | The mask-space, composition and gradient proofs, and the ignored 24 MP figures test. |
+| [`crates/luxforge-core/tests/mask_brush_reference.rs`](../../crates/luxforge-core/tests/mask_brush_reference.rs) | The brush proofs and measurements above, and the ignored `brush_study_figures` test. |
+| [`crates/luxforge-core/tests/reference/mod.rs`](../../crates/luxforge-core/tests/reference/mod.rs) | Declares `pub mod mask;` beside the other studies' references. |
+| [`crates/luxforge-core/src/mask/brush.rs`](../../crates/luxforge-core/src/mask/brush.rs) | The production transcription of the brush: the compiled strokes, the grid index, the colour constraint and the per-pixel fold. |
 
 ## References
 
 - [Masking](masking.md) — the design this study freezes the numerics for, and whose proposals P2, P3 and P4 it settles.
-- [Path primitives](../../crates/lightwell-core/src/path.rs) — the stored coordinate grid, the decimation contract and the content-addressed stroke store the brush's payload references.
+- [Path primitives](../../crates/luxforge-core/src/path.rs) — the stored coordinate grid, the decimation contract and the content-addressed stroke store the brush's payload references.
 - [Vignette study](vignette-study.md) — the positional coverage field, the `smooth` falloff, the explicit hard-step case and the tolerance this study follows.
 - [Content-space edits](content-space-edits.md) — the content stage mask space is defined against.
 - [Instant previews](instant-preview.md) — why normalized storage keeps a masked recipe proxy eligible.

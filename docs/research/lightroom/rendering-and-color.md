@@ -39,7 +39,7 @@ For RAW, interpreting the input can involve sensor decoding, demosaicing and cam
 
 **D.** Adobe ties available controls and rendering to the Process Version. PV2012 introduced the revised tone controls and high-contrast tone mapping; PV5 changed negative Dehaze and low-light rendering; PV6 reduces Color/B&W Mixer banding. An upgrade can visibly change an existing photo. These are image-processing versions, separate from catalog upgrades and application version numbers. [S07: Develop module options](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/develop-module-options.html)
 
-**P.** Lightwell should record its own algorithm/recipe interpretation marker where needed to protect saved work. That is an internal data-integrity mechanism already allowed by project policy, not a public compatibility framework or a commitment to emulate Adobe process versions.
+**P.** Luxforge should record its own algorithm/recipe interpretation marker where needed to protect saved work. That is an internal data-integrity mechanism already allowed by project policy, not a public compatibility framework or a commitment to emulate Adobe process versions.
 
 ## Color has multiple boundaries
 

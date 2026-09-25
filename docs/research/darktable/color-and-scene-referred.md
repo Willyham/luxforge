@@ -40,7 +40,7 @@
 
 **C.** Increasing saturation around one achromatic axis and applying contrast independently per channel can produce different hue changes. A wide working gamut avoids some premature clipping but does not automatically solve gamut mapping, negative values, highlight desaturation or display limits.
 
-**P.** For Lightwell, each future operation should specify input/output color meaning, treatment of negative/over-range values, and the location of clipping. Numerical fixtures should test saturated primaries, neutral ramps, near-black gradients and bright colored lights—not only ordinary photographs.
+**P.** For Luxforge, each future operation should specify input/output color meaning, treatment of negative/over-range values, and the location of clipping. Numerical fixtures should test saturated primaries, neutral ramps, near-black gradients and bright colored lights—not only ordinary photographs.
 
 ## What a color-correctness experiment must record
 

@@ -5,11 +5,11 @@ use crate::*;
 /// directory rather than an output directory so it is shared by every checkout, worktree and
 /// terminal on this machine: a figure measured while another run was launching editors is not a
 /// figure of this machine.
-const LOCK: &str = "lightwell-timing.lock";
+const LOCK: &str = "luxforge-timing.lock";
 
 /// How a timing child is told that its parent already holds the lock. Without it, every timing
 /// component `verify` spawns would refuse the run that started it.
-const GATE_ENV: &str = "LIGHTWELL_TIMING_GATE";
+const GATE_ENV: &str = "LUXFORGE_TIMING_GATE";
 
 /// The one-minute load average above which a timing figure is recorded as `unreliable` rather than
 /// compared against a target. The baselines in `docs/specs/performance.md` were taken between 2.3
@@ -264,19 +264,19 @@ impl Background {
             // still use the native GPU. Do not use a symlink: Cocoa resolves it to the original
             // executable and loses the bundle identity. Never modify the built/packaged app.
             let bundle = tempfile::Builder::new()
-                .prefix("lightwell-test-")
+                .prefix("luxforge-test-")
                 .tempdir()?;
-            let contents = bundle.path().join("Lightwell Test.app/Contents");
+            let contents = bundle.path().join("Luxforge Test.app/Contents");
             fs::create_dir_all(contents.join("MacOS"))?;
-            let executable = contents.join("MacOS/lightwell-test");
+            let executable = contents.join("MacOS/luxforge-test");
             fs::copy(binary, &executable)?;
             fs::write(
                 contents.join("Info.plist"),
                 r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>org.lightwell.background-test</string>
-<key>CFBundleName</key><string>Lightwell Test</string>
-<key>CFBundleExecutable</key><string>lightwell-test</string>
+<key>CFBundleIdentifier</key><string>org.luxforge.background-test</string>
+<key>CFBundleName</key><string>Luxforge Test</string>
+<key>CFBundleExecutable</key><string>luxforge-test</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSBackgroundOnly</key><true/>
 <key>NSHighResolutionCapable</key><true/>

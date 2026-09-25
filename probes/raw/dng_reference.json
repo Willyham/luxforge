@@ -1228,8 +1228,8 @@
     "production_reference": true,
     "selection": "fixed ColorMatrix2 D65 XYZ-to-camera",
     "temperature_kelvin": 2000.0,
-    "tint_lightwell_units": 100.0,
-    "valid_for_lightwell_gain_contract": true,
+    "tint_luxforge_units": 100.0,
+    "valid_for_luxforge_gain_contract": true,
     "validation_reason": "within positive finite 0..32 gain range",
     "whitepoint_xy": [
       0.551229462758742,
@@ -1272,8 +1272,8 @@
     "production_reference": true,
     "selection": "fixed ColorMatrix2 D65 XYZ-to-camera",
     "temperature_kelvin": 5500.0,
-    "tint_lightwell_units": 10.0,
-    "valid_for_lightwell_gain_contract": true,
+    "tint_luxforge_units": 10.0,
+    "valid_for_luxforge_gain_contract": true,
     "validation_reason": "within positive finite 0..32 gain range",
     "whitepoint_xy": [
       0.33252117947966875,
@@ -1321,7 +1321,7 @@
     "production_reference": false,
     "selection": "inverse-CCT dual-calibration interpolation comparator",
     "temperature_kelvin": 5500.0,
-    "tint_lightwell_units": 10.0,
+    "tint_luxforge_units": 10.0,
     "whitepoint_xy": [
       0.33252117947966875,
       0.3496256099482258
@@ -1363,8 +1363,8 @@
     "production_reference": true,
     "selection": "fixed ColorMatrix2 D65 XYZ-to-camera",
     "temperature_kelvin": 5500.0,
-    "tint_lightwell_units": 10.0,
-    "valid_for_lightwell_gain_contract": true,
+    "tint_luxforge_units": 10.0,
+    "valid_for_luxforge_gain_contract": true,
     "validation_reason": "within positive finite 0..32 gain range",
     "whitepoint_xy": [
       0.33252117947966875,

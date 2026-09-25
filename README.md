@@ -1,4 +1,4 @@
-<h1 align="center">Lightwell</h1>
+<h1 align="center">Luxforge</h1>
 
 <p align="center">
   A fast, non-destructive photo editor for macOS, Windows and Linux.<br>
@@ -12,18 +12,18 @@
 </p>
 
 <p align="center">
-  <img src="docs/design/develop-workspace/default.png" alt="The Lightwell Develop workspace: history and recipe on the left, the photograph in the centre, histogram and Basic adjustments on the right" width="900">
+  <img src="docs/design/develop-workspace/default.png" alt="The Luxforge Develop workspace: history and recipe on the left, the photograph in the centre, histogram and Basic adjustments on the right" width="900">
   <br>
   <sub>The Develop workspace, from the design reference the app is built and checked against.</sub>
 </p>
 
 ---
 
-## Why Lightwell
+## Why Luxforge
 
-Lightwell is a free, open-source, cross-platform photo editor. Its goal: meet or exceed the quality and experience of Adobe Lightroom—a benchmark that DHH once called "the last holdout" keeping him on macOS.
+Luxforge is a free, open-source, cross-platform photo editor. Its goal: meet or exceed the quality and experience of Adobe Lightroom—a benchmark that DHH once called "the last holdout" keeping him on macOS.
 
-- **"The last holdout."** Lightwell aims for parity with leading commercial tools, so you never have to compromise on quality or workflow.
+- **"The last holdout."** Luxforge aims for parity with leading commercial tools, so you never have to compromise on quality or workflow.
 - **"Anything you can click, a program can do."** Every slider, crop handle, and action in the interface goes through the same command service as the JSON API. Scripts, plugins, and AI agents interact with the app just like a user does: if they warm up a photo, their edits appear in the same non-destructive history, clearly attributed.
 
 ## The pillars
@@ -38,7 +38,7 @@ These are the core principles that development follows.
 
 ## What it does today
 
-Lightwell is pre-release. Everything is v0, formats change without migrations, and there are no packaged releases yet. With that said, a lot already works and has been checked on the reference machine (an M4 MacBook Pro):
+Luxforge is pre-release. Everything is v0, formats change without migrations, and there are no packaged releases yet. With that said, a lot already works and has been checked on the reference machine (an M4 MacBook Pro):
 
 - **Non-destructive editing** with ordered layers, persistent history, undo and redo, append-only restore, and named versions. Nothing in history is ever deleted.
 - **Basic adjustments**: white balance with a neutral picker, exposure, contrast, highlights, shadows, whites, blacks, vibrance and saturation, each checked against an independent high-precision reference.
@@ -49,10 +49,10 @@ Lightwell is pre-release. Everything is v0, formats change without migrations, a
 - **Presets**, including import of Lightroom Classic XMP and `.lrtemplate` presets, with a report of anything that couldn't be carried over.
 - **An RGB histogram** with clipping overlays and a pixel readout.
 - **Instant previews**: a quick preview first, then a cancellable exact render.
-- **Live agents**: if a script commits an edit while you're mid-drag, Lightwell keeps your draft and asks whether to discard it or reapply it on top.
+- **Live agents**: if a script commits an edit while you're mid-drag, Luxforge keeps your draft and asks whether to discard it or reapply it on top.
 
 <p align="center">
-  <img src="docs/design/develop-workspace/changed-elsewhere.png" alt="A notice reading 'Changed elsewhere: lw-assist committed Rotate right while your Exposure gesture was open. Your draft is kept.' with Discard draft and Reapply buttons" width="900">
+  <img src="docs/design/develop-workspace/changed-elsewhere.png" alt="A notice reading 'Changed elsewhere: lf-assist committed Rotate right while your Exposure gesture was open. Your draft is kept.' with Discard draft and Reapply buttons" width="900">
   <br>
   <sub>An agent commits while you're dragging a slider. Your draft is kept until you choose what happens to it.</sub>
 </p>
@@ -64,12 +64,12 @@ Export, relinking moved originals, an MCP adapter and a multi-photo library are 
 You'll need Rust (the toolchain is pinned) and a few platform prerequisites, listed in [development](docs/engineering/development.md). Then:
 
 ```sh
-git clone https://github.com/Willyham/lightwell.git
-cd lightwell
+git clone https://github.com/Willyham/luxforge.git
+cd luxforge
 cargo xtask develop --open fixtures/s0/orientation-6.jpg
 ```
 
-That builds an optimized editor and opens a sample photo. Use `--catalog path/to/catalog.sqlite` to keep your edits somewhere specific, or `--open` any JPEG or supported RAW file of your own. Lightwell only records a reference to the original and never copies or changes it.
+That builds an optimized editor and opens a sample photo. Use `--catalog path/to/catalog.sqlite` to keep your edits somewhere specific, or `--open` any JPEG or supported RAW file of your own. Luxforge only records a reference to the original and never copies or changes it.
 
 The [user guide](docs/user-guide.md) covers the workspace, keyboard shortcuts and every tool.
 
@@ -78,7 +78,7 @@ The [user guide](docs/user-guide.md) covers the workspace, keyboard shortcuts an
 Every operation in the editor is a JSON request. You can talk to the running app, or start a headless owner of the same catalog and send it one request per line:
 
 ```sh
-target/release/lightwell-json --catalog path/to/catalog.sqlite
+target/release/luxforge-json --catalog path/to/catalog.sqlite
 ```
 
 ```json
@@ -96,15 +96,15 @@ target/release/lightwell-json --catalog path/to/catalog.sqlite
   <sub>Tool panels are generated from each module's descriptor. The same descriptor generates its API.</sub>
 </p>
 
-Lightwell is written in Rust with a deliberately small core. The core owns the catalog, recipes, history and undo, rendering and the command service. Each tool (Basic, the colour mixer, crop and the rest) is a module that declares its parameters, controls and processing. The desktop builds its panels from those declarations, and the API generates `edit.*` methods from the same ones, so the two can't drift apart.
+Luxforge is written in Rust with a deliberately small core. The core owns the catalog, recipes, history and undo, rendering and the command service. Each tool (Basic, the colour mixer, crop and the rest) is a module that declares its parameters, controls and processing. The desktop builds its panels from those declarations, and the API generates `edit.*` methods from the same ones, so the two can't drift apart.
 
 | Crate | What it holds |
 | --- | --- |
-| `lightwell-core` | Images, recipes, rendering, the SQLite catalog and history, preview scheduling, the JSON API |
-| `lightwell-process` | CPU, memory and GPU counters for the editor process |
-| `lightwell-raw` | RAW decoding and development |
-| `lightwell-ui` | The widget library (built on [iced](https://iced.rs)), with no dependency on the core |
-| `lightwell-app` | The desktop app and the headless `lightwell-json` binary |
+| `luxforge-core` | Images, recipes, rendering, the SQLite catalog and history, preview scheduling, the JSON API |
+| `luxforge-process` | CPU, memory and GPU counters for the editor process |
+| `luxforge-raw` | RAW decoding and development |
+| `luxforge-ui` | The widget library (built on [iced](https://iced.rs)), with no dependency on the core |
+| `luxforge-app` | The desktop app and the headless `luxforge-json` binary |
 | `xtask` | Every build, check, evidence and packaging command |
 
 The editor tells you what it's doing. The Performance section shows memory, CPU and GPU use alongside whatever is running in the background, and the same numbers are available to any client through `resources.read` and `activity.list`.
@@ -121,7 +121,7 @@ macOS on Apple silicon is the primary target and the only platform with native G
 
 ## Contributing
 
-Lightwell is developed in the open by a human owner working alongside coding agents, and the docs are written for both. Start with [AGENTS.md](AGENTS.md) for the pillars and working rules, then [CONTRIBUTING.md](CONTRIBUTING.md) for the layout and checks. Before handing off a change:
+Luxforge is developed in the open by a human owner working alongside coding agents, and the docs are written for both. Start with [AGENTS.md](AGENTS.md) for the pillars and working rules, then [CONTRIBUTING.md](CONTRIBUTING.md) for the layout and checks. Before handing off a change:
 
 ```sh
 cargo xtask check
@@ -138,4 +138,4 @@ Useful reading:
 
 ## License
 
-Lightwell is free software under the [GNU General Public License v3.0 or later](LICENSE). Third-party components keep their own licenses. A manual review of licenses, native dependencies and assets has been deferred and is not complete.
+Luxforge is free software under the [GNU General Public License v3.0 or later](LICENSE). Third-party components keep their own licenses. A manual review of licenses, native dependencies and assets has been deferred and is not complete.

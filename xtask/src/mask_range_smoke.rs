@@ -46,7 +46,7 @@ use crate::{
     },
     *,
 };
-use lightwell_core::BASIC_EFFECT;
+use luxforge_core::BASIC_EFFECT;
 
 pub const SCENARIO: &str = "mask-range";
 /// The range fixture: twelve flat patches of the 24-patch chart's own sRGB renderings, laid out so

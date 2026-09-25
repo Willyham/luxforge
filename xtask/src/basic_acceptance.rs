@@ -4,7 +4,7 @@
 //! an independent client reaches it: `catalog.import`, `edit.set-basic`, `draft.*`, `render.sample`,
 //! `analysis.*`, `history.*` and `recipe.describe`. No desktop, no window and no pointer.
 //!
-//! The oracle is the independent f64 reference under `crates/lightwell-core/tests/reference/`,
+//! The oracle is the independent f64 reference under `crates/luxforge-core/tests/reference/`,
 //! compiled into this binary through [`crate::reference`] rather than copied, so the acceptance
 //! journey and the core's own numerical tests check production against one written-from-the-formulas
 //! implementation that production code can never import. This file composes the frozen unit order —
@@ -14,7 +14,7 @@
 //! The histogram reduction below is a plain serial loop written here, not `analysis::reduce`, so a
 //! reported count is compared with a second implementation.
 use crate::{reference, *};
-use lightwell_core::{
+use luxforge_core::{
     ApiRequest, BASIC_EFFECT, ClientId, ModuleRegistry, OwnerHandle, RECIPE_FORMAT, Recipe,
     SnapshotId, SourceImage, render as core_render,
 };
@@ -536,7 +536,7 @@ fn described_basic(described: &Value) -> Result<(String, usize, Value)> {
 
 /// Render one recipe in this process. The raster is the subject of the checks below, never the
 /// oracle: every expected value comes from the f64 reference above.
-pub(crate) fn render(source: &SourceImage, recipe: &Recipe) -> Result<lightwell_core::Raster> {
+pub(crate) fn render(source: &SourceImage, recipe: &Recipe) -> Result<luxforge_core::Raster> {
     let registry = ModuleRegistry::builtin();
     Ok(core_render(&registry, source, SnapshotId::new(), recipe)?)
 }
@@ -571,10 +571,7 @@ pub(crate) fn prepare_source(owner: &OwnerHandle, client: ClientId, asset: &Valu
 /// rather than with the f64 reference: the raster itself is proved against that reference
 /// separately, within the one output code the numerical contract allows, and a one-code difference
 /// on a single pixel would move a bin without any count being wrong.
-fn reduce_render(
-    source: &SourceImage,
-    recipe: &Recipe,
-) -> Result<(Counts, lightwell_core::Raster)> {
+fn reduce_render(source: &SourceImage, recipe: &Recipe) -> Result<(Counts, luxforge_core::Raster)> {
     let raster = render(source, recipe)?;
     let counts = reduce(&raster.rgba, raster.width, raster.height);
     Ok((counts, raster))
@@ -643,7 +640,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
     let fixture = root.join(FIXTURE);
     let fixture_hash = hash(&fixture)?;
     let catalog = out.join("basic-catalog.sqlite");
-    let source = lightwell_core::open_source(&fixture)?;
+    let source = luxforge_core::open_source(&fixture)?;
     let (width, height) = (source.width, source.height);
     let checks: RefCell<Vec<Value>> = RefCell::new(Vec::new());
     let record = |shows: &str, detail: Value| {
@@ -1117,13 +1114,13 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             .map(|layer| layer.effect_id.clone())
             .collect();
         ensure(
-            order == [BASIC_EFFECT, lightwell_core::CROP_EFFECT],
+            order == [BASIC_EFFECT, luxforge_core::CROP_EFFECT],
             format!("The mixed stack is ordered {order:?}"),
         )?;
         let crop_payload = recipe
             .layers
             .iter()
-            .find(|layer| layer.effect_id == lightwell_core::CROP_EFFECT)
+            .find(|layer| layer.effect_id == luxforge_core::CROP_EFFECT)
             .map(|layer| layer.payload.clone())
             .ok_or("The straightened stack holds no crop layer")?;
         let straightened = render(&source, &recipe)?;
@@ -1205,9 +1202,9 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         ensure(
             order
                 == [
-                    lightwell_core::PIXEL_EFFECT,
+                    luxforge_core::PIXEL_EFFECT,
                     BASIC_EFFECT,
-                    lightwell_core::PIXEL_EFFECT,
+                    luxforge_core::PIXEL_EFFECT,
                 ],
             format!("The point-replacement stack is ordered {order:?}"),
         )?;
@@ -1266,7 +1263,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             .map(|layer| layer.effect_id.clone())
             .collect();
         ensure(
-            order == [BASIC_EFFECT, lightwell_core::ORIENTATION_EFFECT],
+            order == [BASIC_EFFECT, luxforge_core::ORIENTATION_EFFECT],
             format!("The oriented stack is ordered {order:?}"),
         )?;
         let oriented = render(&source, &recipe)?;
@@ -1428,13 +1425,13 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "basic_layer_id": basic_layer,
             "code_tolerance": CODE_TOLERANCE,
             "resample_tolerance": RESAMPLE_TOLERANCE,
-            "oracle": "crates/lightwell-core/tests/reference, compiled into xtask; the crop sampler and the histogram reduction are written here from docs/specs/single-image.md and the histogram contract",
+            "oracle": "crates/luxforge-core/tests/reference, compiled into xtask; the crop sampler and the histogram reduction are written here from docs/specs/single-image.md and the histogram contract",
             "generic": "the host behaviour Basic shares with every field-patch module (discovery, drafts, no-ops, deduplication, resets, one layer per target, history, sample equal to render, an unavailable provider and reopen) is proved under field_patch_conformance",
             "reused_unit_tests": [
-                "lightwell_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest",
-                "lightwell_core::api::owner::tests::two_clients_share_one_job_and_keep_independent_current_and_historical_results",
-                "lightwell_core::api::owner::tests::a_draft_target_analyses_the_drafted_recipe_and_belongs_to_one_session",
-                "lightwell_core::api::methods::tests::an_external_commit_conflicts_a_draft_and_reapply_keeps_only_this_clients_fields"
+                "luxforge_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest",
+                "luxforge_core::api::owner::tests::two_clients_share_one_job_and_keep_independent_current_and_historical_results",
+                "luxforge_core::api::owner::tests::a_draft_target_analyses_the_drafted_recipe_and_belongs_to_one_session",
+                "luxforge_core::api::methods::tests::an_external_commit_conflicts_a_draft_and_reapply_keeps_only_this_clients_fields"
             ],
             "checks": checks.borrow().clone(),
             "elapsed_ms": total.elapsed().as_secs_f64() * 1000.0,

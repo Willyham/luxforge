@@ -8,16 +8,16 @@ use crate::{
     scenario::{Checked, Fixture, Frame, Plan, Run, Step, plan::only},
     *,
 };
-use lightwell_core::CROP_EFFECT;
+use luxforge_core::CROP_EFFECT;
 
 /// `edit.transform rotate-right` on an orientation-1 fixture reorders its quadrants exactly as
 /// EXIF orientation 6 does (a 90 degree clockwise turn: new top-left is old bottom-left, and so
 /// on), so every rotated frame reuses the ordinary fixture check at that orientation, with width
 /// and height swapped.
 const ROTATED: u8 = 6;
-const CROP_MODULE: &str = "lightwell.crop";
-const BASIC_MODULE: &str = "lightwell.basic";
-const TRANSFORM_MODULE: &str = "lightwell.transform";
+const CROP_MODULE: &str = "luxforge.crop";
+const BASIC_MODULE: &str = "luxforge.basic";
+const TRANSFORM_MODULE: &str = "luxforge.transform";
 const POINTER_MODE: &str = "pointer";
 
 /// Every frame of `workspace`, in order: the open, then one per step. Comments in the acceptance
@@ -325,7 +325,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     Ok(())
 }
 
-pub const UNAVAILABLE_NOTE: &str = "Two launches: the first commits a crop layer with every built-in module registered; the second reuses its catalog with `--disable-module lightwell.crop` and reopens the same fixture, which the catalog dedupes to the same asset, so the stack's crop layer is reported unavailable instead of silently rendered without it.";
+pub const UNAVAILABLE_NOTE: &str = "Two launches: the first commits a crop layer with every built-in module registered; the second reuses its catalog with `--disable-module luxforge.crop` and reopens the same fixture, which the catalog dedupes to the same asset, so the stack's crop layer is reported unavailable instead of silently rendered without it.";
 
 /// The first launch of `unavailable`: a 16:9 crop committed with every module registered.
 pub fn unavailable_first(_: &[PathBuf]) -> Plan {

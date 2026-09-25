@@ -1,5 +1,5 @@
 {
-  "generated_by": "crates/lightwell-core/tests/mixer_reference.rs generate_mixer_fixtures",
+  "generated_by": "crates/luxforge-core/tests/mixer_reference.rs generate_mixer_fixtures",
   "note": "Independent f64 reference (tests/reference/mixer.rs). expected_linear is linear sRGB after the frozen mixer unit (hue warp, then chroma, then luminance), full f64 precision, unclamped. Production is compared against this file within the tolerance frozen in docs/design/mixer-study.md.",
   "range_order": [
     "red",

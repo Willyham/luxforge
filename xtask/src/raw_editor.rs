@@ -1,6 +1,6 @@
 //! Reproducible full-editor RAW evidence. Every app run uses the background-only smoke launcher.
 use crate::*;
-use lightwell_core::{EditorService, SourceKind};
+use luxforge_core::{EditorService, SourceKind};
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
@@ -285,7 +285,7 @@ fn displayed_entry(frame: &Value) -> Result<&str> {
 /// parameter declares it shows. The control text is the payload rounded to that precision, so the
 /// only honest tolerance is the rounding itself, read from the descriptor rather than written here.
 fn displayed_tolerance(action: &str, parameter: &str) -> Result<f64> {
-    let registry = lightwell_core::ModuleRegistry::builtin();
+    let registry = luxforge_core::ModuleRegistry::builtin();
     let precision = registry
         .descriptors()
         .into_iter()
@@ -304,17 +304,16 @@ fn verify_displayed_raw_controls(frame: &Value) -> Result {
         .ok_or("Displayed layers missing")?;
     let raw = layers
         .iter()
-        .find(|layer| layer["effect"] == "lightwell.raw")
+        .find(|layer| layer["effect"] == "luxforge.raw")
         .ok_or("Displayed RAW layer missing")?;
-    let payload: lightwell_core::RawPayload = serde_json::from_value(raw["payload"].clone())?;
+    let payload: luxforge_core::RawPayload = serde_json::from_value(raw["payload"].clone())?;
     let controls = &state["controls"];
     // The core's own answer for the displayed development: a custom temperature and tint, or
     // under As shot the temperature and tint whose gains are the camera's as-shot gains, which
     // the forward map must reproduce.
     let [kelvin, tint] = payload.white_balance_controls();
-    if payload.wb_mode == lightwell_core::WhiteBalanceMode::AsShot
-        && let Ok(gains) =
-            lightwell_core::gains_from_temperature_tint(kelvin, tint, payload.cam_xyz)
+    if payload.wb_mode == luxforge_core::WhiteBalanceMode::AsShot
+        && let Ok(gains) = luxforge_core::gains_from_temperature_tint(kelvin, tint, payload.cam_xyz)
     {
         ensure(
             gains
@@ -778,7 +777,7 @@ pub fn run(root: &Path, manifest_path: &Path, out: &Path, binary: &Path, samples
     )?;
     ensure(!out.exists(), "RAW editor output must be new")?;
     let manifest: Manifest = serde_json::from_slice(&fs::read(manifest_path)?)?;
-    let catalog_value = read_json(&root.join("crates/lightwell-raw/data/cameras.json"))?;
+    let catalog_value = read_json(&root.join("crates/luxforge-raw/data/cameras.json"))?;
     let profiles: Vec<Value> = manifest
         .sources
         .iter()
@@ -791,7 +790,7 @@ pub fn run(root: &Path, manifest_path: &Path, out: &Path, binary: &Path, samples
     )?;
     fs::create_dir_all(out)?;
     fs::copy(manifest_path, out.join("manifest.json"))?;
-    let snapshot = out.join("lightwell-binary-snapshot");
+    let snapshot = out.join("luxforge-binary-snapshot");
     fs::copy(binary, &snapshot)?;
     let binary_hash = hash(&snapshot)?;
     let mut report = json!({
@@ -850,7 +849,7 @@ mod tests {
     #[test]
     fn catalog_modes_require_matching_camera_identity() {
         let catalog: Value =
-            serde_json::from_str(include_str!("../../crates/lightwell-raw/data/cameras.json"))
+            serde_json::from_str(include_str!("../../crates/luxforge-raw/data/cameras.json"))
                 .unwrap();
         let source = Source {
             id: "z6".into(),

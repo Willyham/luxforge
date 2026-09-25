@@ -1,5 +1,5 @@
 use crate::*;
-use lightwell_core::{
+use luxforge_core::{
     BASIC_EFFECT, CROP_EFFECT, CropPayload, CropStage, EditorService, Layer, LayerId,
     ModuleRegistry, Mutation, PreviewSource, ProxyBounds, Raster, Recipe, SnapshotId, Transform,
     analysis, render,
@@ -137,7 +137,7 @@ fn distribution(samples: Vec<f64>) -> Value {
 
 fn render_samples(
     service: &EditorService,
-    asset: &lightwell_core::AssetId,
+    asset: &luxforge_core::AssetId,
     samples: usize,
 ) -> Result<Vec<f64>> {
     let mut timings = Vec::with_capacity(samples);
@@ -480,8 +480,8 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "analysis::reduce_raster's pixel_count matches the rendered raster on every sample",
             "One and 200 exact transform actions, composed into one orientation layer, render from the same immutable source",
             "A 10 degree crop-fit adds one resample stage boundary and renders its declared stage",
-            "One +1 EV Basic exposure layer, compiled by the real lightwell.basic module, renders the same stage as the stack without it; the difference against that baseline is the streamed colour pass",
-            "One Basic layer with +1 EV exposure and all five Contrast/Highlights/Shadows/Whites/Blacks fields non-neutral, compiled into two real pointwise units by the real lightwell.basic module, renders the same stage as the stack without it",
+            "One +1 EV Basic exposure layer, compiled by the real luxforge.basic module, renders the same stage as the stack without it; the difference against that baseline is the streamed colour pass",
+            "One Basic layer with +1 EV exposure and all five Contrast/Highlights/Shadows/Whites/Blacks fields non-neutral, compiled into two real pointwise units by the real luxforge.basic module, renders the same stage as the stack without it",
             "One Basic layer with vibrance 50 and saturation 20, compiled to two real Oklab colour units, renders the same stage as the stack without it",
             "One temperature 30 / tint -10 Basic layer renders the same stage as the stack without it; its unit is one composite 3x3 linear-sRGB multiply per pixel",
             "One Basic layer with all ten fields non-neutral renders the same stage as the stack without it, at full resolution and against the display-bounded proxy",

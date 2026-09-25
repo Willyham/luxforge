@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Independent DNG 1.4 GainMap/WarpRectilinear reference probe.
 
-This deliberately has no Lightwell or Adobe runtime dependency.  It parses the
+This deliberately has no Luxforge or Adobe runtime dependency.  It parses the
 little-endian TIFF container and the big-endian opcode payloads used by the
 supplied DJI Air 2S DNG, then evaluates the reference equations in float64.
 """
@@ -153,7 +153,7 @@ def _rational_values(values: list[list[int]]) -> list[float]:
 
 
 def _base_whitepoint_xy(temperature_kelvin: float) -> tuple[float, float]:
-    """The documented Lightwell Planck/daylight locus used by the WB solver."""
+    """The documented Luxforge Planck/daylight locus used by the WB solver."""
     t = temperature_kelvin
     if t <= 4_000.0:
         x = -0.2661239e9 / t**3 - 0.2343580e6 / t**2 + 0.8776956e3 / t + 0.179910
@@ -221,7 +221,7 @@ def dng_wb_reference(color_stage: dict, temperature_kelvin: float,
         "production_reference": False,
         "selection": "inverse-CCT dual-calibration interpolation comparator",
         "temperature_kelvin": temperature_kelvin,
-        "tint_lightwell_units": tint,
+        "tint_luxforge_units": tint,
         "calibration_illuminants_cct_kelvin": [cct1, cct2],
         "matrix2_inverse_cct_weight": weight2,
         "whitepoint_xy": [x, y],
@@ -249,13 +249,13 @@ def dng_wb_fixed_cm2_reference(color_stage: dict, temperature_kelvin: float,
         "production_reference": True,
         "selection": "fixed ColorMatrix2 D65 XYZ-to-camera",
         "temperature_kelvin": temperature_kelvin,
-        "tint_lightwell_units": tint,
+        "tint_luxforge_units": tint,
         "whitepoint_xy": [x, y],
         "whitepoint_xyz_y1": list(xyz),
         "xyz_to_camera_matrix": [matrix[0:3], matrix[3:6], matrix[6:9]],
         "camera_white_response": response,
         "green_normalized_sensor_gains": gains,
-        "valid_for_lightwell_gain_contract": valid,
+        "valid_for_luxforge_gain_contract": valid,
         "validation_reason": ("within positive finite 0..32 gain range" if valid
                               else "rejected: a sensor gain exceeds the 0..32 contract"),
     }

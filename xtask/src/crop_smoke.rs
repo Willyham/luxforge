@@ -10,13 +10,13 @@ use crate::{
     scenario::{Checked, Fixture, Frame, Plan, Run, Step, plan::only},
     *,
 };
-use lightwell_core::{BoxRect, CROP_EFFECT, CropPayload, CropStage};
+use luxforge_core::{BoxRect, CROP_EFFECT, CropPayload, CropStage};
 
 /// The fixture both scenarios open, and therefore the crop layer's input stage.
 const STAGE: (u32, u32) = (480, 320);
 /// Expanded by its own default: `crop-draft` collapses it so the crop section is on screen.
-const BASIC_MODULE: &str = "lightwell.basic";
-const CROP_MODULE: &str = "lightwell.crop";
+const BASIC_MODULE: &str = "luxforge.basic";
+const CROP_MODULE: &str = "luxforge.crop";
 /// The straightening angle the scripted `edit.crop` commits.
 const ANGLE: f64 = 7.0;
 /// How much one scripted nudge adds to it before Apply.

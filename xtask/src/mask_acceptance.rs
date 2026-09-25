@@ -15,7 +15,7 @@
 use crate::basic_acceptance::{as_str, as_u64, call, import, mutation, prepare_source, refused};
 use crate::conformance::client::registry_without;
 use crate::*;
-use lightwell_core::{OwnerHandle, mask::commands as mask_commands};
+use luxforge_core::{OwnerHandle, mask::commands as mask_commands};
 use std::{cell::RefCell, sync::Arc, time::Instant};
 
 /// The fixture this chapter runs on: the 480x320 synthetic quadrant pattern every other chapter
@@ -56,7 +56,7 @@ struct Refusal {
 /// both paths is proved by `masked_colour.rs` and `masked_spatial.rs`.
 fn sample(
     owner: &OwnerHandle,
-    client: lightwell_core::ClientId,
+    client: luxforge_core::ClientId,
     asset: &Value,
     at: (u32, u32),
 ) -> Result<Vec<u64>> {
@@ -772,7 +772,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             .join()
             .map_err(|_| "The owner thread panicked")?;
         let (limited, limited_join) =
-            OwnerHandle::start_with(&catalog, Arc::new(registry_without("lightwell.presence")?))?;
+            OwnerHandle::start_with(&catalog, Arc::new(registry_without("luxforge.presence")?))?;
         let limited_detail = (|| -> Result<Value> {
             let client = limited.register();
             prepare_source(&limited, client, &asset)?;

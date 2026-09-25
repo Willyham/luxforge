@@ -13,14 +13,14 @@ use crate::{
     smoke::Scenario,
     *,
 };
-use lightwell_core::{
+use luxforge_core::{
     AssetId, CapabilitiesProofModule, EditorService, EntryId, ModuleRegistry, ProofEndpoint,
 };
 use std::{sync::Arc, time::Duration};
 
-const MODULE: &str = "lightwell.capabilities";
+const MODULE: &str = "luxforge.capabilities";
 const TASK: &str = "generate-proof-tint";
-const TINT_EFFECT: &str = "lightwell.capabilities.tint";
+const TINT_EFFECT: &str = "luxforge.capabilities.tint";
 /// How long the endpoint holds the palette download and each generation, so a frame can be
 /// captured while the install or the task is still running. Well inside every transfer and adapter
 /// deadline.
@@ -55,19 +55,19 @@ pub fn plan(generate: &str, key: &str, wrong: &str) -> Plan {
         // and the panel is scrolled to its end, so the whole capability block is on screen.
         layout(
             "basic-collapsed",
-            json!({"section":{"module":"lightwell.basic","expanded":false}}),
+            json!({"section":{"module":"luxforge.basic","expanded":false}}),
         )
-        .collapsed("lightwell.basic"),
+        .collapsed("luxforge.basic"),
         layout(
             "transform-collapsed",
-            json!({"section":{"module":"lightwell.transform","expanded":false}}),
+            json!({"section":{"module":"luxforge.transform","expanded":false}}),
         )
-        .collapsed("lightwell.transform"),
+        .collapsed("luxforge.transform"),
         layout(
             "crop-collapsed",
-            json!({"section":{"module":"lightwell.crop","expanded":false}}),
+            json!({"section":{"module":"luxforge.crop","expanded":false}}),
         )
-        .collapsed("lightwell.crop"),
+        .collapsed("luxforge.crop"),
         layout(
             "expanded",
             json!({"section":{"module":MODULE,"expanded":true}}),

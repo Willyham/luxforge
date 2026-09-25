@@ -138,7 +138,7 @@
           "WarpRectilinear"
         ]
       },
-      "notes": "Sensor IFD model FC3411 takes precedence over conflicting XMP Test_Pro. Qualified uncompressed16 Bayer mode, unity scales, mandatory List3 GainMap(9) then per-channel WarpRectilinear(1), fixed D65 ColorMatrix2 WB. Headroom-preserving float evaluation follows the Lightwell RAW contract and differs from strict DNG per-opcode clipping. Generic DNG, other firmware/encodings and dual-illuminant profile rendering are not qualified.",
+      "notes": "Sensor IFD model FC3411 takes precedence over conflicting XMP Test_Pro. Qualified uncompressed16 Bayer mode, unity scales, mandatory List3 GainMap(9) then per-channel WarpRectilinear(1), fixed D65 ColorMatrix2 WB. Headroom-preserving float evaluation follows the Luxforge RAW contract and differs from strict DNG per-opcode clipping. Generic DNG, other firmware/encodings and dual-illuminant profile rendering are not qualified.",
       "adapter_evidence": "Exact full-sensor hash against direct uncompressed TIFF samples; independently recomputed gain/warp/calibration references, 18 corrected samples within 1e-7, exact identity channel, finite 2000K/+100 tint development, malformed/unknown required operations rejected, unchanged original SHA-256.",
       "editor_evidence": "Actual JSON and background M4 Metal workflows: import, continuous exposure/WB, verified neutral picker, geometry, undo/history, versions/Restore, process reopen and unchanged source. Unknown mandatory opcode replacement preserves displayed pixels and catalog; changed interpretation and disabled provider fail explicitly without rewriting records. Resource scope is documented separately."
     }

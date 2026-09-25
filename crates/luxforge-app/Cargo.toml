@@ -1,0 +1,32 @@
+[package]
+name = "luxforge-app"
+default-run = "luxforge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "luxforge"
+path = "src/main.rs"
+
+[[bin]]
+name = "luxforge-json"
+path = "src/json.rs"
+
+[dependencies]
+luxforge-core = { path = "../luxforge-core" }
+luxforge-ui = { path = "../luxforge-ui" }
+iced.workspace = true
+# Iced 0.14 gates its public allocation re-export on codec-enabled image support.
+# Use the already-resolved runtime directly to keep JPEG-only decoding.
+iced_runtime = "=0.14.0"
+image.workspace = true
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

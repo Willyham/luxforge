@@ -4,12 +4,12 @@ use crate::{
     *,
 };
 
-const MODULE: &str = "lightwell.controls";
+const MODULE: &str = "luxforge.controls";
 const ACTION: &str = "set-controls";
-const EFFECT: &str = "lightwell.controls.identity";
+const EFFECT: &str = "luxforge.controls.identity";
 
 /// The developer pixel proof, whose section the script shows last: X and Y as px fields.
-const PIXEL_MODULE: &str = "lightwell.pixel";
+const PIXEL_MODULE: &str = "luxforge.pixel";
 
 /// The label a commit of the proof's own action earns, and the one its module reset earns.
 const SET: &str = "Set controls";
@@ -26,14 +26,14 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // Expose the proof section, then capture both its beginning and end in the tools panel.
         view(
             "basic-collapsed",
-            json!({"section":{"module":"lightwell.basic","expanded":false}}),
+            json!({"section":{"module":"luxforge.basic","expanded":false}}),
         )
-        .collapsed("lightwell.basic"),
+        .collapsed("luxforge.basic"),
         view(
             "crop-collapsed",
-            json!({"section":{"module":"lightwell.crop","expanded":false}}),
+            json!({"section":{"module":"luxforge.crop","expanded":false}}),
         )
-        .collapsed("lightwell.crop"),
+        .collapsed("luxforge.crop"),
         view(
             "controls-expanded",
             json!({"section":{"module":MODULE,"expanded":true}}),
@@ -106,11 +106,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // header and cannot collapse; group disclosure is a group of a module with several.
         view(
             "group-collapsed",
-            json!({"group":{"module":"lightwell.basic","path":[2],"expanded":false}}),
+            json!({"group":{"module":"luxforge.basic","path":[2],"expanded":false}}),
         ),
         view(
             "group-expanded",
-            json!({"group":{"module":"lightwell.basic","path":[2],"expanded":true}}),
+            json!({"group":{"module":"luxforge.basic","path":[2],"expanded":true}}),
         ),
         step("reset", json!({"reset":{"module":MODULE}}))
             .commits(1)
@@ -282,10 +282,10 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         Ok(at(step)?["state"]["control_ui"]["group_expanded"].clone())
     };
     ensure(
-        groups("group-collapsed")?["lightwell.basic/2"] == false
-            && groups("group-expanded")?["lightwell.basic/2"] == true
+        groups("group-collapsed")?["luxforge.basic/2"] == false
+            && groups("group-expanded")?["luxforge.basic/2"] == true
             && groups("group-expanded")?
-                .get("lightwell.controls/0")
+                .get("luxforge.controls/0")
                 .is_none(),
         "A group of a multi-group module did not collapse and expand",
     )?;

@@ -51,4 +51,4 @@ The temporary checkout was shallow, without submodule initialization. No upstrea
 
 **P.** Resolve the new release tag to a full commit, diff the source-map entry points, review release notes, and recheck defaults and optional build switches. Audit changed parameter versions, order tables, cache dependencies and model contracts before updating claims. Keep older behavioral qualifications where historical images still select those paths.
 
-Replace a performance unknown only with recorded measurements. Replace an interoperability unknown only with fixtures that compare state and output. Preserve the distinction between a research finding, a proposed Lightwell design and an accepted product decision.
+Replace a performance unknown only with recorded measurements. Replace an interoperability unknown only with fixtures that compare state and output. Preserve the distinction between a research finding, a proposed Luxforge design and an accepted product decision.

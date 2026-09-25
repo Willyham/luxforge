@@ -13,7 +13,7 @@ use crate::basic_acceptance::{
     FIXTURE, call, current_recipe, current_revision, import, mutation, render,
 };
 use crate::*;
-use lightwell_core::{
+use luxforge_core::{
     BASIC_EFFECT, ClientId, MIXER_EFFECT, ORIENTATION_EFFECT, OwnerHandle, PRESENCE_EFFECT,
     SourceImage, VIGNETTE_EFFECT,
 };
@@ -64,7 +64,7 @@ type Section =
 /// One module's section against its own catalog: a new owner, one client and the fixture imported
 /// once. The owner is stopped however the section ends.
 fn section(fixture: &Path, catalog: &Path, run: Section) -> Result<Value> {
-    let source = lightwell_core::open_source(fixture)?;
+    let source = luxforge_core::open_source(fixture)?;
     let total = Instant::now();
     let mut checks = Vec::new();
     let (owner, join) = OwnerHandle::start(catalog)?;

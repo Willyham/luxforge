@@ -6,7 +6,7 @@ Status: implemented. This note records what the history graph is, the named vers
 
 Every history entry stores its complete immutable stack and an `undo_parent`. Undo and redo move the current pointer; a new edit after undo appends with the undone-to entry as its parent; nothing is ever deleted. That is a commit graph: an entry is a commit, its stack is the tree, `undo_parent` is the parent pointer, the asset's current entry is HEAD and the per-asset `sequence` is the reflog. Restore is a forward-moving revert that copies an old stack into a new entry.
 
-Lightroom truncates later history when you edit from an earlier state, and its snapshots exist to survive that truncation. Lightwell never truncates, so every state a Lightroom snapshot could bring back is already reachable through `history.list` and `history.restore`. What was missing was a way to name one entry among hundreds, and a way to see the chain rather than the chronological list.
+Lightroom truncates later history when you edit from an earlier state, and its snapshots exist to survive that truncation. Luxforge never truncates, so every state a Lightroom snapshot could bring back is already reachable through `history.list` and `history.restore`. What was missing was a way to name one entry among hundreds, and a way to see the chain rather than the chronological list.
 
 ## Vocabulary
 

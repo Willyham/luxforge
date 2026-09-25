@@ -27,7 +27,7 @@ jobs:
         run: cargo xtask package --output artifacts/package
       - name: Linux runtime imports
         if: runner.os == 'Linux'
-        run: ldd artifacts/package/Lightwell/lightwell | tee artifacts/package/runtime-imports.txt
+        run: ldd artifacts/package/Luxforge/luxforge | tee artifacts/package/runtime-imports.txt
       - name: Windows runtime imports
         if: runner.os == 'Windows'
         shell: pwsh
@@ -36,7 +36,7 @@ jobs:
           $vsRoot = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $dumpbin = Get-ChildItem "$vsRoot/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe" | Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $dumpbin) { throw "MSVC dumpbin unavailable" }
-          & $dumpbin.FullName /DEPENDENTS artifacts/package/Lightwell/lightwell.exe | Tee-Object artifacts/package/runtime-imports.txt
+          & $dumpbin.FullName /DEPENDENTS artifacts/package/Luxforge/luxforge.exe | Tee-Object artifacts/package/runtime-imports.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Headless Linux renderer smoke (software Vulkan, not native acceptance)
         if: runner.os == 'Linux'
@@ -44,7 +44,7 @@ jobs:
           sudo apt-get install -y xvfb mesa-vulkan-drivers libxkbcommon-x11-0
           cargo xtask generate-fixtures
           for scenario in empty load replacement invalid repeated alternating large24 large60; do
-            xvfb-run -a cargo xtask smoke --binary artifacts/package/Lightwell/lightwell --scenario "$scenario" --output "artifacts/headless-$scenario"
+            xvfb-run -a cargo xtask smoke --binary artifacts/package/Luxforge/luxforge --scenario "$scenario" --output "artifacts/headless-$scenario"
           done
         env:
           WGPU_BACKEND: vulkan
@@ -53,7 +53,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: lightwell-${{ matrix.os }}-development
+          name: luxforge-${{ matrix.os }}-development
           path: artifacts/
           if-no-files-found: warn
           retention-days: 7

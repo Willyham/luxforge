@@ -13,7 +13,7 @@ use crate::{
     scenario::{Checked, Frame, Plan, Run, Step, Tolerance, pixels},
     *,
 };
-use lightwell_core::BASIC_EFFECT;
+use luxforge_core::BASIC_EFFECT;
 
 pub const SCENARIO: &str = "mask-linear";
 /// The golden four-quadrant fixture, unrotated: content and output coordinates coincide, so the

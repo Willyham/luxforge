@@ -18,12 +18,12 @@ use crate::{
     scenario::{Checked, Frame, Plan, Run, Step, plan::only},
     *,
 };
-use lightwell_core::CROP_EFFECT;
+use luxforge_core::CROP_EFFECT;
 
 pub const SCENARIO: &str = "raw-panel";
-const RAW_MODULE: &str = "lightwell.raw";
-const RAW_EFFECT: &str = "lightwell.raw";
-const BASIC_MODULE: &str = "lightwell.basic";
+const RAW_MODULE: &str = "luxforge.raw";
+const RAW_EFFECT: &str = "luxforge.raw";
+const BASIC_MODULE: &str = "luxforge.basic";
 const SET_TEMPERATURE: &str = "set-raw-temperature";
 
 /// The steps the checks read by name, apart from the drags, double-clicks and readouts, whose
@@ -450,11 +450,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 /// core's answer for the frame's own RAW layer, to the precision each field declares, and a
 /// temperature and tint whose gains are the as-shot gains. Returns what was compared.
 fn shows_as_shot_equivalent(frame: &Value, field: &str) -> Result<Value> {
-    let payload: lightwell_core::RawPayload = serde_json::from_value(raw_payload(frame)?.clone())?;
+    let payload: luxforge_core::RawPayload = serde_json::from_value(raw_payload(frame)?.clone())?;
     let [kelvin, tint] =
-        lightwell_core::temperature_tint_from_gains(payload.as_shot_gains, payload.cam_xyz)
+        luxforge_core::temperature_tint_from_gains(payload.as_shot_gains, payload.cam_xyz)
             .map_err(|error| format!("{field}: the as-shot gains have no equivalent: {error}"))?;
-    let back = lightwell_core::gains_from_temperature_tint(kelvin, tint, payload.cam_xyz)?;
+    let back = luxforge_core::gains_from_temperature_tint(kelvin, tint, payload.cam_xyz)?;
     ensure(
         back.iter()
             .zip(payload.as_shot_gains)
@@ -462,7 +462,7 @@ fn shows_as_shot_equivalent(frame: &Value, field: &str) -> Result<Value> {
         format!("{field}: {kelvin} K, {tint} does not reproduce the as-shot gains"),
     )?;
     let controls = &frame["state"]["controls"];
-    let registry = lightwell_core::ModuleRegistry::builtin();
+    let registry = luxforge_core::ModuleRegistry::builtin();
     for (action, parameter, expected) in [
         ("set-raw-temperature", "kelvin", kelvin),
         ("set-raw-tint", "tint", tint),
@@ -515,7 +515,7 @@ fn expect_no_failure(launch: &Checked, step: &str, what: &str) -> Result {
 
 /// The one crop layer of a frame's current stack: its payload. That a later commit updates this
 /// same layer is the plan's.
-fn crop_layer(frame: &Value) -> Result<lightwell_core::CropPayload> {
+fn crop_layer(frame: &Value) -> Result<luxforge_core::CropPayload> {
     let layers: Vec<&Value> = frame["state"]["stack"]["layers"]
         .as_array()
         .ok_or("The frame records no stack")?
@@ -539,7 +539,7 @@ fn shows_crop(frame: &Value, source: [u32; 2], angle: f64, what: &str) -> Result
         payload.angle == angle,
         format!("{what}: the crop layer's angle is {}", payload.angle),
     )?;
-    let stage = lightwell_core::CropStage {
+    let stage = luxforge_core::CropStage {
         width: source[0],
         height: source[1],
         angle,
@@ -588,7 +588,7 @@ fn draft_is_whole(frame: &Frame, source: [u32; 2]) -> Result<Value> {
     let angle = draft["angle"]
         .as_f64()
         .ok_or("The draft records no angle")?;
-    let stage = lightwell_core::CropStage {
+    let stage = luxforge_core::CropStage {
         width: source[0],
         height: source[1],
         angle,
@@ -1047,10 +1047,10 @@ fn keeps_the_tint_in_force(
     released: &Value,
     drag: &Drag,
 ) -> Result<Value> {
-    let prior: lightwell_core::RawPayload = serde_json::from_value(raw_payload(before)?.clone())?;
+    let prior: luxforge_core::RawPayload = serde_json::from_value(raw_payload(before)?.clone())?;
     if drag.drag == DRAGS[0].drag {
         ensure(
-            prior.wb_mode == lightwell_core::WhiteBalanceMode::AsShot,
+            prior.wb_mode == luxforge_core::WhiteBalanceMode::AsShot,
             "The first temperature drag does not start from As shot",
         )?;
     }
@@ -1071,7 +1071,7 @@ fn keeps_the_tint_in_force(
         format!("The Custom tint field moved during a temperature drag: {shown:?}"),
     )?;
     Ok(json!({
-        "from": if prior.wb_mode == lightwell_core::WhiteBalanceMode::AsShot { "as-shot" } else { "custom" },
+        "from": if prior.wb_mode == luxforge_core::WhiteBalanceMode::AsShot { "as-shot" } else { "custom" },
         "in_force": in_force,
         "committed": committed,
         "field": shown[0],
@@ -1097,10 +1097,10 @@ mod tests {
     /// the step after it at the same value, with the zoom around the 100% one where the checks look.
     #[test]
     fn each_drag_is_a_declared_temperature_on_its_step_where_the_checks_look() {
-        let registry = lightwell_core::ModuleRegistry::builtin();
+        let registry = luxforge_core::ModuleRegistry::builtin();
         let (_, action) = registry.action(SET_TEMPERATURE).expect("a declared action");
         let parameter = action.parameter("kelvin").expect("a declared field");
-        let lightwell_core::ParameterKind::Number { min, max } = parameter.kind else {
+        let luxforge_core::ParameterKind::Number { min, max } = parameter.kind else {
             panic!("kelvin is a number");
         };
         let step = parameter.step.unwrap_or(1.0);
@@ -1188,15 +1188,15 @@ mod tests {
 
     /// The reset a number control declares for its own field, found the way `module.list` lists it.
     fn declared_reset(
-        controls: &[lightwell_core::Control],
+        controls: &[luxforge_core::Control],
         action: &str,
         parameter: &str,
-    ) -> Option<Option<lightwell_core::ResetAction>> {
+    ) -> Option<Option<luxforge_core::ResetAction>> {
         controls.iter().find_map(|control| match control {
-            lightwell_core::Control::Group { controls, .. } => {
+            luxforge_core::Control::Group { controls, .. } => {
                 declared_reset(controls, action, parameter)
             }
-            lightwell_core::Control::Number {
+            luxforge_core::Control::Number {
                 action: declared,
                 parameter: named,
                 reset,
@@ -1213,7 +1213,7 @@ mod tests {
     /// it.
     #[test]
     fn every_double_click_is_a_declared_drafting_field_and_its_declared_reset() {
-        let registry = lightwell_core::ModuleRegistry::builtin();
+        let registry = luxforge_core::ModuleRegistry::builtin();
         for click in &DOUBLE_CLICKS {
             let (module, action) = registry.action(click.action).expect("a declared action");
             let parameter = action.parameter(click.parameter).expect("a declared field");
@@ -1222,7 +1222,7 @@ mod tests {
                 "{}",
                 click.action
             );
-            let lightwell_core::ParameterKind::Number { min, max } = parameter.kind else {
+            let luxforge_core::ParameterKind::Number { min, max } = parameter.kind else {
                 panic!("{} is a number", click.parameter);
             };
             assert!((min..=max).contains(&click.value));

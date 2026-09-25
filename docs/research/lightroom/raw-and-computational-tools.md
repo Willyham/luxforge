@@ -6,7 +6,7 @@
 
 **C.** A RAW workflow must interpret sensor samples, black/white levels, channel layout, color calibration and white balance, and produce a useful rendered image. Container decompression alone does not specify demosaicing, highlight reconstruction, color appearance or detail processing. An embedded JPEG can be displayed without proving that any RAW development has occurred.
 
-**D.** Adobe documents that camera-generated previews can initially look different from its subsequent rendition. Camera Matching profiles approximate the camera's rendering intent. [S15: Color FAQ](https://helpx.adobe.com/lightroom-classic/desktop/technical-support/technical-issues/miscellaneous-issues/color-faq.html) **P.** For Lightwell's Nikon Z6 and Fujifilm X100VI goals, keep decoder support, exact recording-mode support, baseline color quality and preview latency as separate acceptance questions; follow the [existing decoder research](../technical-options.md#image-processing-and-raw).
+**D.** Adobe documents that camera-generated previews can initially look different from its subsequent rendition. Camera Matching profiles approximate the camera's rendering intent. [S15: Color FAQ](https://helpx.adobe.com/lightroom-classic/desktop/technical-support/technical-issues/miscellaneous-issues/color-faq.html) **P.** For Luxforge's Nikon Z6 and Fujifilm X100VI goals, keep decoder support, exact recording-mode support, baseline color quality and preview latency as separate acceptance questions; follow the [existing decoder research](../technical-options.md#image-processing-and-raw).
 
 ## Raw Details and Super Resolution
 
@@ -40,4 +40,4 @@
 
 **D.** Classic 15.5 adds Render to DNG: the current edit is baked into a new non-raw DNG. Its presence is a reminder that the `.dng` extension alone does not mean “untouched mosaic sensor data.” [S35: Lightroom Classic release notes](https://helpx.adobe.com/lightroom-classic/desktop/introduction-to-lightroom-classic/release-notes.html)
 
-**P.** Represent source-preserving edit recipes, derived computational sources and flattened exports distinctly in Lightwell. Do not automatically include AI, panorama or HDR merge in current milestones. Their data, quality and API contracts require their own scope.
+**P.** Represent source-preserving edit recipes, derived computational sources and flattened exports distinctly in Luxforge. Do not automatically include AI, panorama or HDR merge in current milestones. Their data, quality and API contracts require their own scope.

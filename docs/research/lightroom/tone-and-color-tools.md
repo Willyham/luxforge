@@ -65,8 +65,8 @@ A basic saturation model mixes a color away from an achromatic axis: `C_out = L 
 
 **C.** A useful model for grading is smoothly weighted tint contributions, `Σ w_i(L)·tint_i`; it does not recover Adobe's weights, color mixing or processing order.
 
-**D.** A profile supplies a rendering foundation without necessarily changing visible edit-slider values. Adaptive profiles can depend on image analysis and require refresh. [S16: Image tone and color](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/image-tone-color.html) **P.** Lightwell should distinguish a preset that assigns settings from a profile resource used during evaluation. It should never equate “all visible sliders at zero” with “no processing.”
+**D.** A profile supplies a rendering foundation without necessarily changing visible edit-slider values. Adaptive profiles can depend on image analysis and require refresh. [S16: Image tone and color](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/image-tone-color.html) **P.** Luxforge should distinguish a preset that assigns settings from a profile resource used during evaluation. It should never equate “all visible sliders at zero” with “no processing.”
 
-## Validation ideas for future Lightwell tools
+## Validation ideas for future Luxforge tools
 
 **P.** Use linear ramps, step wedges, saturated RGB patches, skin-like hues, a backlit face and a clipped highlight fixture. Compare equal-luminance patches in different surroundings to detect spatial adaptation. Check whether a change alters hue, black/white clipping, monotonicity and noise. Test RAW and rendered RGB separately. Select explicit mathematics and visual acceptance before reusing Lightroom's slider names.

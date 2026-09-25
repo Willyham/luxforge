@@ -17,13 +17,13 @@ use crate::{
     scenario::{Bright, Checked, Frame, Plan, Run, Scan, Step, pixels, plan::only},
     *,
 };
-use lightwell_core::PRESENCE_EFFECT;
+use luxforge_core::PRESENCE_EFFECT;
 
-const PRESENCE_MODULE: &str = "lightwell.presence";
+const PRESENCE_MODULE: &str = "luxforge.presence";
 /// The one section the registry lists above Presence that is both a real toggleable section
 /// (Pixel declares none) and expanded by its own descriptor's default: collapsed first, so the
 /// module's own three sliders land on screen without scrolling.
-const BASIC_MODULE: &str = "lightwell.basic";
+const BASIC_MODULE: &str = "luxforge.basic";
 const SET_PRESENCE: &str = "set-presence";
 const TEXTURE: &str = "texture";
 const CLARITY: &str = "clarity";

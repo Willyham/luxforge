@@ -130,5 +130,5 @@ These choices should be settled against the small experiment's intended experien
 
 ## Research references
 
-- [Figma's published multiplayer architecture](https://www.figma.com/blog/how-figmas-multiplayer-technology-works/) demonstrates an authoritative service with CRDT-inspired property handling and explains why collaborative undo requires its own semantics. It is a precedent, not Lightwell's selected conflict policy.
+- [Figma's published multiplayer architecture](https://www.figma.com/blog/how-figmas-multiplayer-technology-works/) demonstrates an authoritative service with CRDT-inspired property handling and explains why collaborative undo requires its own semantics. It is a precedent, not Luxforge's selected conflict policy.
 - [Automerge's conflict semantics](https://automerge.org/docs/reference/documents/conflicts/) illustrate the distinction between deterministic convergence and an application deciding how to present concurrent assignments.

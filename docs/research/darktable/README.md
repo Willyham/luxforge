@@ -18,7 +18,7 @@ The central finding: darktable stores editable module state separately from sour
 | What AI exists in this release, and where does it run? | [AI and derived images](ai-and-derived-images.md) |
 | How do crop, masks, healing and lens correction fit together? | [Geometry, masks and retouching](geometry-masks-and-retouching.md) |
 | What can modules, Lua, D-Bus and the CLI do? | [Modules and automation](modules-and-automation.md) |
-| What differs from Lightroom, and what is relevant to Lightwell? | [Comparison and engineering implications](lightwell-implications.md) |
+| What differs from Lightroom, and what is relevant to Luxforge? | [Comparison and engineering implications](luxforge-implications.md) |
 | Which claims are version-sensitive or still untested? | [Versions and caveats](versions-and-caveats.md) |
 | Where should a developer start reading upstream? | [Source register and code map](sources.md) |
 
@@ -27,7 +27,7 @@ The central finding: darktable stores editable module state separately from sour
 - **S — Source-confirmed:** inspected implementation at the pinned commit. Formulas describe the identified path, not all modes or the complete image rendition.
 - **D — Documented:** official manual or developer documentation. Source wins when a concrete implementation contradicts older prose.
 - **C — Conceptual/inferred:** explanatory reasoning, not a measured result or an exact code transcription.
-- **P — Proposal:** possible Lightwell design or experiment; existing decision gates still apply.
+- **P — Proposal:** possible Luxforge design or experiment; existing decision gates still apply.
 - **U — Unverified:** runtime behavior, quality or performance not established by this research.
 
 No darktable binary was installed or run, no user's catalog was inspected, and no GPU/image-quality benchmark was performed. The temporary source checkout was read only for research, without fetching submodules or running upstream build scripts. All durable citations point upstream, not to that temporary folder.
@@ -40,4 +40,4 @@ No darktable binary was installed or run, no user's catalog was inspected, and n
 - The current release's configured default is **scene-referred sigmoid**, despite manual sections that still describe filmic as the default. [Version caveats](versions-and-caveats.md).
 - Optional AI inference and the ordinary OpenCL pixel pipeline are separate execution systems. A CoreML setting does not turn all image operations into Metal/Neural Engine kernels. [AI](ai-and-derived-images.md).
 
-Lightwell's accepted decisions and implementation roadmap are unchanged by this research. Studying darktable does not adopt its complete interface, module set, persistence model or extension ABI.
+Luxforge's accepted decisions and implementation roadmap are unchanged by this research. Studying darktable does not adopt its complete interface, module set, persistence model or extension ABI.

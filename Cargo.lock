@@ -1895,76 +1895,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lightwell-app"
-version = "0.0.0"
-dependencies = [
- "iced",
- "iced_runtime",
- "image",
- "lightwell-core",
- "lightwell-ui",
- "rfd",
- "serde",
- "serde_json",
- "zeroize",
-]
-
-[[package]]
-name = "lightwell-core"
-version = "0.0.0"
-dependencies = [
- "image",
- "lightwell-process",
- "lightwell-raw",
- "moxcms",
- "rayon",
- "roxmltree",
- "rusqlite",
- "rustls",
- "rustls-platform-verifier",
- "security-framework",
- "serde",
- "serde_json",
- "sha2",
- "ureq-proto",
- "url",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "lightwell-process"
-version = "0.0.0"
-dependencies = [
- "core-foundation 0.10.1",
- "libc",
- "objc2 0.6.4",
- "serde",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "lightwell-raw"
-version = "0.0.0"
-dependencies = [
- "cc",
- "libc",
- "rayon",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "lightwell-ui"
-version = "0.0.0"
-dependencies = [
- "iced",
- "iced_wgpu",
- "wgpu",
-]
-
-[[package]]
 name = "lilt"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2023,6 +1953,76 @@ name = "lru"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
+
+[[package]]
+name = "luxforge-app"
+version = "0.0.0"
+dependencies = [
+ "iced",
+ "iced_runtime",
+ "image",
+ "luxforge-core",
+ "luxforge-ui",
+ "rfd",
+ "serde",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "luxforge-core"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "luxforge-process",
+ "luxforge-raw",
+ "moxcms",
+ "rayon",
+ "roxmltree",
+ "rusqlite",
+ "rustls",
+ "rustls-platform-verifier",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ureq-proto",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "luxforge-process"
+version = "0.0.0"
+dependencies = [
+ "core-foundation 0.10.1",
+ "libc",
+ "objc2 0.6.4",
+ "serde",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "luxforge-raw"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "libc",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "luxforge-ui"
+version = "0.0.0"
+dependencies = [
+ "iced",
+ "iced_wgpu",
+ "wgpu",
+]
 
 [[package]]
 name = "lyon"
@@ -4810,7 +4810,7 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "image",
- "lightwell-core",
+ "luxforge-core",
  "percent-encoding",
  "regex",
  "serde",

@@ -43,6 +43,6 @@
 
 ## Recovery and provenance implications
 
-**P.** A Lightwell design should distinguish an editable recipe, an accepted generated mask, a model artifact, a disposable embedding cache and a newly generated source image. Record model/configuration identity where reproducibility requires it, and preserve generated files when later edits reference them. Define cancellation and partial-file cleanup before exposing an asynchronous job.
+**P.** A Luxforge design should distinguish an editable recipe, an accepted generated mask, a model artifact, a disposable embedding cache and a newly generated source image. Record model/configuration identity where reproducibility requires it, and preserve generated files when later edits reference them. Define cancellation and partial-file cleanup before exposing an asynchronous job.
 
 AI tools remain future work under the existing roadmap. No model, provider or storage design is selected by this research. A full dependency/model license review remains deferred under the owner's existing instruction.

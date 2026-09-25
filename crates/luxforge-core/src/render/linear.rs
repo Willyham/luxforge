@@ -1,0 +1,3934 @@
+//! High precision scene-linear rendering for prepared RAW sources.
+//!
+//! This module is deliberately independent of a RAW decoder. A decoder or source-preparation
+//! worker supplies immutable planar RGB values in unbounded linear sRGB/D65. The recipe is then
+//! evaluated in f64 and converted to the existing byte [`Raster`] only at the terminal boundary.
+//! The byte JPEG evaluator in [`super::render`] remains unchanged.
+
+use super::{
+    Cancel, Compiled, Entry, Raster, ScratchBudget, Segment,
+    spatial::{
+        self, PRODUCTION_TILE, PointTiles, SpatialPlan, build_reduction, fill_planes,
+        resolve_globals, run_batches, run_tile,
+    },
+};
+use crate::{
+    Error, ErrorKind, Recipe, SnapshotId,
+    mask_field::MaskSampling,
+    modules::{Global, ModuleRegistry, Processing, SpatialOperation, Stage},
+};
+use rayon::prelude::*;
+use std::sync::{Arc, Weak};
+
+const MAX_PIXELS: u64 = luxforge_raw::MAX_PIXELS as u64;
+const MAX_SIDE: u32 = 16_384;
+const MAX_SOURCE_BYTES: u64 = luxforge_raw::MAX_RGB_BYTES as u64;
+const MAX_RGBA_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_RESAMPLES: usize = 1;
+const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
+/// Amortize row dispatch while keeping each callback short enough for cancellation and pool peers.
+const LINEAR_COLOR_ROWS_PER_CHUNK: usize = 8;
+
+fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
+    if width == 0 || height == 0 {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            "linear source dimensions must be nonzero",
+        ));
+    }
+    if width > MAX_SIDE || height > MAX_SIDE {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear source side exceeds 16384 pixels",
+        ));
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear source dimensions overflow",
+            )
+        })?;
+    if pixels > MAX_PIXELS {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear source exceeds 128 megapixels",
+        ));
+    }
+    let values = pixels.checked_mul(3).ok_or_else(|| {
+        Error::new(
+            ErrorKind::ResourceLimit,
+            "linear source plane length overflow",
+        )
+    })?;
+    let bytes = values
+        .checked_mul(u64::from(std::mem::size_of::<f32>() as u32))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear source byte length overflow",
+            )
+        })?;
+    if bytes > MAX_SOURCE_BYTES {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear RGB source exceeds 1.5 GiB",
+        ));
+    }
+    let values = usize::try_from(values)
+        .map_err(|_| Error::new(ErrorKind::ResourceLimit, "linear source is not addressable"))?;
+    let plane_len = usize::try_from(pixels).map_err(|_| {
+        Error::new(
+            ErrorKind::ResourceLimit,
+            "linear source plane is not addressable",
+        )
+    })?;
+    Ok((values, plane_len))
+}
+
+fn output_len(width: u32, height: u32) -> Result<usize, Error> {
+    if width == 0 || height == 0 {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            "linear output dimensions must be nonzero",
+        ));
+    }
+    if width > MAX_SIDE || height > MAX_SIDE {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output side exceeds 16384 pixels",
+        ));
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear output dimensions overflow",
+            )
+        })?;
+    if pixels > luxforge_raw::MAX_PIXELS as u64 {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output exceeds 128 megapixels",
+        ));
+    }
+    let bytes = pixels.checked_mul(4).ok_or_else(|| {
+        Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output byte length overflow",
+        )
+    })?;
+    if bytes > MAX_RGBA_BYTES {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output exceeds 512 MiB",
+        ));
+    }
+    usize::try_from(bytes)
+        .map_err(|_| Error::new(ErrorKind::ResourceLimit, "linear output is not addressable"))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct View {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    orientation: u8,
+}
+
+impl View {
+    fn output_dimensions(self) -> (u32, u32) {
+        if (5..=8).contains(&self.orientation) {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        }
+    }
+
+    fn map(self, x: u32, y: u32) -> Option<(u32, u32)> {
+        let (source_x, source_y) = match self.orientation {
+            1 => (x, y),
+            2 => (self.width.checked_sub(1)?.checked_sub(x)?, y),
+            3 => (
+                self.width.checked_sub(1)?.checked_sub(x)?,
+                self.height.checked_sub(1)?.checked_sub(y)?,
+            ),
+            4 => (x, self.height.checked_sub(1)?.checked_sub(y)?),
+            5 => (y, x),
+            6 => (y, self.height.checked_sub(1)?.checked_sub(x)?),
+            7 => (
+                self.width.checked_sub(1)?.checked_sub(y)?,
+                self.height.checked_sub(1)?.checked_sub(x)?,
+            ),
+            8 => (self.width.checked_sub(1)?.checked_sub(y)?, x),
+            _ => return None,
+        };
+        Some((self.x + source_x, self.y + source_y))
+    }
+}
+
+/// Immutable planar f32 RGB prepared in linear sRGB/D65.
+///
+/// `planes` is laid out as one complete R plane, followed by G and B. Values may be negative or
+/// above one; only non-finite values are rejected. A view can crop and orient these planes without
+/// copying them, which lets a source adapter expose its active/upright content rectangle cheaply.
+/// The `Arc<Vec<f32>>` stores the caller's moved `Vec` without copying its pixel buffer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinearImage {
+    base_width: u32,
+    base_height: u32,
+    planes: Arc<Vec<f32>>,
+    fingerprint: String,
+    view: View,
+    /// Which development these planes are: a process-unique number taken when the planes were
+    /// adopted, shared by every view over them and by nothing else. A redevelopment of the same
+    /// source is a new number even when the allocator hands its planes the address the old ones
+    /// had, which is why a cache keys on this and never on an address.
+    development: u64,
+}
+
+/// The source of every [`LinearImage::development`] number.
+static NEXT_DEVELOPMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl LinearImage {
+    /// Construct an identity-view image from contiguous planar R, G and B values.
+    pub fn new(width: u32, height: u32, planes: impl Into<Arc<Vec<f32>>>) -> Result<Self, Error> {
+        Self::with_fingerprint(width, height, planes, String::new())
+    }
+
+    /// Construct an identity-view image with the source identity copied to output rasters.
+    pub fn with_fingerprint(
+        width: u32,
+        height: u32,
+        planes: impl Into<Arc<Vec<f32>>>,
+        fingerprint: impl Into<String>,
+    ) -> Result<Self, Error> {
+        Self::construct(width, height, planes.into(), fingerprint.into(), false)
+    }
+
+    /// Adopt planes whose producer has already checked every output value after its final math.
+    /// The RAW camera conversion is the only caller. This remains private to the core: public
+    /// constructors must scan untrusted input and reject non-finite values.
+    pub(crate) fn from_validated_planes(
+        width: u32,
+        height: u32,
+        planes: Vec<f32>,
+        fingerprint: String,
+    ) -> Result<Self, Error> {
+        Self::construct(width, height, Arc::new(planes), fingerprint, true)
+    }
+
+    fn construct(
+        width: u32,
+        height: u32,
+        planes: Arc<Vec<f32>>,
+        fingerprint: String,
+        already_finite: bool,
+    ) -> Result<Self, Error> {
+        let (expected, _) = layout(width, height)?;
+        if planes.len() != expected {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("linear source needs {expected} planar values"),
+            ));
+        }
+        let capacity_bytes = u64::try_from(planes.capacity())
+            .ok()
+            .and_then(|capacity| capacity.checked_mul(u64::from(std::mem::size_of::<f32>() as u32)))
+            .ok_or_else(|| {
+                Error::new(ErrorKind::ResourceLimit, "linear source capacity overflows")
+            })?;
+        if capacity_bytes > MAX_SOURCE_BYTES {
+            return Err(Error::new(
+                ErrorKind::ResourceLimit,
+                "linear RGB source capacity exceeds 1.5 GiB",
+            ));
+        }
+        if !already_finite && planes.iter().any(|value| !value.is_finite()) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear source contains a non-finite value",
+            ));
+        }
+        Ok(Self {
+            base_width: width,
+            base_height: height,
+            planes,
+            fingerprint,
+            view: View {
+                x: 0,
+                y: 0,
+                width,
+                height,
+                orientation: 1,
+            },
+            development: NEXT_DEVELOPMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        })
+    }
+
+    /// Return a cropped/oriented view without copying the source planes.
+    ///
+    /// `crop` is `[x, y, width, height]` in the base source-plane coordinates. EXIF orientation
+    /// values 1 through 8 use the standard mappings and are applied exactly once to that crop.
+    pub fn with_view(&self, crop: [u32; 4], orientation: u8) -> Result<Self, Error> {
+        let [x, y, width, height] = crop;
+        if !(1..=8).contains(&orientation) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear source orientation must be EXIF 1 through 8",
+            ));
+        }
+        let right = x.checked_add(width).ok_or_else(|| {
+            Error::new(ErrorKind::ResourceLimit, "linear crop exceeds dimensions")
+        })?;
+        let bottom = y.checked_add(height).ok_or_else(|| {
+            Error::new(ErrorKind::ResourceLimit, "linear crop exceeds dimensions")
+        })?;
+        if width == 0 || height == 0 || right > self.base_width || bottom > self.base_height {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear crop lies outside source planes",
+            ));
+        }
+        let view = View {
+            x,
+            y,
+            width,
+            height,
+            orientation,
+        };
+        let (output_width, output_height) = view.output_dimensions();
+        let _ = layout(output_width, output_height)?;
+        Ok(Self {
+            base_width: self.base_width,
+            base_height: self.base_height,
+            planes: Arc::clone(&self.planes),
+            fingerprint: self.fingerprint.clone(),
+            view,
+            development: self.development,
+        })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.view.output_dimensions().0
+    }
+
+    pub fn height(&self) -> u32 {
+        self.view.output_dimensions().1
+    }
+
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    pub fn view(&self) -> ([u32; 4], u8) {
+        (
+            [self.view.x, self.view.y, self.view.width, self.view.height],
+            self.view.orientation,
+        )
+    }
+
+    /// The development these planes belong to: equal for every view over the same adopted planes,
+    /// different for every redevelopment, and never reused within the process.
+    pub fn development(&self) -> u64 {
+        self.development
+    }
+
+    pub(crate) fn storage_weak(&self) -> Weak<Vec<f32>> {
+        Arc::downgrade(&self.planes)
+    }
+
+    /// A bulk reader over this image's viewed pixels. The plane length and the view are resolved
+    /// once here instead of per access, which is what the proxy downscale needs: it reads every
+    /// viewed pixel at most twice per axis and allocates nothing of its own to do it.
+    pub(crate) fn reader(&self) -> ViewReader<'_> {
+        let (width, height) = self.view.output_dimensions();
+        ViewReader {
+            planes: self.planes.as_slice(),
+            base_width: self.base_width,
+            // `layout` accepted these dimensions when the image was built, so the product is
+            // addressable and this cannot overflow `usize`.
+            plane_len: self.base_width as usize * self.base_height as usize,
+            view: self.view,
+            width,
+            height,
+        }
+    }
+
+    pub fn planes(&self) -> &[f32] {
+        self.planes.as_slice()
+    }
+
+    /// Read one view pixel without allocating. This is also useful to a source-stage picker.
+    pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+        let (width, height) = self.view.output_dimensions();
+        if x >= width || y >= height {
+            return None;
+        }
+        let (base_x, base_y) = self.view.map(x, y)?;
+        let index =
+            usize::try_from(u64::from(base_y) * u64::from(self.base_width) + u64::from(base_x))
+                .ok()?;
+        let plane_len =
+            usize::try_from(u64::from(self.base_width) * u64::from(self.base_height)).ok()?;
+        Some([
+            self.planes[index],
+            self.planes[plane_len + index],
+            self.planes[2 * plane_len + index],
+        ])
+    }
+
+    fn pixel_f64(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
+        let pixel = self.pixel(x, y).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!("linear source coordinate ({x}, {y}) is outside the view"),
+            )
+        })?;
+        let pixel = pixel.map(f64::from);
+        if pixel.iter().all(|value| value.is_finite()) {
+            Ok(pixel)
+        } else {
+            Err(Error::new(
+                ErrorKind::Render,
+                "linear source produced a non-finite pixel",
+            ))
+        }
+    }
+}
+
+/// Reads viewed pixels of a [`LinearImage`] without recomputing its layout per access. It borrows
+/// the one immutable plane allocation and copies nothing.
+pub(crate) struct ViewReader<'a> {
+    planes: &'a [f32],
+    base_width: u32,
+    plane_len: usize,
+    view: View,
+    width: u32,
+    height: u32,
+}
+
+impl ViewReader<'_> {
+    pub(crate) fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// One viewed pixel, or `None` outside the view: the same mapping and the same values as
+    /// [`LinearImage::pixel`], which is what makes a bulk read agree with a point read.
+    #[inline]
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let (base_x, base_y) = self.view.map(x, y)?;
+        let index = base_y as usize * self.base_width as usize + base_x as usize;
+        Some([
+            self.planes[index],
+            self.planes[self.plane_len + index],
+            self.planes[2 * self.plane_len + index],
+        ])
+    }
+
+    /// A viewed row with its mapping resolved once. Construction validated the crop, orientation
+    /// and plane lengths, so its pixels advance by one column or one base-plane row, in either
+    /// direction. No pixel data is copied or allocated to make this iterator.
+    fn row(&self, y: u32) -> Option<impl ExactSizeIterator<Item = [f32; 3]> + '_> {
+        if y >= self.height {
+            return None;
+        }
+        let (base_x, base_y) = self.view.map(0, y)?;
+        let first = base_y as usize * self.base_width as usize + base_x as usize;
+        let stride = match self.view.orientation {
+            1 | 4 => 1,
+            2 | 3 => -1,
+            5 | 8 => self.base_width as isize,
+            6 | 7 => -(self.base_width as isize),
+            _ => return None,
+        };
+        Some((0..self.width).map(move |x| {
+            // Every addressed index is inside the validated crop. The signed offset represents
+            // reversed rows as well; it never wraps the resulting address outside the plane.
+            let index = first.wrapping_add_signed(x as isize * stride);
+            [
+                self.planes[index],
+                self.planes[self.plane_len + index],
+                self.planes[2 * self.plane_len + index],
+            ]
+        }))
+    }
+}
+
+/// Per-evaluation linear settings. Zero EV is the neutral default; the setting is applied to the
+/// source before recipe content edits and never to an intermediate display raster.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinearSettings {
+    pub exposure_ev: f64,
+    /// An approximate white-balance change, applied to each source pixel before the exposure
+    /// multiply: `exposure · (W · p)`. Only the preview of an open draft carries one, when the
+    /// drafted temperature or tint asks for sensor gains the developed planes were not developed
+    /// at. Every committed render, export, point sample and analysis is `None`, which is bit for
+    /// bit the evaluation without this field. See [`WhiteBalanceApproximation`].
+    pub white_balance: Option<WhiteBalanceApproximation>,
+}
+
+impl Default for LinearSettings {
+    fn default() -> Self {
+        Self {
+            exposure_ev: 0.0,
+            white_balance: None,
+        }
+    }
+}
+
+/// A RAW white-balance change approximated on planes developed at another white balance.
+///
+/// The retained planes are `R · D(g)` per pixel, where `D(g)` is the native demosaic of the mosaic
+/// after the sensor gains `g` (camera RGB) and `R` is the camera-to-linear-sRGB matrix. The demosaic
+/// is nonlinear, which is why a committed white balance redevelops the mosaic, but to first order
+/// `D(g') ≈ diag(g'/g) · D(g)`. So planes developed at `g` approximate the planes at `g'` by
+///
+/// `W = R · diag(g'_c / g_c) · R⁻¹`
+///
+/// applied to every pixel. The approximation is used only for a drafted preview during a gesture:
+/// nothing committed, exported, sampled or analysed is ever evaluated through it, and a frame
+/// rendered with it says so. The matrix is private and only the constructors build it, so every
+/// instance is finite by construction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WhiteBalanceApproximation {
+    matrix: [[f64; 3]; 3],
+}
+
+impl WhiteBalanceApproximation {
+    /// `W = R · diag(target / developed) · R⁻¹` for the camera-to-linear-sRGB matrix `R`, with
+    /// `R⁻¹` computed in f64. A non-finite or non-positive gain, a non-finite `R`, an `R` that is
+    /// singular (or so close to it that its inverse is meaningless) and a non-finite `W` are each
+    /// refused: there is no approximation, never a wrong one.
+    pub fn between(
+        camera_to_srgb: [[f64; 3]; 3],
+        developed: [f32; 3],
+        target: [f32; 3],
+    ) -> Result<Self, Error> {
+        let mut ratio = [0.0; 3];
+        for (channel, value) in ratio.iter_mut().enumerate() {
+            let (from, to) = (f64::from(developed[channel]), f64::from(target[channel]));
+            if !(from.is_finite() && to.is_finite() && from > 0.0 && to > 0.0) {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    "white-balance gains must be finite and positive",
+                ));
+            }
+            *value = to / from;
+        }
+        let inverse = invert(camera_to_srgb)?;
+        let matrix = std::array::from_fn(|row| {
+            std::array::from_fn(|column| {
+                (0..3)
+                    .map(|k| camera_to_srgb[row][k] * ratio[k] * inverse[k][column])
+                    .sum::<f64>()
+            })
+        });
+        Self::from_matrix(matrix)
+    }
+
+    /// An explicit linear-sRGB matrix, refused unless every entry is finite.
+    pub fn from_matrix(matrix: [[f64; 3]; 3]) -> Result<Self, Error> {
+        if matrix.iter().flatten().all(|value| value.is_finite()) {
+            Ok(Self { matrix })
+        } else {
+            Err(Error::new(
+                ErrorKind::Validation,
+                "a white-balance approximation must be finite",
+            ))
+        }
+    }
+
+    /// The matrix applied to each linear-sRGB pixel, row by row.
+    pub fn matrix(&self) -> [[f64; 3]; 3] {
+        self.matrix
+    }
+
+    #[inline]
+    fn apply(&self, pixel: [f64; 3]) -> [f64; 3] {
+        self.matrix
+            .map(|row| row[0] * pixel[0] + row[1] * pixel[1] + row[2] * pixel[2])
+    }
+
+    /// A key that tells this approximation's evaluation apart from an exact one of the same
+    /// recipe, for a cache keyed by recipe: the matrix's own bits.
+    fn key(&self) -> String {
+        self.matrix
+            .iter()
+            .flatten()
+            .map(|value| format!("{:016x}", value.to_bits()))
+            .collect()
+    }
+}
+
+/// The inverse of a 3×3 matrix in f64, by the adjugate. Refused when the matrix is not finite or
+/// its determinant is negligible against the product of its row norms (Hadamard's bound on it),
+/// which is where an inverse stops meaning anything.
+fn invert(matrix: [[f64; 3]; 3]) -> Result<[[f64; 3]; 3], Error> {
+    let singular = || {
+        Error::new(
+            ErrorKind::UnsupportedColor,
+            "the camera matrix is singular, so no white-balance approximation exists",
+        )
+    };
+    if !matrix.iter().flatten().all(|value| value.is_finite()) {
+        return Err(singular());
+    }
+    let [[a, b, c], [d, e, f], [g, h, i]] = matrix;
+    let cofactors = [
+        [e * i - f * h, c * h - b * i, b * f - c * e],
+        [f * g - d * i, a * i - c * g, c * d - a * f],
+        [d * h - e * g, b * g - a * h, a * e - b * d],
+    ];
+    let determinant = a * cofactors[0][0] + b * cofactors[1][0] + c * cofactors[2][0];
+    let bound: f64 = matrix
+        .iter()
+        .map(|row| row.iter().map(|value| value * value).sum::<f64>().sqrt())
+        .product();
+    if !determinant.is_finite() || bound == 0.0 || determinant.abs() <= 1.0e-12 * bound {
+        return Err(singular());
+    }
+    let inverse = cofactors.map(|row| row.map(|value| value / determinant));
+    if inverse.iter().flatten().all(|value| value.is_finite()) {
+        Ok(inverse)
+    } else {
+        Err(singular())
+    }
+}
+
+impl LinearSettings {
+    fn multiplier(self) -> Result<f64, Error> {
+        if !self.exposure_ev.is_finite() || !(-5.0..=5.0).contains(&self.exposure_ev) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear exposure must be finite and between -5 and +5 EV",
+            ));
+        }
+        let multiplier = self.exposure_ev.exp2();
+        if multiplier.is_finite() {
+            Ok(multiplier)
+        } else {
+            Err(Error::new(
+                ErrorKind::Render,
+                "linear exposure multiplier overflow",
+            ))
+        }
+    }
+}
+
+fn decode_srgb(value: u8) -> f64 {
+    let encoded = f64::from(value) / 255.0;
+    if encoded <= 0.040_45 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn decode_rgb(value: [u8; 3]) -> [f64; 3] {
+    value.map(decode_srgb)
+}
+
+fn terminal_srgb(linear: f64) -> Result<u8, Error> {
+    if !linear.is_finite() {
+        return Err(Error::new(
+            ErrorKind::Render,
+            "linear evaluation produced a non-finite value",
+        ));
+    }
+    let linear = linear.clamp(0.0, 1.0);
+    let code = super::quantize_channel(linear);
+    // Inverting the half-code thresholds avoids a power function for ordinary values, but
+    // f64 encode/decode are not exact inverses. Keep the canonical forward evaluation close to
+    // either neighbouring threshold. This conservative guard is covered by native boundary
+    // tests; powf has no cross-platform ULP bound, so those tests remain part of platform
+    // qualification. The JPEG quantizer keeps its own contract.
+    const ROUNDING_GUARD: f64 = 1e-12;
+    let thresholds = &*super::SRGB_CODE_THRESHOLDS;
+    let lower = thresholds[usize::from(code.saturating_sub(1))];
+    let upper = thresholds[usize::from(code.min(254))];
+    if (linear - lower).abs() > ROUNDING_GUARD && (linear - upper).abs() > ROUNDING_GUARD {
+        return Ok(code);
+    }
+    let encoded = if linear <= 0.003_130_8 {
+        12.92 * linear
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    };
+    let rounded = (encoded * 255.0).round();
+    if !rounded.is_finite() || !(0.0..=255.0).contains(&rounded) {
+        return Err(Error::new(
+            ErrorKind::Render,
+            "terminal sRGB conversion overflow",
+        ));
+    }
+    Ok(rounded as u8)
+}
+
+fn clamp_index(value: f64, limit: u32) -> u32 {
+    let last = limit.saturating_sub(1);
+    if value <= 0.0 {
+        0
+    } else if value >= f64::from(last) {
+        last
+    } else {
+        value as u32
+    }
+}
+
+fn linear_bilinear(
+    u: f64,
+    v: f64,
+    width: u32,
+    height: u32,
+    fetch: impl Fn(u32, u32) -> Result<[f64; 3], Error>,
+) -> Result<[f64; 3], Error> {
+    if !u.is_finite() || !v.is_finite() || width == 0 || height == 0 {
+        return Err(Error::new(
+            ErrorKind::Render,
+            "linear resample has invalid coordinates or dimensions",
+        ));
+    }
+    let x = u - 0.5;
+    let y = v - 0.5;
+    let left = x.floor();
+    let top = y.floor();
+    let weight_x = x - left;
+    let weight_y = y - top;
+    let (left_x, right_x) = (clamp_index(left, width), clamp_index(left + 1.0, width));
+    let (top_y, bottom_y) = (clamp_index(top, height), clamp_index(top + 1.0, height));
+    let corners = [
+        (fetch(left_x, top_y)?, (1.0 - weight_x) * (1.0 - weight_y)),
+        (fetch(right_x, top_y)?, weight_x * (1.0 - weight_y)),
+        (fetch(left_x, bottom_y)?, (1.0 - weight_x) * weight_y),
+        (fetch(right_x, bottom_y)?, weight_x * weight_y),
+    ];
+    let output = std::array::from_fn(|channel| {
+        corners
+            .iter()
+            .map(|(pixel, weight)| pixel[channel] * weight)
+            .sum::<f64>()
+    });
+    if output.iter().all(|value| value.is_finite()) {
+        Ok(output)
+    } else {
+        Err(Error::new(
+            ErrorKind::Render,
+            "linear resample produced a non-finite value",
+        ))
+    }
+}
+
+/// How a [`LinearEvaluation`] answers the pixels of its spatial segments.
+///
+/// `pub(crate)` because the mask overlay's per-cell read of a prefix
+/// ([`crate::PreviewSource::layer_input`]) builds an evaluation of its own and is a point query.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpatialMode {
+    /// Materialize every spatial operation's output once over its whole stage, for a pass that
+    /// reads every pixel.
+    Frames,
+    /// Evaluate every spatial segment only in the tiles the requested pixels need, through one
+    /// [`PointTiles`] cache, for a point query, which is the declared exception to performance
+    /// rule 4. Nothing is materialized: a later segment's halo reads an earlier segment's tiles
+    /// from the same cache, and so does a reduction of a stage behind a spatial segment.
+    Point,
+}
+
+/// The output of the latest spatial segment an evaluation has materialized, with the index of the
+/// segment it enters.
+struct SpatialFrame {
+    index: usize,
+    planes: Arc<Vec<f32>>,
+}
+
+pub(crate) struct LinearEvaluation<'a> {
+    source: &'a LinearImage,
+    compiled: Compiled,
+    exposure_multiplier: f64,
+    /// Applied to each source pixel before the exposure multiply, when the settings carry one.
+    white_balance: Option<WhiteBalanceApproximation>,
+    /// The latest spatial frame, in [`SpatialMode::Frames`]. The linear path pulls single pixels
+    /// through the compiled prefix, and a neighbourhood cannot be pulled one pixel at a time, so for
+    /// a pass over every pixel each spatial operation's output is materialized once, in stage order,
+    /// as three `f32` planes inside the RAW planar limit. Nothing is quantized here: the values stay
+    /// float until the terminal boundary.
+    ///
+    /// Only the latest is kept. A pull stops at the first spatial entry it meets walking back — a
+    /// spatial entry reads its own frame and only a resample reads the segment before it — so a
+    /// spatial segment's input pulls stop at the frame before it, and once its own frame exists
+    /// nothing reads an earlier one. Building a frame therefore holds at most two, and the
+    /// evaluation keeps one.
+    frame: Option<SpatialFrame>,
+    /// Every frame this evaluation built, in order, with how many of them were alive when it was
+    /// finished and before the one it replaces was released, which is the peak.
+    #[cfg(test)]
+    built: Vec<(Weak<Vec<f32>>, usize)>,
+    /// In [`SpatialMode::Point`], the tiles of every spatial segment this query has evaluated.
+    tiles: Option<PointTiles>,
+    /// The output tile a spatial entry is evaluated in; [`PRODUCTION_TILE`] outside the tests that
+    /// prove the result does not depend on it.
+    tile: u32,
+}
+
+impl<'a> LinearEvaluation<'a> {
+    pub(crate) fn new(
+        registry: &ModuleRegistry,
+        source: &'a LinearImage,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        cancel: &Cancel,
+        tile: u32,
+        mode: SpatialMode,
+    ) -> Result<Self, Error> {
+        Self::sampled(
+            registry,
+            source,
+            recipe,
+            settings,
+            cancel,
+            tile,
+            mode,
+            MaskSampling::Point,
+        )
+    }
+
+    /// The same evaluation with the mask sampling named: the proxy phase supersamples a mask field
+    /// thinner than two of its pixels, and every other caller takes `MaskSampling::Point`. The
+    /// spatial mode is orthogonal to it — one decides how a spatial segment's pixels are answered,
+    /// the other how a mask field is sampled — so both travel to `compile_sampled` unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn sampled(
+        registry: &ModuleRegistry,
+        source: &'a LinearImage,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        cancel: &Cancel,
+        tile: u32,
+        mode: SpatialMode,
+        sampling: MaskSampling,
+    ) -> Result<Self, Error> {
+        let exposure_multiplier = settings.multiplier()?;
+        let compiled =
+            registry.compile_sampled(source.width(), source.height(), recipe, sampling)?;
+        let resamples = compiled
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.entry.as_ref().map(Entry::resample), Some(Some(_))))
+            .count();
+        if resamples > MAX_RESAMPLES {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear evaluation supports at most one resample stage",
+            ));
+        }
+        let mut evaluation = Self {
+            source,
+            compiled,
+            exposure_multiplier,
+            white_balance: settings.white_balance,
+            frame: None,
+            #[cfg(test)]
+            built: Vec::new(),
+            tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tile)),
+            tile,
+        };
+        if mode == SpatialMode::Point {
+            return Ok(evaluation);
+        }
+        // In order, because a later spatial operation pulls its input through the earlier one, and
+        // each frame replaces the one before it once it exists.
+        for index in 0..evaluation.compiled.segments.len() {
+            let Some(Entry::Spatial {
+                operation,
+                prefix_hash,
+            }) = &evaluation.compiled.segments[index].entry
+            else {
+                continue;
+            };
+            let planes = Arc::new(evaluation.build_spatial_frame(
+                index,
+                &operation.clone(),
+                &prefix_hash.clone(),
+                cancel,
+            )?);
+            #[cfg(test)]
+            {
+                // This frame and every earlier one still alive.
+                let alive = 1 + evaluation
+                    .built
+                    .iter()
+                    .filter(|(frame, _)| frame.strong_count() > 0)
+                    .count();
+                evaluation.built.push((Arc::downgrade(&planes), alive));
+            }
+            // Releases the frame before it: every later pull stops at this one.
+            evaluation.frame = Some(SpatialFrame { index, planes });
+        }
+        Ok(evaluation)
+    }
+
+    /// Materialize one spatial operation's output over the whole stage, tile by tile, in the same
+    /// batches and against the same budget the byte path uses. Each tile's input region is pulled
+    /// through `pixel_in` of the previous segment, which already applies the source exposure,
+    /// every colour unit and every replacement, so the operation sees exactly the stage the design
+    /// says it does without an input frame ever existing.
+    fn build_spatial_frame(
+        &self,
+        index: usize,
+        operation: &SpatialOperation,
+        prefix_hash: &str,
+        cancel: &Cancel,
+    ) -> Result<Vec<f32>, Error> {
+        let stage = self.spatial_stage(index);
+        // The RAW planar limit applies to this float frame exactly as it does to the source's.
+        let (values, _) = layout(stage.width, stage.height)?;
+        let read = |x: u32, y: u32| self.spatial_read(index, x, y);
+        let plan = SpatialPlan::new(operation, stage, self.tile)?;
+        let globals = self.spatial_globals(index, operation, stage, prefix_hash)?;
+        let mut frame = vec![0.0_f32; values];
+        let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
+        run_batches(
+            &plan,
+            cancel,
+            |tile, parallelism| {
+                run_tile(
+                    &plan,
+                    operation,
+                    &globals,
+                    tile,
+                    parallelism,
+                    |region, planes| fill_planes(region, planes, parallelism, read),
+                )
+            },
+            |tile, (region, tile_values)| -> Result<(), Error> {
+                for y in tile.y0..tile.y1() {
+                    for x in tile.x0..tile.x1() {
+                        let pixel = spatial::plane_pixel(region, &tile_values, x, y);
+                        let offset =
+                            (u64::from(y) * u64::from(stage.width) + u64::from(x)) as usize;
+                        frame[offset] = pixel[0];
+                        frame[plane + offset] = pixel[1];
+                        frame[2 * plane + offset] = pixel[2];
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        Ok(frame)
+    }
+
+    /// The stage spatial segment `index` reads, which is the stage it writes.
+    fn spatial_stage(&self, index: usize) -> Stage {
+        let previous = &self.compiled.segments[index - 1];
+        Stage {
+            width: previous.width,
+            height: previous.height,
+        }
+    }
+
+    /// One pixel of the stage spatial segment `index` reads: the previous segment's output, pulled
+    /// through `pixel_in`, which already applies the source exposure, every colour unit and every
+    /// replacement.
+    fn spatial_read(&self, index: usize, x: u32, y: u32) -> Result<[f32; 3], Error> {
+        let pixel = self.pixel_in(index - 1, x, y)?.ok_or_else(|| {
+            Error::new(
+                ErrorKind::Render,
+                "a spatial read was outside its input stage",
+            )
+        })?;
+        Ok(pixel.map(|value| value as f32))
+    }
+
+    /// The global estimates of spatial segment `index`, from the store or from one reduction of
+    /// its input stage. A frame and a point evaluation of the same recipe ask with the same key, so
+    /// they use the same estimate. A frame's reduction reads the frame before it; a point query's
+    /// reads through [`PointTiles::reduce`].
+    fn spatial_globals(
+        &self,
+        index: usize,
+        operation: &SpatialOperation,
+        stage: Stage,
+        prefix_hash: &str,
+    ) -> Result<Vec<Option<Global>>, Error> {
+        // Fingerprint alone does not identify developed pixels: public callers may omit it, two
+        // developments of a file differ, and crop/orientation views share their source's identity.
+        // Direct settings can also change exposure without changing the recipe prefix.
+        let input_prefix = format!(
+            "{prefix_hash}+linear:{}:{:?}:{:016x}",
+            self.source.development(),
+            self.source.view(),
+            self.exposure_multiplier.to_bits()
+        );
+        // The estimate store is keyed by the recipe prefix, which an approximate white balance
+        // does not change: the drafted recipe names the target gains whichever planes it is
+        // evaluated over. So an approximate evaluation keys its estimates apart, and a committed
+        // render of the same recipe never takes one estimated from approximate pixels.
+        let approximate_prefix = self.white_balance.map(|balance| {
+            format!(
+                "{input_prefix}+white-balance-approximation:{}",
+                balance.key()
+            )
+        });
+        let read = |x: u32, y: u32| self.spatial_read(index, x, y);
+        resolve_globals(
+            operation,
+            stage,
+            self.source.fingerprint(),
+            approximate_prefix.as_deref().unwrap_or(&input_prefix),
+            || match &self.tiles {
+                Some(tiles) => tiles.reduce(stage, self.compiled.spatial_before(index), read),
+                None => build_reduction(stage, read),
+            },
+        )
+    }
+
+    /// One pixel of spatial segment `index`'s output without its frame, from the query's
+    /// [`PointTiles`]: the stage-aligned tile that contains it, run through [`run_tile`] with the
+    /// plan, estimates and input pulls a frame would use, so the value is the frame's value by
+    /// construction rather than by agreement. An earlier spatial segment's pixels, which the halo
+    /// and a reduction pull, come from the same cache. Each evaluated tile costs
+    /// `O((tile + halo)² × layers)` and one working set from the spatial budget while it runs, plus
+    /// one reduction of the stage when an estimate is not in the store.
+    fn point_pixel(
+        &self,
+        index: usize,
+        operation: &SpatialOperation,
+        prefix_hash: &str,
+        x: u32,
+        y: u32,
+    ) -> Result<[f64; 3], Error> {
+        let tiles = self
+            .tiles
+            .as_ref()
+            .expect("a pull meets only the latest frame or a point query's tiles");
+        let stage = self.spatial_stage(index);
+        let pixel = tiles.pixel(
+            index,
+            operation,
+            stage,
+            x,
+            y,
+            || self.spatial_globals(index, operation, stage, prefix_hash),
+            |x, y| self.spatial_read(index, x, y),
+        )?;
+        Ok(pixel.map(f64::from))
+    }
+
+    /// The tiles this point evaluation has evaluated so far.
+    #[cfg(test)]
+    pub(crate) fn point_tiles(&self) -> &PointTiles {
+        self.tiles.as_ref().expect("a point evaluation holds tiles")
+    }
+
+    pub(crate) fn stage(&self) -> (u32, u32) {
+        let segment = self
+            .compiled
+            .segments
+            .last()
+            .expect("compiled recipe has a segment");
+        (segment.width, segment.height)
+    }
+
+    /// The one point where the settings touch a source pixel: `exposure · p`, or
+    /// `exposure · (W · p)` under an approximate white balance.
+    fn source_pixel(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
+        let pixel = self.source.pixel_f64(x, y)?;
+        self.adjust_source_pixel(pixel)
+    }
+
+    /// Shared with the bulk source reader: retain the exact f64 WB-then-exposure order and the
+    /// same finite-result failure for both point evaluation and rendered rows.
+    #[inline]
+    fn adjust_source_pixel(&self, pixel: [f64; 3]) -> Result<[f64; 3], Error> {
+        let output = match &self.white_balance {
+            // The arithmetic an exact evaluation has always done, untouched.
+            None => pixel.map(|value| value * self.exposure_multiplier),
+            Some(balance) => balance
+                .apply(pixel)
+                .map(|value| value * self.exposure_multiplier),
+        };
+        if output.iter().all(|value| value.is_finite()) {
+            Ok(output)
+        } else {
+            Err(Error::new(
+                ErrorKind::Render,
+                "linear exposure produced a non-finite value",
+            ))
+        }
+    }
+
+    /// A plain source rendition can bypass generic per-pixel recipe resolution. This is called
+    /// only on an already validated/compiled evaluation; even neutral or unavailable layers must
+    /// have passed through the registry first. Source views still apply through the reader.
+    fn source_rows(&self) -> Option<ViewReader<'a>> {
+        self.source_segment()
+            .filter(|segment| segment.operations.is_empty())
+            .map(|_| self.source.reader())
+    }
+
+    /// The narrowly eligible source-only colour pass. Keeping replacements, geometry, masks and
+    /// stage boundaries on the generic evaluator preserves their per-pixel resolution semantics.
+    fn source_color_segment(&self) -> Option<&Segment> {
+        let segment = self.source_segment()?;
+        (!segment.operations.is_empty()
+            && segment.operations.iter().all(
+                |operation| matches!(operation, Processing::Color(color) if color.mask().is_none()),
+            ))
+        .then_some(segment)
+    }
+
+    fn source_segment(&self) -> Option<&Segment> {
+        let [segment] = self.compiled.segments.as_slice() else {
+            return None;
+        };
+        (segment.entry.is_none()
+            && segment
+                .geometry
+                .is_identity(self.source.width(), self.source.height()))
+        .then_some(segment)
+    }
+
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        self.pixel_in(self.compiled.segments.len() - 1, x, y)
+    }
+
+    fn pixel_in(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        let segment = &self.compiled.segments[index];
+        let Some(resolved) = segment.resolve(x, y) else {
+            return Ok(None);
+        };
+        let mut pixel = match &segment.entry {
+            None => self.source_pixel(resolved.input_x, resolved.input_y)?,
+            Some(Entry::Spatial {
+                operation,
+                prefix_hash,
+            }) => match &self.frame {
+                Some(SpatialFrame {
+                    index: frame_index,
+                    planes,
+                }) if *frame_index == index => {
+                    let previous = &self.compiled.segments[index - 1];
+                    let plane = (u64::from(previous.width) * u64::from(previous.height)) as usize;
+                    let offset = (u64::from(resolved.input_y) * u64::from(previous.width)
+                        + u64::from(resolved.input_x)) as usize;
+                    [
+                        f64::from(planes[offset]),
+                        f64::from(planes[plane + offset]),
+                        f64::from(planes[2 * plane + offset]),
+                    ]
+                }
+                _ => self.point_pixel(
+                    index,
+                    operation,
+                    prefix_hash,
+                    resolved.input_x,
+                    resolved.input_y,
+                )?,
+            },
+            Some(Entry::Resample(resample)) => {
+                let resample = *resample;
+                let previous = &self.compiled.segments[index - 1];
+                let (u, v) = resample.input_at(resolved.input_x, resolved.input_y);
+                linear_bilinear(
+                    u,
+                    v,
+                    previous.width,
+                    previous.height,
+                    |sample_x, sample_y| {
+                        self.pixel_in(index - 1, sample_x, sample_y)
+                            .and_then(|pixel| {
+                                pixel.ok_or_else(|| {
+                                    Error::new(
+                                        ErrorKind::Render,
+                                        "linear recursive sample was outside stage",
+                                    )
+                                })
+                            })
+                    },
+                )?
+            }
+        };
+        if let Some((_, rgb)) = resolved.replacement {
+            pixel = decode_rgb(rgb);
+        }
+        // The colour phases are the 8-bit path's, applied to this one linear pixel: the replacement
+        // that wins here ends the runs before it, and every run after it processes the value in
+        // place. Nothing is quantized between runs, which is the whole point of the linear path: a
+        // scene value above 1 or below 0 survives to the next unit and only the terminal boundary
+        // encodes it.
+        if segment.has_color {
+            let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
+            let mut linear = [pixel.map(|value| value as f32)];
+            // The same coordinates the 8-bit path hands its units, so a position-dependent unit
+            // makes `sample_linear` and `render_linear` agree pixel for pixel.
+            // One pixel of snapshot scratch on the stack: a masked operation blends against its
+            // own input, and this path pulls single pixels, so nothing is allocated per pixel.
+            let mut scratch = [[0.0f32; 3]; 1];
+            for run in super::color_runs(segment).filter(|run| run.start >= after) {
+                super::apply_units(&run, y, x, &mut linear, &mut scratch)?;
+            }
+            pixel = linear[0].map(f64::from);
+        }
+        if pixel.iter().all(|value| value.is_finite()) {
+            Ok(Some(pixel))
+        } else {
+            Err(Error::new(
+                ErrorKind::Render,
+                "linear evaluation produced a non-finite pixel",
+            ))
+        }
+    }
+}
+
+pub(super) fn terminal_pixel(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
+    Ok([
+        terminal_srgb(pixel[0])?,
+        terminal_srgb(pixel[1])?,
+        terminal_srgb(pixel[2])?,
+        255,
+    ])
+}
+
+/// Render a prepared linear source through the existing recipe and terminally produce bytes.
+pub fn render_linear(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+) -> Result<Raster, Error> {
+    render_linear_cancellable(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        &Cancel::never(),
+    )
+}
+
+/// [`render_linear`] under a [`Cancel`] token the row pass reads once per row and the spatial
+/// operations read once per tile batch. With a token that is never cancelled this is byte for byte
+/// [`render_linear`]; it is the same code, and [`render_linear`] is one call to it.
+pub fn render_linear_cancellable(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    render_linear_tiled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        cancel,
+        PRODUCTION_TILE,
+    )
+}
+
+/// [`render_linear_cancellable`] with the spatial tile size as a parameter, for the tests that
+/// prove a rendered frame does not depend on it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_linear_tiled(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+    tile: u32,
+) -> Result<Raster, Error> {
+    render_linear_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        cancel,
+        tile,
+        MaskSampling::Point,
+    )
+}
+
+/// [`render_linear_cancellable`] against a **proxy** source, with the proxy phase's thin-feature
+/// rule applied to the masks in the stack. The linear half of
+/// [`render_proxy_cancellable`](super::render_proxy_cancellable); no exact render takes this path.
+pub(crate) fn render_linear_proxy_cancellable(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    render_linear_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        cancel,
+        PRODUCTION_TILE,
+        MaskSampling::ThinFeature,
+    )
+}
+
+/// [`render_linear_tiled`] with the mask sampling as a parameter as well.
+#[allow(clippy::too_many_arguments)]
+fn render_linear_sampled(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+    tile: u32,
+    sampling: MaskSampling,
+) -> Result<Raster, Error> {
+    // A token already cancelled when the call arrives costs no frame at all.
+    cancel.check()?;
+    let evaluation = LinearEvaluation::sampled(
+        registry,
+        source,
+        recipe,
+        settings,
+        cancel,
+        tile,
+        SpatialMode::Frames,
+        sampling,
+    )?;
+    let (width, height) = evaluation.stage();
+    let output_len = output_len(width, height)?;
+    let row_bytes = usize::try_from(u64::from(width) * 4).map_err(|_| {
+        Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output row is not addressable",
+        )
+    })?;
+    // Write into the Arc-backed frame that the raster returns, avoiding an output publication copy.
+    let mut frame = super::zeroed_frame(output_len);
+    let output = super::frame_mut(&mut frame);
+    if let Some(segment) = evaluation.source_color_segment() {
+        render_source_color_rows(&evaluation, segment, cancel, output, row_bytes)?;
+    } else {
+        let source_rows = evaluation.source_rows();
+        // One relaxed load per output row, ahead of that row's evaluations; the f64 evaluation and
+        // the terminal boundary are untouched.
+        let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
+            cancel.check()?;
+            if let Some(reader) = &source_rows {
+                let pixels = reader.row(row_index as u32).ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Render,
+                        "linear output coordinate was outside stage",
+                    )
+                })?;
+                for (pixel, rgba) in pixels.zip(row.chunks_exact_mut(4)) {
+                    // Immutable source planes were checked finite on construction. Widen at the
+                    // same boundary as source_pixel, without an intermediate f32 exposure multiply.
+                    let pixel = evaluation.adjust_source_pixel(pixel.map(f64::from))?;
+                    rgba.copy_from_slice(&terminal_pixel(pixel)?);
+                }
+                return Ok(());
+            }
+            for x in 0..width {
+                let pixel = evaluation.pixel(x, row_index as u32)?.ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Render,
+                        "linear output coordinate was outside stage",
+                    )
+                })?;
+                let rgba = terminal_pixel(pixel)?;
+                let offset = x as usize * 4;
+                row[offset..offset + 4].copy_from_slice(&rgba);
+            }
+            Ok(())
+        };
+        if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
+            output
+                .par_chunks_exact_mut(row_bytes)
+                .enumerate()
+                .try_for_each(|(row, pixels)| render_row(row, pixels))?;
+        } else {
+            output
+                .chunks_exact_mut(row_bytes)
+                .enumerate()
+                .try_for_each(|(row, pixels)| render_row(row, pixels))?;
+        }
+    }
+    Ok(Raster {
+        width,
+        height,
+        rgba: frame,
+        source_fingerprint: source.fingerprint.clone(),
+        snapshot_id,
+    })
+}
+
+/// Batch an eligible source-only colour segment by rows. Recipe resolution is still performed
+/// before this call; only its already-compiled unmasked pointwise operations are shared across
+/// each row's pixels.
+fn render_source_color_rows(
+    evaluation: &LinearEvaluation<'_>,
+    segment: &Segment,
+    cancel: &Cancel,
+    output: &mut [u8],
+    row_bytes: usize,
+) -> Result<(), Error> {
+    let mut runs = super::color_runs(segment);
+    let run = runs.next().ok_or_else(|| {
+        Error::new(
+            ErrorKind::Internal,
+            "eligible source colour segment has no colour run",
+        )
+    })?;
+    debug_assert!(runs.next().is_none());
+
+    let width = segment.width as usize;
+    let height = segment.height as usize;
+    let row_scratch_bytes = width
+        .checked_mul(std::mem::size_of::<[f32; 3]>())
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear colour row scratch is not addressable",
+            )
+        })?;
+    let chunk_bytes = row_bytes
+        .checked_mul(LINEAR_COLOR_ROWS_PER_CHUNK)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear colour row chunk is not addressable",
+            )
+        })?;
+    let reader = evaluation.source.reader();
+    let process_chunk = |chunk_index: usize,
+                         chunk: &mut [u8],
+                         pixels: &mut Vec<[f32; 3]>,
+                         scratch: &mut [[f32; 3]; 1]|
+     -> Result<(), Error> {
+        for (row_in_chunk, row) in chunk.chunks_exact_mut(row_bytes).enumerate() {
+            // Cancellation is observed once per row even though Rayon dispatch is amortized over
+            // eight rows. A superseded RAW preview therefore never holds the pool for a full frame.
+            cancel.check()?;
+            let y = chunk_index * LINEAR_COLOR_ROWS_PER_CHUNK + row_in_chunk;
+            if y >= height {
+                return Err(Error::new(
+                    ErrorKind::Render,
+                    "linear colour row was outside stage",
+                ));
+            }
+            let source_row = reader.row(y as u32).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Render,
+                    "linear colour source row was outside stage",
+                )
+            })?;
+            pixels.clear();
+            for source_pixel in source_row {
+                // Preserve the generic path's f64 WB/exposure step and its single f32 boundary
+                // before colour units.
+                let adjusted = evaluation.adjust_source_pixel(source_pixel.map(f64::from))?;
+                pixels.push(adjusted.map(|value| value as f32));
+            }
+            super::apply_units(&run, y as u32, 0, pixels, scratch)?;
+            for (rgba, pixel) in row.chunks_exact_mut(4).zip(pixels.iter()) {
+                rgba.copy_from_slice(&terminal_pixel(pixel.map(f64::from))?);
+            }
+        }
+        Ok(())
+    };
+
+    let pixel_count = u64::from(segment.width) * u64::from(segment.height);
+    let active_row_scratch = u64::try_from(row_scratch_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(rayon::current_num_threads() as u64);
+    let parallel = pixel_count >= PARALLEL_RENDER_PIXELS
+        && active_row_scratch <= ScratchBudget::default().target();
+    if parallel {
+        output
+            .par_chunks_mut(chunk_bytes)
+            .enumerate()
+            .try_for_each_init(
+                || {
+                    (
+                        ScratchBudget::default().reserve(row_scratch_bytes),
+                        Vec::with_capacity(width),
+                        [[0.0_f32; 3]; 1],
+                    )
+                },
+                |(_reservation, pixels, scratch), (chunk_index, chunk)| {
+                    process_chunk(chunk_index, chunk, pixels, scratch)
+                },
+            )?;
+    } else {
+        let _reservation = ScratchBudget::default().reserve(row_scratch_bytes);
+        let mut pixels = Vec::with_capacity(width);
+        let mut scratch = [[0.0_f32; 3]; 1];
+        for (chunk_index, chunk) in output.chunks_mut(chunk_bytes).enumerate() {
+            process_chunk(chunk_index, chunk, &mut pixels, &mut scratch)?;
+        }
+    }
+    Ok(())
+}
+
+/// Evaluate one terminal output pixel, equal to the byte [`render_linear`] writes there. Through a
+/// spatial layer it evaluates the tile that contains the pixel, and through several the tiles of the
+/// earlier ones that tile's halo reads, each once and none materialized, as the byte path's sample
+/// does; that is the declared exception to performance rule 4.
+pub fn sample_linear(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    x: u32,
+    y: u32,
+) -> Result<super::Sample, Error> {
+    sample_linear_tiled(registry, source, recipe, settings, x, y, PRODUCTION_TILE)
+}
+
+/// [`sample_linear`] with the spatial tile size as a parameter, for the tests that prove a sample
+/// equals the render at any tile size.
+pub(super) fn sample_linear_tiled(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    x: u32,
+    y: u32,
+    tile: u32,
+) -> Result<super::Sample, Error> {
+    let evaluation = LinearEvaluation::new(
+        registry,
+        source,
+        recipe,
+        settings,
+        &Cancel::new(),
+        tile,
+        SpatialMode::Point,
+    )?;
+    let (width, height) = evaluation.stage();
+    let _ = output_len(width, height)?;
+    let rgba = evaluation.pixel(x, y)?.map(terminal_pixel).transpose()?;
+    Ok(super::Sample {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// [`super::sample_grid`] on the linear path: the terminal bytes at the centres of a `side` ×
+/// `side` grid, row by row from the top-left, through one evaluation of the stack, so each equals
+/// the rendered byte there. A spatial operation materializes its output once for all of them: the
+/// points spread over the whole stage, one tile each, so the frame costs no more than their tiles.
+pub(crate) fn sample_grid_linear(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    side: u32,
+    checkpoint: &dyn Fn() -> Result<(), Error>,
+) -> Result<Vec<[u8; 4]>, Error> {
+    let evaluation = LinearEvaluation::new(
+        registry,
+        source,
+        recipe,
+        settings,
+        &Cancel::new(),
+        PRODUCTION_TILE,
+        SpatialMode::Frames,
+    )?;
+    let (width, height) = evaluation.stage();
+    let _ = output_len(width, height)?;
+    super::grid_centres(side, width, height)
+        .into_iter()
+        .map(|(x, y)| {
+            checkpoint()?;
+            evaluation
+                .pixel(x, y)?
+                .map(terminal_pixel)
+                .transpose()?
+                .ok_or_else(|| {
+                    Error::new(ErrorKind::Internal, "a grid centre lies outside the stage")
+                })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Layer, Recipe, SnapshotId,
+        modules::{CropPayload, ModuleRegistry},
+    };
+    use sha2::{Digest, Sha256};
+    use std::time::Instant;
+
+    fn image(width: u32, height: u32, rgb: &[[f32; 3]]) -> LinearImage {
+        assert_eq!(rgb.len(), (width * height) as usize);
+        let plane_len = (width * height) as usize;
+        let mut planes = Vec::with_capacity(plane_len * 3);
+        for channel in 0..3 {
+            planes.extend(rgb.iter().map(|pixel| pixel[channel]));
+        }
+        LinearImage::with_fingerprint(width, height, planes, "sha256:linear-test").unwrap()
+    }
+
+    /// The pre-existing generic pixel evaluator remains the reference for the bulk source path.
+    /// It resolves the segment and view for every pixel, retains the production row scheduling
+    /// threshold, and never calls the source row reader.
+    fn generic_linear_reference(
+        registry: &ModuleRegistry,
+        source: &LinearImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        settings: LinearSettings,
+    ) -> Raster {
+        let evaluation = LinearEvaluation::new(
+            registry,
+            source,
+            recipe,
+            settings,
+            &Cancel::never(),
+            PRODUCTION_TILE,
+            SpatialMode::Frames,
+        )
+        .unwrap();
+        let (width, height) = evaluation.stage();
+        let mut frame = super::super::zeroed_frame(output_len(width, height).unwrap());
+        let rgba = super::super::frame_mut(&mut frame);
+        let row_bytes = width as usize * 4;
+        let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
+            for (x, pixel_bytes) in row.chunks_exact_mut(4).enumerate() {
+                let pixel = evaluation
+                    .pixel(x as u32, row_index as u32)?
+                    .ok_or_else(|| {
+                        Error::new(ErrorKind::Render, "reference pixel outside stage")
+                    })?;
+                pixel_bytes.copy_from_slice(&terminal_pixel(pixel)?);
+            }
+            Ok(())
+        };
+        if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
+            rgba.par_chunks_exact_mut(row_bytes)
+                .enumerate()
+                .try_for_each(|(row, pixels)| render_row(row, pixels))
+                .unwrap();
+        } else {
+            rgba.chunks_exact_mut(row_bytes)
+                .enumerate()
+                .try_for_each(|(row, pixels)| render_row(row, pixels))
+                .unwrap();
+        }
+        Raster {
+            width,
+            height,
+            rgba: frame,
+            source_fingerprint: source.fingerprint.clone(),
+            snapshot_id,
+        }
+    }
+
+    fn colour_layer(effect_id: &str, payload: serde_json::Value) -> Layer {
+        Layer {
+            id: crate::LayerId::new(),
+            effect_id: effect_id.into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload,
+            mask: None,
+            artifacts: Vec::new(),
+        }
+    }
+
+    fn colour_recipe(layers: Vec<Layer>) -> Recipe {
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks: Vec::new(),
+            ..Recipe::default()
+        }
+    }
+
+    fn percentile(values: &[f64], percentile: f64) -> f64 {
+        let mut ordered = values.to_vec();
+        ordered.sort_by(f64::total_cmp);
+        ordered[((ordered.len() as f64 - 1.0) * percentile).ceil() as usize]
+    }
+
+    fn timed_render(
+        render: impl FnOnce() -> Raster,
+        sampler: &mut luxforge_process::Sampler,
+    ) -> (f64, Option<f64>) {
+        let cpu_before = sampler.read().cpu_time_ns.ok();
+        let start = Instant::now();
+        let raster = render();
+        std::hint::black_box(&raster);
+        drop(raster);
+        let wall_ms = start.elapsed().as_secs_f64() * 1e3;
+        let cpu_ms = cpu_before
+            .zip(sampler.read().cpu_time_ns.ok())
+            .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6);
+        (wall_ms, cpu_ms)
+    }
+
+    #[test]
+    fn source_rows_preserve_all_views_and_f64_adjustments() {
+        let mut pixels: Vec<_> = (0..99)
+            .map(|index| [index as f32 / 59.0 - 0.2, index as f32 / 97.0, 0.37])
+            .collect();
+        pixels[0] = [-0.0, 0.0, f32::from_bits(1)];
+        pixels[1] = [f32::MIN, f32::MAX, -f32::from_bits(1)];
+        let source = image(11, 9, &pixels);
+        let original: Vec<_> = source
+            .planes()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect();
+        let registry = ModuleRegistry::builtin();
+        let recipe = Recipe::default();
+        let balance = WhiteBalanceApproximation::from_matrix([
+            [1.3, 0.1, -0.05],
+            [0.02, 0.97, 0.01],
+            [-0.1, 0.05, 0.62],
+        ])
+        .unwrap();
+        for orientation in 1..=8 {
+            for crop in [
+                [0, 0, 11, 9],
+                [2, 3, 7, 4],
+                [10, 8, 1, 1],
+                [0, 0, 1, 9],
+                [0, 0, 11, 1],
+            ] {
+                let view = source.with_view(crop, orientation).unwrap();
+                assert!(Arc::ptr_eq(&source.planes, &view.planes));
+                let reader = view.reader();
+                assert!(reader.row(view.height()).is_none());
+                for y in 0..view.height() {
+                    let row = reader.row(y).unwrap();
+                    assert_eq!(row.len(), view.width() as usize);
+                    for (x, pixel) in row.enumerate() {
+                        assert_eq!(
+                            pixel.map(f32::to_bits),
+                            view.pixel(x as u32, y).unwrap().map(f32::to_bits),
+                            "orientation {orientation}, crop {crop:?}, ({x}, {y})"
+                        );
+                    }
+                }
+                for exposure_ev in [-5.0, -0.7, 0.0, 0.7, 5.0] {
+                    for white_balance in [None, Some(balance)] {
+                        let settings = LinearSettings {
+                            exposure_ev,
+                            white_balance,
+                        };
+                        let snapshot = SnapshotId::new();
+                        let actual =
+                            render_linear(&registry, &view, snapshot.clone(), &recipe, settings)
+                                .unwrap();
+                        let expected =
+                            generic_linear_reference(&registry, &view, snapshot, &recipe, settings);
+                        assert_eq!(
+                            actual, expected,
+                            "orientation {orientation}, crop {crop:?}, settings {settings:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            source
+                .planes()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            original
+        );
+    }
+
+    #[test]
+    fn source_rows_preserve_complete_parallel_buffers_for_each_stride() {
+        let source = varied(1027, 1025);
+        let registry = ModuleRegistry::builtin();
+        let recipe = Recipe::default();
+        let settings = LinearSettings {
+            exposure_ev: 0.37,
+            white_balance: None,
+        };
+        for orientation in [1, 2, 5, 7] {
+            let view = source.with_view([1, 1, 1024, 1024], orientation).unwrap();
+            let snapshot = SnapshotId::new();
+            let actual =
+                render_linear(&registry, &view, snapshot.clone(), &recipe, settings).unwrap();
+            let expected = generic_linear_reference(&registry, &view, snapshot, &recipe, settings);
+            assert_eq!(actual, expected, "orientation {orientation}");
+            for (x, y) in [(0, 0), (512, 511), (1023, 1023)] {
+                assert_eq!(
+                    sample_linear(&registry, &view, &recipe, settings, x, y)
+                        .unwrap()
+                        .rgba,
+                    actual.pixel(x, y)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unmasked_basic_and_mixer_rows_match_the_generic_evaluator() {
+        let source = varied(37, 29).with_view([2, 3, 30, 16], 5).unwrap();
+        let registry = ModuleRegistry::builtin();
+        let basic = colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({
+                "exposure": 0.5,
+                "contrast": 20.0,
+                "highlights": -30.0,
+                "shadows": 25.0,
+                "whites": 40.0,
+                "blacks": -10.0,
+                "vibrance": 30.0,
+                "saturation": 15.0
+            }),
+        );
+        let mixer = colour_layer(
+            crate::MIXER_EFFECT,
+            serde_json::json!({"red-hue": 20.0, "aqua-saturation": -35.0, "blue-luminance": 15.0}),
+        );
+        let recipes = [
+            colour_recipe(vec![basic.clone()]),
+            colour_recipe(vec![mixer.clone()]),
+            colour_recipe(vec![basic, mixer]),
+        ];
+        let settings = LinearSettings {
+            exposure_ev: -0.37,
+            white_balance: Some(
+                WhiteBalanceApproximation::from_matrix([
+                    [1.21, -0.11, -0.02],
+                    [-0.06, 1.08, -0.02],
+                    [0.01, -0.13, 1.12],
+                ])
+                .unwrap(),
+            ),
+        };
+
+        for recipe in recipes {
+            let evaluation = LinearEvaluation::new(
+                &registry,
+                &source,
+                &recipe,
+                settings,
+                &Cancel::never(),
+                PRODUCTION_TILE,
+                SpatialMode::Frames,
+            )
+            .unwrap();
+            assert!(evaluation.source_color_segment().is_some());
+            let snapshot = SnapshotId::new();
+            let actual =
+                render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap();
+            let expected =
+                generic_linear_reference(&registry, &source, snapshot, &recipe, settings);
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn parallel_source_colour_rows_match_reference_in_final_partial_chunk() {
+        // Just above the production parallel threshold and not divisible by the eight-row chunk.
+        let source = varied(1003, 1001);
+        let registry = ModuleRegistry::builtin();
+        let recipe = colour_recipe(vec![colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({
+                "exposure": 0.5,
+                "contrast": 20.0,
+                "highlights": -30.0,
+                "shadows": 25.0,
+                "whites": 40.0,
+                "blacks": -10.0,
+                "vibrance": 30.0,
+                "saturation": 15.0
+            }),
+        )]);
+        let settings = LinearSettings {
+            exposure_ev: 0.37,
+            white_balance: None,
+        };
+        let snapshot = SnapshotId::new();
+        let actual =
+            render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap();
+        let expected = generic_linear_reference(&registry, &source, snapshot, &recipe, settings);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn source_colour_rows_leave_masked_and_geometric_recipes_on_generic_path() {
+        let source = varied(19, 13);
+        let registry = ModuleRegistry::builtin();
+        let settings = LinearSettings::default();
+        let basic = colour_layer(crate::BASIC_EFFECT, serde_json::json!({"exposure": 0.5}));
+        let mut mask = crate::Mask::new("Mask 1");
+        mask.components.push(crate::Component::new(
+            "Linear 1",
+            crate::ComponentMode::Add,
+            "linear",
+            serde_json::json!({"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}),
+        ));
+        let masked_recipe = Recipe {
+            layers: vec![Layer {
+                mask: Some(mask.id.clone()),
+                ..basic.clone()
+            }],
+            masks: vec![mask],
+            ..Recipe::default()
+        };
+        let geometric_recipe = colour_recipe(vec![
+            basic,
+            Layer::orientation(crate::Orientation {
+                mirror: false,
+                turns: 1,
+            }),
+        ]);
+
+        for recipe in [&masked_recipe, &geometric_recipe] {
+            let evaluation = LinearEvaluation::new(
+                &registry,
+                &source,
+                recipe,
+                settings,
+                &Cancel::never(),
+                PRODUCTION_TILE,
+                SpatialMode::Frames,
+            )
+            .unwrap();
+            assert!(evaluation.source_color_segment().is_none());
+            let snapshot = SnapshotId::new();
+            assert_eq!(
+                render_linear(&registry, &source, snapshot.clone(), recipe, settings).unwrap(),
+                generic_linear_reference(&registry, &source, snapshot, recipe, settings)
+            );
+        }
+    }
+
+    /// Re-run only on the owner Mac with a private fixture selected through
+    /// `LUXFORGE_RAW_FIXTURE`; it compares the integrated production branch with the original
+    /// generic pixel evaluator and reports core-render timings, process CPU and memory snapshots.
+    /// Set `LUXFORGE_RAW_DIAGNOSTIC=contention-production` or `contention-reference` to skip those
+    /// timed profiles and isolate the Fit proxy overlap run from load left by full-size rendering.
+    #[test]
+    #[ignore = "owner-Mac RAW renderer timing diagnostic"]
+    fn raw_colour_rows_production_diagnostic() {
+        use std::process::Command;
+
+        fn host_load_1m() -> String {
+            Command::new("uptime")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .and_then(|output| {
+                    let (_, values) = output
+                        .split_once("load averages:")
+                        .or_else(|| output.split_once("load average:"))?;
+                    values
+                        .split_whitespace()
+                        .next()
+                        .map(|value| value.trim_end_matches(',').to_owned())
+                })
+                .unwrap_or_else(|| "unavailable".into())
+        }
+
+        let fixture = std::path::PathBuf::from(
+            std::env::var("LUXFORGE_RAW_FIXTURE")
+                .expect("set LUXFORGE_RAW_FIXTURE to a qualified private RAW fixture"),
+        );
+        let bytes = std::fs::read(fixture).expect("read private RAW fixture");
+        let prepared = crate::source::RawPrepared::decode(
+            bytes,
+            "sha256:linear-row-diagnostic".into(),
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("decode private RAW fixture");
+        let source = prepared
+            .linear
+            .clone()
+            .expect("fixture retains linear RAW planes");
+        let registry = ModuleRegistry::builtin();
+        let mut sampler = luxforge_process::Sampler::new();
+        let memory_after_decode = sampler.read().memory;
+        let recipes = [
+            (
+                "full-basic",
+                colour_recipe(vec![colour_layer(
+                    crate::BASIC_EFFECT,
+                    serde_json::json!({
+                        "exposure": 0.5, "contrast": 25.0, "highlights": -30.0,
+                        "shadows": 30.0, "whites": -15.0, "blacks": 15.0,
+                        "temperature": 20.0, "tint": -10.0, "vibrance": 30.0,
+                        "saturation": 15.0
+                    }),
+                )]),
+            ),
+            (
+                "mixer",
+                colour_recipe(vec![colour_layer(
+                    crate::MIXER_EFFECT,
+                    serde_json::json!({
+                        "red-hue": 30.0, "orange-saturation": 20.0,
+                        "blue-luminance": -30.0
+                    }),
+                )]),
+            ),
+        ];
+        let settings = LinearSettings {
+            exposure_ev: 0.7,
+            white_balance: None,
+        };
+        println!(
+            "source=retained-raw dimensions={}x{} source_plane_bytes={} output_rgba_bytes={} rayon_threads={} memory_after_decode={:?} loadavg_before={}",
+            source.width(),
+            source.height(),
+            std::mem::size_of_val(source.planes()),
+            source.width() as usize * source.height() as usize * 4,
+            rayon::current_num_threads(),
+            memory_after_decode,
+            host_load_1m()
+        );
+
+        let diagnostic_mode = std::env::var("LUXFORGE_RAW_DIAGNOSTIC").unwrap_or_default();
+        let contention_only = diagnostic_mode.starts_with("contention");
+        for (name, recipe) in recipes {
+            if contention_only {
+                break;
+            }
+            let snapshot = SnapshotId::new();
+            let reference =
+                generic_linear_reference(&registry, &source, snapshot.clone(), &recipe, settings);
+            let actual = render_linear(&registry, &source, snapshot.clone(), &recipe, settings)
+                .expect("production render");
+            let reference_hash = Sha256::digest(&reference.rgba);
+            let actual_hash = Sha256::digest(&actual.rgba);
+            assert_eq!(
+                reference.rgba.as_ref(),
+                actual.rgba.as_ref(),
+                "complete output bytes: {name}"
+            );
+            assert_eq!(reference_hash, actual_hash, "complete output hash: {name}");
+            assert_eq!(
+                (reference.width, reference.height),
+                (actual.width, actual.height)
+            );
+            for (x, y) in [
+                (0, 0),
+                (reference.width - 1, 0),
+                (0, reference.height - 1),
+                (reference.width - 1, reference.height - 1),
+                (reference.width / 2, reference.height / 2),
+            ] {
+                assert_eq!(
+                    reference.pixel(x, y),
+                    actual.pixel(x, y),
+                    "{name} at ({x}, {y})"
+                );
+                assert_eq!(
+                    sample_linear(&registry, &source, &recipe, settings, x, y)
+                        .unwrap()
+                        .rgba,
+                    actual.pixel(x, y),
+                    "sample {name} at ({x}, {y})"
+                );
+            }
+            drop(reference);
+            drop(actual);
+
+            let reference =
+                generic_linear_reference(&registry, &source, snapshot.clone(), &recipe, settings);
+            drop(reference);
+            let memory_after_reference = sampler.read().memory;
+            let production = render_linear(&registry, &source, snapshot.clone(), &recipe, settings)
+                .expect("production render");
+            drop(production);
+            let memory_after_production = sampler.read().memory;
+
+            let mut reference_wall = Vec::with_capacity(30);
+            let mut production_wall = Vec::with_capacity(30);
+            let mut reference_cpu = Vec::with_capacity(30);
+            let mut production_cpu = Vec::with_capacity(30);
+            for _ in 0..15 {
+                let (wall, cpu) = timed_render(
+                    || {
+                        generic_linear_reference(
+                            &registry,
+                            &source,
+                            snapshot.clone(),
+                            &recipe,
+                            settings,
+                        )
+                    },
+                    &mut sampler,
+                );
+                reference_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    reference_cpu.push(cpu);
+                }
+                let (wall, cpu) = timed_render(
+                    || {
+                        render_linear(&registry, &source, snapshot.clone(), &recipe, settings)
+                            .expect("production render")
+                    },
+                    &mut sampler,
+                );
+                production_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    production_cpu.push(cpu);
+                }
+                let (wall, cpu) = timed_render(
+                    || {
+                        render_linear(&registry, &source, snapshot.clone(), &recipe, settings)
+                            .expect("production render")
+                    },
+                    &mut sampler,
+                );
+                production_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    production_cpu.push(cpu);
+                }
+                let (wall, cpu) = timed_render(
+                    || {
+                        generic_linear_reference(
+                            &registry,
+                            &source,
+                            snapshot.clone(),
+                            &recipe,
+                            settings,
+                        )
+                    },
+                    &mut sampler,
+                );
+                reference_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    reference_cpu.push(cpu);
+                }
+            }
+            println!(
+                "{name}: reference_wall_p50_ms={:.3} reference_wall_p95_ms={:.3} production_wall_p50_ms={:.3} production_wall_p95_ms={:.3} reference_process_cpu_p50_ms={} reference_process_cpu_p95_ms={} production_process_cpu_p50_ms={} production_process_cpu_p95_ms={} row_scratch_bytes_per_folder={} row_scratch_max_at_pool_width={} memory_after_reference={:?} memory_after_production={:?} output_sha256={:x}",
+                percentile(&reference_wall, 0.50),
+                percentile(&reference_wall, 0.95),
+                percentile(&production_wall, 0.50),
+                percentile(&production_wall, 0.95),
+                if reference_cpu.is_empty() {
+                    "unavailable".into()
+                } else {
+                    format!("{:.3}", percentile(&reference_cpu, 0.50))
+                },
+                if reference_cpu.is_empty() {
+                    "unavailable".into()
+                } else {
+                    format!("{:.3}", percentile(&reference_cpu, 0.95))
+                },
+                if production_cpu.is_empty() {
+                    "unavailable".into()
+                } else {
+                    format!("{:.3}", percentile(&production_cpu, 0.50))
+                },
+                if production_cpu.is_empty() {
+                    "unavailable".into()
+                } else {
+                    format!("{:.3}", percentile(&production_cpu, 0.95))
+                },
+                source.width() as usize * std::mem::size_of::<[f32; 3]>(),
+                source.width() as usize
+                    * std::mem::size_of::<[f32; 3]>()
+                    * rayon::current_num_threads(),
+                memory_after_reference,
+                memory_after_production,
+                actual_hash
+            );
+        }
+
+        // A display-bounded nearest-sampled source derived from the retained RAW planes exercises
+        // the same pointwise colour work as a Fit proxy without putting decode or proxy creation in
+        // the timed region. One exact source render runs sequentially in a background caller while
+        // 30 proxy requests use the shared Rayon pool.
+        let preview_width = 1920_u32;
+        let preview_height = 1280_u32;
+        let mut red = Vec::with_capacity((preview_width * preview_height) as usize);
+        let mut green = Vec::with_capacity(red.capacity());
+        let mut blue = Vec::with_capacity(red.capacity());
+        let reader = source.reader();
+        for y in 0..preview_height {
+            let source_y =
+                (u64::from(y) * u64::from(source.height()) / u64::from(preview_height)) as u32;
+            let row = reader
+                .row(source_y)
+                .expect("preview row is inside the retained RAW source")
+                .collect::<Vec<_>>();
+            for x in 0..preview_width {
+                let source_x =
+                    (u64::from(x) * u64::from(source.width()) / u64::from(preview_width)) as usize;
+                let pixel = row[source_x];
+                red.push(pixel[0]);
+                green.push(pixel[1]);
+                blue.push(pixel[2]);
+            }
+        }
+        let mut preview_planes = red;
+        preview_planes.extend(green);
+        preview_planes.extend(blue);
+        let preview_source = LinearImage::with_fingerprint(
+            preview_width,
+            preview_height,
+            preview_planes,
+            "sha256:linear-row-preview-contention",
+        )
+        .unwrap();
+        let preview_recipe = colour_recipe(vec![colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({
+                "exposure": 0.5, "contrast": 25.0, "highlights": -30.0,
+                "shadows": 30.0, "whites": -15.0, "blacks": 15.0,
+                "temperature": 20.0, "tint": -10.0, "vibrance": 30.0,
+                "saturation": 15.0
+            }),
+        )]);
+        let preview_snapshot = SnapshotId::new();
+        let preview_reference = generic_linear_reference(
+            &registry,
+            &preview_source,
+            preview_snapshot.clone(),
+            &preview_recipe,
+            settings,
+        );
+        let preview_actual = render_linear_proxy_cancellable(
+            &registry,
+            &preview_source,
+            preview_snapshot.clone(),
+            &preview_recipe,
+            settings,
+            &Cancel::never(),
+        )
+        .unwrap();
+        assert_eq!(preview_reference, preview_actual, "proxy byte identity");
+        drop(preview_reference);
+        drop(preview_actual);
+        let render_preview = || {
+            render_linear_proxy_cancellable(
+                &registry,
+                &preview_source,
+                preview_snapshot.clone(),
+                &preview_recipe,
+                settings,
+                &Cancel::never(),
+            )
+            .expect("Fit proxy render")
+        };
+        drop(render_preview());
+
+        let mut preview_uncontended_wall = Vec::with_capacity(30);
+        let mut preview_uncontended_cpu = Vec::with_capacity(30);
+        for _ in 0..30 {
+            let (wall, cpu) = timed_render(render_preview, &mut sampler);
+            preview_uncontended_wall.push(wall);
+            if let Some(cpu) = cpu {
+                preview_uncontended_cpu.push(cpu);
+            }
+        }
+
+        let load_before_contention = host_load_1m();
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_running = running.clone();
+        let worker_started = started.clone();
+        let worker_barrier = barrier.clone();
+        let worker_source = source.clone();
+        let worker_recipe = preview_recipe.clone();
+        let worker_snapshot = SnapshotId::new();
+        let worker_reference = diagnostic_mode == "contention-reference";
+        let worker = std::thread::spawn(move || {
+            let worker_registry = ModuleRegistry::builtin();
+            let mut exact_renders = 0_u32;
+            worker_barrier.wait();
+            worker_started.store(true, std::sync::atomic::Ordering::Relaxed);
+            while worker_running.load(std::sync::atomic::Ordering::Relaxed) {
+                let raster = if worker_reference {
+                    generic_linear_reference(
+                        &worker_registry,
+                        &worker_source,
+                        worker_snapshot.clone(),
+                        &worker_recipe,
+                        settings,
+                    )
+                } else {
+                    render_linear(
+                        &worker_registry,
+                        &worker_source,
+                        worker_snapshot.clone(),
+                        &worker_recipe,
+                        settings,
+                    )
+                    .expect("background exact RAW render")
+                };
+                std::hint::black_box(&raster);
+                drop(raster);
+                exact_renders += 1;
+            }
+            exact_renders
+        });
+        let contention_cpu_before = sampler.read().cpu_time_ns.ok();
+        let contention_start = Instant::now();
+        barrier.wait();
+        while !started.load(std::sync::atomic::Ordering::Relaxed) {
+            std::hint::spin_loop();
+        }
+        let mut preview_contended_wall = Vec::with_capacity(30);
+        for _ in 0..30 {
+            preview_contended_wall.push(timed_render(render_preview, &mut sampler).0);
+        }
+        running.store(false, std::sync::atomic::Ordering::Relaxed);
+        let exact_renders = worker.join().expect("exact render worker");
+        let contention_wall_ms = contention_start.elapsed().as_secs_f64() * 1e3;
+        let contention_cpu_ms = contention_cpu_before
+            .zip(sampler.read().cpu_time_ns.ok())
+            .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6);
+        let memory_after_contention = sampler.read().memory;
+        println!(
+            "fit_proxy_contention: variant={} dimensions={}x{} samples=30 uncontended_p50_p95_ms={:.3}/{:.3} uncontended_process_cpu_p50_p95_ms={:.3}/{:.3} contended_p50_p95_ms={:.3}/{:.3} exact_renders_during_proxy_samples={} overlap_wall_ms={:.3} overlap_process_cpu_ms={} memory_after_contention={:?} loadavg_before={}",
+            if worker_reference {
+                "generic-reference"
+            } else {
+                "production-rows"
+            },
+            preview_width,
+            preview_height,
+            percentile(&preview_uncontended_wall, 0.50),
+            percentile(&preview_uncontended_wall, 0.95),
+            percentile(&preview_uncontended_cpu, 0.50),
+            percentile(&preview_uncontended_cpu, 0.95),
+            percentile(&preview_contended_wall, 0.50),
+            percentile(&preview_contended_wall, 0.95),
+            exact_renders,
+            contention_wall_ms,
+            contention_cpu_ms.map_or_else(|| "unavailable".into(), |value| format!("{value:.3}")),
+            memory_after_contention,
+            load_before_contention
+        );
+        println!("loadavg_after={}", host_load_1m());
+    }
+
+    /// Measures a Fit-size RAW proxy while one exact retained-mosaic development repeats on a
+    /// background caller. The serial and parallel normalizer arms run in ABBA block order; each
+    /// proxy byte buffer is checked against an untimed exact reference after its render timer.
+    #[test]
+    #[ignore = "owner-Mac RAW normalization contention diagnostic"]
+    fn bayer_normalization_fit_proxy_contention_diagnostic() {
+        use std::{
+            process::Command,
+            sync::{
+                Barrier,
+                atomic::{AtomicBool, Ordering},
+            },
+        };
+
+        fn host_load_1m() -> String {
+            Command::new("uptime")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .and_then(|output| {
+                    let (_, values) = output
+                        .split_once("load averages:")
+                        .or_else(|| output.split_once("load average:"))?;
+                    values
+                        .split_whitespace()
+                        .next()
+                        .map(|value| value.trim_end_matches(',').to_owned())
+                })
+                .unwrap_or_else(|| "unavailable".into())
+        }
+
+        fn render_checked(
+            registry: &ModuleRegistry,
+            source: &LinearImage,
+            snapshot: &SnapshotId,
+            recipe: &Recipe,
+            settings: LinearSettings,
+            oracle: &Raster,
+            sampler: &mut luxforge_process::Sampler,
+        ) -> (f64, Option<f64>) {
+            let cpu_before = sampler.read().cpu_time_ns.ok();
+            let start = Instant::now();
+            let raster = render_linear_proxy_cancellable(
+                registry,
+                source,
+                snapshot.clone(),
+                recipe,
+                settings,
+                &Cancel::never(),
+            )
+            .expect("Fit proxy render");
+            let wall_ms = start.elapsed().as_secs_f64() * 1e3;
+            let cpu_after = sampler.read().cpu_time_ns.ok();
+            assert_eq!(raster, *oracle, "complete Fit proxy bytes");
+            std::hint::black_box(&raster);
+            drop(raster);
+            let process_cpu_ms = cpu_before
+                .zip(cpu_after)
+                .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6);
+            (wall_ms, process_cpu_ms)
+        }
+
+        struct LegInput<'a> {
+            parallel_normalization: bool,
+            raw: Arc<luxforge_raw::RawSource>,
+            gains: [f32; 3],
+            preview: &'a LinearImage,
+            preview_snapshot: &'a SnapshotId,
+            recipe: &'a Recipe,
+            settings: LinearSettings,
+            oracle: &'a Raster,
+            registry: &'a ModuleRegistry,
+        }
+
+        struct LegMeasurement {
+            proxy_wall: Vec<f64>,
+            proxy_process_cpu: Vec<f64>,
+            exact_started_overlap: u32,
+            exact_completed_overlap: u32,
+            exact_started_drain: u32,
+            exact_completed_drain: u32,
+            overlap_wall_ms: f64,
+            overlap_process_cpu_ms: f64,
+            drain_wall_ms: f64,
+            drain_process_cpu_ms: f64,
+            load_start: String,
+            load_end: String,
+        }
+
+        fn measure_leg(
+            input: LegInput<'_>,
+            sampler: &mut luxforge_process::Sampler,
+        ) -> LegMeasurement {
+            let LegInput {
+                parallel_normalization,
+                raw,
+                gains,
+                preview,
+                preview_snapshot,
+                recipe,
+                settings,
+                oracle,
+                registry,
+            } = input;
+            let running = Arc::new(AtomicBool::new(true));
+            let started = Arc::new(AtomicBool::new(false));
+            let exact_started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let exact_completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let barrier = Arc::new(Barrier::new(2));
+            let worker_running = running.clone();
+            let worker_started = started.clone();
+            let worker_exact_started = exact_started.clone();
+            let worker_exact_completed = exact_completed.clone();
+            let worker_barrier = barrier.clone();
+            let worker_raw = raw.clone();
+            let worker = std::thread::spawn(move || {
+                let worker_cancel = AtomicBool::new(false);
+                worker_barrier.wait();
+                worker_started.store(true, Ordering::Release);
+                while worker_running.load(Ordering::Acquire) {
+                    worker_exact_started.fetch_add(1, Ordering::AcqRel);
+                    let developed = worker_raw
+                        .develop_for_performance_diagnostic(
+                            gains,
+                            &worker_cancel,
+                            parallel_normalization,
+                        )
+                        .expect("concurrent exact Bayer development");
+                    std::hint::black_box(&developed.data);
+                    drop(developed);
+                    worker_exact_completed.fetch_add(1, Ordering::AcqRel);
+                }
+            });
+
+            let load_start = host_load_1m();
+            let cpu_before = sampler.read().cpu_time_ns.ok();
+            let overlap_start = Instant::now();
+            barrier.wait();
+            while !started.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+            let mut proxy_wall = Vec::with_capacity(15);
+            let mut proxy_process_cpu = Vec::with_capacity(15);
+            for _ in 0..15 {
+                let (wall, cpu) = render_checked(
+                    registry,
+                    preview,
+                    preview_snapshot,
+                    recipe,
+                    settings,
+                    oracle,
+                    sampler,
+                );
+                proxy_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    proxy_process_cpu.push(cpu);
+                }
+            }
+            // The measured overlap ends with the fifteenth preview. Snapshot counters
+            // and process CPU before asking the worker to stop; RCD may finish later.
+            let overlap_wall_ms = overlap_start.elapsed().as_secs_f64() * 1e3;
+            let overlap_cpu_snapshot = sampler.read().cpu_time_ns.ok();
+            let overlap_started = exact_started.load(Ordering::Acquire) as u32;
+            let overlap_completed = exact_completed.load(Ordering::Acquire) as u32;
+            running.store(false, Ordering::Release);
+            let drain_start = Instant::now();
+            worker.join().expect("exact RAW worker");
+            let drain_wall_ms = drain_start.elapsed().as_secs_f64() * 1e3;
+            let after_drain_cpu = sampler.read().cpu_time_ns.ok();
+            let drain_process_cpu_ms = overlap_cpu_snapshot
+                .zip(after_drain_cpu)
+                .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6)
+                .unwrap_or(f64::NAN);
+            let overlap_process_cpu_ms = cpu_before
+                .zip(overlap_cpu_snapshot)
+                .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6)
+                .unwrap_or(f64::NAN);
+            let load_end = host_load_1m();
+            let total_started = exact_started.load(Ordering::Acquire) as u32;
+            let total_completed = exact_completed.load(Ordering::Acquire) as u32;
+            LegMeasurement {
+                proxy_wall,
+                proxy_process_cpu,
+                exact_started_overlap: overlap_started,
+                exact_completed_overlap: overlap_completed,
+                exact_started_drain: total_started.saturating_sub(overlap_started),
+                exact_completed_drain: total_completed.saturating_sub(overlap_completed),
+                overlap_wall_ms,
+                overlap_process_cpu_ms,
+                drain_wall_ms,
+                drain_process_cpu_ms,
+                load_start,
+                load_end,
+            }
+        }
+
+        let owner = std::env::var("LUXFORGE_RAW_OWNER_DIR").expect("owner RAW fixture directory");
+        let path = std::path::Path::new(&owner).join("nikon_z6.NEF");
+        let bytes = std::fs::read(&path).expect("read owner Nikon Z6 source");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb",
+            "owner RAW manifest hash"
+        );
+        let prepared = crate::source::RawPrepared::decode(
+            bytes,
+            "sha256:bayer-normalization-fit-contention".into(),
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("decode and prepare owner Nikon Z6");
+        let raw = prepared.sensor.clone();
+        let gains = prepared.gains;
+        assert_eq!(
+            raw.metadata().mode,
+            luxforge_raw::RawMode::NikonZ6Lossless14
+        );
+        assert_eq!(
+            (raw.metadata().sensor_width, raw.metadata().sensor_height),
+            (6064, 4040)
+        );
+        let source = prepared
+            .linear
+            .clone()
+            .expect("retained Nikon linear planes");
+        let mut sampler = luxforge_process::Sampler::new();
+        let memory_after_decode = sampler.read().memory;
+
+        let preview_width = 1920_u32;
+        let preview_height = 1280_u32;
+        let mut red = Vec::with_capacity((preview_width * preview_height) as usize);
+        let mut green = Vec::with_capacity(red.capacity());
+        let mut blue = Vec::with_capacity(red.capacity());
+        let reader = source.reader();
+        for y in 0..preview_height {
+            let source_y =
+                (u64::from(y) * u64::from(source.height()) / u64::from(preview_height)) as u32;
+            let row = reader
+                .row(source_y)
+                .expect("Fit proxy row")
+                .collect::<Vec<_>>();
+            for x in 0..preview_width {
+                let source_x =
+                    (u64::from(x) * u64::from(source.width()) / u64::from(preview_width)) as usize;
+                let pixel = row[source_x];
+                red.push(pixel[0]);
+                green.push(pixel[1]);
+                blue.push(pixel[2]);
+            }
+        }
+        let mut preview_planes = red;
+        preview_planes.extend(green);
+        preview_planes.extend(blue);
+        let preview = LinearImage::with_fingerprint(
+            preview_width,
+            preview_height,
+            preview_planes,
+            "sha256:bayer-normalization-fit-contention-proxy",
+        )
+        .unwrap();
+        let registry = ModuleRegistry::builtin();
+        let settings = LinearSettings {
+            exposure_ev: 0.7,
+            white_balance: None,
+        };
+        let recipe = colour_recipe(vec![colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({
+                "exposure": 0.5, "contrast": 25.0, "highlights": -30.0,
+                "shadows": 30.0, "whites": -15.0, "blacks": 15.0,
+                "temperature": 20.0, "tint": -10.0, "vibrance": 30.0,
+                "saturation": 15.0
+            }),
+        )]);
+        let snapshot = SnapshotId::new();
+        let reference =
+            generic_linear_reference(&registry, &preview, snapshot.clone(), &recipe, settings);
+        assert_eq!(
+            reference,
+            render_linear_proxy_cancellable(
+                &registry,
+                &preview,
+                snapshot.clone(),
+                &recipe,
+                settings,
+                &Cancel::never(),
+            )
+            .unwrap(),
+            "Fit proxy equals generic complete-byte reference"
+        );
+        // Warm native exact and proxy paths in both normalizer modes before sampling.
+        for parallel in [false, true] {
+            let developed = raw
+                .develop_for_performance_diagnostic(
+                    gains,
+                    &std::sync::atomic::AtomicBool::new(false),
+                    parallel,
+                )
+                .expect("warm exact native development");
+            std::hint::black_box(&developed.data);
+            drop(developed);
+            let _ = render_checked(
+                &registry,
+                &preview,
+                &snapshot,
+                &recipe,
+                settings,
+                &reference,
+                &mut sampler,
+            );
+        }
+
+        let mut serial_wall = Vec::with_capacity(30);
+        let mut serial_cpu = Vec::with_capacity(30);
+        let mut parallel_wall = Vec::with_capacity(30);
+        let mut parallel_cpu = Vec::with_capacity(30);
+        let mut exact_started_overlap = [0_u32; 2];
+        let mut exact_completed_overlap = [0_u32; 2];
+        let mut exact_started_drain = [0_u32; 2];
+        let mut exact_completed_drain = [0_u32; 2];
+        let mut overlap_wall_ms = [0.0_f64; 2];
+        let mut overlap_process_cpu_ms = [0.0_f64; 2];
+        let mut drain_wall_ms = [0.0_f64; 2];
+        let mut drain_process_cpu_ms = [0.0_f64; 2];
+        let mut leg_loads = Vec::new();
+        // Each leg contributes 15 preview samples; A-B-B-A therefore gives 30 per arm.
+        for parallel in [false, true, true, false] {
+            let measurement = measure_leg(
+                LegInput {
+                    parallel_normalization: parallel,
+                    raw: raw.clone(),
+                    gains,
+                    preview: &preview,
+                    preview_snapshot: &snapshot,
+                    recipe: &recipe,
+                    settings,
+                    oracle: &reference,
+                    registry: &registry,
+                },
+                &mut sampler,
+            );
+            let arm = usize::from(parallel);
+            if parallel {
+                parallel_wall.extend(measurement.proxy_wall);
+                parallel_cpu.extend(measurement.proxy_process_cpu);
+            } else {
+                serial_wall.extend(measurement.proxy_wall);
+                serial_cpu.extend(measurement.proxy_process_cpu);
+            }
+            exact_started_overlap[arm] += measurement.exact_started_overlap;
+            exact_completed_overlap[arm] += measurement.exact_completed_overlap;
+            exact_started_drain[arm] += measurement.exact_started_drain;
+            exact_completed_drain[arm] += measurement.exact_completed_drain;
+            overlap_wall_ms[arm] += measurement.overlap_wall_ms;
+            overlap_process_cpu_ms[arm] += measurement.overlap_process_cpu_ms;
+            drain_wall_ms[arm] += measurement.drain_wall_ms;
+            drain_process_cpu_ms[arm] += measurement.drain_process_cpu_ms;
+            leg_loads.push((
+                if parallel { "parallel" } else { "serial" },
+                measurement.load_start,
+                measurement.load_end,
+            ));
+        }
+        let memory = sampler.read().memory;
+        println!(
+            "bayer_fit_proxy_contention: source=nikon_z6.NEF dimensions=6064x4040 preview={}x{} samples_per_arm=30 order=serial-parallel-parallel-serial rayon_threads={} max_admitted_normalization_callbacks=8 normalizer_extra_scratch_bytes=0 shared_admission_slot_limit=8 preview_serial_wall_p50_p95_ms={:.3}/{:.3} preview_serial_process_cpu_per_preview_window_p50_p95_ms={:.3}/{:.3} preview_parallel_wall_p50_p95_ms={:.3}/{:.3} preview_parallel_process_cpu_per_preview_window_p50_p95_ms={:.3}/{:.3} exact_serial_started_during_overlap={} exact_serial_completed_during_overlap={} exact_serial_started_in_drain={} exact_serial_completed_in_drain={} exact_parallel_started_during_overlap={} exact_parallel_completed_during_overlap={} exact_parallel_started_in_drain={} exact_parallel_completed_in_drain={} serial_overlap_wall_ms={:.1} serial_overlap_process_cpu_ms={:.1} serial_drain_wall_ms={:.1} serial_drain_process_cpu_ms={:.1} parallel_overlap_wall_ms={:.1} parallel_overlap_process_cpu_ms={:.1} parallel_drain_wall_ms={:.1} parallel_drain_process_cpu_ms={:.1} memory_after_prepare={memory_after_decode:?} process_memory_after_overlap={memory:?} process_memory_peak_scope=whole diagnostic process across both arms including retained mosaic, retained linear planes, preview oracle and transient exact RGB output; not per arm; cancellation=measurement does not cancel exact development; per-row normalization checks and joins; Bayer RCD is noncancellable until its native call returns; includes core preview render, excludes app upload and scanout",
+            preview_width,
+            preview_height,
+            rayon::current_num_threads(),
+            percentile(&serial_wall, 0.50),
+            percentile(&serial_wall, 0.95),
+            percentile(&serial_cpu, 0.50),
+            percentile(&serial_cpu, 0.95),
+            percentile(&parallel_wall, 0.50),
+            percentile(&parallel_wall, 0.95),
+            percentile(&parallel_cpu, 0.50),
+            percentile(&parallel_cpu, 0.95),
+            exact_started_overlap[0],
+            exact_completed_overlap[0],
+            exact_started_drain[0],
+            exact_completed_drain[0],
+            exact_started_overlap[1],
+            exact_completed_overlap[1],
+            exact_started_drain[1],
+            exact_completed_drain[1],
+            overlap_wall_ms[0],
+            overlap_process_cpu_ms[0],
+            drain_wall_ms[0],
+            drain_process_cpu_ms[0],
+            overlap_wall_ms[1],
+            overlap_process_cpu_ms[1],
+            drain_wall_ms[1],
+            drain_process_cpu_ms[1],
+        );
+        for (arm, start, end) in leg_loads {
+            println!("contention_leg_load: arm={arm} load_start={start} load_end={end}");
+        }
+    }
+
+    #[test]
+    fn source_rows_keep_validation_fallback_cancellation_and_finite_errors() {
+        let source = varied(9, 7);
+        let registry = ModuleRegistry::builtin();
+        let settings = LinearSettings::default();
+        let evaluate = |recipe: &Recipe, settings| {
+            LinearEvaluation::new(
+                &registry,
+                &source,
+                recipe,
+                settings,
+                &Cancel::never(),
+                PRODUCTION_TILE,
+                SpatialMode::Frames,
+            )
+        };
+        assert!(
+            evaluate(&Recipe::default(), settings)
+                .unwrap()
+                .source_rows()
+                .is_some()
+        );
+        for recipe in [
+            Recipe {
+                layers: vec![Layer::pixel(1, 1, [30, 60, 90])],
+                ..Recipe::default()
+            },
+            Recipe {
+                layers: vec![Layer::orientation(crate::Orientation {
+                    mirror: false,
+                    turns: 1,
+                })],
+                ..Recipe::default()
+            },
+            Recipe {
+                layers: vec![Layer::crop(CropPayload {
+                    angle: 5.0,
+                    x: 0.2,
+                    y: 0.2,
+                    width: 0.6,
+                    height: 0.6,
+                })],
+                ..Recipe::default()
+            },
+            cancellation_recipe(),
+        ] {
+            assert!(evaluate(&recipe, settings).unwrap().source_rows().is_none());
+            let snapshot = SnapshotId::new();
+            assert_eq!(
+                render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap(),
+                generic_linear_reference(&registry, &source, snapshot, &recipe, settings)
+            );
+        }
+        let mut unavailable = cancellation_recipe();
+        unavailable.layers[0].effect_id = "unavailable.effect".into();
+        let expected = registry
+            .compile(source.width(), source.height(), &unavailable)
+            .err()
+            .unwrap();
+        let actual = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &unavailable,
+            settings,
+        )
+        .unwrap_err();
+        assert_eq!(
+            (actual.kind, actual.detail),
+            (expected.kind, expected.detail)
+        );
+        for exposure_ev in [f64::NAN, f64::INFINITY, -5.1, 5.1] {
+            assert_eq!(
+                render_linear(
+                    &registry,
+                    &source,
+                    SnapshotId::new(),
+                    &Recipe::default(),
+                    LinearSettings {
+                        exposure_ev,
+                        white_balance: None
+                    }
+                )
+                .unwrap_err()
+                .kind,
+                ErrorKind::Validation
+            );
+        }
+        let cancel = Cancel::new();
+        cancel.cancel();
+        assert_eq!(
+            render_linear_cancellable(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &Recipe::default(),
+                settings,
+                &cancel
+            )
+            .unwrap_err()
+            .kind,
+            ErrorKind::Cancelled
+        );
+
+        // Finite WB coefficients can still overflow while evaluating a pixel. The row path must
+        // keep the generic source-adjustment error, not let a later terminal check replace it.
+        let overflow = LinearSettings {
+            exposure_ev: 5.0,
+            white_balance: Some(
+                WhiteBalanceApproximation::from_matrix([[f64::MAX; 3]; 3]).unwrap(),
+            ),
+        };
+        let overflowing_source = image(1, 1, &[[1.0; 3]]);
+        let generic = LinearEvaluation::new(
+            &registry,
+            &overflowing_source,
+            &Recipe::default(),
+            overflow,
+            &Cancel::never(),
+            PRODUCTION_TILE,
+            SpatialMode::Frames,
+        )
+        .unwrap();
+        let expected = generic.pixel(0, 0).unwrap_err();
+        let actual = render_linear(
+            &registry,
+            &overflowing_source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            overflow,
+        )
+        .unwrap_err();
+        assert_eq!(
+            (actual.kind, actual.detail),
+            (expected.kind, expected.detail)
+        );
+    }
+
+    fn reference_srgb(value: f64) -> u8 {
+        let value = value.clamp(0.0, 1.0);
+        let encoded = if value <= 0.003_130_8 {
+            value * 12.92
+        } else {
+            1.055 * value.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    }
+
+    #[test]
+    fn terminal_quantization_preserves_forward_rounding_at_every_f64_boundary() {
+        // Independent inverse transfer, including every representable neighbour around each
+        // code boundary. Some of these values intentionally disagree with inverse-only lookup.
+        for code in 1..=255_u32 {
+            let encoded = (f64::from(code) - 0.5) / 255.0;
+            let boundary = if encoded <= 0.040_45 {
+                encoded / 12.92
+            } else {
+                ((encoded + 0.055) / 1.055).powf(2.4)
+            };
+            let bits = boundary.to_bits();
+            for bits in bits - 128..=bits + 128 {
+                let value = f64::from_bits(bits);
+                assert_eq!(
+                    terminal_srgb(value).unwrap(),
+                    reference_srgb(value),
+                    "code {code}, bits {bits:#018x}"
+                );
+            }
+            // Include both sides of the guard as well as values within it. The reference is
+            // always the former forward transfer, never the lookup under test.
+            for delta in [-2e-12, -1e-12, -5e-13, 5e-13, 1e-12, 2e-12] {
+                let value = boundary + delta;
+                for value in [value.next_down(), value, value.next_up()] {
+                    assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_quantization_preserves_finite_domain_and_rejects_nonfinite_values() {
+        for value in [
+            f64::MIN,
+            -1.0,
+            -f64::MIN_POSITIVE,
+            -f64::from_bits(1),
+            -0.0,
+            0.0,
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            0.003_130_8_f64.next_down(),
+            0.003_130_8,
+            0.003_130_8_f64.next_up(),
+            1.0_f64.next_down(),
+            1.0,
+            1.0_f64.next_up(),
+            32.0,
+            f64::MAX,
+        ] {
+            assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+        }
+        for step in 0..=40_000 {
+            let value = f64::from(step) / 40_000.0;
+            assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+        }
+        // Deterministic bit-pattern coverage also visits the very dark/subnormal domain that
+        // a uniform sweep misses, plus signed and extended-domain source values.
+        let mut bits = 0x1234_5678_9abc_def0_u64;
+        for _ in 0..100_000 {
+            bits = bits.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let value = f64::from_bits(bits);
+            if value.is_finite() {
+                assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+            }
+        }
+        for value in [f64::NAN, -f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = terminal_srgb(value).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Render);
+            assert_eq!(
+                error.detail,
+                "linear evaluation produced a non-finite value"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_planar_bound_is_separate_from_terminal_rgba_bound() {
+        // This checks admission arithmetic only; LinearImage is not allocated.
+        assert!(layout(16_000, 8_000).is_ok());
+        assert!(output_len(16_000, 6_250).is_ok());
+        assert!(output_len(16_000, 8_000).is_ok());
+        assert!(output_len(16_000, 8_001).is_err());
+        assert!(layout(16_384, 16_384).is_err());
+    }
+
+    /// A colour-stage layer reaches the linear path too: the Basic module's units run on the
+    /// scene-linear pixel, without the 8-bit decode and quantize the JPEG path needs, and the only
+    /// encoding is the terminal boundary. A RAW stack therefore never silently omits a Basic edit.
+    #[test]
+    fn a_colour_layer_runs_on_the_linear_pixel_and_encodes_only_at_the_boundary() {
+        let source = image(2, 1, &[[0.1, 0.2, 0.3], [0.05, 0.4, 0.6]]);
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: serde_json::json!({"exposure": 1.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            }],
+            masks: Vec::new(),
+            ..Recipe::default()
+        };
+        let raster = render_linear(
+            &ModuleRegistry::builtin(),
+            &source,
+            SnapshotId::new(),
+            &recipe,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        // +1 EV doubles the linear value; the second pixel's blue clips only at the encoding.
+        assert_eq!(
+            raster.pixel(0, 0),
+            Some([
+                reference_srgb(0.2),
+                reference_srgb(0.4),
+                reference_srgb(0.6),
+                255
+            ])
+        );
+        assert_eq!(
+            raster.pixel(1, 0),
+            Some([
+                reference_srgb(0.1),
+                reference_srgb(0.8),
+                reference_srgb(1.0),
+                255
+            ])
+        );
+    }
+
+    #[test]
+    fn planar_source_keeps_negative_and_headroom_values_until_terminal_boundary() {
+        let source = image(
+            2,
+            2,
+            &[
+                [-0.25, 0.18, 1.5],
+                [0.5, 0.2, -0.1],
+                [1.25, 0.4, 0.75],
+                [2.0, -0.5, 0.25],
+            ],
+        );
+        assert_eq!(source.pixel(0, 0), Some([-0.25, 0.18, 1.5]));
+        let raster = render_linear(
+            &ModuleRegistry::builtin(),
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            LinearSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            raster.pixel(0, 0),
+            Some([0, reference_srgb(0.18), 255, 255])
+        );
+        assert_eq!(
+            raster.pixel(1, 1),
+            Some([255, 0, reference_srgb(0.25), 255])
+        );
+    }
+
+    #[test]
+    fn exposure_is_f64_before_content_and_terminal_clipping() {
+        let source = image(1, 1, &[[0.18, -0.1, 0.5]]);
+        let raster = render_linear(
+            &ModuleRegistry::builtin(),
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            LinearSettings {
+                exposure_ev: 1.0,
+                white_balance: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            raster.pixel(0, 0),
+            Some([reference_srgb(0.36), 0, reference_srgb(1.0), 255])
+        );
+        assert!(
+            LinearSettings {
+                exposure_ev: 5.01,
+                white_balance: None,
+            }
+            .multiplier()
+            .is_err()
+        );
+        assert!(
+            LinearSettings {
+                exposure_ev: f64::NAN,
+                white_balance: None,
+            }
+            .multiplier()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn exact_recipe_geometry_and_source_view_preserve_working_values() {
+        let source = image(
+            3,
+            2,
+            &[
+                [0.1, 1.1, -0.1],
+                [0.2, 1.2, -0.2],
+                [0.3, 1.3, -0.3],
+                [0.4, 1.4, -0.4],
+                [0.5, 1.5, -0.5],
+                [0.6, 1.6, -0.6],
+            ],
+        );
+        let view = source.with_view([0, 0, 3, 2], 6).unwrap();
+        assert_eq!(view.width(), 2);
+        assert_eq!(view.height(), 3);
+        assert_eq!(view.pixel(0, 0), Some([0.4, 1.4, -0.4]));
+        assert_eq!(view.pixel(1, 2), Some([0.3, 1.3, -0.3]));
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer::orientation(crate::Orientation {
+                mirror: false,
+                turns: 2,
+            })],
+            masks: Vec::new(),
+            ..Recipe::default()
+        };
+        let evaluation = LinearEvaluation::new(
+            &ModuleRegistry::builtin(),
+            &view,
+            &recipe,
+            LinearSettings::default(),
+            &Cancel::new(),
+            PRODUCTION_TILE,
+            SpatialMode::Point,
+        )
+        .unwrap();
+        assert_eq!(
+            evaluation.pixel(1, 2).unwrap(),
+            Some([f64::from(0.4_f32), f64::from(1.4_f32), f64::from(-0.4_f32),])
+        );
+    }
+
+    #[test]
+    fn all_eight_source_view_orientations_match_independent_literals() {
+        let source = image(
+            2,
+            3,
+            &[
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [5.0, 0.0, 0.0],
+                [6.0, 0.0, 0.0],
+            ],
+        );
+        let expected = [
+            (1, 2, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            (2, 2, 3, vec![2.0, 1.0, 4.0, 3.0, 6.0, 5.0]),
+            (3, 2, 3, vec![6.0, 5.0, 4.0, 3.0, 2.0, 1.0]),
+            (4, 2, 3, vec![5.0, 6.0, 3.0, 4.0, 1.0, 2.0]),
+            (5, 3, 2, vec![1.0, 3.0, 5.0, 2.0, 4.0, 6.0]),
+            (6, 3, 2, vec![5.0, 3.0, 1.0, 6.0, 4.0, 2.0]),
+            (7, 3, 2, vec![6.0, 4.0, 2.0, 5.0, 3.0, 1.0]),
+            (8, 3, 2, vec![2.0, 4.0, 6.0, 1.0, 3.0, 5.0]),
+        ];
+        for (orientation, width, height, expected_red) in expected {
+            let view = source.with_view([0, 0, 2, 3], orientation).unwrap();
+            let mut actual = Vec::with_capacity((width * height) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    actual.push(view.pixel(x, y).unwrap()[0]);
+                }
+            }
+            assert_eq!(actual, expected_red, "orientation {orientation}");
+        }
+    }
+
+    #[test]
+    fn source_vec_storage_is_moved_without_pixel_copy_and_views_share_it() {
+        let mut planes = Vec::with_capacity(12);
+        planes.extend([0.0_f32, 1.0, 2.0, 3.0]);
+        planes.extend([4.0, 5.0, 6.0, 7.0]);
+        planes.extend([8.0, 9.0, 10.0, 11.0]);
+        let pointer = planes.as_ptr();
+        let source = LinearImage::new(2, 2, planes).unwrap();
+        let view = source.with_view([0, 0, 2, 2], 6).unwrap();
+        assert_eq!(source.planes().as_ptr(), pointer);
+        assert_eq!(view.planes().as_ptr(), pointer);
+        assert_eq!(view.pixel(0, 0), Some([2.0, 6.0, 10.0]));
+    }
+
+    #[test]
+    fn validated_plane_adoption_keeps_layout_identity_and_shared_storage() {
+        let planes = vec![0.25, 0.5, 0.75, 1.0, -0.5, 2.0];
+        let pointer = planes.as_ptr();
+        let source =
+            LinearImage::from_validated_planes(2, 1, planes, "raw-fingerprint".into()).unwrap();
+        let view = source.with_view([0, 0, 2, 1], 2).unwrap();
+        assert_eq!(source.planes().as_ptr(), pointer);
+        assert_eq!(view.planes().as_ptr(), pointer);
+        assert_eq!(source.fingerprint(), "raw-fingerprint");
+        assert_eq!(view.development(), source.development());
+        assert_eq!(source.pixel(0, 0), Some([0.25, 0.75, -0.5]));
+        assert_eq!(view.pixel(0, 0), Some([0.5, 1.0, 2.0]));
+        assert_eq!(
+            LinearImage::from_validated_planes(2, 2, vec![0.0; 6], String::new())
+                .unwrap_err()
+                .kind,
+            ErrorKind::Validation
+        );
+    }
+
+    #[test]
+    fn bilinear_preserves_headroom_and_point_replace_decodes_at_its_stage() {
+        let corners = [
+            [2.0, -1.0, 0.0],
+            [0.0, 1.0, 2.0],
+            [2.0, -1.0, 0.0],
+            [0.0, 1.0, 2.0],
+        ];
+        let actual =
+            linear_bilinear(1.0, 1.0, 2, 2, |x, y| Ok(corners[(y * 2 + x) as usize])).unwrap();
+        assert_eq!(actual, [1.0, 0.0, 1.0]);
+
+        let precise = [
+            [0.125_123_456_789, -0.543_210_987_654, 1.734_567_890_123],
+            [0.912_345_678_901, 0.234_567_890_123, -0.876_543_210_987],
+            [1.234_567_890_123, -1.345_678_901_234, 0.456_789_012_345],
+            [-0.321_098_765_432, 0.678_901_234_567, 1.890_123_456_789],
+        ];
+        let actual =
+            linear_bilinear(1.25, 1.25, 2, 2, |x, y| Ok(precise[(y * 2 + x) as usize])).unwrap();
+        let expected: [f64; 3] = std::array::from_fn(|channel| {
+            precise[0][channel] * 0.0625
+                + precise[1][channel] * 0.1875
+                + precise[2][channel] * 0.1875
+                + precise[3][channel] * 0.5625
+        });
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-15);
+        }
+
+        let source = image(2, 2, &[[0.0, 0.0, 0.0]; 4]);
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer::pixel(1, 0, [128, 64, 255])],
+            masks: Vec::new(),
+            ..Recipe::default()
+        };
+        let sample = sample_linear(
+            &ModuleRegistry::builtin(),
+            &source,
+            &recipe,
+            LinearSettings::default(),
+            1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            sample.rgba,
+            Some([
+                reference_srgb(decode_srgb(128)),
+                reference_srgb(decode_srgb(64)),
+                255,
+                255
+            ])
+        );
+    }
+
+    #[test]
+    fn sample_matches_full_render_and_crop_has_no_float_intermediate() {
+        let source = image(
+            4,
+            4,
+            &(0..16)
+                .map(|value| [value as f32 / 8.0, 0.25, -value as f32 / 16.0])
+                .collect::<Vec<_>>(),
+        );
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer::crop(CropPayload {
+                angle: 12.0,
+                x: 0.25,
+                y: 0.25,
+                width: 0.5,
+                height: 0.5,
+            })],
+            masks: Vec::new(),
+            ..Recipe::default()
+        };
+        let registry = ModuleRegistry::builtin();
+        let raster = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &recipe,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        for y in 0..raster.height {
+            for x in 0..raster.width {
+                assert_eq!(
+                    sample_linear(&registry, &source, &recipe, LinearSettings::default(), x, y)
+                        .unwrap()
+                        .rgba,
+                    raster.pixel(x, y)
+                );
+            }
+        }
+        assert!(raster.width > 0 && raster.height > 0);
+    }
+
+    /// The linear path hands a positional unit the same coordinates the 8-bit path does, so
+    /// `sample_linear` equals `render_linear` pixel for pixel through an exact rotation in one
+    /// segment and after a crop resample, where the coordinates are the output stage's.
+    #[test]
+    fn a_positional_colour_unit_agrees_between_linear_render_and_sample() {
+        use crate::render::tests::{colour_registry, positional_layer};
+        let source = image(
+            5,
+            4,
+            &(0..20)
+                .map(|value| [value as f32 / 24.0, 0.25, 0.5 - value as f32 / 40.0])
+                .collect::<Vec<_>>(),
+        );
+        let registry = colour_registry();
+        for (case, layers) in [
+            ("a positional unit alone", vec![positional_layer()]),
+            (
+                "after an exact rotation in the same segment",
+                vec![
+                    Layer::orientation(crate::Orientation {
+                        mirror: false,
+                        turns: 1,
+                    }),
+                    positional_layer(),
+                ],
+            ),
+            (
+                "after a crop resample, in output coordinates",
+                vec![
+                    Layer::crop(CropPayload {
+                        angle: 0.0,
+                        x: 0.2,
+                        y: 0.2,
+                        width: 0.6,
+                        height: 0.6,
+                    }),
+                    positional_layer(),
+                ],
+            ),
+        ] {
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+                ..Recipe::default()
+            };
+            let raster = render_linear(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &recipe,
+                LinearSettings::default(),
+            )
+            .unwrap();
+            assert!(raster.width > 1 && raster.height > 1, "{case}");
+            for y in 0..raster.height {
+                for x in 0..raster.width {
+                    assert_eq!(
+                        sample_linear(&registry, &source, &recipe, LinearSettings::default(), x, y)
+                            .unwrap()
+                            .rgba,
+                        raster.pixel(x, y),
+                        "{case}: ({x}, {y})"
+                    );
+                }
+            }
+            assert_ne!(
+                raster.pixel(0, 0),
+                raster.pixel(raster.width - 1, raster.height - 1),
+                "{case}: the unit varies across the frame"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The white-balance approximation.
+    // -----------------------------------------------------------------------------------------
+
+    /// A varied source with negative and above-one values in every channel.
+    fn varied(width: u32, height: u32) -> LinearImage {
+        let pixels: Vec<[f32; 3]> = (0..width * height)
+            .map(|index| {
+                let value = index as f32;
+                [
+                    (value * 0.037) % 1.3 - 0.1,
+                    (value * 0.051) % 1.1,
+                    (value * 0.023) % 1.6 - 0.2,
+                ]
+            })
+            .collect();
+        image(width, height, &pixels)
+    }
+
+    /// A plausible camera-to-sRGB matrix: rows sum to one, strong off-diagonal terms, invertible.
+    const CAMERA: [[f64; 3]; 3] = [
+        [1.72, -0.61, -0.11],
+        [-0.18, 1.49, -0.31],
+        [0.04, -0.52, 1.48],
+    ];
+
+    fn apply(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
+        matrix.map(|row| row[0] * vector[0] + row[1] * vector[1] + row[2] * vector[2])
+    }
+
+    /// With no approximation the evaluation is the one every committed render has always done:
+    /// each byte is the independent `sRGB(2^EV · p)` of its source pixel. An identity matrix, whose
+    /// products are exact, renders the same bytes, so the approximation adds nothing but its matrix.
+    #[test]
+    fn no_approximation_is_bit_for_bit_the_exposure_evaluation() {
+        let registry = ModuleRegistry::builtin();
+        let source = varied(9, 7);
+        let exposure_ev = 0.7;
+        let plain = LinearSettings {
+            exposure_ev,
+            white_balance: None,
+        };
+        let raster = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            plain,
+        )
+        .unwrap();
+        let multiplier = exposure_ev.exp2();
+        for y in 0..7 {
+            for x in 0..9 {
+                let pixel = source.pixel(x, y).unwrap().map(f64::from);
+                let expected = pixel.map(|value| reference_srgb(value * multiplier));
+                assert_eq!(
+                    raster.pixel(x, y),
+                    Some([expected[0], expected[1], expected[2], 255]),
+                    "({x}, {y})"
+                );
+            }
+        }
+        let identity = LinearSettings {
+            exposure_ev,
+            white_balance: Some(
+                WhiteBalanceApproximation::from_matrix([
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ])
+                .unwrap(),
+            ),
+        };
+        let through_identity = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            identity,
+        )
+        .unwrap();
+        assert_eq!(through_identity.rgba, raster.rgba);
+    }
+
+    /// The approximation multiplies each source pixel by `W` before the exposure: the byte is the
+    /// independent `sRGB(2^EV · (W · p))`, so a colour layer after it sees the approximated scene
+    /// value exactly as it sees an exact one.
+    #[test]
+    fn the_approximation_applies_its_matrix_before_the_exposure() {
+        let matrix = [[1.3, 0.1, -0.05], [0.02, 0.97, 0.01], [-0.1, 0.05, 0.62]];
+        let settings = LinearSettings {
+            exposure_ev: 1.0,
+            white_balance: Some(WhiteBalanceApproximation::from_matrix(matrix).unwrap()),
+        };
+        let source = varied(6, 5);
+        let registry = ModuleRegistry::builtin();
+        let raster = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            settings,
+        )
+        .unwrap();
+        for y in 0..5 {
+            for x in 0..6 {
+                let pixel = source.pixel(x, y).unwrap().map(f64::from);
+                let expected = apply(matrix, pixel).map(|value| reference_srgb(2.0 * value));
+                assert_eq!(
+                    raster.pixel(x, y),
+                    Some([expected[0], expected[1], expected[2], 255]),
+                    "({x}, {y})"
+                );
+                // The point sampler takes the same path, so the readout of an approximate stack
+                // would agree with its frame — though the host never asks it to.
+                assert_eq!(
+                    sample_linear(&registry, &source, &Recipe::default(), settings, x, y)
+                        .unwrap()
+                        .rgba,
+                    raster.pixel(x, y)
+                );
+            }
+        }
+    }
+
+    /// `W = R · diag(g'/g) · R⁻¹`: a camera-RGB pixel `c` developed at `g` is `R · c`, and the one
+    /// developed at `g'` is, to first order, `R · diag(g'/g) · c`, which `W` must reach from the
+    /// first. Equal gains are the identity to rounding.
+    #[test]
+    fn the_matrix_maps_one_development_onto_the_other_in_camera_space() {
+        let developed = [2.1_f32, 1.0, 1.45];
+        let target = [1.52_f32, 1.0, 2.37];
+        let balance = WhiteBalanceApproximation::between(CAMERA, developed, target).unwrap();
+        let ratio: [f64; 3] =
+            std::array::from_fn(|c| f64::from(target[c]) / f64::from(developed[c]));
+        for camera in [
+            [0.2, 0.4, 0.1],
+            [1.3, 0.05, 0.9],
+            [0.0, 0.0, 1.0],
+            [-0.02, 0.7, 0.33],
+        ] {
+            let at_developed = apply(CAMERA, camera);
+            let at_target = apply(CAMERA, std::array::from_fn(|c| camera[c] * ratio[c]));
+            let approximated = balance.apply(at_developed);
+            for channel in 0..3 {
+                assert!(
+                    (approximated[channel] - at_target[channel]).abs() < 1.0e-12,
+                    "{camera:?} channel {channel}: {approximated:?} against {at_target:?}"
+                );
+            }
+        }
+        let same = WhiteBalanceApproximation::between(CAMERA, developed, developed).unwrap();
+        for (row, values) in same.matrix().iter().enumerate() {
+            for (column, value) in values.iter().enumerate() {
+                let identity = if row == column { 1.0 } else { 0.0 };
+                assert!(
+                    (value - identity).abs() < 1.0e-12,
+                    "{row},{column}: {value}"
+                );
+            }
+        }
+    }
+
+    /// No approximation exists for a singular or non-finite camera matrix, for a gain that is not
+    /// finite and positive, or for a non-finite matrix given directly; each is refused rather than
+    /// rendering a frame the matrix cannot describe.
+    #[test]
+    fn a_singular_matrix_or_unusable_gain_has_no_approximation() {
+        let gains = [2.0_f32, 1.0, 1.5];
+        let rank_two = [[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [0.5, -1.0, 0.25]];
+        let error = WhiteBalanceApproximation::between(rank_two, gains, [1.0, 1.0, 1.0])
+            .expect_err("a rank-two camera matrix has no inverse");
+        assert_eq!(error.kind, ErrorKind::UnsupportedColor);
+        // Nearly singular: a determinant of 1e-15 against unit rows.
+        let nearly = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 1.0e-15]];
+        assert!(WhiteBalanceApproximation::between(nearly, gains, [1.0, 1.0, 1.0]).is_err());
+        let mut infinite = CAMERA;
+        infinite[1][2] = f64::INFINITY;
+        assert!(WhiteBalanceApproximation::between(infinite, gains, [1.0, 1.0, 1.0]).is_err());
+        for bad in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(WhiteBalanceApproximation::between(CAMERA, [bad, 1.0, 1.0], gains).is_err());
+            assert!(WhiteBalanceApproximation::between(CAMERA, gains, [1.0, 1.0, bad]).is_err());
+        }
+        let mut matrix = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        matrix[2][0] = f64::NAN;
+        assert!(WhiteBalanceApproximation::from_matrix(matrix).is_err());
+    }
+
+    #[test]
+    fn malformed_sources_views_and_multiple_resamples_fail_closed() {
+        assert!(LinearImage::new(2, 2, vec![0.0; 11]).is_err());
+        assert!(LinearImage::new(2, 2, vec![f32::NAN; 12]).is_err());
+        assert!(LinearImage::new(0, 1, Vec::<f32>::new()).is_err());
+        assert!(LinearImage::new(16_385, 1, Vec::<f32>::new()).is_err());
+        assert!(output_len(16_000, 8_001).is_err());
+        let source = image(2, 2, &[[0.0, 0.0, 0.0]; 4]);
+        assert!(source.with_view([1, 1, 2, 2], 1).is_err());
+        assert!(source.with_view([u32::MAX, 0, 2, 1], 1).is_err());
+        assert!(source.with_view([0, 0, 2, 2], 9).is_err());
+        assert!(
+            LinearSettings {
+                exposure_ev: 5.1,
+                white_balance: None,
+            }
+            .multiplier()
+            .is_err()
+        );
+        assert!(linear_bilinear(1.0, 1.0, 2, 2, |_x, _y| Ok([f64::INFINITY; 3])).is_err());
+    }
+
+    /// A synthetic linear source with a varying value in all three channels, filled
+    /// programmatically so no file is read.
+    fn cancellation_image(width: u32, height: u32) -> LinearImage {
+        let pixels = (width * height) as usize;
+        let mut planes = Vec::with_capacity(pixels * 3);
+        for channel in 0..3 {
+            planes.extend((0..pixels).map(|index| ((index * (channel + 1)) % 997) as f32 / 997.0));
+        }
+        LinearImage::with_fingerprint(width, height, planes, "sha256:linear-cancellation").unwrap()
+    }
+
+    fn cancellation_recipe() -> Recipe {
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: serde_json::json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            }],
+            masks: Vec::new(),
+            ..Recipe::default()
+        }
+    }
+
+    #[test]
+    fn an_uncancelled_token_renders_the_linear_bytes_the_plain_entry_point_renders() {
+        let registry = ModuleRegistry::builtin();
+        let source = cancellation_image(160, 120);
+        let recipe = cancellation_recipe();
+        let snapshot = SnapshotId::new();
+        let plain = render_linear(
+            &registry,
+            &source,
+            snapshot.clone(),
+            &recipe,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        let cancellable = render_linear_cancellable(
+            &registry,
+            &source,
+            snapshot,
+            &recipe,
+            LinearSettings::default(),
+            &Cancel::never(),
+        )
+        .unwrap();
+        assert_eq!(plain, cancellable);
+    }
+
+    /// The terminal bytes are written in the allocation the raster holds and returned with no
+    /// copy after the pass, and they are the bytes a point sample reads.
+    #[test]
+    fn a_linear_render_returns_the_frame_it_wrote() {
+        let registry = ModuleRegistry::builtin();
+        let source = cancellation_image(40, 30);
+        let recipe = cancellation_recipe();
+        let settings = LinearSettings::default();
+        let (raster, written) = crate::render::frame_writes::record(|| {
+            render_linear(&registry, &source, SnapshotId::new(), &recipe, settings).unwrap()
+        });
+        assert_eq!(written, [raster.rgba.as_ptr() as usize]);
+        for (x, y) in [(0, 0), (17, 11), (39, 29)] {
+            let sampled = sample_linear(&registry, &source, &recipe, settings, x, y).unwrap();
+            assert_eq!(sampled.rgba, raster.pixel(x, y), "({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn a_pre_cancelled_token_stops_a_linear_render_before_it_allocates_a_frame() {
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let error = render_linear_cancellable(
+            &ModuleRegistry::builtin(),
+            &cancellation_image(160, 120),
+            SnapshotId::new(),
+            &cancellation_recipe(),
+            LinearSettings::default(),
+            &cancel,
+        )
+        .expect_err("a cancelled token refuses the linear render");
+        assert_eq!(error.kind, crate::ErrorKind::Cancelled);
+    }
+
+    fn presence_stack(payload: serde_json::Value) -> Recipe {
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::PRESENCE_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload,
+                artifacts: Vec::new(),
+                mask: None,
+            }],
+            masks: Vec::new(),
+            strokes: Default::default(),
+            artifacts: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_point_evaluation_builds_no_frame_for_its_spatial_segment() {
+        let _guard = crate::render::spatial::tests::spatial_guard();
+        crate::render::spatial::clear_estimates();
+        let source = cancellation_image(96, 64);
+        let registry = ModuleRegistry::builtin();
+        let stack = presence_stack(serde_json::json!({"clarity": 40.0}));
+        let evaluate = |mode| {
+            LinearEvaluation::new(
+                &registry,
+                &source,
+                &stack,
+                LinearSettings::default(),
+                &Cancel::new(),
+                PRODUCTION_TILE,
+                mode,
+            )
+            .unwrap()
+        };
+        let frames = evaluate(SpatialMode::Frames);
+        assert!(frames.tiles.is_none());
+        assert_eq!(
+            frames.built.len(),
+            1,
+            "a render materializes the spatial output"
+        );
+        assert!(frames.frame.is_some());
+        let point = evaluate(SpatialMode::Point);
+        assert!(
+            point.built.is_empty() && point.frame.is_none(),
+            "a point evaluation materializes nothing"
+        );
+        for (x, y) in [(5, 7), (90, 60), (5, 7)] {
+            assert_eq!(point.pixel(x, y).unwrap(), frames.pixel(x, y).unwrap());
+        }
+        assert_eq!(
+            point.tiles.as_ref().unwrap().evaluated().len(),
+            1,
+            "one tile answers every pixel inside it"
+        );
+    }
+
+    /// A global Presence layer, a colour layer and three masked Presence layers: four spatial
+    /// segments, each a whole float frame on this path.
+    fn four_spatial_segments() -> Recipe {
+        let mask = |name: &str, x0: f64, x1: f64| {
+            let mut mask = crate::Mask::new(name);
+            let component = mask.next_component_name("linear");
+            mask.components.push(crate::Component::new(
+                component,
+                crate::ComponentMode::Add,
+                "linear",
+                serde_json::json!({"x0": x0, "y0": 0.5, "x1": x1, "y1": 0.5}),
+            ));
+            mask
+        };
+        let masks = vec![
+            mask("Mask 1", 0.2, 0.6),
+            mask("Mask 2", 0.9, 0.3),
+            mask("Mask 3", -0.2, 0.4),
+        ];
+        let layer = |effect: &str, payload, mask: Option<&crate::Mask>| Layer {
+            id: crate::LayerId::new(),
+            effect_id: effect.into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload,
+            mask: mask.map(|mask| mask.id.clone()),
+            artifacts: Vec::new(),
+        };
+        let mut layers = vec![
+            layer(
+                crate::PRESENCE_EFFECT,
+                serde_json::json!({"clarity": 40.0, "dehaze": 20.0}),
+                None,
+            ),
+            layer(
+                crate::BASIC_EFFECT,
+                serde_json::json!({"exposure": 0.3}),
+                None,
+            ),
+        ];
+        for (mask, payload) in masks.iter().zip([
+            serde_json::json!({"texture": 35.0}),
+            serde_json::json!({"clarity": -30.0}),
+            serde_json::json!({"dehaze": 25.0}),
+        ]) {
+            layers.push(layer(crate::PRESENCE_EFFECT, payload, Some(mask)));
+        }
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks,
+            ..Recipe::default()
+        }
+    }
+
+    /// Each spatial frame is built from the one before it and replaces it, so building one holds
+    /// two and the evaluation keeps one, the latest; a point evaluation builds none. The counts are
+    /// the frames' own reference counts, not bookkeeping: an earlier frame anything still held would
+    /// be counted alive.
+    #[test]
+    fn a_linear_evaluation_keeps_at_most_two_spatial_frames() {
+        let _guard = crate::render::spatial::tests::spatial_guard();
+        crate::render::spatial::clear_estimates();
+        let source = cancellation_image(96, 64);
+        let registry = ModuleRegistry::builtin();
+        let stack = four_spatial_segments();
+        let evaluate = |mode| {
+            LinearEvaluation::new(
+                &registry,
+                &source,
+                &stack,
+                LinearSettings::default(),
+                &Cancel::new(),
+                PRODUCTION_TILE,
+                mode,
+            )
+            .unwrap()
+        };
+        let alive = |evaluation: &LinearEvaluation<'_>| -> Vec<bool> {
+            evaluation
+                .built
+                .iter()
+                .map(|(frame, _)| frame.strong_count() > 0)
+                .collect()
+        };
+        let peaks = |evaluation: &LinearEvaluation<'_>| -> Vec<usize> {
+            evaluation.built.iter().map(|(_, peak)| *peak).collect()
+        };
+
+        let frames = evaluate(SpatialMode::Frames);
+        let spatial: Vec<usize> = frames
+            .compiled
+            .segments
+            .iter()
+            .enumerate()
+            .filter(|(_, segment)| matches!(segment.entry, Some(Entry::Spatial { .. })))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(spatial.len(), 4, "four spatial segments");
+        assert_eq!(
+            peaks(&frames),
+            [1, 2, 2, 2],
+            "each frame is finished beside the one it reads and no other"
+        );
+        assert_eq!(alive(&frames), [false, false, false, true]);
+        assert_eq!(
+            frames.frame.as_ref().map(|frame| frame.index),
+            Some(spatial[3])
+        );
+
+        // Point mode materializes no spatial segment: every one is answered from the query's tiles.
+        let point = evaluate(SpatialMode::Point);
+        assert!(point.built.is_empty() && point.frame.is_none());
+        for (x, y) in [(0, 0), (5, 7), (48, 32), (90, 60), (95, 63)] {
+            assert_eq!(point.pixel(x, y).unwrap(), frames.pixel(x, y).unwrap());
+        }
+
+        let built: Vec<_> = [&frames, &point]
+            .iter()
+            .flat_map(|evaluation| evaluation.built.iter().map(|(frame, _)| frame.clone()))
+            .collect();
+        drop((frames, point));
+        assert!(
+            built.iter().all(|frame| frame.strong_count() == 0),
+            "nothing outlives its evaluation"
+        );
+    }
+
+    /// On a real RAW file, through Presence: a point sample equals the byte `render_linear` writes
+    /// there, at points spread over the stage and the far corner, and the timings of the tile and
+    /// of the frame a whole-stage evaluation builds are printed. Run in release with
+    /// LUXFORGE_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG:
+    ///
+    /// ```text
+    /// LUXFORGE_RAW_FIXTURE=/path/to/file.NEF cargo test --release -p luxforge-core --lib \
+    ///   a_raw_point_sample_through_presence -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn a_raw_point_sample_through_presence_equals_the_render() {
+        use std::time::Instant;
+        let path =
+            std::path::PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("fixture path"));
+        let bytes = std::fs::read(&path).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let prepared =
+            crate::source::RawPrepared::decode(bytes, "sha256:point-sample".into(), None, &cancel)
+                .unwrap();
+        let image = prepared.linear.clone().unwrap();
+        let registry = ModuleRegistry::builtin();
+        let settings = LinearSettings::default();
+        let ms = |start: Instant| start.elapsed().as_secs_f64() * 1e3;
+        let median = |mut values: Vec<f64>| {
+            values.sort_by(f64::total_cmp);
+            (values[values.len() / 2], values[values.len() - 1])
+        };
+        println!("{}: {}x{}", path.display(), image.width(), image.height());
+        for payload in [
+            serde_json::json!({"clarity": 60.0}),
+            serde_json::json!({"clarity": 60.0, "dehaze": 30.0}),
+        ] {
+            let stack = presence_stack(payload.clone());
+            crate::render::spatial::clear_estimates();
+            let raster =
+                render_linear(&registry, &image, SnapshotId::new(), &stack, settings).unwrap();
+            let mut state = 0x2545_f491_4f6c_dd1d_u64;
+            let mut points: Vec<(u32, u32)> = (0..40)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (
+                        (state % u64::from(raster.width)) as u32,
+                        ((state >> 32) % u64::from(raster.height)) as u32,
+                    )
+                })
+                .collect();
+            points.push((raster.width - 1, raster.height - 1));
+            let mut samples = Vec::new();
+            for &(x, y) in &points {
+                let start = Instant::now();
+                let sampled = sample_linear(&registry, &image, &stack, settings, x, y).unwrap();
+                samples.push(ms(start));
+                assert_eq!(sampled.rgba, raster.pixel(x, y), "{payload} at ({x}, {y})");
+            }
+            let mut frames = Vec::new();
+            for _ in 0..3 {
+                let start = Instant::now();
+                LinearEvaluation::new(
+                    &registry,
+                    &image,
+                    &stack,
+                    settings,
+                    &Cancel::new(),
+                    PRODUCTION_TILE,
+                    SpatialMode::Frames,
+                )
+                .unwrap();
+                frames.push(ms(start));
+            }
+            let (sample_p50, sample_max) = median(samples);
+            let (frame_p50, _) = median(frames);
+            println!(
+                "{payload}: {} point samples equal the render; sample p50 {sample_p50:.1} ms, \
+                 max {sample_max:.1} ms; the spatial frame alone p50 {frame_p50:.0} ms",
+                points.len()
+            );
+        }
+    }
+}

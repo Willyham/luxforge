@@ -28,7 +28,7 @@ Optional callbacks and host fallback behavior matter; a module having one `proce
 
 **U.** The developer guide makes broad claims about programmatic access. The inspected Lua bindings establish concrete operations and an action dispatcher, but this research does not prove that every parameter, mask point, modal GUI operation and module lifecycle transition is available through a complete, headless, revision-aware API. That would require a coverage inventory and runtime tests.
 
-**P.** Lightwell's requirement is stronger than “has plugins and scripting”: every operation must share the common command layer, expose schemas/state and work through the accepted live-agent interface. A generated parameter table alone does not provide transaction boundaries, cancellation, conflict detection, undo semantics or error recovery.
+**P.** Luxforge's requirement is stronger than “has plugins and scripting”: every operation must share the common command layer, expose schemas/state and work through the accepted live-agent interface. A generated parameter table alone does not provide transaction boundaries, cancellation, conflict detection, undo semantics or error recovery.
 
 ## Lua and D-Bus: inspect the actual exposed surface
 
@@ -48,7 +48,7 @@ A **source-derived, unexecuted upstream syntax sketch** is:
 darktable-cli INPUT_IMAGE [XMP_FILE] OUTPUT_DESTINATION [OPTIONS]
 ```
 
-This is not a Lightwell command or a verified command for an installed darktable binary. Before a future benchmark, inspect that binary's help, isolate its configuration/catalog, choose a new output destination and record styles/presets/profiles. The source help explicitly marks `--bpp` unsupported; its appearance in argument help is not proof of working bit-depth selection. [Command-line rendering](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/src/cli/main.c#L75)
+This is not a Luxforge command or a verified command for an installed darktable binary. Before a future benchmark, inspect that binary's help, isolate its configuration/catalog, choose a new output destination and record styles/presets/profiles. The source help explicitly marks `--bpp` unsupported; its appearance in argument help is not proof of working bit-depth selection. [Command-line rendering](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/src/cli/main.c#L75)
 
 ## Importing Lightroom metadata does not run Adobe algorithms
 
@@ -56,8 +56,8 @@ This is not a Lightwell command or a verified command for an installed darktable
 
 **C.** Matching field names, reading XMP and reproducing pixels are three different compatibility goals. Similar contrast/exposure names cannot bridge different processing orders, tone curves, color handling and local operators by themselves.
 
-## Implications for Lightwell's module boundary
+## Implications for Luxforge's module boundary
 
-**P.** Study per-pipe prepared state, explicit ROI/color requirements and host-owned blending/invalidation. Preserve Lightwell's small core, transaction ownership and requirement to retain unknown/missing-provider edits. Measure before splitting basic functions into separately loaded binaries. External loading remains later required work under the existing plan; this research does not implement a plugin runtime or select darktable's C ABI.
+**P.** Study per-pipe prepared state, explicit ROI/color requirements and host-owned blending/invalidation. Preserve Luxforge's small core, transaction ownership and requirement to retain unknown/missing-provider edits. Measure before splitting basic functions into separately loaded binaries. External loading remains later required work under the existing plan; this research does not implement a plugin runtime or select darktable's C ABI.
 
 Source reuse would require a scoped dependency/asset review and preservation of applicable notices. The project has chosen GPL-3.0-or-later, but that selection is not an audit of darktable's entire dependency/model ecosystem.

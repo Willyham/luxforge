@@ -577,7 +577,7 @@ pub static SCENARIOS: &[Scenario] = &[
                 name: "launch2",
                 plan: workspace::unavailable_second,
                 catalog: Some("launch1"),
-                disable: &["lightwell.crop"],
+                disable: &["luxforge.crop"],
                 ..APP
             },
         ],

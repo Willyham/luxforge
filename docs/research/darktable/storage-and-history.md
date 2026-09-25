@@ -27,7 +27,7 @@ This is a reading of schema creation code, not a proposal to write SQL into a li
 
 **S.** New edits may append a history item or update the current item's parameter data, depending on module/instance, focus and explicit new-item conditions. The code also has time/target-based undo coalescing. Adding edits after selecting an earlier state removes later history entries with special handling for mandatory/default modules. Persistent history is therefore not an immutable log of every pointer movement or every abandoned branch. [History updates](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/src/develop/develop.c#L1176)
 
-**D.** The history panel offers navigation and compression of redundant intermediate entries. This is distinct from rearranging the processing modules. [History-stack behavior](https://docs.darktable.org/usermanual/5.6/en/module-reference/utility-modules/darkroom/history-stack/) **P.** Lightwell's accepted [append-Restore/retain-all policy](../../specs/edit-history.md) is stronger and remains its own contract.
+**D.** The history panel offers navigation and compression of redundant intermediate entries. This is distinct from rearranging the processing modules. [History-stack behavior](https://docs.darktable.org/usermanual/5.6/en/module-reference/utility-modules/darkroom/history-stack/) **P.** Luxforge's accepted [append-Restore/retain-all policy](../../specs/edit-history.md) is stronger and remains its own contract.
 
 ## Parameters, versions and masks survive reopening
 
@@ -43,6 +43,6 @@ This is a reading of schema creation code, not a proposal to write SQL into a li
 
 **P.** A practical recovery test should inventory originals, both databases, XMP, custom profiles/presets, external masks/overlays and any derived AI files separately. Disposable thumbnails and pixelpipe buffers should be recoverable by rendering; a model-generated DNG or an external raster mask may be part of the actual edit input. See [AI](ai-and-derived-images.md).
 
-**C.** Automatic sidecar writing is not a simultaneous multi-writer protocol. Updating a sidecar behind an open application can create a disagreement with its in-memory/database state. This is directly relevant to Lightwell's existing single-owner IPC design: agent edits should use the running owner's command layer, not external SQL or file rewriting.
+**C.** Automatic sidecar writing is not a simultaneous multi-writer protocol. Updating a sidecar behind an open application can create a disagreement with its in-memory/database state. This is directly relevant to Luxforge's existing single-owner IPC design: agent edits should use the running owner's command layer, not external SQL or file rewriting.
 
 **U.** This research did not perform a crash-recovery test or prove atomicity across database and filesystem writes as one transaction. Nor does read-only image processing remove explicit user operations that move/delete files. Preserve original hashes in actual correctness fixtures.

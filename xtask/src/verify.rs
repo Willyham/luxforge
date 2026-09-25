@@ -1281,7 +1281,7 @@ pub fn run(
             "--release",
             "--locked",
             "--package",
-            "lightwell-app",
+            "luxforge-app",
             "--package",
             "xtask",
         ])
@@ -1573,7 +1573,7 @@ mod tests {
             entry("measure", Status::NotRun),
             entry("editor-latency", Status::TimedOut),
         ];
-        let header = json!({"tier":"full","host":"aarch64-apple-darwin","binary":"/tmp/lightwell","binary_sha256":"abc","lockfile_sha256":"def","output":"/tmp/out","elapsed_s":61.5});
+        let header = json!({"tier":"full","host":"aarch64-apple-darwin","binary":"/tmp/luxforge","binary_sha256":"abc","lockfile_sha256":"def","output":"/tmp/out","elapsed_s":61.5});
         let text = markdown(&header, &entries, &[], &[]);
         assert!(text.contains("Tier full: FAILED (smoke-crop, editor-latency)."));
         assert!(text.contains("Host aarch64-apple-darwin"));
@@ -1907,7 +1907,7 @@ mod tests {
     #[test]
     fn no_two_components_share_an_output_directory() {
         let out = Path::new("/tmp/verify");
-        let bin = Path::new("/tmp/lightwell");
+        let bin = Path::new("/tmp/luxforge");
         let manifest = PathBuf::from("/tmp/raw.json");
         let sources = [
             ("z6".to_owned(), PathBuf::from("/tmp/z6.nef")),

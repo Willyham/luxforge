@@ -30,7 +30,7 @@ use crate::{
     scenario::{Bright, Checked, Frame, Plan, Run, Scan, Step, Tolerance, pixels},
     *,
 };
-use lightwell_core::PRESENCE_EFFECT;
+use luxforge_core::PRESENCE_EFFECT;
 
 pub const SCENARIO: &str = "mask-brush";
 /// The Presence fixture: its bottom-right quadrant is a flat mid-grey, which is where the two

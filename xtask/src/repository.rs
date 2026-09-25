@@ -187,14 +187,14 @@ fn active_plans(root: &Path, plans: &[Value], s: &Value) -> Result<Vec<String>> 
 /// reach the core at all. Each entry is a directory, the tokens it may not contain and why.
 const BOUNDARIES: [(&str, &[&str]); 3] = [
     (
-        "crates/lightwell-app/src/state",
+        "crates/luxforge-app/src/state",
         &["use iced", "iced::", "iced_runtime"],
     ),
     (
-        "crates/lightwell-app/src/view",
-        &["lightwell_core", "OwnerHandle", ".call("],
+        "crates/luxforge-app/src/view",
+        &["luxforge_core", "OwnerHandle", ".call("],
     ),
-    ("crates/lightwell-ui", &["lightwell_core"]),
+    ("crates/luxforge-ui", &["luxforge_core"]),
 ];
 
 /// Fail on the first forbidden token, naming the file, the line and the token.
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn layer_boundaries_reject_a_forbidden_import() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = tmp.path().join("crates/lightwell-app/src/state");
+        let state = tmp.path().join("crates/luxforge-app/src/state");
         fs::create_dir_all(&state).unwrap();
         fs::write(state.join("clean.rs"), "use crate::app::fields::Fields;\n").unwrap();
         assert_eq!(boundaries(tmp.path()).unwrap(), 1);
@@ -331,18 +331,18 @@ mod tests {
             "{error}"
         );
         fs::remove_file(state.join("bad.rs")).unwrap();
-        let view = tmp.path().join("crates/lightwell-app/src/view");
+        let view = tmp.path().join("crates/luxforge-app/src/view");
         fs::create_dir_all(&view).unwrap();
         fs::write(
             view.join("bad.rs"),
-            "\nlet state: lightwell_core::EditorState;\n",
+            "\nlet state: luxforge_core::EditorState;\n",
         )
         .unwrap();
         assert!(
             boundaries(tmp.path())
                 .unwrap_err()
                 .to_string()
-                .contains("lightwell_core")
+                .contains("luxforge_core")
         );
         fs::write(view.join("bad.rs"), "owner.call(client, request)\n").unwrap();
         assert!(
@@ -352,18 +352,18 @@ mod tests {
                 .contains(".call(")
         );
         fs::remove_file(view.join("bad.rs")).unwrap();
-        let ui = tmp.path().join("crates/lightwell-ui");
+        let ui = tmp.path().join("crates/luxforge-ui");
         fs::create_dir_all(&ui).unwrap();
         fs::write(
             ui.join("Cargo.toml"),
-            "[dependencies]\nlightwell_core = { path = \"../lightwell-core\" }\n",
+            "[dependencies]\nluxforge_core = { path = \"../luxforge-core\" }\n",
         )
         .unwrap();
         assert!(
             boundaries(tmp.path())
                 .unwrap_err()
                 .to_string()
-                .contains("lightwell-ui")
+                .contains("luxforge-ui")
         );
     }
     fn minimal_plan(id: &str) -> Value {

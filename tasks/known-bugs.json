@@ -19,7 +19,7 @@
         {
           "kind": "file",
           "label": "Tools-panel state",
-          "target": "crates/lightwell-app/src/state/tools.rs",
+          "target": "crates/luxforge-app/src/state/tools.rs",
           "relevance": "`active` and `neutral` decide the band's dot."
         },
         {
@@ -67,25 +67,25 @@
         {
           "kind": "file",
           "label": "Owner loop",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "relevance": "`OwnerCall` carries the reply channel; the loop's special-cased methods and its analysis worker are the pattern for a deferred answer and a bounded worker."
         },
         {
           "kind": "file",
           "label": "Sample planning",
-          "target": "crates/lightwell-core/src/editor/evaluate.rs",
+          "target": "crates/luxforge-core/src/editor/evaluate.rs",
           "relevance": "`sample_entry`, `sample_draft` and `SamplePlan`, which binds a stack for sampling off the owner."
         },
         {
           "kind": "file",
           "label": "Loopback transport",
-          "target": "crates/lightwell-core/src/api/transport.rs",
+          "target": "crates/luxforge-core/src/api/transport.rs",
           "relevance": "Serves one call at a time per connection, so a deferred answer keeps each client's order."
         },
         {
           "kind": "file",
           "label": "Linear point evaluation",
-          "target": "crates/lightwell-core/src/render/linear.rs",
+          "target": "crates/luxforge-core/src/render/linear.rs",
           "relevance": "`sample_linear` and the point evaluation of the last spatial segment."
         },
         {
@@ -137,7 +137,7 @@
         {
           "kind": "file",
           "label": "Crop draft driver",
-          "target": "crates/lightwell-app/src/app/crop.rs",
+          "target": "crates/luxforge-app/src/app/crop.rs",
           "relevance": "Pending draft start, queued idle changes and draft end."
         },
         {
@@ -228,7 +228,7 @@
         {
           "kind": "file",
           "label": "Proxy source",
-          "target": "crates/lightwell-core/src/proxy.rs",
+          "target": "crates/luxforge-core/src/proxy.rs",
           "relevance": "Proxy scale and source construction."
         },
         {
@@ -276,7 +276,7 @@
         {
           "kind": "file",
           "label": "Tools-panel state",
-          "target": "crates/lightwell-app/src/state/tools.rs",
+          "target": "crates/luxforge-app/src/state/tools.rs",
           "relevance": "`crop_input_stage` and `committed_crop`."
         },
         {
@@ -327,7 +327,7 @@
         {
           "kind": "file",
           "label": "Spatial primitive",
-          "target": "crates/lightwell-core/src/render/spatial.rs",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
           "relevance": "Tile batching under the spatial target, halos and global estimates."
         },
         {
@@ -375,7 +375,7 @@
         {
           "kind": "file",
           "label": "Capability journey test",
-          "target": "crates/lightwell-app/src/app/capabilities_tests.rs",
+          "target": "crates/luxforge-app/src/app/capabilities_tests.rs",
           "relevance": "The progress assertion right after the grant and the install are sent."
         }
       ],
@@ -388,7 +388,7 @@
           "Run the desktop suite repeatedly under load, for example beside `cargo xtask check` in another worktree."
         ],
         "commands": [
-          "cargo test -p lightwell-app --bin lightwell the_whole_journey"
+          "cargo test -p luxforge-app --bin luxforge the_whole_journey"
         ],
         "expected_results": [
           "No failure across repeated loaded runs."

@@ -1,6 +1,6 @@
 # RAW backend experiments
 
-These probes are development tools, not Lightwell's renderer. They read local sources, write only into new output paths, and never alter an original. `run.py` verifies each input SHA-256 before and after both decoders. The full-size u16 buffers under `artifacts/raw-backend-probe/` are ignored local evidence; do not commit owner files or those buffers.
+These probes are development tools, not Luxforge's renderer. They read local sources, write only into new output paths, and never alter an original. `run.py` verifies each input SHA-256 before and after both decoders. The full-size u16 buffers under `artifacts/raw-backend-probe/` are ignored local evidence; do not commit owner files or those buffers.
 
 ## Pinned inputs and reproduction
 
@@ -60,7 +60,7 @@ RCD explicitly clamps its output at zero; Markesteijn can return negative interp
 
 ## Selected adapter and remaining gates
 
-The selected, implemented path is [`lightwell-raw`](../../crates/lightwell-raw/README.md): bundled pinned LibRaw 0.22.2 unpack plus librtprocess RCD for Z6 Bayer and Markesteijn one-pass for Fuji X-Trans. The adapter copies one bounded u16 sensor mosaic into `Arc<Vec<u16>>`, closes LibRaw and drops encoded source bytes, then develops WB before demosaic into one Rust-owned contiguous planar float buffer. It does not retain an opaque decoder handle between edits or pass through LibRaw `dcraw_process()`'s 8/16-bit RGB conversion. Repeated WB edits use the retained mosaic; exposure and later recipe layers reuse the developed float frame. The C ABI catches exceptions and validates dimensions, modes, calibration and CFA; cancellation during librtprocess's non-interruptible demosaic suppresses the result on return. Authentic source/hash, float-headroom and error tests live in that crate.
+The selected, implemented path is [`luxforge-raw`](../../crates/luxforge-raw/README.md): bundled pinned LibRaw 0.22.2 unpack plus librtprocess RCD for Z6 Bayer and Markesteijn one-pass for Fuji X-Trans. The adapter copies one bounded u16 sensor mosaic into `Arc<Vec<u16>>`, closes LibRaw and drops encoded source bytes, then develops WB before demosaic into one Rust-owned contiguous planar float buffer. It does not retain an opaque decoder handle between edits or pass through LibRaw `dcraw_process()`'s 8/16-bit RGB conversion. Repeated WB edits use the retained mosaic; exposure and later recipe layers reuse the developed float frame. The C ABI catches exceptions and validates dimensions, modes, calibration and CFA; cancellation during librtprocess's non-interruptible demosaic suppresses the result on return. Authentic source/hash, float-headroom and error tests live in that crate.
 
 The owner's FC3411 DNG is supported with the required corrections described below; generic DNG support is not implied. The full background editor acceptance harness is `cargo xtask raw-editor --manifest FILE --output NEW --samples 30 --binary RELEASE_BINARY`; its local owner NEF/RAF run is recorded under ignored `artifacts/raw-editor-owner-final-30-01/`. All 30 trials per owner source passed the edit/history/reopen checks. Fuji's first-process sampled RSS p95 was 1992 MiB and one unexplained trial peaked at 2436 MiB; a separate 24-edit live API run without screenshots plateaued near 1583 MiB after edit three. These are measured process observations, not a 1.5 GiB bound. Rendered color/detail quality across the requested scene/ISO matrix, process-wide RSS behavior, cancellation latency, and clean Windows/Linux native package builds remain qualification gates. The backend probe timings above are single-trial stage evidence, separate from the editor distributions.
 
@@ -70,14 +70,14 @@ The owner's FC3411 DNG is supported with the required corrections described belo
 
 The production coordinate convention follows Adobe's SDK exclusive bounds. Compared with a literal interpretation of the specification's bottom-right-pixel wording, the supplied sparse locations differ by at most 0.000758959 pixel. Identity channels retain exact integer coordinates and skip resampling. Other channels use Keys cubic A=-0.75, floor-quantized 1/128 phases and active-edge replication. The independent corrected samples agree with production within 7.115e-9 absolute in this sparse set; the authentic adapter test allows 1e-7 for float reconstruction differences. This proves those numerical samples, not whole-scene color or optical accuracy.
 
-The reference separates the specification's per-opcode [0,1] clipping from the Lightwell float-headroom path. A synthetic cubic case produces 1.068603515625 unclipped versus 0.9958984375 with per-input clipping; a gain example produces 1.4065471172 versus 1.0. The existing RAW contract selects the headroom-preserving path, as documented in the [Air 2S design](../../docs/design/air2s-dng.md). Fixed ColorMatrix2/D65 WB references are labeled as production references; a dual-illuminant calculation is comparator-only. The endpoint 2000 K / +100 tint needs a blue gain of 28.3093 and is within the current 32× bound.
+The reference separates the specification's per-opcode [0,1] clipping from the Luxforge float-headroom path. A synthetic cubic case produces 1.068603515625 unclipped versus 0.9958984375 with per-input clipping; a gain example produces 1.4065471172 versus 1.0. The existing RAW contract selects the headroom-preserving path, as documented in the [Air 2S design](../../docs/design/air2s-dng.md). Fixed ColorMatrix2/D65 WB references are labeled as production references; a dual-illuminant calculation is comparator-only. The endpoint 2000 K / +100 tint needs a blue gain of 28.3093 and is within the current 32× bound.
 
 Reproduce the private sparse dump and reference with an optimized build:
 
 ```sh
-LIGHTWELL_DNG_SOURCE=/path/to/mavic_air_2s.DNG \
-LIGHTWELL_DNG_REFERENCE_DUMP=/path/to/ignored/sparse.csv \
-  cargo test --release --locked -p lightwell-raw dump_dji_sparse_uncorrected_reference -- --ignored --nocapture
+LUXFORGE_DNG_SOURCE=/path/to/mavic_air_2s.DNG \
+LUXFORGE_DNG_REFERENCE_DUMP=/path/to/ignored/sparse.csv \
+  cargo test --release --locked -p luxforge-raw dump_dji_sparse_uncorrected_reference -- --ignored --nocapture
 python3 -B probes/raw/dng_reference.py /path/to/mavic_air_2s.DNG \
   --sparse /path/to/ignored/sparse.csv --json /path/to/ignored/reference.json
 ```

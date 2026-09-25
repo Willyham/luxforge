@@ -21,7 +21,7 @@ for name, src in files:
     with src.open('rb') as f:
         original = hashlib.file_digest(f, 'sha256').hexdigest()
     for backend, binary in (
-        ('rawler', root / 'probes/raw/target/release/lightwell-raw-probe'),
+        ('rawler', root / 'probes/raw/target/release/luxforge-raw-probe'),
         ('libraw', root / 'private/raw-backends/libraw_probe'),
     ):
         out = base / (name + '-' + backend)

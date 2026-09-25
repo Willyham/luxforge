@@ -12,14 +12,14 @@ use crate::{
     scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
-use lightwell_core::MIXER_EFFECT;
+use luxforge_core::MIXER_EFFECT;
 
-const MIXER_MODULE: &str = "lightwell.mixer";
+const MIXER_MODULE: &str = "luxforge.mixer";
 /// The one section the registry lists above the Colour mixer's own that is both a real toggleable
 /// section (Pixel declares no expandable section of its own in the tools panel) and expanded by
 /// its own descriptor's default: collapsed first, so the module's own sliders and rails are on
 /// screen without scrolling.
-const BASIC_MODULE: &str = "lightwell.basic";
+const BASIC_MODULE: &str = "luxforge.basic";
 const SET_MIXER: &str = "set-mixer";
 const RED_HUE: &str = "red-hue";
 const AQUA_SATURATION: &str = "aqua-saturation";

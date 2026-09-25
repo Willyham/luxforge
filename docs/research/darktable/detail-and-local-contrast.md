@@ -50,7 +50,7 @@ The code uses a fast exponential approximation. This expression enhances signed 
 
 **S.** The CPU implementation allocates working images and per-scale high-frequency buffers, then repeats the multiscale processing for the requested number of iterations. Radius/scale extent changes the decomposition workload; iterations multiply repeated work. Memory-allocation failure has an explicit fallback/logging path. [Diffuse or sharpen](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/src/iop/diffuse.c#L1340)
 
-**S.** The fast pixelpipe path can immediately copy the input through and return, omitting the effect for that rendering. A very responsive preview is therefore not proof that this module ran at full quality. **P.** Any Lightwell equivalent should make intermediate quality and final settled state observable to agents as well as to the interface. [Diffuse or sharpen](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/src/iop/diffuse.c#L1340)
+**S.** The fast pixelpipe path can immediately copy the input through and return, omitting the effect for that rendering. A very responsive preview is therefore not proof that this module ran at full quality. **P.** Any Luxforge equivalent should make intermediate quality and final settled state observable to agents as well as to the interface. [Diffuse or sharpen](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/src/iop/diffuse.c#L1340)
 
 ## Sharpen: thresholded unsharp masking
 

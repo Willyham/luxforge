@@ -76,7 +76,7 @@ from **one** invocation per size, so the rows are directly comparable to each ot
 per-task rows measured in separate runs are superseded (see the note after the table). This is
 core request-to-render on the catalog owner's thread only: no desktop scheduling, GPU upload or
 presentation. The colour rows all render the same 200-transform-and-10°-crop stack with one Basic
-layer inserted where the host places a colour-stage commit, compiled by the real `lightwell.basic`
+layer inserted where the host places a colour-stage commit, compiled by the real `luxforge.basic`
 module, so the difference between a colour row and the baseline row is that unit's own per-pixel
 work on identical frames.
 
@@ -159,10 +159,10 @@ tile it does not. Each spatial layer, masked or not, is a stage boundary and the
 full frame**: the design caps masked ones at four for that reason, and the host now refuses a fifth
 with a `resource-limit` error naming the limit.
 
-`cargo test --release --locked --package lightwell-core --lib -- --ignored masked_spatial_timing
+`cargo test --release --locked --package luxforge-core --lib -- --ignored masked_spatial_timing
 --nocapture` (`render::spatial::tests::masked_spatial_timing`), on the host recorded above, on
 in-memory synthetic frames rendered by the core alone, warm source and warm estimate store, p50 and
-the slowest of 5 runs, one `lightwell.presence` clarity `+100` layer per mask. "Whole frame" is a
+the slowest of 5 runs, one `luxforge.presence` clarity `+100` layer per mask. "Whole frame" is a
 gradient whose bounds rectangle is the entire stage; "right-edge band" is one confined to about a
 tenth of the columns. The tile counts are exact counters read from the host
 (`masked_tile_counts`), not estimates. The load average rises during the run, because the render
@@ -238,7 +238,7 @@ The other half of the same cost: one masked Presence layer whose mask holds 1, 4
 components — [the limit](../design/masking.md) — each a linear gradient across the whole frame, so
 the bounds rectangle is the whole stage and **every** component is evaluated at every pixel. The
 modes cycle through add, subtract and intersect, because those are one `max` and two `min`s per
-pixel and nothing else. `cargo test --release --locked --package lightwell-core --lib -- --ignored
+pixel and nothing else. `cargo test --release --locked --package luxforge-core --lib -- --ignored
 masked_spatial_component_timing --nocapture`, same host, same warm-up, p50 and the slowest of 5
 runs, one-minute load average 5.12 at the start.
 
@@ -266,7 +266,7 @@ component whose support the tile does not touch is not evaluated there at all.
 
 What a painted mask costs, as against the gradients whose cost is already recorded above: its compile
 (the grid index over segments, built before a pixel is read), the rectangle it bounds, the render it
-modulates, and the point query it answers. `cargo test --release --locked --package lightwell-core
+modulates, and the point query it answers. `cargo test --release --locked --package luxforge-core
 --lib -- --ignored masked_brush_cost_on_photo_sized_frames --nocapture`
 (`render::tests::masked_brush_cost_on_photo_sized_frames`, an ignored measurement test), on the M4
 MacBook Pro, release, one warm-up render then the mean of three, twenty compiles, and a thousand
@@ -669,18 +669,18 @@ the direction is consistent and the histogram plot is now drawn on each of those
 
 A follow-up gave the histogram plot's canvas program an `iced::widget::canvas::Cache`, held in the
 program's own persistent state and keyed by a version the view derives from the render identity and
-the `stale` flag (`crates/lightwell-ui/src/widgets/histogram.rs`,
-`crates/lightwell-app/src/view/tools_panel.rs::plot_version`), so a redraw with unchanged bins reuses
+the `stale` flag (`crates/luxforge-ui/src/widgets/histogram.rs`,
+`crates/luxforge-app/src/view/tools_panel.rs::plot_version`), so a redraw with unchanged bins reuses
 the tessellated polygons instead of rebuilding three 256-point fills. Measured again on the same host,
 binary SHA-256 `db6ce15c…`, one 30-second sample each: **1.32%** with the 60 MP image open
-(`measure --binary target/release/lightwell --output artifacts/idle-after --samples 5`) and **1.38%**
+(`measure --binary target/release/luxforge --output artifacts/idle-after --samples 5`) and **1.38%**
 on the 24 MP full-Basic-layer workload (`editor-latency --source fixtures/generated/24mp.jpg --idle
 --samples 3 --output artifacts/idle-after-basic`), against 1.29% and 1.46% before the cache. Both are
 within a single sample's noise of the unfixed figures, not a resolution. The `histogram` smoke
 scenario (`artifacts/idle-histogram`) confirms the cached plot still renders and updates correctly.
 The likely dominant cost is not this widget: even a `SyncResult::Unchanged` reply to the 500 ms sync
 still drives two `Editor::update` calls and two full `view()` rebuilds of every panel every half
-second (`crates/lightwell-app/src/app/mod.rs`, `app/tasks.rs`), and re-tessellating three small
+second (`crates/luxforge-app/src/app/mod.rs`, `app/tasks.rs`), and re-tessellating three small
 polygons twice a second could not plausibly account for the whole 0.3–0.5 point regression on its
 own. That path is outside this change's scope and is being addressed separately. This is a
 measurement to attribute, not a resolved regression, and it is reported as a miss below.
@@ -1106,11 +1106,11 @@ Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15,
 Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, warm filesystem cache, catalog on the internal APFS SSD. One process per fixture:
 
 ```text
-LIGHTWELL_MASK_GROWTH_SOURCE=fixtures/generated/24mp.jpg /usr/bin/time -l \
-  cargo test --release --package lightwell-core --lib measure_mask_growth -- --ignored --nocapture
+LUXFORGE_MASK_GROWTH_SOURCE=fixtures/generated/24mp.jpg /usr/bin/time -l \
+  cargo test --release --package luxforge-core --lib measure_mask_growth -- --ignored --nocapture
 ```
 
-Scope: `lightwell-core`'s own catalog, one stroke per history entry written through the production write path, each stroke captured at 100 positions and decimating to 67–78 stored ones, packed into the densest mask table the declared limits admit. The session is built at the recipe and entry level rather than through `mask.add-stroke`, to isolate the storage write path from command dispatch; the bytes it writes are the bytes the API path will write, because it is the same `insert_entry`. The [stroke-storage table](../design/masking.md#stroke-storage) measures 200 strokes packed 64 to a mask rather than 81, which is the same curve one arrangement less dense: 1.11 MB there against 1.10 MB here.
+Scope: `luxforge-core`'s own catalog, one stroke per history entry written through the production write path, each stroke captured at 100 positions and decimating to 67–78 stored ones, packed into the densest mask table the declared limits admit. The session is built at the recipe and entry level rather than through `mask.add-stroke`, to isolate the storage write path from command dispatch; the bytes it writes are the bytes the API path will write, because it is the same `insert_entry`. The [stroke-storage table](../design/masking.md#stroke-storage) measures 200 strokes packed 64 to a mask rather than 81, which is the same curve one arrangement less dense: 1.11 MB there against 1.10 MB here.
 
 **Catalog growth is load-independent and is the primary result.** Stored is every entry's JSON plus the content-addressed stroke store; embedded is the same session with each stroke's positions written into its payload instead of its address. The 24 MP and 60 MP fixtures produce identical stored bytes, to the byte, because a stroke is stored in normalized coordinates: the catalog's growth does not depend on the source's pixel dimensions, and only the catalog *file* differs, by a page or two of SQLite allocation.
 
@@ -1147,7 +1147,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), release `--locked`, 23 September 2026, o
 
 A contended owner call now waits at most one sample, as it already did on the byte path, where the same sample on the generated 24 MP JPEG costs 11.5 ms with Clarity +60 and 34.0 ms with Dehaze +30 added (p50 of 15). Answering samples off the owner is the open follow-up.
 
-Exactness on the real files is the ignored core test, run in release with `LIGHTWELL_RAW_FIXTURE` set to each private source (`cargo test --release -p lightwell-core --lib a_raw_point_sample_through_presence -- --ignored --nocapture`): 41 samples per stack, spread over the stage and including the far corner, each equal to the byte `render_linear` writes there. It also times both sides, p50 ms:
+Exactness on the real files is the ignored core test, run in release with `LUXFORGE_RAW_FIXTURE` set to each private source (`cargo test --release -p luxforge-core --lib a_raw_point_sample_through_presence -- --ignored --nocapture`): 41 samples per stack, spread over the stage and including the far corner, each equal to the byte `render_linear` writes there. It also times both sides, p50 ms:
 
 | Clarity +60 · with Dehaze +30 | Z6 | X100VI | Air 2S |
 | --- | --- | --- | --- |
@@ -1160,7 +1160,7 @@ A background evidence run over the Z6 (`--evidence-script` with Clarity +60, the
 
 ## Preset import parse
 
-Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, in memory, 20 runs each: `cargo test --release --package lightwell-core --lib measure_preset_parse -- --ignored --nocapture`. Each synthetic document is filled to the 1 MiB request limit in the shape that presses one bound, and `inspect_preset` runs detection, parsing, mapping and the report. It reads no file and renders nothing.
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, in memory, 20 runs each: `cargo test --release --package luxforge-core --lib measure_preset_parse -- --ignored --nocapture`. Each synthetic document is filled to the 1 MiB request limit in the shape that presses one bound, and `inspect_preset` runs detection, parsing, mapping and the report. It reads no file and renders nothing.
 
 | Shape (1 MiB) | p50 / max ms | Outcome |
 | --- | --- | --- |
@@ -1180,7 +1180,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 
 ### The framework's own costs
 
-`cargo test --release --locked -p lightwell-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start.
+`cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start.
 
 | Measurement | p50 / p95 | Samples |
 | --- | --- | --- |
@@ -1230,10 +1230,10 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release build
 
 | Measurement | Result | Scope |
 | --- | --- | --- |
-| `resources.read` in the desktop, cache warm (`declare_gpu_presenter` called, this process's GPU clients cached) | p50 4.2 µs, p95 7.1 µs; 5.2 / 7.8 µs with JSON encoding | 1000 reads, `cargo test --release --locked -p lightwell-core --test resources_cost -- --ignored --nocapture`, load 22 to 30 |
-| One full walk of the GPU registry (82 to 84 user clients) | p50 0.31 to 0.35 ms, p95 0.39 to 1.1 ms | 200 walks, `cargo test --release --locked -p lightwell-process --test cost -- --ignored --nocapture`; taken at most every 10 s |
+| `resources.read` in the desktop, cache warm (`declare_gpu_presenter` called, this process's GPU clients cached) | p50 4.2 µs, p95 7.1 µs; 5.2 / 7.8 µs with JSON encoding | 1000 reads, `cargo test --release --locked -p luxforge-core --test resources_cost -- --ignored --nocapture`, load 22 to 30 |
+| One full walk of the GPU registry (82 to 84 user clients) | p50 0.31 to 0.35 ms, p95 0.39 to 1.1 ms | 200 walks, `cargo test --release --locked -p luxforge-process --test cost -- --ignored --nocapture`; taken at most every 10 s |
 | First read after `declare_gpu_presenter` | 0.6 ms when the Metal device already exists (the desktop), 37.5 ms in a process that has none | One read each |
-| `activity.list` / `resources.read` / `session.state` round trip through the headless `lightwell-json` owner, stdio and JSON included | p50 14.8 / 19.5 / 18.8 µs, p95 23.0 / 28.1 / 30.9 µs | 2000 requests each after 50 warm-up, load 12 to 18 |
+| `activity.list` / `resources.read` / `session.state` round trip through the headless `luxforge-json` owner, stdio and JSON included | p50 14.8 / 19.5 / 18.8 µs, p95 23.0 / 28.1 / 30.9 µs | 2000 requests each after 50 warm-up, load 12 to 18 |
 | Activity `begin` + `finish`, uncontended | p50 83 ns, p95 84 to 125 ns | 100,000 iterations; the timer resolves 42 ns |
 | Exposure drag input to presented frame, 24 MP, baseline then this work, then reversed | p50: baseline 14.7 and 16.0 ms, this work 11.1 and 15.4 ms; p95 38.9 (baseline), 44.9, 19.0 (this work) and 35.0 ms (baseline) in run order | `editor-latency --source fixtures/generated/24mp.jpg --samples 30`, one launch each, load 19 to 23. No regression; the p95s follow the host in both builds and set no baseline. The settled histogram read 60 to 68 ms p50 in this work's runs against 93 to 94 ms in the baseline's, in both orders; nothing in this work touches the exact render or its reduction, so that difference is not claimed |
 | Idle CPU, 24 MP open, Performance section collapsed / expanded | 0.75% and 0.79% collapsed, 1.37% and 1.08% expanded, of one core, in the order collapsed, expanded, expanded, collapsed | One 24 s window per launch, 2 s after the first scripted step; evidence launches (`--evidence-script` with the section's step and three 10 s waits), so both carry the evidence mode's own 250 ms tick; the expanded runs made 31 reads each and the collapsed runs none; load 11 to 15 |

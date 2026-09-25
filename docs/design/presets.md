@@ -2,16 +2,16 @@
 
 Status: implemented and verified on the M4 Mac on the defaults recorded under [decisions](#decisions-taken-on-defaults), which the owner reviews afterwards. What remains is under [later](#later) and on the [roadmap](../plan.md).
 
-A preset is a named, reusable set of adjustment settings. Applying one changes only the settings it holds, as one history entry, through the same command service every client uses. Lightwell keeps its own presets in the catalog and imports Lightroom Classic presets by converting the settings whose meaning it can carry and reporting every other one.
+A preset is a named, reusable set of adjustment settings. Applying one changes only the settings it holds, as one history entry, through the same command service every client uses. Luxforge keeps its own presets in the catalog and imports Lightroom Classic presets by converting the settings whose meaning it can carry and reporting every other one.
 
 ## Scope
 
 In scope:
 
 - **Settings sets and composite actions.** A settings set names field-patch actions and the fields each one sets. The host applies the steps of a composite action in order and commits the result once.
-- **The presets module.** `lightwell.presets` declares `apply-preset`, which applies a settings set as one entry labelled `Preset: <name>`.
+- **The presets module.** `luxforge.presets` declares `apply-preset`, which applies a settings set as one entry labelled `Preset: <name>`.
 - **A preset library in the catalog.** List, read, create, capture from a photo, update, delete, export and import, all through `preset.*` methods.
-- **Import.** Lightroom Classic XMP develop presets, legacy `.lrtemplate` presets and Lightwell's own preset document, with a per-setting report. A dry run returns the same report without saving anything.
+- **Import.** Lightroom Classic XMP develop presets, legacy `.lrtemplate` presets and Luxforge's own preset document, with a per-setting report. A dry run returns the same report without saving anything.
 - **A desktop Presets section.** The grouped library, apply on click, a create form, a file import and a delete command.
 
 Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, RAW Kelvin and tint conversion, a Copy/Paste Settings command, applying to several photos, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs.
@@ -57,11 +57,11 @@ A draft of a composite action resolves the same way. `EditorService::draft_recip
 
 ## The presets module
 
-`lightwell.presets` is a linked built-in registered first, before the pixel module. It declares no effects, so it never owns a layer, and it writes nothing itself.
+`luxforge.presets` is a linked built-in registered first, before the pixel module. It declares no effects, so it never owns a layer, and it writes nothing itself.
 
 | Field | Value |
 | --- | --- |
-| `id`, `title`, `hint` | `lightwell.presets`, `Presets`, `Saved and imported settings` |
+| `id`, `title`, `hint` | `luxforge.presets`, `Presets`, `Saved and imported settings` |
 | `collapsed` | `true`, so Basic still leads the panel |
 | `actions` | `apply-preset`, titled `Apply preset`, `patch: false` |
 | `controls` | One `presets {action: "apply-preset"}` control |
@@ -74,7 +74,7 @@ A draft of a composite action resolves the same way. `EditorService::draft_recip
 | `name` | `string {max_length: 128}` | yes | The history label and the provenance of the entry |
 | `preset-id` | `string {max_length: 96}` | no | The library preset the settings came from. This is provenance only; the host does not look it up. The name is hyphenated because module parameter names are hyphenated words; host methods keep `preset_id` beside `asset_id` |
 
-`parse` checks that `name` is non-empty after trimming (the generic check has already refused control characters), then stores `{settings, name, preset-id?}` as sent. `plan` returns `Compose` with one step per settings key, in key order. `label` returns `Preset: <name>`. Like every action, `apply-preset` is refused with `incompatible: unavailable module lightwell.presets` when its own module is registered as unavailable; a module with no effects has nothing the commit-time compile could refuse, so the host checks the requested module's availability before planning any action.
+`parse` checks that `name` is non-empty after trimming (the generic check has already refused control characters), then stores `{settings, name, preset-id?}` as sent. `plan` returns `Compose` with one step per settings key, in key order. `label` returns `Preset: <name>`. Like every action, `apply-preset` is refused with `incompatible: unavailable module luxforge.presets` when its own module is registered as unavailable; a module with no effects has nothing the commit-time compile could refuse, so the host checks the requested module's availability before planning any action.
 
 The request carries the settings rather than an ID for three reasons. The entry, request deduplication and Copy as JSON request each describe exactly what was applied. A later edit or deletion of the library preset cannot change what an entry means. And the module needs no access to the catalog. A client reads the library preset (`preset.list` or `preset.read`) and sends its `settings`, `name` and `id` as `preset-id`.
 
@@ -103,13 +103,13 @@ A catalog of an earlier format is refused by name, as every format change has be
 
 **Record.** `{id, name, group, settings, origin, report, actor, created_ms, updated_ms, unavailable}`:
 
-- `origin` is `{kind: "lightwell"}`, `{kind: "lightroom-xmp", file_name?, uuid?, process_version?, preset_type?}` or `{kind: "lightroom-template", file_name?, uuid?}`.
-- `report` is the import report, or `null` for a preset created in Lightwell.
+- `origin` is `{kind: "luxforge"}`, `{kind: "lightroom-xmp", file_name?, uuid?, process_version?, preset_type?}` or `{kind: "lightroom-template", file_name?, uuid?}`.
+- `report` is the import report, or `null` for a preset created in Luxforge.
 - `unavailable` lists the actions of `settings` that are unknown or unavailable in this registry. It is computed when the record is read and never stored.
 
 The imported file's text is kept in `source_text`, bounded by the request limit. Unsupported settings are therefore never lost: a later importer can map them again. It is returned only by `preset.read`.
 
-**Names.** Name and group are trimmed and non-empty, with no control characters. A name has at most 128 characters and a group at most 64. The default group is `User presets` for a preset created in Lightwell and `Imported` for an import that names no group. A (group, name) pair is unique ignoring case. A duplicate is a `conflict`, and nothing is renamed automatically. The library holds at most 1,000 presets; one more is a `resource-limit` error.
+**Names.** Name and group are trimmed and non-empty, with no control characters. A name has at most 128 characters and a group at most 64. The default group is `User presets` for a preset created in Luxforge and `Imported` for an import that names no group. A (group, name) pair is unique ignoring case. A duplicate is a `conflict`, and nothing is renamed automatically. The library holds at most 1,000 presets; one more is a `resource-limit` error.
 
 ### Methods
 
@@ -123,7 +123,7 @@ Every method is a host method listed by `schema.list`. The four mutating methods
 | `preset.capture` | no | `asset_id`, `fields`; optional `entry_id` (default: the session's selection) | `{settings}` read from that entry's stack |
 | `preset.update` | yes | `preset_id`, `mutation`; optional `name`, `group`, `settings` | `{outcome, preset, deduplicated}`, with `outcome: no-op` when nothing changes |
 | `preset.delete` | yes | `preset_id`, `mutation` | `{outcome, deleted, deduplicated}`, with `outcome: no-op` and `deleted: false` when the preset is absent |
-| `preset.export` | no | `preset_id` | `{file_name, content}`, a Lightwell preset document |
+| `preset.export` | no | `preset_id` | `{file_name, content}`, a Luxforge preset document |
 | `preset.inspect` | no | `content`; optional `file_name` | `{preset, report}` as an import would create them; nothing is stored |
 | `preset.import` | yes | `content`, `mutation`; optional `file_name`, `name`, `group` | `{preset, report, deduplicated}` |
 
@@ -139,12 +139,12 @@ Every method is a host method listed by `schema.list`. The four mutating methods
 
 | Content | Format |
 | --- | --- |
-| A JSON object with `"format": "lightwell.preset"` | Lightwell preset document |
+| A JSON object with `"format": "luxforge.preset"` | Luxforge preset document |
 | XML containing an `x:xmpmeta` or `rdf:RDF` element | Lightroom XMP |
 | Text starting `s = {` | Lightroom `.lrtemplate` |
-| Anything else | `unsupported-input: not a Lightwell, Lightroom XMP or .lrtemplate preset` |
+| Anything else | `unsupported-input: not a Luxforge, Lightroom XMP or .lrtemplate preset` |
 
-**Lightwell preset document.** `{"format": "lightwell.preset", "version": 1, "name", "group"?, "settings"}`, with no other keys. Any other version is refused explicitly. `preset.export` writes this document with the file name `<name>.lwpreset`. Its report maps every field one to one.
+**Luxforge preset document.** `{"format": "luxforge.preset", "version": 1, "name", "group"?, "settings"}`, with no other keys. Any other version is refused explicitly. `preset.export` writes this document with the file name `<name>.lfpreset`. Its report maps every field one to one.
 
 The [preset file formats](../research/lightroom/presets.md) chapter of the Lightroom knowledge base is the evidence for everything below.
 
@@ -175,7 +175,7 @@ Nesting deeper than 16 levels or more than 100,000 values is a `resource-limit` 
 - more than 128 namespace declarations;
 - more than 200,000 nodes.
 
-The measured worst case within these bounds is in [performance](../specs/performance.md#preset-import-parse). A setting written twice, whether in two descriptions or as two keys of a template, is `unsupported-input` rather than one copy silently winning. An XML error names its line and column, and a template error names its byte offset. A Lightwell document of another version is `unsupported-input`.
+The measured worst case within these bounds is in [performance](../specs/performance.md#preset-import-parse). A setting written twice, whether in two descriptions or as two keys of a template, is `unsupported-input` rather than one copy silently winning. An XML error names its line and column, and a template error names its byte offset. A Luxforge document of another version is `unsupported-input`.
 
 **Name and group.** The name comes from `crs:Name`, then the template's `title`, then the file name without its extension, then the literal `Imported preset`. The group comes from `crs:Group`, then the request's `group`, then `Imported`. The request's `name` and `group` override both, which is how a client resolves a duplicate.
 
@@ -183,9 +183,9 @@ The measured worst case within these bounds is in [performance](../specs/perform
 
 The importer owns one table of the Lightroom settings it recognizes. Each row says what happens to the setting. A test checks that every mapped target is a registered presettable action and parameter whose range covers the Lightroom range the row claims.
 
-A mapped value is a **value transfer**: the same number on a control with the same name, range and direction. It is not a claim that Lightwell renders what Lightroom renders. The [slider audit](../research/lightroom/slider-parity.md) records why equal values do not mean equal pixels. The report and the user guide say so.
+A mapped value is a **value transfer**: the same number on a control with the same name, range and direction. It is not a claim that Luxforge renders what Lightroom renders. The [slider audit](../research/lightroom/slider-parity.md) records why equal values do not mean equal pixels. The report and the user guide say so.
 
-| Lightroom setting | Lightwell target | Rule |
+| Lightroom setting | Luxforge target | Rule |
 | --- | --- | --- |
 | `Exposure2012` | `set-basic.exposure` | Value transfer, −5..+5 EV |
 | `Contrast2012`, `Highlights2012`, `Shadows2012`, `Whites2012`, `Blacks2012` | `set-basic.contrast`, `highlights`, `shadows`, `whites`, `blacks` | Value transfer, −100..+100 |
@@ -194,19 +194,19 @@ A mapped value is a **value transfer**: the same number on a control with the sa
 | `Texture`, `Clarity2012`, `Dehaze` | `set-presence.texture`, `clarity`, `dehaze` | Value transfer, −100..+100 |
 | `HueAdjustment<Range>`, `SaturationAdjustment<Range>`, `LuminanceAdjustment<Range>` for Red, Orange, Yellow, Green, Aqua, Blue, Purple and Magenta | `set-mixer.<range>-hue`, `-saturation`, `-luminance` | Value transfer, −100..+100 |
 | `PostCropVignetteAmount`, `PostCropVignetteMidpoint`, `PostCropVignetteRoundness`, `PostCropVignetteFeather` | `set-vignette.amount`, `midpoint`, `roundness`, `feather` | Value transfer |
-| `Temperature`, `Tint` | none | **Refused.** These are RAW-only Kelvin and tint values, on a scale that is not Lightwell's RAW tint unit, and the owner kept Lightwell's validated RAW range. Carrying them needs a calibrated conversion |
+| `Temperature`, `Tint` | none | **Refused.** These are RAW-only Kelvin and tint values, on a scale that is not Luxforge's RAW tint unit, and the owner kept Luxforge's validated RAW range. Carrying them needs a calibrated conversion |
 | `WhiteBalance` | none | Neutral when the preset carries `IncrementalTemperature` or `IncrementalTint` and no `Temperature` or `Tint`, because the incremental values then carry the white balance. Otherwise **refused**: `As Shot`, `Auto` and the named modes set RAW white balance, which no field patch can do |
-| `CameraProfile` and a nested `Look` | none | Neutral when they name Lightroom's default profile (`Adobe Standard` or `Adobe Color`), because Lightwell keeps its own neutral rendering. Any other profile is unsupported, because Lightwell has no profiles |
+| `CameraProfile` and a nested `Look` | none | Neutral when they name Lightroom's default profile (`Adobe Standard` or `Adobe Color`), because Luxforge keeps its own neutral rendering. Any other profile is unsupported, because Luxforge has no profiles |
 | Earlier process-version fields: `Exposure`, `Contrast`, `Brightness`, `Shadows`, `FillLight`, `HighlightRecovery`, `Clarity`, `ToneCurve`, `ToneCurveName` and the `Auto*` switches of those versions | none | Neutral in a Process 2012 or later preset, because Lightroom does not render them there. In an earlier-process preset they are **refused**, because their meaning and domains differ from the 2012 fields |
-| Tone curves, parametric curve, colour grading and split toning, sharpening, noise reduction, grain, lens and chromatic-aberration corrections, lens vignetting, defringe, transform and upright, calibration, black-and-white conversion and mix, Auto Tone, masks and local corrections, spot removal, red eye, crop | none | **Unsupported**: Lightwell has no such tool. Neutral when the setting is at its neutral value, or when it only qualifies an amount that is itself neutral: a sharpening radius when `Sharpness` is 0, a grain size when `GrainAmount` is 0, a hue when its saturation is 0, a mix when `ConvertToGrayscale` is false, a crop rectangle when `HasCrop` is false, and an identity curve |
-| `PostCropVignetteStyle`, `PostCropVignetteHighlightContrast` | none | Lightwell draws one vignette style. Neutral when the vignette amount is 0 or the setting is at its default (style 1, contrast 0), otherwise unsupported |
+| Tone curves, parametric curve, colour grading and split toning, sharpening, noise reduction, grain, lens and chromatic-aberration corrections, lens vignetting, defringe, transform and upright, calibration, black-and-white conversion and mix, Auto Tone, masks and local corrections, spot removal, red eye, crop | none | **Unsupported**: Luxforge has no such tool. Neutral when the setting is at its neutral value, or when it only qualifies an amount that is itself neutral: a sharpening radius when `Sharpness` is 0, a grain size when `GrainAmount` is 0, a hue when its saturation is 0, a mix when `ConvertToGrayscale` is false, a crop rectangle when `HasCrop` is false, and an identity curve |
+| `PostCropVignetteStyle`, `PostCropVignetteHighlightContrast` | none | Luxforge draws one vignette style. Neutral when the vignette amount is 0 or the setting is at its default (style 1, contrast 0), otherwise unsupported |
 | Panel switches: `Enable*` in templates | none | Never settings themselves. When one is `false`, the settings of that panel are not in effect in the preset. Mapped settings of that panel are **refused** (`disabled in the preset`), and unsupported ones are neutral |
 | Preset metadata: `PresetType`, `UUID`, `Cluster`, `Supports*`, `Version`, `ProcessVersion`, `HasSettings`, `RequiresRGBTables`, `CameraModelRestriction`, `Copyright`, `ContactInfo`, `Name`, `ShortName`, `SortName`, `Group`, `Description`, and sidecar bookkeeping such as `RawFileName` and `AlreadyApplied` | none | Recorded in `origin` where useful and never reported as settings |
 | Anything else | none | Unsupported: `not recognised` |
 
 A value is parsed as Lightroom writes it (`0.5`, `+0.50`, `-12`, `True`). A value that does not parse, or lies outside the target's hard range, is **refused** with its reason. It is never clamped.
 
-**Process version.** A preset is *modern* when its `ProcessVersion` is 6.7 (Process 2012) or later, or when it has no `ProcessVersion` and does not use the earlier-process tone fields as its tone controls. A preset with an earlier `ProcessVersion`, or with none and only earlier-process tone fields, is *legacy*. In a legacy preset every mapped setting is refused, because Lightwell's controls follow the 2012 names and not what that process version renders.
+**Process version.** A preset is *modern* when its `ProcessVersion` is 6.7 (Process 2012) or later, or when it has no `ProcessVersion` and does not use the earlier-process tone fields as its tone controls. A preset with an earlier `ProcessVersion`, or with none and only earlier-process tone fields, is *legacy*. In a legacy preset every mapped setting is refused, because Luxforge's controls follow the 2012 names and not what that process version renders.
 
 ### Report
 
@@ -216,15 +216,15 @@ A value is parsed as Lightroom writes it (`0.5`, `+0.50`, `-12`, `True`). A valu
   "process_version": "15.4",
   "mapped": [{"setting": "Exposure2012", "value": "+0.35", "action": "set-basic", "field": "exposure", "applied": 0.35}],
   "neutral": [{"setting": "GrainAmount", "value": "0"}],
-  "unsupported": [{"setting": "Sharpness", "value": "40", "reason": "Lightwell has no sharpening"}],
+  "unsupported": [{"setting": "Sharpness", "value": "40", "reason": "Luxforge has no sharpening"}],
   "refused": [{"setting": "Temperature", "value": "5500", "reason": "RAW Kelvin white balance has no calibrated conversion"}]
 }
 ```
 
 - `mapped`: the value transfers and is in the preset's settings.
 - `neutral`: the setting is unsupported but at its neutral value, so nothing is lost.
-- `unsupported`: the effect is not reproduced because Lightwell has no such tool.
-- `refused`: Lightwell has a related control, but this value cannot be carried. It is out of range, belongs to another process version or has no calibrated conversion.
+- `unsupported`: the effect is not reproduced because Luxforge has no such tool.
+- `refused`: Luxforge has a related control, but this value cannot be carried. It is out of range, belongs to another process version or has no calibrated conversion.
 
 A qualifying rule applies only when the preset holds the amount it depends on. A hue whose saturation the preset does not hold is reported on its own value, because the photo's saturation, not the preset's, would decide whether it has an effect.
 
@@ -237,7 +237,7 @@ The Presets section is generated from the `presets` control and is the first sec
 - **Library.** Group headings in the order `preset.list` returns them, each followed by one row per preset. A partial preset shows a `Partial` badge whose tooltip gives the report's four counts, and a preset with unavailable actions shows why it cannot apply. Rows are disabled while the editor is busy, while a draft is open and during a historical preview. The whole section, Import and the form included, is disabled while no photo is open, like every other section.
 - **Apply.** Clicking a row submits `edit.apply-preset` once with that preset's `settings`, `name` and `preset-id`. The ordinary completion path follows: `asset.state`, one preview job and a history merge.
 - **Create.** A `+` button opens a form with the name, the group (default `User presets`) and one checkbox per group of presettable controls, labelled `Module · Group` and taken from the descriptors, all checked except white balance. Create calls `preset.capture` for the displayed entry with the checked groups' parameters, then `preset.create`.
-- **Import.** An Import button opens the native file dialog, filtered to `.xmp`, `.lrtemplate` and `.lwpreset`. The file is read in the dialog's task, refused over 1 MiB or when it is not UTF-8, and sent to `preset.import`. The status bar reports the result, for example `Imported "Soft film": 18 mapped, 2 unsupported, 1 refused`; the neutral count is in the badge's tooltip. A duplicate name, or a file that maps nothing, appears as the error it is.
+- **Import.** An Import button opens the native file dialog, filtered to `.xmp`, `.lrtemplate` and `.lfpreset`. The file is read in the dialog's task, refused over 1 MiB or when it is not UTF-8, and sent to `preset.import`. The status bar reports the result, for example `Imported "Soft film": 18 mapped, 2 unsupported, 1 refused`; the neutral count is in the badge's tooltip. A duplicate name, or a file that maps nothing, appears as the error it is.
 - **Row menu.** Right-clicking a row offers Export…, which writes the `preset.export` document through a native save dialog; Copy import report, for an imported preset, which copies the full report as JSON from `preset.read`; and Delete, which calls `preset.delete`.
 - **Palette.** The command palette lists `Apply preset: <name>` for each library preset that can apply in this build.
 
@@ -246,19 +246,19 @@ The library is listed at startup, after each of the desktop's own preset calls, 
 ## Verification
 
 - **Core unit and integration tests.** They cover the kinds' generic checks, registry validation of the `presets` control and composite plans, and one entry per apply with the exact stack and label. They also cover no-op, partial fields keeping untouched values, undo and restore, unknown, non-patch, unavailable and nested steps, duplicate names, bounds and format 4 refusal.
-- **Importer tests.** They run on checked-in fixture presets: an XMP with attributes and child elements, a nested default `crs:Look`, a non-`crs` prefix, a profile, an earlier process version, an out-of-range value, a sidecar with crop, a `.lrtemplate` with `ZSTR`, flat curve arrays and a `false` panel switch, and a Lightwell document. Each asserts the exact settings and report.
-- **JSON CLI parity.** A test imports, lists, applies, undoes, captures, creates, exports, re-imports and deletes through `lightwell-json`. It asserts that the resulting stacks and pixels equal the same edits made with `edit.set-*`.
-- **Rendered check.** The `presets` smoke scenario imports an XMP and a Lightwell preset through the section, applies each from its row, undoes, creates a preset through the form, applies it and deletes it. Every frame carries the correlated revision, entry, history label, stored layer payloads and section rows, and the photograph's pixels move in each preset's direction. Pixel equality with the equivalent `edit.set-*` stack is the JSON CLI test's claim, not the rendered one's ([scenario](../engineering/development.md#evidence-scripts)).
+- **Importer tests.** They run on checked-in fixture presets: an XMP with attributes and child elements, a nested default `crs:Look`, a non-`crs` prefix, a profile, an earlier process version, an out-of-range value, a sidecar with crop, a `.lrtemplate` with `ZSTR`, flat curve arrays and a `false` panel switch, and a Luxforge document. Each asserts the exact settings and report.
+- **JSON CLI parity.** A test imports, lists, applies, undoes, captures, creates, exports, re-imports and deletes through `luxforge-json`. It asserts that the resulting stacks and pixels equal the same edits made with `edit.set-*`.
+- **Rendered check.** The `presets` smoke scenario imports an XMP and a Luxforge preset through the section, applies each from its row, undoes, creates a preset through the form, applies it and deletes it. Every frame carries the correlated revision, entry, history label, stored layer payloads and section rows, and the photograph's pixels move in each preset's direction. Pixel equality with the equivalent `edit.set-*` stack is the JSON CLI test's claim, not the rendered one's ([scenario](../engineering/development.md#evidence-scripts)).
 - **Performance.** No render or source access on any preset path except the apply's ordinary preview. Import parse time for a 1 MiB document is measured on the M4.
 
 ## Decisions taken on defaults
 
 The owner asked for this work to proceed without blocking. These are proposals the owner can revise:
 
-1. Presets are catalog data (format 7), not files in a settings folder. Sharing goes through export and import of the `.lwpreset` document.
+1. Presets are catalog data (format 7), not files in a settings folder. Sharing goes through export and import of the `.lfpreset` document.
 2. Only field-patch actions are presettable, so RAW source settings, transforms and crop are excluded.
 3. `apply-preset` carries the settings, not a library reference.
-4. Imports are value transfers for the controls Lightwell has. Lightroom's RAW Kelvin and tint are refused until a calibrated conversion exists. Nothing is clamped.
+4. Imports are value transfers for the controls Luxforge has. Lightroom's RAW Kelvin and tint are refused until a calibrated conversion exists. Nothing is clamped.
 5. The Presets section is the first tools-panel section, collapsed, in the "what can I do" panel. Lightroom Classic puts presets on the left instead.
 6. The create form leaves white balance unchecked by default, because white balance is usually per photo.
 
@@ -268,7 +268,7 @@ The owner asked for this work to proceed without blocking. These are proposals t
 | --- | --- |
 | Amount slider | A per-field scaling rule from each module; Lightroom scales only presets that declare `SupportsAmount` |
 | Hover preview | A draft of `apply-preset` rendered at proxy size, within the slider latency budget |
-| RAW white balance import | A calibrated conversion from Lightroom's Kelvin and tint to Lightwell's RAW controls, and a presettable RAW action |
+| RAW white balance import | A calibrated conversion from Lightroom's Kelvin and tint to Luxforge's RAW controls, and a presettable RAW action |
 | Copy/Paste Settings | Capture into a transient set and apply it with `apply-preset`; no core change |
 | DNG presets and profiles | Reading an embedded XMP packet from binary content; a profile system |
 | Writing Lightroom XMP | An exporter for the mapped fields only, with the same value-transfer caveat |

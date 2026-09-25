@@ -2,7 +2,7 @@
 
 [Knowledge base index](README.md) · Evidence checked 2026-09-23.
 
-This chapter describes how Lightroom Classic and Camera Raw store develop presets, so an importer can read them without guessing. It is a format reference, not a claim about how Adobe renders the settings. Lightwell's importer contract is in the [presets design](../../design/presets.md).
+This chapter describes how Lightroom Classic and Camera Raw store develop presets, so an importer can read them without guessing. It is a format reference, not a claim about how Adobe renders the settings. Luxforge's importer contract is in the [presets design](../../design/presets.md).
 
 Besides the usual labels, **F** marks a structural fact observed in a real preset file (S49–S51). Where a fact rests only on the ExifTool tag reference (S52), that is said.
 
@@ -33,7 +33,7 @@ Lightroom Classic 7.3 and later store presets as `.xmp` files.
 
 **Choice values (S52).** `WhiteBalance` takes `As Shot`, `Auto`, `Cloudy`, `Custom`, `Daylight`, `Flash`, `Fluorescent`, `Shade` or `Tungsten` (Adobe's page agrees, S53). `PostCropVignetteStyle` is 1 Highlight Priority, 2 Color Priority or 3 Paint Overlay. `PerspectiveUpright` is 0 Off, 1 Auto, 2 Full, 3 Level, 4 Vertical or 5 Guided.
 
-## Field inventory for Lightwell's controls
+## Field inventory for Luxforge's controls
 
 | Lightroom setting | Range | Evidence |
 | --- | --- | --- |
@@ -43,7 +43,7 @@ Lightroom Classic 7.3 and later store presets as `.xmp` files.
 | `HueAdjustment*`, `SaturationAdjustment*`, `LuminanceAdjustment*` for the eight ranges Red, Orange, Yellow, Green, Aqua, Blue, Purple and Magenta | −100..+100 | Provisional. The names and families match the Color Mixer (F, S44) |
 | `PostCropVignetteAmount` and `Roundness` / `Midpoint` and `Feather` | −100..+100 / 0..100, defaults 0, 0, 50 and 50 | Provisional. The fields are distinct from the lens-correction `VignetteAmount` and `VignetteMidpoint` |
 | `IncrementalTemperature`, `IncrementalTint` | −100..+100 | Relative white balance for rendered files. The Temperature bound is D (S16); Tint is provisional |
-| `Temperature`, `Tint` | 2,000..50,000 K, −150..+150 | D (S53). These apply to RAW files only, and the scale differs from Lightwell's RAW controls ([slider audit](slider-parity.md)) |
+| `Temperature`, `Tint` | 2,000..50,000 K, −150..+150 | D (S53). These apply to RAW files only, and the scale differs from Luxforge's RAW controls ([slider audit](slider-parity.md)) |
 
 **U.** No source describes what Lightroom does to `Temperature` and `Tint` when a preset saved from a RAW photo is applied to a JPEG. Adobe says a preset tied to a RAW-only profile does not work on a JPEG (S54), and it calls presets whose settings cannot all be applied *partially compatible* (S54, S55). Do not guess a conversion between Kelvin and incremental values.
 
@@ -95,8 +95,8 @@ Lightroom Classic keeps user presets in `~/Library/Application Support/Adobe/Cam
 
 ## Applying a preset in Lightroom
 
-- **D.** The preset dialog chooses which settings to include (S55). Applying a preset overwrites the settings it contains and leaves every other one unchanged. This is consistent across sources and is how Lightwell's field patches already behave.
+- **D.** The preset dialog chooses which settings to include (S55). Applying a preset overwrites the settings it contains and leaves every other one unchanged. This is consistent across sources and is how Luxforge's field patches already behave.
 - **D.** Presets that cannot be fully applied appear faded and italic in the Develop presets panel. The Show Partially Compatible Develop Presets preference controls this (S55).
 - **D.** The Amount slider works only for presets saved with Support Amount Slider (S55). Community experts describe it as scaling each included setting between its neutral value and the preset's value, so 50% of +0.5 EV is +0.25 EV and 0% writes the neutral values. It is not a blend with the photo's previous values. Its upper bound (100% or 200%) is **U**.
-- **U.** No source quotes the history-step text for a preset applied in Develop. Lightwell's `Preset: <name>` label is its own choice.
+- **U.** No source quotes the history-step text for a preset applied in Develop. Luxforge's `Preset: <name>` label is its own choice.
 - **D.** Imported presets land in the User Presets group (S55).

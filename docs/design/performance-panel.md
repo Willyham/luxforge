@@ -4,7 +4,7 @@ Status: implemented and verified on the M4 Mac on 2026-09-23, requested by the o
 
 ## Why a host inspector and a board, not a tool module and a bus
 
-A tool module in Lightwell is an editing provider: a descriptor, effects, actions and layers ([modules](modules-and-api.md)). A resource monitor has none of those, so it is a host inspector like the histogram, and its data is reachable through ordinary API methods, which is what makes it programmable.
+A tool module in Luxforge is an editing provider: a descriptor, effects, actions and layers ([modules](modules-and-api.md)). A resource monitor has none of those, so it is a host inspector like the histogram, and its data is reachable through ordinary API methods, which is what makes it programmable.
 
 The coupling the owner wants to avoid is between the panel and the things that do work. The panel must not know the preview worker, the source worker, a later exporter or an AI provider, and none of them may know the panel. The **activity board** is the seam: a publisher calls the host's `begin` and gets a guard; a reader takes a snapshot. Publishers and readers share the board's schema and nothing else.
 
@@ -24,7 +24,7 @@ Out of scope: export and AI jobs, which will publish through the same board when
 
 ## Activity board
 
-`lightwell_core::activity`. One board per catalog owner, created at `OwnerHandle::start_with` and shared as `Arc<ActivityBoard>` with the owner's workers; `OwnerHandle::activity()` hands the desktop the same board for its preview queue.
+`luxforge_core::activity`. One board per catalog owner, created at `OwnerHandle::start_with` and shared as `Arc<ActivityBoard>` with the owner's workers; `OwnerHandle::activity()` hands the desktop the same board for its preview queue.
 
 - `board.begin(spec) -> Activity` records an active entry and returns a guard. `spec` is `{kind, label, detail?, asset_id?, job_id?}`: `kind` is a stable dotted identifier, `label` a short present-participle phrase for people, `detail` an optional second line (a file name), `job_id` the id of a job that `job.status` can also answer, when there is one.
 - `activity.phase(&'static str)` and `activity.progress(fraction, message)` update the entry: `fraction` is 0 to 1 when the work knows a truthful extent, `message` a short word for what it is doing (`downloading`, `copying`). Either may be omitted. A capability job's `ModuleContext::progress` is this call, forwarded through its `JobControl`; `module.job.read` answers with the same progress rather than keeping its own copy.
@@ -73,7 +73,7 @@ Optional keys (`detail`, `asset_id`, `job_id`, `phase`, `progress` as `{"fractio
 
 ## Resource counters
 
-A new leaf crate, `crates/lightwell-process`, holds the platform code. It is the second crate allowed `unsafe` (as `lightwell-raw` is, with `unsafe_op_in_unsafe_fn = "deny"`), keeps every `unsafe` block beside a `SAFETY:` comment and exposes a safe API. It adds no crate that is not already in `Cargo.lock`; direct dependencies are pinned to the locked versions.
+A new leaf crate, `crates/luxforge-process`, holds the platform code. It is the second crate allowed `unsafe` (as `luxforge-raw` is, with `unsafe_op_in_unsafe_fn = "deny"`), keeps every `unsafe` block beside a `SAFETY:` comment and exposes a safe API. It adds no crate that is not already in `Cargo.lock`; direct dependencies are pinned to the locked versions.
 
 | Counter | macOS (owner's M4) | Linux | Windows |
 | --- | --- | --- | --- |
@@ -86,7 +86,7 @@ A new leaf crate, `crates/lightwell-process`, holds the platform code. It is the
 
 Two facts were measured on the M4 on 2026-09-23 with a Metal compute probe: `task_power_info_v2.gpu_energy.task_gpu_utilisation` stays 0 on Apple silicon and cannot be used; the IORegistry `AppUsage` entries report nanoseconds (0.80 s against 0.82 s of command-buffer time), and `MTLCreateSystemDefaultDevice` returns the one device object whose `currentAllocatedSize` counts the process's allocations. `AppUsage` is an undocumented key the driver publishes; if it is missing the counter reports unavailable with that reason, never zero. Walking the accelerator's children costs 0.35 ms p50 and 1.1 ms p95 (84 user clients on the owner's machine), so the sampler keeps this process's user-client entries and asks only them on later reads, walking again every 10 s, whether or not it found any, and sooner when a cached client stops answering. Releasing a command queue removes its entry from `AppUsage`, so the sampler folds a vanished entry's last value into a retired total and GPU time never decreases.
 
-The counters belong to the process, not to a catalog owner, so `lightwell_core::resources` keeps one process-wide sampler, as the colour-scratch budget is process-wide. Reading the Metal device creates one in a process that has none, so GPU allocations are read only after the host calls `lightwell_core::resources::declare_gpu_presenter()`: the desktop does at startup, before its first frame; the headless `lightwell-json` owner does not, and reports the reason.
+The counters belong to the process, not to a catalog owner, so `luxforge_core::resources` keeps one process-wide sampler, as the colour-scratch budget is process-wide. Reading the Metal device creates one in a process that has none, so GPU allocations are read only after the host calls `luxforge_core::resources::declare_gpu_presenter()`: the desktop does at startup, before its first frame; the headless `luxforge-json` owner does not, and reports the reason.
 
 ### `resources.read`
 

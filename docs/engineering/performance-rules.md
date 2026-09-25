@@ -1,6 +1,6 @@
 # Performance rules for core and desktop changes
 
-Required for every change to `lightwell-core`, the desktop adapter or the JSON API. Budgets and measurement method live in [the performance plan](../specs/performance.md).
+Required for every change to `luxforge-core`, the desktop adapter or the JSON API. Budgets and measurement method live in [the performance plan](../specs/performance.md).
 
 ## Why these rules exist
 

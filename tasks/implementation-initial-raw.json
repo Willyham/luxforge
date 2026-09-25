@@ -94,28 +94,28 @@
         {
           "kind": "file",
           "label": "Current source decode",
-          "target": "crates/lightwell-core/src/lib.rs",
+          "target": "crates/luxforge-core/src/lib.rs",
           "locator": "SourceImage, open_source, read_bounded",
           "relevance": "JPEG source representation and limits to preserve while adding RAW preparation."
         },
         {
           "kind": "file",
           "label": "Catalog and source cache",
-          "target": "crates/lightwell-core/src/editor/source.rs",
+          "target": "crates/luxforge-core/src/editor/source.rs",
           "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
         {
           "kind": "file",
           "label": "Single catalog owner",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "locator": "OwnerHandle, OwnerMessage, owner_loop",
           "relevance": "Serial dispatch must remain responsive while bounded workers prepare RAW."
         },
         {
           "kind": "file",
           "label": "Host processing primitives",
-          "target": "crates/lightwell-core/src/modules/processing.rs",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
           "relevance": "Current exact geometry, point replacement and resample stage boundary."
         },
         {
@@ -176,14 +176,14 @@
         {
           "kind": "file",
           "label": "Current renderer",
-          "target": "crates/lightwell-core/src/render.rs",
+          "target": "crates/luxforge-core/src/render.rs",
           "locator": "compile, sample, bilinear",
           "relevance": "Share geometry and sampling contracts while retaining precision through RAW evaluation."
         },
         {
           "kind": "file",
           "label": "Host processing primitives",
-          "target": "crates/lightwell-core/src/modules/processing.rs",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
           "relevance": "Current exact geometry, point replacement and resample stage boundary."
         },
         {
@@ -246,7 +246,7 @@
         {
           "kind": "file",
           "label": "Current source decode",
-          "target": "crates/lightwell-core/src/lib.rs",
+          "target": "crates/luxforge-core/src/lib.rs",
           "locator": "SourceImage, open_source, read_bounded",
           "relevance": "JPEG source representation and limits to preserve while adding RAW preparation."
         },
@@ -326,7 +326,7 @@
         {
           "kind": "file",
           "label": "Current renderer",
-          "target": "crates/lightwell-core/src/render.rs",
+          "target": "crates/luxforge-core/src/render.rs",
           "locator": "compile, sample, bilinear",
           "relevance": "Share geometry and sampling contracts while retaining precision through RAW evaluation."
         },
@@ -433,7 +433,7 @@
         "TASK-006"
       ],
       "extra_context": [
-        "Implemented lightwell-raw with vendored pinned native sources, documented FFI lifetime/exception invariants, strict metadata/mode checks, checked output bounds, callback cancellation and authentic exact-mosaic/source-hash tests. Inventory includes all native notices."
+        "Implemented luxforge-raw with vendored pinned native sources, documented FFI lifetime/exception invariants, strict metadata/mode checks, checked output bounds, callback cancellation and authentic exact-mosaic/source-hash tests. Inventory includes all native notices."
       ],
       "context_links": [
         {
@@ -451,7 +451,7 @@
         {
           "kind": "file",
           "label": "Current source decode",
-          "target": "crates/lightwell-core/src/lib.rs",
+          "target": "crates/luxforge-core/src/lib.rs",
           "locator": "SourceImage, open_source, read_bounded",
           "relevance": "JPEG source representation and limits to preserve while adding RAW preparation."
         },
@@ -505,14 +505,14 @@
         {
           "kind": "file",
           "label": "Current source decode",
-          "target": "crates/lightwell-core/src/lib.rs",
+          "target": "crates/luxforge-core/src/lib.rs",
           "locator": "SourceImage, open_source, read_bounded",
           "relevance": "JPEG source representation and limits to preserve while adding RAW preparation."
         },
         {
           "kind": "file",
           "label": "Host processing primitives",
-          "target": "crates/lightwell-core/src/modules/processing.rs",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
           "relevance": "Current exact geometry, point replacement and resample stage boundary."
         },
         {
@@ -524,7 +524,7 @@
         {
           "kind": "file",
           "label": "Current renderer",
-          "target": "crates/lightwell-core/src/render.rs",
+          "target": "crates/luxforge-core/src/render.rs",
           "locator": "compile, sample, bilinear",
           "relevance": "Share geometry and sampling contracts while retaining precision through RAW evaluation."
         }
@@ -571,14 +571,14 @@
         {
           "kind": "file",
           "label": "Catalog and source cache",
-          "target": "crates/lightwell-core/src/editor/source.rs",
+          "target": "crates/luxforge-core/src/editor/source.rs",
           "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
         {
           "kind": "file",
           "label": "Single catalog owner",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "locator": "OwnerHandle, OwnerMessage, owner_loop",
           "relevance": "Serial dispatch must remain responsive while bounded workers prepare RAW."
         },
@@ -636,7 +636,7 @@
         {
           "kind": "file",
           "label": "Catalog and source cache",
-          "target": "crates/lightwell-core/src/editor/source.rs",
+          "target": "crates/luxforge-core/src/editor/source.rs",
           "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
@@ -695,7 +695,7 @@
         {
           "kind": "file",
           "label": "Current source decode",
-          "target": "crates/lightwell-core/src/lib.rs",
+          "target": "crates/luxforge-core/src/lib.rs",
           "locator": "SourceImage, open_source, read_bounded",
           "relevance": "JPEG source representation and limits to preserve while adding RAW preparation."
         },
@@ -754,7 +754,7 @@
         {
           "kind": "file",
           "label": "Host processing primitives",
-          "target": "crates/lightwell-core/src/modules/processing.rs",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
           "relevance": "Current exact geometry, point replacement and resample stage boundary."
         },
         {
@@ -811,14 +811,14 @@
         {
           "kind": "file",
           "label": "Current renderer",
-          "target": "crates/lightwell-core/src/render.rs",
+          "target": "crates/luxforge-core/src/render.rs",
           "locator": "compile, sample, bilinear",
           "relevance": "Share geometry and sampling contracts while retaining precision through RAW evaluation."
         },
         {
           "kind": "file",
           "label": "Host processing primitives",
-          "target": "crates/lightwell-core/src/modules/processing.rs",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
           "relevance": "Current exact geometry, point replacement and resample stage boundary."
         },
         {
@@ -867,7 +867,7 @@
         "TASK-013"
       ],
       "extra_context": [
-        "Actual lightwell-json owner-fixture tests pass for both cameras, exercising job polling/adoption, exposure/temperature/tint/AsShot, exact undo/redo samples, crop/rotate, versions/restore and process reopen with preparation retry. Source inspection and schemas use the shared service; the owner never performs frame work."
+        "Actual luxforge-json owner-fixture tests pass for both cameras, exercising job polling/adoption, exposure/temperature/tint/AsShot, exact undo/redo samples, crop/rotate, versions/restore and process reopen with preparation retry. Source inspection and schemas use the shared service; the owner never performs frame work."
       ],
       "context_links": [
         {
@@ -879,14 +879,14 @@
         {
           "kind": "file",
           "label": "Single catalog owner",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "locator": "OwnerHandle, OwnerMessage, owner_loop",
           "relevance": "Serial dispatch must remain responsive while bounded workers prepare RAW."
         },
         {
           "kind": "file",
           "label": "Catalog and source cache",
-          "target": "crates/lightwell-core/src/editor/source.rs",
+          "target": "crates/luxforge-core/src/editor/source.rs",
           "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
@@ -1073,13 +1073,13 @@
         {
           "kind": "file",
           "label": "Host processing primitives",
-          "target": "crates/lightwell-core/src/modules/processing.rs",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
           "relevance": "Current exact geometry, point replacement and resample stage boundary."
         },
         {
           "kind": "file",
           "label": "Current renderer",
-          "target": "crates/lightwell-core/src/render.rs",
+          "target": "crates/luxforge-core/src/render.rs",
           "locator": "compile, sample, bilinear",
           "relevance": "Share geometry and sampling contracts while retaining precision through RAW evaluation."
         }
@@ -1132,7 +1132,7 @@
         {
           "kind": "file",
           "label": "Catalog and source cache",
-          "target": "crates/lightwell-core/src/editor/source.rs",
+          "target": "crates/luxforge-core/src/editor/source.rs",
           "locator": "EditorService::import, verified_prepared, CachedSource",
           "relevance": "Identity, atomic import, history and verified cache integration."
         },
@@ -1145,7 +1145,7 @@
         {
           "kind": "file",
           "label": "Single catalog owner",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "locator": "OwnerHandle, OwnerMessage, owner_loop",
           "relevance": "Serial dispatch must remain responsive while bounded workers prepare RAW."
         }
@@ -1400,7 +1400,7 @@
         {
           "kind": "file",
           "label": "Single catalog owner",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "locator": "OwnerHandle, OwnerMessage, owner_loop",
           "relevance": "Serial dispatch must remain responsive while bounded workers prepare RAW."
         },
