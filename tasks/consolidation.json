@@ -2525,7 +2525,7 @@
     {
       "id": "TASK-042",
       "description": "Build each control's request once with a declared commit-on-pick, walk the control tree with one walker and one `NumberSpec`, make the gallery page desktop-local, and have the Performance panel parse the core's report types.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-039"
       ],
