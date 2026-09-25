@@ -2166,6 +2166,39 @@ mod tests {
         assert_eq!(drafted.masks, committed.masks);
     }
 
+    /// TASK-014: the workspace `serde_json` (root `Cargo.toml`) enables `float_roundtrip`, so a
+    /// stored `f64` reads back bit-exact through a recipe's JSON form — the same `encode`/`decode`
+    /// pair every catalog write and read uses (`crate::editor::catalog`). Each of these values'
+    /// shortest decimal needs 17 significant digits and, without the feature, parses one ULP off;
+    /// the second is a RAW tint-like magnitude (a tint control spans roughly -150..150), matching
+    /// the observed bug where a stored tint read back different from the value committed.
+    #[test]
+    fn recipe_json_round_trips_seventeen_digit_doubles_bit_exact() {
+        let values = [
+            -3.6837011971450995_f64,
+            -124.74988053139269,
+            -211.98290340231378,
+        ];
+        let mut recipe = Recipe::default();
+        for (index, value) in values.iter().enumerate() {
+            recipe.layers.push(Layer::new(
+                "test.float-roundtrip",
+                json!({"tint": value, "index": index}),
+            ));
+        }
+        let encoded = crate::editor::catalog::encode(&recipe).unwrap();
+        let decoded: Recipe = crate::editor::catalog::decode("recipe", encoded).unwrap();
+        assert_eq!(decoded.layers.len(), values.len());
+        for (layer, value) in decoded.layers.iter().zip(values.iter()) {
+            let read = layer.payload["tint"].as_f64().unwrap();
+            assert_eq!(
+                read.to_bits(),
+                value.to_bits(),
+                "tint {value} must read back bit exact, read {read}"
+            );
+        }
+    }
+
     /// The frame a preview job renders, on this thread.
     fn preview_frame(service: &EditorService, job: &crate::PreviewJob) -> Raster {
         job.source
