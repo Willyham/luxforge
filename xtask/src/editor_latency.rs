@@ -27,7 +27,10 @@
 //! [design]: ../../../docs/design/basic-and-histogram.md
 use crate::*;
 use lightwell_core::{ModuleRegistry, ParameterKind};
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant},
+};
 
 /// The Basic module's patch action and the field the gesture drags, named as the module declares
 /// them.
@@ -234,7 +237,14 @@ fn elapsed(event: &Value) -> Result<f64> {
         .ok_or_else(|| "An event carries no elapsed_ms".into())
 }
 
-/// Run one evidence script to completion, sampling RSS about every 50 ms while it runs.
+/// One process's sampled CPU and resident memory during an evidence launch.
+struct ProcessObservation {
+    rss_samples: Vec<Value>,
+    peak_rss_mib: f64,
+    process_cpu_seconds: Option<f64>,
+}
+
+/// Run one evidence script to completion, sampling CPU time and RSS about every 50 ms while it runs.
 fn evidence_run(
     root: &Path,
     bin: &Path,
@@ -242,12 +252,14 @@ fn evidence_run(
     name: &str,
     args: &[OsString],
     deadline: Duration,
-) -> Result<(Vec<Value>, f64)> {
+) -> Result<ProcessObservation> {
     let mut child =
         scenario::launch::spawn_editor(root, bin, args, &out.join(format!("{name}.log")))?;
     let start = Instant::now();
     let watch = stats::Watch::new(root, child.child.id());
     let mut rss = Vec::new();
+    let mut first_cpu_seconds = None;
+    let mut last_cpu_seconds = None;
     let status = loop {
         if let Some(status) = child.child.try_wait()? {
             break status;
@@ -256,7 +268,13 @@ fn evidence_run(
             start.elapsed() < deadline,
             format!("The {name} run exceeded its deadline"),
         )?;
-        if let Ok((_, resident)) = watch.usage() {
+        if let Ok((cpu_seconds, resident)) = watch.usage()
+            && resident > 0.0
+        {
+            // `ps` may return a zero RSS row in the race after the child exits but before
+            // `try_wait` observes it. Do not let that reset the final CPU sample to zero.
+            first_cpu_seconds.get_or_insert(cpu_seconds);
+            last_cpu_seconds = Some(cpu_seconds);
             rss.push(json!([start.elapsed().as_secs_f64() * 1000.0, resident]));
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -272,7 +290,15 @@ fn evidence_run(
         .iter()
         .filter_map(|row| row[1].as_f64())
         .fold(0.0, f64::max);
-    Ok((rss, peak))
+    let process_cpu_seconds = first_cpu_seconds
+        .zip(last_cpu_seconds)
+        .map(|(first, last)| last - first)
+        .filter(|delta| *delta >= 0.01);
+    Ok(ProcessObservation {
+        rss_samples: rss,
+        peak_rss_mib: peak,
+        process_cpu_seconds,
+    })
 }
 
 /// One input's journey, from the `draft.set` that carried it to the frame that showed it.
@@ -711,6 +737,139 @@ fn paint_precondition() -> Vec<Value> {
     ]
 }
 
+#[derive(Clone, Debug)]
+struct PaintPhaseSample {
+    generation: u64,
+    phase: &'static str,
+    proxy: bool,
+    input_to_presented_ms: f64,
+    owner_round_trip_ms: f64,
+    executor_wait_ms: f64,
+    draft_set_ms: f64,
+    preview_job_ms: f64,
+    return_to_queue_ms: f64,
+    queue_wait_ms: f64,
+    worker_render_ms: f64,
+    before_worker_result_ms: f64,
+    result_to_surface_ms: f64,
+}
+
+/// Pair one measured paint input with its owner round-trip, worker result and presented frame.
+fn paced_stroke_phase_samples(
+    events: &[Value],
+    positions: usize,
+) -> Result<(usize, Vec<PaintPhaseSample>)> {
+    let stroke_step = events
+        .iter()
+        .position(|event| {
+            event["event"] == json!("script_step")
+                && event["detail"]["request"]["mask"]["stroke"]["interval_ms"].as_u64()
+                    == Some(PAINT_INTERVAL_MS)
+                && event["detail"]["request"]["mask"]["stroke"]["points"]
+                    .as_array()
+                    .is_some_and(|points| points.len() == positions)
+        })
+        .ok_or("The event stream has no paced stroke step matching this run")?;
+    let events = &events[stroke_step..];
+    let mut pending: Option<f64> = None;
+    let mut inputs: Vec<(f64, u64, [f64; 4])> = Vec::new();
+    for event in events {
+        match event["event"].as_str() {
+            Some("mask_draft_set") => pending = Some(elapsed(event)?),
+            Some("mask_draft_preview") => {
+                let Some(sent) = pending.take() else {
+                    return Err("A mask_draft_preview answered no mask_draft_set".into());
+                };
+                let generation = event["detail"]["generation"]
+                    .as_u64()
+                    .ok_or("A mask draft preview named no generation")?;
+                let legs = &event["detail"]["round_trip_ms"];
+                let legs = [
+                    "executor_wait",
+                    "draft_set",
+                    "preview_job",
+                    "return_to_queue",
+                ]
+                .map(|leg| {
+                    legs[leg]
+                        .as_f64()
+                        .ok_or_else(|| format!("A mask draft preview has no {leg} timing"))
+                })
+                .into_iter()
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+                let legs: [f64; 4] = legs
+                    .try_into()
+                    .map_err(|_| "A mask draft preview has an invalid owner timing count")?;
+                inputs.push((sent, generation, legs));
+            }
+            _ => {}
+        }
+    }
+
+    let mut samples = Vec::new();
+    let mut seen = BTreeSet::new();
+    for displayed in events
+        .iter()
+        .filter(|event| event["event"] == json!("preview_displayed"))
+    {
+        let Some(generation) = displayed["detail"]["generation"].as_u64() else {
+            continue;
+        };
+        let Some((sent, _, owner_legs)) = inputs
+            .iter()
+            .find(|(_, held, _)| *held == generation)
+            .copied()
+        else {
+            continue;
+        };
+        let owner_round_trip_ms = owner_legs.iter().sum::<f64>();
+        if !seen.insert(generation) {
+            continue;
+        }
+        let proxy = displayed["detail"]["proxy"].as_bool().unwrap_or(false);
+        let phase = if proxy { "proxy" } else { "exact" };
+        let received = events
+            .iter()
+            .find(|event| {
+                event["event"] == json!("preview_result_received")
+                    && event["detail"]["generation"].as_u64() == Some(generation)
+                    && event["detail"]["phase"] == json!(phase)
+            })
+            .ok_or_else(|| format!("Generation {generation} has no received worker result"))?;
+        let queue_wait_ms = received["detail"]["queue_wait_ms"]
+            .as_f64()
+            .ok_or("A measured worker result has no queue timing")?;
+        let worker_render_ms = received["detail"]["render_ms"]
+            .as_f64()
+            .ok_or("A measured worker result has no render timing")?;
+        let displayed_ms = elapsed(displayed)?;
+        let received_ms = elapsed(received)?;
+        ensure(
+            received_ms <= displayed_ms,
+            format!("Generation {generation} was displayed before its worker result was received"),
+        )?;
+        let input_to_presented_ms = displayed_ms - sent;
+        let before_worker_result_ms =
+            received_ms - sent - owner_round_trip_ms - queue_wait_ms - worker_render_ms;
+        samples.push(PaintPhaseSample {
+            generation,
+            phase,
+            proxy,
+            input_to_presented_ms,
+            owner_round_trip_ms,
+            executor_wait_ms: owner_legs[0],
+            draft_set_ms: owner_legs[1],
+            preview_job_ms: owner_legs[2],
+            return_to_queue_ms: owner_legs[3],
+            queue_wait_ms,
+            worker_render_ms,
+            before_worker_result_ms,
+            result_to_surface_ms: displayed_ms - received_ms,
+        });
+    }
+    Ok((inputs.len(), samples))
+}
+
 /// One paced stroke's input-to-presented-frame samples, paired out of a run's own events.
 ///
 /// The pairing is exact rather than by order: every `mask_draft_set` is answered by one
@@ -789,6 +948,7 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     let script_file = out.join("gesture-script.json");
     write_json(&script_file, &json!(script))?;
 
+    let load_start = crate::verify::load_average(root);
     let evidence = out.join("app");
     let args: Vec<OsString> = vec![
         "--evidence-dir".into(),
@@ -798,7 +958,7 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         "--open".into(),
         source.clone().into_os_string(),
     ];
-    let (rss, peak_rss) = evidence_run(
+    let usage = evidence_run(
         root,
         bin,
         out,
@@ -861,7 +1021,11 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     let masked_layers = bound.len();
     let components = components.len();
 
-    let (queued, latencies) = paced_stroke_latencies(&events)?;
+    let (queued, phase_samples) = paced_stroke_phase_samples(&events, options.samples)?;
+    let latencies: Vec<f64> = phase_samples
+        .iter()
+        .map(|sample| sample.input_to_presented_ms)
+        .collect();
     ensure(
         !latencies.is_empty(),
         "The run painted no stroke whose drafted frame reached the screen",
@@ -869,7 +1033,7 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     let mut ranked = latencies.clone();
     ranked.sort_by(f64::total_cmp);
     let p95 = stats::Distribution::percentile(&ranked, 95);
-    let load = crate::verify::load_average(root);
+    let load_end = crate::verify::load_average(root);
 
     let result = json!({
         "status":"passed",
@@ -912,16 +1076,42 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "measured_p95_ms":p95,
             "met":p95.map(|ms| ms < 16.0),"acceptable":p95.map(|ms| ms < 32.0)},
         "timings_ms":{
-            "input_to_presented_frame":distribution(latencies),
+            "input_to_presented_frame":distribution(latencies.clone()),
+            "owner_round_trip_to_preview_queue":distribution(phase_samples.iter().map(|sample| sample.owner_round_trip_ms).collect()),
+            "executor_wait":distribution(phase_samples.iter().map(|sample| sample.executor_wait_ms).collect()),
+            "draft_set":distribution(phase_samples.iter().map(|sample| sample.draft_set_ms).collect()),
+            "preview_job_planning":distribution(phase_samples.iter().map(|sample| sample.preview_job_ms).collect()),
+            "owner_return_to_preview_queue":distribution(phase_samples.iter().map(|sample| sample.return_to_queue_ms).collect()),
+            "preview_request_to_worker_start":distribution(phase_samples.iter().map(|sample| sample.queue_wait_ms).collect()),
+            "preview_worker_render":distribution(phase_samples.iter().map(|sample| sample.worker_render_ms).collect()),
+            "worker_result_to_surface_assignment":distribution(phase_samples.iter().map(|sample| sample.result_to_surface_ms).collect()),
+            "pre_result_residual":distribution(phase_samples.iter().map(|sample| sample.before_worker_result_ms).collect()),
         },
-        "load_average_1m":load,
+        "phase_samples":phase_samples.iter().map(|sample| json!({
+            "generation":sample.generation,
+            "phase":sample.phase,
+            "proxy":sample.proxy,
+            "input_to_presented_frame_ms":sample.input_to_presented_ms,
+            "owner_round_trip_to_preview_queue_ms":sample.owner_round_trip_ms,
+            "executor_wait_ms":sample.executor_wait_ms,
+            "draft_set_ms":sample.draft_set_ms,
+            "preview_job_planning_ms":sample.preview_job_ms,
+            "owner_return_to_preview_queue_ms":sample.return_to_queue_ms,
+            "preview_request_to_worker_start_ms":sample.queue_wait_ms,
+            "preview_worker_render_ms":sample.worker_render_ms,
+            "pre_result_residual_ms":sample.before_worker_result_ms,
+            "worker_result_to_surface_assignment_ms":sample.result_to_surface_ms,
+        })).collect::<Vec<_>>(),
+        "load_average_1m_start":load_start,
+        "load_average_1m_end":load_end,
         "load_threshold":launch::LOAD_THRESHOLD,
-        "provisional":load.is_none_or(|load| load > launch::LOAD_THRESHOLD),
+        "provisional":load_start.or(load_end).is_none_or(|load| load > launch::LOAD_THRESHOLD),
         "resources":{
-            "sampled_peak_rss_mib":peak_rss,
+            "sampled_peak_rss_mib":usage.peak_rss_mib,
+            "sampled_process_cpu_seconds":usage.process_cpu_seconds,
             "scratch":last["state"]["scratch"],
-            "rss_samples":rss,
-            "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure.",
+            "rss_samples":usage.rss_samples,
+            "note":"RSS and process CPU time are sampled together by ps about every 50 ms. Peak RSS includes captures, GPU resources and allocator retention; CPU seconds are the first-to-last valid sampled process delta, may miss up to one polling interval at each edge, and are null when the delta is below ps's 0.01 s resolution.",
         },
         "workspace":last["state"]["workspace"],
         "scope":"mask_draft_set to the preview_displayed of the generation it queued, over one paced brush stroke on a bare masked recipe at this source's own size. It is the paint gesture's counterpart of drag mode's slider figure, and it is not comparable to the mask-range scenario's stroke, which is painted on four masked colour layers.",
@@ -1025,7 +1215,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     if options.control == Control::Curve {
         args.push("--developer".into());
     }
-    let (rss, peak_rss) = evidence_run(
+    let usage = evidence_run(
         root,
         bin,
         out,
@@ -1278,9 +1468,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             "note":"Two bounds show here. Within one gesture the driver keeps at most one draft round trip in flight and only the newest value waiting, so a burst of moves between two ticks is coalesced: burst_step_values against burst_step_draft_sets is that reduction. At the queue, a requested preview job whose generation never reaches a preview_displayed was superseded; every commit supersedes the drafted preview of the value it commits, and a drag's open steps drain one at a time so none of theirs is. No analysis job is superseded because a drafted preview is never analysed: the exact report is reduced only from the committed frame.",
         },
         "resources":{
-            "sampled_peak_rss_mib":peak_rss,
+            "sampled_peak_rss_mib":usage.peak_rss_mib,
+            "sampled_process_cpu_seconds":usage.process_cpu_seconds,
             "scratch":last["state"]["scratch"],
-            "rss_samples":rss,
+            "rss_samples":usage.rss_samples,
             "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the process-wide colour budget at the last captured frame, with peak_bytes its high-water mark over the whole run.",
         },
         "workspace":last["state"]["workspace"],
@@ -1513,7 +1704,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         "--open".into(),
         source.clone().into_os_string(),
     ];
-    let (rss, peak_rss) = evidence_run(
+    let usage = evidence_run(
         root,
         bin,
         out,
@@ -1595,9 +1786,10 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "proxy":analysis.proxy,
         },
         "resources":{
-            "sampled_peak_rss_mib":peak_rss,
+            "sampled_peak_rss_mib":usage.peak_rss_mib,
+            "sampled_process_cpu_seconds":usage.process_cpu_seconds,
             "scratch":last["state"]["scratch"],
-            "rss_samples":rss,
+            "rss_samples":usage.rss_samples,
             "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the process-wide colour budget at the last captured frame, with peak_bytes its high-water mark over the whole run.",
         },
         "workspace":last["state"]["workspace"],
@@ -1630,7 +1822,7 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
         &script,
         &json!([{"api":{"method":"edit.set-basic","params":full_basic()}}]),
     )?;
-    let (_, hold_peak) = evidence_run(
+    let hold_usage = evidence_run(
         root,
         bin,
         out,
@@ -1705,7 +1897,8 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
             "workload":"One 24 MP image holding a Basic layer with all ten fields non-neutral, histogram on",
             "basic_payload":full_basic(),
             "gesture_process":{
-                "sampled_peak_rss_mib":hold_peak,
+                "sampled_peak_rss_mib":hold_usage.peak_rss_mib,
+                "sampled_process_cpu_seconds":hold_usage.process_cpu_seconds,
                 "scratch":frame["state"]["scratch"],
                 "workspace":frame["state"]["workspace"],
                 "histogram":frame["state"]["histogram"],
@@ -1734,6 +1927,47 @@ mod tests {
     /// placeholder for the curve control, which ignores its `field` argument entirely.
     fn unused_field() -> FieldTarget {
         FieldTarget::basic_exposure()
+    }
+
+    #[test]
+    fn paint_phase_samples_pair_worker_and_surface_by_generation() {
+        let events = vec![
+            json!({"event":"mask_draft_set","elapsed_ms":1.0}),
+            json!({"event":"mask_draft_preview","elapsed_ms":2.0,"detail":{"generation":6}}),
+            json!({"event":"script_step","elapsed_ms":9.0,"detail":{"request":{"mask":{"stroke":{
+                "interval_ms":24,"points":[[0.2,0.5]]
+            }}}}}),
+            json!({"event":"mask_draft_set","elapsed_ms":10.0}),
+            json!({"event":"mask_draft_preview","elapsed_ms":14.0,"detail":{
+                "generation":7,
+                "round_trip_ms":{"executor_wait":1.0,"draft_set":2.0,"preview_job":0.5,"return_to_queue":0.5}
+            }}),
+            json!({"event":"preview_result_received","elapsed_ms":23.0,"detail":{
+                "generation":7,"phase":"proxy","queue_wait_ms":3.0,"render_ms":5.0
+            }}),
+            json!({"event":"preview_displayed","elapsed_ms":25.0,"detail":{
+                "generation":7,"proxy":true
+            }}),
+        ];
+
+        let (queued, samples) =
+            paced_stroke_phase_samples(&events, 1).expect("paired phase sample");
+        assert_eq!(queued, 1);
+        assert_eq!(samples.len(), 1);
+        let sample = &samples[0];
+        assert_eq!(sample.generation, 7);
+        assert_eq!(sample.phase, "proxy");
+        assert!(sample.proxy);
+        assert_eq!(sample.owner_round_trip_ms, 4.0);
+        assert_eq!(sample.executor_wait_ms, 1.0);
+        assert_eq!(sample.draft_set_ms, 2.0);
+        assert_eq!(sample.preview_job_ms, 0.5);
+        assert_eq!(sample.return_to_queue_ms, 0.5);
+        assert_eq!(sample.queue_wait_ms, 3.0);
+        assert_eq!(sample.worker_render_ms, 5.0);
+        assert_eq!(sample.before_worker_result_ms, 1.0);
+        assert_eq!(sample.result_to_surface_ms, 2.0);
+        assert_eq!(sample.input_to_presented_ms, 15.0);
     }
 
     /// One `slider_draft_set`/`slider_draft_preview`/`preview_displayed` triple, the same shape

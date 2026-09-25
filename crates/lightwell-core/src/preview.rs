@@ -562,6 +562,10 @@ pub struct PreviewResult {
     /// phase too, up to the moment it stopped. So it answers "how long did this picture take to
     /// render", not "how long after the request did it appear".
     pub render_ms: f64,
+    /// Present only when the caller explicitly opted into phase diagnostics. Time from the queue
+    /// request to the preview worker starting; includes queue planning and time behind an active
+    /// preview, and never changes the default queue path.
+    pub queue_wait_ms: Option<f64>,
 }
 
 impl PreviewResult {
@@ -586,6 +590,13 @@ impl PreviewResult {
 struct WorkerMessage {
     result: PreviewResult,
     built: Option<(ProxyKey, PreviewSource)>,
+}
+
+/// Optional services and diagnostics captured by one preview worker.
+struct WorkerContext {
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    board: Option<Arc<ActivityBoard>>,
+    requested_at: Option<Instant>,
 }
 
 /// What the proxy phase of one job should do, decided on the thread that asked rather than on the
@@ -652,7 +663,7 @@ fn rank(phase: PreviewPhase) -> u8 {
 pub struct PreviewQueue {
     generation: u64,
     active: Option<Active>,
-    pending: Option<(u64, PreviewJob)>,
+    pending: Option<(u64, PreviewJob, Option<Instant>)>,
     /// One proxy source, keyed by source identity and plan. Bounded by construction: a new plan
     /// replaces the old entry rather than accumulating beside it.
     cache: ProxyCache,
@@ -667,6 +678,17 @@ pub struct PreviewQueue {
 
 impl PreviewQueue {
     pub fn request(&mut self, job: PreviewJob) -> u64 {
+        self.request_inner(job, None)
+    }
+
+    /// Request a preview with opt-in timing from this call until its worker starts. The normal
+    /// request method does not read the clock.
+    pub fn request_timed(&mut self, job: PreviewJob) -> (u64, Instant) {
+        let requested_at = Instant::now();
+        (self.request_inner(job, Some(requested_at)), requested_at)
+    }
+
+    fn request_inner(&mut self, job: PreviewJob, requested_at: Option<Instant>) -> u64 {
         self.generation = self.generation.saturating_add(1);
         let generation = self.generation;
         // The superseded job's exact phase is stopped: nothing is waiting for that frame and it
@@ -676,9 +698,9 @@ impl PreviewQueue {
             active.exact_cancel.cancel();
         }
         if self.active.is_some() {
-            self.pending = Some((generation, job));
+            self.pending = Some((generation, job, requested_at));
         } else {
-            self.start(generation, job);
+            self.start(generation, job, requested_at);
         }
         generation
     }
@@ -715,7 +737,7 @@ impl PreviewQueue {
     /// that job, and a replaced job never starts, so it delivers nothing at all: asking here, just
     /// before requesting, is the only way to learn that it has ended.
     pub fn pending_generation(&self) -> Option<u64> {
-        self.pending.as_ref().map(|(generation, _)| *generation)
+        self.pending.as_ref().map(|(generation, _, _)| *generation)
     }
 
     /// The generation of the last result [`Self::poll`] delivered, so a caller can correlate its
@@ -763,7 +785,7 @@ impl PreviewQueue {
         }
     }
 
-    fn start(&mut self, generation: u64, job: PreviewJob) {
+    fn start(&mut self, generation: u64, job: PreviewJob, requested_at: Option<Instant>) {
         let step = self.plan_proxy(&job);
         let proxy_cancel = Cancel::new();
         let exact_cancel = Cancel::new();
@@ -773,7 +795,12 @@ impl PreviewQueue {
         // Two results per job at most, so the worker never blocks on the desktop draining the
         // proxy frame before it can answer with the exact one.
         let (sender, receiver) = sync_channel(2);
-        std::thread::spawn(move || run(job, generation, step, tokens, sender, waker, board));
+        let context = WorkerContext {
+            waker,
+            board,
+            requested_at,
+        };
+        std::thread::spawn(move || run(job, generation, step, tokens, sender, context));
         self.active = Some(Active {
             generation,
             receiver,
@@ -831,8 +858,8 @@ impl PreviewQueue {
     /// The active job has nothing further to send: release it and start whatever waited.
     fn finish_active(&mut self) {
         self.active = None;
-        if let Some((generation, job)) = self.pending.take() {
-            self.start(generation, job);
+        if let Some((generation, job, requested_at)) = self.pending.take() {
+            self.start(generation, job, requested_at);
         }
     }
 }
@@ -848,9 +875,15 @@ fn run(
     step: ProxyStep,
     (proxy_cancel, exact_cancel): (Cancel, Cancel),
     sender: SyncSender<WorkerMessage>,
-    waker: Option<Arc<dyn Fn() + Send + Sync>>,
-    board: Option<Arc<ActivityBoard>>,
+    context: WorkerContext,
 ) {
+    let WorkerContext {
+        waker,
+        board,
+        requested_at,
+    } = context;
+    let queue_wait_ms = requested_at
+        .map(|requested| Instant::now().duration_since(requested).as_secs_f64() * 1000.0);
     let wake = || {
         if let Some(waker) = &waker {
             waker();
@@ -944,6 +977,7 @@ fn run(
                                     ),
                                     approximate_white_balance,
                                     render_ms: milliseconds_since(started),
+                                    queue_wait_ms,
                                 },
                                 built: fresh.then_some((key, source)),
                             };
@@ -1014,6 +1048,7 @@ fn run(
             proxy_approximation: ProxyApproximation::default(),
             approximate_white_balance,
             render_ms,
+            queue_wait_ms,
         },
         built: None,
     });
@@ -1794,6 +1829,39 @@ mod tests {
             .expect("the exact render");
         let frame = exact.result.expect("an exact frame");
         assert_eq!(frame.rgba.as_ref(), reference.rgba.as_ref());
+    }
+
+    #[test]
+    fn queue_timing_is_opt_in_and_survives_the_worker_result() {
+        let mut ordinary = PreviewQueue::default();
+        ordinary.request(stacked(
+            64,
+            48,
+            eligible_layers(64, 48),
+            Some(bounds(16, 16)),
+        ));
+        let ordinary_results = drain_all(&mut ordinary);
+        assert!(
+            ordinary_results
+                .iter()
+                .all(|result| result.queue_wait_ms.is_none())
+        );
+
+        let mut measured = PreviewQueue::default();
+        let (generation, requested_at) = measured.request_timed(stacked(
+            64,
+            48,
+            eligible_layers(64, 48),
+            Some(bounds(16, 16)),
+        ));
+        assert_eq!(generation, 1);
+        assert!(requested_at <= Instant::now());
+        let measured_results = drain_all(&mut measured);
+        assert!(
+            measured_results
+                .iter()
+                .all(|result| result.queue_wait_ms.is_some_and(|ms| ms >= 0.0))
+        );
     }
 
     /// The thin-feature rule, on both sides of its threshold, over the same stack and the same

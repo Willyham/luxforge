@@ -1803,7 +1803,25 @@ impl Editor {
     /// display scale ask for now, so a job requested once the display scale is known is already at
     /// it and a job requested during a resize is sized for the window it will be shown in. A
     /// truncated job never gets a proxy.
-    pub(crate) fn request_preview(&mut self, mut job: lightwell_core::PreviewJob) -> u64 {
+    pub(crate) fn request_preview(&mut self, job: lightwell_core::PreviewJob) -> u64 {
+        self.request_preview_inner(job, false).0
+    }
+
+    /// Queue a mask frame with phase timing for an evidence run. Ordinary preview requests use
+    /// the untimed method and do not read the clock.
+    pub(crate) fn request_mask_preview_timed(
+        &mut self,
+        job: lightwell_core::PreviewJob,
+    ) -> (u64, Option<Instant>) {
+        debug_assert!(self.diagnostics.is_some());
+        self.request_preview_inner(job, true)
+    }
+
+    fn request_preview_inner(
+        &mut self,
+        mut job: lightwell_core::PreviewJob,
+        timed: bool,
+    ) -> (u64, Option<Instant>) {
         job.proxy = if job.layer_count.is_some() {
             None
         } else {
@@ -1828,12 +1846,17 @@ impl Editor {
         // nothing about it will ever be delivered: when it was the crop draft's input stage, the
         // draft it was for ends here, as a cancelled one does in `poll_preview`.
         let replaced = self.preview_queue.pending_generation();
-        let generation = self.preview_queue.request(job);
+        let (generation, requested_at) = if timed {
+            let (generation, requested_at) = self.preview_queue.request_timed(job);
+            (generation, Some(requested_at))
+        } else {
+            (self.preview_queue.request(job), None)
+        };
         self.pending_bounds.insert(generation, bounds);
         if replaced.is_some() && replaced == self.draft_generation {
             self.draft_preview_superseded(replaced);
         }
-        generation
+        (generation, requested_at)
     }
 
     /// Re-render the proxy on screen once when the bounds it was made for no longer match the
@@ -2885,6 +2908,21 @@ impl Editor {
                     // A slider gesture's drafted preview is not this: it renders the whole drafted
                     // stack into the ordinary photograph, and is adopted like any other frame.
                     let for_draft = Some(result.generation) == self.draft_generation;
+                    if let Some(queue_wait_ms) = result.queue_wait_ms {
+                        let phase = match result.phase {
+                            PreviewPhase::Proxy => "proxy",
+                            PreviewPhase::Exact => "exact",
+                        };
+                        self.event(
+                            "preview_result_received",
+                            json!({
+                                "generation":result.generation,
+                                "phase":phase,
+                                "queue_wait_ms":queue_wait_ms,
+                                "render_ms":result.render_ms,
+                            }),
+                        );
+                    }
                     // The delivery rule, the same monotone one the queue itself applies: present
                     // whatever is not older than what is on screen. Rejecting everything but the
                     // newest generation presents no frames at all under a sustained drag, because

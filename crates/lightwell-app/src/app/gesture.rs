@@ -740,8 +740,14 @@ impl Editor {
             Ok((set, job, round_trip)) => {
                 let draft_revision = set.draft_revision;
                 self.session.draft = Some(set.clone());
-                self.preview_generation = self.request_preview(job);
-                self.set_previewed(draft_revision, round_trip);
+                let (generation, requested_at) =
+                    if self.diagnostics.is_some() && self.mask_gesture().is_some() {
+                        self.request_mask_preview_timed(job)
+                    } else {
+                        (self.request_preview(job), None)
+                    };
+                self.preview_generation = generation;
+                self.set_previewed(draft_revision, round_trip, requested_at);
                 self.drive(Event::Set(Ok(set)))
             }
             Err(error) => {
@@ -767,7 +773,12 @@ impl Editor {
     /// carried the fields, and the preview job just queued for it is `generation`, which the
     /// `preview_displayed` event of its frame repeats. Without it a measurement can only guess
     /// which frame belongs to which input.
-    fn set_previewed(&mut self, draft_revision: u64, round_trip: RoundTrip) {
+    fn set_previewed(
+        &mut self,
+        draft_revision: u64,
+        round_trip: RoundTrip,
+        requested_at: Option<std::time::Instant>,
+    ) {
         let generation = self.preview_generation;
         let Some(Gesture::Core(gesture)) = &mut self.gesture else {
             return;
@@ -801,11 +812,21 @@ impl Editor {
                 // `positions` is the path's length and not the path: a measurement needs to know
                 // how much geometry the frame carries, and a log is not where a stroke is stored.
                 let positions = mask.shape.brush().map(|stroke| stroke.captured().len());
-                self.event(
-                    "mask_draft_preview",
-                    json!({"generation":generation,"draft_revision":draft_revision,
-                           "positions":positions}),
-                );
+                let mut detail = json!({
+                    "generation":generation,
+                    "draft_revision":draft_revision,
+                    "positions":positions,
+                });
+                if let Some(requested_at) = requested_at {
+                    let legs = round_trip.legs_ms(requested_at);
+                    detail["round_trip_ms"] = json!({
+                        "executor_wait":legs[0],
+                        "draft_set":legs[1],
+                        "preview_job":legs[2],
+                        "return_to_queue":legs[3],
+                    });
+                }
+                self.event("mask_draft_preview", detail);
             }
         }
     }

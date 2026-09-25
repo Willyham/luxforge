@@ -451,26 +451,17 @@ host's queue, not of the render.
 
 #### A painted stroke's own latency
 
-**The measurement phase C left unmade, and why it needed new machinery.** `editor-latency` drives
-field-patch sliders: one declared value per step, each its own `draft.set`, preview job and displayed
-frame. A stroke is not that gesture. An evidence script's stroke step appends every position in one
-update, so the gesture coalesces the path into one `draft.set` with the rest waiting — which is what a
-fast drag does, and what every correctness scenario wants — and the two drafted previews a two-position
-stroke raises are superseded by the commit before either reaches the screen. So there was no
-end-to-end figure for a paint gesture at all, and the slider figure above was not allowed to stand in
-for one.
+The `editor-latency --mode paint` workload measures a brush stroke at a fixed 24 ms input pace.
+The harness pairs each `mask_draft_set` with the preview generation returned for that edit and then
+with the corresponding `preview_displayed` event. The editor emits `mask_draft_preview` for that
+pairing. When diagnostics are enabled for the paint measurement, the queue and worker record request
+to worker-start and worker-render durations; ordinary preview requests remain untimed. The scripted
+stroke step accepts `interval_ms` and sends one point per timer tick, so the sample is a continuous
+stroke with one history entry, not a sequence of released strokes.
 
-Two things closed it, both small and both in the harness rather than in the editor's own path. The
-desktop now emits `mask_draft_preview` beside its existing `mask_draft_set`, carrying the preview
-generation that set queued — the mask gesture's counterpart of `slider_draft_preview`, and the only
-way to know which frame belongs to which pointer position. And an evidence script's stroke step takes
-an **`interval_ms`**, which hands its positions to a gated timer and sends one per interval in real
-time, exactly as a paced slider step does with its values: the first tick presses, each later one
-moves, the last releases, so one paced step is still one stroke and one history entry.
-
-There are two sets of figures, taken on two different recipes, and the second corrects the reading of
-the first. The pairing itself is one function, shared by the scenario and the measurement mode, so the
-two cannot drift apart.
+The four-layer correctness scenario and the bare-recipe photo-sized workload use different recipes
+and should not be combined into one estimate. The bare-recipe phase table below isolates the
+per-generation owner, queue, worker and surface intervals.
 
 #### The four-layer figure, from the correctness run
 
@@ -498,65 +489,55 @@ over 100% of the stage, against a placed gradient's 14.6–20.0 ns over 40%. It 
 the reading that most of the figure was that recipe. **The bare-recipe measurement below withdraws
 that reading**, and the correction is the more useful of the two results.
 
-#### The same gesture on a bare recipe, at 24 and 60 MP
+#### Bare recipe at photo size, with phase attribution
 
-Taken with `editor-latency --mode paint`, which exists for this measurement: it builds one brush mask
-of one component and one masked Basic exposure layer — asserted in the captured state, not assumed —
-and paints one sixteen-position stroke at the same 24 ms pace, pairing `mask_draft_set` with the
-`preview_displayed` of the generation its own `mask_draft_preview` named. Background evidence launch of
-the release binary, warm cache, 120 Hz M4 MacBook Pro. Three runs per size, taken 24, 60, 60, 24, 24,
-60 so a drift over the sequence cannot be read as a difference between the sizes. The first run after
-the idle period is discarded by convention; on this sequence it read p50 25.4 ms and was **not** the
-slowest, so the doubling that convention exists for did not fire, and it is discarded anyway because
-that is the rule.
+`editor-latency --mode paint` opens one generated photo-sized JPEG, prepares a single brush mask and
+one masked Basic exposure layer, then sends a 30-position stroke at 24 ms intervals. The parser
+starts at that scripted stroke step, so setup edits do not enter its latency or superseded counts.
+The preview queue remains one active job plus one replaceable pending job; every frame is paired to
+the generation its own `mask_draft_preview` named. Release build, warm file cache, background hidden
+window on the Apple M4 Pro, 2880 × 1800 physical window at 2× scale. All presented phases were the
+1716 × 1144 display proxy. One run per size, no competing build or test; start/end one-minute load
+was 3.91/3.91 for 24 MP and 3.46/3.46 for 60 MP.
 
-| Bare recipe, `mask_draft_set` → `preview_displayed` | 24 MP a | 24 MP b | 24 MP c | 60 MP a | 60 MP b | 60 MP c |
-| --- | --- | --- | --- | --- | --- | --- |
-| p50 ms | 36.4 | 32.9 | 27.0 | 24.3 | 25.1 | 24.5 |
-| p95 ms | 64.2 | 53.4 | 54.0 | 104.8 | 97.1 | 50.4 |
-| fastest ms | 14.2 | 10.7 | 9.7 | 9.6 | 9.9 | 10.1 |
-| displayed / positions that queued a job | 17 / 19 | 17 / 19 | 18 / 19 | 12 / 17 | 14 / 19 | 16 / 19 |
-| one-minute load average | 3.90 | 4.34 | 4.34 | 5.67 | 4.63 | 4.31 |
+| Phase (p50 / p95 ms) | 24 MP, 6000 × 4000 | 60 MP, 10000 × 6000 |
+| --- | ---: | ---: |
+| `mask_draft_set` → `preview_displayed` | 19.23 / 40.70 | 17.71 / 35.06 |
+| Owner round trip to preview request | 0.18 / 5.96 | 0.12 / 0.65 |
+| `draft.set` on owner | 0.04 / 3.23 | 0.03 / 0.16 |
+| Preview-job planning on owner | 0.13 / 4.34 | 0.09 / 0.19 |
+| Preview request → worker start | 6.63 / 18.17 | 8.59 / 17.40 |
+| Worker render | 4.63 / 5.43 | 4.14 / 4.45 |
+| Pre-result residual | 7.29 / 20.28 | 4.97 / 22.41 |
+| Worker result → surface assignment | 0.02 / 0.04 | 0.01 / 0.02 |
 
-**Against the provisional target this is a miss at both bounds on both sizes, and the miss is larger
-than the four-layer one.** Every p95 is between 50.4 and 104.8 ms against a 16 ms bound and a 32 ms
-acceptable bound. Two of the three 24 MP p50s, 36.4 and 32.9 ms, are themselves past the acceptable
-p95. Every load average is between 3.90 and 5.67, well under the 8.0 a quotable figure needs, so none
-of it is the host.
+The owner executor wait and return-to-queue legs stayed below 0.01 ms in these samples. The
+pre-result residual is the remaining time from the input event through the request timestamp and
+from worker completion until the app polls the result; it does not identify one function. Phase
+percentiles are independent distributions and must not be summed. The request-to-worker interval
+includes time behind an active job and thread scheduling. GPU texture upload and display scanout
+were not measured; the last row is only the app's surface-assignment event.
 
-**The cost is the gesture, not the recipe.** The four-layer 1.4 MP figure was p50 32.2–32.6 and p95
-42.1–50.2; the bare 24 MP figure is p50 27.0–36.4 and p95 53.4–64.2. The bare recipe's p50 brackets the
-four-layer one and its p95 is *worse*. Whatever this gesture costs, three whole-stage value-based
-layers are not most of it, and the sentence above that said they were is withdrawn. What differs
-between the two measurements is mostly the **frame size** — 1.4 MP against 24 and 60 — and even that
-does not separate them cleanly, which the next paragraph is about.
+| Workload resources | 24 MP | 60 MP |
+| --- | ---: | ---: |
+| Displayed positions / 30 | 26 | 24 |
+| Superseded positions | 4 | 6 |
+| Process CPU seconds for the whole evidence launch | 7.34 | 8.73 |
+| Sampled peak process RSS | 785.4 MiB | 1288.2 MiB |
+| Shared colour scratch high-water mark | 15.12 MB | 15.12 MB |
 
-**60 MP is not slower than 24 MP at the median, and the reason matters.** Its p50 is *lower*
-(24.3–25.1 against 27.0–36.4) while its p95 is worse (up to 104.8 ms) and it shows fewer positions on
-screen (12–16 of 17–19 against 17–18 of 19). The positions a 60 MP run displays are the ones the queue
-had time for; the rest were superseded by the next position before their pixels were drawn. A median
-over the survivors of a longer queue is therefore not comparable with a median over nearly all of
-them, and the **displayed ratio is the honest primary result** for this gesture rather than either
-percentile: a hand sees 12 to 18 of 19 positions, and the ones it does not see are the expensive ones.
+The CPU total includes source opening, initial rendering, the gesture, evidence captures and process
+exit; it is not a per-frame CPU measurement. Peak RSS includes captures and GPU resources and is not
+a CPU-heap figure. The 60 MP peak from this capture-heavy run is not comparable to the normal-open
+working-set target above. The synthetic fixtures isolate image dimensions and fixed per-pixel work;
+they are not camera-photo content.
 
-**The distribution is quantized to the display frame, which says what kind of miss this is.** The
-samples cluster at integer multiples of the 120 Hz frame: 24 MP run b reads 10.7, 11.3, 16.3, 17.0,
-18.6, 24.2, 24.4, 26.7, 32.9, 33.2, 34.6, 46.4, 48.7, 49.2, 49.4, 49.7, 53.4 ms — two frames, then
-three, four, six. So the figure is not "a mask evaluation takes 33 ms"; it is "the frame carrying this
-position is the second to the sixth one after it", and the fastest sample in every run, 9.6 to 14.2 ms,
-is a single frame's worth and is inside the 16 ms bound. The bound is missed by a queue that falls
-behind a 24 ms pace, not by arithmetic per pixel.
-
-**Outliers, reported rather than averaged away.** 60 MP run a's slowest sample is 104.8 ms and run b's
-is 97.1 ms, against run c's 50.4 ms on the same size at a lower load. Those two are each one sample in
-twelve and fourteen; they are what makes the 60 MP p95 what it is, and a third run of the same size
-does not reproduce them. Nothing here is averaged with them and nothing is averaged without them.
-
-**What is still not measured.** Why the queue falls behind — which of the proxy phase, the mask
-compile, the masked colour run and the presentation owns those frames — is not decomposed here; the
-figures are end to end on purpose, and a decomposition is the work a fix would start from rather than
-the acceptance pass's. The drafted-frames-per-second half of the original item is answered by the
-displayed ratio above and not by a separate workload.
+**The measurable tail is scheduling and delivery rather than the pixel kernel.** Worker render p95
+is 4.45–5.43 ms, and surface assignment is at most 0.04 ms, while input-to-surface p95 remains
+35.06–40.70 ms. Queue wait and the pre-result residual dominate the tails; some owner `draft.set`
+round trips also have a several-millisecond tail on 24 MP. This does not justify SIMD, assembly, a
+GPU rewrite or changing the mask renderer yet. Keep the bounded queue and cancellation rules while
+tracing whether the remaining gap comes from the active-job handoff or the desktop event loop.
 
 ### Desktop slider-to-presented-frame and settled histogram
 
@@ -1687,8 +1668,9 @@ cross-platform native GPU qualification is claimed by this M4 evidence.
 The remaining candidates are ranked in [further performance opportunities](../research/further-performance.md).
 RCD Bayer development remains serial. RAW colour row batching is in production and measured on
 actual Z6 and X100VI working planes; the core shared-pool result is separate from presentation and
-does not replace end-to-end evidence. Startup attribution, RGBA ownership, GPU execution and
-SIMD/assembly remain open; no savings are assigned to them.
+does not replace end-to-end evidence. Startup attribution, GPU texture transfer, GPU execution and
+SIMD/assembly remain open; CPU RGBA publication already writes directly into the frame owner, and
+no additional savings are assigned to it.
 
 ## Method
 

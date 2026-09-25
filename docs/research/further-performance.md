@@ -1,7 +1,9 @@
 # Further performance opportunities
 
 Status: the guarded RAW colour-row path is implemented and measured on the owner's M4 Pro, 14 cores
-and 48 GiB. Other items remain research opportunities. The
+and 48 GiB. Mask-paint phase attribution is implemented; its worker and surface costs are small
+relative to queue and result-delivery tails, so no renderer-kernel change is justified yet. Other
+items remain research opportunities. The
 [current measurements](../specs/performance.md#startup-and-raw-throughput) remain the source for
 accepted application baselines. Core renders, preview contention and whole-application measurements
 have different scopes; do not add their savings.
@@ -11,10 +13,10 @@ have different scopes; do not add their savings.
 | Rank | Opportunity | Evidence | Next work | Effort / risk |
 | --- | --- | --- | --- | --- |
 | 1 | Batch RAW Basic/Mixer colour rows | The production path reduces Z6/X100VI Full Basic p50 by 63–66% and Mixer by 43–45%; whole-buffer checks pass. Under continuous exact work, the Fit-proxy p95 falls 67% versus the generic renderer. See results below. | Keep eligibility narrow and correlate core gains with a presented generation when the hidden runner works; track the remaining contended proxy tail. | Small contained core change. Masks, geometry, replacements and spatial recipes retain the generic path. The core contention probe does not measure UI or GPU presentation. |
-| 2 | Find the cause of slow mask-paint frames | On the bare 24/60 MP recipe, p95 is 53–105 ms at low host load. The per-generation path is not split into queue, render, upload and redraw costs. | Add evidence-only phase timestamps to the existing generation correlation, then repeat on real 24/60 MP photos. | Small diagnostic, unknown fix. Instrumentation must not add work to ordinary strokes. |
+| 2 | Reduce mask-paint queue and delivery tails | On one bare masked layer, 30 positions at low host load yield input-to-presented p95 40.7 ms at 24 MP and 35.1 ms at 60 MP. Worker render p95 is 5.4/4.5 ms; queue wait is 18.2/17.4 ms and pre-result residual 20.3/22.4 ms. | Repeat with a phase sweep that separates active-job handoff from desktop event-loop delivery; preserve the one-active/one-pending bound and cancellation. | Diagnostic is complete. No compute-kernel rewrite is supported by the measured cost. |
 | 3 | Parallelize Bayer RCD tiles | Whole native development is 268.6/270.7 ms p50/p95 for Z6 and 350.6/358.1 ms for DJI. RCD is serial, but its share is not isolated. | Prove disjoint interiors and independent scratch, then dispatch bounded tiles through the shared executor and compare whole mosaic outputs. | Medium-high. Preserve border/CFA behavior, cancellation and preview tail latency. No speedup estimate yet. |
 | 4 | Attribute source-open and startup time | Existing copied-bundle launches are 764–809 ms p95 across empty, 24 and 60 MP cases; those totals include bundle copying and event polling. A phase probe reaches `Editor::new` about 142 ms after process entry but has not reached first view. | Restore a working hidden launch on this host; then separate bundle launch, app boot, read/hash/decode, source adoption, proxy raster and surface assignment on a stable bundle. | Small instrumentation, no optimization justified yet. Do not use the failed current launches as latency samples. |
-| 5 | Preserve RGBA vectors at publication | An isolated ownership conversion costs 1.49/1.79 ms p50/p95 at 24 MP and 3.72/3.82 ms at 60 MP, with 96/240 MB of transient duplicate bytes inferred from the buffer sizes. | Introduce an immutable buffer owner through source, raster and surface APIs; confirm pointer identity at handoff and measure overlapping frame lifetimes. | Medium API change. Latency is modest; peak-memory benefit is promising but not yet an RSS measurement. |
+| 5 | Measure GPU texture upload separately | The isolated `Vec<u8>` → `Arc<[u8]>` probe costs 1.49/1.79 ms p50/p95 at 24 MP and 3.72/3.82 ms at 60 MP, but production decode and render paths already allocate an `Arc<[u8]>` frame and write directly into it; `PhotoRaster` retains the same Arc. The remaining `queue.write_texture` is a distinct GPU transfer. | Keep the current CPU ownership path. Measure texture upload only if an end-to-end profile identifies it as material. | No publication API change is justified; broad ownership churn would not remove the separate GPU transfer. |
 
 ## RAW colour-row implementation and measurement
 
@@ -85,22 +87,26 @@ completed 30 exact renders in 6.4 s, so it did not beat the eight-row path's 207
 renders in 6.0 s. No GPU upload or presented-frame timing is available because the background app
 runner currently stops before its first view event.
 
-## Other measured editing opportunity
+## Mask-paint phase attribution
 
-`editor-latency --mode paint` pairs each `mask_draft_set` with the displayed preview generation for
-a paced sixteen-position brush stroke at Fit. The recipe contains one brush mask and one masked
-Basic exposure layer. Six runs used generated 24/60 MP sources, warm filesystem cache and host load
-3.90–5.67; this is an editor gesture measurement, not a core-only render.
+The diagnostic now pairs only the scripted 30-position stroke with its preview generations, and
+reports the four owner legs, queue wait, worker render, pre-result residual and surface assignment.
+The latest one-run-per-size distributions on generated photo-sized fixtures are in the
+[performance spec](../specs/performance.md#a-painted-strokes-own-latency). At leg start/end, load
+was 3.91/3.91 for 24 MP and 3.46/3.46 for 60 MP; no build or test overlapped either run.
 
-| Source | p50 range | p95 range | Fastest observed |
-| --- | ---: | ---: | ---: |
-| 24 MP | 27.0–36.4 ms | 53.4–64.2 ms | 9.7–14.2 ms |
-| 60 MP | 24.3–25.1 ms | 50.4–104.8 ms | 9.6–10.1 ms |
+The gesture presents 26/30 positions at 24 MP and 24/30 at 60 MP. The input-to-presented p95 is
+40.70/35.06 ms. Worker render p95 is 5.43/4.45 ms and surface assignment p95 is 0.04/0.02 ms.
+Queue wait and pre-result residual are the larger terms, though the residual still combines the
+interval before worker start with result delivery and does not name one hot function. Whole-launch
+process CPU is 7.34/8.73 seconds; sampled peak RSS is 785.4/1288.2 MiB and includes GPU resources
+and evidence captures. Scratch high-water is 15.12 MB in both runs. These CPU and RSS totals are not
+per-preview costs or normal-open memory baselines. The 60 MP capture-heavy RSS does not establish a
+production working-set regression.
 
-The test does not attribute the slow tail to brush compilation, preview queueing, rendering, upload
-or a redraw wait; it also does not report process CPU or RSS. Add diagnostic-only stamps tied to the
-existing generation ID, then repeat on photo fixtures with 30 samples per size. Preserve the current
-single owner round trip, replaceable pending-preview bound and cancellation behavior while doing so.
+The measured worker kernel and surface handoff are too small to justify SIMD, assembly or a GPU
+colour-stage rewrite. Continue with a bounded scheduling/event-loop trace before changing queue
+policy, and retain the current cancellation and memory bounds.
 
 ## Startup and image-loading attribution
 
@@ -151,31 +157,23 @@ about 16 MB and concurrent Basic-proxy p95 moved from 13.28 to 14.01 ms. Less bo
 raised the proxy p95 to roughly 60–216 ms. Reuse those admission and callback bounds; do not treat
 idle CPU headroom as permission to occupy the shared pool with long callbacks.
 
-## RGBA ownership and GPU/SIMD choices
+## RGBA ownership, GPU and SIMD choices
 
-The isolated M4 ownership probe used deterministic 24/60 MP buffers, 30 observations per variant in
-15 ABBA pairs, and recorded load 2.24 before / 1.97 after. `Arc<[u8]>::from(Vec<u8>)` took 1.486/1.794
-ms p50/p95 for 96 MB and 3.717/3.821 ms for 240 MB. `Arc<Vec<u8>>` adoption was below 0.003 ms p95
-and retained the original pointer in all 60 observations; slice conversion did not. The timed region
-includes allocation/copy and old-vector release, but excludes input construction, input clone,
-complete-buffer comparison and final output drop. It is a standard-library boundary probe, not a
-whole app import or GPU upload. The 96/240 MB transient duplicate is inferred from the byte lengths;
-RSS and CPU time were not sampled separately.
+The production CPU publication boundaries already preserve one allocation. JPEG decode writes into
+`render::zeroed_frame`; generic, linear RAW, spatial and proxy renderers write into the
+Arc-backed frame they return. Identity renders retain the source Arc, and the app passes that same
+pixel owner through `PhotoRaster` to the drawing surface. A broad `Arc<Vec<u8>>` conversion would
+not remove a current production copy. The isolated 1.49/1.79 ms (96 MB) and 3.72/3.82 ms (240 MB)
+`Vec`-to-`Arc<[u8]>` timings are only a standard-library boundary probe; their duplicate-byte counts
+do not describe current application RSS. `queue.write_texture` remains a separate GPU transfer and
+has no measurement here.
 
-The real boundaries are JPEG decode publication, proxy frames, new edited RGBA rasters and terminal
-RAW rasters. Use a private immutable pixel-buffer type if retaining `Vec` capacity, then verify byte
-identity and pointer continuity through `SourceImage`, `Raster`, `PhotoRaster` and surface upload.
-Account for old/new frame overlap and retained capacity. `queue.write_texture` remains a separate
-GPU upload and must not be counted as the same copy.
+The smaller encoded-RAW adoption copy is measured at 0.53/0.64 ms p50/p95 for Z6, 1.39/1.61 ms for
+X100VI and 0.64/0.67 ms for DJI. Keep it below the remaining startup and Bayer RCD work.
 
-The smaller encoded-RAW adoption copy is already measured at 0.53/0.64 ms p50/p95 for Z6, 1.39/1.61
-ms for X100VI and 0.64/0.67 ms for DJI. Keep that below the large RGBA ownership change in priority.
-
-Do not start with assembly. The row path is integrated; profile the remaining hot operations and
-inspect generated code next. Consider SIMD only if the compiler leaves a measured scalar bottleneck
-and full byte-exact references still pass on ARM64 plus the portable fallback. A GPU colour preview
-is a higher-cost follow-up: time the complete input-to-presented-proxy path including texture
-ownership, upload, readback, cancellation and contention. Preserve exact f64/byte behavior for
-analysis, sampling, export and committed frames; any approximate preview requires an explicit
-numerical and product contract. Current evidence does not justify a GPU or hand-written assembly
-speedup estimate.
+Do not start with assembly. The colour-row path is integrated; profile remaining operations and
+inspect generated code before considering SIMD. Any vector path must preserve complete output bytes
+on ARM64 and the portable fallback. A GPU colour preview needs an end-to-end measurement that
+includes texture ownership, upload, cancellation and contention, with exact f64/byte behavior kept
+for analysis, sampling, export and committed frames. Current evidence does not justify a GPU or
+hand-written assembly speedup estimate.
