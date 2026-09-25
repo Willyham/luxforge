@@ -2990,7 +2990,7 @@
     {
       "id": "TASK-049",
       "description": "Build test support on `lightwell-testkit` and an independent `lightwell-reference` crate that cannot depend on the core, with fewer test binaries, the per-module field-patch tests in the field-patch suite, the historical-parity tests deleted and xtask's acceptance JSON helpers on the conformance client.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-033"
       ],
@@ -2999,8 +2999,7 @@
         "Reference implementations live in the core's test tree and can import the code they check; a `lightwell-reference` crate that cannot depend on `lightwell-core` makes them independent by construction.",
         "Per-module field-patch tests remain in `basic`, `mixer`, `presence` and `vignette` beside the shared field-patch conformance suite.",
         "`tests/basic_tone.rs` and `tests/basic_colour.rs` compare against values saved before an earlier change, which the current-shapes rule forbids.",
-        "xtask's `basic_acceptance.rs` has its own JSON helpers beside the conformance suite's client.",
-        "Done except merging the mask test binaries, which waits for the masking task's changes to those tests."
+        "xtask's `basic_acceptance.rs` has its own JSON helpers beside the conformance suite's client."
       ],
       "context_links": [
         {
@@ -3012,7 +3011,7 @@
         {
           "kind": "file",
           "label": "Core tests",
-          "target": "crates/lightwell-core/tests/mask_unit.rs",
+          "target": "crates/lightwell-core/tests/mask/unit.rs",
           "relevance": "One of the mask test binaries."
         },
         {
