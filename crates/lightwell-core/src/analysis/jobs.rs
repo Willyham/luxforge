@@ -14,7 +14,7 @@
 use super::{DOMAIN, Report, deserialize_domain, reduce_raster_cancellable};
 use crate::{
     AssetId, ClientId, DraftStamp, EntryId, Error, ErrorKind, HistoryEntry, JobId, JobStatus,
-    ModuleRegistry, PreviewSource, Recipe, SnapshotId,
+    ModuleRegistry, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     latest::{Latest, Running, WAITING_RESULTS},
 };
@@ -100,7 +100,7 @@ impl<'de> Deserialize<'de> for AnalysisDomain {
 impl AnalysisIdentity {
     /// The identity of the analysis of one evaluated stack. Pure and `O(layers)`: it serializes and
     /// hashes the recipe and reads nothing else. `stage` is the output stage the caller learned
-    /// from [`render::extents`]; `None` records that the stack has no output stage at all.
+    /// from compiling it; `None` records that the stack has no output stage at all.
     pub fn of(
         asset_id: &AssetId,
         source_fingerprint: &str,
@@ -143,6 +143,7 @@ pub struct AnalysisJob {
     pub identity: AnalysisIdentity,
     pub source: PreviewSource,
     pub registry: Arc<ModuleRegistry>,
+    pub context: RenderContext,
     pub recipe: Recipe,
 }
 
@@ -293,6 +294,7 @@ fn analyse(
         identity,
         source,
         registry,
+        context,
         recipe,
     } = job;
     let activity = board.map(|board| {
@@ -305,15 +307,21 @@ fn analyse(
         })
     });
     let cancel = running.abandoned();
-    let result = source
-        .render_cancellable(&registry, identity.snapshot_id.clone(), &recipe, cancel)
-        .and_then(|raster| {
-            let report = reduce_raster_cancellable(&raster, cancel);
-            // No per-result raster is retained: the frame is released here, before the bounded
-            // report travels back to the owner.
-            drop(raster);
-            report
-        });
+    let result = crate::render(
+        &registry,
+        &source,
+        &recipe,
+        RenderOptions::exact(cancel),
+        &context,
+    )
+    .and_then(|render| render.frame(identity.snapshot_id.clone()))
+    .and_then(|raster| {
+        let report = reduce_raster_cancellable(&raster, cancel);
+        // No per-result raster is retained: the frame is released here, before the bounded
+        // report travels back to the owner.
+        drop(raster);
+        report
+    });
     // The render has compiled the stack; the artifacts it was bound with go with it.
     drop(recipe);
     // The activity ends before the outcome is handed over, so a client that reads the job as
@@ -868,6 +876,7 @@ mod tests {
                 orientation: 1,
             }),
             registry: Arc::new(registry),
+            context: crate::RenderContext::new(),
             recipe,
         }
     }

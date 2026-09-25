@@ -8,8 +8,8 @@
 
 use lightwell_core::{
     BASIC_EFFECT, BoxRect, Cancel, CropStage, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId,
-    ModuleRegistry, Orientation, RECIPE_FORMAT, Recipe, ScratchBudget, SnapshotId, SourceImage,
-    Transform, render_cancellable,
+    ModuleRegistry, Orientation, RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, SnapshotId,
+    SourceImage, Transform,
 };
 use serde_json::json;
 use std::{
@@ -88,7 +88,14 @@ fn start_render(cancel: &Cancel) -> thread::JoinHandle<Result<lightwell_core::Ra
     let cancel = cancel.clone();
     thread::spawn(move || {
         let registry = ModuleRegistry::builtin();
-        render_cancellable(&registry, &source, SnapshotId::new(), &recipe, &cancel)
+        lightwell_core::render(
+            &registry,
+            &*source,
+            &recipe,
+            RenderOptions::exact(&cancel),
+            context(),
+        )?
+        .frame(SnapshotId::new())
     })
 }
 
@@ -133,7 +140,7 @@ fn a_cancelled_render_returns_promptly_and_yields_no_frame() {
         "5 ms in, during the transform pass",
     );
     assert_eq!(
-        ScratchBudget::default().in_use(),
+        context().scratch().in_use(),
         0,
         "a cancelled render leaves no reservation behind"
     );
@@ -142,7 +149,7 @@ fn a_cancelled_render_returns_promptly_and_yields_no_frame() {
 #[test]
 fn a_colour_pass_cancelled_mid_chunk_releases_every_reservation() {
     let _guard = budget_guard();
-    let budget = ScratchBudget::default();
+    let budget = context().scratch();
     assert_eq!(budget.in_use(), 0, "nothing else in this process reserves");
     let cancel = Cancel::new();
     let worker = start_render(&cancel);
@@ -170,4 +177,11 @@ fn a_colour_pass_cancelled_mid_chunk_releases_every_reservation() {
         budget.peak() > 0,
         "the counter this test waited on was a real reservation"
     );
+}
+
+/// The one context this binary's renders share, so a test reads the scratch budget its render
+/// reserved from.
+fn context() -> &'static RenderContext {
+    static CONTEXT: std::sync::OnceLock<RenderContext> = std::sync::OnceLock::new();
+    CONTEXT.get_or_init(RenderContext::new)
 }

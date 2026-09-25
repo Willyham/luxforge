@@ -18,11 +18,11 @@ use crate::{
     SourceImage,
     modules::{Global, Parallelism, Region, SpatialOperation, Stage, ToolModule},
     render::{
-        render_tiled,
         spatial::{
-            Cancel, SpatialBudget, SpatialPlan, build_reduction, cached_estimates, clear_estimates,
-            fill_planes, resolve_globals, run_tile, tests::spatial_guard,
+            Cancel, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_tile,
+            tests::spatial_guard,
         },
+        testing::{cached_estimates, clear_estimates, context, render_tiled},
     },
 };
 use serde_json::{Value, json};
@@ -350,11 +350,11 @@ fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
         let plan = SpatialPlan::new(&operation, stage, crate::modules::SPATIAL_TILE)
             .unwrap_or_else(|error| panic!("{width}x{height}: {error}"));
         assert!(
-            plan.working_set() <= SpatialBudget::default().target(),
+            plan.working_set() <= context().spatial().target(),
             "{width}x{height}: one tile needs {} bytes",
             plan.working_set()
         );
-        assert!(plan.concurrency() >= 1);
+        assert!(context().spatial().concurrency(plan.working_set()) >= 1);
         assert!(
             operation.summed_halo(stage) <= crate::modules::MAX_SPATIAL_HALO,
             "{width}x{height}: the summed halo is over the host's bound"
@@ -472,9 +472,14 @@ fn texture_and_clarity_never_reduce_for_an_unused_estimate() {
         json!({"texture": -70.0, "clarity": 35.0}),
     ] {
         let operation = operation(&payload, stage);
-        let globals = resolve_globals(&operation, stage, "source", "prefix", || {
-            panic!("{payload} must not read pixels for a global estimate")
-        })
+        let globals = resolve_globals(
+            context().estimates(),
+            &operation,
+            stage,
+            "source",
+            "prefix",
+            || panic!("{payload} must not read pixels for a global estimate"),
+        )
         .unwrap();
         assert_eq!(globals, vec![None; operation.len()]);
         assert_eq!(
@@ -495,16 +500,23 @@ fn dehaze_reuses_only_strength_independent_estimates() {
     };
     let reductions = std::cell::Cell::new(0);
     let resolve = |payload: Value, stage: Stage, source: &str, prefix: &str| {
-        resolve_globals(&operation(&payload, stage), stage, source, prefix, || {
-            reductions.set(reductions.get() + 1);
-            build_reduction(stage, |x, y| {
-                Ok([
-                    x as f32 / stage.width as f32,
-                    y as f32 / stage.height as f32,
-                    0.4,
-                ])
-            })
-        })
+        resolve_globals(
+            context().estimates(),
+            &operation(&payload, stage),
+            stage,
+            source,
+            prefix,
+            || {
+                reductions.set(reductions.get() + 1);
+                build_reduction(stage, |x, y| {
+                    Ok([
+                        x as f32 / stage.width as f32,
+                        y as f32 / stage.height as f32,
+                        0.4,
+                    ])
+                })
+            },
+        )
         .unwrap()
     };
     let first = resolve(json!({"dehaze": 60.0}), stage, "source", "prefix");
@@ -570,10 +582,17 @@ fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths()
     for linear_path in [false, true] {
         let render = |recipe: &Recipe| {
             if linear_path {
-                crate::render_linear(&registry, &linear, SnapshotId::new(), recipe, settings)
-                    .unwrap()
+                crate::render::testing::render_linear(
+                    &registry,
+                    &linear,
+                    SnapshotId::new(),
+                    recipe,
+                    settings,
+                )
+                .unwrap()
             } else {
-                crate::render(&registry, &source, SnapshotId::new(), recipe).unwrap()
+                crate::render::testing::render(&registry, &source, SnapshotId::new(), recipe)
+                    .unwrap()
             }
         };
         for payload in [
@@ -599,9 +618,12 @@ fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths()
             );
             for (x, y) in [(0, 0), (47, 31), (95, 63)] {
                 let sampled = if linear_path {
-                    crate::sample_linear(&registry, &linear, &changed, settings, x, y).unwrap()
+                    crate::render::testing::sample_linear(
+                        &registry, &linear, &changed, settings, x, y,
+                    )
+                    .unwrap()
                 } else {
-                    crate::sample(&registry, &source, &changed, x, y).unwrap()
+                    crate::render::testing::sample(&registry, &source, &changed, x, y).unwrap()
                 };
                 assert_eq!(sampled.rgba, reused.pixel(x, y));
             }
@@ -615,7 +637,7 @@ fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths()
 #[test]
 fn a_render_at_tile_128_and_at_tile_512_agree_on_every_code() {
     let _guard = spatial_guard();
-    crate::render::spatial::clear_estimates();
+    clear_estimates();
     let registry = ModuleRegistry::builtin();
     // Larger than one production tile on both sides of the 512 grid, so both tile sizes exercise
     // partial edge tiles and more than one batch.
@@ -754,8 +776,9 @@ fn presence_timing() {
             let plan =
                 SpatialPlan::new(&operation, stage, crate::modules::SPATIAL_TILE).expect("a plan");
             // Warm the source and the estimate store, then measure.
-            crate::render(&registry, &source, SnapshotId::new(), &stack).expect("a warm render");
-            SpatialBudget::default().reset_peak();
+            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
+                .expect("a warm render");
+            context().spatial().reset_peak();
             let mut sampler = lightwell_process::Sampler::new();
             let mut samples = Vec::new();
             let mut cpu = Vec::new();
@@ -763,7 +786,8 @@ fn presence_timing() {
                 let before = sampler.read().cpu_time_ns.expect("this process's CPU time");
                 let started = std::time::Instant::now();
                 let raster =
-                    crate::render(&registry, &source, SnapshotId::new(), &stack).expect("a render");
+                    crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
+                        .expect("a render");
                 let elapsed = started.elapsed();
                 let after = sampler.read().cpu_time_ns.expect("this process's CPU time");
                 samples.push(elapsed.as_secs_f64() * 1000.0);
@@ -783,9 +807,9 @@ fn presence_timing() {
                 operation.summed_halo(stage),
                 plan.tiles().len(),
                 plan.working_set() as f64 / mib,
-                plan.concurrency(),
-                SpatialBudget::default().peak() as f64 / mib,
-                SpatialBudget::default().target() as f64 / mib,
+                context().spatial().concurrency(plan.working_set()),
+                context().spatial().peak() as f64 / mib,
+                context().spatial().target() as f64 / mib,
             );
         }
     }

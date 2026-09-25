@@ -33,7 +33,7 @@ fn measure(label: &str, reads: usize) {
         (0..reads)
             .map(|_| {
                 let start = Instant::now();
-                std::hint::black_box(resources::read());
+                std::hint::black_box(resources::read(context()));
                 micros(start)
             })
             .collect(),
@@ -43,7 +43,7 @@ fn measure(label: &str, reads: usize) {
         (0..reads)
             .map(|_| {
                 let start = Instant::now();
-                std::hint::black_box(serde_json::to_value(resources::read()).unwrap());
+                std::hint::black_box(serde_json::to_value(resources::read(context())).unwrap());
                 micros(start)
             })
             .collect(),
@@ -54,14 +54,14 @@ fn measure(label: &str, reads: usize) {
 #[ignore = "timing for the performance record; prints p50, p95 and max"]
 fn resources_read_cost() {
     let start = Instant::now();
-    let report = resources::read();
+    let report = resources::read(context());
     println!("first read (creates the sampler): {:.1} µs", micros(start));
     println!("headless: {}", serde_json::to_string(&report).unwrap());
     measure("headless, no GPU client, so every read walks", 1000);
 
     resources::declare_gpu_presenter();
     let start = Instant::now();
-    let report = resources::read();
+    let report = resources::read(context());
     println!(
         "first read after declaring a presenter (opens the Metal device, walks): {:.1} µs",
         micros(start)
@@ -69,7 +69,13 @@ fn resources_read_cost() {
     measure("presenter, warm client cache", 1000);
     println!(
         "presenter: {}",
-        serde_json::to_string(&resources::read()).unwrap()
+        serde_json::to_string(&resources::read(context())).unwrap()
     );
     drop(report);
+}
+
+/// The render context whose budgets each read reports.
+fn context() -> &'static lightwell_core::RenderContext {
+    static CONTEXT: std::sync::OnceLock<lightwell_core::RenderContext> = std::sync::OnceLock::new();
+    CONTEXT.get_or_init(lightwell_core::RenderContext::new)
 }

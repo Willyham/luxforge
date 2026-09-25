@@ -581,7 +581,7 @@ const TARGETS: [Target; 10] = [
         direction: Direction::AtMost,
         strict: false,
         scale: 1.0 / (1024.0 * 1024.0),
-        note: "High-water mark of the process-wide colour budget over the gesture run",
+        note: "High-water mark of the owner render context's colour budget over the gesture run",
     },
     Target {
         text: "24 MP single-image edit working set <= 600 MiB CPU-resident",

@@ -932,7 +932,7 @@ mod tests {
         AnalysisSelection, MutationOutcome,
         test_support::{fixture, mutation, temp},
     };
-    use crate::{Draft, PreviewSource, render};
+    use crate::{Draft, PreviewSource, render::testing::render};
     use serde_json::Map;
 
     #[test]

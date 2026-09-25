@@ -47,10 +47,9 @@ pub use presets::*;
 pub use preview::*;
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
 pub use render::{
-    Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget,
-    SpatialBudget, StageSize, StageTransform, WhiteBalanceApproximation, extents, render,
-    render_cancellable, render_linear, render_linear_cancellable, sample, sample_linear,
-    stage_transform,
+    Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Render, RenderContext,
+    RenderOptions, RenderPhase, RenderSource, Sample, ScratchBudget, SpatialBudget, StageSize,
+    StageTransform, WhiteBalanceApproximation, render, stage_transform,
 };
 pub use source::{SourceImage, open_source};
 pub(crate) use source::{open_source_bytes, read_bounded_file};

@@ -8,7 +8,7 @@
 //! reads are answered from; and `artifact_store` derived artifacts.
 use crate::{
     AssetId, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, HistoryRow, LayerId, MaskId,
-    ModuleRegistry, PreviewSource, Recipe, SnapshotId,
+    ModuleRegistry, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId,
     analysis::AnalysisIdentity,
     artifacts::{ArtifactId, LiveArtifacts, PreparedArtifacts},
     source::PreparedSource,
@@ -237,6 +237,7 @@ pub struct AnalysisPlan {
     /// at all: there is nothing to render, so the original is never prepared for it.
     pub source: Option<PreviewSource>,
     pub registry: Arc<ModuleRegistry>,
+    pub context: RenderContext,
     /// The effective recipe, bound with the verified bytes of every artifact it references, which
     /// the job holds while it runs.
     pub recipe: Recipe,
@@ -249,6 +250,7 @@ pub struct AnalysisPlan {
 pub(crate) struct SamplePlan {
     source: PreviewSource,
     registry: Arc<ModuleRegistry>,
+    context: RenderContext,
     recipe: Recipe,
 }
 
@@ -261,8 +263,14 @@ impl SamplePlan {
         side: u32,
         checkpoint: &dyn Fn() -> Result<(), Error>,
     ) -> Result<Vec<[u8; 4]>, Error> {
-        self.source
-            .sample_grid(&self.registry, &self.recipe, side, checkpoint)
+        crate::render(
+            &self.registry,
+            &self.source,
+            &self.recipe,
+            RenderOptions::default(),
+            &self.context,
+        )?
+        .grid(side, checkpoint)
     }
 }
 
@@ -405,6 +413,9 @@ pub struct EditorService {
     source_cache: RefCell<Option<CachedSource>>,
     allow_sync_source: bool,
     registry: Arc<ModuleRegistry>,
+    /// The budgets and the estimate store every evaluation this service plans shares: its own
+    /// samples and exports, and the preview and analysis jobs it hands to workers.
+    render: RenderContext,
     /// This catalog's own identity, which its artifact root's manifest must name.
     catalog_id: String,
     /// Where this catalog's artifacts live: `<catalog stem>.artifacts` beside the catalog file. It
@@ -478,6 +489,7 @@ impl EditorService {
             source_cache: RefCell::new(None),
             allow_sync_source: true,
             registry,
+            render: RenderContext::new(),
             catalog_id,
             artifact_root,
             prepared_artifacts: RefCell::new(PreparedArtifacts::default()),
@@ -489,5 +501,10 @@ impl EditorService {
     /// The providers this service validates, plans and renders with.
     pub fn registry(&self) -> &Arc<ModuleRegistry> {
         &self.registry
+    }
+
+    /// The render context every evaluation this service plans reads.
+    pub fn render_context(&self) -> &RenderContext {
+        &self.render
     }
 }

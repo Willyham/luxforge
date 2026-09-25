@@ -1,5 +1,6 @@
-//! Executing the spatial primitive: the budget, the tiling, the unit chain, the global-estimate
-//! store and the cancellation token.
+//! Executing the spatial primitive: the tiling, the unit chain, the global estimates and the
+//! cancellation token. The budget and the estimate store themselves belong to the
+//! [`RenderContext`](super::RenderContext) every evaluation is handed.
 //!
 //! The contract a module writes against is in [`crate::modules::SpatialUnit`]. This module owns the
 //! other half: how much one tile costs, how many tiles may be in flight, where the intermediate
@@ -7,139 +8,27 @@
 //! sampled byte is the byte a render of that tile produces.
 
 pub(crate) use super::Cancel;
+use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
 use crate::{
     Error, ErrorKind,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO,
-        Parallelism, Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE,
-        SpatialOperation, Stage,
+        ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
+        PlanesMut, Reduction, Region, SPATIAL_TILE, SpatialOperation, Stage,
     },
 };
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use std::{
-    borrow::Cow,
-    collections::VecDeque,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 const MIB: f64 = (1024 * 1024) as f64;
 
-/// A process-wide target for the working sets of spatial tiles, separate from the colour run's
-/// [`ScratchBudget`](super::ScratchBudget) because one tile is orders of magnitude larger than one
-/// row chunk: a 512 × 512 tile of a 60 MP stage with all three frozen presence units reads a
-/// 1408 × 1408 input region and needs about 101 MiB, which the 64 MiB scratch target could not hold
-/// at all.
-///
-/// It is a target, not a limit. It decides how many tiles run at once: a batch takes as many
-/// working sets as fit beside what other evaluations hold, and never fewer than one. So a render
-/// that meets the target already taken — the histogram's analysis rendering the same stack as the
-/// preview, say — slows to one tile at a time instead of failing, and a tile larger than the whole
-/// target still runs, alone. The overshoot is at most one working set per spatial evaluation in
-/// flight, and [`Self::peak`] shows it. Nothing here refuses work.
-///
-/// A reservation covers one batch and is taken before any of its tiles allocates, so the next
-/// batch sees whatever other evaluations released in the meantime.
-pub struct SpatialBudget {
-    target: AtomicU64,
-    used: AtomicU64,
-    peak: AtomicU64,
-}
-
-static SPATIAL_BUDGET: SpatialBudget = SpatialBudget {
-    target: AtomicU64::new(SPATIAL_BUDGET_BYTES),
-    used: AtomicU64::new(0),
-    peak: AtomicU64::new(0),
-};
-
-impl SpatialBudget {
-    /// The one process-wide budget. It is shared state, not a new instance, so this is not the
-    /// `Default` trait.
-    #[allow(clippy::should_implement_trait)]
-    pub fn default() -> &'static Self {
-        &SPATIAL_BUDGET
-    }
-
-    pub fn target(&self) -> u64 {
-        self.target.load(Ordering::Relaxed)
-    }
-
-    /// Set the target and return the previous one. Lowering it below what is already reserved does
-    /// not free anything; the next batch is what runs fewer tiles.
-    pub fn set_target(&self, bytes: u64) -> u64 {
-        self.target.swap(bytes, Ordering::SeqCst)
-    }
-
-    pub fn in_use(&self) -> u64 {
-        self.used.load(Ordering::SeqCst)
-    }
-
-    /// The high-water mark of [`Self::in_use`]. A batch releases its reservation as soon as its
-    /// tiles are written, so `in_use` observed from outside a render is almost always zero; this is
-    /// what makes the budget observable after the fact, including a peak above the target when
-    /// evaluations overlapped or one tile needed more than all of it.
-    pub fn peak(&self) -> u64 {
-        self.peak.load(Ordering::Relaxed)
-    }
-
-    /// Start the high-water mark again from what is reserved right now, so a measurement or a test
-    /// can report the peak of one render rather than of the whole process.
-    pub fn reset_peak(&self) {
-        self.peak.store(self.in_use(), Ordering::Relaxed);
-    }
-
-    /// Reserve working sets for up to `wanted` tiles: as many as fit in what the target has left,
-    /// and one when none do. It never fails. The reservation is released when the returned guard is
-    /// dropped, including on an early return from the work it covers.
-    pub(crate) fn reserve(&self, working_set: u64, wanted: usize) -> SpatialReservation<'_> {
-        let target = self.target();
-        let wanted = wanted.max(1) as u64;
-        let mut tiles = 1;
-        // The closure always yields a value, so the update always succeeds; `tiles` is the count of
-        // the attempt that did.
-        let (Ok(used) | Err(used)) =
-            self.used
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
-                    tiles = (target.saturating_sub(used) / working_set.max(1)).clamp(1, wanted);
-                    Some(used.saturating_add(tiles.saturating_mul(working_set)))
-                });
-        let bytes = tiles.saturating_mul(working_set);
-        self.peak
-            .fetch_max(used.saturating_add(bytes), Ordering::Relaxed);
-        SpatialReservation {
-            budget: self,
-            bytes,
-            tiles: tiles as usize,
-        }
-    }
-}
-
-pub(crate) struct SpatialReservation<'a> {
-    budget: &'a SpatialBudget,
-    bytes: u64,
-    tiles: usize,
-}
-
-impl SpatialReservation<'_> {
-    /// How many tiles this reservation covers: at least one, at most what was asked for.
-    pub(crate) fn tiles(&self) -> usize {
-        self.tiles
-    }
-}
-
-impl Drop for SpatialReservation<'_> {
-    fn drop(&mut self) {
-        self.budget.used.fetch_sub(self.bytes, Ordering::SeqCst);
-    }
-}
-
 /// Everything about running one operation over one stage that does not depend on the pixels: the
-/// tiling, the halos, what one tile costs and how many tiles may run at once.
+/// tiling, the halos and what one tile costs. How many tiles may run at once is the budget's
+/// answer for that cost ([`SpatialBudget::concurrency`]), asked when a render runs.
 ///
 /// It is built when the recipe is compiled, which is where an operation whose declarations the
 /// host does not accept is refused, and again when a frame or a sample is actually evaluated.
@@ -153,9 +42,6 @@ pub(crate) struct SpatialPlan {
     tile: u32,
     /// The bytes one tile may hold at once, computed for the largest tile of the stage.
     working_set: u64,
-    /// How many tiles the budget's target and the pool allow in flight together when nothing else
-    /// holds any of the target: what each batch asks for, and at least one.
-    concurrency: usize,
 }
 
 impl SpatialPlan {
@@ -204,27 +90,18 @@ impl SpatialPlan {
         }
         let tile = tile.max(1);
         let working_set = worst_case_working_set(operation, stage, &halos, summed_halo, tile);
-        let concurrency = usize::try_from(SpatialBudget::default().target() / working_set.max(1))
-            .unwrap_or(usize::MAX)
-            .clamp(1, rayon::current_num_threads().max(1));
         Ok(Self {
             stage,
             halos,
             summed_halo,
             tile,
             working_set,
-            concurrency,
         })
     }
 
     #[cfg(test)]
     pub(crate) fn working_set(&self) -> u64 {
         self.working_set
-    }
-
-    #[cfg(test)]
-    pub(crate) fn concurrency(&self) -> usize {
-        self.concurrency
     }
 
     /// Every output tile of the stage, in row-major order, aligned to the stage origin with
@@ -555,6 +432,7 @@ pub(crate) fn reset_masked_tile_counts() {
 /// concurrency times one tile.
 pub(crate) fn run_batches<T: Send>(
     plan: &SpatialPlan,
+    budget: &SpatialBudget,
     cancel: &Cancel,
     work: impl Fn(Region, Parallelism) -> Result<T, Error> + Sync,
     mut write: impl FnMut(Region, T) -> Result<(), Error>,
@@ -562,12 +440,12 @@ pub(crate) fn run_batches<T: Send>(
     let tiles = plan.tiles();
     let large = plan.stage.width as u64 * plan.stage.height as u64 >= super::PARALLEL_RENDER_PIXELS;
     let workers = rayon::current_num_threads();
+    let concurrency = budget.concurrency(plan.working_set);
     let mut start = 0;
     while start < tiles.len() {
         // Before the reservation, so a cancelled render never takes working sets it will not use.
         cancel.check()?;
-        let reservation = SpatialBudget::default()
-            .reserve(plan.working_set, plan.concurrency.min(tiles.len() - start));
+        let reservation = budget.reserve(plan.working_set, concurrency.min(tiles.len() - start));
         let batch = &tiles[start..start + reservation.tiles()];
         start += batch.len();
         let parallelism = tile_parallelism(large, batch.len(), workers);
@@ -650,20 +528,21 @@ const POINT_TILES_FLOOR: usize = 16;
 /// Every evaluation here runs serially on the calling thread: on the pool it would queue behind a
 /// render holding it. The lock is never held across an evaluation, because an evaluation reads
 /// through this cache itself and its global estimate may reduce a stage on the pool.
-pub(crate) struct PointTiles {
+pub(crate) struct PointTiles<'a> {
+    budget: &'a SpatialBudget,
     tile: u32,
     capacity: usize,
-    state: Mutex<PointState>,
+    state: Mutex<PointState<'a>>,
     /// Every (segment, tile) this query evaluated, in order.
     #[cfg(test)]
     evaluated: Mutex<Vec<(usize, Region)>>,
 }
 
 #[derive(Default)]
-struct PointState {
+struct PointState<'a> {
     prepared: Vec<Arc<Prepared>>,
     /// The held tiles, most recently read first.
-    held: Vec<HeldTile>,
+    held: Vec<HeldTile<'a>>,
 }
 
 /// One spatial segment's plan and global estimates, resolved for its first tile.
@@ -675,14 +554,14 @@ struct Prepared {
 
 /// One evaluated tile of one spatial segment: exactly the tile's three planes, cut from the last
 /// unit's rectangle, and the budget it is charged to.
-struct HeldTile {
+struct HeldTile<'a> {
     segment: usize,
     tile: Region,
     values: Vec<f32>,
-    _reservation: SpatialReservation<'static>,
+    _reservation: SpatialReservation<'a>,
 }
 
-impl PointState {
+impl PointState<'_> {
     fn read(&mut self, segment: usize, x: u32, y: u32) -> Option<[f32; 3]> {
         let index = self
             .held
@@ -694,9 +573,10 @@ impl PointState {
     }
 }
 
-impl PointTiles {
-    /// An empty cache for one query evaluated in tiles of `tile` pixels.
-    pub(crate) fn new(tile: u32) -> Self {
+impl<'a> PointTiles<'a> {
+    /// An empty cache for one query evaluated in tiles of `tile` pixels, holding at most what
+    /// `budget`'s target has bytes for.
+    pub(crate) fn new(tile: u32, budget: &'a SpatialBudget) -> Self {
         let tile_bytes = Region {
             x0: 0,
             y0: 0,
@@ -704,10 +584,11 @@ impl PointTiles {
             height: tile.max(1),
         }
         .plane_bytes();
-        let capacity = usize::try_from(SpatialBudget::default().target() / tile_bytes)
+        let capacity = usize::try_from(budget.target() / tile_bytes)
             .unwrap_or(usize::MAX)
             .max(POINT_TILES_FLOOR);
         Self {
+            budget,
             tile,
             capacity,
             state: Mutex::default(),
@@ -716,7 +597,7 @@ impl PointTiles {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, PointState> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, PointState<'a>> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -763,7 +644,7 @@ impl PointTiles {
         let Prepared { plan, globals, .. } = &*prepared;
         let tile = plan.tile_containing(x, y);
         let (region, values) = {
-            let _reservation = SpatialBudget::default().reserve(plan.working_set, 1);
+            let _reservation = self.budget.reserve(plan.working_set, 1);
             run_tile(
                 plan,
                 operation,
@@ -798,7 +679,7 @@ impl PointTiles {
                     segment,
                     tile,
                     values,
-                    _reservation: SpatialBudget::default().reserve(bytes, 1),
+                    _reservation: self.budget.reserve(bytes, 1),
                 },
             );
         }
@@ -842,71 +723,6 @@ impl PointTiles {
 // Global estimates.
 // ---------------------------------------------------------------------------------------------
 
-/// What one cached global estimate belongs to: the source, the layers before the operation (which
-/// decide what its input stage holds), the stage the reduction was built from, and the unit's own
-/// [`SpatialUnit::estimate_key`](crate::modules::SpatialUnit::estimate_key), which names everything
-/// its preparation reads besides that reduction.
-///
-/// Neither the unit's position nor its description is part of it. A module compiles whichever units
-/// its payload needs — the Presence module omits a unit whose amount is zero, which moves the others
-/// up — so a position alone could hand one unit the estimate another prepared; the key is the unit's
-/// own and does not move with it. The description names coefficients only `apply` reads, such as an
-/// amount, and keying by it would reduce the whole stage again for every new amount although the
-/// estimate is the same; two units that declare one key over one stage prepare one estimate by the
-/// trait's own rule, so they share it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct EstimateKey {
-    pub(crate) fingerprint: String,
-    pub(crate) prefix_hash: String,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) estimate: Cow<'static, str>,
-}
-
-/// The bounded store of prepared estimates: [`ESTIMATE_STORE_ENTRIES`] entries, oldest first, each
-/// at most [`crate::modules::MAX_GLOBAL_BYTES`]. Only a unit that declares an estimate key has an
-/// entry, and an entry may hold `None` when its preparation yielded none, so a second evaluation of
-/// the same stack costs no reduction at all.
-static ESTIMATES: Mutex<VecDeque<(EstimateKey, Option<Global>)>> = Mutex::new(VecDeque::new());
-
-fn estimates() -> std::sync::MutexGuard<'static, VecDeque<(EstimateKey, Option<Global>)>> {
-    ESTIMATES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// `Some(estimate)` on a hit, where the estimate itself may be `None` for a preparation that
-/// yielded none.
-fn cached(key: &EstimateKey) -> Option<Option<Global>> {
-    estimates()
-        .iter()
-        .find(|(stored, _)| stored == key)
-        .map(|(_, value)| value.clone())
-}
-
-fn remember(key: EstimateKey, value: Option<Global>) {
-    let mut store = estimates();
-    if store.iter().any(|(stored, _)| *stored == key) {
-        return;
-    }
-    store.push_back((key, value));
-    while store.len() > ESTIMATE_STORE_ENTRIES {
-        store.pop_front();
-    }
-}
-
-/// Forget every cached estimate. Tests that count `prepare` calls start from here.
-#[cfg(test)]
-pub(crate) fn clear_estimates() {
-    estimates().clear();
-}
-
-/// How many estimates are held right now.
-#[cfg(test)]
-pub(crate) fn cached_estimates() -> usize {
-    estimates().len()
-}
-
 /// The global estimate of every unit of an operation, in unit order: `None` for a unit that
 /// declares no estimate key, which is never prepared and never reduces anything, and for every
 /// other unit the store's entry under its key, or else one preparation from one reduction of the
@@ -914,6 +730,7 @@ pub(crate) fn cached_estimates() -> usize {
 /// a key is missing from the store: a stack evaluated twice reduces nothing the second time, and
 /// neither does one whose units changed only in coefficients their keys do not name.
 pub(crate) fn resolve_globals(
+    store: &EstimateStore,
     operation: &SpatialOperation,
     stage: Stage,
     fingerprint: &str,
@@ -937,7 +754,7 @@ pub(crate) fn resolve_globals(
     let mut missing: Vec<(usize, &EstimateKey)> = Vec::new();
     for (index, key) in keys.iter().enumerate() {
         if let Some(key) = key {
-            match cached(key) {
+            match store.cached(key) {
                 Some(global) => globals[index] = global,
                 None => missing.push((index, key)),
             }
@@ -955,7 +772,7 @@ pub(crate) fn resolve_globals(
             Some((_, global)) => global.clone(),
             None => {
                 let global = units[index].prepare(&reduction);
-                remember(key.clone(), global.clone());
+                store.remember(key.clone(), global.clone());
                 prepared.push((key, global.clone()));
                 global
             }
@@ -971,7 +788,7 @@ pub(crate) fn resolve_globals(
 ///
 /// The reduced frame is at most [`MAX_REDUCTION_PIXELS`] pixels, so this allocates about 3 MiB at
 /// the largest stage the host accepts whatever the source is. The read itself is the whole stage,
-/// which is why the store above exists.
+/// which is why the render context keeps a store of the estimates prepared from it.
 pub(crate) fn build_reduction(
     stage: Stage,
     fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
@@ -1159,29 +976,35 @@ pub(crate) mod tests {
     use crate::{
         EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, Raster, Recipe,
         SnapshotId, SourceImage, Transform,
+        modules::ESTIMATE_STORE_ENTRIES,
         modules::{
             ActionInput, ActionPlan, Availability, EffectDescriptor, EffectStage, ModuleDescriptor,
             Processing, SpatialUnit, StageContext, ToolModule,
         },
         render::{
-            linear::{render_linear_tiled, sample_linear_tiled},
-            render_tiled,
+            testing::{
+                cached_estimates, clear_estimates, context, evaluation, linear_evaluation,
+                render_linear_tiled, render_tiled, sample_linear_tiled,
+            },
             tests::{CropReference, crop_layer, fitted_crop, geometry_registry, gradient, turn},
         },
     };
     use serde_json::{Map, Value, json};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+    use std::{
+        borrow::Cow,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        },
     };
 
-    /// The spatial budget and the estimate store are process-wide, so every test that reads either
-    /// holds this lock instead of racing. That is every test that renders a spatial layer: each one
+    /// The unit tests share one render context (`testing::context`), so every test that reads its
+    /// spatial budget or its estimate store holds this lock instead of racing. That is every test that renders a spatial layer: each one
     /// takes working sets from the budget, and a unit that declares an estimate key reads and writes
     /// the store.
     static SPATIAL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Held by every test that reads or writes either piece of process-wide state, including the
+    /// Held by every test that reads or writes either piece of that shared state, including the
     /// Presence module's own tests in `modules::presence::oracle`.
     pub(crate) fn spatial_guard() -> std::sync::MutexGuard<'static, ()> {
         SPATIAL_TESTS
@@ -1924,7 +1747,8 @@ pub(crate) mod tests {
         // chapter samples through.
         for y in 0..raster.height {
             for x in 0..raster.width {
-                let sampled = crate::sample(&registry, &source, &stack, x, y).unwrap();
+                let sampled =
+                    crate::render::testing::sample(&registry, &source, &stack, x, y).unwrap();
                 assert_eq!(
                     sampled.rgba,
                     raster.pixel(x, y),
@@ -1956,9 +1780,15 @@ pub(crate) mod tests {
             ),
         };
         let render = |settings: LinearSettings| {
-            crate::render_linear(&registry, &source, SnapshotId::new(), &stack, settings)
-                .unwrap()
-                .rgba
+            crate::render::testing::render_linear(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &stack,
+                settings,
+            )
+            .unwrap()
+            .rgba
         };
         clear_estimates();
         let exact_alone = render(LinearSettings::default());
@@ -2014,9 +1844,15 @@ pub(crate) mod tests {
         };
         let settings = [exact, approximate(1.4, 0.6), approximate(0.7, 1.3)];
         let render = |recipe: &Recipe, settings| {
-            crate::render_linear(&registry, &source, SnapshotId::new(), recipe, settings)
-                .unwrap()
-                .rgba
+            crate::render::testing::render_linear(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                recipe,
+                settings,
+            )
+            .unwrap()
+            .rgba
         };
         let expected = settings.map(|settings| {
             clear_estimates();
@@ -2085,7 +1921,7 @@ pub(crate) mod tests {
         for linear_path in [false, true] {
             let render = |stack: &Recipe| {
                 if linear_path {
-                    crate::render_linear(
+                    crate::render::testing::render_linear(
                         &registry,
                         &linear,
                         SnapshotId::new(),
@@ -2094,7 +1930,8 @@ pub(crate) mod tests {
                     )
                     .unwrap()
                 } else {
-                    crate::render(&registry, &byte, SnapshotId::new(), stack).unwrap()
+                    crate::render::testing::render(&registry, &byte, SnapshotId::new(), stack)
+                        .unwrap()
                 }
             };
             for changed in &variants {
@@ -2117,7 +1954,7 @@ pub(crate) mod tests {
                     "the fixture makes this mask edit visible"
                 );
                 let sample = if linear_path {
-                    crate::sample_linear(
+                    crate::render::testing::sample_linear(
                         &registry,
                         &linear,
                         changed,
@@ -2127,7 +1964,7 @@ pub(crate) mod tests {
                     )
                     .unwrap()
                 } else {
-                    crate::sample(&registry, &byte, changed, 17, 13).unwrap()
+                    crate::render::testing::sample(&registry, &byte, changed, 17, 13).unwrap()
                 };
                 assert_eq!(sample.rgba, cached.pixel(17, 13));
             }
@@ -2167,18 +2004,18 @@ pub(crate) mod tests {
                 let id = SnapshotId::new();
                 let cancel = Cancel::new();
                 match (linear_path, proxy) {
-                    (false, false) => crate::render(&registry, &byte, id, &stack),
-                    (false, true) => crate::render::render_proxy_cancellable(
+                    (false, false) => crate::render::testing::render(&registry, &byte, id, &stack),
+                    (false, true) => crate::render::testing::render_proxy_cancellable(
                         &registry, &byte, id, &stack, &cancel,
                     ),
-                    (true, false) => crate::render_linear(
+                    (true, false) => crate::render::testing::render_linear(
                         &registry,
                         &linear,
                         id,
                         &stack,
                         LinearSettings::default(),
                     ),
-                    (true, true) => crate::render::linear::render_linear_proxy_cancellable(
+                    (true, true) => crate::render::testing::render_linear_proxy_cancellable(
                         &registry,
                         &linear,
                         id,
@@ -2248,7 +2085,14 @@ pub(crate) mod tests {
             ),
         ];
         let render = |source: &LinearImage, settings| {
-            crate::render_linear(&registry, source, SnapshotId::new(), &stack, settings).unwrap()
+            crate::render::testing::render_linear(
+                &registry,
+                source,
+                SnapshotId::new(),
+                &stack,
+                settings,
+            )
+            .unwrap()
         };
         let expected: Vec<_> = cases
             .iter()
@@ -2269,7 +2113,8 @@ pub(crate) mod tests {
             assert_eq!(cached_estimates(), index + 1);
             assert_eq!(render(&source.clone(), *settings).rgba, expected);
             let sampled =
-                crate::sample_linear(&registry, source, &stack, *settings, 7, 11).unwrap();
+                crate::render::testing::sample_linear(&registry, source, &stack, *settings, 7, 11)
+                    .unwrap();
             assert_eq!(sampled.rgba, cached.pixel(7, 11));
             assert_eq!(
                 PREPARED.load(AtomicOrdering::SeqCst),
@@ -2286,10 +2131,12 @@ pub(crate) mod tests {
         let registry = spatial_registry();
         let stack = recipe(vec![spatial_layer(&["blur:3", "shift"])]);
         let source = gradient(48, 36);
-        let raster = crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+        let raster =
+            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
         for y in 0..raster.height {
             for x in 0..raster.width {
-                let sampled = crate::sample(&registry, &source, &stack, x, y).unwrap();
+                let sampled =
+                    crate::render::testing::sample(&registry, &source, &stack, x, y).unwrap();
                 assert_eq!(
                     sampled.rgba,
                     raster.pixel(x, y),
@@ -2298,7 +2145,7 @@ pub(crate) mod tests {
             }
         }
         let linear = linear_source(40, 30);
-        let rendered = crate::render_linear(
+        let rendered = crate::render::testing::render_linear(
             &registry,
             &linear,
             SnapshotId::new(),
@@ -2308,7 +2155,7 @@ pub(crate) mod tests {
         .unwrap();
         for y in 0..rendered.height {
             for x in 0..rendered.width {
-                let sampled = crate::sample_linear(
+                let sampled = crate::render::testing::sample_linear(
                     &registry,
                     &linear,
                     &stack,
@@ -2334,7 +2181,7 @@ pub(crate) mod tests {
         let source = linear_source(60, 44);
         let crop = fitted_crop(60, 44, 6.0, [0.2, 0.2, 0.55, 0.55]);
         let stack = recipe(vec![spatial_layer(&["blur:2", "shift"]), crop_layer(crop)]);
-        let rendered = crate::render_linear(
+        let rendered = crate::render::testing::render_linear(
             &registry,
             &source,
             SnapshotId::new(),
@@ -2345,7 +2192,7 @@ pub(crate) mod tests {
         assert!(rendered.width > 1 && rendered.height > 1);
         for y in 0..rendered.height {
             for x in 0..rendered.width {
-                let sampled = crate::sample_linear(
+                let sampled = crate::render::testing::sample_linear(
                     &registry,
                     &source,
                     &stack,
@@ -2381,7 +2228,7 @@ pub(crate) mod tests {
             16,
         )
         .unwrap();
-        let evaluation = crate::render::Evaluation::new(&registry, &source, &stack)
+        let evaluation = evaluation(&registry, &source, &stack)
             .unwrap()
             .with_tile(16);
         for y in 0..raster.height {
@@ -2471,10 +2318,10 @@ pub(crate) mod tests {
             SPATIAL_TILE,
         )
         .unwrap();
-        let budget = SpatialBudget::default();
+        let budget = context().spatial();
         assert_eq!(budget.in_use(), 0, "nothing is held between evaluations");
         budget.reset_peak();
-        let sampled = crate::sample_linear(
+        let sampled = crate::render::testing::sample_linear(
             &registry,
             &source,
             &stack,
@@ -2509,10 +2356,10 @@ pub(crate) mod tests {
             SPATIAL_TILE,
         )
         .unwrap();
-        let budget = SpatialBudget::default();
+        let budget = context().spatial();
         assert_eq!(budget.in_use(), 0, "nothing is held between renders");
         budget.reset_peak();
-        let sampled = crate::sample(&registry, &source, &stack, 300, 200).unwrap();
+        let sampled = crate::render::testing::sample(&registry, &source, &stack, 300, 200).unwrap();
         assert!(sampled.rgba.is_some());
         assert_eq!(
             budget.peak(),
@@ -2617,11 +2464,16 @@ pub(crate) mod tests {
         clear_estimates();
         let registry = spatial_registry();
         let source = gradient(64, 48);
-        let budget = SpatialBudget::default();
+        let budget = context().spatial();
         budget.reset_peak();
         let refuse = |layers: Vec<Layer>| -> Error {
-            let error = crate::render(&registry, &source, SnapshotId::new(), &recipe(layers))
-                .expect_err("the host refuses this operation");
+            let error = crate::render::testing::render(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &recipe(layers),
+            )
+            .expect_err("the host refuses this operation");
             assert_eq!(error.kind, ErrorKind::ResourceLimit, "{error}");
             error
         };
@@ -2637,7 +2489,7 @@ pub(crate) mod tests {
         assert_eq!(budget.peak(), 0, "and no pixel work was done");
         // A refused stack is still readable: nothing was rewritten.
         assert_eq!(
-            crate::extents(
+            crate::render::testing::extents(
                 &registry,
                 &source,
                 &recipe(vec![spatial_layer(&["blur:1"])])
@@ -2654,7 +2506,7 @@ pub(crate) mod tests {
     #[test]
     fn a_reservation_takes_what_fits_and_never_less_than_one_tile() {
         let _guard = spatial_guard();
-        let budget = SpatialBudget::default();
+        let budget = context().spatial();
         assert_eq!(budget.in_use(), 0, "nothing is held between tests");
         let previous = budget.set_target(1000);
         {
@@ -2687,10 +2539,10 @@ pub(crate) mod tests {
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 3 })]).unwrap();
         let plan = SpatialPlan::new(&operation, Stage { width, height }, tile).unwrap();
         assert!(
-            plan.concurrency() > 1,
+            context().spatial().concurrency(plan.working_set()) > 1,
             "alone, the operation runs tiles together"
         );
-        let budget = SpatialBudget::default();
+        let budget = context().spatial();
         let held = budget.reserve(budget.target(), 1);
         budget.reset_peak();
 
@@ -2731,8 +2583,9 @@ pub(crate) mod tests {
         let expected = reference_chain(width, height, linear_frame(&linear), &[RefUnit::Blur(3)]);
         assert_frame(&raster, &expected, "linear render beside a taken target");
 
-        let rendered = crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-        let sampled = crate::sample(&registry, &source, &stack, 100, 75)
+        let rendered =
+            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+        let sampled = crate::render::testing::sample(&registry, &source, &stack, 100, 75)
             .expect("the sample completes past the target");
         assert_eq!(sampled.rgba, rendered.pixel(100, 75), "the rendered byte");
 
@@ -2749,12 +2602,12 @@ pub(crate) mod tests {
         let source = gradient(width, height);
         let stack = recipe(vec![spatial_layer(&["blur:2"])]);
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 2 })]).unwrap();
-        let budget = SpatialBudget::default();
+        let budget = context().spatial();
         let previous = budget.set_target(1024);
         let plan = SpatialPlan::new(&operation, Stage { width, height }, tile)
             .expect("what a tile costs never refuses a plan");
         assert!(plan.working_set() > budget.target());
-        assert_eq!(plan.concurrency(), 1);
+        assert_eq!(context().spatial().concurrency(plan.working_set()), 1);
         budget.reset_peak();
         let raster = render_tiled(
             &registry,
@@ -2789,9 +2642,11 @@ pub(crate) mod tests {
         let registry = spatial_registry();
         let source = gradient(64, 48);
         let stack = recipe(vec![spatial_layer(&["shift"])]);
-        let first = crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+        let first =
+            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
         assert_eq!(PREPARED.load(AtomicOrdering::SeqCst), 1, "one preparation");
-        let second = crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+        let second =
+            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
         assert_eq!(
             PREPARED.load(AtomicOrdering::SeqCst),
             1,
@@ -2803,7 +2658,7 @@ pub(crate) mod tests {
             Layer::pixel(1, 1, [3, 4, 5]),
             spatial_layer(&["shift"]),
         ]);
-        crate::render(&registry, &source, SnapshotId::new(), &prefixed).unwrap();
+        crate::render::testing::render(&registry, &source, SnapshotId::new(), &prefixed).unwrap();
         assert_eq!(
             PREPARED.load(AtomicOrdering::SeqCst),
             2,
@@ -2816,11 +2671,11 @@ pub(crate) mod tests {
                 Layer::pixel(2, 2, [index as u8, 0, 0]),
                 spatial_layer(&["shift"]),
             ]);
-            crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
         }
         assert_eq!(cached_estimates(), ESTIMATE_STORE_ENTRIES);
         let before = PREPARED.load(AtomicOrdering::SeqCst);
-        crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+        crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
         assert_eq!(
             PREPARED.load(AtomicOrdering::SeqCst),
             before + 1,
@@ -2840,7 +2695,7 @@ pub(crate) mod tests {
         let registry = spatial_registry();
         let source = gradient(64, 48);
         // A unit that declares no estimate at position 0, given none.
-        crate::render(
+        crate::render::testing::render(
             &registry,
             &source,
             SnapshotId::new(),
@@ -2849,7 +2704,7 @@ pub(crate) mod tests {
         .unwrap();
         // The same source, the same (empty) prefix and the same stage, with a unit that does want
         // one at that position.
-        let shifted = crate::render(
+        let shifted = crate::render::testing::render(
             &registry,
             &source,
             SnapshotId::new(),
@@ -2882,6 +2737,7 @@ pub(crate) mod tests {
         .unwrap();
         for _ in 0..2 {
             let globals = resolve_globals(
+                context().estimates(),
                 &operation,
                 stage,
                 "sha256:no-estimate-key",
@@ -2894,9 +2750,11 @@ pub(crate) mod tests {
             assert_eq!(globals, vec![None, None, None]);
         }
         assert!(
-            estimates()
+            context()
+                .estimates()
+                .keys()
                 .iter()
-                .all(|(key, _)| key.fingerprint != "sha256:no-estimate-key"),
+                .all(|key| key.fingerprint != "sha256:no-estimate-key"),
             "and it stored nothing"
         );
 
@@ -2904,7 +2762,7 @@ pub(crate) mod tests {
         PREPARED.store(0, AtomicOrdering::SeqCst);
         let registry = spatial_registry();
         let source = gradient(64, 48);
-        let raster = crate::render(
+        let raster = crate::render::testing::render(
             &registry,
             &source,
             SnapshotId::new(),
@@ -2949,10 +2807,17 @@ pub(crate) mod tests {
         // A fingerprint no other test uses, so the first resolve is a miss.
         let fingerprint = format!("sha256:one-key-{}", SnapshotId::new());
         let mut reductions = 0;
-        let globals = resolve_globals(&operation, stage, &fingerprint, "prefix", || {
-            reductions += 1;
-            build_reduction(stage, read)
-        })
+        let globals = resolve_globals(
+            context().estimates(),
+            &operation,
+            stage,
+            &fingerprint,
+            "prefix",
+            || {
+                reductions += 1;
+                build_reduction(stage, read)
+            },
+        )
         .unwrap();
         assert_eq!(reductions, 1);
         assert_eq!(PREPARED.load(AtomicOrdering::SeqCst), 1, "one preparation");
@@ -2993,10 +2858,17 @@ pub(crate) mod tests {
         let fingerprint = format!("sha256:presence-amounts-{}", SnapshotId::new());
         let reductions = AtomicUsize::new(0);
         let resolve = |payload: &Value| {
-            resolve_globals(&compile(payload), stage, &fingerprint, "prefix", || {
-                reductions.fetch_add(1, AtomicOrdering::SeqCst);
-                build_reduction(stage, read)
-            })
+            resolve_globals(
+                context().estimates(),
+                &compile(payload),
+                stage,
+                &fingerprint,
+                "prefix",
+                || {
+                    reductions.fetch_add(1, AtomicOrdering::SeqCst);
+                    build_reduction(stage, read)
+                },
+            )
             .unwrap()
         };
 
@@ -3049,7 +2921,7 @@ pub(crate) mod tests {
                 mask: None,
                 artifacts: Vec::new(),
             }]);
-            crate::render(&registry, &source, SnapshotId::new(), &stack)
+            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
                 .unwrap()
                 .rgba
         };
@@ -3242,7 +3114,7 @@ pub(crate) mod tests {
     /// `a_reduction_behind_a_spatial_segment_evaluates_each_tile_once`.
     #[test]
     fn a_point_query_evaluates_each_spatial_tile_at_most_once_on_both_paths() {
-        use crate::render::linear::{LinearEvaluation, SpatialMode, terminal_pixel};
+        use crate::render::linear::{SpatialMode, terminal_pixel};
         let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
@@ -3270,7 +3142,7 @@ pub(crate) mod tests {
             .unwrap();
             for (x, y) in point_query_points(rendered.width, rendered.height) {
                 let case = format!("{case}, byte path at ({x}, {y})");
-                let evaluation = crate::render::Evaluation::new(&registry, &source, &stack)
+                let evaluation = evaluation(&registry, &source, &stack)
                     .unwrap()
                     .with_tile(POINT_TILE);
                 assert_eq!(
@@ -3294,7 +3166,7 @@ pub(crate) mod tests {
             .unwrap();
             for (x, y) in point_query_points(rendered.width, rendered.height) {
                 let case = format!("{case}, linear path at ({x}, {y})");
-                let evaluation = LinearEvaluation::new(
+                let evaluation = linear_evaluation(
                     &registry,
                     &linear,
                     &stack,
@@ -3342,7 +3214,7 @@ pub(crate) mod tests {
                 POINT_TILE,
             )
             .unwrap();
-            let evaluation = crate::render::Evaluation::new(&registry, &source, stack)
+            let evaluation = evaluation(&registry, &source, stack)
                 .unwrap()
                 .with_tile(POINT_TILE);
             evaluation.pixel(x, y).unwrap();
@@ -3361,7 +3233,7 @@ pub(crate) mod tests {
     /// byte, whose render prepared its estimates from a cold store of its own.
     #[test]
     fn a_reduction_behind_a_spatial_segment_evaluates_each_tile_once() {
-        use crate::render::linear::{LinearEvaluation, SpatialMode, terminal_pixel};
+        use crate::render::linear::{SpatialMode, terminal_pixel};
         let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
@@ -3371,7 +3243,7 @@ pub(crate) mod tests {
 
         let source = gradient(width, height);
         clear_estimates();
-        let evaluation = crate::render::Evaluation::new(&registry, &source, &stack)
+        let evaluation = evaluation(&registry, &source, &stack)
             .unwrap()
             .with_tile(POINT_TILE);
         let sampled = evaluation.pixel(x, y).unwrap();
@@ -3393,7 +3265,7 @@ pub(crate) mod tests {
 
         let linear = linear_source(width, height);
         clear_estimates();
-        let evaluation = LinearEvaluation::new(
+        let evaluation = linear_evaluation(
             &registry,
             &linear,
             &stack,
@@ -3472,10 +3344,10 @@ pub(crate) mod tests {
             POINT_TILE,
         )
         .unwrap();
-        let budget = SpatialBudget::default();
+        let budget = context().spatial();
         assert_eq!(budget.in_use(), 0);
         let previous = budget.set_target(0);
-        let evaluation = crate::render::Evaluation::new(&registry, &source, &stack)
+        let evaluation = evaluation(&registry, &source, &stack)
             .unwrap()
             .with_tile(POINT_TILE);
         budget.set_target(previous);
@@ -3544,7 +3416,7 @@ pub(crate) mod tests {
         let applied = |stack: &Recipe, linear_path: bool| {
             APPLIED.store(0, AtomicOrdering::SeqCst);
             if linear_path {
-                crate::render_linear(
+                crate::render::testing::render_linear(
                     &registry,
                     &linear,
                     SnapshotId::new(),
@@ -3553,7 +3425,8 @@ pub(crate) mod tests {
                 )
                 .unwrap();
             } else {
-                crate::render(&registry, &source, SnapshotId::new(), stack).unwrap();
+                crate::render::testing::render(&registry, &source, SnapshotId::new(), stack)
+                    .unwrap();
             }
             APPLIED.load(AtomicOrdering::SeqCst)
         };
@@ -3585,7 +3458,7 @@ pub(crate) mod tests {
         let source = gradient(2000, 1500);
         let stack = recipe(vec![spatial_layer(&["blur:24"])]);
         let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 24 })]).unwrap();
-        let budget = SpatialBudget::default();
+        let budget = context().spatial();
         let plan = SpatialPlan::new(
             &operation,
             Stage {
@@ -3606,8 +3479,13 @@ pub(crate) mod tests {
             })
         };
         let started = std::time::Instant::now();
-        let result =
-            crate::render_cancellable(&registry, &source, SnapshotId::new(), &stack, &cancel);
+        let result = crate::render::testing::render_cancellable(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &stack,
+            &cancel,
+        );
         let elapsed = started.elapsed();
         handle.join().unwrap();
         let error = match result {
@@ -3621,12 +3499,16 @@ pub(crate) mod tests {
         );
         assert_eq!(budget.in_use(), 0, "the batch reservation is released");
         // An already cancelled token refuses before any tile runs.
-        let error =
-            match crate::render_cancellable(&registry, &source, SnapshotId::new(), &stack, &cancel)
-            {
-                Ok(_) => panic!("still cancelled"),
-                Err(error) => error,
-            };
+        let error = match crate::render::testing::render_cancellable(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &stack,
+            &cancel,
+        ) {
+            Ok(_) => panic!("still cancelled"),
+            Err(error) => error,
+        };
         assert_eq!(error.kind, ErrorKind::Cancelled);
         budget.set_target(previous);
     }
@@ -3667,7 +3549,7 @@ pub(crate) mod tests {
             SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 2 }), Arc::new(MeanShift)])
                 .unwrap();
         let plan = SpatialPlan::new(&operation, Stage { width, height }, tile).unwrap();
-        let budget = SpatialBudget::default();
+        let budget = context().spatial();
         let mut frames = Vec::new();
         // One working set: batches of one tile, pooled. Unbounded: batches as wide as the pool,
         // serial.
@@ -3720,12 +3602,14 @@ pub(crate) mod tests {
             let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius })]).unwrap();
             let plan = SpatialPlan::new(&operation, Stage { width, height }, SPATIAL_TILE).unwrap();
             // Warm the source and the estimate store, then measure.
-            crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-            SpatialBudget::default().reset_peak();
+            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+            context().spatial().reset_peak();
             let mut samples = Vec::new();
             for _ in 0..10 {
                 let started = std::time::Instant::now();
-                let raster = crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+                let raster =
+                    crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
+                        .unwrap();
                 samples.push(started.elapsed().as_secs_f64() * 1000.0);
                 assert_eq!((raster.width, raster.height), (width, height));
             }
@@ -3738,9 +3622,9 @@ pub(crate) mod tests {
                  target {:.1} MiB",
                 samples.len(),
                 plan.working_set() as f64 / MIB,
-                plan.concurrency(),
-                SpatialBudget::default().peak() as f64 / MIB,
-                SpatialBudget::default().target() as f64 / MIB,
+                context().spatial().concurrency(plan.working_set()),
+                context().spatial().peak() as f64 / MIB,
+                context().spatial().target() as f64 / MIB,
             );
         }
     }
@@ -3817,15 +3701,25 @@ pub(crate) mod tests {
                             continue;
                         }
                         // Warm the source and the estimate store, then measure.
-                        crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-                        SpatialBudget::default().reset_peak();
+                        crate::render::testing::render(
+                            &registry,
+                            &source,
+                            SnapshotId::new(),
+                            &stack,
+                        )
+                        .unwrap();
+                        context().spatial().reset_peak();
                         reset_masked_tile_counts();
                         let mut samples = Vec::new();
                         for _ in 0..5 {
                             let started = std::time::Instant::now();
-                            let raster =
-                                crate::render(&registry, &source, SnapshotId::new(), &stack)
-                                    .unwrap();
+                            let raster = crate::render::testing::render(
+                                &registry,
+                                &source,
+                                SnapshotId::new(),
+                                &stack,
+                            )
+                            .unwrap();
                             samples.push(started.elapsed().as_secs_f64() * 1000.0);
                             assert_eq!((raster.width, raster.height), (width, height));
                         }
@@ -3841,8 +3735,8 @@ pub(crate) mod tests {
                             if masked { "masked" } else { "unmasked" },
                             copied / runs,
                             evaluated / runs,
-                            SpatialBudget::default().peak() as f64 / MIB,
-                            SpatialBudget::default().target() as f64 / MIB,
+                            context().spatial().peak() as f64 / MIB,
+                            context().spatial().target() as f64 / MIB,
                         );
                     }
                 }
@@ -3917,14 +3811,20 @@ pub(crate) mod tests {
                     ..Recipe::default()
                 };
                 // Warm the source and the estimate store, then measure.
-                crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
-                SpatialBudget::default().reset_peak();
+                crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
+                    .unwrap();
+                context().spatial().reset_peak();
                 reset_masked_tile_counts();
                 let mut samples = Vec::new();
                 for _ in 0..5 {
                     let started = std::time::Instant::now();
-                    let raster =
-                        crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+                    let raster = crate::render::testing::render(
+                        &registry,
+                        &source,
+                        SnapshotId::new(),
+                        &stack,
+                    )
+                    .unwrap();
                     samples.push(started.elapsed().as_secs_f64() * 1000.0);
                     assert_eq!((raster.width, raster.height), (width, height));
                 }
@@ -3939,8 +3839,8 @@ pub(crate) mod tests {
                      copied {}, evaluated {}; budget peak {:.1} MiB of {:.1} MiB",
                     copied / runs,
                     evaluated / runs,
-                    SpatialBudget::default().peak() as f64 / MIB,
-                    SpatialBudget::default().target() as f64 / MIB,
+                    context().spatial().peak() as f64 / MIB,
+                    context().spatial().target() as f64 / MIB,
                 );
             }
         }

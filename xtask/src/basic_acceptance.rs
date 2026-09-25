@@ -436,7 +436,9 @@ fn described_basic(described: &Value) -> Result<(String, usize, Value)> {
 /// oracle: every expected value comes from the f64 reference above.
 pub(crate) fn render(source: &SourceImage, recipe: &Recipe) -> Result<lightwell_core::Raster> {
     let registry = ModuleRegistry::builtin();
-    Ok(core_render(&registry, source, SnapshotId::new(), recipe)?)
+    let context = lightwell_core::RenderContext::new();
+    let options = lightwell_core::RenderOptions::default();
+    Ok(core_render(&registry, source, recipe, options, &context)?.frame(SnapshotId::new())?)
 }
 
 /// An independent reduction of an independent render of one recipe. The counts a reduction

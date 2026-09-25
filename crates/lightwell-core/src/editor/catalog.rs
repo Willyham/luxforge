@@ -766,9 +766,10 @@ mod tests {
                 },
             );
             for error in [
-                crate::render(&registry, &source, SnapshotId::new(), recipe).unwrap_err(),
-                crate::sample(&registry, &source, recipe, 0, 0).unwrap_err(),
-                crate::extents(&registry, &source, recipe).unwrap_err(),
+                crate::render::testing::render(&registry, &source, SnapshotId::new(), recipe)
+                    .unwrap_err(),
+                crate::render::testing::sample(&registry, &source, recipe, 0, 0).unwrap_err(),
+                crate::render::testing::extents(&registry, &source, recipe).unwrap_err(),
                 crate::stage_transform(&registry, source.width, source.height, recipe).unwrap_err(),
                 registry
                     .compile(source.width, source.height, recipe)

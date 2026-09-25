@@ -32,8 +32,8 @@ use lightwell_core::{
         commands::{self, MaskTarget},
     },
     path::{ColourLimit, Stroke, StrokeTable},
-    render, sample,
 };
+use lightwell_testkit::fixtures::{render, sample};
 use reference::mask::{
     Brush as RefBrush, BrushStroke, ColourLimit as RefColourLimit, Stage as RefStage,
     brush_coverage, colour_similarity,

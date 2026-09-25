@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     AssetId, ContentPoint, Draft, EntryId, Error, ErrorKind, HistoryEntry, PreviewJob,
-    PreviewSource, ProxyBounds, Raster, Recipe, StageTransform,
+    PreviewSource, ProxyBounds, Raster, Recipe, RenderOptions, StageTransform,
     analysis::AnalysisIdentity,
     render::{locate_dimensions, stage_transform},
     source::PreparedSource,
@@ -99,6 +99,7 @@ impl EditorService {
             source,
             entry,
             registry: self.registry.clone(),
+            context: self.render.clone(),
             recipe,
             layer_count,
             draft_revision,
@@ -253,6 +254,7 @@ impl EditorService {
             identity,
             source,
             registry: self.registry.clone(),
+            context: self.render.clone(),
             recipe,
             failure,
         })
@@ -262,11 +264,14 @@ impl EditorService {
     pub fn render_entry(&self, asset_id: &AssetId, entry_id: &EntryId) -> Result<Raster, Error> {
         let state = self.state(asset_id)?;
         let (entry, source) = self.exact_entry(&state, entry_id)?;
-        source.render(
+        crate::render(
             &self.registry,
-            entry.snapshot.id.clone(),
+            &source,
             &entry.snapshot.recipe,
-        )
+            RenderOptions::default(),
+            &self.render,
+        )?
+        .frame(entry.snapshot.id.clone())
     }
 
     /// One saved entry of an asset, bound, with the buffer it is evaluated on exactly: a RAW
@@ -297,7 +302,7 @@ impl EditorService {
     ) -> Result<PixelSample, Error> {
         let state = self.state(asset_id)?;
         let (entry, source) = self.exact_entry(&state, entry_id)?;
-        let sampled = source.sample(&self.registry, &entry.snapshot.recipe, x, y)?;
+        let sampled = self.sample_point(&source, &entry.snapshot.recipe, x, y)?;
         pixel_sample(entry, &state.asset.fingerprint, sampled, x, y, None)
     }
 
@@ -317,6 +322,7 @@ impl EditorService {
         Ok(SamplePlan {
             source,
             registry: self.registry.clone(),
+            context: self.render.clone(),
             recipe,
         })
     }
@@ -338,7 +344,7 @@ impl EditorService {
         let result = self.bound_source(&state.asset, &mut recipe, RawSettingsMode::Strict);
         let stack = Evaluated::exactly(&state.asset, &state.current_entry.id, &recipe);
         let source = self.needing(stack, result)?;
-        let sampled = source.sample(&self.registry, &recipe, x, y)?;
+        let sampled = self.sample_point(&source, &recipe, x, y)?;
         let fingerprint = state.asset.fingerprint.clone();
         pixel_sample(
             state.current_entry,
@@ -351,6 +357,24 @@ impl EditorService {
                 draft_revision: draft.draft_revision,
             }),
         )
+    }
+
+    /// One output pixel of `recipe` over `source`, through the one render entry point: no frame.
+    fn sample_point(
+        &self,
+        source: &PreviewSource,
+        recipe: &Recipe,
+        x: u32,
+        y: u32,
+    ) -> Result<crate::Sample, Error> {
+        crate::render(
+            &self.registry,
+            source,
+            recipe,
+            RenderOptions::default(),
+            &self.render,
+        )?
+        .sample(x, y)
     }
 
     /// Map one output pixel of a saved entry back to the pixel of the content stage it shows: the

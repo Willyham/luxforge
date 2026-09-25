@@ -180,7 +180,10 @@ fn reference(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
 fn reduction(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
     let source = lightwell_core::open_source(&root.join(FIXTURE))?;
     let registry = ModuleRegistry::builtin();
-    let raster = core_render(&registry, &source, SnapshotId::new(), recipe)?;
+    let context = lightwell_core::RenderContext::new();
+    let options = lightwell_core::RenderOptions::default();
+    let raster =
+        core_render(&registry, &source, recipe, options, &context)?.frame(SnapshotId::new())?;
     Ok(analysis::reduce_raster(&raster)?)
 }
 

@@ -24,9 +24,9 @@ mod reference;
 
 use lightwell_core::{
     Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, Mask,
-    ModuleRegistry, PRESENCE_EFFECT, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage, render,
-    render_linear, sample, sample_linear,
+    ModuleRegistry, PRESENCE_EFFECT, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
 };
+use lightwell_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use reference::mask::{
     Algebra, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, Stage as RefStage,
     coverage,

@@ -34,9 +34,9 @@ use lightwell_core::{
         commands::{self, MaskTarget},
     },
     path::{Stroke, StrokeTable},
-    render, render_linear, sample, sample_linear,
 };
 use lightwell_core::{LinearImage, LinearSettings};
+use lightwell_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use reference::mask::{
     Brush as RefBrush, BrushStroke, Linear, Stage as RefStage, brush_coverage, linear_coverage,
 };

@@ -1512,11 +1512,11 @@ fn session_state(
 /// The process's resource counters and working-memory budgets. It takes no parameters and says so
 /// when given one, so a client that expects an option here learns there is none.
 fn resources_read(
-    _: &mut EditorService,
+    service: &mut EditorService,
     _: &mut ClientSession,
     _: NoParams,
 ) -> Result<Value, Error> {
-    value(crate::resources::read())
+    value(crate::resources::read(service.render_context()))
 }
 
 fn render_sample(

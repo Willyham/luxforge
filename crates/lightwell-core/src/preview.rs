@@ -1,14 +1,13 @@
-use crate::render::{render_linear_proxy_cancellable, render_proxy_cancellable};
 use crate::{
     Cancel, Component, ComponentId, ComponentMode, EntryId, Error, ErrorKind, HistoryEntry,
     LinearImage, LinearSettings, Mask, MaskId, ModuleRegistry, ProxyApproximation, ProxyBounds,
-    ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
+    ProxyCache, ProxyKey, Raster, Recipe, RenderContext, RenderOptions, RenderSource, SourceImage,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, MaskOverlay, MaskPixels, Report},
     latest::{Latest, Running},
     mask::CompiledMask,
     modules::Stage,
-    render, render_cancellable, render_linear, render_linear_cancellable, stage_transform,
+    render,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
@@ -147,187 +146,20 @@ impl PreviewSource {
         }
     }
 
-    /// The input of one layer of `recipe` as a point query, through whichever path this source
-    /// interprets: the prefix before that layer, compiled once.
-    ///
-    /// This is the same prefix the colour-constrained brush's seed and `mask.sample-input` read,
-    /// through `StageContext::sample_before`; the mask table and the stroke store travel with it for
-    /// the same reason they do there — a prefix layer may itself be masked, and dropping them would
-    /// make a valid stack look as if it named a mask that does not exist.
-    ///
-    /// **A prefix holding a spatial layer is refused by name, before anything is built.** One point
-    /// query through such a layer is the declared exception to [performance rule
-    /// 4](../../docs/engineering/performance-rules.md#rules) — it evaluates the stage-aligned tiles
-    /// its pixel needs, plus the operation's halo, each once per query. The caller here asks per
-    /// display cell over the whole stage, which would evaluate every tile of it on every overlay, so
-    /// it is refused rather than paid: the check is the prefix's own compilation, which is
-    /// `O(layers)` and allocates no frame, and it happens before either evaluation exists so neither
-    /// path allocates anything to be told no.
-    ///
-    /// Cost is therefore two `compile_layers` and no frame at all.
-    pub(crate) fn layer_input<'a>(
-        &'a self,
-        registry: &ModuleRegistry,
-        recipe: &Recipe,
-        layer: usize,
-    ) -> Result<crate::render::LayerInput<'a>, Error> {
-        let layers = crate::editor::prefix(&recipe.layers, layer)?;
-        let (width, height) = self.dimensions();
-        if registry
-            .compile_layers(
-                width,
-                height,
-                layers,
-                &recipe.masks,
-                &recipe.strokes,
-                &recipe.artifacts,
-            )?
-            .evaluates_spatial()
-        {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "a spatial layer before the masked one means reading the pixel it receives \
-                     evaluates a {} px tile per grid cell",
-                    crate::render::spatial::PRODUCTION_TILE
-                ),
-            ));
-        }
-        match self {
-            Self::Jpeg(image) => Ok(crate::render::LayerInput::Byte(
-                crate::render::Evaluation::over_layers(
-                    registry,
-                    image,
-                    layers,
-                    &recipe.masks,
-                    &recipe.strokes,
-                    &recipe.artifacts,
-                )?,
-            )),
-            Self::Raw { image, settings } => {
-                let prefix = Recipe {
-                    format: recipe.format,
-                    layers: layers.to_vec(),
-                    masks: recipe.masks.clone(),
-                    strokes: recipe.strokes.clone(),
-                    artifacts: recipe.artifacts.clone(),
-                };
-                Ok(crate::render::LayerInput::Linear(
-                    crate::render::linear::LinearEvaluation::new(
-                        registry,
-                        image,
-                        &prefix,
-                        *settings,
-                        &Cancel::never(),
-                        crate::render::spatial::PRODUCTION_TILE,
-                        // A point query: this prefix is read one pixel per display cell, or once
-                        // for a stroke's colour seed, never as a whole frame. A prefix holding a
-                        // spatial layer is refused before it reaches here, so the mode changes
-                        // nothing admissible; it is named for what the read is.
-                        crate::render::linear::SpatialMode::Point,
-                    )?,
-                ))
-            }
-        }
+    /// The pixels a render of this source reads, borrowed.
+    pub fn input(&self) -> RenderSource<'_> {
+        self.into()
     }
+}
 
-    /// Render this stack, through the path the source interpretation asks for.
-    pub fn render(
-        &self,
-        registry: &ModuleRegistry,
-        snapshot_id: crate::SnapshotId,
-        recipe: &Recipe,
-    ) -> Result<Raster, Error> {
-        match self {
-            Self::Jpeg(image) => render(registry, image, snapshot_id, recipe),
-            Self::Raw { image, settings } => {
-                render_linear(registry, image, snapshot_id, recipe, *settings)
-            }
-        }
-    }
-
-    /// [`Self::render`] under a [`Cancel`] token, through the same two paths: the exact phase of a
-    /// preview job, which a newer job stops within one row or chunk.
-    pub fn render_cancellable(
-        &self,
-        registry: &ModuleRegistry,
-        snapshot_id: crate::SnapshotId,
-        recipe: &Recipe,
-        cancel: &Cancel,
-    ) -> Result<Raster, Error> {
-        match self {
-            Self::Jpeg(image) => render_cancellable(registry, image, snapshot_id, recipe, cancel),
-            Self::Raw { image, settings } => {
-                render_linear_cancellable(registry, image, snapshot_id, recipe, *settings, cancel)
-            }
-        }
-    }
-
-    /// [`Self::render_cancellable`] against a **proxy** source: the proxy phase of a preview job.
-    ///
-    /// The same code, the same colour arithmetic and the same compiled path as the exact phase —
-    /// the recipe is resolution independent and a mask's geometry is normalized, so this frame is
-    /// the exact recipe at proxy size. The one thing it adds is the thin-feature rule: a mask whose
-    /// narrowest feature is under two pixels of this smaller stage has its **field** supersampled
-    /// 2 x 2 per pixel, never the effect, and the caller reports the frame approximate through
-    /// [`ProxyApproximation`](crate::ProxyApproximation). A mask the proxy grid resolves is sampled
-    /// exactly as the exact phase samples it, which is what makes a proxy frame byte for byte the
-    /// exact recipe over the exact downscale of the source.
-    pub fn render_proxy_cancellable(
-        &self,
-        registry: &ModuleRegistry,
-        snapshot_id: crate::SnapshotId,
-        recipe: &Recipe,
-        cancel: &Cancel,
-    ) -> Result<Raster, Error> {
-        match self {
-            Self::Jpeg(image) => {
-                render_proxy_cancellable(registry, image, snapshot_id, recipe, cancel)
-            }
-            Self::Raw { image, settings } => render_linear_proxy_cancellable(
-                registry,
+impl<'a> From<&'a PreviewSource> for RenderSource<'a> {
+    fn from(source: &'a PreviewSource) -> Self {
+        match source {
+            PreviewSource::Jpeg(image) => Self::Byte(image),
+            PreviewSource::Raw { image, settings } => Self::Linear {
                 image,
-                snapshot_id,
-                recipe,
-                *settings,
-                cancel,
-            ),
-        }
-    }
-
-    /// One output pixel of this stack without rasterizing a frame, through the same two paths.
-    pub fn sample(
-        &self,
-        registry: &ModuleRegistry,
-        recipe: &Recipe,
-        x: u32,
-        y: u32,
-    ) -> Result<crate::Sample, Error> {
-        match self {
-            Self::Jpeg(image) => crate::sample(registry, image, recipe, x, y),
-            Self::Raw { image, settings } => {
-                crate::sample_linear(registry, image, recipe, *settings, x, y)
-            }
-        }
-    }
-
-    /// The output pixels at the centres of a `side` × `side` grid, row by row from the top-left,
-    /// through the same two paths and one evaluation of the stack: `O(side² × layers)`, no frame.
-    /// `checkpoint` is asked before each point.
-    pub(crate) fn sample_grid(
-        &self,
-        registry: &ModuleRegistry,
-        recipe: &Recipe,
-        side: u32,
-        checkpoint: &dyn Fn() -> Result<(), Error>,
-    ) -> Result<Vec<[u8; 4]>, Error> {
-        match self {
-            Self::Jpeg(image) => {
-                crate::render::sample_grid(registry, image, recipe, side, checkpoint)
-            }
-            Self::Raw { image, settings } => crate::render::linear::sample_grid_linear(
-                registry, image, recipe, *settings, side, checkpoint,
-            ),
+                settings: *settings,
+            },
         }
     }
 }
@@ -386,6 +218,9 @@ pub struct PreviewJob {
     pub entry: HistoryEntry,
     /// The providers the worker evaluates this stack with; shared, never rebuilt per job.
     pub registry: Arc<ModuleRegistry>,
+    /// The budgets and the estimate store this job's renders share with every other evaluation
+    /// its planner runs; shared, never rebuilt per job.
+    pub context: RenderContext,
     /// The stack to render: the entry's own recipe, or an open draft's effective recipe, bound
     /// with the verified bytes of every artifact it lists, so the worker compiles it whatever the
     /// owner's cache evicts meanwhile.
@@ -858,12 +693,14 @@ fn run(
                 Err(error) => Some(error.detail),
                 Ok((source, fresh)) => {
                     let dimensions = (key.plan.width, key.plan.height);
-                    let rendered = source.render_proxy_cancellable(
+                    let rendered = render(
                         &job.registry,
-                        snapshot_id.clone(),
+                        source.input(),
                         &job.recipe,
-                        proxy_cancel,
-                    );
+                        RenderOptions::proxy(proxy_cancel),
+                        &job.context,
+                    )
+                    .and_then(|render| render.frame(snapshot_id.clone()));
                     // The proxy this job built belongs to the worker whether or not its frame is
                     // still wanted: the next job at the same bounds is a hit either way.
                     if fresh {
@@ -922,9 +759,14 @@ fn run(
     // The exact phase's own clock starts here, after the proxy phase has handed over its frame, so
     // the two phases' times never overlap and neither includes the other.
     let started = Instant::now();
-    let rendered = job
-        .source
-        .render_cancellable(&job.registry, snapshot_id, recipe, exact_cancel);
+    let rendered = render(
+        &job.registry,
+        job.source.input(),
+        recipe,
+        RenderOptions::exact(exact_cancel),
+        &job.context,
+    )
+    .and_then(|render| render.frame(snapshot_id));
     // The histogram is reduced from the frame this worker just produced, in place and without a
     // second render or a copy. A failed reduction leaves no report rather than reporting zeroes; a
     // cancelled one means the job was superseded mid-reduce, and the frame it describes is as stale
@@ -944,9 +786,14 @@ fn run(
     // allocates one byte per display cell; a mask that reads pixels reads them from the input of its
     // own first bound layer instead, one point query per cell.
     let (mask_overlay, mask_overlay_absent) = match (&result, &job.mask_overlay) {
-        (Ok(_), Some(request)) => {
-            mask_overlay_for(&job.registry, &job.source, recipe, request, exact_cancel)
-        }
+        (Ok(_), Some(request)) => mask_overlay_for(
+            &job.registry,
+            &job.source,
+            recipe,
+            request,
+            exact_cancel,
+            &job.context,
+        ),
         _ => (None, None),
     };
     let render_ms = milliseconds_since(started);
@@ -995,6 +842,7 @@ fn mask_overlay_for(
     recipe: &Recipe,
     request: &MaskOverlayRequest,
     cancel: &Cancel,
+    context: &RenderContext,
 ) -> (Option<MaskOverlay>, Option<String>) {
     let refused = |error: Error| match error.kind {
         ErrorKind::Cancelled => (None, None),
@@ -1028,7 +876,7 @@ fn mask_overlay_for(
     let (width, height) = source.dimensions();
     // `O(layers)`: it composes the geometry tail of the stack already compiled for this frame and
     // reads no pixel.
-    let transform = match stage_transform(registry, width, height, recipe) {
+    let transform = match crate::stage_transform(registry, width, height, recipe) {
         Ok(transform) => transform,
         Err(error) => return refused(error),
     };
@@ -1052,9 +900,9 @@ fn mask_overlay_for(
         // exactly what it did before a value-based component existed.
         MaskPixels::Unavailable("this mask reads no pixel")
     } else {
-        match crate::mask::commands::input_layer_index(recipe, &request.mask)
-            .and_then(|layer| source.layer_input(registry, recipe, layer))
-        {
+        match crate::mask::commands::input_layer_index(recipe, &request.mask).and_then(|layer| {
+            crate::render::layer_input(registry, source.input(), recipe, layer, context)
+        }) {
             // Two different stages would be two different coverage fields, and `coverage_grid`
             // refuses that mismatch for the frame; it is refused here for the operation, in the same
             // voice, rather than read at coordinates of another stage.
@@ -1172,6 +1020,7 @@ mod tests {
                 orientation: 1,
             }),
             registry: Arc::new(ModuleRegistry::builtin()),
+            context: crate::render::testing::context().clone(),
             recipe,
             layer_count: None,
             draft_revision: None,
@@ -1490,6 +1339,7 @@ mod tests {
         PreviewJob {
             source,
             registry: Arc::new(ModuleRegistry::builtin()),
+            context: crate::render::testing::context().clone(),
             recipe,
             layer_count: None,
             draft_revision: None,
@@ -2670,6 +2520,7 @@ mod tests {
                 &job.recipe,
                 &request,
                 &Cancel::never(),
+                &job.context,
             );
             if absent {
                 assert!(grid.is_none(), "a value-based mask behind a spatial layer");
@@ -2754,8 +2605,14 @@ mod tests {
                         cells_h,
                     };
                     let started = Instant::now();
-                    let (grid, absent) =
-                        mask_overlay_for(&registry, &source, &recipe, &request, &Cancel::never());
+                    let (grid, absent) = mask_overlay_for(
+                        &registry,
+                        &source,
+                        &recipe,
+                        &request,
+                        &Cancel::never(),
+                        crate::render::testing::context(),
+                    );
                     let elapsed = started.elapsed();
                     let cells = u64::from(cells_w) * u64::from(cells_h);
                     match grid {
@@ -2788,9 +2645,9 @@ mod tests {
     /// with the target free, and every batch releases what it reserved.
     #[test]
     fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
-        use crate::{LinearImage, LinearSettings, PRESENCE_EFFECT, SpatialBudget};
+        use crate::{LinearImage, LinearSettings, PRESENCE_EFFECT};
         let _guard = crate::render::spatial::tests::spatial_guard();
-        crate::render::spatial::clear_estimates();
+        crate::render::testing::clear_estimates();
         // More than one 512 px tile each way, so the spatial pass runs in batches.
         let (width, height) = (1100_u32, 700_u32);
         let planes: Vec<f32> = (0..3 * width * height)
@@ -2855,7 +2712,7 @@ mod tests {
             .render(&registry, snapshot, &recipe)
             .expect("the proxy renders with the target free");
 
-        let budget = SpatialBudget::default();
+        let budget = crate::render::testing::context().spatial();
         let held = budget.reserve(budget.target(), 1);
         let mut queue = PreviewQueue::default();
         let generation = queue.request(job);

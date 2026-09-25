@@ -1,8 +1,8 @@
 use crate::*;
 use lightwell_core::{
     BASIC_EFFECT, CROP_EFFECT, CropPayload, CropStage, EditorService, Layer, LayerId,
-    ModuleRegistry, Mutation, PreviewSource, ProxyBounds, Raster, Recipe, SnapshotId, Transform,
-    analysis, render,
+    ModuleRegistry, Mutation, PreviewSource, ProxyBounds, Raster, Recipe, RenderContext,
+    RenderOptions, SnapshotId, Transform, analysis, render,
 };
 use std::time::Instant;
 
@@ -107,9 +107,11 @@ fn recipe_render_samples(
 ) -> Result<(Vec<f64>, (u32, u32))> {
     let mut timings = Vec::with_capacity(samples);
     let mut stage = (0, 0);
+    let context = RenderContext::new();
     for _ in 0..samples {
         let started = Instant::now();
-        let raster = source.render(registry, SnapshotId::new(), recipe)?;
+        let raster = render(registry, source, recipe, RenderOptions::default(), &context)?
+            .frame(SnapshotId::new())?;
         timings.push(milliseconds(started));
         ensure(!raster.rgba.is_empty(), "Colour render was empty")?;
         stage = (raster.width, raster.height);
@@ -192,9 +194,11 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         PreviewSource::Jpeg(image) => render(
             service.registry(),
             image,
-            original_job.entry.snapshot.id,
             &original_job.entry.snapshot.recipe,
-        )?,
+            RenderOptions::default(),
+            service.render_context(),
+        )?
+        .frame(original_job.entry.snapshot.id)?,
         PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
     };
     let original_render_ms = milliseconds(started);
@@ -417,9 +421,11 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         PreviewSource::Jpeg(image) => render(
             service.registry(),
             image,
-            cold_job.entry.snapshot.id,
             &cold_job.entry.snapshot.recipe,
-        )?,
+            RenderOptions::default(),
+            service.render_context(),
+        )?
+        .frame(cold_job.entry.snapshot.id)?,
         PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
     };
     let cold_original_render_ms = milliseconds(started);

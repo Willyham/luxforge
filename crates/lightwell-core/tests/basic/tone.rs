@@ -8,9 +8,10 @@
 //! `sample`), as the Exposure module does.
 
 use super::basic_layer;
-use lightwell_core::{ModuleRegistry, SnapshotId, render};
+use lightwell_core::{ModuleRegistry, SnapshotId};
 use lightwell_reference::tone::ToneParams;
 use lightwell_testkit::fixtures::{recipe, source_of};
+use lightwell_testkit::fixtures::{render, sample};
 use serde_json::{Value, json};
 
 fn tone_payload(params: ToneParams) -> Value {
@@ -185,7 +186,7 @@ fn isolated_and_combined_tone_values_render_and_sample_identically() {
         let rendered = render(&registry, &source, SnapshotId::new(), &stack)
             .unwrap_or_else(|error| panic!("{payload}: {error}"));
         for x in 0..width {
-            let sampled = lightwell_core::sample(&registry, &source, &stack, x, 0)
+            let sampled = sample(&registry, &source, &stack, x, 0)
                 .expect("a sample")
                 .rgba
                 .expect("an opaque pixel");

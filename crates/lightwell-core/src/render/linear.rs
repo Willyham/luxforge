@@ -6,22 +6,21 @@
 //! The byte JPEG evaluator in [`super::render`] remains unchanged.
 
 use super::{
-    Cancel, Compiled, Entry, Raster, ScratchBudget, Segment,
+    Cancel, Compiled, Entry, Raster, RenderContext, ScratchBudget, Segment,
     spatial::{
-        self, PRODUCTION_TILE, PointTiles, SpatialPlan, build_reduction, fill_planes,
-        resolve_globals, run_batches, run_tile,
+        self, PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
+        run_tile,
     },
 };
 use crate::{
-    Error, ErrorKind, Recipe, SnapshotId,
+    Error, ErrorKind, SnapshotId,
     colour::{mat3, srgb},
-    mask_field::MaskSampling,
-    modules::{Global, ModuleRegistry, Processing, SpatialOperation, Stage},
+    modules::{Global, Processing, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
-use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Weak;
+use std::{borrow::Cow, sync::Arc};
 
 const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
 const MAX_SIDE: u32 = 16_384;
@@ -90,7 +89,7 @@ fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
     Ok((values, plane_len))
 }
 
-fn output_len(width: u32, height: u32) -> Result<usize, Error> {
+pub(super) fn output_len(width: u32, height: u32) -> Result<usize, Error> {
     if width == 0 || height == 0 {
         return Err(Error::new(
             ErrorKind::Validation,
@@ -196,7 +195,9 @@ pub struct LinearImage {
     held: crate::source::PlanesHeld,
 }
 
-/// The source of every [`LinearImage::development`] number.
+/// The source of every [`LinearImage::development`] number. It is a development's identity, not
+/// render state: process-unique, so a proxy cache keyed by it can never mistake one development's
+/// planes for another's, whichever render context evaluates them.
 static NEXT_DEVELOPMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl LinearImage {
@@ -579,7 +580,7 @@ impl WhiteBalanceApproximation {
 }
 
 impl LinearSettings {
-    fn multiplier(self) -> Result<f64, Error> {
+    pub(super) fn multiplier(self) -> Result<f64, Error> {
         if !self.exposure_ev.is_finite() || !(-5.0..=5.0).contains(&self.exposure_ev) {
             return Err(Error::new(
                 ErrorKind::Validation,
@@ -689,9 +690,6 @@ fn linear_bilinear(
 }
 
 /// How a [`LinearEvaluation`] answers the pixels of its spatial segments.
-///
-/// `pub(crate)` because the mask overlay's per-cell read of a prefix
-/// ([`crate::PreviewSource::layer_input`]) builds an evaluation of its own and is a point query.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpatialMode {
     /// Materialize every spatial operation's output once over its whole stage, for a pass that
@@ -713,7 +711,7 @@ struct SpatialFrame {
 
 pub(crate) struct LinearEvaluation<'a> {
     source: &'a LinearImage,
-    compiled: Compiled,
+    compiled: Cow<'a, Compiled>,
     exposure_multiplier: f64,
     /// Applied to each source pixel before the exposure multiply, when the settings carry one.
     white_balance: Option<WhiteBalanceApproximation>,
@@ -734,63 +732,46 @@ pub(crate) struct LinearEvaluation<'a> {
     #[cfg(test)]
     built: Vec<(Weak<Vec<f32>>, usize)>,
     /// In [`SpatialMode::Point`], the tiles of every spatial segment this query has evaluated.
-    tiles: Option<PointTiles>,
-    /// The output tile a spatial entry is evaluated in; [`PRODUCTION_TILE`] outside the tests that
-    /// prove the result does not depend on it.
+    tiles: Option<PointTiles<'a>>,
+    /// The output tile a spatial entry is evaluated in; [`spatial::PRODUCTION_TILE`] outside the
+    /// tests that prove the result does not depend on it.
     tile: u32,
+    context: &'a RenderContext,
+}
+
+/// Refuse a stack the linear path cannot evaluate: more than one resample stage.
+pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
+    let resamples = compiled
+        .segments
+        .iter()
+        .filter(|segment| matches!(segment.entry.as_ref().map(Entry::resample), Some(Some(_))))
+        .count();
+    if resamples > MAX_RESAMPLES {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            "linear evaluation supports at most one resample stage",
+        ));
+    }
+    Ok(())
 }
 
 impl<'a> LinearEvaluation<'a> {
-    pub(crate) fn new(
-        registry: &ModuleRegistry,
-        source: &'a LinearImage,
-        recipe: &Recipe,
-        settings: LinearSettings,
-        cancel: &Cancel,
-        tile: u32,
-        mode: SpatialMode,
-    ) -> Result<Self, Error> {
-        Self::sampled(
-            registry,
-            source,
-            recipe,
-            settings,
-            cancel,
-            tile,
-            mode,
-            MaskSampling::Point,
-        )
-    }
-
-    /// The same evaluation with the mask sampling named: the proxy phase supersamples a mask field
-    /// thinner than two of its pixels, and every other caller takes `MaskSampling::Point`. The
-    /// spatial mode is orthogonal to it — one decides how a spatial segment's pixels are answered,
-    /// the other how a mask field is sampled — so both travel to `compile_sampled` unchanged.
+    /// An evaluation of a stack compiled against `source`'s dimensions. In
+    /// [`SpatialMode::Frames`] every spatial operation's output is materialized here, in stage
+    /// order, under `cancel`; in [`SpatialMode::Point`] nothing is, and a spatial segment's pixels
+    /// are pulled through [`Self::point_pixel`] one tile at a time.
     #[allow(clippy::too_many_arguments)]
-    fn sampled(
-        registry: &ModuleRegistry,
+    pub(crate) fn new(
         source: &'a LinearImage,
-        recipe: &Recipe,
+        compiled: Cow<'a, Compiled>,
         settings: LinearSettings,
         cancel: &Cancel,
         tile: u32,
         mode: SpatialMode,
-        sampling: MaskSampling,
+        context: &'a RenderContext,
     ) -> Result<Self, Error> {
         let exposure_multiplier = settings.multiplier()?;
-        let compiled =
-            registry.compile_sampled(source.width(), source.height(), recipe, sampling)?;
-        let resamples = compiled
-            .segments
-            .iter()
-            .filter(|segment| matches!(segment.entry.as_ref().map(Entry::resample), Some(Some(_))))
-            .count();
-        if resamples > MAX_RESAMPLES {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "linear evaluation supports at most one resample stage",
-            ));
-        }
+        check_resamples(&compiled)?;
         let mut evaluation = Self {
             source,
             compiled,
@@ -799,8 +780,9 @@ impl<'a> LinearEvaluation<'a> {
             frame: None,
             #[cfg(test)]
             built: Vec::new(),
-            tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tile)),
+            tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tile, context.spatial())),
             tile,
+            context,
         };
         if mode == SpatialMode::Point {
             return Ok(evaluation);
@@ -837,31 +819,6 @@ impl<'a> LinearEvaluation<'a> {
         Ok(evaluation)
     }
 
-    /// A point evaluation of a prefix `compiled` elsewhere, at `MaskSampling::Point`, for reuse
-    /// across several samples of the same prefix instead of recompiling it through [`Self::new`]
-    /// each time. `HostStage::sample_before`'s RAW path compiles a prefix once this way and calls
-    /// [`sample_linear_compiled`] for every point it samples from it. No spatial frame is
-    /// materialized here — a point query always pulls a spatial segment's pixels through
-    /// [`Self::point_pixel`] — so this never runs `build_spatial_frame`.
-    fn from_compiled(
-        source: &'a LinearImage,
-        compiled: Compiled,
-        settings: LinearSettings,
-        tile: u32,
-    ) -> Result<Self, Error> {
-        Ok(Self {
-            source,
-            compiled,
-            exposure_multiplier: settings.multiplier()?,
-            white_balance: settings.white_balance,
-            frame: None,
-            #[cfg(test)]
-            built: Vec::new(),
-            tiles: Some(PointTiles::new(tile)),
-            tile,
-        })
-    }
-
     /// Materialize one spatial operation's output over the whole stage, tile by tile, in the same
     /// batches and against the same budget the byte path uses. Each tile's input region is pulled
     /// through `pixel_in` of the previous segment, which already applies the source exposure,
@@ -884,6 +841,7 @@ impl<'a> LinearEvaluation<'a> {
         let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
         run_batches(
             &plan,
+            self.context.spatial(),
             cancel,
             |tile, parallelism| {
                 run_tile(
@@ -966,6 +924,7 @@ impl<'a> LinearEvaluation<'a> {
         });
         let read = |x: u32, y: u32| self.spatial_read(index, x, y);
         resolve_globals(
+            self.context.estimates(),
             operation,
             stage,
             self.source.fingerprint(),
@@ -1011,7 +970,7 @@ impl<'a> LinearEvaluation<'a> {
 
     /// The tiles this point evaluation has evaluated so far.
     #[cfg(test)]
-    pub(crate) fn point_tiles(&self) -> &PointTiles {
+    pub(crate) fn point_tiles(&self) -> &PointTiles<'a> {
         self.tiles.as_ref().expect("a point evaluation holds tiles")
     }
 
@@ -1155,7 +1114,7 @@ impl<'a> LinearEvaluation<'a> {
             let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
             let mut linear = [pixel.map(|value| value as f32)];
             // The same coordinates the 8-bit path hands its units, so a position-dependent unit
-            // makes `sample_linear` and `render_linear` agree pixel for pixel.
+            // makes a linear sample and a linear frame agree pixel for pixel.
             // One pixel of snapshot scratch on the stack: a masked operation blends against its
             // own input, and this path pulls single pixels, so nothing is allocated per pixel.
             let mut scratch = [[0.0f32; 3]; 1];
@@ -1184,117 +1143,15 @@ pub(super) fn terminal_pixel(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
     ])
 }
 
-/// Render a prepared linear source through the existing recipe and terminally produce bytes.
-pub fn render_linear(
-    registry: &ModuleRegistry,
+/// The whole frame of a frames-mode evaluation, terminally produced as bytes: the linear path's half
+/// of [`super::Render::frame`], for the exact phase and the proxy phase alike.
+pub(super) fn rasterize(
+    evaluation: &LinearEvaluation<'_>,
     source: &LinearImage,
     snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    settings: LinearSettings,
-) -> Result<Raster, Error> {
-    render_linear_cancellable(
-        registry,
-        source,
-        snapshot_id,
-        recipe,
-        settings,
-        &Cancel::never(),
-    )
-}
-
-/// [`render_linear`] under a [`Cancel`] token the row pass reads once per row and the spatial
-/// operations read once per tile batch. With a token that is never cancelled this is byte for byte
-/// [`render_linear`]; it is the same code, and [`render_linear`] is one call to it.
-pub fn render_linear_cancellable(
-    registry: &ModuleRegistry,
-    source: &LinearImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    settings: LinearSettings,
     cancel: &Cancel,
+    context: &RenderContext,
 ) -> Result<Raster, Error> {
-    render_linear_tiled(
-        registry,
-        source,
-        snapshot_id,
-        recipe,
-        settings,
-        cancel,
-        PRODUCTION_TILE,
-    )
-}
-
-/// [`render_linear_cancellable`] with the spatial tile size as a parameter, for the tests that
-/// prove a rendered frame does not depend on it.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_linear_tiled(
-    registry: &ModuleRegistry,
-    source: &LinearImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    settings: LinearSettings,
-    cancel: &Cancel,
-    tile: u32,
-) -> Result<Raster, Error> {
-    render_linear_sampled(
-        registry,
-        source,
-        snapshot_id,
-        recipe,
-        settings,
-        cancel,
-        tile,
-        MaskSampling::Point,
-    )
-}
-
-/// [`render_linear_cancellable`] against a **proxy** source, with the proxy phase's thin-feature
-/// rule applied to the masks in the stack. The linear half of
-/// [`render_proxy_cancellable`](super::render_proxy_cancellable); no exact render takes this path.
-pub(crate) fn render_linear_proxy_cancellable(
-    registry: &ModuleRegistry,
-    source: &LinearImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    settings: LinearSettings,
-    cancel: &Cancel,
-) -> Result<Raster, Error> {
-    render_linear_sampled(
-        registry,
-        source,
-        snapshot_id,
-        recipe,
-        settings,
-        cancel,
-        PRODUCTION_TILE,
-        MaskSampling::ThinFeature,
-    )
-}
-
-/// [`render_linear_tiled`] with the mask sampling as a parameter as well.
-#[allow(clippy::too_many_arguments)]
-fn render_linear_sampled(
-    registry: &ModuleRegistry,
-    source: &LinearImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    settings: LinearSettings,
-    cancel: &Cancel,
-    tile: u32,
-    sampling: MaskSampling,
-) -> Result<Raster, Error> {
-    // A token already cancelled when the call arrives costs no frame at all.
-    cancel.check()?;
-    let evaluation = LinearEvaluation::sampled(
-        registry,
-        source,
-        recipe,
-        settings,
-        cancel,
-        tile,
-        SpatialMode::Frames,
-        sampling,
-    )?;
     let (width, height) = evaluation.stage();
     let output_len = output_len(width, height)?;
     let row_bytes = usize::try_from(u64::from(width) * 4).map_err(|_| {
@@ -1307,7 +1164,14 @@ fn render_linear_sampled(
     let mut frame = super::zeroed_frame(output_len);
     let output = super::frame_mut(&mut frame);
     if let Some(segment) = evaluation.source_color_segment() {
-        render_source_color_rows(&evaluation, segment, cancel, output, row_bytes)?;
+        render_source_color_rows(
+            evaluation,
+            segment,
+            cancel,
+            context.scratch(),
+            output,
+            row_bytes,
+        )?;
     } else {
         let source_rows = evaluation.source_rows();
         // One relaxed load per output row, ahead of that row's evaluations; the f64 evaluation and
@@ -1370,6 +1234,7 @@ fn render_source_color_rows(
     evaluation: &LinearEvaluation<'_>,
     segment: &Segment,
     cancel: &Cancel,
+    budget: &ScratchBudget,
     output: &mut [u8],
     row_bytes: usize,
 ) -> Result<(), Error> {
@@ -1442,8 +1307,7 @@ fn render_source_color_rows(
     let active_row_scratch = u64::try_from(row_scratch_bytes)
         .unwrap_or(u64::MAX)
         .saturating_mul(rayon::current_num_threads() as u64);
-    let parallel = pixel_count >= PARALLEL_RENDER_PIXELS
-        && active_row_scratch <= ScratchBudget::default().target();
+    let parallel = pixel_count >= PARALLEL_RENDER_PIXELS && active_row_scratch <= budget.target();
     if parallel {
         output
             .par_chunks_mut(chunk_bytes)
@@ -1451,7 +1315,7 @@ fn render_source_color_rows(
             .try_for_each_init(
                 || {
                     (
-                        ScratchBudget::default().reserve(row_scratch_bytes),
+                        budget.reserve(row_scratch_bytes),
                         Vec::with_capacity(width),
                         [[0.0_f32; 3]; 1],
                     )
@@ -1461,7 +1325,7 @@ fn render_source_color_rows(
                 },
             )?;
     } else {
-        let _reservation = ScratchBudget::default().reserve(row_scratch_bytes);
+        let _reservation = budget.reserve(row_scratch_bytes);
         let mut pixels = Vec::with_capacity(width);
         let mut scratch = [[0.0_f32; 3]; 1];
         for (chunk_index, chunk) in output.chunks_mut(chunk_bytes).enumerate() {
@@ -1471,114 +1335,16 @@ fn render_source_color_rows(
     Ok(())
 }
 
-/// Evaluate one terminal output pixel, equal to the byte [`render_linear`] writes there. Through a
-/// spatial layer it evaluates the tile that contains the pixel, and through several the tiles of the
-/// earlier ones that tile's halo reads, each once and none materialized, as the byte path's sample
-/// does; that is the declared exception to performance rule 4.
-pub fn sample_linear(
-    registry: &ModuleRegistry,
-    source: &LinearImage,
-    recipe: &Recipe,
-    settings: LinearSettings,
-    x: u32,
-    y: u32,
-) -> Result<super::Sample, Error> {
-    sample_linear_tiled(registry, source, recipe, settings, x, y, PRODUCTION_TILE)
-}
-
-/// [`sample_linear`] of a prefix `compiled` elsewhere, at [`PRODUCTION_TILE`]: calling this for
-/// every point sampled from the same compiled prefix, as `HostStage::sample_before`'s RAW path does
-/// for Basic's neutral picker's 5 × 5 patch, serves them all from that one compile instead of
-/// recompiling per point ([performance rule
-/// 4](../../../docs/engineering/performance-rules.md#rules)). The sampled value is unchanged: this
-/// is [`sample_linear`] with its compile step hoisted out to the caller.
-pub(crate) fn sample_linear_compiled(
-    source: &LinearImage,
-    compiled: Compiled,
-    settings: LinearSettings,
-    x: u32,
-    y: u32,
-) -> Result<super::Sample, Error> {
-    let evaluation = LinearEvaluation::from_compiled(source, compiled, settings, PRODUCTION_TILE)?;
-    point_sample(&evaluation, x, y)
-}
-
-/// [`sample_linear`] with the spatial tile size as a parameter, for the tests that prove a sample
-/// equals the render at any tile size.
-pub(super) fn sample_linear_tiled(
-    registry: &ModuleRegistry,
-    source: &LinearImage,
-    recipe: &Recipe,
-    settings: LinearSettings,
-    x: u32,
-    y: u32,
-    tile: u32,
-) -> Result<super::Sample, Error> {
-    let evaluation = LinearEvaluation::new(
-        registry,
-        source,
-        recipe,
-        settings,
-        &Cancel::new(),
-        tile,
-        SpatialMode::Point,
-    )?;
-    point_sample(&evaluation, x, y)
-}
-
-/// The terminal pixel a point evaluation holds at `(x, y)`, with the stage it was sampled from.
-fn point_sample(evaluation: &LinearEvaluation<'_>, x: u32, y: u32) -> Result<super::Sample, Error> {
-    let (width, height) = evaluation.stage();
-    let _ = output_len(width, height)?;
-    let rgba = evaluation.pixel(x, y)?.map(terminal_pixel).transpose()?;
-    Ok(super::Sample {
-        width,
-        height,
-        rgba,
-    })
-}
-
-/// [`super::sample_grid`] on the linear path: the terminal bytes at the centres of a `side` ×
-/// `side` grid, row by row from the top-left, through one evaluation of the stack, so each equals
-/// the rendered byte there. A spatial operation materializes its output once for all of them: the
-/// points spread over the whole stage, one tile each, so the frame costs no more than their tiles.
-pub(crate) fn sample_grid_linear(
-    registry: &ModuleRegistry,
-    source: &LinearImage,
-    recipe: &Recipe,
-    settings: LinearSettings,
-    side: u32,
-    checkpoint: &dyn Fn() -> Result<(), Error>,
-) -> Result<Vec<[u8; 4]>, Error> {
-    let evaluation = LinearEvaluation::new(
-        registry,
-        source,
-        recipe,
-        settings,
-        &Cancel::new(),
-        PRODUCTION_TILE,
-        SpatialMode::Frames,
-    )?;
-    let (width, height) = evaluation.stage();
-    let _ = output_len(width, height)?;
-    super::grid_centres(side, width, height)
-        .into_iter()
-        .map(|(x, y)| {
-            checkpoint()?;
-            evaluation
-                .pixel(x, y)?
-                .map(terminal_pixel)
-                .transpose()?
-                .ok_or_else(|| {
-                    Error::new(ErrorKind::Internal, "a grid centre lies outside the stage")
-                })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::{
+        spatial::PRODUCTION_TILE,
+        testing::{
+            linear_evaluation, render_linear, render_linear_cancellable,
+            render_linear_proxy_cancellable, sample_linear,
+        },
+    };
     use crate::{
         Layer, Recipe, SnapshotId,
         modules::{CropPayload, ModuleRegistry},
@@ -1606,7 +1372,7 @@ mod tests {
         recipe: &Recipe,
         settings: LinearSettings,
     ) -> Raster {
-        let evaluation = LinearEvaluation::new(
+        let evaluation = linear_evaluation(
             registry,
             source,
             recipe,
@@ -1833,7 +1599,7 @@ mod tests {
         };
 
         for recipe in recipes {
-            let evaluation = LinearEvaluation::new(
+            let evaluation = linear_evaluation(
                 &registry,
                 &source,
                 &recipe,
@@ -1912,7 +1678,7 @@ mod tests {
         ]);
 
         for recipe in [&masked_recipe, &geometric_recipe] {
-            let evaluation = LinearEvaluation::new(
+            let evaluation = linear_evaluation(
                 &registry,
                 &source,
                 recipe,
@@ -2744,7 +2510,7 @@ mod tests {
         let registry = ModuleRegistry::builtin();
         let settings = LinearSettings::default();
         let evaluate = |recipe: &Recipe, settings| {
-            LinearEvaluation::new(
+            linear_evaluation(
                 &registry,
                 &source,
                 recipe,
@@ -2851,7 +2617,7 @@ mod tests {
             ),
         };
         let overflowing_source = image(1, 1, &[[1.0; 3]]);
-        let generic = LinearEvaluation::new(
+        let generic = linear_evaluation(
             &registry,
             &overflowing_source,
             &Recipe::default(),
@@ -3116,7 +2882,7 @@ mod tests {
             masks: Vec::new(),
             ..Recipe::default()
         };
-        let evaluation = LinearEvaluation::new(
+        let evaluation = linear_evaluation(
             &ModuleRegistry::builtin(),
             &view,
             &recipe,
@@ -3694,12 +3460,12 @@ mod tests {
     #[test]
     fn a_point_evaluation_builds_no_frame_for_its_spatial_segment() {
         let _guard = crate::render::spatial::tests::spatial_guard();
-        crate::render::spatial::clear_estimates();
+        crate::render::testing::clear_estimates();
         let source = cancellation_image(96, 64);
         let registry = ModuleRegistry::builtin();
         let stack = presence_stack(serde_json::json!({"clarity": 40.0}));
         let evaluate = |mode| {
-            LinearEvaluation::new(
+            linear_evaluation(
                 &registry,
                 &source,
                 &stack,
@@ -3794,12 +3560,12 @@ mod tests {
     #[test]
     fn a_linear_evaluation_keeps_at_most_two_spatial_frames() {
         let _guard = crate::render::spatial::tests::spatial_guard();
-        crate::render::spatial::clear_estimates();
+        crate::render::testing::clear_estimates();
         let source = cancellation_image(96, 64);
         let registry = ModuleRegistry::builtin();
         let stack = four_spatial_segments();
         let evaluate = |mode| {
-            LinearEvaluation::new(
+            linear_evaluation(
                 &registry,
                 &source,
                 &stack,
@@ -3860,8 +3626,8 @@ mod tests {
         );
     }
 
-    /// `sample_linear_compiled` from one `Compiled` shared by several points equals `sample_linear`'s
-    /// own compile-per-call, at every point of a small stack with a colour layer: the split
+    /// A sample from one `Compiled` shared by several points equals a sample that compiles for
+    /// itself, at every point of a small stack with a colour layer: the split
     /// `HostStage::sample_before`'s RAW path takes to compile a prefix once and reuse it across the
     /// points it samples (TASK-015) reads the same values as compiling fresh for each point.
     #[test]
@@ -3914,8 +3680,18 @@ mod tests {
         for y in 0..3 {
             for x in 0..3 {
                 let expected = sample_linear(&registry, &source, &recipe, settings, x, y).unwrap();
-                let actual =
-                    sample_linear_compiled(&source, compiled.clone(), settings, x, y).unwrap();
+                let actual = crate::render::Render::compiled(
+                    crate::RenderSource::Linear {
+                        image: &source,
+                        settings,
+                    },
+                    compiled.clone(),
+                    crate::RenderOptions::default(),
+                    crate::render::testing::context(),
+                )
+                .unwrap()
+                .sample(x, y)
+                .unwrap();
                 assert_eq!(actual.rgba, expected.rgba, "({x}, {y})");
                 assert_eq!(
                     (actual.width, actual.height),
@@ -3960,7 +3736,7 @@ mod tests {
             serde_json::json!({"clarity": 60.0, "dehaze": 30.0}),
         ] {
             let stack = presence_stack(payload.clone());
-            crate::render::spatial::clear_estimates();
+            crate::render::testing::clear_estimates();
             let raster =
                 render_linear(&registry, &image, SnapshotId::new(), &stack, settings).unwrap();
             let mut state = 0x2545_f491_4f6c_dd1d_u64;
@@ -3986,7 +3762,7 @@ mod tests {
             let mut frames = Vec::new();
             for _ in 0..3 {
                 let start = Instant::now();
-                LinearEvaluation::new(
+                linear_evaluation(
                     &registry,
                     &image,
                     &stack,

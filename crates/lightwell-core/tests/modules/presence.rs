@@ -14,13 +14,13 @@
 
 use lightwell_core::{
     Layer, LinearImage, LinearSettings, ModuleRegistry, PRESENCE_EFFECT, SnapshotId, SourceImage,
-    render, render_linear, sample, sample_linear,
 };
 use lightwell_reference::{
     self as reference,
     presence::{PresenceParams, Rgb, apply_presence},
 };
 use lightwell_testkit::fixtures::{self, linear_source_of, recipe, source_of};
+use lightwell_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use serde_json::{Value, json};
 
 /// The frozen production tolerance's relative band, in linear light.

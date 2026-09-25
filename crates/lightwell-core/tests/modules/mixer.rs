@@ -9,12 +9,10 @@
 //! `1e-5 + 1e-5 * |threshold|` of the exact linear threshold between two codes, where one code of
 //! difference is permitted. Identity stacks and byte sharing are exact with no tolerance at all.
 
-use lightwell_core::{
-    Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry, SnapshotId, render, render_linear, sample,
-    sample_linear,
-};
+use lightwell_core::{Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry, SnapshotId};
 use lightwell_reference::{self as reference, mixer::RANGE_NAMES};
 use lightwell_testkit::fixtures::{self, linear_source_of, recipe, source_of};
+use lightwell_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use serde_json::{Map, Value, json};
 use std::fs;
 

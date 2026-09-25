@@ -5,9 +5,9 @@
 use super::{Checked, ensure, shape::FieldPatch};
 use lightwell_core::{
     ErrorKind, Layer, LinearImage, LinearSettings, ModuleRegistry, Processing, RECIPE_FORMAT,
-    Raster, Recipe, SnapshotId, SourceImage, Stage, open_source, render, render_linear, sample,
-    sample_linear,
+    Raster, Recipe, SnapshotId, SourceImage, Stage, open_source,
 };
+use lightwell_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 

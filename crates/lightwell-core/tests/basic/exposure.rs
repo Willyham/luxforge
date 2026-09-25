@@ -9,10 +9,11 @@
 use super::{basic_layer, mutation};
 use lightwell_core::{
     BASIC_EFFECT, CROP_EFFECT, EditorService, Layer, LayerId, ModuleRegistry, MutationOutcome,
-    ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, SnapshotId, SourceImage, Transform, render,
+    ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, SnapshotId, SourceImage, Transform,
 };
 use lightwell_reference::{RefOp, evaluate_pixel, exposure, srgb_to_linear};
 use lightwell_testkit::fixtures::{self, recipe, source_of};
+use lightwell_testkit::fixtures::{render, sample};
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, fs};
@@ -110,7 +111,7 @@ fn a_sample_equals_the_rendered_byte_for_every_code() {
         let rendered =
             render(&registry, &source, SnapshotId::new(), &stack).expect("a rendered frame");
         for code in 0u32..256 {
-            let sampled = lightwell_core::sample(&registry, &source, &stack, code, 0)
+            let sampled = sample(&registry, &source, &stack, code, 0)
                 .expect("a sample")
                 .rgba
                 .expect("an opaque pixel");

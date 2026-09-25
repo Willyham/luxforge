@@ -7,9 +7,10 @@
 //! because production decodes, converts through Oklab and multiplies in f32.
 
 use super::basic_layer;
-use lightwell_core::{ModuleRegistry, SnapshotId, render};
+use lightwell_core::{ModuleRegistry, SnapshotId};
 use lightwell_reference::{RefOp, evaluate_pixel, exposure, srgb_to_linear};
 use lightwell_testkit::fixtures::{self, recipe, source_of};
+use lightwell_testkit::fixtures::{render, sample};
 use serde_json::json;
 
 /// The Colour contract's relative band around a code threshold.
@@ -148,7 +149,7 @@ fn combined_vibrance_saturation_with_exposure_matches_the_reference_in_frozen_or
                 );
             }
 
-            let sampled = lightwell_core::sample(&registry, &source, &stack, index as u32, 0)
+            let sampled = sample(&registry, &source, &stack, index as u32, 0)
                 .expect("a sample")
                 .rgba
                 .expect("an opaque pixel");

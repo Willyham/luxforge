@@ -1329,7 +1329,7 @@ pub(crate) mod tests {
             ActionInput, ActionPlan, Availability, CropPayload, EffectStage, ModuleDescriptor,
             StageContext,
         },
-        render, sample,
+        render::testing::{render, sample},
     };
     use serde_json::{Map, Value, json};
 
@@ -3096,7 +3096,7 @@ pub(crate) mod tests {
                 .expect("a missing mask never compiles"),
             render(&registry, &source(), SnapshotId::new(), &recipe).unwrap_err(),
             sample(&registry, &source(), &recipe, 0, 0).unwrap_err(),
-            crate::render::extents(&registry, &source(), &recipe).unwrap_err(),
+            crate::render::testing::extents(&registry, &source(), &recipe).unwrap_err(),
         ] {
             assert_eq!(error.kind, ErrorKind::Incompatible);
             assert_eq!(error.detail, expected);
@@ -3194,7 +3194,7 @@ pub(crate) mod tests {
                 .expect("an unknown component kind never compiles"),
             render(&registry, &source(), SnapshotId::new(), &recipe).unwrap_err(),
             sample(&registry, &source(), &recipe, 0, 0).unwrap_err(),
-            crate::render::extents(&registry, &source(), &recipe).unwrap_err(),
+            crate::render::testing::extents(&registry, &source(), &recipe).unwrap_err(),
         ] {
             assert_eq!(error.kind, ErrorKind::Incompatible);
             assert_eq!(error.detail, "unknown mask component future-kind");

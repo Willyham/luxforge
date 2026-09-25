@@ -848,6 +848,7 @@ pub struct OwnerHandle {
     sender: SyncSender<OwnerMessage>,
     next_client: Arc<AtomicU64>,
     activity: Arc<ActivityBoard>,
+    render: crate::RenderContext,
 }
 
 impl OwnerHandle {
@@ -909,6 +910,7 @@ impl OwnerHandle {
     ) -> Result<(Self, JoinHandle<()>), Error> {
         let mut service = EditorService::open_with(catalog, registry)?;
         service.disable_sync_source();
+        let render = service.render_context().clone();
         let (sender, receiver) = sync_channel(64);
         let (source_sender, source_receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
         let worker_sender = sender.clone();
@@ -947,6 +949,7 @@ impl OwnerHandle {
                 sender,
                 next_client: Arc::new(AtomicU64::new(1)),
                 activity,
+                render,
             },
             join,
         ))
@@ -957,6 +960,12 @@ impl OwnerHandle {
     /// the owner's own work without passing through the owner.
     pub fn activity(&self) -> Arc<ActivityBoard> {
         self.activity.clone()
+    }
+
+    /// The render context every evaluation this owner plans reads, so a render the desktop runs
+    /// itself shares its budgets and a diagnostic reads the same figures `resources.read` reports.
+    pub fn render_context(&self) -> crate::RenderContext {
+        self.render.clone()
     }
 
     /// Allocate an edit client's identity; its session starts as default on first use.
@@ -1545,6 +1554,7 @@ pub(super) fn analysis_request(
         identity,
         source,
         registry,
+        context,
         recipe,
         failure,
     } = owner.service.analysis_plan(&params.asset_id, selection)?;
@@ -1563,6 +1573,7 @@ pub(super) fn analysis_request(
                     identity,
                     source,
                     registry,
+                    context,
                     recipe,
                 }) {
                     owner.analyses.supersede(&displaced);

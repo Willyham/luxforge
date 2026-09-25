@@ -1,10 +1,9 @@
 //! The developer proof module is deliberately registered only in these tests. Its descriptor,
 //! method table, persistence and identity render are exercised through the same public paths as
 //! an independent JSON client.
-use lightwell_core::{
-    CONTROLS_EFFECT, ControlsModule, ModuleRegistry, OwnerHandle, SnapshotId, render,
-};
+use lightwell_core::{CONTROLS_EFFECT, ControlsModule, ModuleRegistry, OwnerHandle, SnapshotId};
 use lightwell_testkit::client::{call, import, refused};
+use lightwell_testkit::fixtures::render;
 use lightwell_testkit::fixtures::{self, recipe, source_of};
 use serde_json::json;
 use std::{fs, sync::Arc};

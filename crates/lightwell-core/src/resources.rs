@@ -1,11 +1,11 @@
-//! What the operating system accounts to this process, and the process-wide working-memory budgets,
-//! as `resources.read` reports them.
+//! What the operating system accounts to this process, and the working-memory budgets of the
+//! render context every evaluation the owner plans shares, as `resources.read` reports them.
 //!
-//! The counters belong to the process, not to a catalog owner, so there is one sampler per process,
-//! as there is one colour-scratch budget. A read takes its mutex on the owner thread and costs a
-//! handful of system calls plus, with this process's GPU clients cached, a few IORegistry property
-//! reads: bookkeeping, not frame work.
-use crate::{ScratchBudget, SpatialBudget};
+//! The counters belong to the process, not to a catalog owner, so there is one sampler per process;
+//! the budgets belong to the render context the caller passes in. A read takes its mutex on the
+//! owner thread and costs a handful of system calls plus, with this process's GPU clients cached, a
+//! few IORegistry property reads: bookkeeping, not frame work.
+use crate::RenderContext;
 pub use lightwell_process::MemoryKind;
 use lightwell_process::{Counters, Sampler, Unavailable};
 use serde::Serialize;
@@ -103,7 +103,7 @@ pub struct GpuReport {
     pub unavailable: Reasons,
 }
 
-/// The process-wide working-memory budgets: exact, and free to read.
+/// A render context's working-memory budgets: exact, and free to read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct BudgetsReport {
     pub colour_scratch: BudgetReport,
@@ -119,8 +119,8 @@ pub struct BudgetReport {
     pub peak_bytes: u64,
 }
 
-/// Read every counter and budget now.
-pub fn read() -> ResourceReport {
+/// Read every counter now, and the budgets of `context`.
+pub fn read(context: &RenderContext) -> ResourceReport {
     let (monotonic_ns, counters) = {
         let mut shared = shared();
         let since = shared.epoch.elapsed();
@@ -129,8 +129,8 @@ pub fn read() -> ResourceReport {
             shared.sampler.read(),
         )
     };
-    let scratch = ScratchBudget::default();
-    let spatial = SpatialBudget::default();
+    let scratch = context.scratch();
+    let spatial = context.spatial();
     report(
         monotonic_ns,
         counters,
@@ -239,7 +239,7 @@ mod tests {
     /// A real read on this machine has exactly the documented shape.
     #[test]
     fn a_read_has_the_documented_keys() {
-        let report = serde_json::to_value(read()).unwrap();
+        let report = serde_json::to_value(read(&crate::RenderContext::new())).unwrap();
         assert_eq!(
             keys(&report),
             ["budgets", "cpu", "gpu", "memory", "monotonic_ns"]
@@ -298,11 +298,11 @@ mod tests {
         }
         assert_eq!(
             report["budgets"]["colour_scratch"]["target_bytes"],
-            json!(ScratchBudget::default().target())
+            json!(crate::RenderContext::new().scratch().target())
         );
         assert_eq!(
             report["budgets"]["spatial"]["target_bytes"],
-            json!(SpatialBudget::default().target())
+            json!(crate::RenderContext::new().spatial().target())
         );
         if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
             assert!(report["cpu"].get("unavailable").is_none(), "{report}");
@@ -318,7 +318,7 @@ mod tests {
             );
             assert!(report["gpu"].get("unified_memory").is_none());
         }
-        let later = serde_json::to_value(read()).unwrap();
+        let later = serde_json::to_value(read(&crate::RenderContext::new())).unwrap();
         assert!(later["monotonic_ns"].as_u64() > report["monotonic_ns"].as_u64());
     }
 

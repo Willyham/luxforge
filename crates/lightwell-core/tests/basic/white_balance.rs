@@ -11,13 +11,13 @@
 
 use super::basic_layer;
 use lightwell_core::{
-    ApiRequest, BASIC_EFFECT, EFFECT_FORMAT, ModuleRegistry, OwnerHandle, SnapshotId, render,
-    sample,
+    ApiRequest, BASIC_EFFECT, EFFECT_FORMAT, ModuleRegistry, OwnerHandle, SnapshotId,
 };
 use lightwell_reference::srgb_to_linear;
 use lightwell_reference::white_balance::{self, RejectReason};
 use lightwell_testkit::client::{call, import, refused};
 use lightwell_testkit::fixtures::{self, recipe, source_of};
+use lightwell_testkit::fixtures::{render, sample};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
 

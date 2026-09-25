@@ -12,7 +12,7 @@ use crate::{
         ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
         StageContext, StageQuestions, action_label, check_parameters,
     },
-    render::{Compiled, Evaluation, linear::sample_linear_compiled},
+    render::{Compiled, Render, RenderOptions, RenderSource},
     source::PreparedSource,
 };
 use serde_json::{Value, json};
@@ -658,13 +658,19 @@ impl StageQuestions for HostStage<'_> {
     /// `O(layers)` once rather than once per point, and nothing is rasterized either way.
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         let compiled = self.compiled_prefix(index)?;
-        match self.source()? {
-            PreparedSource::Jpeg(image) => Evaluation::from_compiled(image, compiled).pixel(x, y),
+        let source = match self.source()? {
+            PreparedSource::Jpeg(image) => RenderSource::Byte(image),
             PreparedSource::Raw(_) => {
-                let (linear, settings) = self.linear()?;
-                Ok(sample_linear_compiled(linear, compiled, settings, x, y)?.rgba)
+                let (image, settings) = self.linear()?;
+                RenderSource::Linear { image, settings }
             }
-        }
+        };
+        let context = self.service.render_context();
+        Ok(
+            Render::compiled(source, compiled, RenderOptions::default(), context)?
+                .sample(x, y)?
+                .rgba,
+        )
     }
 
     /// The RAW mosaic's own patch, which needs the decoded sensor and no development.
@@ -772,7 +778,8 @@ mod tests {
     };
     use crate::{
         BoxRect, CROP_EFFECT, CropPayload, CropStage, EffectStage, ModuleRegistry,
-        ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, Raster, SnapshotId, open_source, render,
+        ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, Raster, SnapshotId, open_source,
+        render::testing::render,
     };
     use serde_json::Map;
     use std::sync::Arc;
@@ -2236,7 +2243,7 @@ mod tests {
         for y in 0..raster.height {
             for x in 0..raster.width {
                 assert_eq!(
-                    crate::sample(&registry, &source, &recipe, x, y)
+                    crate::render::testing::sample(&registry, &source, &recipe, x, y)
                         .unwrap()
                         .rgba,
                     raster.pixel(x, y),
@@ -2397,19 +2404,28 @@ mod tests {
             1,
             "25 points sampled from one prefix must compile it once"
         );
-        let fresh = Evaluation::over_layers(
-            &service.registry,
-            &image,
-            &recipe.layers[..index],
-            &recipe.masks,
-            &recipe.strokes,
-            &recipe.artifacts,
+        let prefix = service
+            .registry
+            .compile_layers(
+                image.width,
+                image.height,
+                &recipe.layers[..index],
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )
+            .unwrap();
+        let fresh = Render::compiled(
+            RenderSource::Byte(&image),
+            prefix,
+            RenderOptions::default(),
+            crate::render::testing::context(),
         )
         .unwrap();
         for (point_index, cached) in sampled.iter().enumerate() {
             let x = (point_index % 5) as u32;
             let y = (point_index / 5) as u32;
-            assert_eq!(*cached, fresh.pixel(x, y).unwrap(), "({x}, {y})");
+            assert_eq!(*cached, fresh.sample(x, y).unwrap().rgba, "({x}, {y})");
         }
         drop(service);
         std::fs::remove_file(catalog).unwrap();

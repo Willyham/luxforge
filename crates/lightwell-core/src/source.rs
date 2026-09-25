@@ -478,7 +478,7 @@ mod tests {
     use super::*;
     use crate::{
         LinearSettings, ModuleRegistry, PreviewSource, ProxyBounds, Recipe, SnapshotId,
-        WhiteBalanceApproximation, gains_from_temperature_tint, render_linear,
+        WhiteBalanceApproximation, gains_from_temperature_tint, render::testing::render_linear,
     };
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
@@ -1043,7 +1043,7 @@ mod jpeg_tests {
     use super::*;
     use crate::{
         AssetId, Layer, ModuleRegistry, Orientation, RECIPE_FORMAT, Recipe, Snapshot, SnapshotId,
-        Transform, render,
+        Transform, render::testing::render,
     };
 
     fn fixture(name: &str) -> std::path::PathBuf {

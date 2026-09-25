@@ -1,11 +1,14 @@
 //! The inputs integration tests build their checks from: repository fixtures, unique scratch paths,
-//! exact synthetic sources, single-layer stacks, mutation envelopes, and the one tolerance rule a
-//! rendered byte is held to against an f64 reference.
+//! exact synthetic sources, single-layer stacks, mutation envelopes, frames and samples through the
+//! one render entry point, and the one tolerance rule a rendered byte is held to against an f64
+//! reference.
 //!
 //! These speak `lightwell-core` types, so they serve the core's integration tests, other crates'
 //! tests and xtask, not the core's own unit tests (see the crate documentation).
 use lightwell_core::{
-    EFFECT_FORMAT, Layer, LayerId, LinearImage, Mutation, RECIPE_FORMAT, Recipe, SourceImage,
+    EFFECT_FORMAT, Error, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, Mutation,
+    RECIPE_FORMAT, Raster, Recipe, RenderContext, RenderOptions, RenderSource, Sample, SnapshotId,
+    SourceImage,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -172,4 +175,84 @@ pub fn assert_code_near_threshold(
         "{case}: rendered {actual} against {expected}, but the reference value {linear} is not \
          within {tolerance} of the code threshold {threshold}"
     );
+}
+
+/// One exact frame of `recipe` over a byte source, through the render entry point in a context of
+/// its own.
+pub fn render(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+) -> Result<Raster, Error> {
+    frame(registry, source.into(), snapshot_id, recipe)
+}
+
+/// One exact pixel of `recipe` over a byte source, through the render entry point in a context of
+/// its own. `rgba` is `None` outside the output stage.
+pub fn sample(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    recipe: &Recipe,
+    x: u32,
+    y: u32,
+) -> Result<Sample, Error> {
+    point(registry, source.into(), recipe, x, y)
+}
+
+/// [`render`] over a linear source with the settings its recipe asks of it.
+pub fn render_linear(
+    registry: &ModuleRegistry,
+    image: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+) -> Result<Raster, Error> {
+    frame(
+        registry,
+        RenderSource::Linear { image, settings },
+        snapshot_id,
+        recipe,
+    )
+}
+
+/// [`sample`] over a linear source with the settings its recipe asks of it.
+pub fn sample_linear(
+    registry: &ModuleRegistry,
+    image: &LinearImage,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    x: u32,
+    y: u32,
+) -> Result<Sample, Error> {
+    point(
+        registry,
+        RenderSource::Linear { image, settings },
+        recipe,
+        x,
+        y,
+    )
+}
+
+fn frame(
+    registry: &ModuleRegistry,
+    source: RenderSource<'_>,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+) -> Result<Raster, Error> {
+    let context = RenderContext::new();
+    lightwell_core::render(registry, source, recipe, RenderOptions::default(), &context)?
+        .frame(snapshot_id)
+}
+
+fn point(
+    registry: &ModuleRegistry,
+    source: RenderSource<'_>,
+    recipe: &Recipe,
+    x: u32,
+    y: u32,
+) -> Result<Sample, Error> {
+    let context = RenderContext::new();
+    lightwell_core::render(registry, source, recipe, RenderOptions::default(), &context)?
+        .sample(x, y)
 }

@@ -340,6 +340,7 @@ pub(crate) fn refresh_for(
         original: None,
         job: PreviewJob {
             registry: std::sync::Arc::new(lightwell_core::ModuleRegistry::builtin()),
+            context: lightwell_core::RenderContext::new(),
             source: lightwell_core::PreviewSource::Jpeg(SourceImage {
                 width: 1,
                 height: 1,

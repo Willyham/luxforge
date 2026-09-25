@@ -1,7 +1,7 @@
 use crate::{
-    Error, ErrorKind, Layer, Recipe, SnapshotId, SourceImage,
+    Error, ErrorKind, Recipe, SnapshotId, SourceImage,
     colour::srgb::{decode_channel, decode_pixel, linear_to_srgb, quantize_pixel},
-    mask_field::{MaskField, MaskSampling},
+    mask_field::MaskField,
     modules::{
         ColorOperation, ExactGeometry, ModuleRegistry, Parallelism, Processing, Region, Resample,
         SpatialOperation, Stage,
@@ -10,24 +10,24 @@ use crate::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     cell::Cell,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
 };
 
+mod context;
+mod entry;
 pub mod linear;
 pub mod spatial;
-pub(crate) use linear::render_linear_proxy_cancellable;
-pub use linear::{
-    LinearImage, LinearSettings, WhiteBalanceApproximation, render_linear,
-    render_linear_cancellable, sample_linear,
-};
-pub use spatial::SpatialBudget;
+pub use context::{RenderContext, ScratchBudget, SpatialBudget};
+pub(crate) use entry::layer_input;
+pub use entry::{Render, RenderOptions, RenderPhase, RenderSource, render};
+pub use linear::{LinearImage, LinearSettings, WhiteBalanceApproximation};
 use spatial::{
-    PRODUCTION_TILE, PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals,
-    run_batches, run_tile,
+    PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches, run_tile,
 };
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
@@ -80,91 +80,6 @@ impl Cancel {
         } else {
             Ok(())
         }
-    }
-}
-
-/// The default aggregate target for transient float scratch: 64 MiB across every active render.
-const DEFAULT_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
-
-/// A process-wide account of the transient float buffers a render streams through. Frames have
-/// their own 512 MiB limit; this covers everything that is neither a frame nor the source, so a
-/// colour pass never trades a bounded frame for scratch nobody counts. Reservations are taken
-/// before the allocation they pay for and released when it is dropped.
-///
-/// It is a target, not a limit. What keeps scratch inside it is the row chunk, sized so one chunk
-/// per pool worker stays well below the target; a chunk that finds the target taken — because more
-/// renders overlap than the sizing assumed, or the target was lowered — still runs, and
-/// [`Self::peak`] shows the overshoot. Nothing here refuses work.
-pub struct ScratchBudget {
-    target: AtomicU64,
-    used: AtomicU64,
-    /// The largest `used` any reservation ever reached, so a process that is idle when it is asked
-    /// can still report what the budget actually had to carry. It is only ever raised.
-    peak: AtomicU64,
-}
-
-static SCRATCH_BUDGET: ScratchBudget = ScratchBudget {
-    target: AtomicU64::new(DEFAULT_SCRATCH_BYTES),
-    used: AtomicU64::new(0),
-    peak: AtomicU64::new(0),
-};
-
-impl ScratchBudget {
-    /// The one process-wide budget. It is shared state, not a new instance, so this is not the
-    /// `Default` trait.
-    #[allow(clippy::should_implement_trait)]
-    pub fn default() -> &'static Self {
-        &SCRATCH_BUDGET
-    }
-
-    pub fn target(&self) -> u64 {
-        self.target.load(Ordering::Relaxed)
-    }
-
-    /// Set the target and return the previous one. It changes nothing a reservation does; it is
-    /// the figure the high-water mark is read against.
-    pub fn set_target(&self, bytes: u64) -> u64 {
-        self.target.swap(bytes, Ordering::SeqCst)
-    }
-
-    pub fn in_use(&self) -> u64 {
-        self.used.load(Ordering::SeqCst)
-    }
-
-    /// The high-water mark of [`Self::in_use`] since the process started. A render's scratch is
-    /// released as soon as its chunk is done, so `in_use` observed from outside a pass is almost
-    /// always zero; this is what makes the budget observable after the fact, including a peak
-    /// above the target.
-    pub fn peak(&self) -> u64 {
-        self.peak.load(Ordering::Relaxed)
-    }
-
-    /// Reserve `bytes`. It never fails. The reservation is released when the returned guard is
-    /// dropped, including on an early return from the work it covers.
-    fn reserve(&self, bytes: usize) -> Reservation<'_> {
-        let bytes = bytes as u64;
-        let total = self
-            .used
-            .fetch_add(bytes, Ordering::SeqCst)
-            .saturating_add(bytes);
-        // One relaxed maximum beside the reservation that already happened: the counter is only
-        // read by diagnostics, so no other value depends on the order it becomes visible in.
-        self.peak.fetch_max(total, Ordering::Relaxed);
-        Reservation {
-            budget: self,
-            bytes,
-        }
-    }
-}
-
-struct Reservation<'a> {
-    budget: &'a ScratchBudget,
-    bytes: u64,
-}
-
-impl Drop for Reservation<'_> {
-    fn drop(&mut self) {
-        self.budget.used.fetch_sub(self.bytes, Ordering::SeqCst);
     }
 }
 
@@ -452,14 +367,15 @@ fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>, x: u32, y: u32) -> Result<[u8; 
 
 /// One streamed colour pass over a frame, in place: bounded row chunks on the shared Rayon pool
 /// above the same one-megapixel threshold the other passes use, serial below it. No full-frame
-/// float buffer exists at any point; each chunk reserves its scratch before it uses it, in a
-/// buffer its worker allocates once and reuses for every chunk it takes.
+/// float buffer exists at any point; each chunk reserves its scratch from `budget` before it uses
+/// it, in a buffer its worker allocates once and reuses for every chunk it takes.
 fn apply_color_run(
     pixels: &mut [u8],
     width: u32,
     rows: std::ops::Range<usize>,
     run: &ColorRun<'_>,
     cancel: &Cancel,
+    budget: &ScratchBudget,
 ) -> Result<(), Error> {
     if pixels.is_empty() || width == 0 || rows.is_empty() {
         return Ok(());
@@ -482,15 +398,13 @@ fn apply_color_run(
             // Before the reservation, so a cancelled pass never takes scratch it will not use.
             cancel.check()?;
             let count = chunk.len() / 4;
-            let _reservation =
-                ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>());
+            let _reservation = budget.reserve(count * std::mem::size_of::<[f32; 3]>());
             // One row of snapshot scratch for a masked operation's own input, reserved before it is
             // used and released with the chunk. It is a row and not a chunk because `apply_units` is
             // handed one row at a time; nothing here scales with the frame, and an unmasked run takes
             // none of it.
-            let _snapshot_reservation = masked.then(|| {
-                ScratchBudget::default().reserve(width as usize * std::mem::size_of::<[f32; 3]>())
-            });
+            let _snapshot_reservation =
+                masked.then(|| budget.reserve(width as usize * std::mem::size_of::<[f32; 3]>()));
             let ColorScratch { linear, snapshot } = scratch;
             let mut unused = [[0.0f32; 3]; 1];
             let snapshot: &mut [[f32; 3]] = if masked {
@@ -1001,6 +915,7 @@ fn spatial_frame(
     fingerprint: &str,
     cancel: &Cancel,
     tile_size: u32,
+    context: &RenderContext,
 ) -> Result<Arc<[u8]>, Error> {
     let plan = SpatialPlan::new(operation, stage, tile_size)?;
     let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
@@ -1011,13 +926,19 @@ fn spatial_frame(
             input[offset + 2],
         ]))
     };
-    let globals = resolve_globals(operation, stage, fingerprint, prefix_hash, || {
-        build_reduction(stage, read)
-    })?;
+    let globals = resolve_globals(
+        context.estimates(),
+        operation,
+        stage,
+        fingerprint,
+        prefix_hash,
+        || build_reduction(stage, read),
+    )?;
     let mut frame = zeroed_frame(Raster::expected_len(stage.width, stage.height)?);
     let output = frame_mut(&mut frame);
     run_batches(
         &plan,
+        context.spatial(),
         cancel,
         |tile, parallelism| -> Result<Vec<u8>, Error> {
             let (region, values) = run_tile(
@@ -1240,6 +1161,7 @@ fn apply_operations(
     segment: &Segment,
     rows: std::ops::Range<usize>,
     cancel: &Cancel,
+    scratch: &ScratchBudget,
 ) -> Result<(), Error> {
     if !segment.writes_pixels() {
         return Ok(());
@@ -1258,13 +1180,13 @@ fn apply_operations(
     };
     for run in color_runs(segment) {
         write(&mut next, run.start, pixels);
-        apply_color_run(pixels, segment.width, rows.clone(), &run, cancel)?;
+        apply_color_run(pixels, segment.width, rows.clone(), &run, cancel, scratch)?;
     }
     write(&mut next, usize::MAX, pixels);
     Ok(())
 }
 
-fn check_source(source: &SourceImage) -> Result<(), Error> {
+pub(super) fn check_source(source: &SourceImage) -> Result<(), Error> {
     if source.rgba.len() != Raster::expected_len(source.width, source.height)? {
         return Err(Error::new(
             ErrorKind::Validation,
@@ -1409,71 +1331,37 @@ impl Affine {
 /// allocate a frame. Compiling once serves any number of sampled pixels.
 pub(crate) struct Evaluation<'a> {
     source: &'a SourceImage,
-    compiled: Compiled,
+    compiled: Cow<'a, Compiled>,
     /// The spatial tiles this evaluation has evaluated, of every spatial segment, in tiles of
-    /// [`PRODUCTION_TILE`] everywhere but in the tests that prove the result does not depend on it.
-    tiles: PointTiles,
+    /// [`spatial::PRODUCTION_TILE`] everywhere but in the tests that prove the result does not
+    /// depend on it.
+    tiles: PointTiles<'a>,
+    context: &'a RenderContext,
 }
 
 impl<'a> Evaluation<'a> {
+    /// An evaluation of a stack compiled against `source`'s dimensions, whose source length the
+    /// caller has checked. Allocates only the per-query tile cache, and rasterizes nothing.
     pub(crate) fn new(
-        registry: &ModuleRegistry,
         source: &'a SourceImage,
-        recipe: &Recipe,
-    ) -> Result<Self, Error> {
-        check_source(source)?;
-        Ok(Self {
+        compiled: Cow<'a, Compiled>,
+        tile: u32,
+        context: &'a RenderContext,
+    ) -> Self {
+        Self {
             source,
-            compiled: registry.compile(source.width, source.height, recipe)?,
-            tiles: PointTiles::new(PRODUCTION_TILE),
-        })
+            compiled,
+            tiles: PointTiles::new(tile, context.spatial()),
+            context,
+        }
     }
 
     #[cfg(test)]
     /// The same evaluation with another spatial tile size. A spatial unit's value at a pixel
     /// depends on that pixel's neighbourhood only, so this changes nothing but the schedule.
     pub(crate) fn with_tile(mut self, tile: u32) -> Self {
-        self.tiles = PointTiles::new(tile);
+        self.tiles = PointTiles::new(tile, self.context.spatial());
         self
-    }
-
-    /// One evaluation over an ordered prefix of a stack, for planning a layer against the stage it
-    /// will be inserted at. The recipe format is the caller's to check; compiling the prefix costs
-    /// `O(layers)` and allocates no frame, so sampling that stage still rasterizes nothing.
-    pub(crate) fn over_layers(
-        registry: &ModuleRegistry,
-        source: &'a SourceImage,
-        layers: &[Layer],
-        masks: &[crate::Mask],
-        strokes: &crate::path::StrokeTable,
-        artifacts: &crate::artifacts::ArtifactTable,
-    ) -> Result<Self, Error> {
-        check_source(source)?;
-        Ok(Self {
-            source,
-            compiled: registry.compile_layers(
-                source.width,
-                source.height,
-                layers,
-                masks,
-                strokes,
-                artifacts,
-            )?,
-            tiles: PointTiles::new(PRODUCTION_TILE),
-        })
-    }
-
-    /// An evaluation of a prefix `compiled` elsewhere, for reuse across several point queries
-    /// against the same prefix instead of paying [`Self::over_layers`]'s compile again for each one.
-    /// `HostStage::sample_before` compiles a prefix once this way and calls this for every point it
-    /// samples from that prefix, such as Basic's neutral picker's 5 × 5 patch. Allocates only the
-    /// per-query tile cache, and rasterizes nothing.
-    pub(crate) fn from_compiled(source: &'a SourceImage, compiled: Compiled) -> Self {
-        Self {
-            source,
-            compiled,
-            tiles: PointTiles::new(PRODUCTION_TILE),
-        }
     }
 
     pub(crate) fn stage(&self) -> Stage {
@@ -1591,6 +1479,7 @@ impl<'a> Evaluation<'a> {
             y,
             || {
                 resolve_globals(
+                    self.context.estimates(),
                     operation,
                     stage,
                     &self.source.fingerprint,
@@ -1698,24 +1587,6 @@ impl crate::analysis::MaskInputPixel for LayerInput<'_> {
     }
 }
 
-/// Evaluate one output pixel without rasterizing; cost is linear in the layer count and, for a
-/// stack with a resample, in the four samples each resample blends.
-pub fn sample(
-    registry: &ModuleRegistry,
-    source: &SourceImage,
-    recipe: &Recipe,
-    x: u32,
-    y: u32,
-) -> Result<Sample, Error> {
-    let evaluation = Evaluation::new(registry, source, recipe)?;
-    let stage = evaluation.stage();
-    Ok(Sample {
-        width: stage.width,
-        height: stage.height,
-        rgba: evaluation.pixel(x, y)?,
-    })
-}
-
 /// The centres of the cells of a `side` × `side` grid over a `width` × `height` stage, row by row
 /// from the top-left. Along an axis of `extent` pixels the centre of cell `i` is
 /// `floor((2i + 1) · extent / (2 · side))`, which lies inside every non-empty stage.
@@ -1726,32 +1597,6 @@ pub(crate) fn grid_centres(side: u32, width: u32, height: u32) -> Vec<(u32, u32)
     (0..side)
         .flat_map(|row| (0..side).map(move |column| (column, row)))
         .map(|(column, row)| (centre(column, width), centre(row, height)))
-        .collect()
-}
-
-/// Point samples of a recipe's output stage at the centres of a `side` × `side` grid, row by row
-/// from the top-left. One compiled evaluation answers every point, so the cost is
-/// `O(side² × layers)` — a point through a spatial layer evaluates its tile, as any sample does, and
-/// the points share the evaluation's tile cache — and no frame is allocated; each sample is the byte
-/// the render holds there. `checkpoint` is asked before each point, so a caller can stop between
-/// them.
-pub(crate) fn sample_grid(
-    registry: &ModuleRegistry,
-    source: &SourceImage,
-    recipe: &Recipe,
-    side: u32,
-    checkpoint: &dyn Fn() -> Result<(), Error>,
-) -> Result<Vec<[u8; 4]>, Error> {
-    let evaluation = Evaluation::new(registry, source, recipe)?;
-    let stage = evaluation.stage();
-    grid_centres(side, stage.width, stage.height)
-        .into_iter()
-        .map(|(x, y)| {
-            checkpoint()?;
-            evaluation.pixel(x, y)?.ok_or_else(|| {
-                Error::new(ErrorKind::Internal, "a grid centre lies outside the stage")
-            })
-        })
         .collect()
 }
 
@@ -1816,22 +1661,6 @@ pub(crate) fn locate_dimensions(
     })
 }
 
-/// The output stage one recipe produces over this source: the dimensions an analysis job, a
-/// preview or an export of it will have. Cost is linear in the layer count — it compiles the stack
-/// and allocates only the per-segment operation lists — and it reads no pixels and rasterizes
-/// nothing, so the catalog owner may call it while building a job.
-pub fn extents(
-    registry: &ModuleRegistry,
-    source: &SourceImage,
-    recipe: &Recipe,
-) -> Result<(u32, u32), Error> {
-    check_source(source)?;
-    let stage = registry
-        .compile(source.width, source.height, recipe)?
-        .stage();
-    Ok((stage.width, stage.height))
-}
-
 /// The whole geometry tail of one recipe as one affine map between the content stage and the output
 /// stage, in both directions.
 ///
@@ -1844,7 +1673,7 @@ pub fn extents(
 ///
 /// The dimensions are the whole input, not a source: no pixel is read on any path here, so there is
 /// none to pass. Cost is one matrix multiply per layer on top of compiling the stack, and like
-/// [`extents`] it allocates no frame, which is what lets the catalog owner answer it
+/// [`Render::stage`] it allocates no frame, which is what lets the catalog owner answer it
 /// ([rules 4 and 5](../../docs/engineering/performance-rules.md#rules)).
 ///
 /// A stack the compiler refuses has no output stage to map, and its reason is returned unchanged —
@@ -1856,7 +1685,15 @@ pub fn stage_transform(
     height: u32,
     recipe: &Recipe,
 ) -> Result<StageTransform, Error> {
-    let compiled = registry.compile(width, height, recipe)?;
+    transform_of(&registry.compile(width, height, recipe)?, width, height)
+}
+
+/// [`stage_transform`] of a stack already compiled against a `width` × `height` content stage.
+pub(super) fn transform_of(
+    compiled: &Compiled,
+    width: u32,
+    height: u32,
+) -> Result<StageTransform, Error> {
     let mut forward = Affine::IDENTITY;
     for segment in &compiled.segments {
         // A resample declares the map from its output back to its input, which is the direction a
@@ -1880,100 +1717,20 @@ pub fn stage_transform(
     })
 }
 
-pub fn render(
-    registry: &ModuleRegistry,
+/// The whole frame of a stack compiled against a byte source: the byte path's half of
+/// [`Render::frame`]. The exact phase and the proxy phase differ only in how their masks were
+/// compiled, so this one pass serves both. A cancelled token answers `Cancelled`, and every
+/// reservation held is released on the way out.
+pub(super) fn rasterize(
     source: &SourceImage,
+    compiled: &Compiled,
     snapshot_id: SnapshotId,
-    recipe: &Recipe,
-) -> Result<Raster, Error> {
-    render_cancellable(registry, source, snapshot_id, recipe, &Cancel::never())
-}
-
-/// [`render`] under a [`Cancel`] token the passes read once per row or chunk and once per batch of
-/// spatial tiles. With a token that is never cancelled this is byte for byte [`render`]; it is the
-/// same code, and [`render`] is one call to it. A cancelled render releases every reservation it
-/// held.
-pub fn render_cancellable(
-    registry: &ModuleRegistry,
-    source: &SourceImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    cancel: &Cancel,
-) -> Result<Raster, Error> {
-    render_tiled(
-        registry,
-        source,
-        snapshot_id,
-        recipe,
-        cancel,
-        PRODUCTION_TILE,
-    )
-}
-
-/// [`render_cancellable`] against a **proxy** source: the same code and the same colour arithmetic,
-/// with the proxy phase's thin-feature rule applied to the masks in the stack.
-///
-/// The recipe is resolution independent and a mask's geometry is normalized, so this is the exact
-/// recipe at proxy size and its frame is byte for byte [`render_cancellable`] over the same
-/// downscaled source — *unless* a mask draws a feature narrower than two pixels of that smaller
-/// stage, where [`MaskSampling::ThinFeature`] supersamples the mask field 2 x 2 and the caller
-/// reports the frame approximate. Nothing about the effect is supersampled, and no exact render
-/// ever takes this path.
-pub(crate) fn render_proxy_cancellable(
-    registry: &ModuleRegistry,
-    source: &SourceImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    cancel: &Cancel,
-) -> Result<Raster, Error> {
-    render_sampled(
-        registry,
-        source,
-        snapshot_id,
-        recipe,
-        cancel,
-        PRODUCTION_TILE,
-        MaskSampling::ThinFeature,
-    )
-}
-
-/// [`render_cancellable`] with the spatial tile size as a parameter. Production always passes
-/// [`PRODUCTION_TILE`]; the tests pass other sizes to prove a rendered frame does not depend on it.
-pub(crate) fn render_tiled(
-    registry: &ModuleRegistry,
-    source: &SourceImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
     cancel: &Cancel,
     tile: u32,
-) -> Result<Raster, Error> {
-    render_sampled(
-        registry,
-        source,
-        snapshot_id,
-        recipe,
-        cancel,
-        tile,
-        MaskSampling::Point,
-    )
-}
-
-/// [`render_tiled`] with the mask sampling as a parameter as well. The only caller that passes
-/// anything but [`MaskSampling::Point`] is the proxy phase.
-#[allow(clippy::too_many_arguments)]
-fn render_sampled(
-    registry: &ModuleRegistry,
-    source: &SourceImage,
-    snapshot_id: SnapshotId,
-    recipe: &Recipe,
-    cancel: &Cancel,
-    tile: u32,
-    sampling: MaskSampling,
+    context: &RenderContext,
 ) -> Result<Raster, Error> {
     // A token already cancelled when the call arrives costs no frame at all.
     cancel.check()?;
-    check_source(source)?;
-    let compiled = registry.compile_sampled(source.width, source.height, recipe, sampling)?;
     let first = &compiled.segments[0];
     let mut width = first.width;
     let mut height = first.height;
@@ -2005,7 +1762,13 @@ fn render_sampled(
         }
     };
     if let Some(pixels) = frame.as_mut() {
-        apply_operations(frame_mut(pixels), first, band(0, height), cancel)?;
+        apply_operations(
+            frame_mut(pixels),
+            first,
+            band(0, height),
+            cancel,
+            context.scratch(),
+        )?;
     }
 
     for (index, segment) in compiled.segments.iter().enumerate().skip(1) {
@@ -2033,6 +1796,7 @@ fn render_sampled(
                 &source.fingerprint,
                 cancel,
                 tile,
+                context,
             )?,
         };
         // The frame the boundary read is released before the next pass, so two frames is the peak.
@@ -2043,7 +1807,13 @@ fn render_sampled(
             width = segment.width;
             height = segment.height;
         }
-        apply_operations(frame_mut(&mut next), segment, band(index, height), cancel)?;
+        apply_operations(
+            frame_mut(&mut next),
+            segment,
+            band(index, height),
+            cancel,
+            context.scratch(),
+        )?;
         frame = Some(next);
     }
 
@@ -2056,8 +1826,357 @@ fn render_sampled(
     })
 }
 
+/// What the crate's unit tests render through: [`render`] with one context they all share, as they
+/// shared the budgets and the estimate store when those were process-wide. A test that reads the
+/// budgets or the store serializes on the guard it always did (`tests::scratch_guard`,
+/// `spatial::tests::spatial_guard`). Every helper is one call to the entry point; none is a
+/// second way to render.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::render as enter;
+    use super::{
+        Cancel, Evaluation, LinearImage, LinearSettings, Raster, RenderContext, RenderOptions,
+        RenderSource, Sample, SourceImage, linear::LinearEvaluation, linear::SpatialMode,
+    };
+    use crate::{Error, ModuleRegistry, Recipe, SnapshotId};
+    use std::{borrow::Cow, sync::OnceLock};
+
+    pub(crate) fn context() -> &'static RenderContext {
+        static CONTEXT: OnceLock<RenderContext> = OnceLock::new();
+        CONTEXT.get_or_init(RenderContext::new)
+    }
+
+    fn frame<'a>(
+        registry: &ModuleRegistry,
+        source: impl Into<RenderSource<'a>>,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        options: RenderOptions,
+    ) -> Result<Raster, Error> {
+        enter(registry, source, recipe, options, context())?.frame(snapshot_id)
+    }
+
+    fn linear(source: &LinearImage, settings: LinearSettings) -> RenderSource<'_> {
+        RenderSource::Linear {
+            image: source,
+            settings,
+        }
+    }
+
+    pub(crate) fn render_tiled(
+        registry: &ModuleRegistry,
+        source: &SourceImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        cancel: &Cancel,
+        tile: u32,
+    ) -> Result<Raster, Error> {
+        let options = RenderOptions::exact(cancel).with_tile(tile);
+        frame(registry, source, snapshot_id, recipe, options)
+    }
+
+    pub(crate) fn render_cancellable(
+        registry: &ModuleRegistry,
+        source: &SourceImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        cancel: &Cancel,
+    ) -> Result<Raster, Error> {
+        frame(
+            registry,
+            source,
+            snapshot_id,
+            recipe,
+            RenderOptions::exact(cancel),
+        )
+    }
+
+    pub(crate) fn render(
+        registry: &ModuleRegistry,
+        source: &SourceImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+    ) -> Result<Raster, Error> {
+        frame(
+            registry,
+            source,
+            snapshot_id,
+            recipe,
+            RenderOptions::default(),
+        )
+    }
+
+    pub(crate) fn render_proxy_cancellable(
+        registry: &ModuleRegistry,
+        source: &SourceImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        cancel: &Cancel,
+    ) -> Result<Raster, Error> {
+        frame(
+            registry,
+            source,
+            snapshot_id,
+            recipe,
+            RenderOptions::proxy(cancel),
+        )
+    }
+
+    pub(crate) fn render_linear_tiled(
+        registry: &ModuleRegistry,
+        source: &LinearImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        cancel: &Cancel,
+        tile: u32,
+    ) -> Result<Raster, Error> {
+        let options = RenderOptions::exact(cancel).with_tile(tile);
+        frame(
+            registry,
+            linear(source, settings),
+            snapshot_id,
+            recipe,
+            options,
+        )
+    }
+
+    pub(crate) fn render_linear_cancellable(
+        registry: &ModuleRegistry,
+        source: &LinearImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        cancel: &Cancel,
+    ) -> Result<Raster, Error> {
+        frame(
+            registry,
+            linear(source, settings),
+            snapshot_id,
+            recipe,
+            RenderOptions::exact(cancel),
+        )
+    }
+
+    pub(crate) fn render_linear(
+        registry: &ModuleRegistry,
+        source: &LinearImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        settings: LinearSettings,
+    ) -> Result<Raster, Error> {
+        render_linear_cancellable(
+            registry,
+            source,
+            snapshot_id,
+            recipe,
+            settings,
+            &Cancel::never(),
+        )
+    }
+
+    pub(crate) fn render_linear_proxy_cancellable(
+        registry: &ModuleRegistry,
+        source: &LinearImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        cancel: &Cancel,
+    ) -> Result<Raster, Error> {
+        frame(
+            registry,
+            linear(source, settings),
+            snapshot_id,
+            recipe,
+            RenderOptions::proxy(cancel),
+        )
+    }
+
+    pub(crate) fn sample(
+        registry: &ModuleRegistry,
+        source: &SourceImage,
+        recipe: &Recipe,
+        x: u32,
+        y: u32,
+    ) -> Result<Sample, Error> {
+        enter(
+            registry,
+            source,
+            recipe,
+            RenderOptions::default(),
+            context(),
+        )?
+        .sample(x, y)
+    }
+
+    pub(crate) fn sample_linear_tiled(
+        registry: &ModuleRegistry,
+        source: &LinearImage,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        x: u32,
+        y: u32,
+        tile: u32,
+    ) -> Result<Sample, Error> {
+        let options = RenderOptions::default().with_tile(tile);
+        enter(
+            registry,
+            linear(source, settings),
+            recipe,
+            options,
+            context(),
+        )?
+        .sample(x, y)
+    }
+
+    pub(crate) fn sample_linear(
+        registry: &ModuleRegistry,
+        source: &LinearImage,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        x: u32,
+        y: u32,
+    ) -> Result<Sample, Error> {
+        sample_linear_tiled(
+            registry,
+            source,
+            recipe,
+            settings,
+            x,
+            y,
+            super::spatial::PRODUCTION_TILE,
+        )
+    }
+
+    pub(crate) fn extents(
+        registry: &ModuleRegistry,
+        source: &SourceImage,
+        recipe: &Recipe,
+    ) -> Result<(u32, u32), Error> {
+        Ok(enter(
+            registry,
+            source,
+            recipe,
+            RenderOptions::default(),
+            context(),
+        )?
+        .stage())
+    }
+
+    /// A byte point evaluation of `recipe`, compiled once, for a test that asks it many pixels or
+    /// inspects its tile cache.
+    pub(crate) fn evaluation<'a>(
+        registry: &ModuleRegistry,
+        source: &'a SourceImage,
+        recipe: &Recipe,
+    ) -> Result<Evaluation<'a>, Error> {
+        super::check_source(source)?;
+        let compiled = registry.compile(source.width, source.height, recipe)?;
+        Ok(Evaluation::new(
+            source,
+            Cow::Owned(compiled),
+            super::spatial::PRODUCTION_TILE,
+            context(),
+        ))
+    }
+
+    /// A linear evaluation of `recipe` in either spatial mode, for a test that inspects the frames
+    /// or the tiles it holds.
+    pub(crate) fn linear_evaluation<'a>(
+        registry: &ModuleRegistry,
+        source: &'a LinearImage,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        cancel: &Cancel,
+        tile: u32,
+        mode: SpatialMode,
+    ) -> Result<LinearEvaluation<'a>, Error> {
+        settings.multiplier()?;
+        let compiled = registry.compile(source.width(), source.height(), recipe)?;
+        LinearEvaluation::new(
+            source,
+            Cow::Owned(compiled),
+            settings,
+            cancel,
+            tile,
+            mode,
+            context(),
+        )
+    }
+
+    /// The unit tests' own reading of a preview source: each method is one call to the entry point
+    /// with [`context`], so a test compares a worker's frame against the same code.
+    impl crate::PreviewSource {
+        pub(crate) fn render(
+            &self,
+            registry: &ModuleRegistry,
+            snapshot_id: SnapshotId,
+            recipe: &Recipe,
+        ) -> Result<Raster, Error> {
+            frame(
+                registry,
+                self,
+                snapshot_id,
+                recipe,
+                RenderOptions::default(),
+            )
+        }
+
+        pub(crate) fn render_cancellable(
+            &self,
+            registry: &ModuleRegistry,
+            snapshot_id: SnapshotId,
+            recipe: &Recipe,
+            cancel: &Cancel,
+        ) -> Result<Raster, Error> {
+            frame(
+                registry,
+                self,
+                snapshot_id,
+                recipe,
+                RenderOptions::exact(cancel),
+            )
+        }
+
+        pub(crate) fn render_proxy_cancellable(
+            &self,
+            registry: &ModuleRegistry,
+            snapshot_id: SnapshotId,
+            recipe: &Recipe,
+            cancel: &Cancel,
+        ) -> Result<Raster, Error> {
+            frame(
+                registry,
+                self,
+                snapshot_id,
+                recipe,
+                RenderOptions::proxy(cancel),
+            )
+        }
+
+        pub(crate) fn sample(
+            &self,
+            registry: &ModuleRegistry,
+            recipe: &Recipe,
+            x: u32,
+            y: u32,
+        ) -> Result<Sample, Error> {
+            enter(registry, self, recipe, RenderOptions::default(), context())?.sample(x, y)
+        }
+    }
+
+    pub(crate) fn clear_estimates() {
+        context().estimates().clear();
+    }
+
+    pub(crate) fn cached_estimates() -> usize {
+        context().estimates().len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::testing::{context, extents, render, render_cancellable, sample};
     use super::*;
     use crate::{
         AssetId, EFFECT_FORMAT, Layer, LayerId, MAX_COLOR_UNITS, ORIENTATION_EFFECT, Orientation,
@@ -3762,8 +3881,8 @@ mod tests {
     // The pointwise colour stage.
     // ---------------------------------------------------------------------------------------
 
-    /// The scratch budget is process-wide, so the test that lowers its target and every test that
-    /// reserves from it hold this lock instead of racing.
+    /// The unit tests share one render context (`testing::context`), so the test that lowers its
+    /// scratch target and every test that reserves from it hold this lock instead of racing.
     static SCRATCH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn scratch_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -4327,7 +4446,16 @@ mod tests {
                 Some(&(raster.rgba.as_ptr() as usize)),
                 "{case}: the raster is the frame written last, not a copy of it"
             );
-            let grid = sample_grid(&registry, &source, &recipe, 6, &|| Ok(())).unwrap();
+            let grid = super::render(
+                &registry,
+                &source,
+                &recipe,
+                RenderOptions::default(),
+                context(),
+            )
+            .unwrap()
+            .grid(6, &|| Ok(()))
+            .unwrap();
             for ((x, y), sampled) in grid_centres(6, raster.width, raster.height)
                 .into_iter()
                 .zip(grid)
@@ -4762,7 +4890,7 @@ mod tests {
         let registry = colour_registry();
         let source = gradient(64, 48);
         let recipe = colour_recipe(vec![exposure_layer(&[1.0])]);
-        let budget = ScratchBudget::default();
+        let budget = context().scratch();
         assert_eq!(budget.target(), 64 * 1024 * 1024, "the declared default");
         // The budget is process-wide and other tests' preview workers reserve from it on their
         // own threads, so "nothing is held between renders" is read once those renders have
@@ -4807,7 +4935,7 @@ mod tests {
             assert!((1..=COLOR_CHUNK_ROWS).contains(&rows), "{width}");
             assert!(bytes <= COLOR_CHUNK_SCRATCH_BYTES, "{width}: {bytes} bytes");
             assert!(
-                (16 * bytes as u64) < DEFAULT_SCRATCH_BYTES,
+                (16 * bytes as u64) < context::DEFAULT_SCRATCH_BYTES,
                 "{width}: {bytes} bytes per worker"
             );
         }
@@ -5207,7 +5335,7 @@ mod tests {
             vec![masked(exposure_layer(&[1.0]), &mask)],
             vec![mask.clone()],
         );
-        let budget = ScratchBudget::default();
+        let budget = context().scratch();
         let idle = || {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while budget.in_use() != 0 {
@@ -5246,8 +5374,8 @@ mod tests {
         budget.set_target(previous);
         assert!(sampled.rgba.is_some());
         // The high-water mark is what makes the aggregate observable after the fact: a masked pass
-        // has to have carried at least one chunk and one row of snapshot at once. `peak` is
-        // process-wide and only ever raised, so this reads "at least"; the unmasked and sampled runs
+        // has to have carried at least one chunk and one row of snapshot at once. `peak` is the
+        // shared test context's and only ever raised, so this reads "at least"; the unmasked and sampled runs
         // above raised it by nothing, which is the other half of the claim.
         assert!(
             budget.peak() >= (chunk + snapshot) as u64,

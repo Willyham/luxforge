@@ -15,9 +15,10 @@
 
 use lightwell_core::{
     AssetId, CropPayload, EditorService, Layer, ModuleRegistry, Mutation, Orientation, SnapshotId,
-    Transform, VIGNETTE_EFFECT, render,
+    Transform, VIGNETTE_EFFECT,
 };
 use lightwell_reference as reference;
+use lightwell_testkit::fixtures::render;
 use lightwell_testkit::fixtures::{self, recipe, source_of};
 use serde_json::{Value, json};
 

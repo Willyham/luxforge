@@ -303,7 +303,7 @@ masked-colour row above uses, so the difference between the rows is the mask and
   takes 0.003 ms for one stroke and 0.029 ms for sixty-four at 24 MP, and less at 60 MP because the
   work is in the strokes rather than the stage. It is charged to the gesture, once, before a pixel is
   read — a thousandth of the frame it precedes.
-- **A point query stays a point query.** `render::sample` through a brush mask answers in 0.0023 ms
+- **A point query stays a point query.** `Render::sample` through a brush mask answers in 0.0023 ms
   at one stroke and 0.0385 ms at sixty-four, on both stage sizes: it rasterizes nothing
   ([rule 4](../engineering/performance-rules.md#rules)), and the cost it does have is the segments
   the index leaves near that pixel. Even at the stroke limit it is a four-hundredth of a display
@@ -1150,7 +1150,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), release `--locked`, 23 September 2026, o
 
 A contended owner call now waits at most one sample, as it already did on the byte path, where the same sample on the generated 24 MP JPEG costs 11.5 ms with Clarity +60 and 34.0 ms with Dehaze +30 added (p50 of 15). Answering samples off the owner is the open follow-up.
 
-Exactness on the real files is the ignored core test, run in release with `LIGHTWELL_RAW_FIXTURE` set to each private source (`cargo test --release -p lightwell-core --lib a_raw_point_sample_through_presence -- --ignored --nocapture`): 41 samples per stack, spread over the stage and including the far corner, each equal to the byte `render_linear` writes there. It also times both sides, p50 ms:
+Exactness on the real files is the ignored core test, run in release with `LIGHTWELL_RAW_FIXTURE` set to each private source (`cargo test --release -p lightwell-core --lib a_raw_point_sample_through_presence -- --ignored --nocapture`): 41 samples per stack, spread over the stage and including the far corner, each equal to the byte the linear render writes there. It also times both sides, p50 ms:
 
 | Clarity +60 · with Dehaze +30 | Z6 | X100VI | Air 2S |
 | --- | --- | --- | --- |

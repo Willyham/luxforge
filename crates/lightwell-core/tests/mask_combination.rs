@@ -27,8 +27,8 @@ use lightwell_core::{
     Mask, MaskId, ModuleRegistry, Mutation, RECIPE_FORMAT, Raster, Recipe, SnapshotId, SourceImage,
     mask::commands::{self, MaskTarget},
     path::Stroke,
-    render,
 };
+use lightwell_testkit::fixtures::render;
 use reference::mask::{
     Algebra, Brush, BrushStroke, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode,
     Radial, Stage as RefStage, axis_is_legal, blend, brush_coverage, combine, coverage,
