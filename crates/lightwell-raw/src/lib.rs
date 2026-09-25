@@ -17,6 +17,7 @@ mod dng_ops;
 mod format;
 mod limits;
 mod native_tiles;
+mod neutral;
 mod profiles;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 pub use format::required_dng_opcodes;
@@ -34,6 +35,10 @@ fn camera_catalog() -> &'static Catalog {
 
 const PROVIDER: &str = "LibRaw 0.22.2 + librtprocess 9a858270";
 
+/// The largest green-normalised white-balance gain a development accepts and a neutral pick
+/// returns.
+pub(crate) const MAX_GAIN: f32 = 32.0;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawError {
     InvalidInput(&'static str),
@@ -44,6 +49,9 @@ pub enum RawError {
     ResourceLimit(&'static str),
     Cancelled,
     Native(String),
+    /// A neutral pick whose point or sensor patch cannot give gains: outside the image, dark,
+    /// clipped or otherwise unusable.
+    NeutralPatch(String),
 }
 
 impl fmt::Display for RawError {
@@ -59,6 +67,7 @@ impl fmt::Display for RawError {
             Self::ResourceLimit(v) => write!(f, "RAW resource limit: {v}"),
             Self::Cancelled => write!(f, "RAW work cancelled"),
             Self::Native(v) => write!(f, "RAW native decoder: {v}"),
+            Self::NeutralPatch(v) => write!(f, "{v}"),
         }
     }
 }
@@ -526,7 +535,7 @@ impl RawSource {
         }
         if !gains
             .iter()
-            .all(|v| v.is_finite() && *v > 0.0 && *v <= 32.0)
+            .all(|v| v.is_finite() && *v > 0.0 && *v <= MAX_GAIN)
             || (gains[1] - 1.0).abs() > 1e-6
         {
             return Err(RawError::InvalidInput(

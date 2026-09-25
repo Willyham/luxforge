@@ -1,5 +1,4 @@
 //! The required source-stage interpretation of a RAW original.
-pub mod neutral;
 pub mod white_balance;
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
