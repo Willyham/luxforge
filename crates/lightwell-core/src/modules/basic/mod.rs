@@ -19,16 +19,9 @@
 //! The module also answers one read-only query, `neutral-sample`: the neutral picker, which reads a
 //! bounded patch of the stage this layer receives and solves the white balance that makes it
 //! neutral. It commits nothing.
-/// The Oklab conversion the two colour modules share. `pub(crate)` so the mixer's unit reuses
-/// the same matrices and helpers instead of restating them; nothing in it changed when it was
-/// opened up.
-pub(crate) mod colour;
+mod colour;
 mod exposure;
-/// `pub(crate)` rather than private: the vignette module's positive-amount branch reuses this
-/// unit's `encode_srgb_extended`/`decode_srgb_extended` rather than duplicating the sRGB OETF a
-/// third time in production (see `docs/design/vignette-study.md`'s "Amount"). No equation in this
-/// file changes for that reuse; only this module's own visibility does.
-pub(crate) mod tone;
+mod tone;
 mod white_balance;
 
 use super::{

@@ -5,9 +5,9 @@
 //! This file is the `f32` production transcription of `docs/design/presence-study.md` and of the
 //! independent `f64` reference at `crates/lightwell-core/tests/reference/presence.rs`; the three
 //! must be read together, and every constant here is named identically to the constant of the same
-//! name there. The sRGB working domain is not restated: the units encode and decode through the
-//! Basic module's `encode_srgb_extended`/`decode_srgb_extended`, which are the same analytically
-//! continued transfer function the study quotes.
+//! name there. The sRGB working domain, luminance and the luminance-ratio reconstruction are not
+//! restated: the units use [`crate::colour`]'s, which are the analytically continued transfer
+//! function and the tone study's reconstruction the study quotes.
 //!
 //! **Two deliberate differences from the reference, both inside the frozen tolerance.**
 //!
@@ -34,25 +34,14 @@
 
 use crate::{
     Error, ErrorKind,
-    modules::{
-        Parallelism, Stage,
-        basic::tone::{decode_srgb_extended, encode_srgb_extended},
-    },
+    colour::{luma, srgb},
+    modules::{Parallelism, Stage},
 };
 use rayon::prelude::*;
 
 // ---------------------------------------------------------------------------------------------
 // Frozen constants shared by more than one unit.
 // ---------------------------------------------------------------------------------------------
-
-/// Rec. 709 / sRGB luma coefficients on *linear* sRGB, as in the tone and presence studies.
-const LUMA_R: f32 = 0.2126;
-const LUMA_G: f32 = 0.7152;
-const LUMA_B: f32 = 0.0722;
-
-/// Below this linear luminance (absolute value) the luminance-ratio reconstruction switches to the
-/// tone study's additive rule.
-const EPSILON_L: f32 = 1e-6;
 
 /// The reference long side every radius is quoted at: 6000 px, a 24 MP stage.
 const REFERENCE_LONG_SIDE: f64 = 6000.0;
@@ -86,35 +75,9 @@ pub(super) fn reduced_halo(reach: i64, reduction: i64) -> i64 {
     (reach + 2) * reduction - 1
 }
 
-/// Rec. 709 relative luminance of a linear-sRGB triple. Not gamut-clamped.
-///
-/// The Basic module's Tone unit computes this inline rather than through a shared helper, so this
-/// is the same three coefficients written once for the Presence units rather than a second
-/// definition of a function that exists elsewhere.
-pub(super) fn luminance(rgb: [f32; 3]) -> f32 {
-    LUMA_R * rgb[0] + LUMA_G * rgb[1] + LUMA_B * rgb[2]
-}
-
 /// Encoded luminance: the tone study's working domain, reused unchanged.
 pub(super) fn encoded_luminance(rgb: [f32; 3]) -> f32 {
-    encode_srgb_extended(luminance(rgb))
-}
-
-/// The tone study's luminance-ratio reconstruction with its additive near-black rule. Every cross
-/// ratio between channels is preserved by construction, so an achromatic pixel stays achromatic.
-pub(super) fn reconstruct(rgb: [f32; 3], l_in: f32, l_out: f32) -> [f32; 3] {
-    if l_in.abs() < EPSILON_L {
-        let delta = l_out - l_in;
-        [rgb[0] + delta, rgb[1] + delta, rgb[2] + delta]
-    } else {
-        let ratio = l_out / l_in;
-        [rgb[0] * ratio, rgb[1] * ratio, rgb[2] * ratio]
-    }
-}
-
-/// Decode an encoded luminance back to linear light, for the reconstruction above.
-pub(super) fn decode(encoded: f32) -> f32 {
-    decode_srgb_extended(encoded)
+    srgb::encode_f32(luma::rec709(rgb))
 }
 
 /// The compressive (soft-clipping) gain both luminance units apply to their raw encoded excursion:

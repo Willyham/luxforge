@@ -33,13 +33,8 @@
 use super::smooth;
 use crate::{
     Component, Error, ErrorKind, ParameterDescriptor,
-    modules::{
-        Region, Stage,
-        basic::{
-            colour::{M1_F64, M2_F64},
-            tone::{LUMA_B_F64, LUMA_G_F64, LUMA_R_F64},
-        },
-    },
+    colour::{luma::rec709_f64, oklab::lab_f64, srgb},
+    modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
 
@@ -76,61 +71,27 @@ pub(super) const COLOUR_LIMITS: &[&str] = &[
 // The shared axes: the luminance axis and the Oklab chromaticity of one pixel
 // ---------------------------------------------------------------------------
 
-/// The sRGB OETF (linear to encoded), analytically continued to every finite real value, in `f64`.
-///
-/// The same function `crate::modules::basic::tone::encode_srgb_extended` computes in `f32`, written
-/// out here in `f64` because this unit's whole arithmetic is the reference's. It is **not clamped**:
-/// an earlier unit in the same colour run may legitimately hand on a linear value below `0` or above
-/// `1`, and the continued OETF is defined and strictly increasing on the whole real line, so such a
-/// pixel is treated as darker than black or brighter than white rather than folded onto the axis.
-fn encode_srgb_extended(l: f64) -> f64 {
-    if l <= 0.003_130_8 {
-        12.92 * l
-    } else {
-        1.055 * l.powf(1.0 / 2.4) - 0.055
-    }
-}
-
 /// The luminance axis: Rec. 709 relative luminance of the linear-sRGB pixel, encoded through the
-/// continued OETF.
+/// continued sRGB OETF in `f64`. The OETF is **not clamped**: an earlier unit in the same colour run
+/// may legitimately hand on a linear value below `0` or above `1`, and the continued OETF is defined
+/// and strictly increasing on the whole real line, so such a pixel is treated as darker than black
+/// or brighter than white rather than folded onto the axis.
 ///
 /// This is the domain the delivered histogram bins — the histogram's horizontal axis *is* the
 /// encoded output value, quantized to a byte — so a number on the band's slider is the number a
 /// person reads off the histogram's axis. The weights are the delivered Basic layer's own, so there
 /// is one definition of luminance in the editor.
 fn luminance_axis(rgb: [f64; 3]) -> f64 {
-    let y = LUMA_R_F64 * rgb[0] + LUMA_G_F64 * rgb[1] + LUMA_B_F64 * rgb[2];
-    encode_srgb_extended(y)
-}
-
-fn matvec(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
-    [
-        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-    ]
-}
-
-/// The signed cube root `sign(x) * |x|^(1/3)`, finite for every finite `x` including a negative one.
-/// `powf(1/3)` is not safe here: it is NaN for a negative base, and a linear value preserved from an
-/// earlier unit can land a negative LMS component after `M1`.
-fn signed_cbrt(x: f64) -> f64 {
-    x.signum() * x.abs().cbrt()
+    srgb::encode(rec709_f64(rgb))
 }
 
 /// The Oklab chromaticity pair `(a, b)` of one linear-sRGB pixel, through the delivered conversion's
-/// own matrices. `L` is computed and discarded: the frozen metric is blind to lightness, which is
-/// the study's measured choice and not an omission, and computing the third row costs three
-/// multiplies that keep this spelling the delivered `to_oklab`'s spelling exactly.
+/// own matrices at `f64`. `L` is computed and discarded: the frozen metric is blind to lightness,
+/// which is the study's measured choice and not an omission, and computing the third row costs
+/// three multiplies that keep this the delivered conversion exactly.
 fn oklab_ab(rgb: [f64; 3]) -> (f64, f64) {
-    let lms = matvec(&M1_F64, rgb);
-    let lms_root = [
-        signed_cbrt(lms[0]),
-        signed_cbrt(lms[1]),
-        signed_cbrt(lms[2]),
-    ];
-    let lab = matvec(&M2_F64, lms_root);
-    (lab[1], lab[2])
+    let [_, a, b] = lab_f64(rgb);
+    (a, b)
 }
 
 // ---------------------------------------------------------------------------
@@ -656,7 +617,7 @@ mod tests {
     #[test]
     fn the_axis_is_the_histograms_own_domain() {
         for code in 0u8..=255 {
-            let linear = f64::from(crate::render::decode_pixel([code, code, code])[0]);
+            let linear = f64::from(crate::colour::srgb::decode_pixel([code, code, code])[0]);
             let e = luminance_axis([linear, linear, linear]);
             assert_eq!(
                 (255.0 * e + 0.5).floor() as u8,

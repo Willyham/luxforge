@@ -828,11 +828,7 @@ fn sample_rows(payload: &serde_json::Value, kind: &str, enabled: bool) -> Vec<Sa
 /// One linear-sRGB channel as the 8-bit code a swatch draws, through the delivered encode so the chip
 /// shows the colour the value means rather than a guess at it.
 fn code(linear: f64) -> u8 {
-    let encoded = if linear <= 0.003_130_8 {
-        12.92 * linear
-    } else {
-        1.055 * linear.max(0.0).powf(1.0 / 2.4) - 0.055
-    };
+    let encoded = lightwell_core::colour::srgb::encode(linear.max(0.0));
     (255.0 * encoded.clamp(0.0, 1.0) + 0.5).floor() as u8
 }
 

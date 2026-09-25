@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 /// One 8-bit RGBA sample as the linear-sRGB triple a mask's value-based parts evaluate on, through the
 /// delivered decode and nothing else, so one definition of "linear sRGB" serves the whole editor.
 fn linear_triple(rgba: [u8; 4]) -> [f64; 3] {
-    let linear = crate::render::decode_pixel([rgba[0], rgba[1], rgba[2]]);
+    let linear = crate::colour::srgb::decode_pixel([rgba[0], rgba[1], rgba[2]]);
     [
         f64::from(linear[0]),
         f64::from(linear[1]),

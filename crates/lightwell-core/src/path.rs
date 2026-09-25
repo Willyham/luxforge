@@ -256,7 +256,7 @@ impl ColourLimit {
     /// The seed in **linear sRGB**, through the delivered decode, which is the domain the frozen
     /// similarity is evaluated in.
     pub fn seed(&self) -> [f64; 3] {
-        let linear = crate::render::decode_pixel(self.seed);
+        let linear = crate::colour::srgb::decode_pixel(self.seed);
         [
             f64::from(linear[0]),
             f64::from(linear[1]),

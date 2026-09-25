@@ -21,6 +21,7 @@ use super::filters::{
 };
 use crate::{
     Error,
+    colour::{luma, srgb},
     modules::{Global, Parallelism, Planes, PlanesMut, SpatialUnit, Stage},
 };
 
@@ -165,8 +166,7 @@ impl SpatialUnit for Clarity {
                 let value = if delta == 0.0 {
                     rgb
                 } else {
-                    let l_in = filters::luminance(rgb);
-                    filters::reconstruct(rgb, l_in, filters::decode(e + delta))
+                    luma::reconstruct(rgb, luma::rec709(rgb), srgb::decode_f32(e + delta))
                 };
                 let column = (x - out.x0) as usize;
                 [red[column], green[column], blue[column]] = value;

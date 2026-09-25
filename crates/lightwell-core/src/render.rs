@@ -1,5 +1,6 @@
 use crate::{
     Error, ErrorKind, Layer, Recipe, SnapshotId, SourceImage,
+    colour::srgb::{decode_channel, decode_pixel, linear_to_srgb, quantize_pixel},
     mask_field::{MaskField, MaskSampling},
     modules::{
         ColorOperation, ExactGeometry, ModuleRegistry, Parallelism, Processing, Region, Resample,
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     cell::Cell,
     sync::{
-        Arc, LazyLock,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -80,84 +81,6 @@ impl Cancel {
             Ok(())
         }
     }
-}
-
-/// The sRGB transfer function applied backwards, in f64: one encoded channel in `[0, 1]` to linear
-/// light. Every table below is built from this one definition.
-fn srgb_decode(encoded: f64) -> f64 {
-    if encoded <= 0.040_45 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// One 8-bit channel code in linear light, at f64 precision: the same transfer function the f32
-/// table below is built from, without that table's storage rounding. A module that reasons about
-/// colour off the per-pixel path — the neutral picker averages 25 sampled codes and solves a
-/// chromaticity from them — decodes through this rather than restating the transfer function.
-pub(crate) fn srgb_to_linear_f64(code: u8) -> f64 {
-    srgb_decode(f64::from(code) / 255.0)
-}
-
-/// The sRGB transfer function over the 256 8-bit channel values: interpolation weights and colour
-/// units are applied in linear light, so every channel is decoded through this table first. The
-/// entries are computed in f64 and stored as f32, which is the working precision of a colour unit.
-static SRGB_TO_LINEAR: LazyLock<[f32; 256]> = LazyLock::new(|| {
-    let mut table = [0.0; 256];
-    for (value, slot) in table.iter_mut().enumerate() {
-        *slot = srgb_decode(value as f64 / 255.0) as f32;
-    }
-    table
-});
-
-/// The 255 linear-light thresholds that separate the 256 output codes: `t_k = decode((k − 0.5)/255)`
-/// for `k` in `1..=255`, at index `k − 1`. `floor(255·encode(v) + 0.5) = k` exactly when
-/// `encode(v)` lies in `[(k − 0.5)/255, (k + 0.5)/255)`, so the code of a clamped value is the
-/// number of thresholds at or below it. Computed once in f64, it quantizes the output boundary
-/// without a power function per pixel.
-static SRGB_CODE_THRESHOLDS: LazyLock<[f64; 255]> = LazyLock::new(|| {
-    let mut thresholds = [0.0; 255];
-    for (index, slot) in thresholds.iter_mut().enumerate() {
-        *slot = srgb_decode((index as f64 + 0.5) / 255.0);
-    }
-    thresholds
-});
-
-const SRGB_CODE_BINS: usize = 4096;
-
-/// A small exact index into the canonical thresholds, not an approximation of the transfer
-/// function. A bin is narrower than the closest pair of thresholds (the linear part of sRGB,
-/// `1 / (255 * 12.92)`), so at most one code boundary lies after its lower endpoint. Store the
-/// lower endpoint's code and compare against that one boundary using the original f64 value.
-struct SrgbCodeIndex {
-    lower_codes: [u8; SRGB_CODE_BINS],
-    thresholds: &'static [f64; 255],
-}
-
-static SRGB_CODE_INDEX: LazyLock<SrgbCodeIndex> = LazyLock::new(|| {
-    let thresholds = &*SRGB_CODE_THRESHOLDS;
-    let width = 1.0 / SRGB_CODE_BINS as f64;
-    assert!(thresholds.windows(2).all(|pair| pair[1] - pair[0] > width));
-    let lower_codes = std::array::from_fn(|bin| {
-        let lower = bin as f64 / SRGB_CODE_BINS as f64;
-        thresholds.partition_point(|threshold| *threshold <= lower) as u8
-    });
-    SrgbCodeIndex {
-        lower_codes,
-        thresholds,
-    }
-});
-
-/// The sRGB transfer function applied forwards, rounded to the nearest 8-bit value.
-fn linear_to_srgb(linear: f64) -> u8 {
-    let linear = linear.clamp(0.0, 1.0);
-    let encoded = if linear <= 0.003_130_8 {
-        12.92 * linear
-    } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
-    };
-    (encoded * 255.0).round() as u8
 }
 
 /// The default aggregate target for transient float scratch: 64 MiB across every active render.
@@ -416,41 +339,6 @@ impl<'a> MaskPlacement<'a> {
     }
 }
 
-/// One 8-bit pixel decoded into linear sRGB.
-#[inline]
-pub(crate) fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
-    let table = &*SRGB_TO_LINEAR;
-    [
-        table[rgb[0] as usize],
-        table[rgb[1] as usize],
-        table[rgb[2] as usize],
-    ]
-}
-
-/// The output boundary for one channel already carried in f64: clamp to `[0, 1]`, then take the
-/// code whose exact threshold interval holds the value, which equals `floor(255 · encode(v) + 0.5)`.
-///
-/// A pass that accumulates in f64 — the proxy downscale averages a source rectangle that way —
-/// quantizes through this directly, so no f32 rounding is inserted between its arithmetic and the
-/// code boundary.
-#[inline]
-pub(crate) fn quantize_channel(value: f64) -> u8 {
-    let index = &*SRGB_CODE_INDEX;
-    let value = value.clamp(0.0, 1.0);
-    // Scaling by a power of two is exact in this clamped domain. The cast maps NaN to bin zero;
-    // its comparison below is false, preserving the binary search's zero code for either NaN.
-    let bin = ((value * SRGB_CODE_BINS as f64) as usize).min(SRGB_CODE_BINS - 1);
-    let lower = index.lower_codes[bin];
-    lower + u8::from(lower < 255 && index.thresholds[usize::from(lower)] <= value)
-}
-
-/// The output boundary: clamp to `[0, 1]`, then take the code whose exact threshold interval holds
-/// the value, which equals `floor(255 · encode(v) + 0.5)`.
-#[inline]
-pub(crate) fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
-    rgb.map(|value| quantize_channel(f64::from(value)))
-}
-
 /// Apply one run to one contiguous run of already decoded linear pixels of row `y` starting at
 /// column `x0`, in the coordinates of the stage its segment produces. Nothing is clamped or
 /// quantized between operations or between units, so an inverse pair returns its input exactly and a
@@ -668,7 +556,6 @@ fn bilinear(
     height: u32,
     fetch: impl Fn(u32, u32) -> [u8; 4],
 ) -> [u8; 4] {
-    let table = &*SRGB_TO_LINEAR;
     // The mapped coordinate is a pixel center, so index space starts half a pixel earlier.
     let x = u - 0.5;
     let y = v - 0.5;
@@ -698,7 +585,7 @@ fn bilinear(
     for (channel, slot) in pixel.iter_mut().enumerate().take(3) {
         let linear: f64 = corners
             .iter()
-            .map(|(corner, weight)| weight * f64::from(table[corner[channel] as usize]))
+            .map(|(corner, weight)| weight * f64::from(decode_channel(corner[channel])))
             .sum();
         *slot = linear_to_srgb(linear);
     }
@@ -2175,6 +2062,7 @@ mod tests {
     use crate::{
         AssetId, EFFECT_FORMAT, Layer, LayerId, MAX_COLOR_UNITS, ORIENTATION_EFFECT, Orientation,
         PIXEL_EFFECT, PixelReplace, PointwiseColor, Recipe, Snapshot, Transform,
+        colour::srgb::{CODE_BINS, quantize_channel},
         modules::{
             ActionInput, ActionPlan, Availability, BoxRect, CropPayload, CropStage,
             EffectDescriptor, EffectStage, ModuleDescriptor, StageContext, ToolModule,
@@ -4176,8 +4064,8 @@ mod tests {
                 check(f64::from(value));
             }
         }
-        for bin in 0..=SRGB_CODE_BINS {
-            let boundary = bin as f64 / SRGB_CODE_BINS as f64;
+        for bin in 0..=CODE_BINS {
+            let boundary = bin as f64 / CODE_BINS as f64;
             for value in [boundary.next_down(), boundary, boundary.next_up()] {
                 check(value);
             }

@@ -19,7 +19,13 @@
 //! camera's gains, and [`temperature_tint_from_gains`] answers which temperature and tint would
 //! reproduce them, for a client to show.
 
-use crate::{Error, ErrorKind};
+use crate::{
+    Error, ErrorKind,
+    colour::{
+        cct::{self, planckian_locus_xy},
+        mat3::{self, matvec_f64},
+    },
+};
 
 pub const MIN_TEMPERATURE_K: f64 = 2_000.0;
 pub const MAX_TEMPERATURE_K: f64 = 12_000.0;
@@ -33,32 +39,6 @@ const MATRIX_DETERMINANT_RELATIVE_MIN: f64 = 1.0e-9;
 
 fn validation(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, message)
-}
-
-fn planck_xy(temperature_kelvin: f64) -> [f64; 2] {
-    // The two x(T) polynomials are the Kang, Moon, Hong, Lee, Cho, and Kim (2002)
-    // Planckian-locus approximation ("Design of Advanced Color Temperature Control System
-    // for HDTV Applications", Journal of the Korean Physical Society 41(6), 865-871).
-    // over 1667..4000 K and 4000..25000 K. The matching y(T) polynomials are split at 2222 K
-    // and 4000 K. Lightwell validates a narrower 2000..12000 K interval before calling this.
-    let x = if temperature_kelvin <= 4_000.0 {
-        -0.266_123_9e9 / temperature_kelvin.powi(3) - 0.234_358_9e6 / temperature_kelvin.powi(2)
-            + 0.877_695_6e3 / temperature_kelvin
-            + 0.179_910
-    } else {
-        -3.025_846_9e9 / temperature_kelvin.powi(3)
-            + 2.107_037_9e6 / temperature_kelvin.powi(2)
-            + 0.222_634_7e3 / temperature_kelvin
-            + 0.240_390
-    };
-    let y = if temperature_kelvin <= 2_222.0 {
-        -1.106_381_4 * x.powi(3) - 1.348_110_2 * x.powi(2) + 2.185_558_32 * x - 0.202_196_83
-    } else if temperature_kelvin <= 4_000.0 {
-        -0.954_947_6 * x.powi(3) - 1.374_185_93 * x.powi(2) + 2.091_370_15 * x - 0.167_488_67
-    } else {
-        3.081_758_0 * x.powi(3) - 5.873_386_70 * x.powi(2) + 3.751_129_97 * x - 0.370_014_83
-    };
-    [x, y]
 }
 
 fn daylight_xy(temperature_kelvin: f64) -> [f64; 2] {
@@ -83,7 +63,7 @@ fn smoothstep(value: f64) -> f64 {
 }
 
 fn base_whitepoint_xy(temperature_kelvin: f64) -> [f64; 2] {
-    let planck = planck_xy(temperature_kelvin);
+    let planck = planckian_locus_xy(temperature_kelvin);
     let daylight = daylight_xy(temperature_kelvin);
     let blend = smoothstep(
         (temperature_kelvin - PLANCK_DAYLIGHT_BLEND_START_K)
@@ -95,13 +75,13 @@ fn base_whitepoint_xy(temperature_kelvin: f64) -> [f64; 2] {
     ]
 }
 
+/// [`cct::xy_to_uv`], refused when the projection is singular or not finite.
 fn xy_to_uv(xy: [f64; 2]) -> Result<[f64; 2], Error> {
     let [x, y] = xy;
-    let denominator = -2.0 * x + 12.0 * y + 3.0;
+    let (uv, denominator) = cct::xy_to_uv(x, y);
     if !denominator.is_finite() || denominator.abs() < f64::EPSILON {
         return Err(validation("white-balance xy to uv conversion is singular"));
     }
-    let uv = [4.0 * x / denominator, 6.0 * y / denominator];
     if uv.iter().all(|value| value.is_finite()) {
         Ok(uv)
     } else {
@@ -109,14 +89,14 @@ fn xy_to_uv(xy: [f64; 2]) -> Result<[f64; 2], Error> {
     }
 }
 
+/// [`cct::uv_to_xy`], refused when the projection is singular or leaves the visible whitepoint
+/// domain.
 fn uv_to_xy(uv: [f64; 2]) -> Result<[f64; 2], Error> {
     let [u, v] = uv;
-    // Inverting u = 4x / (-2x + 12y + 3), v = 6y / (-2x + 12y + 3).
-    let denominator = 2.0 * u - 8.0 * v + 4.0;
+    let (xy, denominator) = cct::uv_to_xy(u, v);
     if !denominator.is_finite() || denominator.abs() < f64::EPSILON {
         return Err(validation("white-balance uv to xy conversion is singular"));
     }
-    let xy = [3.0 * u / denominator, 2.0 * v / denominator];
     let [x, y] = xy;
     if !xy.iter().all(|value| value.is_finite()) || x <= 0.0 || y <= 0.0 || x + y >= 1.0 {
         return Err(validation(
@@ -194,9 +174,7 @@ fn camera_matrix(cam_xyz: [[f32; 3]; 4]) -> Result<[[f64; 3]; 3], Error> {
     {
         return Err(validation("camera XYZ matrix contains a zero row"));
     }
-    let determinant = matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
-        - matrix[0][1] * (matrix[1][0] * matrix[2][2] - matrix[1][2] * matrix[2][0])
-        + matrix[0][2] * (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0]);
+    let determinant = mat3::determinant(&matrix);
     let scale = norms[0] * norms[1] * norms[2];
     if !determinant.is_finite()
         || !scale.is_finite()
@@ -256,7 +234,7 @@ fn gains_f64(
     if !xyz.iter().all(|value| value.is_finite() && *value > 0.0) {
         return Err(validation("RAW whitepoint XYZ is invalid"));
     }
-    let response = matrix.map(|row| row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2]);
+    let response = matvec_f64(matrix, xyz);
     if !response
         .iter()
         .all(|value| value.is_finite() && *value > 0.0)
@@ -353,9 +331,12 @@ fn temperature_tint_from_gains_f64(
     if !gains.iter().all(|gain| gain.is_finite() && *gain > 0.0) {
         return Err(validation("RAW gains must be finite and positive"));
     }
-    let inverse = mat3_inverse(matrix)?;
+    let (inverse, determinant) = mat3::inverse_and_determinant(matrix);
+    if !determinant.is_finite() || !inverse.iter().flatten().all(|value| value.is_finite()) {
+        return Err(validation("camera XYZ matrix has no finite inverse"));
+    }
     let response = [gains[1] / gains[0], 1.0, gains[1] / gains[2]];
-    let xyz = inverse.map(|row| row[0] * response[0] + row[1] * response[1] + row[2] * response[2]);
+    let xyz = matvec_f64(&inverse, response);
     let sum = xyz[0] + xyz[1] + xyz[2];
     let xy = [xyz[0] / sum, xyz[1] / sum];
     if !sum.is_finite()
@@ -491,37 +472,6 @@ impl Answer {
             self
         }
     }
-}
-
-/// The exact 3×3 inverse by adjugate and determinant, of a matrix [`camera_matrix`] has already
-/// found non-degenerate.
-fn mat3_inverse(m: &[[f64; 3]; 3]) -> Result<[[f64; 3]; 3], Error> {
-    let cofactor =
-        |r0: usize, r1: usize, c0: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
-    let adjugate = [
-        [
-            cofactor(1, 2, 1, 2),
-            -cofactor(0, 2, 1, 2),
-            cofactor(0, 1, 1, 2),
-        ],
-        [
-            -cofactor(1, 2, 0, 2),
-            cofactor(0, 2, 0, 2),
-            -cofactor(0, 1, 0, 2),
-        ],
-        [
-            cofactor(1, 2, 0, 1),
-            -cofactor(0, 2, 0, 1),
-            cofactor(0, 1, 0, 1),
-        ],
-    ];
-    let determinant =
-        m[0][0] * adjugate[0][0] + m[0][1] * adjugate[1][0] + m[0][2] * adjugate[2][0];
-    let inverse = adjugate.map(|row| row.map(|value| value / determinant));
-    if !determinant.is_finite() || !inverse.iter().flatten().all(|value| value.is_finite()) {
-        return Err(validation("camera XYZ matrix has no finite inverse"));
-    }
-    Ok(inverse)
 }
 
 #[cfg(test)]
@@ -772,8 +722,8 @@ mod tests {
         // measured seam bounded instead of silently claiming mathematical continuity. The CIE
         // daylight branches likewise meet closely at 7000 K.
         for boundary in [2_222.0, 4_000.0] {
-            let before = planck_xy(boundary - 1.0e-3);
-            let after = planck_xy(boundary + 1.0e-3);
+            let before = planckian_locus_xy(boundary - 1.0e-3);
+            let after = planckian_locus_xy(boundary + 1.0e-3);
             close(before[0], after[0], 1.0e-4);
             close(before[1], after[1], 1.0e-4);
         }
@@ -988,7 +938,7 @@ mod tests {
             error.detail
         };
         for (name, cam_xyz) in inverse_matrices().into_iter().take(3) {
-            let warm = gains_of(xy_to_uv(planck_xy(1_900.0)).unwrap(), cam_xyz);
+            let warm = gains_of(xy_to_uv(planckian_locus_xy(1_900.0)).unwrap(), cam_xyz);
             assert_eq!(
                 refused(warm, cam_xyz),
                 "out-of-range: the gains need a temperature below 2000 K",

@@ -12,21 +12,13 @@
 //! either side of the slider) and the sRGB encode/decode of the pixel's own luminance; nothing here
 //! is clamped, matching the pointwise colour contract that the host clamps once at the end of a
 //! run, not each unit.
-use crate::modules::PointwiseColor;
-
-/// Rec. 709 / sRGB luma coefficients on linear sRGB. See "Luminance" in the design doc.
-///
-/// Written as `f64` and narrowed once, the pattern `colour.rs` already uses for the Oklab matrices:
-/// the units below multiply the `f32` values, and the host's value-based mask components
-/// (`crate::mask::range`) multiply the `f64` ones, so the editor has **one** definition of
-/// luminance rather than two that could drift.
-pub(crate) const LUMA_R_F64: f64 = 0.2126;
-pub(crate) const LUMA_G_F64: f64 = 0.7152;
-pub(crate) const LUMA_B_F64: f64 = 0.0722;
-
-const LUMA_R: f32 = LUMA_R_F64 as f32;
-const LUMA_G: f32 = LUMA_G_F64 as f32;
-const LUMA_B: f32 = LUMA_B_F64 as f32;
+use crate::{
+    colour::{
+        luma,
+        srgb::{decode_f32, encode_f32},
+    },
+    modules::PointwiseColor,
+};
 
 /// The curve domain's pivot: encoded mid-grey. See "Contrast" in the design doc.
 const PIVOT: f32 = 0.5;
@@ -44,10 +36,6 @@ const EPSILON_GAP: f64 = 0.05;
 /// Highlights/Shadows odds-bias steepness scale: `k = +-K_HS * amount / 100`. See "Highlights and
 /// Shadows" in the design doc.
 const K_HS: f64 = 1.5;
-
-/// Below this linear luminance, RGB reconstruction switches to the additive near-black rule. See
-/// "Luminance ratio and gamut policy" in the design doc.
-const EPSILON_L: f32 = 1e-6;
 
 /// Contrast, Highlights, Shadows, Whites and Blacks, composed Whites/Blacks, then
 /// Highlights/Shadows, then Contrast (the frozen order) on encoded sRGB luminance, with RGB
@@ -212,47 +200,12 @@ impl Tone {
     }
 }
 
-/// The sRGB OETF (linear -> encoded), analytically continued to every finite value, not clamped to
-/// `[0, 1]`. See "Working tone domain" in the design doc.
-///
-/// `pub(crate)`: the vignette module's positive-amount branch reuses this exact function (see the
-/// `mod tone` doc comment in `basic/mod.rs`); the formula is unchanged for that reuse.
-pub(crate) fn encode_srgb_extended(l: f32) -> f32 {
-    if l <= 0.003_130_8 {
-        12.92 * l
-    } else {
-        1.055 * l.powf(1.0 / 2.4) - 0.055
-    }
-}
-
-/// The inverse of `encode_srgb_extended`, equally extended.
-pub(crate) fn decode_srgb_extended(e: f32) -> f32 {
-    if e <= 0.040_45 {
-        e / 12.92
-    } else {
-        ((e + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 impl PointwiseColor for Tone {
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
-            let l_in = LUMA_R * pixel[0] + LUMA_G * pixel[1] + LUMA_B * pixel[2];
-            let l_out = decode_srgb_extended(self.tone_curve(encode_srgb_extended(l_in)));
-            // Near-black rule: below EPSILON_L, divide by (near) zero is numerically unsafe, so
-            // reconstruction switches to the additive rule. See "Luminance ratio and gamut policy"
-            // in the design doc.
-            if l_in.abs() < EPSILON_L {
-                let delta = l_out - l_in;
-                pixel[0] += delta;
-                pixel[1] += delta;
-                pixel[2] += delta;
-            } else {
-                let ratio = l_out / l_in;
-                pixel[0] *= ratio;
-                pixel[1] *= ratio;
-                pixel[2] *= ratio;
-            }
+            let l_in = luma::rec709(*pixel);
+            let l_out = decode_f32(self.tone_curve(encode_f32(l_in)));
+            *pixel = luma::reconstruct(*pixel, l_in, l_out);
         }
     }
 

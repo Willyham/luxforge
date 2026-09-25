@@ -2934,7 +2934,7 @@ pub(crate) mod tests {
         let source = gradient(64, 48);
         let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
             let offset = ((y * 64 + x) * 4) as usize;
-            Ok(crate::render::decode_pixel([
+            Ok(crate::colour::srgb::decode_pixel([
                 source.rgba[offset],
                 source.rgba[offset + 1],
                 source.rgba[offset + 2],
@@ -2973,7 +2973,7 @@ pub(crate) mod tests {
         let source = gradient(width, height);
         let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
             let offset = ((y * width + x) * 4) as usize;
-            Ok(crate::render::decode_pixel([
+            Ok(crate::colour::srgb::decode_pixel([
                 source.rgba[offset],
                 source.rgba[offset + 1],
                 source.rgba[offset + 2],

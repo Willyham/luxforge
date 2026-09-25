@@ -1,7 +1,7 @@
 //! Decoding an original into pixels: the JPEG path (bounded header validation, upright decode,
 //! RGBA written straight into the frame the render returns) and the prepared original, byte-exact
 //! JPEG or an immutable RAW mosaic with one WB development.
-use crate::{Error, ErrorKind, LinearImage, Raster};
+use crate::{Error, ErrorKind, LinearImage, Raster, colour::mat3::matvec_f32};
 use image::{ImageDecoder, ImageReader, Limits};
 use lightwell_raw::{RawError, RawMetadata, RawSource};
 use sha2::{Digest, Sha256};
@@ -219,17 +219,13 @@ fn convert_camera_planes(
 ) -> Result<(), Error> {
     let (red, rest) = planes.split_at_mut(n);
     let (green, blue) = rest.split_at_mut(n);
+    let matrix = matrix.map(|row| [row[0], row[1], row[2]]);
     let convert = |red: &mut [f32], green: &mut [f32], blue: &mut [f32]| {
         if cancel.load(Ordering::Relaxed) {
             return Err(Error::new(ErrorKind::Conflict, "RAW development cancelled"));
         }
         for i in 0..red.len() {
-            let camera = [red[i], green[i], blue[i]];
-            let value =
-                |row: &[f32; 4]| row[0] * camera[0] + row[1] * camera[1] + row[2] * camera[2];
-            let r = value(&matrix[0]);
-            let g = value(&matrix[1]);
-            let b = value(&matrix[2]);
+            let [r, g, b] = matvec_f32(&matrix, [red[i], green[i], blue[i]]);
             if !r.is_finite() || !g.is_finite() || !b.is_finite() {
                 return Err(Error::new(
                     ErrorKind::UnsupportedColor,

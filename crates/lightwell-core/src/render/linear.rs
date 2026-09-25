@@ -14,6 +14,7 @@ use super::{
 };
 use crate::{
     Error, ErrorKind, Recipe, SnapshotId,
+    colour::{mat3, srgb},
     mask_field::MaskSampling,
     modules::{Global, ModuleRegistry, Processing, SpatialOperation, Stage},
 };
@@ -522,7 +523,7 @@ impl WhiteBalanceApproximation {
             }
             *value = to / from;
         }
-        let inverse = invert(camera_to_srgb)?;
+        let inverse = mat3::hadamard_checked_inverse(camera_to_srgb)?;
         let matrix = std::array::from_fn(|row| {
             std::array::from_fn(|column| {
                 (0..3)
@@ -552,8 +553,7 @@ impl WhiteBalanceApproximation {
 
     #[inline]
     fn apply(&self, pixel: [f64; 3]) -> [f64; 3] {
-        self.matrix
-            .map(|row| row[0] * pixel[0] + row[1] * pixel[1] + row[2] * pixel[2])
+        mat3::matvec_f64(&self.matrix, pixel)
     }
 
     /// A key that tells this approximation's evaluation apart from an exact one of the same
@@ -564,41 +564,6 @@ impl WhiteBalanceApproximation {
             .flatten()
             .map(|value| format!("{:016x}", value.to_bits()))
             .collect()
-    }
-}
-
-/// The inverse of a 3×3 matrix in f64, by the adjugate. Refused when the matrix is not finite or
-/// its determinant is negligible against the product of its row norms (Hadamard's bound on it),
-/// which is where an inverse stops meaning anything.
-fn invert(matrix: [[f64; 3]; 3]) -> Result<[[f64; 3]; 3], Error> {
-    let singular = || {
-        Error::new(
-            ErrorKind::UnsupportedColor,
-            "the camera matrix is singular, so no white-balance approximation exists",
-        )
-    };
-    if !matrix.iter().flatten().all(|value| value.is_finite()) {
-        return Err(singular());
-    }
-    let [[a, b, c], [d, e, f], [g, h, i]] = matrix;
-    let cofactors = [
-        [e * i - f * h, c * h - b * i, b * f - c * e],
-        [f * g - d * i, a * i - c * g, c * d - a * f],
-        [d * h - e * g, b * g - a * h, a * e - b * d],
-    ];
-    let determinant = a * cofactors[0][0] + b * cofactors[1][0] + c * cofactors[2][0];
-    let bound: f64 = matrix
-        .iter()
-        .map(|row| row.iter().map(|value| value * value).sum::<f64>().sqrt())
-        .product();
-    if !determinant.is_finite() || bound == 0.0 || determinant.abs() <= 1.0e-12 * bound {
-        return Err(singular());
-    }
-    let inverse = cofactors.map(|row| row.map(|value| value / determinant));
-    if inverse.iter().flatten().all(|value| value.is_finite()) {
-        Ok(inverse)
-    } else {
-        Err(singular())
     }
 }
 
@@ -622,17 +587,8 @@ impl LinearSettings {
     }
 }
 
-fn decode_srgb(value: u8) -> f64 {
-    let encoded = f64::from(value) / 255.0;
-    if encoded <= 0.040_45 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 fn decode_rgb(value: [u8; 3]) -> [f64; 3] {
-    value.map(decode_srgb)
+    value.map(srgb::decode_u8)
 }
 
 fn terminal_srgb(linear: f64) -> Result<u8, Error> {
@@ -643,24 +599,20 @@ fn terminal_srgb(linear: f64) -> Result<u8, Error> {
         ));
     }
     let linear = linear.clamp(0.0, 1.0);
-    let code = super::quantize_channel(linear);
+    let code = srgb::quantize_channel(linear);
     // Inverting the half-code thresholds avoids a power function for ordinary values, but
     // f64 encode/decode are not exact inverses. Keep the canonical forward evaluation close to
     // either neighbouring threshold. This conservative guard is covered by native boundary
     // tests; powf has no cross-platform ULP bound, so those tests remain part of platform
     // qualification. The JPEG quantizer keeps its own contract.
     const ROUNDING_GUARD: f64 = 1e-12;
-    let thresholds = &*super::SRGB_CODE_THRESHOLDS;
+    let thresholds = &*srgb::CODE_THRESHOLDS;
     let lower = thresholds[usize::from(code.saturating_sub(1))];
     let upper = thresholds[usize::from(code.min(254))];
     if (linear - lower).abs() > ROUNDING_GUARD && (linear - upper).abs() > ROUNDING_GUARD {
         return Ok(code);
     }
-    let encoded = if linear <= 0.003_130_8 {
-        12.92 * linear
-    } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
-    };
+    let encoded = srgb::encode(linear);
     let rounded = (encoded * 255.0).round();
     if !rounded.is_finite() || !(0.0..=255.0).contains(&rounded) {
         return Err(Error::new(
@@ -3289,8 +3241,8 @@ mod tests {
         assert_eq!(
             sample.rgba,
             Some([
-                reference_srgb(decode_srgb(128)),
-                reference_srgb(decode_srgb(64)),
+                reference_srgb(srgb::decode_u8(128)),
+                reference_srgb(srgb::decode_u8(64)),
                 255,
                 255
             ])

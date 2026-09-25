@@ -18,9 +18,9 @@
 //!
 //! The study's frozen tolerance against that reference is `1e-6 + 1e-6·|reference|` in linear light
 //! and at most one output code at quantization.
-use crate::modules::{
-    PointwiseColor, Stage,
-    basic::tone::{decode_srgb_extended, encode_srgb_extended},
+use crate::{
+    colour::srgb::{decode_f32, encode_f32},
+    modules::{PointwiseColor, Stage},
 };
 
 /// The shape family the roundness selects, with everything that does not vary per pixel already
@@ -170,9 +170,9 @@ impl Vignette {
         } else {
             let lift = self.a * mask;
             for channel in pixel {
-                let encoded = f64::from(encode_srgb_extended(*channel));
+                let encoded = f64::from(encode_f32(*channel));
                 if encoded < 1.0 {
-                    *channel = decode_srgb_extended((encoded + lift * (1.0 - encoded)) as f32);
+                    *channel = decode_f32((encoded + lift * (1.0 - encoded)) as f32);
                 }
             }
         }

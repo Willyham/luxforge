@@ -11,53 +11,10 @@
 //! below for the measured difference this makes). This file never imports the reference: the two
 //! are written
 //! independently so they never share a bug.
-use crate::modules::PointwiseColor;
-
-/// Linear sRGB (D65) to LMS, Björn Ottosson's published Oklab matrix, reproduced with every
-/// published digit as `f64` (matching the design and the independent reference byte for byte) and
-/// converted once, below, to the `f32` values the hot loop actually multiplies by: coefficients are
-/// computed in f64, units run in f32, exactly as the colour processing contract requires.
-pub(crate) const M1_F64: [[f64; 3]; 3] = [
-    [0.4122214708, 0.5363325363, 0.0514459929],
-    [0.2119034982, 0.6806995451, 0.1073969566],
-    [0.0883024619, 0.2817188376, 0.6299787005],
-];
-
-/// LMS' (post signed-cube-root) to Oklab `(L, a, b)`.
-pub(crate) const M2_F64: [[f64; 3]; 3] = [
-    [0.2104542553, 0.7936177850, -0.0040720468],
-    [1.9779984951, -2.4285922050, 0.4505937099],
-    [0.0259040371, 0.7827717662, -0.8086757660],
-];
-
-/// Oklab `(L, a, b)` to LMS'. Independently published and rounded, not an exact algebraic inverse
-/// of `M2_F64`.
-const M2_INV_F64: [[f64; 3]; 3] = [
-    [1.0, 0.3963377774, 0.2158037573],
-    [1.0, -0.1055613458, -0.0638541728],
-    [1.0, -0.0894841775, -1.2914855480],
-];
-
-/// LMS to linear sRGB. Independently published and rounded, not an exact algebraic inverse of
-/// `M1_F64`.
-const M1_INV_F64: [[f64; 3]; 3] = [
-    [4.0767416621, -3.3077115913, 0.2309699292],
-    [-1.2684380046, 2.6097574011, -0.3413193965],
-    [-0.0041960863, -0.7034186147, 1.7076147010],
-];
-
-const fn as_f32(m: [[f64; 3]; 3]) -> [[f32; 3]; 3] {
-    [
-        [m[0][0] as f32, m[0][1] as f32, m[0][2] as f32],
-        [m[1][0] as f32, m[1][1] as f32, m[1][2] as f32],
-        [m[2][0] as f32, m[2][1] as f32, m[2][2] as f32],
-    ]
-}
-
-const M1: [[f32; 3]; 3] = as_f32(M1_F64);
-const M2: [[f32; 3]; 3] = as_f32(M2_F64);
-const M2_INV: [[f32; 3]; 3] = as_f32(M2_INV_F64);
-const M1_INV: [[f32; 3]; 3] = as_f32(M1_INV_F64);
+use crate::{
+    colour::oklab::{Oklab, chroma, from_oklab, hue_degrees, to_oklab},
+    modules::PointwiseColor,
+};
 
 /// Reference Oklab chroma of the most saturated point on the sRGB gamut surface (`(255, 0, 255)`,
 /// sRGB magenta), measured by scanning the gamut surface at 8-bit resolution. Normalizes the
@@ -84,72 +41,6 @@ const SKIN_HUE_CENTER_DEG: f32 = SKIN_HUE_CENTER_DEG_F64 as f32;
 const SKIN_HUE_HALF_WIDTH_DEG: f32 = SKIN_HUE_HALF_WIDTH_DEG_F64 as f32;
 const SKIN_PROTECTION: f32 = SKIN_PROTECTION_F64 as f32;
 const CHROMA_EPSILON: f32 = CHROMA_EPSILON_F64 as f32;
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Oklab {
-    pub(crate) l: f32,
-    pub(crate) a: f32,
-    pub(crate) b: f32,
-}
-
-fn matvec(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
-    [
-        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-    ]
-}
-
-/// The signed cube root `sign(x) * |x|^(1/3)`, defined and finite for every finite `x`, including
-/// negative ones. `f32::powf(1.0 / 3.0)` is **not** safe here: it returns NaN for a negative base,
-/// and out-of-range linear input preserved between units (per the integration contract) can land a
-/// negative LMS component after `M1`.
-fn signed_cbrt(x: f32) -> f32 {
-    x.signum() * x.abs().cbrt()
-}
-
-pub(crate) fn to_oklab(rgb: [f32; 3]) -> Oklab {
-    let lms = matvec(&M1, rgb);
-    let lms_root = [
-        signed_cbrt(lms[0]),
-        signed_cbrt(lms[1]),
-        signed_cbrt(lms[2]),
-    ];
-    let lab = matvec(&M2, lms_root);
-    Oklab {
-        l: lab[0],
-        a: lab[1],
-        b: lab[2],
-    }
-}
-
-/// Oklab to linear sRGB. An achromatic colour (`a = b = 0`, either sign of zero) reconstructs to
-/// `L^3` in all three channels, which is what the exact matrices give it: `M2^-1`'s first column is
-/// one and each row of `M1^-1` sums to one. The published rows are rounded, though, so in f32 the
-/// general path returns three channels a few ulps apart, and where they straddle an output code
-/// threshold a fully desaturated grey would render with one channel a code off.
-pub(crate) fn from_oklab(lab: Oklab) -> [f32; 3] {
-    if lab.a == 0.0 && lab.b == 0.0 {
-        let grey = lab.l * lab.l * lab.l;
-        return [grey, grey, grey];
-    }
-    let lms_root = matvec(&M2_INV, [lab.l, lab.a, lab.b]);
-    let lms = [
-        lms_root[0] * lms_root[0] * lms_root[0],
-        lms_root[1] * lms_root[1] * lms_root[1],
-        lms_root[2] * lms_root[2] * lms_root[2],
-    ];
-    matvec(&M1_INV, lms)
-}
-
-pub(crate) fn chroma(lab: Oklab) -> f32 {
-    lab.a.hypot(lab.b)
-}
-
-/// Oklab hue angle in degrees, `atan2(b, a)` in `[-180, 180]`, including either signed endpoint.
-pub(crate) fn hue_degrees(lab: Oklab) -> f32 {
-    lab.b.atan2(lab.a).to_degrees()
-}
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
@@ -382,7 +273,7 @@ mod tests {
         }
         unit.apply_row(0, 0, &mut row);
         for pixel in &row {
-            let codes = crate::render::quantize_pixel(*pixel);
+            let codes = crate::colour::srgb::quantize_pixel(*pixel);
             assert!(
                 codes[0] == codes[1] && codes[1] == codes[2],
                 "{pixel:?} renders {codes:?}"

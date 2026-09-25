@@ -8,18 +8,18 @@
 //! justifications live; this file restates the constants and nothing else.
 //!
 //! The Oklab conversion is **not** restated here: it is the one accepted in
-//! `docs/design/basic-colour.md` and implemented in [`crate::modules::basic::colour`], reused
-//! unchanged so the two colour modules cannot drift apart and the matrices exist once; that
-//! conversion also gives an achromatic result three bit-identical channels.
+//! `docs/design/basic-colour.md` and implemented in [`crate::colour::oklab`], reused unchanged so
+//! every colour-adjusting module shares it rather than restating the matrices; that conversion
+//! also gives an achromatic result three bit-identical channels.
 //!
 //! Coefficients are computed in f64 — the frozen centres, the eight gaps derived from them, the
 //! hue warp's knots, slopes and per-segment cubics, and the sixteen saturation and luminance
 //! amounts — and cast once into the small fixed-size f32 arrays the unit holds. The per-pixel path
 //! is f32 throughout, ignores the row coordinates and touches nothing but the pixel it was given
 //! and those arrays.
-use crate::modules::{
-    PointwiseColor,
-    basic::colour::{self, Oklab},
+use crate::{
+    colour::oklab::{self, Oklab},
+    modules::PointwiseColor,
 };
 
 /// The eight hue ranges, in wheel order (ascending Oklab hue angle).
@@ -208,7 +208,7 @@ fn chroma_ramp(chroma: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// An Oklab hue angle, which [`colour::hue_degrees`] reports in `(-180, 180]`, wrapped to
+/// An Oklab hue angle, which [`oklab::hue_degrees`] reports in `(-180, 180]`, wrapped to
 /// `[0, 360)`.
 fn normalize_hue_deg(hue_deg: f32) -> f32 {
     if hue_deg < 0.0 {
@@ -331,14 +331,14 @@ impl PointwiseColor for Mixer {
     /// response where they raise to the power `1`.
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
-            let lab = colour::to_oklab(*pixel);
+            let lab = oklab::to_oklab(*pixel);
             if lab.a == 0.0 && lab.b == 0.0 {
-                *pixel = colour::from_oklab(lab);
+                *pixel = oklab::from_oklab(lab);
                 continue;
             }
-            let ramp = chroma_ramp(colour::chroma(lab));
+            let ramp = chroma_ramp(oklab::chroma(lab));
             let (rotation, factor, amount) =
-                self.amounts(ramp, normalize_hue_deg(colour::hue_degrees(lab)));
+                self.amounts(ramp, normalize_hue_deg(oklab::hue_degrees(lab)));
             // Hue, then chroma, applied to the `(a, b)` vector directly — rotate, then scale —
             // rather than by recomposing `C` and `h`: a rotation and a non-negative scalar commute,
             // so this realizes the frozen `(C, h)` equations exactly while leaving a zero rotation
@@ -357,7 +357,7 @@ impl PointwiseColor for Mixer {
             } else {
                 luminance_response(lab.l, amount)
             };
-            *pixel = colour::from_oklab(Oklab { l, a, b });
+            *pixel = oklab::from_oklab(Oklab { l, a, b });
         }
     }
 
@@ -470,9 +470,7 @@ mod tests {
     }
 
     fn hue_of(rgb: [f32; 3]) -> f64 {
-        f64::from(normalize_hue_deg(colour::hue_degrees(colour::to_oklab(
-            rgb,
-        ))))
+        f64::from(normalize_hue_deg(oklab::hue_degrees(oklab::to_oklab(rgb))))
     }
 
     /// `+100` displaces a centre by the reach of the gap to the neighbour in the direction of
@@ -628,7 +626,7 @@ mod tests {
                         let produced = apply(grey, &unit);
                         if property == 1 && value < 0.0 {
                             assert_eq!(
-                                crate::render::quantize_pixel(produced),
+                                crate::colour::srgb::quantize_pixel(produced),
                                 [code; 3],
                                 "grey {code} changed code under {} saturation {value}",
                                 RANGE_NAMES[range]

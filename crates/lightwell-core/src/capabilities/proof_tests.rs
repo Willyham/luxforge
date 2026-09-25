@@ -20,9 +20,9 @@ use crate::{
     ModuleDescriptor, ModuleRegistry, OwnerHandle, PROOF_PALETTE_GAINS, PROOF_TASK, Processing,
     Stage, StageContext, ToolModule,
     capabilities::context::ModuleContext,
+    colour::srgb::{decode_u8, quantize_pixel},
     modules::{ActionInput, ActionPlan},
     redact_request,
-    render::{quantize_pixel, srgb_to_linear_f64},
 };
 use lightwell_testkit::ProofEndpoint;
 use serde_json::{Map, Value, json};
@@ -470,7 +470,7 @@ fn gains_of(result: &Value) -> [f32; 3] {
 
 /// One source pixel tinted in linear light and quantized at the output boundary as the host does.
 fn tinted(source: [u8; 4], gains: [f32; 3]) -> [u8; 4] {
-    let linear = |channel: usize| srgb_to_linear_f64(source[channel]) as f32 * gains[channel];
+    let linear = |channel: usize| decode_u8(source[channel]) as f32 * gains[channel];
     let [red, green, blue] = quantize_pixel([linear(0), linear(1), linear(2)]);
     [red, green, blue, source[3]]
 }

@@ -69,11 +69,7 @@ pub fn check(bytes: &[u8], components: u8) -> Result<(), Error> {
         // All possible source codes are checked: this viewer accepts 8-bit JPEG only.
         for code in 0..=255 {
             let encoded = code as f32 / 255.;
-            let expected = if encoded <= 0.04045 {
-                encoded / 12.92
-            } else {
-                ((encoded + 0.055) / 1.055).powf(2.4)
-            };
+            let expected = crate::colour::srgb::decode_f32(encoded);
             let actual = evaluator.evaluate_value(encoded);
             if !actual.is_finite() || (actual - expected).abs() > 0.0005 {
                 return Err(unsupported());

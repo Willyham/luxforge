@@ -12,7 +12,14 @@
 //! compose to identity only to about `1e-7`, which fails the design's `1e-12` identity requirement
 //! outright), and the whole matrix sandwich is folded into one linear-sRGB 3x3 in the constructor
 //! so a pixel costs one 3x3 multiply in `f32`.
-use crate::{modules::PointwiseColor, render::srgb_to_linear_f64};
+use crate::{
+    colour::{
+        cct::{planckian_locus_xy, uv_to_xy, xy_to_uv},
+        mat3::{self, matvec_f32, matvec_f64},
+        srgb::decode_u8,
+    },
+    modules::PointwiseColor,
+};
 
 type Mat3 = [[f64; 3]; 3];
 
@@ -70,99 +77,16 @@ const SOLVER_JACOBIAN_STEP: f64 = 1e-3;
 pub(super) const PARAMETER_RANGE: f64 = 100.0;
 
 // ---------------------------------------------------------------------------------------------
-// Linear algebra.
-// ---------------------------------------------------------------------------------------------
-
-fn mat3_vec(m: &Mat3, v: [f64; 3]) -> [f64; 3] {
-    [
-        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-    ]
-}
-
-fn mat3_mul(a: &Mat3, b: &Mat3) -> Mat3 {
-    let mut out = [[0.0; 3]; 3];
-    for (r, row) in out.iter_mut().enumerate() {
-        for (c, slot) in row.iter_mut().enumerate() {
-            *slot = (0..3).map(|k| a[r][k] * b[k][c]).sum();
-        }
-    }
-    out
-}
-
-/// The exact algebraic inverse of a 3x3 matrix via the adjugate and determinant, in `f64`.
-///
-/// The design requires this to be computed rather than replaced with separately published "inverse"
-/// constants: inverting the very matrix the code already uses makes the round trip self-cancelling
-/// to double precision (about `1e-15`), whichever way the forward matrix was rounded when it was
-/// published.
-fn mat3_inverse(m: &Mat3) -> Mat3 {
-    let (a, b, c) = (m[0][0], m[0][1], m[0][2]);
-    let (d, e, f) = (m[1][0], m[1][1], m[1][2]);
-    let (g, h, i) = (m[2][0], m[2][1], m[2][2]);
-    let cof_a = e * i - f * h;
-    let cof_b = -(d * i - f * g);
-    let cof_c = d * h - e * g;
-    let cof_d = -(b * i - c * h);
-    let cof_e = a * i - c * g;
-    let cof_f = -(a * h - b * g);
-    let cof_g = b * f - c * e;
-    let cof_h = -(a * f - c * d);
-    let cof_i = a * e - b * d;
-    let det = a * cof_a + b * cof_b + c * cof_c;
-    [
-        [cof_a / det, cof_d / det, cof_g / det],
-        [cof_b / det, cof_e / det, cof_h / det],
-        [cof_c / det, cof_f / det, cof_i / det],
-    ]
-}
-
-// ---------------------------------------------------------------------------------------------
 // The Planckian locus, CIE 1960 (u, v), and the target chromaticity.
 // ---------------------------------------------------------------------------------------------
 
-/// The Planckian-locus chromaticity approximation (Kim et al. 2002), valid 1667 K to 25000 K.
-///
-/// This is a *model of a blackbody radiator*, used only to obtain a smooth, well-known warm/cool
-/// direction in chromaticity space. It is not a claim that a JPEG's illuminant is a blackbody, and
-/// it reproduces no camera's or editor's own Kelvin value.
-fn planckian_locus_xy(kelvin: f64) -> (f64, f64) {
-    let x = if kelvin <= 4000.0 {
-        -0.2661239e9 / kelvin.powi(3) - 0.2343589e6 / kelvin.powi(2)
-            + 0.8776956e3 / kelvin
-            + 0.179910
-    } else {
-        -3.0258469e9 / kelvin.powi(3)
-            + 2.1070379e6 / kelvin.powi(2)
-            + 0.2226347e3 / kelvin
-            + 0.240390
-    };
-    let y = if kelvin <= 2222.0 {
-        -1.1063814 * x.powi(3) - 1.34811020 * x.powi(2) + 2.18555832 * x - 0.20219683
-    } else if kelvin <= 4000.0 {
-        -0.9549476 * x.powi(3) - 1.37418593 * x.powi(2) + 2.09137015 * x - 0.16748867
-    } else {
-        3.0817580 * x.powi(3) - 5.87338670 * x.powi(2) + 3.75112997 * x - 0.37001483
-    };
-    (x, y)
-}
-
-/// CIE 1931 `(x, y)` to CIE 1960 `(u, v)`.
-fn xy_to_uv(x: f64, y: f64) -> (f64, f64) {
-    let d = -2.0 * x + 12.0 * y + 3.0;
-    (4.0 * x / d, 6.0 * y / d)
-}
-
-/// CIE 1960 `(u, v)` back to CIE 1931 `(x, y)`, the exact inverse of [`xy_to_uv`].
-fn uv_to_xy(u: f64, v: f64) -> (f64, f64) {
-    let d = 2.0 * u - 8.0 * v + 4.0;
-    (3.0 * u / d, 2.0 * v / d)
-}
-
+/// The Planckian locus in CIE 1960 `(u, v)`: a model of a blackbody radiator used only to obtain a
+/// smooth, well-known warm/cool direction in chromaticity space. It is not a claim that a JPEG's
+/// illuminant is a blackbody, and it reproduces no camera's or editor's own Kelvin value.
 fn locus_uv(kelvin: f64) -> (f64, f64) {
-    let (x, y) = planckian_locus_xy(kelvin);
-    xy_to_uv(x, y)
+    let [x, y] = planckian_locus_xy(kelvin);
+    let ([u, v], _) = xy_to_uv(x, y);
+    (u, v)
 }
 
 /// The locus's unit tangent at `kelvin`, by a 1 K forward difference.
@@ -188,7 +112,7 @@ fn target_uv(temperature: f64, tint: f64) -> (f64, f64) {
     // The locked sign: this -90 degree rotation of the locus tangent is the one that makes positive
     // Tint raise R and B while lowering G, which is the magenta convention the design requires.
     let (pu, pv) = (tv, -tu);
-    let (u_d65, v_d65) = xy_to_uv(D65_X, D65_Y);
+    let ([u_d65, v_d65], _) = xy_to_uv(D65_X, D65_Y);
     (
         u_d65 + (u_p - u_p0) + tint * K_TINT * pu,
         v_d65 + (v_p - v_p0) + tint * K_TINT * pv,
@@ -198,12 +122,12 @@ fn target_uv(temperature: f64, tint: f64) -> (f64, f64) {
 /// The Bradford cone responses of a chromaticity at unit luminance. A gain ratio is
 /// luminance-independent, so the `Y = 1` normalization is the whole of it.
 fn lms_of_uv(u: f64, v: f64) -> [f64; 3] {
-    let (x, y) = uv_to_xy(u, v);
-    mat3_vec(&XYZ_TO_LMS, [x / y, 1.0, (1.0 - x - y) / y])
+    let ([x, y], _) = uv_to_xy(u, v);
+    matvec_f64(&XYZ_TO_LMS, [x / y, 1.0, (1.0 - x - y) / y])
 }
 
 fn d65_lms() -> [f64; 3] {
-    let (u, v) = xy_to_uv(D65_X, D65_Y);
+    let ([u, v], _) = xy_to_uv(D65_X, D65_Y);
     lms_of_uv(u, v)
 }
 
@@ -258,9 +182,9 @@ impl WhiteBalance {
         }
         let g = gains(temperature, tint);
         let diagonal: Mat3 = [[g[0], 0.0, 0.0], [0.0, g[1], 0.0], [0.0, 0.0, g[2]]];
-        let to_lms = mat3_mul(&XYZ_TO_LMS, &RGB_TO_XYZ);
-        let from_lms = mat3_mul(&mat3_inverse(&RGB_TO_XYZ), &mat3_inverse(&XYZ_TO_LMS));
-        let composite = mat3_mul(&from_lms, &mat3_mul(&diagonal, &to_lms));
+        let to_lms = mat3::mul(&XYZ_TO_LMS, &RGB_TO_XYZ);
+        let from_lms = mat3::mul(&mat3::inverse(&RGB_TO_XYZ), &mat3::inverse(&XYZ_TO_LMS));
+        let composite = mat3::mul(&from_lms, &mat3::mul(&diagonal, &to_lms));
         let mut matrix = [[0.0f32; 3]; 3];
         for (row, source) in matrix.iter_mut().zip(composite) {
             for (slot, value) in row.iter_mut().zip(source) {
@@ -273,14 +197,8 @@ impl WhiteBalance {
 
 impl PointwiseColor for WhiteBalance {
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
-        let m = &self.matrix;
         for pixel in rgb {
-            let [r, g, b] = *pixel;
-            *pixel = [
-                m[0][0] * r + m[0][1] * g + m[0][2] * b,
-                m[1][0] * r + m[1][1] * g + m[1][2] * b,
-                m[2][0] * r + m[2][1] * g + m[2][2] * b,
-            ];
+            *pixel = matvec_f32(&self.matrix, *pixel);
         }
     }
 
@@ -386,7 +304,7 @@ pub(super) fn average_patch(pixels: &[[u8; 3]]) -> Result<[f64; 3], Reason> {
     let mut sum = [0.0; 3];
     for pixel in pixels {
         for (slot, code) in sum.iter_mut().zip(pixel) {
-            *slot += srgb_to_linear_f64(*code);
+            *slot += decode_u8(*code);
         }
     }
     let mean = [sum[0] / count, sum[1] / count, sum[2] / count];
@@ -410,12 +328,12 @@ pub(super) fn neutral_settings(mean_linear_rgb: [f64; 3]) -> Result<(i64, i64), 
     if mean_linear_rgb.iter().any(|value| !value.is_finite()) {
         return Err(Reason::NonFinite);
     }
-    let xyz = mat3_vec(&RGB_TO_XYZ, mean_linear_rgb);
+    let xyz = matvec_f64(&RGB_TO_XYZ, mean_linear_rgb);
     let sum = xyz[0] + xyz[1] + xyz[2];
     if !sum.is_finite() || sum <= 0.0 {
         return Err(Reason::NonFinite);
     }
-    let (patch_u, patch_v) = xy_to_uv(xyz[0] / sum, xyz[1] / sum);
+    let ([patch_u, patch_v], _) = xy_to_uv(xyz[0] / sum, xyz[1] / sum);
     if !patch_u.is_finite() || !patch_v.is_finite() {
         return Err(Reason::NonFinite);
     }
@@ -544,7 +462,7 @@ mod tests {
         let cases = cases();
         assert_eq!(cases.transform_cases.len(), 45, "the committed corpus");
         for case in &cases.transform_cases {
-            let input = case.input_rgb_u8.map(srgb_to_linear_f64);
+            let input = case.input_rgb_u8.map(decode_u8);
             let actual = applied(case.temperature, case.tint, input);
             for (channel, (actual, expected)) in
                 actual.iter().zip(case.expected_linear_f64).enumerate()
@@ -591,7 +509,7 @@ mod tests {
         // Recompute the gains through the general path by nudging the special case aside: the
         // target at an infinitesimal temperature is the anchor to within the step taken.
         let (u, v) = target_uv(0.0, 0.0);
-        let (anchor_u, anchor_v) = xy_to_uv(D65_X, D65_Y);
+        let ([anchor_u, anchor_v], _) = xy_to_uv(D65_X, D65_Y);
         assert_eq!((u, v), (anchor_u, anchor_v), "zero offsets cancel exactly");
         let target = lms_of_uv(u, v);
         let d65 = d65_lms();
@@ -599,7 +517,7 @@ mod tests {
             assert!((d65 / target - 1.0).abs() < 1e-12, "channel {channel}");
         }
         // The matrix sandwich composes to identity to double precision using the computed inverses.
-        let round_trip = mat3_mul(&mat3_inverse(&RGB_TO_XYZ), &RGB_TO_XYZ);
+        let round_trip = mat3::mul(&mat3::inverse(&RGB_TO_XYZ), &RGB_TO_XYZ);
         for (r, row) in round_trip.iter().enumerate() {
             for (c, value) in row.iter().enumerate() {
                 let expected = if r == c { 1.0 } else { 0.0 };

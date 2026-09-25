@@ -14,7 +14,8 @@
 
 use crate::{
     Error, ErrorKind, LinearImage, ModuleRegistry, PreviewSource, Raster, Recipe, SourceImage,
-    render::{decode_pixel, frame_mut, quantize_channel, zeroed_frame},
+    colour::srgb::{decode_pixel, quantize_channel},
+    render::{frame_mut, zeroed_frame},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -587,7 +588,7 @@ mod tests {
     use crate::{
         BASIC_EFFECT, BoxRect, CROP_EFFECT, CropStage, EFFECT_FORMAT, Layer, LayerId,
         LinearSettings, Mask, Orientation, PIXEL_EFFECT, RECIPE_FORMAT, SnapshotId, Stage,
-        render::{Cancel, srgb_to_linear_f64},
+        colour::srgb::decode_u8, render::Cancel,
     };
     use serde_json::json;
 
@@ -599,7 +600,7 @@ mod tests {
     /// function, stored as f32. Decoding through the table is what production does, so the
     /// reference has to start from the same value to be a reference and not a second algorithm.
     fn decoded(code: u8) -> f64 {
-        f64::from(srgb_to_linear_f64(code) as f32)
+        f64::from(decode_u8(code) as f32)
     }
 
     /// The forward sRGB transfer function rounded to a code. This is the definition the render

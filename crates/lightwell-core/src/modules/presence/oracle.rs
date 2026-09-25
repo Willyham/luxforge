@@ -558,7 +558,7 @@ fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths()
     let pixels: Vec<_> = source
         .rgba
         .chunks_exact(4)
-        .map(|pixel| crate::render::decode_pixel([pixel[0], pixel[1], pixel[2]]))
+        .map(|pixel| crate::colour::srgb::decode_pixel([pixel[0], pixel[1], pixel[2]]))
         .collect();
     let planes: Vec<f32> = (0..3)
         .flat_map(|channel| pixels.iter().map(move |p| p[channel]))
@@ -666,7 +666,7 @@ fn a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
     let pixels: Vec<[f32; 3]> = source
         .rgba
         .chunks_exact(4)
-        .map(|rgba| crate::render::decode_pixel([rgba[0], rgba[1], rgba[2]]))
+        .map(|rgba| crate::colour::srgb::decode_pixel([rgba[0], rgba[1], rgba[2]]))
         .collect();
     let read = |x: u32, y: u32| -> Result<[f32; 3], Error> { Ok(pixels[(y * width + x) as usize]) };
     let reduction = build_reduction(stage, read).expect("a reduction");
