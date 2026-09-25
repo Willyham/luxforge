@@ -3112,7 +3112,7 @@
     {
       "id": "TASK-051",
       "description": "Correct the documentation the review found stale: the modules-and-API design's Basic and effects rows, Basic's field descriptions of its input, the instant-preview restatement of the slider budget, and architecture's Persistence paragraph.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-030"
       ],
