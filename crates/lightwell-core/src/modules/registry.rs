@@ -1126,7 +1126,7 @@ impl ModuleRegistry {
                     // Nothing is rewritten or reduced to fit, and what a tile costs in memory,
                     // which a mask adds two tile planes to, never refuses it.
                     SpatialPlan::new(&operation, stage, SPATIAL_TILE)?;
-                    let prefix_hash = prefix_hash(&layers[..index])?;
+                    let prefix_hash = prefix_hash(&layers[..index], masks, sampling)?;
                     segments.push(Segment::new(
                         Some(Entry::Spatial {
                             operation,

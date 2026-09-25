@@ -36,6 +36,8 @@ pub(crate) fn boot() -> (Editor, PathBuf) {
         join,
         live_server: None,
         config: Config::default(),
+        client: None,
+        initial_import: None,
         window: (1440.0, 900.0),
     });
     (editor, catalog)

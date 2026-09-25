@@ -17,7 +17,7 @@ use crate::{
         host::{CapabilityHost, announce_once},
         jobs::Origin,
     },
-    editor::{PreparedFile, RawDevelopment, SourceSignature},
+    editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
     source::RawPrepared,
 };
 use requests::{RequestKey, RequestTable};
@@ -192,9 +192,8 @@ struct SourceFlightKey {
 }
 
 enum SourceTaskKind {
-    /// Read, verify and decode the original; a RAW one is developed at these gains, or at its
-    /// camera's as-shot gains when none are named.
-    File(Option<[f32; 3]>),
+    /// Read and decode the original, developing a known RAW at the requested entry gains.
+    File(Option<Box<FilePreparation>>),
     Develop(RawDevelopment),
     /// The asset's source is already prepared; only its artifacts need reading.
     Artifacts(AssetId),
@@ -262,31 +261,32 @@ impl SourceJobs {
         &mut self,
         client: ClientId,
         path: PathBuf,
-        expected_fingerprint: Option<String>,
+        target: Option<FilePreparation>,
         artifacts: Vec<ArtifactRead>,
     ) -> Result<JobId, Error> {
-        self.enqueue_file(client, path, expected_fingerprint, None, artifacts)
+        self.enqueue_file(client, path, target, artifacts)
     }
 
-    /// Prepare an original from its file, developing a RAW one at `gains` when they are named, and
-    /// read the artifacts after it.
+    /// Prepare an original and its artifacts for the requested entry.
     fn enqueue_file(
         &mut self,
         client: ClientId,
         path: PathBuf,
-        expected_fingerprint: Option<String>,
-        gains: Option<[f32; 3]>,
+        target: Option<FilePreparation>,
         artifacts: Vec<ArtifactRead>,
     ) -> Result<JobId, Error> {
         let (canonical, signature) = EditorService::request_signature(&path)?;
         let key = SourceFlightKey {
             path: canonical,
             signature: Some(signature),
-            expected_fingerprint,
-            gains_bits: gains.map(|gains| gains.map(f32::to_bits)),
+            expected_fingerprint: target.as_ref().map(|target| target.fingerprint.clone()),
+            gains_bits: target
+                .as_ref()
+                .and_then(|target| target.raw.as_ref())
+                .map(|raw| raw.gains.map(f32::to_bits)),
             artifacts: flight_artifacts(&artifacts),
         };
-        let kind = SourceTaskKind::File(gains);
+        let kind = SourceTaskKind::File(target.map(Box::new));
         self.submit(client, key, kind, artifacts, None, true)
     }
 
@@ -563,8 +563,7 @@ fn queue_preparation(
         let id = jobs.enqueue_file(
             client,
             state.asset.locator,
-            Some(state.asset.fingerprint),
-            needs.gains,
+            Some(service.file_preparation(asset_id, Some(&needs.entry_id))?),
             artifacts,
         )?;
         service.evict_development();
@@ -702,31 +701,32 @@ fn source_worker(
         }
         hold.wait();
         let result = match task.kind {
-            SourceTaskKind::File(gains) => {
-                EditorService::prepare_file_cancel(&task.key.path, gains, &task.cancelled).and_then(
-                    |prepared| {
-                        if Some(&prepared.signature) != task.key.signature.as_ref() {
-                            return Err(Error::new(
-                                ErrorKind::Conflict,
-                                "source changed after job was queued",
-                            ));
-                        }
-                        if task
-                            .key
-                            .expected_fingerprint
-                            .as_deref()
-                            .is_some_and(|expected| expected != prepared.fingerprint)
-                        {
-                            return Err(Error::new(
-                                ErrorKind::SourceUnavailable,
-                                "original source fingerprint changed",
-                            ));
-                        }
-                        let verified = read_artifacts(&task.artifacts, &task.cancelled)?;
-                        Ok(SourceResult::File(prepared, verified))
-                    },
-                )
-            }
+            SourceTaskKind::File(target) => EditorService::prepare_file_cancel(
+                &task.key.path,
+                target.as_deref(),
+                &task.cancelled,
+            )
+            .and_then(|prepared| {
+                if Some(&prepared.signature) != task.key.signature.as_ref() {
+                    return Err(Error::new(
+                        ErrorKind::Conflict,
+                        "source changed after job was queued",
+                    ));
+                }
+                if task
+                    .key
+                    .expected_fingerprint
+                    .as_deref()
+                    .is_some_and(|expected| expected != prepared.fingerprint)
+                {
+                    return Err(Error::new(
+                        ErrorKind::SourceUnavailable,
+                        "original source fingerprint changed",
+                    ));
+                }
+                let verified = read_artifacts(&task.artifacts, &task.cancelled)?;
+                Ok(SourceResult::File(prepared, verified))
+            }),
             SourceTaskKind::Develop(request) => RawPrepared::develop(
                 request.sensor.clone(),
                 request.fingerprint.clone(),
@@ -1403,7 +1403,7 @@ pub(super) fn catalog_import(
     let (id, status) = match owner.service.cached_import(&params.path)? {
         Some(state) => (owner.jobs.ready(call.client, state)?, JobStatus::Ready),
         None => {
-            let expected = owner.service.known_fingerprint(&params.path)?;
+            let expected = owner.service.known_file_preparation(&params.path)?;
             let id = owner
                 .jobs
                 .enqueue(call.client, params.path, expected, Vec::new())?;

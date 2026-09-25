@@ -108,6 +108,12 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
     assert!(first.unified_memory.is_some());
     let buffer = 256 * MIB;
     let gpu = support::Metal::open(buffer as usize).expect("a queue and a buffer on the device");
+    // The measured queue may create its driver client lazily. Warm it before a fresh sampler's
+    // first walk: a warm sampler discovers new clients only every ten seconds, which this unit
+    // check must not confuse with the driver's much shorter counter-retirement delay.
+    gpu.dispatch(1);
+    sampler = Sampler::new();
+    sampler.enable_gpu_allocations();
     let with_buffer = sampler.read().gpu;
     let now = with_buffer
         .allocated_bytes
@@ -131,11 +137,12 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
     let after = before.map(|before| {
         let measured = gpu.dispatch(16);
         // The driver updates AppUsage as the command buffer retires, which waitUntilCompleted may
-        // beat by a moment.
+        // beat by a moment. A small bookkeeping update can arrive first, so wait for the dispatch's
+        // existing lower bound rather than accepting any positive counter change.
         let deadline = Instant::now() + Duration::from_secs(2);
         let after = loop {
             let after = sampler.read().gpu.time_ns.expect("GPU time");
-            if after > before || Instant::now() > deadline {
+            if after.saturating_sub(before) >= (measured / 4).max(1) || Instant::now() > deadline {
                 break after;
             }
             std::thread::sleep(Duration::from_millis(5));

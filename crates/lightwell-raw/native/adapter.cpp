@@ -14,6 +14,7 @@
 
 extern "C" {
 typedef int (*LwCancel)(void *);
+struct LwCancelState { LwCancel callback; void *context; };
 
 struct LwMosaicCorrection { uint32_t index; uint16_t value; };
 
@@ -32,6 +33,11 @@ struct LwMetadata {
   float black_repeat[4096];
   float white, as_shot[3], rgb_cam[12], cam_xyz[12];
 };
+}
+
+extern "C" bool lw_tile_cancel(void *context) noexcept {
+  const auto *state = static_cast<const LwCancelState *>(context);
+  return state->callback && state->callback(state->context);
 }
 
 namespace {
@@ -185,6 +191,8 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
                                const LwMetadata *meta,const LwMosaicCorrection *patches,size_t patch_count,
                                const float gains[3],
                                float *red,float *green,float *blue,
+                               unsigned test_fault,
+                               rpTileExecutor executor,void *executor_context,
                                LwCancel cancel,void *cancel_context,
                                char *err,size_t err_len) noexcept {
   if(!samples||!meta||!gains||!red||!green||!blue||!meta->width||!meta->height||
@@ -194,6 +202,11 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
   }
   if (patch_count>65536 || (patch_count && !patches)) {
     error(err,err_len,"invalid sparse mosaic corrections"); return 1;
+  }
+  // The pinned X-Trans tile code requires one full 114px tile to initialize
+  // scratch before its final-edge calculation. Qualified sensors exceed this.
+  if (meta->cfa_width==6 && (meta->width<120 || meta->height<120)) {
+    error(err,err_len,"X-Trans sensor below native tile minimum"); return 4;
   }
   for(size_t i=0;i<patch_count;++i) {
     if(patches[i].index>=count || (i && patches[i-1].index>=patches[i].index)) {
@@ -241,9 +254,13 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
       code=rcd_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),bayer,no_cancel,2,false,false);
     else{
       float cam[3][4]{};for(size_t i=0;i<12;++i)cam[i/4][i%4]=meta->rgb_cam[i];
-      code=markesteijn_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),xtrans,cam,no_cancel,1,false,2,false);
+      LwCancelState cancel_state{cancel,cancel_context};
+      code=markesteijn_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),xtrans,cam,no_cancel,1,false,2,false,executor,executor_context,lw_tile_cancel,&cancel_state,test_fault);
     }
-    if(code!=RP_NO_ERROR){error(err,err_len,"float demosaic failed");return code==RP_MEMORY_ERROR?6:5;}
+    if(code!=RP_NO_ERROR){
+      error(err,err_len,"float demosaic failed");
+      return code==RP_MEMORY_ERROR?6:code==RP_CANCELLED?2:code==RP_WORKER_ERROR?3:5;
+    }
     if(cancel&&cancel(cancel_context)){error(err,err_len,"cancelled after demosaic");return 2;}
     for(size_t i=0;i<count;++i){
       red[i]/=65535.f;green[i]/=65535.f;blue[i]/=65535.f;

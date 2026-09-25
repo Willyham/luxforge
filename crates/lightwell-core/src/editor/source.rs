@@ -6,7 +6,7 @@ use super::{
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Preparation, PreparationNeeds,
     Snapshot, open_source_bytes, read_bounded_file,
-    source::{PreparedSource, RawPrepared},
+    source::{PreparedSource, RawPreparation, RawPrepared},
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -119,6 +119,41 @@ fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
     Ok(signature)
 }
 
+/// Immutable source settings for a known file. The worker receives bounded catalog metadata,
+/// then checks the decoded original before developing it at this entry's gains.
+#[derive(Clone, Debug)]
+pub(crate) struct FilePreparation {
+    pub(crate) fingerprint: String,
+    pub(crate) raw: Option<RawPreparation>,
+}
+
+impl FilePreparation {
+    fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
+        validate_source_recipe(asset, recipe)?;
+        let raw = match &asset.source {
+            SourceKind::Jpeg => None,
+            SourceKind::Raw { metadata } => Some(RawPreparation {
+                metadata: metadata.0.as_ref().clone(),
+                gains: development_gains(asset, recipe)?.expect("RAW has development gains"),
+            }),
+        };
+        Ok(Self {
+            fingerprint: asset.fingerprint.clone(),
+            raw,
+        })
+    }
+
+    fn verify_fingerprint(&self, fingerprint: &str) -> Result<(), Error> {
+        if self.fingerprint != fingerprint {
+            return Err(Error::new(
+                ErrorKind::SourceUnavailable,
+                "original source fingerprint changed",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl EditorService {
     /// The catalog owner disables synchronous source misses; workers prepare these separately.
     pub(crate) fn disable_sync_source(&mut self) {
@@ -159,11 +194,10 @@ impl EditorService {
         Self::prepare_file_cancel(path, None, &AtomicBool::new(false))
     }
 
-    /// [`Self::prepare_file`] under a cancellation flag. A RAW original is developed at `gains`, or
-    /// at its camera's as-shot gains when none are named.
+    /// [`Self::prepare_file`] under a cancellation flag. A known RAW is developed at its entry's gains.
     pub(crate) fn prepare_file_cancel(
         path: &Path,
-        gains: Option<[f32; 3]>,
+        target: Option<&FilePreparation>,
         cancel: &AtomicBool,
     ) -> Result<PreparedFile, Error> {
         let canonical = canonical_source(path)?;
@@ -181,10 +215,33 @@ impl EditorService {
         let (source, fingerprint) = if bytes.starts_with(&[0xff, 0xd8]) {
             let image = open_source_bytes(bytes)?;
             let fingerprint = image.fingerprint.clone();
+            if let Some(target) = target {
+                target.verify_fingerprint(&fingerprint)?;
+                if target.raw.is_some() {
+                    return Err(Error::new(
+                        ErrorKind::Incompatible,
+                        "original source interpretation changed",
+                    ));
+                }
+            }
             (PreparedSource::Jpeg(image), fingerprint)
         } else {
             let fingerprint = format!("{:x}", Sha256::digest(&bytes));
-            let raw = RawPrepared::decode(bytes, fingerprint.clone(), gains, cancel)?;
+            if let Some(target) = target {
+                target.verify_fingerprint(&fingerprint)?;
+                if target.raw.is_none() {
+                    return Err(Error::new(
+                        ErrorKind::Incompatible,
+                        "original source interpretation changed",
+                    ));
+                }
+            }
+            let raw = RawPrepared::decode(
+                bytes,
+                fingerprint.clone(),
+                target.and_then(|target| target.raw.as_ref()),
+                cancel,
+            )?;
             (PreparedSource::Raw(raw), fingerprint)
         };
         let handle_after = file.metadata().map_err(file_access)?;
@@ -205,11 +262,27 @@ impl EditorService {
         })
     }
 
-    pub(crate) fn known_fingerprint(&self, path: &Path) -> Result<Option<String>, Error> {
+    pub(crate) fn known_file_preparation(
+        &self,
+        path: &Path,
+    ) -> Result<Option<FilePreparation>, Error> {
         let (canonical, signature) = Self::request_signature(path)?;
-        Ok(self
-            .asset_for_source(&canonical, &signature.file_identity)?
-            .map(|(_, fingerprint)| fingerprint))
+        self.asset_for_source(&canonical, &signature.file_identity)?
+            .map(|(id, _)| self.file_preparation(&id, None))
+            .transpose()
+    }
+
+    pub(crate) fn file_preparation(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<FilePreparation, Error> {
+        let state = self.state(asset_id)?;
+        let entry = match entry_id {
+            Some(id) => self.entry(asset_id, id)?,
+            None => state.current_entry,
+        };
+        FilePreparation::for_recipe(&state.asset, &entry.snapshot.recipe)
     }
 
     /// A repeated import can reuse the one verified immutable decode without a new worker job.
@@ -423,8 +496,9 @@ impl EditorService {
 
     /// Direct service clients may prepare synchronously; the API owner never calls this path.
     pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
-        self.import_prepared(Self::prepare_file(path)?)
-            .map(|(state, _)| state)
+        let target = self.known_file_preparation(path)?;
+        let prepared = Self::prepare_file_cancel(path, target.as_ref(), &AtomicBool::new(false))?;
+        self.import_prepared(prepared).map(|(state, _)| state)
     }
 
     /// Complete an import only after a worker has verified and decoded its exact source bytes.
@@ -860,6 +934,28 @@ mod tests {
     };
     use crate::{Draft, PreviewSource, render};
     use serde_json::Map;
+
+    #[test]
+    fn known_file_preparation_checks_bytes_and_source_kind() {
+        let path = fixture();
+        let prepared = EditorService::prepare_file(&path).unwrap();
+        let target = FilePreparation {
+            fingerprint: prepared.fingerprint.clone(),
+            raw: None,
+        };
+        EditorService::prepare_file_cancel(&path, Some(&target), &AtomicBool::new(false))
+            .expect("matching JPEG target");
+        let wrong = FilePreparation {
+            fingerprint: "different bytes".into(),
+            ..target
+        };
+        assert_eq!(
+            EditorService::prepare_file_cancel(&path, Some(&wrong), &AtomicBool::new(false))
+                .unwrap_err()
+                .kind,
+            ErrorKind::SourceUnavailable
+        );
+    }
 
     #[test]
     fn raw_interpretation_json_roundtrip_is_strict_at_native_precision() {

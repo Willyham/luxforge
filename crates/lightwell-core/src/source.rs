@@ -202,6 +202,68 @@ pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
     })
 }
 
+use rayon::prelude::*;
+
+const PARALLEL_CAMERA_PIXELS: usize = 1_000_000;
+const CAMERA_CHUNK_PIXELS: usize = 65_536;
+
+/// Convert the existing planar allocation in disjoint slices. A camera pixel is read into three
+/// locals before any output channel is written, preserving the scalar operation order. Each
+/// successfully finished chunk has proved all three resulting values finite, which permits the
+/// private linear-image adoption path to skip a second full-frame scan.
+fn convert_camera_planes(
+    planes: &mut [f32],
+    n: usize,
+    matrix: &[[f32; 4]; 3],
+    cancel: &AtomicBool,
+) -> Result<(), Error> {
+    let (red, rest) = planes.split_at_mut(n);
+    let (green, blue) = rest.split_at_mut(n);
+    let convert = |red: &mut [f32], green: &mut [f32], blue: &mut [f32]| {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Error::new(ErrorKind::Conflict, "RAW development cancelled"));
+        }
+        for i in 0..red.len() {
+            let camera = [red[i], green[i], blue[i]];
+            let value =
+                |row: &[f32; 4]| row[0] * camera[0] + row[1] * camera[1] + row[2] * camera[2];
+            let r = value(&matrix[0]);
+            let g = value(&matrix[1]);
+            let b = value(&matrix[2]);
+            if !r.is_finite() || !g.is_finite() || !b.is_finite() {
+                return Err(Error::new(
+                    ErrorKind::UnsupportedColor,
+                    "RAW color conversion produced a non-finite value",
+                ));
+            }
+            red[i] = r;
+            green[i] = g;
+            blue[i] = b;
+        }
+        Ok(())
+    };
+    if n >= PARALLEL_CAMERA_PIXELS {
+        red.par_chunks_mut(CAMERA_CHUNK_PIXELS)
+            .zip(green.par_chunks_mut(CAMERA_CHUNK_PIXELS))
+            .zip(blue.par_chunks_mut(CAMERA_CHUNK_PIXELS))
+            .try_for_each(|((red, green), blue)| convert(red, green, blue))?;
+    } else {
+        for ((red, green), blue) in red
+            .chunks_mut(CAMERA_CHUNK_PIXELS)
+            .zip(green.chunks_mut(CAMERA_CHUNK_PIXELS))
+            .zip(blue.chunks_mut(CAMERA_CHUNK_PIXELS))
+        {
+            convert(red, green, blue)?;
+        }
+    }
+    // A cancellation in the final short chunk must never publish these partially converted
+    // planes. Rayon has joined every chunk before this check or before returning an error.
+    if cancel.load(Ordering::Relaxed) {
+        return Err(Error::new(ErrorKind::Conflict, "RAW development cancelled"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum PreparedSource {
     Jpeg(SourceImage),
@@ -213,6 +275,32 @@ pub(crate) struct RawPrepared {
     pub(crate) sensor: Arc<RawSource>,
     pub(crate) linear: Option<LinearImage>,
     pub(crate) gains: [f32; 3],
+}
+
+/// A known recipe's source-only target, resolved without reading pixels on the catalog owner.
+/// The freshly unpacked interpretation must match before its gains can develop that mosaic.
+#[derive(Clone, Debug)]
+pub(crate) struct RawPreparation {
+    pub(crate) metadata: RawMetadata,
+    pub(crate) gains: [f32; 3],
+}
+
+impl RawPreparation {
+    pub(crate) fn validate(&self, metadata: &RawMetadata) -> Result<(), Error> {
+        // Both sides are typed first, so catalog JSON's shortest f32 decimals compare at the
+        // native precision, exactly as they do when the owner adopts the completed source.
+        let value = |metadata: &RawMetadata| {
+            serde_json::to_value(metadata)
+                .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
+        };
+        if value(&self.metadata)? != value(metadata)? {
+            return Err(Error::new(
+                ErrorKind::Incompatible,
+                "original source interpretation changed",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl PreparedSource {
@@ -257,11 +345,17 @@ impl RawPrepared {
     pub(crate) fn decode(
         bytes: Vec<u8>,
         fingerprint: String,
-        gains: Option<[f32; 3]>,
+        target: Option<&RawPreparation>,
         cancel: &AtomicBool,
     ) -> Result<Self, Error> {
         let sensor = Arc::new(RawSource::decode(Arc::from(bytes), cancel).map_err(raw_error)?);
-        let gains = gains.unwrap_or(sensor.metadata().as_shot_gains);
+        let gains = match target {
+            Some(target) => {
+                target.validate(sensor.metadata())?;
+                target.gains
+            }
+            None => sensor.metadata().as_shot_gains,
+        };
         Self::develop(sensor, fingerprint, gains, cancel)
     }
 
@@ -272,31 +366,16 @@ impl RawPrepared {
         cancel: &AtomicBool,
     ) -> Result<Self, Error> {
         let mut rgb = sensor.develop(gains, cancel).map_err(raw_error)?;
-        let matrix = &sensor.metadata().rgb_cam;
         let n = rgb.plane_len();
-        for i in 0..n {
-            if i & 0xffff == 0 && cancel.load(Ordering::Relaxed) {
-                return Err(Error::new(ErrorKind::Conflict, "RAW development cancelled"));
-            }
-            let camera = [rgb.data[i], rgb.data[n + i], rgb.data[2 * n + i]];
-            for (channel, row) in matrix.iter().enumerate() {
-                let value = row[0] * camera[0] + row[1] * camera[1] + row[2] * camera[2];
-                if !value.is_finite() {
-                    return Err(Error::new(
-                        ErrorKind::UnsupportedColor,
-                        "RAW color conversion produced a non-finite value",
-                    ));
-                }
-                rgb.data[channel * n + i] = value;
-            }
-        }
+        convert_camera_planes(&mut rgb.data, n, &sensor.metadata().rgb_cam, cancel)?;
         let metadata = sensor.metadata();
         let crop = metadata.default_crop;
-        let linear = LinearImage::with_fingerprint(rgb.width, rgb.height, rgb.data, fingerprint)?
-            .with_view(
-            [crop.x, crop.y, crop.width, crop.height],
-            metadata.exif_orientation,
-        )?;
+        let linear =
+            LinearImage::from_validated_planes(rgb.width, rgb.height, rgb.data, fingerprint)?
+                .with_view(
+                    [crop.x, crop.y, crop.width, crop.height],
+                    metadata.exif_orientation,
+                )?;
         Ok(Self {
             sensor,
             linear: Some(linear),
@@ -396,6 +475,138 @@ mod tests {
     };
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
+
+    fn scalar_camera_reference(mut planes: Vec<f32>, n: usize, matrix: &[[f32; 4]; 3]) -> Vec<f32> {
+        for i in 0..n {
+            let camera = [planes[i], planes[n + i], planes[2 * n + i]];
+            for (channel, row) in matrix.iter().enumerate() {
+                planes[channel * n + i] =
+                    row[0] * camera[0] + row[1] * camera[1] + row[2] * camera[2];
+            }
+        }
+        planes
+    }
+
+    #[test]
+    fn camera_chunks_match_independent_scalar_bits_across_awkward_edges() {
+        let matrix = [
+            [1.341, -0.123, 0.004, f32::MAX],
+            [-0.061, 1.161, -0.100, f32::MAX],
+            [0.002, -0.049, 1.047, f32::MAX],
+        ];
+        for n in [3, CAMERA_CHUNK_PIXELS + 3, PARALLEL_CAMERA_PIXELS + 3] {
+            let mut input = Vec::with_capacity(n * 3);
+            for channel in 0..3 {
+                for i in 0..n {
+                    input.push(((i % 23) as f32 - 11.0) * (channel as f32 + 0.375));
+                }
+            }
+            input[0] = f32::MIN_POSITIVE;
+            input[n + 1] = -1e30;
+            input[3 * n - 1] = 1e-30;
+            let expected = scalar_camera_reference(input.clone(), n, &matrix);
+            convert_camera_planes(&mut input, n, &matrix, &AtomicBool::new(false)).unwrap();
+            assert!(input.iter().all(|value| value.is_finite()));
+            assert!(
+                input
+                    .iter()
+                    .zip(&expected)
+                    .all(|(actual, expected)| actual.to_bits() == expected.to_bits()),
+                "camera conversion differs at {n} pixels"
+            );
+        }
+    }
+
+    #[test]
+    fn camera_conversion_rejects_overflow_and_cancellation_without_adoption() {
+        let n = PARALLEL_CAMERA_PIXELS + 3;
+        let mut planes = vec![1.0; 3 * n];
+        planes[n - 1] = f32::MAX;
+        let matrix = [[2.0, 0.0, 0.0, 0.0]; 3];
+        let error =
+            convert_camera_planes(&mut planes, n, &matrix, &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedColor);
+        assert_eq!(
+            error.detail,
+            "RAW color conversion produced a non-finite value"
+        );
+
+        let cancel = AtomicBool::new(true);
+        let mut unchanged = vec![1.0; 3 * n];
+        let error = convert_camera_planes(&mut unchanged, n, &matrix, &cancel).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        assert!(unchanged.iter().all(|value| *value == 1.0));
+        assert_eq!(
+            LinearImage::new(1, 1, vec![1.0, f32::NAN, 1.0])
+                .unwrap_err()
+                .kind,
+            ErrorKind::Validation,
+            "public input still checks every value"
+        );
+    }
+
+    /// Diagnostic only: prepares one real RAW outside the clock, then times the production
+    /// converter and private adoption separately on cloned, already-developed planes. The clone,
+    /// hash and teardown are outside both timings. Set LIGHTWELL_RAW_MATRIX_SOURCE to a RAW path.
+    #[test]
+    #[ignore]
+    fn camera_conversion_photo_timing() {
+        let path = std::env::var("LIGHTWELL_RAW_MATRIX_SOURCE").expect("RAW source path");
+        let samples: usize = std::env::var("LIGHTWELL_RAW_MATRIX_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(30);
+        let cancel = AtomicBool::new(false);
+        let sensor = RawSource::decode(Arc::from(std::fs::read(path).unwrap()), &cancel).unwrap();
+        let rgb = sensor
+            .develop(sensor.metadata().as_shot_gains, &cancel)
+            .unwrap();
+        let matrix = &sensor.metadata().rgb_cam;
+        let n = rgb.plane_len();
+        let mut rows = Vec::with_capacity(samples);
+        let mut expected_hash = None;
+        for trial in 0..=samples {
+            let mut planes = rgb.data.clone();
+            let start = std::time::Instant::now();
+            convert_camera_planes(&mut planes, n, matrix, &cancel).unwrap();
+            let convert_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let start = std::time::Instant::now();
+            let image = LinearImage::from_validated_planes(
+                rgb.width,
+                rgb.height,
+                planes,
+                "raw-matrix-timing".into(),
+            )
+            .unwrap();
+            let adopt_ms = start.elapsed().as_secs_f64() * 1000.0;
+            std::hint::black_box(&image);
+            let mut hash = Sha256::new();
+            for value in image.planes() {
+                hash.update(value.to_bits().to_le_bytes());
+            }
+            let hash = format!("{:x}", hash.finalize());
+            if let Some(expected) = &expected_hash {
+                assert_eq!(&hash, expected);
+            } else {
+                expected_hash = Some(hash);
+            }
+            if trial > 0 {
+                rows.push(json!({"convert_ms":convert_ms,"adopt_ms":adopt_ms}));
+            }
+        }
+        println!(
+            "{}",
+            json!({
+                "camera":sensor.metadata().model,
+                "width":rgb.width,
+                "height":rgb.height,
+                "samples":rows,
+                "output_sha256":expected_hash,
+                "explicit_scratch_bytes":0,
+                "scope":"Production camera conversion and validated adoption; RAW decode/development, clone, hash and drop excluded"
+            })
+        );
+    }
 
     /// How far one 8-bit rendition is from another, and where the differences sit.
     fn compare(approximate: &crate::Raster, exact: &crate::Raster) -> (Value, Vec<u8>) {

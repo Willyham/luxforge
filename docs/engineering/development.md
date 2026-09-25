@@ -792,7 +792,7 @@ That an automated launch never takes the desktop is proven once, not per run: `h
 
 Rules for any UI or image check:
 
-- Capture after the intended generation is rendered, tied to state and logs, with explicit provenance. A PNG's existence is not a pass.
+- Capture after the intended generation is rendered, tied to state and logs, with explicit provenance. A PNG's existence is not a pass. At Fit, evidence also waits for any permitted display-bounds refit. Drafts that deliberately defer refitting can be captured at their displayed bounds. An asynchronous readback superseded by newer photo pixels is retried before a frame event or file is published.
 - Keep state checks, pixel checks with declared tolerances, UI review and native checks (dialogs, focus, resize, shutdown in a real desktop session) separate.
 - Never report a screenshot as taken when capture is unsupported. A skipped or headless run is not native platform verification.
 - Only synthetic fixtures in CI and shared artifacts. Routine logs use fixture identifiers, not private paths or EXIF. Keep personal photos in ignored `fixtures/jpg/` or `private/`.

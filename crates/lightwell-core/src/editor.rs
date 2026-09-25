@@ -42,7 +42,7 @@ pub(crate) use catalog::{decode, encode, now_ms, write};
 pub use masks::MASK_FIELD;
 pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
-pub(crate) use source::source_signature;
+pub(crate) use source::{FilePreparation, source_signature};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]

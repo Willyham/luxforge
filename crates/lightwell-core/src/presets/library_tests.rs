@@ -111,7 +111,7 @@ fn a_fresh_catalog_is_marked_with_the_current_format_and_starts_with_an_empty_li
         .expect("a marker");
     // The mask table and stroke store, the preset library, the catalog identity with the artifact
     // tables, and each entry's history row in its own columns.
-    assert_eq!(marker, 8);
+    assert_eq!(marker, 9);
     assert!(service.presets().expect("a listing").is_empty());
     drop(service);
     let reopened = EditorService::open(&path).expect("a current-format catalog reopens");
@@ -136,7 +136,7 @@ fn a_format_4_catalog_is_refused_by_name_without_rewriting_it() {
     assert_eq!(error.kind, ErrorKind::Incompatible);
     assert_eq!(
         error.detail,
-        "catalog format 4 is not supported; expected 8; choose a new catalog path"
+        "catalog format 4 is not supported; expected 9; choose a new catalog path"
     );
     assert_eq!(
         std::fs::read(&path).expect("the bytes"),

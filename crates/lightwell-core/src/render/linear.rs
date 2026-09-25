@@ -204,7 +204,28 @@ impl LinearImage {
         planes: impl Into<Arc<Vec<f32>>>,
         fingerprint: impl Into<String>,
     ) -> Result<Self, Error> {
-        let planes = planes.into();
+        Self::construct(width, height, planes.into(), fingerprint.into(), false)
+    }
+
+    /// Adopt planes whose producer has already checked every output value after its final math.
+    /// The RAW camera conversion is the only caller. This remains private to the core: public
+    /// constructors must scan untrusted input and reject non-finite values.
+    pub(crate) fn from_validated_planes(
+        width: u32,
+        height: u32,
+        planes: Vec<f32>,
+        fingerprint: String,
+    ) -> Result<Self, Error> {
+        Self::construct(width, height, Arc::new(planes), fingerprint, true)
+    }
+
+    fn construct(
+        width: u32,
+        height: u32,
+        planes: Arc<Vec<f32>>,
+        fingerprint: String,
+        already_finite: bool,
+    ) -> Result<Self, Error> {
         let (expected, _) = layout(width, height)?;
         if planes.len() != expected {
             return Err(Error::new(
@@ -224,7 +245,7 @@ impl LinearImage {
                 "linear RGB source capacity exceeds 1.5 GiB",
             ));
         }
-        if planes.iter().any(|value| !value.is_finite()) {
+        if !already_finite && planes.iter().any(|value| !value.is_finite()) {
             return Err(Error::new(
                 ErrorKind::Validation,
                 "linear source contains a non-finite value",
@@ -234,7 +255,7 @@ impl LinearImage {
             base_width: width,
             base_height: height,
             planes,
-            fingerprint: fingerprint.into(),
+            fingerprint,
             view: View {
                 x: 0,
                 y: 0,
@@ -407,6 +428,34 @@ impl ViewReader<'_> {
             self.planes[self.plane_len + index],
             self.planes[2 * self.plane_len + index],
         ])
+    }
+
+    /// A viewed row with its mapping resolved once. Construction validated the crop, orientation
+    /// and plane lengths, so its pixels advance by one column or one base-plane row, in either
+    /// direction. No pixel data is copied or allocated to make this iterator.
+    fn row(&self, y: u32) -> Option<impl ExactSizeIterator<Item = [f32; 3]> + '_> {
+        if y >= self.height {
+            return None;
+        }
+        let (base_x, base_y) = self.view.map(0, y)?;
+        let first = base_y as usize * self.base_width as usize + base_x as usize;
+        let stride = match self.view.orientation {
+            1 | 4 => 1,
+            2 | 3 => -1,
+            5 | 8 => self.base_width as isize,
+            6 | 7 => -(self.base_width as isize),
+            _ => return None,
+        };
+        Some((0..self.width).map(move |x| {
+            // Every addressed index is inside the validated crop. The signed offset represents
+            // reversed rows as well; it never wraps the resulting address outside the plane.
+            let index = first.wrapping_add_signed(x as isize * stride);
+            [
+                self.planes[index],
+                self.planes[self.plane_len + index],
+                self.planes[2 * self.plane_len + index],
+            ]
+        }))
     }
 }
 
@@ -592,6 +641,19 @@ fn terminal_srgb(linear: f64) -> Result<u8, Error> {
         ));
     }
     let linear = linear.clamp(0.0, 1.0);
+    let code = super::quantize_channel(linear);
+    // Inverting the half-code thresholds avoids a power function for ordinary values, but
+    // f64 encode/decode are not exact inverses. Keep the canonical forward evaluation close to
+    // either neighbouring threshold. This conservative guard is covered by native boundary
+    // tests; powf has no cross-platform ULP bound, so those tests remain part of platform
+    // qualification. The JPEG quantizer keeps its own contract.
+    const ROUNDING_GUARD: f64 = 1e-12;
+    let thresholds = &*super::SRGB_CODE_THRESHOLDS;
+    let lower = thresholds[usize::from(code.saturating_sub(1))];
+    let upper = thresholds[usize::from(code.min(254))];
+    if (linear - lower).abs() > ROUNDING_GUARD && (linear - upper).abs() > ROUNDING_GUARD {
+        return Ok(code);
+    }
     let encoded = if linear <= 0.003_130_8 {
         12.92 * linear
     } else {
@@ -893,13 +955,22 @@ impl<'a> LinearEvaluation<'a> {
         stage: Stage,
         prefix_hash: &str,
     ) -> Result<Vec<Option<Global>>, Error> {
+        // Fingerprint alone does not identify developed pixels: public callers may omit it, two
+        // developments of a file differ, and crop/orientation views share their source's identity.
+        // Direct settings can also change exposure without changing the recipe prefix.
+        let input_prefix = format!(
+            "{prefix_hash}+linear:{}:{:?}:{:016x}",
+            self.source.development(),
+            self.source.view(),
+            self.exposure_multiplier.to_bits()
+        );
         // The estimate store is keyed by the recipe prefix, which an approximate white balance
         // does not change: the drafted recipe names the target gains whichever planes it is
         // evaluated over. So an approximate evaluation keys its estimates apart, and a committed
         // render of the same recipe never takes one estimated from approximate pixels.
         let approximate_prefix = self.white_balance.map(|balance| {
             format!(
-                "{prefix_hash}+white-balance-approximation:{}",
+                "{input_prefix}+white-balance-approximation:{}",
                 balance.key()
             )
         });
@@ -908,7 +979,7 @@ impl<'a> LinearEvaluation<'a> {
             operation,
             stage,
             self.source.fingerprint(),
-            approximate_prefix.as_deref().unwrap_or(prefix_hash),
+            approximate_prefix.as_deref().unwrap_or(&input_prefix),
             || match &self.tiles {
                 Some(tiles) => tiles.reduce(stage, self.compiled.spatial_before(index), read),
                 None => build_reduction(stage, read),
@@ -967,6 +1038,13 @@ impl<'a> LinearEvaluation<'a> {
     /// `exposure · (W · p)` under an approximate white balance.
     fn source_pixel(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
         let pixel = self.source.pixel_f64(x, y)?;
+        self.adjust_source_pixel(pixel)
+    }
+
+    /// Shared with the bulk source reader: retain the exact f64 WB-then-exposure order and the
+    /// same finite-result failure for both point evaluation and rendered rows.
+    #[inline]
+    fn adjust_source_pixel(&self, pixel: [f64; 3]) -> Result<[f64; 3], Error> {
         let output = match &self.white_balance {
             // The arithmetic an exact evaluation has always done, untouched.
             None => pixel.map(|value| value * self.exposure_multiplier),
@@ -982,6 +1060,21 @@ impl<'a> LinearEvaluation<'a> {
                 "linear exposure produced a non-finite value",
             ))
         }
+    }
+
+    /// A plain source rendition can bypass generic per-pixel recipe resolution. This is called
+    /// only on an already validated/compiled evaluation; even neutral or unavailable layers must
+    /// have passed through the registry first. Source views still apply through the reader.
+    fn source_rows(&self) -> Option<ViewReader<'a>> {
+        let [segment] = self.compiled.segments.as_slice() else {
+            return None;
+        };
+        (segment.entry.is_none()
+            && segment.operations.is_empty()
+            && segment
+                .geometry
+                .is_identity(self.source.width(), self.source.height()))
+        .then(|| self.source.reader())
     }
 
     pub(crate) fn pixel(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
@@ -1207,10 +1300,26 @@ fn render_linear_sampled(
     // Written in place and returned as it is, with no copy into the raster.
     let mut frame = super::zeroed_frame(output_len);
     let output = super::frame_mut(&mut frame);
+    let source_rows = evaluation.source_rows();
     // One relaxed load per output row, ahead of that row's evaluations; the f64 evaluation and the
     // terminal boundary are untouched.
     let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
         cancel.check()?;
+        if let Some(reader) = &source_rows {
+            let pixels = reader.row(row_index as u32).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Render,
+                    "linear output coordinate was outside stage",
+                )
+            })?;
+            for (pixel, rgba) in pixels.zip(row.chunks_exact_mut(4)) {
+                // Immutable source planes were checked finite on construction. Widen at the
+                // same boundary as source_pixel, without an intermediate f32 exposure multiply.
+                let pixel = evaluation.adjust_source_pixel(pixel.map(f64::from))?;
+                rgba.copy_from_slice(&terminal_pixel(pixel)?);
+            }
+            return Ok(());
+        }
         for x in 0..width {
             let pixel = evaluation.pixel(x, row_index as u32)?.ok_or_else(|| {
                 Error::new(
@@ -1345,6 +1454,280 @@ mod tests {
         LinearImage::with_fingerprint(width, height, planes, "sha256:linear-test").unwrap()
     }
 
+    /// The pre-existing generic pixel evaluator remains the reference for the bulk source path.
+    /// It resolves the segment and view for every pixel and never calls the row reader.
+    fn generic_linear_reference(
+        registry: &ModuleRegistry,
+        source: &LinearImage,
+        snapshot_id: SnapshotId,
+        recipe: &Recipe,
+        settings: LinearSettings,
+    ) -> Raster {
+        let evaluation = LinearEvaluation::new(
+            registry,
+            source,
+            recipe,
+            settings,
+            &Cancel::never(),
+            PRODUCTION_TILE,
+            SpatialMode::Frames,
+        )
+        .unwrap();
+        let (width, height) = evaluation.stage();
+        let mut rgba = Vec::with_capacity(output_len(width, height).unwrap());
+        for y in 0..height {
+            for x in 0..width {
+                rgba.extend(terminal_pixel(evaluation.pixel(x, y).unwrap().unwrap()).unwrap());
+            }
+        }
+        Raster {
+            width,
+            height,
+            rgba: rgba.into(),
+            source_fingerprint: source.fingerprint.clone(),
+            snapshot_id,
+        }
+    }
+
+    #[test]
+    fn source_rows_preserve_all_views_and_f64_adjustments() {
+        let mut pixels: Vec<_> = (0..99)
+            .map(|index| [index as f32 / 59.0 - 0.2, index as f32 / 97.0, 0.37])
+            .collect();
+        pixels[0] = [-0.0, 0.0, f32::from_bits(1)];
+        pixels[1] = [f32::MIN, f32::MAX, -f32::from_bits(1)];
+        let source = image(11, 9, &pixels);
+        let original: Vec<_> = source
+            .planes()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect();
+        let registry = ModuleRegistry::builtin();
+        let recipe = Recipe::default();
+        let balance = WhiteBalanceApproximation::from_matrix([
+            [1.3, 0.1, -0.05],
+            [0.02, 0.97, 0.01],
+            [-0.1, 0.05, 0.62],
+        ])
+        .unwrap();
+        for orientation in 1..=8 {
+            for crop in [
+                [0, 0, 11, 9],
+                [2, 3, 7, 4],
+                [10, 8, 1, 1],
+                [0, 0, 1, 9],
+                [0, 0, 11, 1],
+            ] {
+                let view = source.with_view(crop, orientation).unwrap();
+                assert!(Arc::ptr_eq(&source.planes, &view.planes));
+                let reader = view.reader();
+                assert!(reader.row(view.height()).is_none());
+                for y in 0..view.height() {
+                    let row = reader.row(y).unwrap();
+                    assert_eq!(row.len(), view.width() as usize);
+                    for (x, pixel) in row.enumerate() {
+                        assert_eq!(
+                            pixel.map(f32::to_bits),
+                            view.pixel(x as u32, y).unwrap().map(f32::to_bits),
+                            "orientation {orientation}, crop {crop:?}, ({x}, {y})"
+                        );
+                    }
+                }
+                for exposure_ev in [-5.0, -0.7, 0.0, 0.7, 5.0] {
+                    for white_balance in [None, Some(balance)] {
+                        let settings = LinearSettings {
+                            exposure_ev,
+                            white_balance,
+                        };
+                        let snapshot = SnapshotId::new();
+                        let actual =
+                            render_linear(&registry, &view, snapshot.clone(), &recipe, settings)
+                                .unwrap();
+                        let expected =
+                            generic_linear_reference(&registry, &view, snapshot, &recipe, settings);
+                        assert_eq!(
+                            actual, expected,
+                            "orientation {orientation}, crop {crop:?}, settings {settings:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            source
+                .planes()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            original
+        );
+    }
+
+    #[test]
+    fn source_rows_preserve_complete_parallel_buffers_for_each_stride() {
+        let source = varied(1027, 1025);
+        let registry = ModuleRegistry::builtin();
+        let recipe = Recipe::default();
+        let settings = LinearSettings {
+            exposure_ev: 0.37,
+            white_balance: None,
+        };
+        for orientation in [1, 2, 5, 7] {
+            let view = source.with_view([1, 1, 1024, 1024], orientation).unwrap();
+            let snapshot = SnapshotId::new();
+            let actual =
+                render_linear(&registry, &view, snapshot.clone(), &recipe, settings).unwrap();
+            let expected = generic_linear_reference(&registry, &view, snapshot, &recipe, settings);
+            assert_eq!(actual, expected, "orientation {orientation}");
+            for (x, y) in [(0, 0), (512, 511), (1023, 1023)] {
+                assert_eq!(
+                    sample_linear(&registry, &view, &recipe, settings, x, y)
+                        .unwrap()
+                        .rgba,
+                    actual.pixel(x, y)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_rows_keep_validation_fallback_cancellation_and_finite_errors() {
+        let source = varied(9, 7);
+        let registry = ModuleRegistry::builtin();
+        let settings = LinearSettings::default();
+        let evaluate = |recipe: &Recipe, settings| {
+            LinearEvaluation::new(
+                &registry,
+                &source,
+                recipe,
+                settings,
+                &Cancel::never(),
+                PRODUCTION_TILE,
+                SpatialMode::Frames,
+            )
+        };
+        assert!(
+            evaluate(&Recipe::default(), settings)
+                .unwrap()
+                .source_rows()
+                .is_some()
+        );
+        for recipe in [
+            Recipe {
+                layers: vec![Layer::pixel(1, 1, [30, 60, 90])],
+                ..Recipe::default()
+            },
+            Recipe {
+                layers: vec![Layer::orientation(crate::Orientation {
+                    mirror: false,
+                    turns: 1,
+                })],
+                ..Recipe::default()
+            },
+            Recipe {
+                layers: vec![Layer::crop(CropPayload {
+                    angle: 5.0,
+                    x: 0.2,
+                    y: 0.2,
+                    width: 0.6,
+                    height: 0.6,
+                })],
+                ..Recipe::default()
+            },
+            cancellation_recipe(),
+        ] {
+            assert!(evaluate(&recipe, settings).unwrap().source_rows().is_none());
+            let snapshot = SnapshotId::new();
+            assert_eq!(
+                render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap(),
+                generic_linear_reference(&registry, &source, snapshot, &recipe, settings)
+            );
+        }
+        let mut unavailable = cancellation_recipe();
+        unavailable.layers[0].effect_id = "unavailable.effect".into();
+        let expected = registry
+            .compile(source.width(), source.height(), &unavailable)
+            .err()
+            .unwrap();
+        let actual = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &unavailable,
+            settings,
+        )
+        .unwrap_err();
+        assert_eq!(
+            (actual.kind, actual.detail),
+            (expected.kind, expected.detail)
+        );
+        for exposure_ev in [f64::NAN, f64::INFINITY, -5.1, 5.1] {
+            assert_eq!(
+                render_linear(
+                    &registry,
+                    &source,
+                    SnapshotId::new(),
+                    &Recipe::default(),
+                    LinearSettings {
+                        exposure_ev,
+                        white_balance: None
+                    }
+                )
+                .unwrap_err()
+                .kind,
+                ErrorKind::Validation
+            );
+        }
+        let cancel = Cancel::new();
+        cancel.cancel();
+        assert_eq!(
+            render_linear_cancellable(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &Recipe::default(),
+                settings,
+                &cancel
+            )
+            .unwrap_err()
+            .kind,
+            ErrorKind::Cancelled
+        );
+
+        // Finite WB coefficients can still overflow while evaluating a pixel. The row path must
+        // keep the generic source-adjustment error, not let a later terminal check replace it.
+        let overflow = LinearSettings {
+            exposure_ev: 5.0,
+            white_balance: Some(
+                WhiteBalanceApproximation::from_matrix([[f64::MAX; 3]; 3]).unwrap(),
+            ),
+        };
+        let overflowing_source = image(1, 1, &[[1.0; 3]]);
+        let generic = LinearEvaluation::new(
+            &registry,
+            &overflowing_source,
+            &Recipe::default(),
+            overflow,
+            &Cancel::never(),
+            PRODUCTION_TILE,
+            SpatialMode::Frames,
+        )
+        .unwrap();
+        let expected = generic.pixel(0, 0).unwrap_err();
+        let actual = render_linear(
+            &registry,
+            &overflowing_source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            overflow,
+        )
+        .unwrap_err();
+        assert_eq!(
+            (actual.kind, actual.detail),
+            (expected.kind, expected.detail)
+        );
+    }
+
     fn reference_srgb(value: f64) -> u8 {
         let value = value.clamp(0.0, 1.0);
         let encoded = if value <= 0.003_130_8 {
@@ -1353,6 +1736,83 @@ mod tests {
             1.055 * value.powf(1.0 / 2.4) - 0.055
         };
         (encoded * 255.0).round() as u8
+    }
+
+    #[test]
+    fn terminal_quantization_preserves_forward_rounding_at_every_f64_boundary() {
+        // Independent inverse transfer, including every representable neighbour around each
+        // code boundary. Some of these values intentionally disagree with inverse-only lookup.
+        for code in 1..=255_u32 {
+            let encoded = (f64::from(code) - 0.5) / 255.0;
+            let boundary = if encoded <= 0.040_45 {
+                encoded / 12.92
+            } else {
+                ((encoded + 0.055) / 1.055).powf(2.4)
+            };
+            let bits = boundary.to_bits();
+            for bits in bits - 128..=bits + 128 {
+                let value = f64::from_bits(bits);
+                assert_eq!(
+                    terminal_srgb(value).unwrap(),
+                    reference_srgb(value),
+                    "code {code}, bits {bits:#018x}"
+                );
+            }
+            // Include both sides of the guard as well as values within it. The reference is
+            // always the former forward transfer, never the lookup under test.
+            for delta in [-2e-12, -1e-12, -5e-13, 5e-13, 1e-12, 2e-12] {
+                let value = boundary + delta;
+                for value in [value.next_down(), value, value.next_up()] {
+                    assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_quantization_preserves_finite_domain_and_rejects_nonfinite_values() {
+        for value in [
+            f64::MIN,
+            -1.0,
+            -f64::MIN_POSITIVE,
+            -f64::from_bits(1),
+            -0.0,
+            0.0,
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            0.003_130_8_f64.next_down(),
+            0.003_130_8,
+            0.003_130_8_f64.next_up(),
+            1.0_f64.next_down(),
+            1.0,
+            1.0_f64.next_up(),
+            32.0,
+            f64::MAX,
+        ] {
+            assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+        }
+        for step in 0..=40_000 {
+            let value = f64::from(step) / 40_000.0;
+            assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+        }
+        // Deterministic bit-pattern coverage also visits the very dark/subnormal domain that
+        // a uniform sweep misses, plus signed and extended-domain source values.
+        let mut bits = 0x1234_5678_9abc_def0_u64;
+        for _ in 0..100_000 {
+            bits = bits.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let value = f64::from_bits(bits);
+            if value.is_finite() {
+                assert_eq!(terminal_srgb(value).unwrap(), reference_srgb(value));
+            }
+        }
+        for value in [f64::NAN, -f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = terminal_srgb(value).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Render);
+            assert_eq!(
+                error.detail,
+                "linear evaluation produced a non-finite value"
+            );
+        }
     }
 
     #[test]
@@ -1572,6 +2032,27 @@ mod tests {
         assert_eq!(source.planes().as_ptr(), pointer);
         assert_eq!(view.planes().as_ptr(), pointer);
         assert_eq!(view.pixel(0, 0), Some([2.0, 6.0, 10.0]));
+    }
+
+    #[test]
+    fn validated_plane_adoption_keeps_layout_identity_and_shared_storage() {
+        let planes = vec![0.25, 0.5, 0.75, 1.0, -0.5, 2.0];
+        let pointer = planes.as_ptr();
+        let source =
+            LinearImage::from_validated_planes(2, 1, planes, "raw-fingerprint".into()).unwrap();
+        let view = source.with_view([0, 0, 2, 1], 2).unwrap();
+        assert_eq!(source.planes().as_ptr(), pointer);
+        assert_eq!(view.planes().as_ptr(), pointer);
+        assert_eq!(source.fingerprint(), "raw-fingerprint");
+        assert_eq!(view.development(), source.development());
+        assert_eq!(source.pixel(0, 0), Some([0.25, 0.75, -0.5]));
+        assert_eq!(view.pixel(0, 0), Some([0.5, 1.0, 2.0]));
+        assert_eq!(
+            LinearImage::from_validated_planes(2, 2, vec![0.0; 6], String::new())
+                .unwrap_err()
+                .kind,
+            ErrorKind::Validation
+        );
     }
 
     #[test]

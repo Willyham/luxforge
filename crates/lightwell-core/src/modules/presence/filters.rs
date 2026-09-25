@@ -344,6 +344,7 @@ impl<'a> Plane<'a> {
     }
 
     /// Edge-clamped read, the host's own rule.
+    #[inline]
     pub(super) fn get(&self, x: i64, y: i64) -> f32 {
         let (x, y) = self.geometry.clamp(x, y);
         self.data[self.geometry.index(x, y)]

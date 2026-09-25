@@ -107,6 +107,10 @@ pub(crate) struct Boot {
     pub(crate) join: JoinHandle<()>,
     pub(crate) live_server: Option<LocalServer>,
     pub(crate) config: Config,
+    /// Production registers before platform initialization so its first import can already run.
+    /// Unit fixtures leave this unset and register when constructing the editor.
+    pub(crate) client: Option<ClientId>,
+    pub(crate) initial_import: Option<tasks::StartupImport>,
     /// The window's logical size at launch, before any resize event. The clipping overlay's cell
     /// grid is sized against the photo surface, which this and the panel flags give.
     pub(crate) window: (f32, f32),
@@ -200,12 +204,22 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         let _ = std::fs::remove_file(&session_file);
     }
     let live_server = LocalServer::start(owner.clone(), &session_file).ok();
+    // Queue only the first command-line file. The source worker can read and decode it while
+    // Iced/AppKit initializes, without making the window thread read the image or changing the
+    // normal adoption, history and error path. Evidence mode opens later files in order as usual.
+    let client = owner.register_with(ClientAuthority::Permissions);
+    let initial_import = config
+        .files
+        .front()
+        .map(|path| tasks::start_import(&owner, client, path));
     let hidden = config.hidden;
     let boot = Mutex::new(Some(Boot {
         owner,
         join,
         live_server,
         config,
+        client: Some(client),
+        initial_import,
         window: size,
     }));
     let application = iced::application(
@@ -563,11 +577,13 @@ impl Editor {
             join,
             live_server,
             mut config,
+            client,
+            initial_import,
             window,
         } = boot;
         // The desktop's own client may grant module permissions: it does so only after the person
         // presses Allow in its consent notice.
-        let client = owner.register_with(ClientAuthority::Permissions);
+        let client = client.unwrap_or_else(|| owner.register_with(ClientAuthority::Permissions));
         let script = std::mem::take(&mut config.script);
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
@@ -757,14 +773,14 @@ impl Editor {
         let presets = presets_task(editor.owner.clone(), editor.client);
         let first = match &mut editor.evidence {
             Some(evidence) => match evidence.queue.pop_front() {
-                Some(path) => editor.open(path),
+                Some(path) => editor.open_queued(path, initial_import),
                 None => {
                     evidence.capture_pending = true;
                     Task::none()
                 }
             },
             None => initial
-                .map(|path| editor.open(path))
+                .map(|path| editor.open_queued(path, initial_import))
                 .unwrap_or_else(Task::none),
         };
         editor.rederive();
@@ -1219,7 +1235,18 @@ impl Editor {
     }
 
     fn open(&mut self, path: PathBuf) -> Task<Message> {
+        self.open_queued(path, None)
+    }
+
+    fn open_queued(
+        &mut self,
+        path: PathBuf,
+        queued: Option<tasks::StartupImport>,
+    ) -> Task<Message> {
         self.begin_request();
+        if let Some(queued) = &queued {
+            self.activity.request_started = queued.started;
+        }
         let generation = self.activity.requested;
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
@@ -1240,6 +1267,7 @@ impl Editor {
             generation,
             self.open_generation.clone(),
             proxy,
+            queued.map(|queued| queued.result),
         )
     }
 
@@ -1815,6 +1843,7 @@ impl Editor {
     fn refit_proxy(&mut self) -> Task<Message> {
         if self.state.is_none()
             || self.gesture_refusal(Starting::Refit).is_some()
+            || self.proxy_refit_deferred()
             || self.presented_generation == 0
             || !self.presented_proxy
             || self.refit_pending
@@ -1836,6 +1865,12 @@ impl Editor {
         self.request_current_preview()
     }
 
+    /// Drafts own the preview until they finish, so a layout change deliberately leaves their
+    /// displayed proxy at its previous bounds instead of starting a competing refit.
+    fn proxy_refit_deferred(&self) -> bool {
+        self.gesture_refusal(Starting::Refit).is_some()
+    }
+
     /// A view change has just asked for the frame it needs. A scripted step whose frame is still
     /// to be captured — waiting on the session round trip, or already settled by it earlier in this
     /// same update — waits for that frame instead, so the capture never shows the picture the view
@@ -1847,6 +1882,25 @@ impl Editor {
         {
             evidence.capture_pending = false;
             evidence.awaiting = Some(Settle::Preview);
+        }
+    }
+
+    /// Evidence of a displayed proxy waits for the current layout when a refit is permitted.
+    /// The exact phase of an open can arm a capture while its display-scale refit is rendering.
+    /// Drafts deliberately defer such refits, and can supersede a queued one; their settled frame
+    /// can be captured as shown even if that abandoned request left `refit_pending` set.
+    fn capture_proxy_ready(&self) -> bool {
+        if !self.presented_proxy || self.render_error.is_some() || self.proxy_refit_deferred() {
+            return true;
+        }
+        if self.refit_pending {
+            return false;
+        }
+        match self.proxy_bounds() {
+            Some(bounds) => self.presented_bounds == Some(bounds),
+            // At 100% the exact frame is the target; the step's normal preview settlement
+            // already waits for it, without requiring a proxy that cannot be requested.
+            None => true,
         }
     }
 
@@ -2498,6 +2552,7 @@ impl Editor {
             Message::DoubleClickSecond => return self.double_click_second(),
             Message::Capture => {
                 let rows_shown = self.recipe_rows_shown();
+                let proxy_ready = self.capture_proxy_ready();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
@@ -2515,6 +2570,7 @@ impl Editor {
                     || self.curve_sample_in_flight
                     || self.curve_sample_pending.is_some()
                     || !rows_shown
+                    || !proxy_ready
                 {
                     return Task::none();
                 }
@@ -2529,28 +2585,52 @@ impl Editor {
                     return Task::none();
                 };
                 evidence.capture_pending = false;
-                evidence.capture_overlay = false;
                 evidence.saving = true;
                 let recorded = (self.snapshot(), self.activity.requested);
                 if let Some(evidence) = &mut self.evidence {
-                    evidence.sync.state = Some(recorded);
+                    evidence.sync.state = Some((recorded.0, recorded.1, self.photo_version));
                 }
                 return iced::window::oldest()
                     .and_then(iced::window::screenshot)
                     .map(Message::Captured);
             }
             Message::Captured(shot) => {
+                // The window readback is asynchronous. A newer proxy can reach the surface while
+                // it is in flight; its request-time snapshot then describes the old proxy even
+                // though the capture response arrives after the new one was displayed. Retry on
+                // the next drawn frame without publishing or saving that stale screenshot.
+                let stale = !self.capture_proxy_ready()
+                    || self.evidence.as_ref().is_some_and(|evidence| {
+                        evidence
+                            .sync
+                            .state
+                            .as_ref()
+                            .is_some_and(|(_, _, version)| *version != self.photo_version)
+                    });
+                if stale {
+                    if let Some(evidence) = &mut self.evidence {
+                        evidence.sync.state = None;
+                        evidence.saving = false;
+                        evidence.capture_pending = true;
+                    }
+                    return Task::none();
+                }
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.capture_overlay = false;
+                }
                 self.event(
                     "frame_captured",
                     json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
                 );
                 // The state as it stood when the screenshot was asked for, which is the state the
                 // frame it reads back was built from.
-                let (state, generation) = self
+                let (state, generation, _) = self
                     .evidence
                     .as_mut()
                     .and_then(|evidence| evidence.sync.state.take())
-                    .unwrap_or_else(|| (self.snapshot(), self.activity.requested));
+                    .unwrap_or_else(|| {
+                        (self.snapshot(), self.activity.requested, self.photo_version)
+                    });
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
                 // The photo surface spans the window minus padding, the sidebar and their spacing.
@@ -8560,6 +8640,24 @@ mod tests {
     }
 
     #[test]
+    fn initial_open_keeps_its_prequeue_clock_and_normal_generation() {
+        let (mut editor, catalog) = boot();
+        let started = Instant::now() - std::time::Duration::from_millis(25);
+        let _ = editor.open_queued(
+            PathBuf::from("missing-startup-photo.jpg"),
+            Some(tasks::StartupImport {
+                started,
+                result: Err("read-error: missing source".into()),
+            }),
+        );
+        assert_eq!(editor.activity.request_started, started);
+        assert_eq!(editor.activity.requested, 1);
+        assert_eq!(editor.open_generation.load(Ordering::Acquire), 1);
+        assert!(editor.activity.pending && editor.busy);
+        finish(editor, catalog);
+    }
+
+    #[test]
     fn a_late_open_result_cannot_replace_the_newer_selected_asset() {
         let (mut editor, catalog, current_asset, _) = opened(Vec::new(), 2);
         let displayed = editor.display_entry.clone();
@@ -8962,6 +9060,152 @@ mod tests {
         let evidence = crate::app::testing::evidence(&editor);
         assert!(!evidence.capture_pending, "the old proxy is not captured");
         assert_eq!(evidence.awaiting, Some(Settle::Preview));
+        finish(editor, catalog);
+    }
+
+    /// An open can complete its exact analysis while the first proxy is still being refitted
+    /// for the display scale. Its outcome arms evidence, but the old proxy is not a settled frame.
+    #[test]
+    fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
+        let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+        editor.window = (1440.0, 900.0);
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 1.0;
+        editor.presented_proxy = true;
+        editor.presented_bounds = editor.proxy_bounds();
+        editor.scale_factor = 2.0;
+        editor.refit_pending = true;
+        editor.outcome_ready(false);
+        assert!(crate::app::testing::evidence(&editor).capture_pending);
+        assert!(
+            !editor.capture_proxy_ready(),
+            "the old 1× proxy is not ready"
+        );
+
+        editor.presented_bounds = editor.proxy_bounds();
+        assert!(!editor.capture_proxy_ready(), "the refit is still pending");
+        editor.render_error = Some((ErrorKind::ResourceLimit, "refit failed".into()));
+        assert!(
+            editor.capture_proxy_ready(),
+            "a failed refit is captured as an error"
+        );
+        editor.render_error = None;
+        editor.refit_pending = false;
+        assert!(editor.capture_proxy_ready(), "the 2× proxy is ready");
+
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        assert!(
+            editor.capture_proxy_ready(),
+            "100% does not require a proxy"
+        );
+        editor.presented_proxy = false;
+        assert!(
+            editor.capture_proxy_ready(),
+            "an exact frame needs no proxy refit"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A panel toggle changes Fit bounds, but a slider or crop draft owns the preview and
+    /// deliberately defers its refit. A queued refit can also be superseded by a crop input-stage
+    /// job, leaving the boolean set while no refit frame will arrive. Both settled drafts can be
+    /// captured at the pixels they actually show.
+    #[test]
+    fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
+        let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+        editor.window = (1440.0, 900.0);
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 2.0;
+        editor.presented_proxy = true;
+        editor.presented_generation = 7;
+        editor.session.workspace.tools_panel = true;
+        editor.presented_bounds = editor.proxy_bounds();
+        editor.session.workspace.tools_panel = false;
+        assert_ne!(editor.presented_bounds, editor.proxy_bounds());
+        assert!(
+            !editor.capture_proxy_ready(),
+            "outside a draft, refit is required"
+        );
+
+        let (draft, _) = draft::CoreDraft::open(draft::GestureId(1), 4, None);
+        editor.gesture = Some(Gesture::Core(gesture::CoreGesture {
+            asset: editor.state.as_ref().expect("open state").asset.id.clone(),
+            draft,
+            kind: gesture::Kind::Slider(gesture::SliderGesture {
+                action: "set-basic".into(),
+                parameter: "exposure".into(),
+                label: "Exposure".into(),
+                target: lightwell_core::mask::commands::MaskTarget::default(),
+                unpreviewed: false,
+            }),
+        }));
+        let _ = editor.refit_proxy();
+        assert!(!editor.refit_pending, "the slider defers refit");
+        assert!(
+            editor.capture_proxy_ready(),
+            "the slider's frame can be captured"
+        );
+        editor.gesture = None;
+
+        editor.set_crop(Some(crate::crop_draft::CropDraft::neutral(
+            CropStage {
+                width: 4000,
+                height: 3000,
+                angle: 0.0,
+            },
+            4,
+            0,
+        )));
+        editor.refit_pending = true; // The queued refit was superseded by crop input-stage work.
+        assert!(
+            editor.capture_proxy_ready(),
+            "the crop frame can be captured"
+        );
+        editor.set_crop(None);
+        assert!(
+            !editor.capture_proxy_ready(),
+            "a pending refit blocks ordinary captures"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A screenshot requested against one proxy may return after the refit proxy is presented.
+    /// That readback is discarded before a frame event or file is published and retried on a
+    /// newly drawn frame. An overlay capture keeps its overlay requirement across the retry.
+    #[test]
+    fn evidence_retries_a_readback_superseded_by_new_pixels() {
+        let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+        editor.window = (1440.0, 900.0);
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 2.0;
+        editor.presented_proxy = true;
+        editor.presented_bounds = editor.proxy_bounds();
+        editor.photo_version = 2;
+        let path = crate::app::testing::attach_log(&mut editor);
+        let evidence = editor.evidence.as_mut().expect("evidence run");
+        evidence.sync.state = Some((json!({"old":"proxy"}), 1, 1));
+        evidence.capture_pending = false;
+        evidence.capture_overlay = true;
+        evidence.saving = true;
+        let shot =
+            iced::window::Screenshot::new([0, 0, 0, 255].to_vec(), iced::Size::new(1, 1), 1.0);
+        let _ = editor.dispatch(Message::Captured(shot));
+
+        let evidence = crate::app::testing::evidence(&editor);
+        assert!(evidence.capture_pending, "retry is armed");
+        assert!(!evidence.saving, "the stale save was cancelled");
+        assert!(evidence.sync.state.is_none(), "stale state was dropped");
+        assert!(
+            evidence.capture_overlay,
+            "overlay requirement survives retry"
+        );
+        assert!(evidence.frames.is_empty(), "no frame was published");
+        assert!(
+            !crate::app::testing::logged(&mut editor, &path)
+                .iter()
+                .any(|event| event["event"] == "frame_captured"),
+            "no capture event was published"
+        );
         finish(editor, catalog);
     }
 }

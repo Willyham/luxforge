@@ -20,8 +20,8 @@ use crate::{
     render::{
         render_tiled,
         spatial::{
-            Cancel, SpatialBudget, SpatialPlan, build_reduction, fill_planes, run_tile,
-            tests::spatial_guard,
+            Cancel, SpatialBudget, SpatialPlan, build_reduction, cached_estimates, clear_estimates,
+            fill_planes, resolve_globals, run_tile, tests::spatial_guard,
         },
     },
 };
@@ -445,6 +445,167 @@ fn presence_recipe(payload: Value) -> Recipe {
         }],
         masks: Vec::new(),
         ..Recipe::default()
+    }
+}
+
+fn operation(payload: &Value, stage: Stage) -> SpatialOperation {
+    match PresenceModule::new()
+        .compile(PRESENCE_EFFECT, EFFECT_FORMAT, payload, stage)
+        .unwrap()
+    {
+        crate::modules::Processing::Spatial(operation) => operation,
+        other => panic!("expected a spatial operation, got {other:?}"),
+    }
+}
+
+#[test]
+fn texture_and_clarity_never_reduce_for_an_unused_estimate() {
+    let _guard = spatial_guard();
+    clear_estimates();
+    let stage = Stage {
+        width: 64,
+        height: 48,
+    };
+    for payload in [
+        json!({"texture": 60.0}),
+        json!({"clarity": -40.0}),
+        json!({"texture": -70.0, "clarity": 35.0}),
+    ] {
+        let operation = operation(&payload, stage);
+        let globals = resolve_globals(&operation, stage, "source", "prefix", || {
+            panic!("{payload} must not read pixels for a global estimate")
+        })
+        .unwrap();
+        assert_eq!(globals, vec![None; operation.len()]);
+        assert_eq!(
+            cached_estimates(),
+            0,
+            "no unused entries in the bounded store"
+        );
+    }
+}
+
+#[test]
+fn dehaze_reuses_only_strength_independent_estimates() {
+    let _guard = spatial_guard();
+    clear_estimates();
+    let stage = Stage {
+        width: 64,
+        height: 48,
+    };
+    let reductions = std::cell::Cell::new(0);
+    let resolve = |payload: Value, stage: Stage, source: &str, prefix: &str| {
+        resolve_globals(&operation(&payload, stage), stage, source, prefix, || {
+            reductions.set(reductions.get() + 1);
+            build_reduction(stage, |x, y| {
+                Ok([
+                    x as f32 / stage.width as f32,
+                    y as f32 / stage.height as f32,
+                    0.4,
+                ])
+            })
+        })
+        .unwrap()
+    };
+    let first = resolve(json!({"dehaze": 60.0}), stage, "source", "prefix");
+    assert!(first[0].is_some());
+    for payload in [
+        json!({"dehaze": 61.0}),
+        json!({"dehaze": -40.0}),
+        json!({"dehaze": 35.0, "texture": 40.0, "clarity": -30.0}),
+    ] {
+        let globals = resolve(payload, stage, "source", "prefix");
+        assert_eq!(
+            globals[0], first[0],
+            "strength cannot change the atmosphere"
+        );
+        assert!(globals[1..].iter().all(Option::is_none));
+        assert_eq!(
+            reductions.get(),
+            1,
+            "amount edits and unused units need no reduction"
+        );
+        assert_eq!(cached_estimates(), 1);
+    }
+    for (changed_stage, source, prefix) in [
+        (stage, "different source", "prefix"),
+        (stage, "source", "different prefix"),
+        (Stage { width: 65, ..stage }, "source", "prefix"),
+        (
+            Stage {
+                height: 49,
+                ..stage
+            },
+            "source",
+            "prefix",
+        ),
+    ] {
+        let before = reductions.get();
+        resolve(json!({"dehaze": 61.0}), changed_stage, source, prefix);
+        assert_eq!(
+            reductions.get(),
+            before + 1,
+            "changed input identity must reduce again"
+        );
+    }
+}
+
+#[test]
+fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths() {
+    let _guard = spatial_guard();
+    let registry = ModuleRegistry::builtin();
+    let source = textured_source(96, 64);
+    let pixels: Vec<_> = source
+        .rgba
+        .chunks_exact(4)
+        .map(|pixel| crate::render::decode_pixel([pixel[0], pixel[1], pixel[2]]))
+        .collect();
+    let planes: Vec<f32> = (0..3)
+        .flat_map(|channel| pixels.iter().map(move |p| p[channel]))
+        .collect();
+    let linear =
+        crate::LinearImage::with_fingerprint(96, 64, planes, "presence-estimate-reuse").unwrap();
+    let settings = crate::LinearSettings::default();
+    let seed = presence_recipe(json!({"dehaze": 60.0}));
+    for linear_path in [false, true] {
+        let render = |recipe: &Recipe| {
+            if linear_path {
+                crate::render_linear(&registry, &linear, SnapshotId::new(), recipe, settings)
+                    .unwrap()
+            } else {
+                crate::render(&registry, &source, SnapshotId::new(), recipe).unwrap()
+            }
+        };
+        for payload in [
+            json!({"dehaze": 61.0}),
+            json!({"dehaze": -40.0}),
+            json!({"dehaze": 35.0, "texture": 40.0, "clarity": -30.0}),
+        ] {
+            clear_estimates();
+            render(&seed);
+            let mut changed = seed.clone();
+            changed.layers[0].payload = payload;
+            let reused = render(&changed);
+            assert_eq!(
+                cached_estimates(),
+                1,
+                "only the seed atmosphere is retained"
+            );
+            clear_estimates();
+            let fresh = render(&changed);
+            assert_eq!(
+                reused.rgba, fresh.rgba,
+                "reusing the estimate changes no byte"
+            );
+            for (x, y) in [(0, 0), (47, 31), (95, 63)] {
+                let sampled = if linear_path {
+                    crate::sample_linear(&registry, &linear, &changed, settings, x, y).unwrap()
+                } else {
+                    crate::sample(&registry, &source, &changed, x, y).unwrap()
+                };
+                assert_eq!(sampled.rgba, reused.pixel(x, y));
+            }
+        }
     }
 }
 

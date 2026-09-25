@@ -124,6 +124,31 @@ static SRGB_CODE_THRESHOLDS: LazyLock<[f64; 255]> = LazyLock::new(|| {
     thresholds
 });
 
+const SRGB_CODE_BINS: usize = 4096;
+
+/// A small exact index into the canonical thresholds, not an approximation of the transfer
+/// function. A bin is narrower than the closest pair of thresholds (the linear part of sRGB,
+/// `1 / (255 * 12.92)`), so at most one code boundary lies after its lower endpoint. Store the
+/// lower endpoint's code and compare against that one boundary using the original f64 value.
+struct SrgbCodeIndex {
+    lower_codes: [u8; SRGB_CODE_BINS],
+    thresholds: &'static [f64; 255],
+}
+
+static SRGB_CODE_INDEX: LazyLock<SrgbCodeIndex> = LazyLock::new(|| {
+    let thresholds = &*SRGB_CODE_THRESHOLDS;
+    let width = 1.0 / SRGB_CODE_BINS as f64;
+    assert!(thresholds.windows(2).all(|pair| pair[1] - pair[0] > width));
+    let lower_codes = std::array::from_fn(|bin| {
+        let lower = bin as f64 / SRGB_CODE_BINS as f64;
+        thresholds.partition_point(|threshold| *threshold <= lower) as u8
+    });
+    SrgbCodeIndex {
+        lower_codes,
+        thresholds,
+    }
+});
+
 /// The sRGB transfer function applied forwards, rounded to the nearest 8-bit value.
 fn linear_to_srgb(linear: f64) -> u8 {
     let linear = linear.clamp(0.0, 1.0);
@@ -410,9 +435,13 @@ pub(crate) fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
 /// code boundary.
 #[inline]
 pub(crate) fn quantize_channel(value: f64) -> u8 {
-    let thresholds = &*SRGB_CODE_THRESHOLDS;
+    let index = &*SRGB_CODE_INDEX;
     let value = value.clamp(0.0, 1.0);
-    thresholds.partition_point(|threshold| *threshold <= value) as u8
+    // Scaling by a power of two is exact in this clamped domain. The cast maps NaN to bin zero;
+    // its comparison below is false, preserving the binary search's zero code for either NaN.
+    let bin = ((value * SRGB_CODE_BINS as f64) as usize).min(SRGB_CODE_BINS - 1);
+    let lower = index.lower_codes[bin];
+    lower + u8::from(lower < 255 && index.thresholds[usize::from(lower)] <= value)
 }
 
 /// The output boundary: clamp to `[0, 1]`, then take the code whose exact threshold interval holds
@@ -4094,6 +4123,123 @@ mod tests {
             encoded / 12.92
         } else {
             ((encoded + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn quantizer_reference_thresholds() -> [f64; 255] {
+        std::array::from_fn(|index| decode_reference((index as f64 + 0.5) / 255.0))
+    }
+
+    /// The canonical search, independent of the production index and its bin selection.
+    fn quantizer_search_reference(thresholds: &[f64; 255], value: f64) -> u8 {
+        let value = value.clamp(0.0, 1.0);
+        thresholds.partition_point(|threshold| *threshold <= value) as u8
+    }
+
+    #[test]
+    fn indexed_quantizer_matches_search_at_every_threshold_and_bin_boundary() {
+        let thresholds = quantizer_reference_thresholds();
+        let check = |value| {
+            assert_eq!(
+                quantize_channel(value),
+                quantizer_search_reference(&thresholds, value),
+                "value {value:?}, bits {:#018x}",
+                value.to_bits()
+            );
+        };
+        for threshold in thresholds {
+            for bits in threshold.to_bits() - 128..=threshold.to_bits() + 128 {
+                check(f64::from_bits(bits));
+            }
+            let rounded = threshold as f32;
+            for value in [rounded.next_down(), rounded, rounded.next_up()] {
+                check(f64::from(value));
+            }
+        }
+        for bin in 0..=SRGB_CODE_BINS {
+            let boundary = bin as f64 / SRGB_CODE_BINS as f64;
+            for value in [boundary.next_down(), boundary, boundary.next_up()] {
+                check(value);
+            }
+            let rounded = boundary as f32;
+            for value in [rounded.next_down(), rounded, rounded.next_up()] {
+                check(f64::from(value));
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_quantizer_matches_search_across_dense_random_and_extended_values() {
+        let thresholds = quantizer_reference_thresholds();
+        let check = |value| {
+            assert_eq!(
+                quantize_channel(value),
+                quantizer_search_reference(&thresholds, value),
+                "value {value:?}, bits {:#018x}",
+                value.to_bits()
+            );
+        };
+        for value in [
+            f64::NEG_INFINITY,
+            f64::MIN,
+            -1.0,
+            -f64::MIN_POSITIVE,
+            -f64::from_bits(1),
+            -0.0,
+            0.0,
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            1.0,
+            32.0,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NAN,
+            -f64::NAN,
+            f64::from_bits(0x7ff0_0000_0000_0001),
+        ] {
+            check(value);
+        }
+        for step in 0..=100_000 {
+            check(f64::from(step) / 100_000.0);
+        }
+        let mut bits = 0x1234_5678_9abc_def0_u64;
+        for _ in 0..100_000 {
+            bits = bits.wrapping_mul(6364136223846793005).wrapping_add(1);
+            check(f64::from_bits(bits));
+            check(f64::from(f32::from_bits(bits as u32)));
+        }
+    }
+
+    #[test]
+    fn indexed_quantizer_preserves_complete_serial_and_parallel_colour_buffers() {
+        let _scratch = scratch_guard();
+        let thresholds = quantizer_reference_thresholds();
+        let registry = colour_registry();
+        let evs = [0.7_f64, -0.2];
+        let gains = evs.map(|ev| ev.exp2() as f32);
+        let recipe = colour_recipe(vec![exposure_layer(&evs)]);
+        for (width, height) in [(257, 129), (1024, 1024)] {
+            let mut source = source(width, height);
+            // All alpha codes survive the colour run unchanged as well.
+            for (index, pixel) in Arc::make_mut(&mut source.rgba)
+                .chunks_exact_mut(4)
+                .enumerate()
+            {
+                pixel[3] = index as u8;
+            }
+            let mut expected = Vec::with_capacity(source.rgba.len());
+            for pixel in source.rgba.chunks_exact(4) {
+                for channel in &pixel[..3] {
+                    let mut linear = decode_reference(f64::from(*channel) / 255.0) as f32;
+                    for gain in gains {
+                        linear *= gain;
+                    }
+                    expected.push(quantizer_search_reference(&thresholds, f64::from(linear)));
+                }
+                expected.push(pixel[3]);
+            }
+            let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+            assert_eq!(raster.rgba.as_ref(), expected, "{width}x{height}");
         }
     }
 

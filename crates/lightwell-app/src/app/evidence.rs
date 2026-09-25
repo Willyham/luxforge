@@ -108,8 +108,9 @@ pub(crate) struct CaptureSync {
     /// `updates` as it stood when the frame drawn last was built, stored by that frame's
     /// [`DrawnMarker`] as it is drawn; `u64::MAX` until the first frame is.
     pub(crate) drawn: Arc<AtomicU64>,
-    /// The state and the requested generation recorded with the screenshot being taken.
-    pub(crate) state: Option<(Value, u64)>,
+    /// The state, requested generation and presented photo version recorded with the screenshot
+    /// being taken. A newer photo makes an in-flight readback stale.
+    pub(crate) state: Option<(Value, u64, u64)>,
 }
 
 impl Default for CaptureSync {

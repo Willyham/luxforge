@@ -125,7 +125,7 @@ Current shapes only; nothing is migrated.
 
 - **RAW effect format 1 → 2.** The payload loses `exposure_ev`, and As shot is canonical. A RAW recipe written before is refused explicitly (`incompatible: unsupported effect format 1`), with its history and rows readable and unchanged. JPEG assets in the same catalog keep working. RAW photos edited before the change need a new catalog.
 - **API.** Removed: `edit.set-raw-exposure`, `edit.set-raw-temperature`, `edit.set-raw-tint`, `edit.use-as-shot-wb` and `edit.reset-raw`, which now return `validation: unknown action`. Added: `edit.set-raw`. Descriptors gain `sources` and `variants`, and the RAW descriptor loses its controls and its shortcut.
-- **Unchanged:** catalog format 7, because no table changes; recipe format 2; the Basic effect format 1, because its payload keeps its meaning and no format-2 RAW recipe can hold a superseded field; and preset document version 1, because the `set-basic` fields keep their meaning and `set-raw` is new.
+- **Unchanged:** catalog format 9, because no table changes; recipe format 2; the Basic effect format 1, because its payload keeps its meaning and no format-2 RAW recipe can hold a superseded field; and preset document version 1, because the `set-basic` fields keep their meaning and `set-raw` is new.
 
 ## Verification
 

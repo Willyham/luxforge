@@ -16,6 +16,7 @@ mod dng;
 mod dng_ops;
 mod format;
 mod limits;
+mod native_tiles;
 mod profiles;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 pub use format::required_dng_opcodes;
@@ -245,6 +246,9 @@ unsafe extern "C" {
         red: *mut f32,
         green: *mut f32,
         blue: *mut f32,
+        test_fault: u32,
+        executor: Option<native_tiles::TileExecutor>,
+        executor_context: *mut c_void,
         cancel: CancelCallback,
         cancel_context: *mut c_void,
         err: *mut c_char,
@@ -470,6 +474,15 @@ impl RawSource {
         gains: [f32; 3],
         cancel: &AtomicBool,
     ) -> Result<PlanarRgb, RawError> {
+        self.develop_uncorrected_with_workers(gains, cancel, 0)
+    }
+
+    fn develop_uncorrected_with_workers(
+        &self,
+        gains: [f32; 3],
+        cancel: &AtomicBool,
+        worker_limit: usize,
+    ) -> Result<PlanarRgb, RawError> {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
@@ -497,6 +510,10 @@ impl RawSource {
         let (red, rest) = data.split_at_mut(n);
         let (green, blue) = rest.split_at_mut(n);
         let mut error = [0 as c_char; 256];
+        let mut executor_context = native_tiles::ExecutorContext {
+            cancel,
+            worker_limit,
+        };
         // SAFETY: immutable mosaic/meta and three disjoint initialized planes
         // stay alive for the synchronous call; C++ validates count, catches
         // exceptions, and stores none of these pointers.
@@ -511,6 +528,9 @@ impl RawSource {
                 red.as_mut_ptr(),
                 green.as_mut_ptr(),
                 blue.as_mut_ptr(),
+                0,
+                Some(native_tiles::execute),
+                (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast(),
                 cancelled,
                 (cancel as *const AtomicBool).cast_mut().cast(),
                 error.as_mut_ptr(),
@@ -934,6 +954,9 @@ mod tests {
                 red.as_mut_ptr(),
                 green.as_mut_ptr(),
                 blue.as_mut_ptr(),
+                0,
+                None,
+                std::ptr::null_mut(),
                 cancelled,
                 (&cancel as *const AtomicBool).cast_mut().cast(),
                 error.as_mut_ptr(),
@@ -974,6 +997,9 @@ mod tests {
                 red.as_mut_ptr(),
                 green.as_mut_ptr(),
                 blue.as_mut_ptr(),
+                0,
+                None,
+                std::ptr::null_mut(),
                 cancelled,
                 (&cancel as *const AtomicBool).cast_mut().cast(),
                 error.as_mut_ptr(),
@@ -997,6 +1023,9 @@ mod tests {
                 red.as_mut_ptr(),
                 green.as_mut_ptr(),
                 blue.as_mut_ptr(),
+                0,
+                None,
+                std::ptr::null_mut(),
                 cancelled,
                 (&cancel as *const AtomicBool).cast_mut().cast(),
                 error.as_mut_ptr(),
@@ -1055,6 +1084,317 @@ mod tests {
         }
         std::fs::write(output, csv).expect("write temporary sparse reference");
     }
+    #[test]
+    #[ignore = "requires explicit local authentic Fuji RAW fixture"]
+    fn markesteijn_parallel_complete_float_oracle() {
+        use sha2::{Digest, Sha256};
+        fn without_executor(raw: &RawSource, gains: [f32; 3], cancel: &AtomicBool) -> Vec<f32> {
+            let n = raw.mosaic.len();
+            let mut data = vec![0.0_f32; n * 3];
+            let (red, rest) = data.split_at_mut(n);
+            let (green, blue) = rest.split_at_mut(n);
+            let mut error = [0 as c_char; 256];
+            // SAFETY: buffers and callback token remain live for the native
+            // synchronous call; this exercises its default serial executor.
+            let code = unsafe {
+                lw_raw_develop(
+                    raw.mosaic.as_ptr(),
+                    n,
+                    &*raw.native,
+                    raw.mosaic_corrections.as_ptr(),
+                    raw.mosaic_corrections.len(),
+                    gains.as_ptr(),
+                    red.as_mut_ptr(),
+                    green.as_mut_ptr(),
+                    blue.as_mut_ptr(),
+                    0,
+                    None,
+                    std::ptr::null_mut(),
+                    cancelled,
+                    (cancel as *const AtomicBool).cast_mut().cast(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            assert_eq!(code, 0, "{}", c_text(&error));
+            data
+        }
+        let owner = std::env::var("LIGHTWELL_RAW_OWNER_DIR").expect("RAW fixture directory");
+        let path = format!("{owner}/fujifilm_x100vi.RAF");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            "187e3403bdb93617a906e059209e91037e56efbaf5b6824700e96e0d4abd7246"
+        );
+        let cancel = AtomicBool::new(false);
+        let raw = RawSource::decode(Arc::from(bytes), &cancel).unwrap();
+        let gains = raw.metadata.as_shot_gains;
+        let serial = raw
+            .develop_uncorrected_with_workers(gains, &cancel, 1)
+            .unwrap();
+        let default_serial = without_executor(&raw, gains, &cancel);
+        assert!(
+            default_serial
+                .iter()
+                .zip(&serial.data)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        drop(default_serial);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let mut hash = Sha256::new();
+            for value in &serial.data {
+                hash.update(value.to_bits().to_le_bytes());
+            }
+            // Captured from the pre-change binary on the owner's M4 Mac.
+            // Other architectures still run the complete serial/pooled
+            // comparison below without claiming cross-platform bit parity.
+            assert_eq!(
+                format!("{:x}", hash.finalize()),
+                "4174b34b43a8d4b684668a4cb9eebfc8d71ed88d5dc1e8057412f4bf5931f209"
+            );
+        }
+        for workers in [2, 4, 0, 4] {
+            let other = raw
+                .develop_uncorrected_with_workers(gains, &cancel, workers)
+                .unwrap();
+            assert_eq!(other.data.len(), serial.data.len());
+            if let Some(index) = other
+                .data
+                .iter()
+                .zip(&serial.data)
+                .position(|(a, b)| a.to_bits() != b.to_bits())
+            {
+                panic!(
+                    "complete Fuji float planes differ at worker count {workers}, index {index}, serial {:?}, parallel {:?}",
+                    serial.data[index].to_bits(),
+                    other.data[index].to_bits()
+                );
+            }
+        }
+        let adjusted = [gains[0] * 1.15, 1.0, gains[2] * 0.85];
+        let custom_serial = raw
+            .develop_uncorrected_with_workers(adjusted, &cancel, 1)
+            .unwrap();
+        for workers in [2, 4, 0] {
+            let other = raw
+                .develop_uncorrected_with_workers(adjusted, &cancel, workers)
+                .unwrap();
+            assert!(
+                other
+                    .data
+                    .iter()
+                    .zip(&custom_serial.data)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "complete changed-WB Fuji planes differ at worker count {workers}"
+            );
+        }
+        drop(custom_serial);
+        drop(serial);
+
+        // Odd final tiles exercise the retained interior and border join.
+        let width = 239_usize;
+        let height = 347_usize;
+        let source_width = raw.native.width as usize;
+        let mut odd = raw.clone();
+        odd.native.width = width as u32;
+        odd.native.height = height as u32;
+        odd.metadata.sensor_width = width as u32;
+        odd.metadata.sensor_height = height as u32;
+        odd.mosaic = Arc::new(
+            raw.mosaic
+                .chunks_exact(source_width)
+                .take(height)
+                .flat_map(|row| row[..width].iter().copied())
+                .collect(),
+        );
+        odd.mosaic_corrections = Arc::new(Vec::new());
+        odd.dng_correction = None;
+        let reference = odd
+            .develop_uncorrected_with_workers(adjusted, &cancel, 1)
+            .unwrap();
+        let odd_default_serial = without_executor(&odd, adjusted, &cancel);
+        assert!(
+            odd_default_serial
+                .iter()
+                .zip(&reference.data)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        for workers in [2, 4, 0] {
+            let other = odd
+                .develop_uncorrected_with_workers(adjusted, &cancel, workers)
+                .unwrap();
+            assert!(
+                other
+                    .data
+                    .iter()
+                    .zip(&reference.data)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+        }
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| odd.develop_uncorrected_with_workers(adjusted, &cancel, 0));
+            let second = scope.spawn(|| odd.develop_uncorrected_with_workers(adjusted, &cancel, 0));
+            for result in [first.join().unwrap(), second.join().unwrap()] {
+                let other = result.unwrap();
+                assert!(
+                    other
+                        .data
+                        .iter()
+                        .zip(&reference.data)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
+            }
+        });
+        for (width, height) in [
+            (119, 413),
+            (413, 119),
+            (120, 413),
+            (121, 221),
+            (219, 219),
+            (219, 121),
+            (317, 315),
+            (317, 120),
+            (1003, 413),
+            (1004, 511),
+            (1005, 413),
+        ] {
+            let mut edge = raw.clone();
+            edge.native.width = width as u32;
+            edge.native.height = height as u32;
+            edge.metadata.sensor_width = width as u32;
+            edge.metadata.sensor_height = height as u32;
+            edge.mosaic = Arc::new(
+                raw.mosaic
+                    .chunks_exact(source_width)
+                    .take(height)
+                    .flat_map(|row| row[..width].iter().copied())
+                    .collect(),
+            );
+            edge.mosaic_corrections = Arc::new(Vec::new());
+            edge.dng_correction = None;
+            if width < 120 || height < 120 {
+                assert!(matches!(
+                    edge.develop_uncorrected_with_workers(adjusted, &cancel, 1),
+                    Err(RawError::ResourceLimit(_))
+                ));
+                assert!(matches!(
+                    edge.develop_uncorrected_with_workers(adjusted, &cancel, 0),
+                    Err(RawError::ResourceLimit(_))
+                ));
+                continue;
+            }
+            let serial = edge
+                .develop_uncorrected_with_workers(adjusted, &cancel, 1)
+                .unwrap();
+            let default_serial = without_executor(&edge, adjusted, &cancel);
+            assert!(
+                default_serial
+                    .iter()
+                    .zip(&serial.data)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "default serial differs at edge geometry {width}x{height}"
+            );
+            let pooled = edge
+                .develop_uncorrected_with_workers(adjusted, &cancel, 0)
+                .unwrap();
+            assert!(
+                serial
+                    .data
+                    .iter()
+                    .zip(&pooled.data)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "edge geometry {width}x{height}"
+            );
+        }
+        let token = AtomicBool::new(true);
+        assert!(matches!(
+            odd.develop_uncorrected_with_workers(adjusted, &token, 4),
+            Err(RawError::Cancelled)
+        ));
+
+        struct CancelAfter {
+            calls: std::sync::atomic::AtomicUsize,
+            first_cancel_call: usize,
+        }
+        extern "C" fn cancel_after(context: *mut c_void) -> c_int {
+            // SAFETY: the native call joins all tile callbacks before the
+            // stack-backed counter leaves this test.
+            let state = unsafe { &*context.cast::<CancelAfter>() };
+            c_int::from(state.calls.fetch_add(1, Ordering::Relaxed) >= state.first_cancel_call)
+        }
+        let run_private_fault = |fault: u32, first_cancel_call: usize, worker_limit: usize| {
+            let n = odd.mosaic.len();
+            let mut data = vec![f32::NAN; n * 3];
+            let (red, rest) = data.split_at_mut(n);
+            let (green, blue) = rest.split_at_mut(n);
+            let state = CancelAfter {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                first_cancel_call,
+            };
+            let mut executor_context = native_tiles::ExecutorContext {
+                cancel: &cancel,
+                worker_limit,
+            };
+            let mut error = [0 as c_char; 256];
+            // SAFETY: all input/output/callback state is live and disjoint;
+            // the synchronous native and Rayon entries join before return.
+            let code = unsafe {
+                lw_raw_develop(
+                    odd.mosaic.as_ptr(),
+                    n,
+                    &*odd.native,
+                    std::ptr::null(),
+                    0,
+                    adjusted.as_ptr(),
+                    red.as_mut_ptr(),
+                    green.as_mut_ptr(),
+                    blue.as_mut_ptr(),
+                    fault,
+                    Some(native_tiles::execute),
+                    (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast(),
+                    cancel_after,
+                    (&state as *const CancelAfter).cast_mut().cast(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            (
+                code,
+                native_error(code, &error),
+                state.calls.load(Ordering::Relaxed),
+            )
+        };
+        // The adapter checks once before normalization and at rows 0, 128,
+        // and 256. Native tile checks then allow work before cancellation.
+        let (code, error, calls) = run_private_fault(0, 6, 1);
+        assert_eq!(code, 2);
+        assert!(matches!(error, RawError::Cancelled));
+        assert!(calls >= 7);
+        let (code, error, _) = run_private_fault(1, usize::MAX, 4);
+        assert_eq!(code, 6);
+        assert!(matches!(error, RawError::ResourceLimit(_)));
+        let (code, error, _) = run_private_fault(2, usize::MAX, 4);
+        assert_eq!(code, 3);
+        assert!(matches!(error, RawError::Native(_)));
+        // A successful call after both failures proves all workers joined
+        // and returned their process-wide scratch permits.
+        let recovered = odd
+            .develop_uncorrected_with_workers(adjusted, &cancel, 4)
+            .unwrap();
+        assert!(
+            recovered
+                .data
+                .iter()
+                .zip(&reference.data)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(std::fs::read(path).unwrap())),
+            "187e3403bdb93617a906e059209e91037e56efbaf5b6824700e96e0d4abd7246"
+        );
+    }
+
     #[test]
     fn early_cancellation_and_empty_source() {
         let cancelled = AtomicBool::new(true);

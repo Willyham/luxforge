@@ -23,6 +23,12 @@ pub const OVERLAY_BOTH: u8 = OVERLAY_SHADOW | OVERLAY_HIGHLIGHT;
 /// side is far beyond any display while keeping the buffer at 16 MiB in the worst case.
 pub const MAX_OVERLAY_CELLS: u32 = 4096;
 
+// A grid with fewer rows than useful workers would underfill the pool. Only for small grids,
+// partition source rows instead: at most 64 fixed partial grids of at most 64 KiB each, so scratch
+// cannot exceed 4 MiB regardless of Rayon splitting or the source image's dimensions.
+const MAX_PARTIAL_GRID_BYTES: usize = 64 * 1024;
+const MAX_PARTIAL_GRIDS: usize = 64;
+
 /// The bit(s) one clipping class contributes to its cell.
 const fn bits(clip: Option<Clip>) -> u8 {
     match clip {
@@ -38,9 +44,9 @@ const fn bits(clip: Option<Clip>) -> u8 {
 /// `(floor(x * cells_w / width), floor(y * cells_h / height))`, which is the same nearest-cell rule
 /// the canvas uses, so nothing is averaged away and one clipped pixel still lights its cell.
 ///
-/// Serial below one megapixel and on the shared Rayon pool above it, with worker-local cell buffers
-/// merged by OR. Nothing proportional to the image is allocated: the only buffers are the cell
-/// grids, bounded by [`MAX_OVERLAY_CELLS`] a side.
+/// Serial below one megapixel and on the shared Rayon pool above it, with disjoint output rows.
+/// Small grids with too few output rows use a fixed number of partial grids, bounded to 4 MiB of
+/// scratch. The final grid is bounded by [`MAX_OVERLAY_CELLS`] a side.
 pub fn overlay(
     rgba: &[u8],
     width: u32,
@@ -80,57 +86,107 @@ pub fn overlay(
     }
     let cells = (cells_w as usize) * (cells_h as usize);
     let row_bytes = (width as usize) * 4;
-    if pixels >= PARALLEL_REDUCE_PIXELS {
-        // Worker-local cell grids, merged by OR: the reduction is associative, so the merge order
-        // does not change the result.
-        let merged = rgba
-            .par_chunks_exact(row_bytes)
-            .enumerate()
-            .fold(
-                || vec![OVERLAY_NONE; cells],
-                |mut local, (y, row)| {
-                    fold_row(&mut local, row, y as u32, width, height, cells_w, cells_h);
-                    local
-                },
-            )
-            .reduce(
-                || vec![OVERLAY_NONE; cells],
-                |mut a, b| {
-                    for (left, right) in a.iter_mut().zip(b) {
-                        *left |= right;
-                    }
-                    a
-                },
-            );
-        return Ok(merged);
-    }
     let mut grid = vec![OVERLAY_NONE; cells];
-    for (y, row) in rgba.chunks_exact(row_bytes).enumerate() {
-        fold_row(&mut grid, row, y as u32, width, height, cells_w, cells_h);
+    if pixels >= PARALLEL_REDUCE_PIXELS {
+        let partials = partial_grid_count(cells, cells_h, height, rayon::current_num_threads());
+        if partials > 0 {
+            fold_partial_grids(&mut grid, rgba, width, height, cells_w, cells_h, partials);
+            return Ok(grid);
+        }
+        // A cell row owns exactly the source rows y for which floor(y * cells_h / height)
+        // equals its index. Inverting that interval with ceiling division gives disjoint spans,
+        // including empty spans when the grid has more rows than the image. Every source row is
+        // read once and writes only this output slice: no private grids or OR merges are needed.
+        grid.par_chunks_mut(cells_w as usize)
+            .enumerate()
+            .for_each(|(cell_y, cells)| {
+                let first =
+                    (cell_y as u64 * u64::from(height)).div_ceil(u64::from(cells_h)) as usize;
+                let end =
+                    ((cell_y as u64 + 1) * u64::from(height)).div_ceil(u64::from(cells_h)) as usize;
+                for row in rgba[first * row_bytes..end * row_bytes].chunks_exact(row_bytes) {
+                    fold_row(cells, row, width, cells_w);
+                }
+            });
+    } else {
+        for (y, row) in rgba.chunks_exact(row_bytes).enumerate() {
+            let base = cell_index(y as u32, height, cells_h) as usize * cells_w as usize;
+            fold_row(
+                &mut grid[base..base + cells_w as usize],
+                row,
+                width,
+                cells_w,
+            );
+        }
     }
     Ok(grid)
 }
 
-/// OR one source row into a cell grid. The row's cell row is computed once; the column index
-/// advances per pixel.
-fn fold_row(
+fn partial_grid_count(cells: usize, cell_rows: u32, source_rows: u32, workers: usize) -> usize {
+    let useful_workers = workers.min(MAX_PARTIAL_GRIDS).min(source_rows as usize);
+    if cells <= MAX_PARTIAL_GRID_BYTES && (cell_rows as usize) < useful_workers {
+        // More than one row range per worker lets the shared pool redistribute work when cores
+        // have different throughput, while the fixed cap still bounds the scratch allocation.
+        useful_workers
+            .saturating_mul(4)
+            .min(MAX_PARTIAL_GRIDS)
+            .min(source_rows as usize)
+    } else {
+        0
+    }
+}
+
+fn fold_partial_grids(
     grid: &mut [u8],
-    row: &[u8],
-    y: u32,
+    rgba: &[u8],
     width: u32,
     height: u32,
     cells_w: u32,
     cells_h: u32,
+    count: usize,
 ) {
-    let cell_y = cell_index(y, height, cells_h) as usize;
-    let base = cell_y * cells_w as usize;
+    // The caller chose count through partial_grid_count, so this allocation is at most 4 MiB.
+    // Each fixed partition owns one grid and disjoint source rows; scheduler subdivision cannot
+    // create more grids. The tiny final merge is serial and ORs exactly the same endpoint bits.
+    let cells = grid.len();
+    let mut partials = vec![OVERLAY_NONE; cells * count];
+    let row_bytes = width as usize * 4;
+    partials
+        .par_chunks_exact_mut(cells)
+        .enumerate()
+        .for_each(|(partition, local)| {
+            let first = (partition as u64 * u64::from(height) / count as u64) as usize;
+            let end = ((partition as u64 + 1) * u64::from(height) / count as u64) as usize;
+            for (offset, row) in rgba[first * row_bytes..end * row_bytes]
+                .chunks_exact(row_bytes)
+                .enumerate()
+            {
+                let y = (first + offset) as u32;
+                let base = cell_index(y, height, cells_h) as usize * cells_w as usize;
+                fold_row(
+                    &mut local[base..base + cells_w as usize],
+                    row,
+                    width,
+                    cells_w,
+                );
+            }
+        });
+    for local in partials.chunks_exact(cells) {
+        for (cell, partial) in grid.iter_mut().zip(local) {
+            *cell |= partial;
+        }
+    }
+}
+
+/// OR one source row into its output cell row.
+fn fold_row(cells: &mut [u8], row: &[u8], width: u32, cells_w: u32) {
     for (x, pixel) in row.chunks_exact(4).enumerate() {
         let class = bits(clip_class([pixel[0], pixel[1], pixel[2], pixel[3]]));
         if class == OVERLAY_NONE {
             continue;
         }
         let cell_x = cell_index(x as u32, width, cells_w) as usize;
-        grid[base + cell_x] |= class;
+        cells[cell_x] |= class;
     }
 }
 
@@ -183,6 +239,21 @@ mod tests {
             value["width"].as_u64().expect("width") as u32,
             value["height"].as_u64().expect("height") as u32,
         )
+    }
+
+    /// Independent source-pixel traversal: no output-row spans, production fold or cell helpers.
+    fn serial_oracle(rgba: &[u8], width: u32, height: u32, cells_w: u32, cells_h: u32) -> Vec<u8> {
+        let mut cells = vec![0; cells_w as usize * cells_h as usize];
+        for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+            let x = index as u64 % u64::from(width);
+            let y = index as u64 / u64::from(width);
+            let cell_x = x * u64::from(cells_w) / u64::from(width);
+            let cell_y = y * u64::from(cells_h) / u64::from(height);
+            let bits =
+                u8::from(pixel[..3].contains(&0)) | (u8::from(pixel[..3].contains(&255)) << 1);
+            cells[(cell_y * u64::from(cells_w) + cell_x) as usize] |= bits;
+        }
+        cells
     }
 
     #[test]
@@ -297,11 +368,7 @@ mod tests {
         rgba[clipped(1000, 1000) + 1] = 255;
         assert!(u64::from(width) * u64::from(height) >= PARALLEL_REDUCE_PIXELS);
         let parallel = overlay(&rgba, width, height, 8, 8).unwrap();
-        let mut serial = vec![OVERLAY_NONE; 64];
-        for y in 0..height {
-            let row = &rgba[(y as usize) * (width as usize) * 4..][..(width as usize) * 4];
-            fold_row(&mut serial, row, y, width, height, 8, 8);
-        }
+        let serial = serial_oracle(&rgba, width, height, 8, 8);
         assert_eq!(parallel, serial);
         assert_eq!(parallel[0], OVERLAY_SHADOW, "the one dark sample");
         assert_eq!(parallel[63], OVERLAY_HIGHLIGHT, "the one bright sample");
@@ -312,5 +379,139 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn disjoint_rows_match_the_oracle_for_partial_empty_and_capped_cell_rows() {
+        // The large frame enters the parallel path with nondivisible dimensions. The small one
+        // also checks the serial path; enlarged grids have output rows with no source pixels.
+        for (width, height) in [(13u32, 7u32), (1031, 1019)] {
+            let mut rgba = vec![0; width as usize * height as usize * 4];
+            for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+                let x = index as u32 % width;
+                let y = index as u32 / width;
+                // Include dense clipping, unclipped pixels and both endpoints. Alpha alternates
+                // endpoints independently, so consulting it would change clean cells.
+                let palette = [[60, 90, 120], [0, 80, 100], [70, 255, 100], [0, 90, 255]];
+                pixel[..3].copy_from_slice(&palette[((x * 17 + y * 7) % 29 / 8) as usize]);
+                pixel[3] = if index % 2 == 0 { 0 } else { 255 };
+            }
+            for (cells_w, cells_h) in [
+                (1, 1),
+                (1, 13),
+                (17, 1),
+                (37, 29),
+                (1023, 1009),
+                (width, height),
+                (MAX_OVERLAY_CELLS, MAX_OVERLAY_CELLS),
+            ] {
+                assert_eq!(
+                    overlay(&rgba, width, height, cells_w, cells_h).unwrap(),
+                    serial_oracle(&rgba, width, height, cells_w, cells_h),
+                    "{width}x{height} into {cells_w}x{cells_h}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn isolated_clips_at_nondivisible_row_boundaries_reach_only_their_own_cells() {
+        let (width, height, cells_w, cells_h) = (1031u32, 1019u32, 37u32, 29u32);
+        let mut rgba = vec![64; width as usize * height as usize * 4];
+        let set = |rgba: &mut [u8], x: u32, y: u32, pixel: [u8; 4]| {
+            let index = (y as usize * width as usize + x as usize) * 4;
+            rgba[index..index + 4].copy_from_slice(&pixel);
+        };
+        // The first row of every cell row and the row immediately before it; floor mapping in
+        // the oracle decides ownership independently of the production interval calculation.
+        for cell_y in 1..cells_h {
+            let boundary =
+                (u64::from(cell_y) * u64::from(height)).div_ceil(u64::from(cells_h)) as u32;
+            set(&mut rgba, 0, boundary - 1, [0, 64, 64, 255]);
+            set(&mut rgba, width - 1, boundary, [64, 64, 255, 0]);
+        }
+        set(&mut rgba, 0, 0, [0, 255, 64, 255]);
+        set(&mut rgba, width - 1, height - 1, [0, 255, 64, 255]);
+        let actual = overlay(&rgba, width, height, cells_w, cells_h).unwrap();
+        assert_eq!(
+            actual,
+            serial_oracle(&rgba, width, height, cells_w, cells_h)
+        );
+        assert_eq!(actual[0], OVERLAY_BOTH);
+        assert_eq!(actual[actual.len() - 1], OVERLAY_BOTH);
+    }
+
+    fn sparse_clipping_frame(width: u32, height: u32) -> Vec<u8> {
+        let mut rgba = vec![64; width as usize * height as usize * 4];
+        for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+            pixel[3] = if index % 2 == 0 { 0 } else { 255 };
+            if index % 131_071 == 0 {
+                pixel[0] = 0;
+            }
+            if index % 65_537 == 3 {
+                pixel[1] = 255;
+            }
+        }
+        let last = rgba.len() - 4;
+        rgba[last..].copy_from_slice(&[64, 0, 255, 0]);
+        rgba
+    }
+
+    #[test]
+    fn tiny_grids_match_the_oracle_for_nondivisible_tall_and_single_row_inputs() {
+        for (width, height) in [(1021, 1025), (17, 65_537), (1_000_003, 1)] {
+            let rgba = sparse_clipping_frame(width, height);
+            assert!(u64::from(width) * u64::from(height) >= PARALLEL_REDUCE_PIXELS);
+            for (cells_w, cells_h) in [(1, 1), (8, 8), (MAX_OVERLAY_CELLS, 1), (127, 3)] {
+                assert_eq!(
+                    overlay(&rgba, width, height, cells_w, cells_h).unwrap(),
+                    serial_oracle(&rgba, width, height, cells_w, cells_h),
+                    "{width}x{height} into {cells_w}x{cells_h}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn partial_grids_are_bounded_by_cells_workers_and_source_rows() {
+        assert_eq!(partial_grid_count(1, 1, 100, 1), 0);
+        assert_eq!(partial_grid_count(64, 8, 100, 8), 0);
+        assert_eq!(partial_grid_count(64, 8, 100, 9), 36);
+        assert_eq!(partial_grid_count(1, 1, 1, 64), 0);
+        assert_eq!(partial_grid_count(1, 1, 3, 64), 3);
+        assert_eq!(partial_grid_count(1, 1, 100, usize::MAX), 64);
+        assert_eq!(partial_grid_count(MAX_PARTIAL_GRID_BYTES, 16, 100, 64), 64);
+        assert_eq!(
+            partial_grid_count(MAX_PARTIAL_GRID_BYTES + 1, 16, 100, 64),
+            0
+        );
+        assert_eq!(MAX_PARTIAL_GRID_BYTES * MAX_PARTIAL_GRIDS, 4 * 1024 * 1024);
+
+        let (width, height) = (1031, 1019);
+        let rgba = sparse_clipping_frame(width, height);
+        // Force partition counts, not a private pool, to exercise the 4 MiB maximum on hosts
+        // with fewer than 64 workers. Rows remain disjoint on the existing process pool.
+        for (cells_w, cells_h, workers, expected_count) in [
+            (4096, 16, 64, 64),
+            (4096, 17, 64, 0),
+            (37, 7, 8, 32),
+            (37, 8, 8, 0),
+            (37, 9, 8, 0),
+        ] {
+            let cells = cells_w as usize * cells_h as usize;
+            let count = partial_grid_count(cells, cells_h, height, workers);
+            assert_eq!(count, expected_count);
+            let actual = if count > 0 {
+                let mut grid = vec![OVERLAY_NONE; cells];
+                fold_partial_grids(&mut grid, &rgba, width, height, cells_w, cells_h, count);
+                grid
+            } else {
+                overlay(&rgba, width, height, cells_w, cells_h).unwrap()
+            };
+            assert_eq!(
+                actual,
+                serial_oracle(&rgba, width, height, cells_w, cells_h)
+            );
+        }
     }
 }

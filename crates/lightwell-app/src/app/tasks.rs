@@ -498,40 +498,92 @@ pub(crate) fn import_task(
     generation: u64,
     open_guard: Arc<AtomicU64>,
     proxy: Option<ProxyBounds>,
+    queued: Option<Result<QueuedImport, String>>,
 ) -> Task<Message> {
     Task::perform(
         async move {
-            let (result, sequence) = call(
+            import_now(
                 &owner,
                 client,
-                "catalog.import",
-                json!({"path":path,"mutation":request()}),
-            )?;
-            let job_id = result["job_id"]
-                .as_str()
-                .ok_or("catalog.import did not return a source job")?;
-            let state = wait_source_job(&owner, client, job_id, Some((&open_guard, generation)))?;
-            if open_guard.load(Ordering::Acquire) != generation {
-                let _ = call(&owner, client, "job.cancel", json!({"job_id":job_id}));
-                return Err("superseded open".into());
-            }
-            let (_, adopted_sequence) =
-                call(&owner, client, "job.adopt", json!({"job_id":job_id}))?;
-            let refreshed = refresh(
-                &owner,
-                client,
-                state.asset.id,
-                Scope::Open,
-                sequence.max(adopted_sequence),
+                &path,
+                generation,
+                &open_guard,
                 proxy,
-            )?;
-            if open_guard.load(Ordering::Acquire) != generation {
-                return Err("superseded open".into());
-            }
-            Ok(refreshed)
+                queued,
+            )
         },
         move |result| Message::ImportRefreshed(generation, result.map(Box::new)),
     )
+}
+
+fn import_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    path: &Path,
+    generation: u64,
+    open_guard: &AtomicU64,
+    proxy: Option<ProxyBounds>,
+    queued: Option<Result<QueuedImport, String>>,
+) -> Result<Refresh, String> {
+    let QueuedImport { job_id, sequence } = match queued {
+        Some(result) => result?,
+        None => queue_import(owner, client, path)?,
+    };
+    let state = wait_source_job(owner, client, &job_id, Some((open_guard, generation)))?;
+    if open_guard.load(Ordering::Acquire) != generation {
+        let _ = call(owner, client, "job.cancel", json!({"job_id":job_id}));
+        return Err("superseded open".into());
+    }
+    let (_, adopted_sequence) = call(owner, client, "job.adopt", json!({"job_id":job_id}))?;
+    let refreshed = refresh(
+        owner,
+        client,
+        state.asset.id,
+        Scope::Open,
+        sequence.max(adopted_sequence),
+        proxy,
+    )?;
+    if open_guard.load(Ordering::Acquire) != generation {
+        return Err("superseded open".into());
+    }
+    Ok(refreshed)
+}
+
+/// The initial request can begin before the platform event loop and still finish through the
+/// ordinary open path. Its clock includes startup work.
+#[derive(Debug)]
+pub(crate) struct QueuedImport {
+    job_id: String,
+    sequence: u64,
+}
+
+pub(crate) struct StartupImport {
+    pub(crate) started: Instant,
+    pub(crate) result: Result<QueuedImport, String>,
+}
+
+pub(crate) fn start_import(owner: &OwnerHandle, client: ClientId, path: &Path) -> StartupImport {
+    let started = Instant::now();
+    let result = queue_import(owner, client, path);
+    StartupImport { started, result }
+}
+
+fn queue_import(
+    owner: &OwnerHandle,
+    client: ClientId,
+    path: &Path,
+) -> Result<QueuedImport, String> {
+    let (result, sequence) = call(
+        owner,
+        client,
+        "catalog.import",
+        json!({"path":path,"mutation":request()}),
+    )?;
+    let job_id = result["job_id"]
+        .as_str()
+        .ok_or("catalog.import did not return a source job")?
+        .to_owned();
+    Ok(QueuedImport { job_id, sequence })
 }
 
 /// One command and the refresh its answer calls for, as the plain calls [`state_task`] runs: an

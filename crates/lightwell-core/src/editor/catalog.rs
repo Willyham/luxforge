@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 8 keeps each entry's history row — its label, actor, timestamp and restore target, beside
+/// Format 9 keeps each entry's history row — its label, actor, timestamp and restore target, beside
 /// the sequence, action and undo parent format 7 already held — in the entry's own columns, so a
 /// page of history rows decodes no entry. Format 7 was the merged shape: the mask table a recipe
 /// carries and the layer's mask reference, the content-addressed stroke store a painted path is
@@ -19,7 +19,7 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(super) const CATALOG_FORMAT: i64 = 8;
+pub(super) const CATALOG_FORMAT: i64 = 9;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 2 is not supported; expected 8; choose a new catalog path"
+            "catalog format 2 is not supported; expected 9; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
@@ -579,7 +579,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 7 is not supported; expected 8; choose a new catalog path"
+            "catalog format 7 is not supported; expected 9; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
@@ -1586,7 +1586,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 5 is not supported; expected 8; choose a new catalog path"
+            "catalog format 5 is not supported; expected 9; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
