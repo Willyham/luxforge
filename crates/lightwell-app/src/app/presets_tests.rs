@@ -109,7 +109,6 @@ impl Library {
             self.editor.client,
             self.asset.clone(),
             tasks::Scope::Open,
-            self.editor.api_sequence,
             None,
         )
         .unwrap();
@@ -377,6 +376,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         library.editor.client,
         library.asset.clone(),
         library.editor.api_sequence,
+        &[],
         None,
     )
     .unwrap();
@@ -386,6 +386,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         library.editor.client,
         library.asset.clone(),
         library.editor.api_sequence,
+        &[],
         None,
     )
     .unwrap();
@@ -407,6 +408,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         library.editor.client,
         library.asset.clone(),
         library.editor.api_sequence,
+        &[],
         None,
     )
     .unwrap();
@@ -433,6 +435,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         library.editor.client,
         library.asset.clone(),
         library.editor.api_sequence,
+        &[],
         None,
     )
     .unwrap();

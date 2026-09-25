@@ -226,6 +226,7 @@ impl Editor {
     }
 
     pub(crate) fn adopt_change(&mut self, change: PresetChange) {
+        self.read_back(change.request);
         self.adopt_presets(change.presets, change.sequence);
     }
 

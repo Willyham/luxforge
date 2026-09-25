@@ -352,3 +352,106 @@ fn action_copy_uses_the_clicked_controls_preset() {
     }
     finish(editor, catalog);
 }
+
+/// A discrete control commits at once, so under an open gesture it is refused as a slider or a
+/// preset started over it is: a toggle, an action button and a field's Enter each send nothing,
+/// leave the gesture as it was, and put what the gesture needs in the status bar. The toggle does
+/// not show a value that was never sent, and the typed text stays in its field.
+#[test]
+fn a_discrete_control_is_refused_while_a_gesture_is_open() {
+    const REASON: &str = "Finish or discard the slider draft before running another edit";
+    let (mut editor, catalog, _) = editor();
+    hold_slider(&mut editor, ACTION, "amount");
+    let held = editor.gesture.clone().map(|gesture| format!("{gesture:?}"));
+    let unchanged = |editor: &Editor, case: &str| {
+        assert!(!editor.busy, "{case}: nothing was sent");
+        assert_eq!(editor.status, REASON, "{case}");
+        assert_eq!(
+            editor.gesture.clone().map(|gesture| format!("{gesture:?}")),
+            held,
+            "{case}: the gesture is untouched"
+        );
+    };
+
+    let before = editor.fields.get(ACTION, "enabled").map(str::to_owned);
+    let _ = editor.update(Message::ControlDiscrete {
+        action: ACTION.into(),
+        parameter: "enabled".into(),
+        value: json!(true),
+    });
+    unchanged(&editor, "a toggle");
+    assert_eq!(
+        editor.fields.get(ACTION, "enabled").map(str::to_owned),
+        before,
+        "the toggle shows the committed value"
+    );
+
+    editor.status.clear();
+    let _ = editor.update(Message::RunAction {
+        action: ACTION.into(),
+        preset: serde_json::Map::from_iter([("amount".to_owned(), json!(0.0))]),
+    });
+    unchanged(&editor, "an action button");
+
+    editor.status.clear();
+    let _ = editor.update(Message::Field {
+        action: ACTION.into(),
+        parameter: "count".into(),
+        text: "7".into(),
+    });
+    let _ = editor.update(Message::Submit {
+        action: ACTION.into(),
+        parameter: Some("count".into()),
+    });
+    unchanged(&editor, "a field's Enter");
+    assert_eq!(editor.fields.get(ACTION, "count"), Some("7"));
+    assert!(editor.editing.is_some(), "the field keeps its typed text");
+
+    // With the gesture gone, the same button runs.
+    editor.gesture = None;
+    let _ = editor.update(Message::RunAction {
+        action: ACTION.into(),
+        preset: serde_json::Map::from_iter([("amount".to_owned(), json!(0.0))]),
+    });
+    assert!(editor.busy, "{}", editor.status);
+    finish(editor, catalog);
+}
+
+/// `busy` belongs to the request that set it. A gesture's commit and the committed frame read back
+/// after a gesture never set it, so their answers landing while an unrelated request is in flight
+/// (an import, a restore) leave its controls disabled; a history selection's own answer is what
+/// clears the flag the selection set.
+#[test]
+fn a_gesture_answer_leaves_busy_to_the_request_that_set_it() {
+    let (mut editor, catalog, asset) = editor();
+    hold_slider(&mut editor, ACTION, "amount");
+    editor.fake_sets = Some(Default::default());
+    answer_begin(&mut editor, Draft::new(ACTION, asset.clone(), 4));
+    let _ = editor.update(Message::Draft(DraftMessage::Commit));
+    assert_eq!(
+        core_draft(&editor).and_then(|draft| draft.in_flight()),
+        Some(super::draft::Round::Commit)
+    );
+
+    editor.busy = true;
+    let current = editor.state.as_ref().unwrap().current_entry.clone();
+    let next = entry(&asset, 5, Some(&current.id));
+    let committed = refresh_for(&asset, &next, Vec::new(), &[&next], false);
+    let job = committed.job.clone();
+    answer_commit(&mut editor, Ok(Some(committed)));
+    assert!(editor.gesture.is_none(), "the gesture committed");
+    assert_eq!(editor.state.as_ref().unwrap().revision, 5);
+    assert!(editor.busy, "the commit's answer leaves busy set");
+
+    let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+        super::tasks::PreviewPayload {
+            job,
+            session: editor.session.clone(),
+        },
+    ))));
+    assert!(editor.busy, "and so does a frame read back after a gesture");
+
+    let _ = editor.update(Message::Selected(Err("cancelled".into())));
+    assert!(!editor.busy, "a selection's own answer clears it");
+    finish(editor, catalog);
+}

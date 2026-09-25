@@ -123,6 +123,8 @@ pub(crate) enum Starting {
     Compare,
     /// A preset applied to the photograph.
     Preset,
+    /// A discrete control's one commit: a button, a toggle, a choice or a field's Enter.
+    Action,
     /// A preview of the committed state for the view's own sake: a refit to new bounds, or a new
     /// mask overlay.
     Refit,
@@ -150,6 +152,7 @@ impl Starting {
             Self::Gallery => "before opening Components",
             Self::Compare => "before comparing with the original",
             Self::Preset => "before applying a preset",
+            Self::Action => "before running another edit",
             Self::Refit => "before refitting the preview",
         }
     }
@@ -568,8 +571,43 @@ impl Editor {
     /// marked, exactly as the crop draft is, so nothing is discarded without a decision.
     pub(crate) fn gesture_revision(&mut self, revision: u64) {
         let task = self.drive(Event::Revision(revision));
-        // A revision answers with a notice or nothing: it never sends a request.
+        // A revision answers with a notice or nothing: it never sends a request. An armed brush it
+        // conflicted is rebased once the update is over.
         drop(task);
+    }
+
+    /// Rebase an armed brush a new revision conflicted, silently: its core draft holds no field of
+    /// this client's, so `draft.reapply` puts it on the current revision with nothing to re-send.
+    /// Called once per update, because the revision that conflicts it arrives inside a read-back
+    /// that sends nothing of its own. Sends at most one reapply for the gesture.
+    pub(crate) fn rebase_armed_brush(&mut self) -> Task<Message> {
+        let Some(id) = self.armed_rebase else {
+            return Task::none();
+        };
+        let due = match self.core_gesture() {
+            Some(gesture) if gesture.draft.gesture == id && gesture.draft.conflicted => {
+                gesture.draft.in_flight().is_none()
+            }
+            // The gesture ended, or its draft is no longer conflicted: nothing to rebase.
+            _ => {
+                self.armed_rebase = None;
+                return Task::none();
+            }
+        };
+        if !due {
+            return Task::none();
+        }
+        let revision = self.state.as_ref().map(|state| state.revision);
+        self.event("mask_draft_rebased", json!({ "revision": revision }));
+        self.drive(Event::Reapply)
+    }
+
+    /// The Changed elsewhere notice is up: the open core gesture's draft is conflicted and is not
+    /// an armed brush's being rebased without one.
+    pub(crate) fn gesture_conflicted(&self) -> bool {
+        self.core_gesture().is_some_and(|gesture| {
+            gesture.draft.conflicted && self.armed_rebase != Some(gesture.draft.gesture)
+        })
     }
 
     /// A discarded core gesture leaves the screen at once, whatever its owner round trips are still
@@ -641,6 +679,13 @@ impl Editor {
                 let Some(Gesture::Core(gesture)) = &mut self.gesture else {
                     return Task::none();
                 };
+                // An armed brush has sent nothing, so there is nothing to discard or reapply: it
+                // rebases onto the new state without a notice, once this update is over
+                // ([`Editor::rebase_armed_brush`]).
+                if gesture.kind.armed() {
+                    self.armed_rebase = Some(gesture.draft.gesture);
+                    return Task::none();
+                }
                 let revision = self.state.as_ref().map(|state| state.revision);
                 let (prefix, noun) = (gesture.kind.prefix(), gesture.kind.noun());
                 let detail = match &mut gesture.kind {
@@ -954,7 +999,7 @@ impl Editor {
         draft_id: &DraftId,
         result: Result<Option<Refresh>, String>,
     ) -> Task<Message> {
-        self.busy = false;
+        // A gesture's commit never set `busy`, so its answer leaves it to whatever did.
         let owned = self
             .core_gesture()
             .is_some_and(|open| open.draft.answers(gesture, Some(draft_id)));
@@ -1057,11 +1102,14 @@ impl Editor {
             );
             return Task::none();
         }
+        // An armed brush's own rebase: a stroke begun while it was in flight carries on into the
+        // rebased draft, since the conflict it answers came before the stroke did.
+        let silent = self.armed_rebase.take_if(|id| *id == gesture).is_some();
         if open {
             match &result {
                 Ok(rebased) => {
                     self.session.draft = Some(rebased.clone());
-                    if let Some(mask) = self.mask_gesture_mut() {
+                    if !silent && let Some(mask) = self.mask_gesture_mut() {
                         mask.shape.interrupt();
                     }
                     if let Some(slider) = self.slider_gesture() {

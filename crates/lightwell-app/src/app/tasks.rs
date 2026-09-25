@@ -61,7 +61,10 @@ pub(crate) struct Refresh {
     pub(crate) original: Option<EntryId>,
     pub(crate) job: PreviewJob,
     pub(crate) session: ClientSession,
-    pub(crate) sequence: u64,
+    /// This desktop's own request whose change the refresh read back: the event that request left
+    /// in the log needs no refresh of its own when a poll reads it ([`sync_now`]). `None` when the
+    /// refresh read back no change of this desktop's.
+    pub(crate) request: Option<String>,
 }
 
 /// What a refresh reads back, by what the change before it could have touched. Every scope reads
@@ -114,7 +117,6 @@ impl Scope {
 pub(crate) struct PreviewPayload {
     pub(crate) job: PreviewJob,
     pub(crate) session: ClientSession,
-    pub(crate) sequence: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -156,6 +158,11 @@ pub(crate) struct Upload {
 /// library when a `preset.*` event did, and `capabilities` says a capability method (`module.*` or
 /// `task.*`) was used, whose changes the asset state does not show; a gap in the log, which could
 /// have hidden any of them, asks for all three.
+///
+/// The poll is the only reader of the event log, so its `sequence` is the only one the desktop's
+/// event cursor ever takes: the log's newest sequence as `events.since` answered it, which every
+/// event the poll acted on is at or below. The sequence any other response carries counts other
+/// clients' events this desktop has not read, and is never a cursor.
 #[derive(Clone, Debug)]
 pub(crate) struct SyncResult {
     pub(crate) sequence: u64,
@@ -163,17 +170,22 @@ pub(crate) struct SyncResult {
     /// The listing and the event sequence it was read at.
     pub(crate) presets: Option<(Vec<PresetSummary>, u64)>,
     pub(crate) capabilities: bool,
+    /// This desktop's own requests whose events the poll read and skipped, because the answer to
+    /// each had already read its change back.
+    pub(crate) own: Vec<String>,
 }
 
 #[cfg(test)]
 impl SyncResult {
-    /// A poll that saw an asset event and read the state back.
+    /// A poll that saw an asset event and read the state back. It read events up to sequence 0,
+    /// which moves no cursor; a test that needs one sets `sequence`.
     pub(crate) fn changed(refresh: Refresh) -> Self {
         Self {
-            sequence: refresh.sequence,
+            sequence: 0,
             refresh: Some(Box::new(refresh)),
             presets: None,
             capabilities: false,
+            own: Vec::new(),
         }
     }
 }
@@ -190,7 +202,10 @@ pub(crate) struct PresetChange {
     /// What the call itself answered.
     pub(crate) result: Value,
     pub(crate) presets: Vec<PresetSummary>,
+    /// The event sequence the listing was read at, which orders it against other listings.
     pub(crate) sequence: u64,
+    /// The call's own request, whose event the listing already reflects.
+    pub(crate) request: String,
 }
 
 /// A host method an evidence script called directly, and what it answered.
@@ -242,16 +257,52 @@ pub(crate) fn request() -> MutationRequest {
     }
 }
 
+/// One request through the owner's method table: its answer and the event log's sequence when it
+/// was answered. That sequence counts every client's events, including ones this desktop has not
+/// read, so it orders answers and is never where the event sync reads from.
 pub(crate) fn call(
     owner: &OwnerHandle,
     client: ClientId,
     method: &str,
     params: Value,
 ) -> Result<(Value, u64), String> {
+    send(owner, client, api_request_id(), method, params)
+}
+
+/// One change of this desktop's own whose answer the caller reads back: its answer and the request
+/// id its event carries, which the caller hands to the event sync once the read-back is on screen.
+pub(crate) fn call_own(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<(Value, String), String> {
+    let id = api_request_id();
+    let (answer, _) = send(owner, client, id.clone(), method, params)?;
+    Ok((answer, id))
+}
+
+/// A request id no other client's is likely to repeat, so an event is recognised as this desktop's
+/// own by its id alone.
+fn api_request_id() -> String {
+    format!(
+        "ui-{}-{}",
+        std::process::id(),
+        REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn send(
+    owner: &OwnerHandle,
+    client: ClientId,
+    id: String,
+    method: &str,
+    params: Value,
+) -> Result<(Value, u64), String> {
     #[cfg(test)]
     owner_calls::record(method);
     let request = ApiRequest {
-        id: format!("ui-{}", REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)),
+        id,
         method: method.into(),
         params,
         token: None,
@@ -369,14 +420,10 @@ pub(crate) fn refresh(
     client: ClientId,
     asset_id: AssetId,
     scope: Scope,
-    mut sequence: u64,
     proxy: Option<ProxyBounds>,
 ) -> Result<Refresh, String> {
-    let answered = sequence;
-    let mut fetch = |method: &str, params: Value| -> Result<Value, String> {
-        let (value, seen) = call(owner, client, method, params)?;
-        sequence = sequence.max(seen);
-        Ok(value)
+    let fetch = |method: &str, params: Value| -> Result<Value, String> {
+        call(owner, client, method, params).map(|(value, _)| value)
     };
     let state: EditorState = parse(fetch("asset.state", json!({"asset_id":asset_id}))?)?;
     let scope = scope.at(state.revision);
@@ -461,10 +508,6 @@ pub(crate) fn refresh(
             proxy,
         ),
     )?;
-    // A narrow read vouches only for what it read. Another client's change that moves no revision —
-    // a version named meanwhile — is not in it, so the event sequence stays at the command's own
-    // answer and the next poll reads that change from there rather than stepping over it.
-    let sequence = if whole { sequence } else { answered };
     Ok(Refresh {
         state,
         history,
@@ -476,7 +519,7 @@ pub(crate) fn refresh(
         original,
         job,
         session,
-        sequence,
+        request: None,
     })
 }
 
@@ -525,7 +568,7 @@ fn import_now(
     proxy: Option<ProxyBounds>,
     queued: Option<Result<QueuedImport, String>>,
 ) -> Result<Refresh, String> {
-    let QueuedImport { job_id, sequence } = match queued {
+    let QueuedImport { job_id, request } = match queued {
         Some(result) => result?,
         None => queue_import(owner, client, path)?,
     };
@@ -534,18 +577,13 @@ fn import_now(
         let _ = call(owner, client, "job.cancel", json!({"job_id":job_id}));
         return Err("superseded open".into());
     }
-    let (_, adopted_sequence) = call(owner, client, "job.adopt", json!({"job_id":job_id}))?;
-    let refreshed = refresh(
-        owner,
-        client,
-        state.asset.id,
-        Scope::Open,
-        sequence.max(adopted_sequence),
-        proxy,
-    )?;
+    call(owner, client, "job.adopt", json!({"job_id":job_id}))?;
+    let mut refreshed = refresh(owner, client, state.asset.id, Scope::Open, proxy)?;
     if open_guard.load(Ordering::Acquire) != generation {
         return Err("superseded open".into());
     }
+    // An import is announced under the `catalog.import` request that asked for it.
+    refreshed.request = Some(request);
     Ok(refreshed)
 }
 
@@ -554,7 +592,7 @@ fn import_now(
 #[derive(Debug)]
 pub(crate) struct QueuedImport {
     job_id: String,
-    sequence: u64,
+    request: String,
 }
 
 pub(crate) struct StartupImport {
@@ -573,7 +611,7 @@ fn queue_import(
     client: ClientId,
     path: &Path,
 ) -> Result<QueuedImport, String> {
-    let (result, sequence) = call(
+    let (result, request) = call_own(
         owner,
         client,
         "catalog.import",
@@ -583,7 +621,7 @@ fn queue_import(
         .as_str()
         .ok_or("catalog.import did not return a source job")?
         .to_owned();
-    Ok(QueuedImport { job_id, sequence })
+    Ok(QueuedImport { job_id, request })
 }
 
 /// One command and the refresh its answer calls for, as the plain calls [`state_task`] runs: an
@@ -597,9 +635,11 @@ pub(crate) fn command_now(
     params: Value,
     proxy: Option<ProxyBounds>,
 ) -> Result<Refresh, String> {
-    let (answer, sequence) = call(owner, client, method, params)?;
+    let (answer, request) = call_own(owner, client, method, params)?;
     let scope = Scope::after(method, &answer);
-    refresh(owner, client, asset_id, scope, sequence, proxy)
+    let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
+    refreshed.request = Some(request);
+    Ok(refreshed)
 }
 
 pub(crate) fn state_task(
@@ -616,6 +656,9 @@ pub(crate) fn state_task(
     )
 }
 
+/// One selection method and the preview job of what it selects, answered as `answered` says: a
+/// history selection's answer is the one that clears `busy`, a comparison's is not.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn preview_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -624,10 +667,11 @@ pub(crate) fn preview_task(
     method: &'static str,
     params: Value,
     proxy: Option<ProxyBounds>,
+    answered: fn(Result<Box<PreviewPayload>, String>) -> Message,
 ) -> Task<Message> {
     Task::perform(
         async move {
-            let (mut result, sequence) = call(&owner, client, method, params)?;
+            let (mut result, _) = call(&owner, client, method, params)?;
             let session: ClientSession = parse(result["session"].take())?;
             let job = ready_preview_job(
                 &owner,
@@ -638,13 +682,9 @@ pub(crate) fn preview_task(
                     proxy,
                 ),
             )?;
-            Ok(PreviewPayload {
-                job,
-                session,
-                sequence,
-            })
+            Ok(PreviewPayload { job, session })
         },
-        |result| Message::PreviewLoaded(result.map(Box::new)),
+        move |result| answered(result.map(Box::new)),
     )
 }
 
@@ -887,7 +927,7 @@ pub(crate) fn draft_commit_now(
     mutation: Mutation,
     proxy: Option<ProxyBounds>,
 ) -> Result<Option<Refresh>, String> {
-    let (committed, sequence) = call(
+    let (committed, request) = call_own(
         owner,
         client,
         "draft.commit",
@@ -898,7 +938,9 @@ pub(crate) fn draft_commit_now(
         return Ok(None);
     }
     let scope = Scope::Commit(result.mutation.revision);
-    refresh(owner, client, asset_id, scope, sequence, proxy).map(Some)
+    let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
+    refreshed.request = Some(request);
+    Ok(Some(refreshed))
 }
 
 pub(crate) fn draft_commit_task(
@@ -1031,11 +1073,10 @@ fn current_preview(
         ),
     )
     .map_err(|error| error.to_string())?;
-    let (session, sequence) = call(owner, client, "session.state", json!({}))?;
+    let (session, _) = call(owner, client, "session.state", json!({}))?;
     Ok(PreviewPayload {
         job,
         session: parse::<ClientSession>(session)?,
-        sequence,
     })
 }
 
@@ -1071,8 +1112,8 @@ pub(crate) fn session_task(
 ) -> Task<Message> {
     Task::perform(
         async move {
-            let (result, sequence) = call(&owner, client, method, params)?;
-            Ok((parse::<ClientSession>(result)?, sequence))
+            let (result, _) = call(&owner, client, method, params)?;
+            parse::<ClientSession>(result)
         },
         Message::SessionUpdated,
     )
@@ -1083,8 +1124,8 @@ pub(crate) fn session_task(
 pub(crate) fn workspace_task(owner: OwnerHandle, client: ClientId, params: Value) -> Task<Message> {
     Task::perform(
         async move {
-            let (result, sequence) = call(&owner, client, "workspace.set", params)?;
-            Ok((parse::<ClientSession>(result)?, sequence))
+            let (result, _) = call(&owner, client, "workspace.set", params)?;
+            parse::<ClientSession>(result)
         },
         Message::WorkspaceUpdated,
     )
@@ -1220,13 +1261,10 @@ pub(crate) fn versions_task(
 ) -> Task<Message> {
     Task::perform(
         async move {
-            let (_, sequence) = call(&owner, client, method, params)?;
-            let (mut listed, seen) =
+            let (_, request) = call_own(&owner, client, method, params)?;
+            let (mut listed, _) =
                 call(&owner, client, "version.list", json!({"asset_id":asset_id}))?;
-            Ok((
-                parse::<Vec<Version>>(listed["versions"].take())?,
-                sequence.max(seen),
-            ))
+            Ok((parse::<Vec<Version>>(listed["versions"].take())?, request))
         },
         Message::VersionsLoaded,
     )
@@ -1237,10 +1275,11 @@ pub(crate) fn sync_task(
     client: ClientId,
     asset_id: AssetId,
     after: u64,
+    own: Vec<String>,
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
-        async move { sync_now(&owner, client, asset_id, after, proxy) },
+        async move { sync_now(&owner, client, asset_id, after, &own, proxy) },
         Message::Synced,
     )
 }
@@ -1292,15 +1331,27 @@ fn is_library_event(method: &str) -> bool {
 /// One poll: the events since `after`, then only the reads they call for. A poll that saw nothing
 /// reads nothing else, and a preset event from another client costs one `preset.list` and no asset
 /// refresh or preview.
+///
+/// `own` names this desktop's requests whose answers already read their changes back and reached
+/// the screen. Their events are read and skipped, so a commit of this desktop's own costs its poll
+/// nothing; any other event, including one of this desktop's whose read-back never arrived, is
+/// read back here. Every read is made after `events.since` answered, so it covers every event up to
+/// the sequence the poll returns.
 pub(crate) fn sync_now(
     owner: &OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     after: u64,
+    own: &[String],
     proxy: Option<ProxyBounds>,
 ) -> Result<SyncResult, String> {
-    let (events, mut sequence) = call(owner, client, "events.since", json!({"after":after}))?;
-    let events: EventsResult = parse(events)?;
+    let (events, _) = call(owner, client, "events.since", json!({"after":after}))?;
+    let mut events: EventsResult = parse(events)?;
+    let sequence = events.current_sequence;
+    let (read, others): (Vec<_>, Vec<_>) = std::mem::take(&mut events.events)
+        .into_iter()
+        .partition(|event| own.contains(&event.request_id));
+    events.events = others;
     let library = events.gap
         || events
             .events
@@ -1318,16 +1369,18 @@ pub(crate) fn sync_now(
             .iter()
             .any(|event| !is_library_event(&event.method) && !capability_event(&event.method));
     let presets = if library {
-        let (presets, seen) = list_presets(owner, client)?;
-        sequence = sequence.max(seen);
-        Some((presets, seen))
+        Some(list_presets(owner, client)?)
     } else {
         None
     };
     let refresh = if asset {
-        let refreshed = refresh(owner, client, asset_id, Scope::Elsewhere, sequence, proxy)?;
-        sequence = sequence.max(refreshed.sequence);
-        Some(Box::new(refreshed))
+        Some(Box::new(refresh(
+            owner,
+            client,
+            asset_id,
+            Scope::Elsewhere,
+            proxy,
+        )?))
     } else {
         None
     };
@@ -1336,6 +1389,7 @@ pub(crate) fn sync_now(
         refresh,
         presets,
         capabilities,
+        own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
 
@@ -1362,12 +1416,13 @@ fn preset_change(
     method: &str,
     params: Value,
 ) -> Result<PresetChange, String> {
-    let (result, sequence) = call(owner, client, method, params)?;
-    let (presets, seen) = list_presets(owner, client)?;
+    let (result, request) = call_own(owner, client, method, params)?;
+    let (presets, sequence) = list_presets(owner, client)?;
     Ok(PresetChange {
         result,
         presets,
-        sequence: sequence.max(seen),
+        sequence,
+        request,
     })
 }
 
@@ -1584,13 +1639,13 @@ pub(crate) fn older_task(
 ) -> Task<Message> {
     Task::perform(
         async move {
-            let (page, sequence) = call(
+            let (page, _) = call(
                 &owner,
                 client,
                 "history.list",
                 json!({"asset_id":asset_id,"before_sequence":before_sequence,"limit":HISTORY_PAGE_SIZE}),
             )?;
-            Ok((parse::<HistoryPage>(page)?, sequence))
+            parse::<HistoryPage>(page)
         },
         Message::OlderLoaded,
     )
@@ -1649,7 +1704,7 @@ mod tests {
             call(&owner, client, "job.adopt", json!({"job_id": job})).unwrap();
             let asset = state.asset.id;
             owner_calls::take();
-            let refresh = refresh(&owner, client, asset.clone(), Scope::Open, 0, None).unwrap();
+            let refresh = refresh(&owner, client, asset.clone(), Scope::Open, None).unwrap();
             let calls = owner_calls::take();
             let opened = Self {
                 owner,
@@ -1779,7 +1834,6 @@ mod tests {
             opened.client,
             opened.asset.clone(),
             Scope::Commit(answered),
-            0,
             None,
         )
         .unwrap();
@@ -1804,58 +1858,114 @@ mod tests {
         opened.finish();
     }
 
-    /// A commit's narrow refresh reads no versions, so it leaves the event sequence at the
-    /// command's own answer: a version another client names before the refresh reads anything,
-    /// which moves no revision, is still ahead of it, and the next poll reads it and the list.
+    /// The desktop through its own update, against a real owner: the poll's event cursor advances
+    /// only past events a poll read. Another client's change that lands between two of the
+    /// desktop's own calls — a version named, which moves no revision and so conflicts with nothing
+    /// — is answered past by every response after it, and it still reaches the next poll, which
+    /// reads it and the versions back. The desktop's own import and commits are read and skipped,
+    /// and no answer moves the cursor backwards.
     #[test]
-    fn a_version_named_during_a_commits_refresh_is_left_for_the_next_poll() {
-        let (opened, _) = Opened::new();
-        let agent = opened.owner.register();
-        let (answer, answered) = call(
-            &opened.owner,
-            opened.client,
-            "edit.transform",
-            json!({"asset_id": opened.asset, "mutation": mutation(opened.refresh.state.revision),
-                   "transform": "rotate-left"}),
-        )
-        .unwrap();
+    fn the_event_sequence_advances_only_past_events_a_poll_read() {
+        use crate::app::{Editor, message::Message, testing};
+        let (mut editor, catalog) = testing::boot();
+        let (owner, client) = (editor.owner.clone(), editor.client);
+        let agent = owner.register();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg");
+        let opened = import_now(&owner, client, &fixture, 0, &AtomicU64::new(0), None, None)
+            .expect("the import opens");
+        let asset = opened.state.asset.id.clone();
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(opened))));
+        assert_eq!(editor.api_sequence, 0, "an open reads no event");
+        let mut cursor = editor.api_sequence;
+        let mut poll = |editor: &mut Editor| {
+            let own = editor.own_requests.iter().cloned().collect::<Vec<_>>();
+            let polled = sync_now(
+                &owner,
+                client,
+                asset.clone(),
+                editor.api_sequence,
+                &own,
+                None,
+            )
+            .expect("the poll answers");
+            let result = (polled.refresh.is_some(), polled.own.len());
+            let _ = editor.update(Message::Synced(Ok(polled)));
+            assert!(editor.api_sequence >= cursor, "never backwards");
+            cursor = editor.api_sequence;
+            result
+        };
+        assert_eq!(
+            poll(&mut editor),
+            (false, 1),
+            "the desktop's own import is read and costs nothing"
+        );
+        let caught_up = editor.api_sequence;
+
+        let command = |editor: &mut Editor, transform: &str| {
+            let revision = editor.state.as_ref().unwrap().revision;
+            let refreshed = command_now(
+                &editor.owner,
+                client,
+                asset.clone(),
+                "edit.transform",
+                json!({"asset_id": asset, "mutation": mutation(revision), "transform": transform}),
+                None,
+            )
+            .expect("the command commits");
+            let _ = editor.update(Message::Refreshed(Ok(Box::new(refreshed))));
+        };
+        command(&mut editor, "rotate-left");
         call(
-            &opened.owner,
+            &owner,
             agent,
             "version.create",
-            json!({"asset_id": opened.asset, "name": "Keep", "mutation": request()}),
+            json!({"asset_id": asset, "name": "Keep", "mutation": request()}),
         )
         .unwrap();
-        let read = refresh(
-            &opened.owner,
-            opened.client,
-            opened.asset.clone(),
-            Scope::after("edit.transform", &answer),
-            answered,
-            None,
-        )
-        .unwrap();
-        assert!(read.versions.is_none() && read.history.is_none());
+        command(&mut editor, "rotate-right");
         assert_eq!(
-            read.sequence, answered,
-            "the reads vouch for no later event"
+            editor.api_sequence, caught_up,
+            "the commits' answers, which count the agent's event, move no cursor"
         );
-        let polled = sync_now(
-            &opened.owner,
-            opened.client,
-            opened.asset.clone(),
-            read.sequence,
-            None,
-        )
-        .unwrap();
-        let versions = polled
-            .refresh
-            .expect("the poll reads the asset again")
-            .versions
-            .expect("with its versions");
-        assert_eq!(versions.len(), 1);
-        assert_eq!(versions[0].name, "Keep");
-        opened.finish();
+        assert!(editor.versions.is_empty(), "no read so far saw the version");
+
+        assert_eq!(
+            poll(&mut editor),
+            (true, 2),
+            "the agent's event is read back; the two commits are skipped"
+        );
+        assert_eq!(
+            editor
+                .versions
+                .iter()
+                .map(|version| version.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Keep"],
+            "the version named between the two commits reached the screen"
+        );
+        assert_eq!(editor.api_sequence, caught_up + 3);
+        assert!(
+            editor.own_requests.is_empty(),
+            "every skipped event is forgotten"
+        );
+        assert_eq!(
+            poll(&mut editor),
+            (false, 0),
+            "and the next poll reads nothing"
+        );
+
+        // An answer read at an older sequence never moves the cursor back.
+        let stale = SyncResult {
+            sequence: caught_up,
+            refresh: None,
+            presets: None,
+            capabilities: false,
+            own: Vec::new(),
+        };
+        let _ = editor.update(Message::Synced(Ok(stale)));
+        assert_eq!(editor.api_sequence, caught_up + 3);
+        testing::finish(editor, catalog);
     }
 
     #[test]

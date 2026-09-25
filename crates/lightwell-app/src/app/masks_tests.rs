@@ -114,7 +114,6 @@ impl Masking {
             self.editor.client,
             self.asset.clone(),
             tasks::Scope::Open,
-            self.editor.api_sequence,
             None,
         )
         .unwrap();
@@ -150,17 +149,15 @@ impl Masking {
 
     /// The owner's session, as the `workspace.set` round trip returns it.
     fn adopt_session(&mut self) {
-        let (session, sequence) = call(
+        let (session, _) = call(
             &self.owner(),
             self.editor.client,
             "session.state",
             json!({}),
         )
         .unwrap();
-        let _ = self.editor.update(Message::WorkspaceUpdated(Ok((
-            serde_json::from_value(session).unwrap(),
-            sequence,
-        ))));
+        let session = serde_json::from_value(session).unwrap();
+        let _ = self.editor.update(Message::WorkspaceUpdated(Ok(session)));
     }
 
     fn message(&mut self, message: MaskMessage) {
@@ -3041,4 +3038,145 @@ fn a_stroke_settles_on_its_committed_frame_while_the_brush_re_arms() {
         None,
         "the committed frame settled the step"
     );
+}
+
+/// A generated `mask.*` control submitted while a drawn gesture is open is refused exactly as the
+/// panel's own commands are: nothing is sent, the gesture is untouched, and the status bar says
+/// what it needs. Once the gesture is cancelled the same submit goes out.
+#[test]
+fn a_generated_mask_command_is_refused_while_a_gesture_is_open() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.2, 0.2), (0.8, 0.8));
+    let before = masking.editor.mask_shape().cloned();
+    let submit = |masking: &mut Masking| {
+        masking.editor.last_mask_request = None;
+        let _ = masking.editor.update(Message::RunAction {
+            action: "mask.set-amount".into(),
+            preset: serde_json::Map::from_iter([("amount".to_owned(), json!(40.0))]),
+        });
+    };
+    submit(&mut masking);
+    assert_eq!(masking.editor.last_mask_request, None, "nothing was sent");
+    assert!(!masking.editor.busy);
+    assert_eq!(
+        masking.editor.status,
+        "Apply or Cancel the mask gesture before editing a mask"
+    );
+    assert_eq!(masking.editor.mask_shape().cloned(), before);
+    assert!(!masking.editor.gesture_conflicted());
+
+    masking.draft(DraftMessage::Cancel);
+    testing::run_round(&mut masking.editor);
+    assert!(masking.editor.gesture.is_none(), "the gesture closed");
+    submit(&mut masking);
+    assert!(
+        masking.editor.last_mask_request.is_some(),
+        "without a gesture the submit goes out: {}",
+        masking.editor.status
+    );
+}
+
+/// Another client commits while the brush is armed. It has painted nothing and sent nothing, so
+/// there is nothing to discard or reapply: no Changed elsewhere notice appears, its draft is
+/// rebased onto the new revision with one `draft.reapply`, and the next stroke commits on it.
+#[test]
+fn an_armed_brush_changed_elsewhere_rebases_without_a_notice() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.paint(&[(0.3, 0.3), (0.5, 0.35)]);
+    masking.open_gesture();
+    assert!(masking.editor.armed_brush(), "the brush is armed");
+
+    agent_commits(&mut masking);
+    let revision = masking.editor.state.as_ref().unwrap().revision;
+    assert!(masking.editor.armed_brush(), "the brush stays in hand");
+    assert!(!masking.editor.gesture_conflicted(), "no notice");
+    assert!(
+        !masking
+            .editor
+            .workspace
+            .canvas
+            .notices
+            .iter()
+            .any(|notice| notice.title == "Changed elsewhere"),
+        "no Changed elsewhere card"
+    );
+    assert!(
+        !masking.editor.status.starts_with("Changed elsewhere"),
+        "{}",
+        masking.editor.status
+    );
+    assert_eq!(
+        testing::run_round(&mut masking.editor),
+        Some(Round::Reapply),
+        "the brush's draft is rebased"
+    );
+    let draft = testing::core_draft(&masking.editor).expect("the brush's draft");
+    assert!(!draft.conflicted && draft.drained());
+    assert_eq!(draft.base_revision, revision);
+    assert_eq!(masking.editor.armed_rebase, None);
+    assert_eq!(testing::run_round(&mut masking.editor), None, "one reapply");
+
+    masking.paint(&[(0.5, 0.6), (0.65, 0.65)]);
+    assert_eq!(masking.labels(), ["Add brush", "Update Brush 1"]);
+}
+
+/// A brush that has painted holds a stroke of its own, so a commit elsewhere during it shows the
+/// Changed elsewhere notice with Discard and Reapply, and nothing is rebased behind its back.
+#[test]
+fn a_painted_brush_changed_elsewhere_shows_the_notice() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.3,
+        y: 0.3,
+    }));
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.5, y: 0.4 }));
+    masking.assert_geometry_sent();
+    assert!(!masking.editor.armed_brush(), "the brush has painted");
+
+    agent_commits(&mut masking);
+    assert!(masking.editor.gesture_conflicted());
+    assert_eq!(
+        masking.editor.status,
+        "Changed elsewhere: discard the mask gesture or reapply it"
+    );
+    assert!(
+        masking
+            .editor
+            .workspace
+            .canvas
+            .notices
+            .iter()
+            .any(|notice| notice.title == "Changed elsewhere"),
+        "the notice offers Discard and Reapply"
+    );
+    assert_eq!(masking.editor.armed_rebase, None);
+    assert_eq!(
+        testing::run_round(&mut masking.editor),
+        None,
+        "nothing is rebased until the person chooses"
+    );
+}
+
+/// An independent client commits an edit, and the desktop reads it back as its poll would.
+fn agent_commits(masking: &mut Masking) {
+    let revision = masking.editor.state.as_ref().unwrap().revision;
+    call(
+        &masking.owner(),
+        masking.agent,
+        "edit.set-basic",
+        json!({"asset_id": masking.asset, "exposure": 0.5,
+            "mutation": {"expected_revision": revision, "request_id": format!("agent-{revision}"), "actor": "agent"}}),
+    )
+    .unwrap();
+    masking.refresh();
 }

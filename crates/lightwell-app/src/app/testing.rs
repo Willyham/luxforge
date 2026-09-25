@@ -366,7 +366,7 @@ pub(crate) fn refresh_for(
             mask_overlay: None,
         },
         session: ClientSession::default(),
-        sequence: 7,
+        request: None,
     }
 }
 

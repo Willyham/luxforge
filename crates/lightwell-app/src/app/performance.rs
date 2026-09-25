@@ -262,17 +262,17 @@ mod tests {
         let mut session = editor.session.clone();
         session.workspace.state_panel = false;
         session.revision += 1;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok((session.clone(), 0))));
+        let _ = editor.update(Message::WorkspaceUpdated(Ok(session.clone())));
         assert!(!editor.performance_sampling());
         session.workspace.state_panel = true;
         session.revision += 1;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok((session.clone(), 0))));
+        let _ = editor.update(Message::WorkspaceUpdated(Ok(session.clone())));
         assert!(editor.performance_sampling());
         // The component gallery replaces the workspace, panel and all.
         editor.developer = true;
         session.workspace.component_gallery = Some(2);
         session.revision += 1;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok((session, 0))));
+        let _ = editor.update(Message::WorkspaceUpdated(Ok(session)));
         assert!(!editor.performance_sampling());
         finish(editor, catalog);
     }

@@ -547,22 +547,26 @@ pub(crate) enum Message {
     Refreshed(Result<Box<Refresh>, String>),
     /// A source-open result tied to the generation that requested it.
     ImportRefreshed(u64, Result<Box<Refresh>, String>),
-    /// A history selection's preview job and session.
+    /// A preview job and the session that selects it, read by something that did not set `busy`:
+    /// a comparison, or the displayed entry again once a gesture ended without committing.
     PreviewLoaded(Result<Box<PreviewPayload>, String>),
+    /// The same for a history selection or a return to current, which set `busy` and whose answer
+    /// is what clears it.
+    Selected(Result<Box<PreviewPayload>, String>),
     /// A view change returned the owner's session.
-    SessionUpdated(Result<(ClientSession, u64), String>),
+    SessionUpdated(Result<ClientSession, String>),
     /// A workspace change returned the owner's session.
-    WorkspaceUpdated(Result<(ClientSession, u64), String>),
+    WorkspaceUpdated(Result<ClientSession, String>),
     /// A pan round trip completed.
     PanSynced(Result<ClientSession, String>),
-    /// The named versions after a create or delete.
-    VersionsLoaded(Result<(Vec<Version>, u64), String>),
+    /// The named versions after a create or delete, and the request that created or deleted one.
+    VersionsLoaded(Result<(Vec<Version>, String), String>),
     /// The displayed entry's layers and masks as the panels read them.
     RecipeDescribed(Result<Box<crate::app::tasks::RecipeRead>, String>),
     /// The result of one live-refresh poll.
     Synced(Result<SyncResult, String>),
     /// An older history page.
-    OlderLoaded(Result<(HistoryPage, u64), String>),
+    OlderLoaded(Result<HistoryPage, String>),
     /// Poll the owner for events while an asset is open.
     Sync,
     /// Poll the preview queue while a job is in flight.

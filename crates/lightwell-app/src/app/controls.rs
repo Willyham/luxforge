@@ -225,6 +225,12 @@ impl Editor {
         if !self.editable() {
             return Task::none();
         }
+        // A discrete value commits at once: refused under an open draft before the control shows a
+        // value that was never sent.
+        if !continuous && let Some(reason) = self.action_refusal(&action) {
+            self.status = reason;
+            return Task::none();
+        }
         self.set_control_field_value(&action, &parameter, &value);
         if continuous {
             self.dragging = Some((action, parameter));

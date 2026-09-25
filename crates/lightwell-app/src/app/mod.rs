@@ -118,6 +118,9 @@ pub(crate) struct Boot {
 
 /// The reason a module named by `--disable-module` reports.
 const DISABLED_REASON: &str = "disabled by --disable-module";
+/// How many of this desktop's read-back requests the event sync remembers between polls. A poll
+/// every 500 ms forgets each one it reads, so this holds the requests of one interval.
+const OWN_REQUESTS: usize = 64;
 
 /// The providers this run serves: the core's built-in modules, with any `--disable-module` one
 /// registered unavailable. In developer mode the controls proof joins them, and the capability
@@ -441,7 +444,15 @@ pub(crate) struct Editor {
     /// What Copy in the status bar copies instead of the line itself, while the status still reads
     /// that line: an import's whole report behind its one-line summary.
     pub(crate) status_copy: Option<(String, String)>,
+    /// The event sync's cursor: the newest event sequence a poll has read up to. Only a poll moves
+    /// it, and never backwards; the sequence any other answer carries counts events of other
+    /// clients' that no poll has read yet.
     pub(crate) api_sequence: u64,
+    /// This desktop's own requests whose answers read their changes back and reached the screen,
+    /// oldest first and at most [`OWN_REQUESTS`]. A poll reads their events and skips them; one
+    /// that falls out of the bound is read back like another client's, which costs a refresh and
+    /// loses nothing.
+    pub(crate) own_requests: std::collections::VecDeque<String>,
     pub(crate) scale_factor: f32,
     /// Descriptors fetched once through `module.list`; the only source of tool controls.
     pub(crate) modules: Vec<ModuleDescriptor>,
@@ -468,6 +479,10 @@ pub(crate) struct Editor {
     pub(crate) gesture: Option<Gesture>,
     /// The last local gesture identity minted, so every owner answer names the gesture it is for.
     pub(crate) gesture_serial: u64,
+    /// An armed brush a new revision conflicted. It has sent nothing, so its draft is rebased with
+    /// `draft.reapply` and no notice: set when the conflict is found, sent once the update is over
+    /// ([`Editor::rebase_armed_brush`]) and taken by that reapply's answer.
+    pub(crate) armed_rebase: Option<draft::GestureId>,
     /// A test's stand-in for the owner's `draft.set`, for a photograph the owner does not hold:
     /// every set is accepted, except that each queued refusal answers one set in turn.
     #[cfg(test)]
@@ -687,6 +702,7 @@ impl Editor {
             status: "Open a photo to begin".into(),
             status_copy: None,
             api_sequence: 0,
+            own_requests: std::collections::VecDeque::new(),
             scale_factor: 1.0,
             modules: Vec::new(),
             modules_ready: false,
@@ -702,6 +718,7 @@ impl Editor {
             dragging: None,
             gesture: None,
             gesture_serial: 0,
+            armed_rebase: None,
             #[cfg(test)]
             fake_sets: None,
             pending_reset: None,
@@ -1336,7 +1353,8 @@ impl Editor {
             self.seed_values();
         }
         let mask_overlay = self.upload_mask_overlay();
-        let task = self.sync_mode(Task::batch([task, sample, mask_overlay]));
+        let rebase = self.rebase_armed_brush();
+        let task = self.sync_mode(Task::batch([task, sample, mask_overlay, rebase]));
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
@@ -2341,9 +2359,7 @@ impl Editor {
                     .core_gesture()
                     .is_some_and(|gesture| gesture.draft.conflicted),
             }),
-            gesture_conflicted: self
-                .core_gesture()
-                .is_some_and(|gesture| gesture.draft.conflicted),
+            gesture_conflicted: self.gesture_conflicted(),
             preset_refusal: self.gesture_refusal(Starting::Preset),
             gallery_refusal: self.gesture_refusal(Starting::Gallery),
             draft: self.crop(),
@@ -2474,9 +2490,9 @@ impl Editor {
                 if self.open_generation.load(Ordering::Acquire) != generation {
                     return Task::none();
                 }
-                // An open starts the event sync at the owner's current sequence, so a library
-                // change another client made before it never arrives as an event: list the
-                // library again beside the opened photo.
+                // The event sync polls only while a photograph is open, so a library change
+                // another client made while none was reaches the screen with the photo rather
+                // than a poll later: list the library again beside it.
                 let opened = result.is_ok();
                 let refreshed = self.dispatch(Message::Refreshed(result));
                 if !opened {
@@ -2721,15 +2737,19 @@ impl Editor {
                     None => self.next_step(),
                 };
             }
+            Message::Selected(result) => {
+                // The selection's own answer ends the request that set `busy`, whether or not
+                // something newer overtook the frame it carries.
+                self.busy = false;
+                return self.dispatch(Message::PreviewLoaded(result));
+            }
             Message::PreviewLoaded(result) => {
                 if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
                     return Task::none();
                 }
-                self.busy = false;
                 match result {
                     Ok(payload) => {
                         let payload = *payload;
-                        self.api_sequence = payload.sequence;
                         self.adopt(payload.session);
                         // History selection changes the authoritative values shown by generated
                         // controls. A field being edited in the previous entry must not pin its
@@ -2758,9 +2778,8 @@ impl Editor {
             Message::SessionUpdated(result) => {
                 self.busy = false;
                 match result {
-                    Ok((session, sequence)) => {
+                    Ok(session) => {
                         self.adopt(session);
-                        self.api_sequence = sequence;
                         self.status = "View updated".into();
                     }
                     Err(error) => self.status = error,
@@ -2769,9 +2788,8 @@ impl Editor {
             }
             Message::WorkspaceUpdated(result) => {
                 match result {
-                    Ok((session, sequence)) => {
+                    Ok(session) => {
                         self.adopt(session);
-                        self.api_sequence = sequence;
                         // A canvas mode that picks from the photograph says so while it waits,
                         // whichever route entered it: the strip, its letter, the palette or a
                         // script all arrive here through the same `workspace.set`.
@@ -2819,9 +2837,9 @@ impl Editor {
             Message::VersionsLoaded(result) => {
                 self.busy = false;
                 match result {
-                    Ok((versions, sequence)) => {
+                    Ok((versions, request)) => {
                         self.versions = versions;
-                        self.api_sequence = sequence;
+                        self.read_back(request);
                         self.version_name.clear();
                         self.status = "Versions updated".into();
                     }
@@ -2839,6 +2857,7 @@ impl Editor {
                     self.client,
                     self.state.as_ref().unwrap().asset.id.clone(),
                     self.api_sequence,
+                    self.own_requests.iter().cloned().collect(),
                     proxy,
                 );
             }
@@ -2864,6 +2883,9 @@ impl Editor {
                         }
                         if !superseded {
                             self.api_sequence = self.api_sequence.max(sync.sequence);
+                            // Read past, so never asked about again.
+                            self.own_requests
+                                .retain(|request| !sync.own.contains(request));
                         }
                         if sync.capabilities {
                             return self.reload_capabilities();
@@ -2875,8 +2897,7 @@ impl Editor {
             Message::OlderLoaded(result) => {
                 self.busy = false;
                 match result {
-                    Ok((page, sequence)) => {
-                        self.api_sequence = sequence;
+                    Ok(page) => {
                         self.history.entries.extend(page.entries);
                         self.history.next_before_sequence = page.next_before_sequence;
                         self.status = "Loaded older history".into();
@@ -3426,6 +3447,11 @@ impl Editor {
                             return Task::none();
                         }
                     };
+                // Refused before the field lets go, so the typed text stays with its reason.
+                if let Some(reason) = self.action_refusal(&action) {
+                    self.status = reason;
+                    return Task::none();
+                }
                 self.editing = None;
                 return self.dispatch(Message::RunAction { action, preset });
             }
@@ -3501,19 +3527,16 @@ impl Editor {
                     .is_some_and(|frame| frame.module.id == mode)
                     && self.crop().is_none()
                     && self.crop_pending().is_none();
-                let mut tasks = vec![workspace_task(
-                    self.owner.clone(),
-                    self.client,
-                    json!({ "mode": mode }),
-                )];
-                if opens_draft {
-                    tasks.push(self.crop_update(CropMessage::Start));
-                }
-                // This arm already asks the session to follow the mode explicitly; the generic
-                // catch-up in `sync_mode` would otherwise queue a second, redundant request for the
-                // same field.
                 self.mode_sync = None;
-                return Task::batch(tasks);
+                if opens_draft {
+                    // The crop mode is the draft's: a start asks the session to enter it, through
+                    // `sync_mode`, only once the draft has started, so a refused start sends
+                    // nothing and leaves the session's mode where it was.
+                    return self.crop_update(CropMessage::Start);
+                }
+                // This arm asks the session to follow the mode explicitly, having cleared the
+                // generic catch-up in `sync_mode`, so the same field is never asked for twice.
+                return workspace_task(self.owner.clone(), self.client, json!({ "mode": mode }));
             }
             Message::CompareBegin => {
                 // Compare selects the Original entry, which pauses an open draft: the draft would
@@ -3542,6 +3565,7 @@ impl Editor {
                     "preview.select",
                     json!({"asset_id":asset,"entry_id":original}),
                     proxy,
+                    Message::PreviewLoaded,
                 );
             }
             Message::CompareEnd => {
@@ -3560,6 +3584,7 @@ impl Editor {
                         "preview.return-current",
                         json!({}),
                         proxy,
+                        Message::PreviewLoaded,
                     ),
                     HistorySelection::Entry(entry_id) => preview_task(
                         self.owner.clone(),
@@ -3569,6 +3594,7 @@ impl Editor {
                         "preview.select",
                         json!({"asset_id":asset,"entry_id":entry_id}),
                         proxy,
+                        Message::PreviewLoaded,
                     ),
                 };
             }
@@ -3679,15 +3705,22 @@ impl Editor {
                 None => self.status = "No crop draft to copy".into(),
             },
             Message::RunAction { action, preset } => {
-                let Some(state) = &self.state else {
+                if self.state.is_none() {
                     return Task::none();
-                };
+                }
+                if let Some(reason) = self.action_refusal(&action) {
+                    self.status = reason;
+                    return Task::none();
+                }
                 // A host command of the `mask.*` family is its own method, and its identities are
                 // envelope fields: the generic builder below would spell it `edit.mask.set-amount`
                 // and drop the target, so it goes through the family's own path.
                 if lightwell_core::mask::commands::find(&action).is_some() {
                     return self.run_mask_action(&action, &preset);
                 }
+                let Some(state) = &self.state else {
+                    return Task::none();
+                };
                 let Some(declared) = tools::declared_action(&self.modules, &action) else {
                     self.status = format!("No module declares the action {action}");
                     return Task::none();
@@ -4037,6 +4070,7 @@ impl Editor {
                     "preview.select",
                     params,
                     proxy,
+                    Message::Selected,
                 );
             }
             Message::ReturnCurrent => {
@@ -4058,6 +4092,7 @@ impl Editor {
                     "preview.return-current",
                     json!({}),
                     proxy,
+                    Message::Selected,
                 );
             }
             Message::Restore => {
@@ -4255,6 +4290,20 @@ impl Editor {
         Some(json!({"method":format!("edit.{action}"),"params":envelope}))
     }
 
+    /// Why a discrete control's action cannot commit now, in the words the status bar uses.
+    ///
+    /// A button, a toggle, a choice or a field's Enter commits at once, so it answers to the
+    /// one-draft rule every other commit does: an open draft is finished deliberately, never
+    /// conflicted by a click. A generated `mask.*` control is refused as the Masks panel's own
+    /// commands are, since it would move the stack out from under the open gesture's draft.
+    pub(crate) fn action_refusal(&self, action: &str) -> Option<String> {
+        self.gesture_refusal(if lightwell_core::mask::commands::find(action).is_some() {
+            Starting::MaskCommand
+        } else {
+            Starting::Action
+        })
+    }
+
     /// One generated `mask.*` control submitting its own field. The method is the action, the
     /// identities are the envelope and the declared fields go beside them, exactly as in the request
     /// an independent JSON client sends.
@@ -4330,15 +4379,24 @@ impl Editor {
                     .is_some_and(|held| held.current_entry.id != payload.job.entry.id))
     }
 
+    /// This desktop's own request has read its change back onto the screen: the next poll reads
+    /// its event and skips it.
+    pub(crate) fn read_back(&mut self, request: String) {
+        if self.own_requests.len() == OWN_REQUESTS {
+            self.own_requests.pop_front();
+        }
+        self.own_requests.push_back(request);
+    }
+
     pub(crate) fn accept(&mut self, refresh: Refresh) {
         if self.superseded(&refresh) {
             return;
         }
         self.controls_ui.curve_samples.clear();
         self.curve_sample_requested_source.clear();
-        // Never backwards: a poll that read everything since may already have moved past the
-        // command's own answer, which is where a narrow refresh leaves its sequence.
-        self.api_sequence = self.api_sequence.max(refresh.sequence);
+        if let Some(request) = refresh.request {
+            self.read_back(request);
+        }
         self.adopt(refresh.session);
         match refresh.history {
             Some(history) => self.history = history,
@@ -4914,7 +4972,7 @@ mod tests {
         let mut session = editor.session.clone();
         session.workspace.component_gallery = Some(6);
         session.revision += 1;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok((session, 0))));
+        let _ = editor.update(Message::WorkspaceUpdated(Ok(session)));
         assert_eq!(editor.gallery_page(), Some(6));
         assert_eq!(editor.snapshot()["gallery"]["page"], json!(6));
         let before = editor.session.clone();
@@ -8357,7 +8415,7 @@ mod tests {
             ..ClientSession::default()
         };
         session.workspace.thirds = true;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok((session.clone(), 3))));
+        let _ = editor.update(Message::WorkspaceUpdated(Ok(session.clone())));
         assert!(editor.workspace.canvas.thirds);
         assert_eq!(editor.snapshot()["workspace"]["thirds"], json!(true));
 
@@ -8368,7 +8426,7 @@ mod tests {
         assert_eq!(open[0], (view::STATE_PANEL_WIDTH * scale) as u32);
         session.revision = 3;
         session.workspace.state_panel = false;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok((session.clone(), 4))));
+        let _ = editor.update(Message::WorkspaceUpdated(Ok(session.clone())));
         assert!(!editor.workspace.title.state_panel_open);
         let collapsed = view::surface_columns(width, scale, &editor.workspace);
         assert_eq!(collapsed[0], 0, "the canvas now starts at the window edge");
@@ -8377,7 +8435,7 @@ mod tests {
         // And one that hides the tools panel gives the canvas the rest of the width.
         session.revision = 4;
         session.workspace.tools_panel = false;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok((session, 5))));
+        let _ = editor.update(Message::WorkspaceUpdated(Ok(session)));
         assert!(!editor.workspace.title.tools_panel_open);
         assert_eq!(
             view::surface_columns(width, scale, &editor.workspace),
@@ -8448,11 +8506,7 @@ mod tests {
         session.revision += 1;
         let job = raw_refresh(&asset, &historical).job;
         let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
-            tasks::PreviewPayload {
-                job,
-                session,
-                sequence: 8,
-            },
+            tasks::PreviewPayload { job, session },
         ))));
         assert_eq!(editor.display_entry, Some(historical.id.clone()));
         assert!(editor.editing.is_none());
@@ -8483,7 +8537,6 @@ mod tests {
             tasks::PreviewPayload {
                 job: raw_refresh(&asset, &current).job,
                 session,
-                sequence: 9,
             },
         ))));
         let read = raw_refresh(&asset, &current);
@@ -8508,7 +8561,6 @@ mod tests {
             tasks::PreviewPayload {
                 job: raw_refresh(&asset, &historical).job,
                 session,
-                sequence: 10,
             },
         ))));
         assert!(!editor.recipe_rows_shown());
@@ -8736,12 +8788,12 @@ mod tests {
             revision: 3,
             ..ClientSession::default()
         };
-        let _ = editor.update(Message::SessionUpdated(Ok((newer.clone(), 1))));
+        let _ = editor.update(Message::SessionUpdated(Ok(newer.clone())));
         let _ = editor.update(Message::PanSynced(Ok(older)));
         assert_eq!(editor.session, newer);
         let mut same = newer.clone();
         same.preview.view.pan_to(4.0, 5.0).unwrap();
-        let _ = editor.update(Message::SessionUpdated(Ok((same.clone(), 1))));
+        let _ = editor.update(Message::SessionUpdated(Ok(same.clone())));
         assert_eq!(
             editor.session, same,
             "an equal revision may replace the copy"
@@ -8787,7 +8839,7 @@ mod tests {
         );
         let _ = editor.update(Message::Refreshed(Ok(Box::new(full))));
         assert!(!editor.busy);
-        assert_eq!(editor.api_sequence, 7);
+        assert_eq!(editor.api_sequence, 0, "only a poll moves the event cursor");
         assert_eq!(editor.history.entries.len(), 4);
         assert_eq!(editor.display_entry, Some(c.id.clone()));
         fn branch(editor: &Editor, id: &lightwell_core::EntryId) -> Option<bool> {
@@ -8895,7 +8947,6 @@ mod tests {
             tasks::PreviewPayload {
                 job: refresh_for(&asset, &older, Vec::new(), &[&older], false).job,
                 session: selected.clone(),
-                sequence: 8,
             },
         ))));
         assert_eq!(editor.display_entry, Some(older.id.clone()));
@@ -8930,9 +8981,9 @@ mod tests {
         let _ = editor.update(Message::Refreshed(Ok(Box::new(before_selection.clone()))));
         unchanged(&editor, "a refresh behind the selection");
         assert!(editor.busy, "the answer that overtook it ends the request");
-        let mut polled = before_selection;
+        let mut polled = tasks::SyncResult::changed(before_selection);
         polled.sequence = 20;
-        let _ = editor.update(Message::Synced(Ok(tasks::SyncResult::changed(polled))));
+        let _ = editor.update(Message::Synced(Ok(polled)));
         unchanged(&editor, "a poll behind the selection");
 
         // A refresh of an older revision than the one held.
@@ -8950,7 +9001,6 @@ mod tests {
             tasks::PreviewPayload {
                 job: refresh_for(&asset, &current, Vec::new(), &[&current], false).job,
                 session: earlier,
-                sequence: 9,
             },
         ))));
         unchanged(&editor, "a frame behind the selection");
@@ -8963,7 +9013,6 @@ mod tests {
             tasks::PreviewPayload {
                 job: refresh_for(&asset, &next, Vec::new(), &[&next], false).job,
                 session: returned.clone(),
-                sequence: 10,
             },
         ))));
         unchanged(&editor, "a current frame of another entry");
@@ -8973,7 +9022,6 @@ mod tests {
             tasks::PreviewPayload {
                 job: refresh_for(&asset, &current, Vec::new(), &[&current], false).job,
                 session: returned,
-                sequence: 10,
             },
         ))));
         assert_eq!(editor.display_entry, Some(current.id.clone()));

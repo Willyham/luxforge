@@ -1128,6 +1128,53 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// The mode strip's Crop entry enters the crop mode only by starting the draft: a start that is
+    /// refused sends no `workspace.set`, so the session never reports a crop mode the desktop is not
+    /// in. A start that goes ahead asks for the mode once, through the update's own catch-up.
+    #[test]
+    fn a_refused_crop_start_sends_no_workspace_change() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 1);
+        let crop_id = crop_frame(&editor.modules)
+            .expect("a declared crop frame")
+            .module
+            .id
+            .to_owned();
+        let mode = editor.session.workspace.mode.clone();
+        let refused = |editor: &mut Editor, case: &str| {
+            let task = editor.dispatch(Message::SetMode(crop_id.clone()));
+            assert_eq!(task.units(), 0, "{case}: nothing is sent");
+            assert_eq!(editor.mode_sync, None, "{case}: no mode change is queued");
+            assert!(editor.crop_pending().is_none() && editor.crop().is_none());
+            assert_eq!(editor.session.workspace.mode, mode, "{case}");
+        };
+
+        // A discarded draft still closing holds the slot: the start is refused with its reason.
+        let (draft, _) = crate::app::draft::CoreDraft::open(editor.next_gesture(), 1, None);
+        editor.gesture = Some(crate::app::gesture::Gesture::Closing {
+            draft,
+            reseed: false,
+        });
+        refused(&mut editor, "a draft closing");
+        assert_eq!(
+            editor.status,
+            "Wait for the discarded draft to close before cropping"
+        );
+        editor.gesture = None;
+
+        // A historical preview cannot be edited.
+        let current = editor.session.preview.selection.clone();
+        editor.session.preview.selection = HistorySelection::Entry(entry_id);
+        refused(&mut editor, "a historical preview");
+        editor.session.preview.selection = current;
+
+        // Nothing refuses it: the draft starts and asks the session for the mode once.
+        let task = editor.dispatch(Message::SetMode(crop_id.clone()));
+        assert_eq!(task.units(), 1, "the truncated preview's own task");
+        assert!(editor.crop_pending().is_some());
+        assert_eq!(editor.mode_sync.as_deref(), Some(crop_id.as_str()));
+        finish(editor, catalog);
+    }
+
     #[test]
     fn a_history_preview_pauses_the_draft_without_discarding_it() {
         let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 1);
@@ -1139,7 +1186,7 @@ mod tests {
             ..ClientSession::default()
         };
         session.preview.selection = HistorySelection::Entry(entry_id);
-        let _ = editor.update(Message::SessionUpdated(Ok((session, 1))));
+        let _ = editor.update(Message::SessionUpdated(Ok(session)));
         assert!(!editor.session.preview.can_edit());
         assert!(
             editor.crop().is_some(),

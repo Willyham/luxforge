@@ -25,7 +25,6 @@ struct Proof {
     catalog: PathBuf,
     asset: AssetId,
     json_client: ClientId,
-    sequence: u64,
 }
 
 impl Proof {
@@ -88,11 +87,9 @@ impl Proof {
             editor.client,
             asset.clone(),
             tasks::Scope::Open,
-            0,
             None,
         )
         .unwrap();
-        let sequence = refreshed.sequence;
         let _ = editor.update(Message::Refreshed(Ok(Box::new(refreshed))));
         assert!(editor.editable());
         assert_eq!(editor.workspace.tools.developer.len(), 1);
@@ -101,7 +98,6 @@ impl Proof {
             catalog,
             asset,
             json_client,
-            sequence,
         }
     }
 
@@ -186,13 +182,12 @@ impl Proof {
             comparable, independent,
             "copied request equals the independent JSON shape"
         );
-        let (_, sequence) = call(
+        call(
             &self.editor.owner,
             self.json_client,
             &format!("edit.{ACTION}"),
             independent,
         );
-        self.sequence = self.sequence.max(sequence);
         self.editor.gesture = None; // The ignored Iced task did not open a real draft.
         self.editor.dragging = None;
         self.editor.editing = None;
@@ -204,11 +199,9 @@ impl Proof {
             self.editor.client,
             self.asset.clone(),
             tasks::Scope::Elsewhere,
-            self.sequence,
             None,
         )
         .unwrap();
-        self.sequence = self.sequence.max(refreshed.sequence);
         let _ = self
             .editor
             .update(Message::Refreshed(Ok(Box::new(refreshed))));
@@ -249,13 +242,12 @@ impl Proof {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         independent["mutation"]["actor"] = json!("proof-json-client");
-        let (_, sequence) = call(
+        call(
             &self.editor.owner,
             self.json_client,
             &format!("edit.{ACTION}"),
             independent,
         );
-        self.sequence = self.sequence.max(sequence);
         self.editor.dragging = None;
         self.editor.editing = None;
         let refreshed = tasks::refresh(
@@ -263,11 +255,9 @@ impl Proof {
             self.editor.client,
             self.asset.clone(),
             tasks::Scope::Elsewhere,
-            self.sequence,
             None,
         )
         .unwrap();
-        self.sequence = self.sequence.max(refreshed.sequence);
         let _ = self
             .editor
             .update(Message::Refreshed(Ok(Box::new(refreshed))));
@@ -627,19 +617,17 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     independent["mutation"]["actor"] = json!("proof-json-client");
-    let (_, sequence) = call(
+    call(
         &proof.editor.owner,
         proof.json_client,
         &format!("edit.{}", reset.action),
         independent,
     );
-    proof.sequence = proof.sequence.max(sequence);
     let refreshed = tasks::refresh(
         &proof.editor.owner,
         proof.editor.client,
         proof.asset.clone(),
         tasks::Scope::Elsewhere,
-        proof.sequence,
         None,
     )
     .unwrap();
