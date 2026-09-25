@@ -623,6 +623,7 @@ mod tests {
                         parameters: Map::new(),
                     },
                     label: "Again".into(),
+                    touched: None,
                 },
             )
             .unwrap();

@@ -535,7 +535,7 @@ impl Fixture {
         method: &str,
         target: MaskTarget,
         parameters: Value,
-    ) -> Result<lightwell_core::mask::commands::MaskCommandResult, lightwell_core::Error> {
+    ) -> Result<lightwell_core::ActionResult, lightwell_core::Error> {
         let command = commands::find(method).expect("a declared command");
         let mutation = self.mutation();
         self.service

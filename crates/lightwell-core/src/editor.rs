@@ -140,6 +140,45 @@ pub struct MutationResult {
     pub deduplicated: bool,
 }
 
+/// What one action answers with, and what the request table stores for its retry: the mutation
+/// result, flattened so `outcome`, `revision` and `deduplicated` read exactly where every other
+/// mutation puts them, and what a host action says it touched.
+///
+/// A module action touches one layer the stack already names, so it reports the envelope alone and
+/// its answer serializes exactly as a [`MutationResult`]. A `mask.*` command reports the label it
+/// committed, the mask and component it addressed or minted, and the layers a destructive delete
+/// removed. The whole answer is stored with the request in the same transaction as the change, so a
+/// deduplicated retry answers with the identities the first attempt created rather than
+/// reconstructing them; a no-op wrote no entry and reports the envelope alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionResult {
+    #[serde(flatten)]
+    pub mutation: MutationResult,
+    /// The history label a host command committed, which is the durable record of what it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<MaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<crate::ComponentId>,
+    /// The layers a `mask.delete` removed. A destructive command says what it removed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_layers: Vec<crate::mask::commands::RemovedLayer>,
+}
+
+impl ActionResult {
+    /// The envelope and nothing else: a module action, a navigation, a no-op.
+    pub(crate) fn plain(mutation: MutationResult) -> Self {
+        Self {
+            mutation,
+            label: None,
+            mask: None,
+            component: None,
+            removed_layers: Vec::new(),
+        }
+    }
+}
+
 /// One evaluated output pixel of a saved history entry, with the identities that produced it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

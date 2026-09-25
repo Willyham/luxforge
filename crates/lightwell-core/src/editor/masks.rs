@@ -1,13 +1,11 @@
 use super::{
-    AssetRecord, EditorService, EditorState, MutationResult, PixelInput,
-    history::{Change, CommittedAction, request_input},
+    ActionResult, AssetRecord, EditorService, EditorState, PixelInput,
+    history::{Change, CommittedAction, Touched, request_input},
     source::{Evaluated, validate_source_recipe},
 };
 use crate::{
     AssetId, EntryId, Error, ErrorKind, MaskId, ModuleRegistry, Mutation, Recipe,
-    mask::commands::{
-        MaskChange, MaskCommand, MaskCommandResult, MaskListing, MaskOutcome, MaskTarget,
-    },
+    mask::commands::{MaskChange, MaskCommand, MaskListing, MaskOutcome, MaskTarget},
     modules::{ActionInput, check_parameters},
 };
 use serde_json::{Map, Value};
@@ -41,7 +39,7 @@ impl EditorService {
         command: &'static MaskCommand,
         parameters: Value,
         target: MaskTarget,
-    ) -> Result<MaskCommandResult, Error> {
+    ) -> Result<ActionResult, Error> {
         command.checked_target(&target)?;
         let checked = check_parameters(&command.action, &parameters)?;
         // The entry stores the declared parameters and the envelope fields naming what they addressed,
@@ -55,9 +53,8 @@ impl EditorService {
         // parameters above, so it is hashed with them. The field a module action passes here names
         // the *layer* an edit addressed, which is a different question a mask command never asks.
         let request = request_input(&input, &mutation, None)?;
-        // What the command changed beside the recipe, which its report names.
-        let mut changed = None;
-        let result = self.mutate(
+        // What the command touched is stored with its request, so a retry answers with it.
+        self.mutate(
             asset_id,
             &mutation,
             &request,
@@ -69,26 +66,20 @@ impl EditorService {
                     mask,
                     component,
                     removed_layers,
-                }) => {
-                    changed = Some((label.clone(), mask, component, removed_layers));
-                    Ok(Change::append(recipe, CommittedAction { input, label }))
-                }
+                }) => Ok(Change::append(
+                    recipe,
+                    CommittedAction {
+                        input,
+                        label,
+                        touched: Some(Touched {
+                            mask,
+                            component,
+                            removed_layers,
+                        }),
+                    },
+                )),
             },
-        )?;
-        // A retry is answered from the entry the original call wrote, so it reports the same.
-        if result.deduplicated {
-            return self.mask_report(asset_id, result);
-        }
-        Ok(match changed {
-            Some((label, mask, component, removed_layers)) => MaskCommandResult {
-                mutation: result,
-                label: Some(label),
-                mask,
-                component,
-                removed_layers,
-            },
-            None => MaskCommandResult::plain(result),
-        })
+        )
     }
 
     /// What one checked `mask.*` command does to the asset's current stack: the one planning step a
@@ -110,30 +101,6 @@ impl EditorService {
         validate_source_recipe(&state.asset, recipe)?;
         let seed = self.mask_colour_seed(state, command, recipe, target, parameters)?;
         crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, seed)
-    }
-
-    /// The report of a deduplicated retry, read back from the entry the original call wrote so the
-    /// retry answers identically. A retried no-op wrote no entry and reports the envelope alone,
-    /// exactly as the no-op itself did.
-    fn mask_report(
-        &self,
-        asset_id: &AssetId,
-        result: MutationResult,
-    ) -> Result<MaskCommandResult, Error> {
-        let Some(entry_id) = result.created_entry_id.clone() else {
-            return Ok(MaskCommandResult::plain(result));
-        };
-        let entry = self.entry(asset_id, &entry_id)?;
-        let parent = match &entry.undo_parent {
-            Some(parent) => Some(self.entry(asset_id, parent)?),
-            None => None,
-        };
-        Ok(crate::mask::commands::report_of(
-            result,
-            &entry,
-            parent.as_ref(),
-            &self.registry,
-        ))
     }
 
     /// The pixel a limited stroke is seeded on, as the three sRGB codes the host sampled, or `None`
@@ -382,7 +349,7 @@ pub(super) fn recipe_for_target<'a>(
 mod tests {
     use super::*;
     use crate::editor::{
-        MutationOutcome,
+        MutationOutcome, MutationResult,
         test_support::{fixture, mutation, stored_entry_json, temp},
     };
     use crate::{Component, ComponentMode, HistoryEntry, Mask, Snapshot, SnapshotId, Transform};
@@ -857,6 +824,90 @@ mod tests {
             before,
             "the refused entry's stored JSON is untouched"
         );
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A mask command's request stores its whole answer in the same transaction as the change, so a
+    /// retry — in the same session or after a restart — answers with the mask and component the
+    /// first attempt minted, read from the request table rather than reconstructed from history.
+    #[test]
+    fn a_retried_mask_command_answers_with_the_identities_it_minted() {
+        let catalog = temp("mask-retry.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let command = crate::mask::commands::find("mask.create-linear").unwrap();
+        let geometry = json!({"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 1.0});
+        let first = service
+            .apply_mask_command(
+                &asset,
+                mutation(0, "create"),
+                command,
+                geometry.clone(),
+                MaskTarget::default(),
+            )
+            .unwrap();
+        let mask = first.mask.clone().expect("a created mask");
+        let component = first.component.clone().expect("its first component");
+        // A later command moves the head and the history on; the retry still answers the first.
+        service
+            .apply_mask_command(
+                &asset,
+                mutation(1, "rename"),
+                crate::mask::commands::find("mask.rename").unwrap(),
+                Value::Null,
+                MaskTarget {
+                    mask: Some(mask.clone()),
+                    name: Some("Sky".into()),
+                    ..MaskTarget::default()
+                },
+            )
+            .unwrap();
+        let retry = |service: &mut EditorService| {
+            service
+                .apply_mask_command(
+                    &asset,
+                    mutation(0, "create"),
+                    command,
+                    geometry.clone(),
+                    MaskTarget::default(),
+                )
+                .unwrap()
+        };
+        let again = retry(&mut service);
+        assert!(again.mutation.deduplicated);
+        assert_eq!(
+            ActionResult {
+                mutation: MutationResult {
+                    deduplicated: false,
+                    ..again.mutation.clone()
+                },
+                ..again.clone()
+            },
+            first,
+            "the retry is the first answer, marked deduplicated"
+        );
+        drop(service);
+
+        // The row holds the whole answer, identities included.
+        let stored: String = Connection::open(&catalog)
+            .unwrap()
+            .query_row(
+                "SELECT result_json FROM requests WHERE asset_id=?1 AND request_id='create'",
+                params![asset.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let stored: ActionResult = serde_json::from_str(&stored).unwrap();
+        assert_eq!(stored.mask.as_ref(), Some(&mask));
+        assert_eq!(stored.component.as_ref(), Some(&component));
+        assert_eq!(stored.label.as_deref(), Some("Add linear"));
+
+        // And after a restart.
+        let mut service = EditorService::open(&catalog).unwrap();
+        let reopened = retry(&mut service);
+        assert_eq!(reopened.mask, Some(mask));
+        assert_eq!(reopened.component, Some(component));
+        drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
 }

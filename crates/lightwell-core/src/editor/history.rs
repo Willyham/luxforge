@@ -1,6 +1,6 @@
 use super::{
-    AssetRecord, EditorService, EditorState, HistoryPage, Lineage, LineageStep, MutationOutcome,
-    MutationResult, Version, VersionResult, artifact_store,
+    ActionResult, AssetRecord, EditorService, EditorState, HistoryPage, Lineage, LineageStep,
+    MutationOutcome, MutationResult, Version, VersionResult, artifact_store,
     catalog::{
         decode, encode, input_hash, insert_entry, insert_request, json_error, next_sequence,
         now_ms, write,
@@ -117,9 +117,12 @@ impl EditorService {
     /// that answer, marked deduplicated, and nothing is planned; the head is read and the expected
     /// revision checked; `plan` decides the [`Change`] against that state; an appended stack is
     /// [admitted](Self::admit), which is the one validation it gets; then one transaction writes the
-    /// entry, moves the head and records the request's result, and the head the entry cache holds
-    /// moves once that transaction has committed. A failure at any step writes nothing and moves
-    /// nothing cached. `request` is the request's identity, whose hash a retry must match.
+    /// entry, moves the head and records the request's whole answer, and the head the entry cache
+    /// holds moves once that transaction has committed. A failure at any step writes nothing and
+    /// moves nothing cached. `request` is the request's identity, whose hash a retry must match.
+    ///
+    /// The answer stored is the one returned: the mutation result and, for a host command, what it
+    /// touched ([`ActionResult`]), so a retry answers with the identities the first attempt minted.
     ///
     /// The owner is the catalog's only writer, so the head `plan` sees is the one the transaction
     /// moves; a request committed since the retry check is refused as a `conflict` by the insert of
@@ -130,7 +133,7 @@ impl EditorService {
         mutation: &Mutation,
         request: &Value,
         plan: impl FnOnce(&Self, &EditorState) -> Result<Change, Error>,
-    ) -> Result<MutationResult, Error> {
+    ) -> Result<ActionResult, Error> {
         mutation.validate()?;
         if let Some(result) = self.request_result(asset_id, &mutation.request_id, request)? {
             return Ok(result);
@@ -174,13 +177,28 @@ impl EditorService {
                 None,
             ),
         };
-        let result = MutationResult {
+        let mut result = ActionResult::plain(MutationResult {
             outcome,
             revision,
             current_entry_id,
             created_entry_id,
             deduplicated: false,
-        };
+        });
+        if let Change::Append {
+            action:
+                CommittedAction {
+                    label,
+                    touched: Some(touched),
+                    ..
+                },
+            ..
+        } = &mut change
+        {
+            result.label = Some(label.clone());
+            result.mask = touched.mask.take();
+            result.component = touched.component.take();
+            result.removed_layers = std::mem::take(&mut touched.removed_layers);
+        }
         let artifact_root = &self.artifact_root;
         let moved = write(&mut self.connection, |tx| {
             // The redo list the head moves to, or `None` when it stays where it is.
@@ -191,7 +209,7 @@ impl EditorService {
                     restore_target,
                 } => {
                     let entry = HistoryEntry {
-                        id: result.current_entry_id.clone(),
+                        id: result.mutation.current_entry_id.clone(),
                         asset_id: asset_id.clone(),
                         sequence: next_sequence(tx, asset_id)?,
                         action_id: action.input.action_id,
@@ -201,7 +219,7 @@ impl EditorService {
                         timestamp_ms: now_ms(),
                         request_id: Some(mutation.request_id.clone()),
                         base_revision: state.revision,
-                        result_revision: result.revision,
+                        result_revision: result.mutation.revision,
                         snapshot: Snapshot {
                             id: SnapshotId::new(),
                             asset_id: asset_id.clone(),
@@ -222,8 +240,8 @@ impl EditorService {
                     "UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json=?4 WHERE asset_id=?1",
                     params![
                         asset_id.as_str(),
-                        result.current_entry_id.as_str(),
-                        result.revision as i64,
+                        result.mutation.current_entry_id.as_str(),
+                        result.mutation.revision as i64,
                         encode(redo)?
                     ],
                 )?;
@@ -232,9 +250,12 @@ impl EditorService {
             Ok(redo)
         })?;
         if let Some(redo) = moved {
-            self.entries
-                .get_mut()
-                .moved(asset_id, result.revision, &result.current_entry_id, redo);
+            self.entries.get_mut().moved(
+                asset_id,
+                result.mutation.revision,
+                &result.mutation.current_entry_id,
+                redo,
+            );
         }
         Ok(result)
     }
@@ -254,6 +275,7 @@ impl EditorService {
         self.mutate(asset_id, &mutation, &request, |_, _| {
             Ok(Change::append(snapshot.recipe, action))
         })
+        .map(|result| result.mutation)
     }
 
     pub fn undo(
@@ -304,6 +326,7 @@ impl EditorService {
             service.shared_entry(asset_id, &target)?;
             Ok(Change::Navigate { target, redo })
         })
+        .map(|result| result.mutation)
     }
 
     /// Copy a retained entry's stack into a new Restore entry. The copied stack is admitted by
@@ -332,10 +355,12 @@ impl EditorService {
                         parameters,
                     },
                     label: format!("Restore entry {}", target.sequence),
+                    touched: None,
                 },
                 restore_target: Some(target_id.clone()),
             })
         })
+        .map(|result| result.mutation)
     }
 
     /// Walk undo parents from `from` (default: current) towards Original, newest first.
@@ -509,14 +534,14 @@ impl EditorService {
         })
     }
 
-    /// The answer this asset already gave `request_id`, marked deduplicated, or `None` for a new
-    /// request. The same identity with a different input is a `conflict`.
+    /// The whole answer this asset already gave `request_id`, marked deduplicated, or `None` for a
+    /// new request. The same identity with a different input is a `conflict`.
     fn request_result(
         &self,
         asset_id: &AssetId,
         request_id: &str,
         input: &Value,
-    ) -> Result<Option<MutationResult>, Error> {
+    ) -> Result<Option<ActionResult>, Error> {
         let found = self
             .connection
             .query_row(
@@ -534,8 +559,8 @@ impl EditorService {
                 "request_id was already used with different input",
             ));
         }
-        let mut result: MutationResult = decode("invalid saved request result", result_json)?;
-        result.deduplicated = true;
+        let mut result: ActionResult = decode("invalid saved request result", result_json)?;
+        result.mutation.deduplicated = true;
         Ok(Some(result))
     }
 }
@@ -574,10 +599,20 @@ impl Change {
 }
 
 /// What one action records on the entry it commits: the durable identity and stored parameters the
-/// module parsed, and the label the host rendered from the action that was requested.
+/// module parsed, the label the host rendered from the action that was requested, and — for a host
+/// command — what it touched, which its answer reports and its request stores.
 pub(super) struct CommittedAction {
     pub(super) input: ActionInput,
     pub(super) label: String,
+    pub(super) touched: Option<Touched>,
+}
+
+/// What a host command says it touched: the mask and component it addressed or minted and the
+/// layers it removed. Its answer reports them beside the label it committed.
+pub(super) struct Touched {
+    pub(super) mask: Option<MaskId>,
+    pub(super) component: Option<crate::ComponentId>,
+    pub(super) removed_layers: Vec<crate::mask::commands::RemovedLayer>,
 }
 
 fn ensure_revision(state: &EditorState, expected: u64) -> Result<(), Error> {
@@ -1120,6 +1155,7 @@ mod tests {
                             parameters: Map::new(),
                         },
                         label: "Commit".into(),
+                        touched: None,
                     },
                 )
                 .expect_err("a commit refuses the stack");

@@ -1,4 +1,4 @@
-use super::{AssetRecord, EditorService, MutationResult, artifact_store, entries::Head};
+use super::{ActionResult, AssetRecord, EditorService, artifact_store, entries::Head};
 use crate::{AssetId, EntryId, Error, ErrorKind, HistoryEntry, Recipe};
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -11,15 +11,18 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 9 keeps each entry's history row — its label, actor, timestamp and restore target, beside
-/// the sequence, action and undo parent format 7 already held — in the entry's own columns, so a
-/// page of history rows decodes no entry. Format 7 was the merged shape: the mask table a recipe
+/// Format 10 stores each asset request's whole answer in the request table — for a `mask.*` command
+/// the label it committed and the mask and component it addressed or minted beside the mutation
+/// result — so a retry answers with the identities the first attempt created. Format 9 kept each
+/// entry's history row — its label, actor, timestamp and restore target, beside the sequence, action
+/// and undo parent format 7 already held — in the entry's own columns, so a page of history rows
+/// decodes no entry. Format 7 was the merged shape: the mask table a recipe
 /// carries and the layer's mask reference, the content-addressed stroke store a painted path is
 /// kept in — so no catalog ever holds embedded stroke points — the preset library, and the
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(super) const CATALOG_FORMAT: i64 = 9;
+pub(super) const CATALOG_FORMAT: i64 = 10;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -209,7 +212,7 @@ pub(super) fn insert_request(
     asset_id: &AssetId,
     request_id: &str,
     input: &Value,
-    result: &MutationResult,
+    result: &ActionResult,
 ) -> Result<(), Error> {
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO requests VALUES (?1,?2,?3,?4)",
@@ -541,7 +544,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 2 is not supported; expected 9; choose a new catalog path"
+            "catalog format 2 is not supported; expected 10; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
@@ -579,7 +582,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 7 is not supported; expected 9; choose a new catalog path"
+            "catalog format 7 is not supported; expected 10; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
@@ -1477,6 +1480,7 @@ mod tests {
                         parameters: serde_json::Map::new(),
                     },
                     label: "Brush past the bound".into(),
+                    touched: None,
                 },
             )
             .expect_err("past the serialized bound");
@@ -1590,7 +1594,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 5 is not supported; expected 9; choose a new catalog path"
+            "catalog format 5 is not supported; expected 10; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),

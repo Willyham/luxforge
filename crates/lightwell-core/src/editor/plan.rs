@@ -58,8 +58,16 @@ impl EditorService {
                 return Ok(Change::NoOp);
             };
             let label = masked_label(current, mask.as_ref(), label);
-            Ok(Change::append(recipe, CommittedAction { input, label }))
+            Ok(Change::append(
+                recipe,
+                CommittedAction {
+                    input,
+                    label,
+                    touched: None,
+                },
+            ))
         })
+        .map(|result| result.mutation)
     }
 
     /// What one parsed action does to `recipe`, the stack of `asset` it is planned against, or
@@ -1140,6 +1148,7 @@ mod tests {
                         parameters: Map::new(),
                     },
                     label: "Stored stack".into(),
+                    touched: None,
                 },
             )
             .unwrap();

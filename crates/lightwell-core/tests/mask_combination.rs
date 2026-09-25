@@ -477,7 +477,7 @@ impl Fixture {
         target: MaskTarget,
         parameters: Value,
         request: &str,
-    ) -> lightwell_core::mask::commands::MaskCommandResult {
+    ) -> lightwell_core::ActionResult {
         let command =
             commands::find(method).unwrap_or_else(|| panic!("{method} is a declared command"));
         let mutation = self.mutation(request);

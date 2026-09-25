@@ -10,12 +10,12 @@ use crate::{
 };
 use iced::Task;
 use lightwell_core::{
-    ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
-    EntryId, ErrorKind, EventsResult, HistoryPage, HistoryRow, HistorySelection, Lineage,
-    MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest, OwnerHandle,
-    PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription, StageTransform,
-    Version,
-    mask::commands::{MaskCommandResult, MaskListing, MaskTarget},
+    ActionResult, ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId,
+    EditorState, EntryId, ErrorKind, EventsResult, HistoryPage, HistoryRow, HistorySelection,
+    Lineage, MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest,
+    OwnerHandle, PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription,
+    StageTransform, Version,
+    mask::commands::{MaskListing, MaskTarget},
 };
 use serde_json::{Value, json};
 use std::{
@@ -933,7 +933,7 @@ pub(crate) fn draft_commit_now(
         "draft.commit",
         json!({"draft_id":draft_id,"mutation":mutation}),
     )?;
-    let result = parse::<MaskCommandResult>(committed)?;
+    let result = parse::<ActionResult>(committed)?;
     if result.mutation.outcome == MutationOutcome::NoOp {
         return Ok(None);
     }
