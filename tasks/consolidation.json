@@ -1843,7 +1843,7 @@
     {
       "id": "TASK-032",
       "description": "Replace the preview, analysis and clipping-overlay queues with one persistent latest-job worker primitive that takes its own next job, so the next preview no longer waits for the desktop to poll, proxy planning leaves the desktop thread and an abandoned analysis is cancelled.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-026"
       ],
@@ -2938,7 +2938,7 @@
     {
       "id": "TASK-048",
       "description": "Share one serde-derived evidence script crate between the desktop and xtask.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "The desktop parses evidence scripts by hand in `app/evidence.rs` and xtask writes them by hand; one crate of serde-derived types serves both."
