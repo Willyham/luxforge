@@ -1,6 +1,6 @@
 # Consolidation
 
-Status: **authorized by the owner on 2026-09-24. Wave 1 is complete; waves 2, 3, 4 and 6 are partly complete; wave 5 and the source-kind controls have not started.** The plan records each task's status, and on-hold tasks name the branch holding their unfinished work. The work is tracked in the [task plan](../../tasks/consolidation.json). When the last wave lands, delete this document and the plan; the outcome lives in the specs they changed.
+Status: **authorized by the owner on 2026-09-24. Waves 1 and 2 are complete; the remaining work is planned as concrete tasks in the [task plan](../../tasks/consolidation.json), each of which deletes the copies it replaces and states its proof. The source-kind controls wait on the owner's answers to their design's open questions.** When the last task lands, delete this document and the plan; the outcome lives in the specs they changed.
 
 ## Why
 

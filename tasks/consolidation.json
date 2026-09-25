@@ -565,12 +565,12 @@
     {
       "id": "TASK-010",
       "description": "Wave 3, module contract: the declarative field-patch module, a plan result whose layer identity, format and mask the host owns, declared single-layer effects, `builtin_modules()` with core-reported neutrality, declared source kinds with one Exposure and white-balance control set for JPEG and RAW, one colour module, descriptor builders with one schema emitter, mask commands through the shared plan path, and capability settings on the parameter vocabulary.",
-      "status": "pending",
+      "status": "cancelled",
       "dependencies": [
         "TASK-009"
       ],
       "extra_context": [
-        "Detailed when wave 2 lands. The source-kind control set needs its own short design first: how one control behaves per source kind."
+        "Replaced by the concrete tasks TASK-035 and TASK-036 (masking) and TASK-037 to TASK-038 (module contract), each of which deletes the copies it replaces and states its proof."
       ],
       "context_links": [
         {
@@ -601,13 +601,13 @@
     {
       "id": "TASK-011",
       "description": "Wave 4, desktop: one core-draft driver and gesture field, `app/mod.rs` split with nested messages, a presenter for the displayed frame, overlays on the photo surface, a silent idle poll, per-message waste removed, and crop on the core draft lifecycle.",
-      "status": "pending",
+      "status": "cancelled",
       "dependencies": [
         "TASK-002",
         "TASK-009"
       ],
       "extra_context": [
-        "Detailed when wave 2 lands."
+        "Replaced by the concrete tasks TASK-039 to TASK-043, each of which deletes the copies it replaces and states its proof."
       ],
       "context_links": [
         {
@@ -639,12 +639,12 @@
     {
       "id": "TASK-012",
       "description": "Wave 5, rendering and RAW: one latest-job worker primitive for preview, analysis and the clipping overlay, one compile per job, one render entry point and a render context in place of globals, band-parallel RAW development, row evaluation on the RAW path, then one pipeline for both domains.",
-      "status": "pending",
+      "status": "cancelled",
       "dependencies": [
         "TASK-009"
       ],
       "extra_context": [
-        "Detailed when wave 2 lands."
+        "Replaced by the concrete tasks TASK-044 to TASK-047, each of which deletes the copies it replaces and states its proof."
       ],
       "context_links": [
         {
@@ -675,12 +675,12 @@
     {
       "id": "TASK-013",
       "description": "Wave 6, harness: a smoke scenario library and scenario table, one conformance suite for field-patch modules, a serde-derived evidence script shared with xtask, test-support and independent-reference crates, and one timing distribution type.",
-      "status": "pending",
+      "status": "cancelled",
       "dependencies": [
         "TASK-007"
       ],
       "extra_context": [
-        "Detailed after wave 1. Old and new verifiers are compared over the same captured artifacts before the old ones are deleted."
+        "Replaced by the concrete tasks TASK-048 to TASK-051, each of which deletes the copies it replaces and states its proof."
       ],
       "context_links": [
         {
@@ -2063,6 +2063,1108 @@
           "Identical planes; cancellation observed mid-demosaic."
         ]
       }
+    },
+    {
+      "id": "TASK-035",
+      "description": "Resolve and plan mask commands through the module action path, store each command's full result, give mask, component and stroke IDs a declared parameter kind, validate the mask table once when a recipe enters the service, and stop scanning every layer payload for strokes.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-030"
+      ],
+      "extra_context": [
+        "Mask commands have their own resolution and planning beside module actions. They become actions resolved as `ActionRef::{Module, Host}` and planned through the same plan path, published as a host descriptor in `module.list`, so an agent discovers them as it discovers module actions.",
+        "A deduplicated retry of a mask command returns only the outcome today; the request table stores each command's full result, so a retry returns the created mask or component IDs.",
+        "Decided by the owner: mask, component and stroke identities become a declared parameter kind, validated and deduplicated like any other parameter; the recipe stops scanning every layer payload for strokes until a consumer other than masks exists.",
+        "The mask table is validated on every compile; it is validated once when a recipe enters the service (commit, restore, draft, import), and compile trusts an admitted recipe."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Mask commands",
+          "target": "crates/lightwell-core/src/mask/commands.rs",
+          "relevance": "The separate command resolution and planning."
+        },
+        {
+          "kind": "file",
+          "label": "Mask parameters",
+          "target": "crates/lightwell-core/src/mask/parameters.rs",
+          "relevance": "Identity parameters today."
+        },
+        {
+          "kind": "file",
+          "label": "Editor masks",
+          "target": "crates/lightwell-core/src/editor/masks.rs",
+          "relevance": "The service side of mask commands."
+        },
+        {
+          "kind": "file",
+          "label": "Command contracts",
+          "target": "crates/lightwell-core/src/mask/command_contracts.rs",
+          "relevance": "The UI/API parity contracts."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "relevance": "The mask command contract."
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "Architecture review decisions."
+        }
+      ],
+      "acceptance_criteria": [
+        "Mask commands are listed as a host descriptor in `module.list` and resolved and planned through the module action path; the separate command path is deleted.",
+        "A retried mask command returns the IDs the first attempt created.",
+        "An identity parameter kind validates mask, component and stroke IDs in every schema that takes one.",
+        "The mask table is validated once on admission; compile no longer validates it, and a recipe that fails validation never reaches compile.",
+        "Strokes are found from the mask table only; no layer payload is scanned.",
+        "Mask coverage stays bit-identical to its frozen reference; the mask tests, the command-contracts parity test and the four mask smokes pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Mask and command-contract tests; the mask, mask-brush, mask-range and mask-combine smokes."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core mask",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass; coverage bit-identical."
+        ]
+      }
+    },
+    {
+      "id": "TASK-036",
+      "description": "Let the mask component-kind table carry each kind's compile and validate, give the desktop a `ShapeEditor` per drawn kind, share the host's mask rules with the Masks panel, and share one canvas view and ellipse helper between crop and mask.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-035"
+      ],
+      "extra_context": [
+        "Each component kind's compile and validation are matched by hand in several places; the kind table carries them, so adding a kind is one entry.",
+        "The desktop's mask canvas and draft match on the drawn kind for hit testing, handles and drags; a `ShapeEditor` per drawn kind (linear, radial, brush) replaces the matches.",
+        "The Masks panel re-derives rules the host owns (which combinations are allowed, limits, labels); it reads them from the host.",
+        "The crop and mask canvases each carry a view transform and an ellipse helper; one serves both."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Mask module",
+          "target": "crates/lightwell-core/src/mask/mod.rs",
+          "relevance": "The component-kind table."
+        },
+        {
+          "kind": "file",
+          "label": "Mask canvas",
+          "target": "crates/lightwell-app/src/mask_canvas.rs",
+          "relevance": "Desktop drawing and hit testing."
+        },
+        {
+          "kind": "file",
+          "label": "Mask draft",
+          "target": "crates/lightwell-app/src/mask_draft.rs",
+          "relevance": "Desktop drag handling per kind."
+        },
+        {
+          "kind": "file",
+          "label": "Crop canvas",
+          "target": "crates/lightwell-app/src/crop_canvas.rs",
+          "relevance": "The other canvas view."
+        },
+        {
+          "kind": "file",
+          "label": "Masks panel state",
+          "target": "crates/lightwell-app/src/state/masks.rs",
+          "relevance": "Rules re-derived on the desktop."
+        }
+      ],
+      "acceptance_criteria": [
+        "Component compile and validate are dispatched through the kind table; the hand matches are deleted.",
+        "The desktop has one `ShapeEditor` per drawn kind and no kind match in the canvas or draft outside it.",
+        "The Masks panel's rules come from the host.",
+        "Crop and mask share one canvas view and ellipse helper.",
+        "Mask tests, the command-contracts parity test and the four mask smokes pass; coverage bit-identical."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Mask tests; app tests; the four mask smokes and the crop smoke."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core mask",
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-037",
+      "description": "Describe capability settings with the module parameter vocabulary, so settings and parameters share one vocabulary and one schema emitter.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-030",
+        "TASK-033"
+      ],
+      "extra_context": [
+        "Decided by the owner: settings use the module parameter vocabulary. Capability settings have their own kinds and schema today."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Settings",
+          "target": "crates/lightwell-core/src/capabilities/settings.rs",
+          "relevance": "The settings kinds."
+        },
+        {
+          "kind": "file",
+          "label": "Descriptors",
+          "target": "crates/lightwell-core/src/modules/descriptor.rs",
+          "relevance": "The parameter vocabulary."
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities design",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "The settings contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "Settings are declared with parameter descriptors and emitted by the one schema emitter; the settings-only kinds and emitter are deleted.",
+        "The capability tests and the capabilities smoke pass; `schema.list` changes only in the settings shapes, which the design documents."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Capability tests; capabilities smoke."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core capabilit",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-038",
+      "description": "Move capability methods behind their own trait off `ToolModule`, and split `registry.rs` into lookups, placement and compile.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-035",
+        "TASK-037"
+      ],
+      "extra_context": [
+        "`ToolModule` carries capability methods every module must default; a module that uses capabilities implements a separate trait the registry discovers.",
+        "`modules/registry.rs` is about 3.7k lines holding lookups, stage placement and compile."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Registry",
+          "target": "crates/lightwell-core/src/modules/registry.rs",
+          "relevance": "The file to split."
+        },
+        {
+          "kind": "file",
+          "label": "Modules",
+          "target": "crates/lightwell-core/src/modules/mod.rs",
+          "relevance": "`ToolModule`."
+        },
+        {
+          "kind": "file",
+          "label": "Capabilities proof module",
+          "target": "crates/lightwell-core/src/modules/capabilities_proof.rs",
+          "relevance": "The capability consumer."
+        }
+      ],
+      "acceptance_criteria": [
+        "`ToolModule` has no capability methods; the capability trait is implemented only by modules that use capabilities.",
+        "`registry.rs` is split into lookup, placement and compile files with no behaviour change; `module.list` and `schema.list` are byte-identical and renders are byte-identical."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Core tests; list identity."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-039",
+      "description": "Split the desktop's `app/mod.rs` along its seams with nested message enums, and enforce that `state/` never imports `app/` in the repository check.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-032"
+      ],
+      "extra_context": [
+        "`crates/lightwell-app/src/app/mod.rs` is about 9.2k lines: the editor struct, the update loop over one flat message enum, owner answers, preview presentation and a large test module.",
+        "Nested message enums per seam (preview, owner answers, crop, masks, controls, capabilities, evidence) let each seam own its update function; the top-level update only routes.",
+        "`state/` is derived view state and must not import `app/`; `check-repository` enforces the desktop layer boundaries and gains this rule."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop editor",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "The file to split."
+        },
+        {
+          "kind": "file",
+          "label": "Messages",
+          "target": "crates/lightwell-app/src/app/message.rs",
+          "relevance": "The flat message enum."
+        },
+        {
+          "kind": "file",
+          "label": "Repository check",
+          "target": "xtask/src/repository.rs",
+          "relevance": "Desktop layer boundaries."
+        }
+      ],
+      "acceptance_criteria": [
+        "`app/mod.rs` holds the editor struct and routing only; each seam has its own module and nested message enum.",
+        "`check-repository` fails when a `state/` file imports `app/`.",
+        "No behaviour change: app tests and the rendered tier pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "App tests; rendered tier on the integrated branch."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-040",
+      "description": "Present the displayed preview through one `Presenter` with one `Frame` type, and draw the clipping overlay, mask overlays and the crop input stage on the photo surface.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-039"
+      ],
+      "extra_context": [
+        "The displayed frame, the draft photo and the crop input stage are held and uploaded by separate paths with their own frame types.",
+        "Clipping, mask overlays and the crop input stage are drawn as separate images or canvases over the photo instead of on the photo surface (`lightwell-ui` `photo_surface`)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop editor",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "Frame presentation."
+        },
+        {
+          "kind": "file",
+          "label": "Draft photo",
+          "target": "crates/lightwell-app/src/draft_photo.rs",
+          "relevance": "A second frame path."
+        },
+        {
+          "kind": "file",
+          "label": "Photo surface",
+          "target": "crates/lightwell-ui/src/photo_surface.rs",
+          "relevance": "The GPU surface."
+        },
+        {
+          "kind": "file",
+          "label": "Overlay",
+          "target": "crates/lightwell-app/src/app/overlay.rs",
+          "relevance": "The clipping overlay."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace design",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "The desktop architecture."
+        }
+      ],
+      "acceptance_criteria": [
+        "One `Presenter` owns what is displayed, with one `Frame` type; the other frame holders are deleted.",
+        "Clipping, mask overlays and the crop input stage are drawn on the photo surface.",
+        "The rendered tier passes, including the histogram, mask and crop scenarios, with correlated frames and logs."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "App tests; rendered tier."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-041",
+      "description": "Poll events silently while idle through a subscription that yields only on events, give the desktop one owner-task helper with no sleep-poll loops on the executor, and remove per-message waste in derive and view.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-039"
+      ],
+      "extra_context": [
+        "The idle event poll wakes the update loop on a timer whether or not anything happened.",
+        "Owner calls are made through several task helpers; the capability call and its preparation wait duplicate the task helper and `wait_source_job`, including a blocking sleep loop inside an async task.",
+        "Derive and view recompute or clone state on every message whether or not it changed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop tasks",
+          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "relevance": "Task helpers and the event poll."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop capabilities",
+          "target": "crates/lightwell-app/src/app/capabilities.rs",
+          "relevance": "The duplicate call and preparation wait."
+        },
+        {
+          "kind": "file",
+          "label": "Waker",
+          "target": "crates/lightwell-app/src/app/waker.rs",
+          "relevance": "Wakeups."
+        },
+        {
+          "kind": "file",
+          "label": "State",
+          "target": "crates/lightwell-app/src/state/mod.rs",
+          "relevance": "Derived state."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The checklist every change under crates/ answers."
+        }
+      ],
+      "acceptance_criteria": [
+        "While idle the update loop runs only when an event arrives.",
+        "One owner-task helper serves every owner call, including capabilities; no sleep loop runs on the executor.",
+        "Derive and view do no per-message work for unchanged state.",
+        "Idle CPU and gesture latency are no worse, measured at the end."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "App tests; idle and gesture timing at the end."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-042",
+      "description": "Build each control's request once with a declared commit-on-pick, walk the control tree with one walker and one `NumberSpec`, make the gallery page desktop-local, and have the Performance panel parse the core's report types.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-039"
+      ],
+      "extra_context": [
+        "Control requests are built in several places, and the desktop names `pick-raw-neutral` to decide that a pick commits; the descriptor declares commit-on-pick instead.",
+        "Several walkers traverse the control tree and number formatting is specified more than once.",
+        "Decided by the owner: the developer component gallery's page is desktop view state and leaves the core session schema.",
+        "The Performance panel parses mirror structs of the core's report types."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Controls",
+          "target": "crates/lightwell-app/src/app/controls.rs",
+          "relevance": "Control requests."
+        },
+        {
+          "kind": "file",
+          "label": "Fields",
+          "target": "crates/lightwell-app/src/app/fields.rs",
+          "relevance": "Control fields."
+        },
+        {
+          "kind": "file",
+          "label": "Tools state",
+          "target": "crates/lightwell-app/src/state/tools.rs",
+          "relevance": "Control tree walking."
+        },
+        {
+          "kind": "file",
+          "label": "Performance state",
+          "target": "crates/lightwell-app/src/state/performance.rs",
+          "relevance": "The mirror report types."
+        },
+        {
+          "kind": "file",
+          "label": "Control descriptors",
+          "target": "crates/lightwell-core/src/modules/controls.rs",
+          "relevance": "Where commit-on-pick is declared."
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "The gallery decision."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each control's request is built once; commit-on-pick is declared by the descriptor and no module action is named by the desktop.",
+        "One control-tree walker and one `NumberSpec` remain.",
+        "The gallery page is not in the core session schema.",
+        "The Performance panel uses the core's report types; the mirrors are deleted.",
+        "App tests and the controls, basic-panel, raw-panel, gallery and performance scenarios pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "App tests; covering smokes."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-043",
+      "description": "Move the crop draft onto the core `draft.*` lifecycle through the desktop's one draft driver, and trim `app/gesture.rs` and `app/draft.rs`.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-036",
+        "TASK-040",
+        "TASK-041",
+        "TASK-042"
+      ],
+      "extra_context": [
+        "Decided by the owner: the crop draft moves onto the core draft lifecycle once the desktop has one draft driver, so agents see it in `session.state`; crop geometry and canvas stay as they are.",
+        "`app/gesture.rs` and `app/draft.rs` grew by about 440 lines during the draft-driver work."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Crop driver",
+          "target": "crates/lightwell-app/src/app/crop.rs",
+          "relevance": "The desktop-local crop draft."
+        },
+        {
+          "kind": "file",
+          "label": "Crop draft",
+          "target": "crates/lightwell-app/src/crop_draft.rs",
+          "relevance": "Crop geometry."
+        },
+        {
+          "kind": "file",
+          "label": "Gesture",
+          "target": "crates/lightwell-app/src/app/gesture.rs",
+          "relevance": "The gesture field."
+        },
+        {
+          "kind": "file",
+          "label": "Draft driver",
+          "target": "crates/lightwell-app/src/app/draft.rs",
+          "relevance": "The core-draft driver."
+        },
+        {
+          "kind": "file",
+          "label": "Core drafts",
+          "target": "crates/lightwell-core/src/draft.rs",
+          "relevance": "The draft lifecycle."
+        },
+        {
+          "kind": "file",
+          "label": "Single-image spec",
+          "target": "docs/specs/single-image.md",
+          "relevance": "Crop draft behaviour."
+        }
+      ],
+      "acceptance_criteria": [
+        "An open crop draft is a core draft visible in `session.state`, driven by the one draft driver; the local crop draft state is deleted.",
+        "`gesture.rs` and `draft.rs` are smaller with no behaviour change.",
+        "App tests, the crop and crop-draft scenarios pass; a before/after of drag, paint and idle is recorded at the end."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "App tests; crop smokes; timing at the end."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-044",
+      "description": "Give rendering one entry point with options and a render context in place of process globals, compile once per preview job, split `preview.rs` with a phase-typed `PreviewResult`, and keep one proxy box downscale.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-032"
+      ],
+      "extra_context": [
+        "Rendering has several entry points (entry, draft, preview phases, samples) with overlapping parameters, and process-global state (scratch budgets, caches) instead of a context passed in.",
+        "A preview job compiles its recipe once per phase.",
+        "`preview.rs` is about 2.9k lines; `PreviewResult` carries optional fields per phase.",
+        "The proxy box downscale exists more than once."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Render",
+          "target": "crates/lightwell-core/src/render.rs",
+          "relevance": "Entry points and globals."
+        },
+        {
+          "kind": "file",
+          "label": "Preview",
+          "target": "crates/lightwell-core/src/preview.rs",
+          "relevance": "Jobs and results."
+        },
+        {
+          "kind": "file",
+          "label": "Proxy",
+          "target": "crates/lightwell-core/src/proxy.rs",
+          "relevance": "The proxy downscale."
+        },
+        {
+          "kind": "file",
+          "label": "Instant preview design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "The two-phase preview."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The checklist every change under crates/ answers."
+        }
+      ],
+      "acceptance_criteria": [
+        "One render entry point takes an options value and a render context; the other entry points and the globals are deleted.",
+        "A preview job compiles once.",
+        "`preview.rs` is split and `PreviewResult` is typed per phase.",
+        "One proxy box downscale remains.",
+        "Renders and samples are byte-identical; rendered tier passes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core render and preview tests; rendered tier."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-045",
+      "description": "Deliver mask coverage grids with the proxy phase, and copy the tiles a masked spatial layer cannot reach instead of processing them.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-035",
+        "TASK-044"
+      ],
+      "extra_context": [
+        "Decided by the owner: a mask's coverage grid is delivered with the proxy phase rather than after the exact render, because it reads no pixel of the exact frame.",
+        "A masked spatial layer processes every tile, including tiles whose coverage is zero."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Mask overlay",
+          "target": "crates/lightwell-core/src/analysis/mask_overlay.rs",
+          "relevance": "The coverage grid."
+        },
+        {
+          "kind": "file",
+          "label": "Spatial",
+          "target": "crates/lightwell-core/src/render/spatial.rs",
+          "relevance": "Tile processing."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "relevance": "Coverage and proxies."
+        }
+      ],
+      "acceptance_criteria": [
+        "The coverage grid arrives with the proxy phase.",
+        "Tiles with zero coverage (including their halo) are copied, and the result is byte-identical to processing them.",
+        "Mask and masked-spatial tests and the mask smokes pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core tests; mask smokes."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core mask",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-046",
+      "description": "Evaluate the JPEG and RAW domains with one pipeline generic over its pixel domain, building on the RAW row batching, so there are no longer two rasterizers.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-044"
+      ],
+      "extra_context": [
+        "Byte `Evaluation` (render.rs) and RAW `LinearEvaluation` (render/linear.rs, about 3.9k lines) are two rasterizers with parallel segment, spatial and sampling code. Main's RAW source colour row batching is the base the one pipeline builds on."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Render",
+          "target": "crates/lightwell-core/src/render.rs",
+          "relevance": "Byte evaluation."
+        },
+        {
+          "kind": "file",
+          "label": "Linear render",
+          "target": "crates/lightwell-core/src/render/linear.rs",
+          "relevance": "RAW evaluation."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The checklist every change under crates/ answers."
+        }
+      ],
+      "acceptance_criteria": [
+        "One pipeline, generic over its pixel domain, serves both; the duplicate rasterizer code is deleted.",
+        "Renders and samples are byte-identical on JPEG and RAW, and a sample equals the rendered byte on both paths.",
+        "Timing is no worse, measured at the end."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core render tests; rendered and timing tiers at the end."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-047",
+      "description": "Clean up RAW preparation: sensor neutral sampling moves into `lightwell-raw`, redundant decode copies and finiteness scans go, a condvar replaces the 25 ms memory-gate poll, the DNG opcode allowlist lives in one place, and the camera catalog becomes static data.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-034"
+      ],
+      "extra_context": [
+        "`source::neutral_at` samples the mosaic in the core; it belongs to the RAW crate.",
+        "Decode copies buffers and scans for finiteness more than once.",
+        "The memory gate polls every 25 ms instead of waiting on a condvar.",
+        "The DNG opcode allowlist is repeated.",
+        "The camera catalog is built in code rather than held as static data."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Source preparation",
+          "target": "crates/lightwell-core/src/source.rs",
+          "relevance": "Neutral sampling and the memory gate."
+        },
+        {
+          "kind": "file",
+          "label": "RAW crate",
+          "target": "crates/lightwell-raw/src/lib.rs",
+          "relevance": "Decode and development."
+        },
+        {
+          "kind": "file",
+          "label": "DNG",
+          "target": "crates/lightwell-raw/src/dng.rs",
+          "relevance": "Opcode handling."
+        },
+        {
+          "kind": "file",
+          "label": "Profiles",
+          "target": "crates/lightwell-raw/src/profiles.rs",
+          "relevance": "The camera catalog."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The checklist every change under crates/ answers."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each item is done with its copy deleted.",
+        "Developed planes are byte-identical on the synthetic mosaics and the supplied files.",
+        "RAW tests and the raw-panel scenario pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "RAW tests; ignored real-file tests; raw-panel smoke."
+        ],
+        "commands": [
+          "cargo test -p lightwell-raw",
+          "cargo test -p lightwell-core raw",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-048",
+      "description": "Share one serde-derived evidence script crate between the desktop and xtask.",
+      "status": "pending",
+      "dependencies": [],
+      "extra_context": [
+        "The desktop parses evidence scripts by hand in `app/evidence.rs` and xtask writes them by hand; one crate of serde-derived types serves both."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Evidence",
+          "target": "crates/lightwell-app/src/app/evidence.rs",
+          "relevance": "The desktop's script parser."
+        },
+        {
+          "kind": "file",
+          "label": "Smoke",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Script writers."
+        },
+        {
+          "kind": "file",
+          "label": "Development",
+          "target": "docs/engineering/development.md",
+          "relevance": "Evidence rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "One crate defines the evidence script types, used by the desktop and xtask; the hand parsers and writers are deleted.",
+        "Every smoke scenario still runs, and a deliberately broken step fails as before."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "App and xtask tests; rendered tier."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app",
+          "cargo test -p xtask",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-049",
+      "description": "Build test support on `lightwell-testkit` and an independent `lightwell-reference` crate that cannot depend on the core, with fewer test binaries, the per-module field-patch tests in the field-patch suite, the historical-parity tests deleted and xtask's acceptance JSON helpers on the conformance client.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-033"
+      ],
+      "extra_context": [
+        "Test helpers are copied per test binary; the core has one integration-test binary per file (mask tests alone are about a dozen).",
+        "Reference implementations live in the core's test tree and can import the code they check; a `lightwell-reference` crate that cannot depend on `lightwell-core` makes them independent by construction.",
+        "Per-module field-patch tests remain in `basic`, `mixer`, `presence` and `vignette` beside the shared field-patch conformance suite.",
+        "`tests/basic_tone.rs` and `tests/basic_colour.rs` compare against values saved before an earlier change, which the current-shapes rule forbids.",
+        "xtask's `basic_acceptance.rs` has its own JSON helpers beside the conformance suite's client."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Core tests",
+          "target": "crates/lightwell-core/tests/mask_unit.rs",
+          "relevance": "One of the mask test binaries."
+        },
+        {
+          "kind": "file",
+          "label": "Field-patch conformance",
+          "target": "crates/lightwell-core/tests/field_patch_conformance.rs",
+          "relevance": "The shared suite."
+        },
+        {
+          "kind": "file",
+          "label": "Basic tone test",
+          "target": "crates/lightwell-core/tests/basic_tone.rs",
+          "relevance": "A historical-parity test."
+        },
+        {
+          "kind": "file",
+          "label": "Basic colour test",
+          "target": "crates/lightwell-core/tests/basic_colour.rs",
+          "relevance": "A historical-parity test."
+        },
+        {
+          "kind": "file",
+          "label": "Basic acceptance",
+          "target": "xtask/src/basic_acceptance.rs",
+          "relevance": "The duplicate JSON helpers."
+        }
+      ],
+      "acceptance_criteria": [
+        "`lightwell-testkit` holds the shared helpers and `lightwell-reference` holds the independent references with no dependency on the core; the copies are deleted.",
+        "The mask tests are one binary and the core has fewer test binaries.",
+        "Per-module field-patch tests live in the field-patch suite.",
+        "The historical-parity tests are deleted.",
+        "xtask's acceptance uses the conformance client.",
+        "Every remaining check still runs and passes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core and xtask tests; quick tier."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-050",
+      "description": "Replace the private error helper copies with error constructors such as `Error::validation(..)`, last, because it touches everything.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-038",
+        "TASK-043",
+        "TASK-045",
+        "TASK-046",
+        "TASK-047",
+        "TASK-048",
+        "TASK-049"
+      ],
+      "extra_context": [
+        "Modules and services build errors with `Error::new(ErrorKind::X, ..)` and private helper copies; constructors per kind replace them."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Error",
+          "target": "crates/lightwell-core/src/error.rs",
+          "relevance": "The error type."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every private error helper copy is replaced by a constructor; error codes and messages are unchanged.",
+        "The quick tier passes."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Core and app tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-051",
+      "description": "Correct the documentation the review found stale: the modules-and-API design's Basic and effects rows, Basic's field descriptions of its input, the instant-preview restatement of the slider budget, and architecture's Persistence paragraph.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-030"
+      ],
+      "extra_context": [
+        "`docs/design/modules-and-api.md` says Basic implements only `exposure`, and its effects row omits `maskable`.",
+        "Basic's field descriptions call the input \"a rendered sRGB JPEG\" although RAW feeds it linear data.",
+        "`docs/design/instant-preview.md` restates the slider budget that the performance spec owns.",
+        "`docs/design/architecture.md`'s Persistence paragraph has grown long; it is trimmed to current behaviour."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Basic and effects rows."
+        },
+        {
+          "kind": "file",
+          "label": "Basic module",
+          "target": "crates/lightwell-core/src/modules/basic/mod.rs",
+          "relevance": "Field descriptions."
+        },
+        {
+          "kind": "file",
+          "label": "Instant preview",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "The slider budget."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "Persistence."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each item reads as current behaviour; descriptor text changes are reflected in `schema.list`.",
+        "The repository check passes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Repository check."
+        ],
+        "commands": [
+          "cargo xtask check-repository"
+        ],
+        "expected_results": [
+          "Passes."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -2076,7 +3178,8 @@
         "TASK-005",
         "TASK-006",
         "TASK-007",
-        "TASK-008"
+        "TASK-008",
+        "TASK-048"
       ]
     },
     {
@@ -2102,7 +3205,8 @@
         "TASK-019",
         "TASK-020",
         "TASK-021",
-        "TASK-023"
+        "TASK-023",
+        "TASK-047"
       ]
     },
     {
@@ -2118,14 +3222,20 @@
     {
       "wave": 5,
       "task_ids": [
-        "TASK-024"
+        "TASK-024",
+        "TASK-035",
+        "TASK-037",
+        "TASK-049",
+        "TASK-051"
       ]
     },
     {
       "wave": 6,
       "task_ids": [
         "TASK-026",
-        "TASK-027"
+        "TASK-027",
+        "TASK-036",
+        "TASK-038"
       ]
     },
     {
@@ -2133,6 +3243,35 @@
       "task_ids": [
         "TASK-031",
         "TASK-032"
+      ]
+    },
+    {
+      "wave": 8,
+      "task_ids": [
+        "TASK-039",
+        "TASK-044"
+      ]
+    },
+    {
+      "wave": 9,
+      "task_ids": [
+        "TASK-040",
+        "TASK-041",
+        "TASK-042",
+        "TASK-045",
+        "TASK-046"
+      ]
+    },
+    {
+      "wave": 10,
+      "task_ids": [
+        "TASK-043"
+      ]
+    },
+    {
+      "wave": 11,
+      "task_ids": [
+        "TASK-050"
       ]
     }
   ]
