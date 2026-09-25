@@ -2,8 +2,9 @@
 
 Status: the guarded RAW colour-row path is implemented and measured on the owner's M4 Pro, 14 cores
 and 48 GiB. Mask-paint phase attribution is implemented; its worker and surface costs are small
-relative to queue and result-delivery tails, so no renderer-kernel change is justified yet. Other
-items remain research opportunities. The
+relative to queue and result-delivery tails, so no renderer-kernel change is justified yet. Bayer
+RCD tile batching remains blocked by exact output differences. Other items remain research
+opportunities. The
 [current measurements](../specs/performance.md#startup-and-raw-throughput) remain the source for
 accepted application baselines. Core renders, preview contention and whole-application measurements
 have different scopes; do not add their savings.
@@ -14,9 +15,10 @@ have different scopes; do not add their savings.
 | --- | --- | --- | --- | --- |
 | 1 | Batch RAW Basic/Mixer colour rows | The production path reduces Z6/X100VI Full Basic p50 by 63–66% and Mixer by 43–45%; whole-buffer checks pass. Under continuous exact work, the Fit-proxy p95 falls 67% versus the generic renderer. See results below. | Keep eligibility narrow and correlate core gains with a presented generation when the hidden runner works; track the remaining contended proxy tail. | Small contained core change. Masks, geometry, replacements and spatial recipes retain the generic path. The core contention probe does not measure UI or GPU presentation. |
 | 2 | Reduce mask-paint queue and delivery tails | On one bare masked layer, 30 positions at low host load yield input-to-presented p95 40.7 ms at 24 MP and 35.1 ms at 60 MP. Worker render p95 is 5.4/4.5 ms; queue wait is 18.2/17.4 ms and pre-result residual 20.3/22.4 ms. | Repeat with a phase sweep that separates active-job handoff from desktop event-loop delivery; preserve the one-active/one-pending bound and cancellation. | Diagnostic is complete. No compute-kernel rewrite is supported by the measured cost. |
-| 3 | Parallelize Bayer RCD tiles | Whole native development is 268.6/270.7 ms p50/p95 for Z6 and 350.6/358.1 ms for DJI. RCD is serial, but its share is not isolated. | Prove disjoint interiors and independent scratch, then dispatch bounded tiles through the shared executor and compare whole mosaic outputs. | Medium-high. Preserve border/CFA behavior, cancellation and preview tail latency. No speedup estimate yet. |
-| 4 | Attribute source-open and startup time | Existing copied-bundle launches are 764–809 ms p95 across empty, 24 and 60 MP cases; those totals include bundle copying and event polling. A phase probe reaches `Editor::new` about 142 ms after process entry but has not reached first view. | Restore a working hidden launch on this host; then separate bundle launch, app boot, read/hash/decode, source adoption, proxy raster and surface assignment on a stable bundle. | Small instrumentation, no optimization justified yet. Do not use the failed current launches as latency samples. |
-| 5 | Measure GPU texture upload separately | The isolated `Vec<u8>` → `Arc<[u8]>` probe costs 1.49/1.79 ms p50/p95 at 24 MP and 3.72/3.82 ms at 60 MP, but production decode and render paths already allocate an `Arc<[u8]>` frame and write directly into it; `PhotoRaster` retains the same Arc. The remaining `queue.write_texture` is a distinct GPU transfer. | Keep the current CPU ownership path. Measure texture upload only if an end-to-end profile identifies it as material. | No publication API change is justified; broad ownership churn would not remove the separate GPU transfer. |
+| 3 | Parallelize Bayer mosaic normalization | An isolated shared-pool prototype is bit-exact on owner Z6/DJI mosaics and RGB output. Retained-development wall p50 falls 28 ms (11–12%); process CPU rises 9–10%. | Measure a display-sized preview while exact Bayer development runs on the same pool; choose an admission cap only if its p95 remains responsive. | Small native adapter change; current evidence excludes preview contention and DNG correction warp. No whole-open savings are assigned yet. |
+| 4 | Parallelize Bayer RCD tiles | Whole native development is 268.6/270.7 ms p50/p95 for Z6 and 350.6/358.1 ms for DJI. The tile-batch prototype failed exact full-buffer comparisons, including with one executor worker. | Keep RCD serial until scratch/order dependencies across tile batches can be isolated and whole-buffer equality is restored. | High risk. No timing was taken; no speedup estimate. Preserve border/CFA behavior, cancellation and preview responsiveness. |
+| 5 | Attribute source-open and startup time | Existing copied-bundle launches are 764–809 ms p95 across empty, 24 and 60 MP cases; those totals include bundle copying and event polling. A phase probe reaches `Editor::new` about 142 ms after process entry but has not reached first view. | Restore a working hidden launch on this host; then separate bundle launch, app boot, read/hash/decode, source adoption, proxy raster and surface assignment on a stable bundle. | Small instrumentation, no optimization justified yet. Do not use the failed current launches as latency samples. |
+| 6 | Measure GPU texture upload separately | The isolated `Vec<u8>` → `Arc<[u8]>` probe costs 1.49/1.79 ms p50/p95 at 24 MP and 3.72/3.82 ms at 60 MP, but production decode and render paths already allocate an `Arc<[u8]>` frame and write directly into it; `PhotoRaster` retains the same Arc. The remaining `queue.write_texture` is a distinct GPU transfer. | Keep the current CPU ownership path. Measure texture upload only if an end-to-end profile identifies it as material. | No publication API change is justified; broad ownership churn would not remove the separate GPU transfer. |
 
 ## RAW colour-row implementation and measurement
 
@@ -142,14 +144,40 @@ been separately timed. They are upper bounds on the RCD opportunity, not predict
 and concurrent-preview contention were not measured for the RCD-only phase. The existing unchanged-
 camera comparisons ran at leg-start load 3.2–6.5.
 
-The RCD implementation processes 194 × 194 tiles at a 176 px stride, with 9 px overlap, followed by
-a border pass. The tile interiors appear independent. A worker needs about 978,536 bytes of scratch;
-eight admitted slots fit the existing 988,208-byte slot ceiling (7,905,664 bytes total). Keep the
-existing shared pool and cap, use bounded tile callbacks and poll cancellation between tiles. First
-prove exact full float outputs for Nikon and DJI, all CFA patterns, partial edge tiles and small/odd
-dimensions; then measure it beside the Fit proxy workload. Preserve the serial final border pass
-until its dependencies are separately proved. Do not confuse this with Fuji's X-Trans Markesteijn
-path, which is already parallel and must retain its current preview-tail behavior.
+An isolated batch prototype failed the exactness gate on a 1003 × 1003 RGGB image. Two- and
+eight-tile batches changed full RGB floats near the bottom edge (first mismatches at `(10, 993)` and
+`(365, 992)`); even an executor worker limit of one changed output. No timing was taken. Tile
+interiors cannot be assumed independent across callback boundaries while native scratch history is
+unresolved. Keep Bayer RCD serial until that history is isolated or refactored and whole-frame float
+equality passes on odd edges and authentic Nikon/DJI inputs. This is separate from Fuji's
+X-Trans Markesteijn path, whose bounded parallel implementation remains qualified.
+
+## Bayer normalization prototype
+
+The prototype batches 16 rows through the existing shared executor above one megapixel, before the
+unchanged serial RCD call. It adds no per-worker scratch and checks cancellation per row. Complete
+normalized mosaics and complete RGB planes match the serial path bit for bit on the authentic Nikon
+Z6 and Air 2S Bayer fixtures. The Z6 raw mosaic is 6064 × 4040 (24.5 MP); the Air 2S sensor mosaic
+is 5568 × 3648 (20.3 MP).
+
+Release measurements use 30 observations per arm in 15 ABBA pairs, warm input, one fresh process per
+source, and no builds/tests during timing. The timer includes normalization, demosaic, output plane
+allocation and final conversion; it excludes file read/decode, the Air 2S correction warp, rendering,
+GPU work and presentation. Each timed output is compared with the full serial RGB oracle outside the
+timer. The process high-water RSS was 852 MB (Z6) and 698 MB (Air 2S), with a full serial RGB oracle
+held for exactness; these are harness peaks, not per-arm or normal-editor memory. Normalization uses
+up to eight admitted callbacks under the existing shared cap and adds zero scratch bytes.
+
+| Source | Serial wall p50 / p95 | Batched wall p50 / p95 | Serial normalization p50 / p95 | Batched normalization p50 / p95 | Serial process CPU p50 / p95 | Batched process CPU p50 / p95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Nikon Z6 | 264.43 / 268.22 ms | 235.87 / 239.93 ms | 32.55 / 33.30 ms | 7.49 / 8.84 ms | 263.94 / 267.79 ms | 288.44 / 296.13 ms |
+| DJI Air 2S | 228.72 / 233.24 ms | 201.22 / 204.22 ms | 33.33 / 34.03 ms | 7.35 / 8.33 ms | 228.31 / 232.84 ms | 251.16 / 256.46 ms |
+
+This is an 11–12% reduction in retained-development wall time, with 9–10% more process CPU. The
+measured load averages were 4.56/3.47/3.27 to 5.28/3.69/3.35 for Z6 and 4.86/3.65/3.34 to
+4.74/3.68/3.36 for DJI (1/5/15 minute values). A same-pool Fit-preview contention run has not yet
+qualified responsiveness, so the prototype is not yet recommended for production. Do not count
+these core development savings again in the larger source-open or WB-commit timings.
 
 The neighbouring Markesteijn work shows why this contention test is required: bounded tile callbacks
 cut whole Fuji development wall time by about 72%, while process CPU rose about 19%, peak RSS rose
