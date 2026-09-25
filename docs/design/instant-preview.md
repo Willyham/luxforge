@@ -18,16 +18,7 @@ The presented frame lands 75 ms after the input at the median with one unit acti
 
 ## Goal
 
-A slider dragged back and forth wildly at Fit shows the value under the pointer within two display frames, on the owner's M4 Mac, with every Basic unit active, on 24 MP and 60 MP JPEGs, under a rotated crop, and on the qualified RAW sources for the RAW exposure slider. The targets below are provisional thresholds in the sense the [performance plan](../specs/performance.md#provisional-budgets) gives that word; a miss is reported with its figures.
-
-| Provisional target | Threshold |
-| --- | --- |
-| Input to presented frame, drained drag, 24 MP and 60 MP JPEG at Fit, full Basic layer, with and without a 7° crop | p95 < 16 ms, acceptable below 32 ms (the owner's target of 2026-09-22; this design was measured against p95 ≤ 33 ms) |
-| Input to presented frame, RAW exposure drag at Fit, Z6 and X100VI | p95 ≤ 50 ms |
-| Burst drag (120 inputs per second for three seconds, alternating direction): presented frames per second | ≥ 30 |
-| Burst drag: staleness of each presented frame (its input's time to its presentation) | p95 ≤ 50 ms |
-| Settled exact histogram after the last input, 24 MP | p95 < 200 ms (unchanged) |
-| Idle CPU and process memory | unchanged targets; the proxy adds at most one bounded buffer |
+A slider dragged back and forth wildly at Fit shows the value under the pointer within two display frames, on the owner's M4 Mac, with every Basic unit active, on 24 MP and 60 MP JPEGs, under a rotated crop, and on the qualified RAW sources for the RAW exposure slider. The slider, RAW exposure, burst and settled-histogram thresholds are the [performance plan's provisional budgets](../specs/performance.md#provisional-budgets), and a miss is reported with its figures; idle CPU and process memory keep their targets, and the proxy adds at most one bounded buffer.
 
 "Presented" keeps its harness meaning: the desktop update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests. It is not scanout.
 

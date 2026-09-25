@@ -27,6 +27,9 @@ Engineering hypotheses until measured and accepted on the recorded M4 configurat
 | Uncached 24 MP JPEG to Fit preview | p95 < 750 ms; loading feedback within 100 ms |
 | Crop overlay frame time | p95 ≤ 16.7 ms at 60 Hz |
 | Slider input to presented frame at Fit, warm 24 MP | p95 < 16 ms; acceptable below 32 ms; a miss at or above 32 ms (owner's target of 2026-09-22) |
+| RAW exposure drag at Fit, input to presented frame, Z6 and X100VI | p95 ≤ 50 ms |
+| Burst drag (120 inputs per second for three seconds, alternating direction) | ≥ 30 presented frames per second; each presented frame's staleness p95 ≤ 50 ms |
+| Settled exact histogram after the last input, 24 MP | p95 < 200 ms |
 | Geometry input to presented preview | p95 < 50 ms once the source preview is ready |
 | Empty steady-state process memory | ≤ 150 MiB including helper processes |
 | 24 MP single-image edit working set | ≤ 600 MiB CPU-resident |

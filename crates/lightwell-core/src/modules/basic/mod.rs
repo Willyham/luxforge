@@ -142,7 +142,7 @@ impl FieldPatch for Basic {
                     ..white_balance(
                         TEMPERATURE,
                         "Temperature",
-                        "a relative warm/cool correction of the rendered JPEG, not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. The correction is a von Kries chromatic adaptation in Bradford LMS anchored at the sRGB D65 white",
+                        "a relative warm/cool correction of the photo as rendered (a JPEG as decoded, a RAW as developed at its own white balance), not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. The correction is a von Kries chromatic adaptation in Bradford LMS anchored at the sRGB D65 white",
                     )
                 },
                 Field {
@@ -150,7 +150,7 @@ impl FieldPatch for Basic {
                     ..white_balance(
                         TINT,
                         "Tint",
-                        "a relative green/magenta correction of the rendered JPEG, not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. It offsets the target chromaticity perpendicular to the daylight locus in CIE 1960 (u, v)",
+                        "a relative green/magenta correction of the photo as rendered (a JPEG as decoded, a RAW as developed at its own white balance), not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. It offsets the target chromaticity perpendicular to the daylight locus in CIE 1960 (u, v)",
                     )
                 },
                 Field {
@@ -162,7 +162,7 @@ impl FieldPatch for Basic {
                     ..Field::slider(
                         EXPOSURE,
                         "Exposure",
-                        "multiplies the linear-light channels by 2^EV. The input is a rendered sRGB JPEG decoded through the sRGB transfer function, not scene-linear RAW data, so this is an exposure correction of a rendered image and cannot recover detail a clipped plateau no longer holds",
+                        "multiplies the linear-light channels by 2^EV. On a JPEG the input is the rendered image decoded through the sRGB transfer function, so this corrects a rendered image and cannot recover detail a clipped plateau no longer holds; on a RAW photo it multiplies the developed linear planes, after the RAW source's own exposure",
                     )
                 },
                 tone(
@@ -499,7 +499,7 @@ mod tests {
         assert_eq!(exposure.step, Some(0.01));
         assert_eq!(exposure.precision, Some(2));
         assert!(
-            exposure.notes.contains("2^EV") && exposure.notes.contains("not scene-linear RAW"),
+            exposure.notes.contains("2^EV") && exposure.notes.contains("developed linear planes"),
             "{}",
             exposure.notes
         );
@@ -744,7 +744,9 @@ mod tests {
             assert_eq!(parameter.precision, Some(0), "{name}");
             assert!(
                 parameter.notes.contains("relative")
-                    && parameter.notes.contains("rendered JPEG")
+                    && parameter
+                        .notes
+                        .contains("a JPEG as decoded, a RAW as developed")
                     && parameter.notes.contains(expected_label),
                 "{name}: {}",
                 parameter.notes
