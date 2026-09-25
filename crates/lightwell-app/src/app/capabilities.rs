@@ -13,7 +13,6 @@ use crate::{
     app::{
         Editor,
         evidence::{CapabilityAction, CapabilitySection, CapabilityStep, Settle},
-        fields,
         message::{CapabilityMessage, Message},
         tasks::{REQUEST_NUMBER, mutation, request},
     },
@@ -22,7 +21,7 @@ use crate::{
             CapabilityView, Consent, FieldKey, ModuleCapabilities, ModuleStatus, OpenConsent,
             Operation, SecretText, TaskPhase, TaskRun, declares, task_profile,
         },
-        tools,
+        fields, tools,
     },
 };
 use iced::{Subscription, Task};

@@ -183,12 +183,16 @@ fn active_plans(root: &Path, plans: &[Value], s: &Value) -> Result<Vec<String>> 
     Ok(summaries)
 }
 /// The desktop's layering rule, enforced here rather than by review: the view model cannot reach a
-/// framework, the view cannot reach authoritative state or the owner, and the widget crate cannot
-/// reach the core at all. Each entry is a directory, the tokens it may not contain and why.
+/// framework or the update layer above it (`app/`, which depends on it), the view cannot reach
+/// authoritative state or the owner, and the widget crate cannot reach the core at all. Each entry
+/// is a directory and the tokens it may not contain. A token that starts with an identifier
+/// character matches only at the start of a path segment, so `app::` catches `crate::app::`,
+/// `super::app::` and a grouped `use crate::{ app::... }` line alike, and nothing that merely ends
+/// in `app`.
 const BOUNDARIES: [(&str, &[&str]); 3] = [
     (
         "crates/lightwell-app/src/state",
-        &["use iced", "iced::", "iced_runtime"],
+        &["use iced", "iced::", "iced_runtime", "app::"],
     ),
     (
         "crates/lightwell-app/src/view",
@@ -217,7 +221,7 @@ fn boundaries(root: &Path) -> Result<usize> {
             for (number, line) in text.lines().enumerate() {
                 for token in forbidden {
                     ensure(
-                        !line.contains(token),
+                        !contains_token(line, token),
                         format!(
                             "{}:{}: {directory} may not contain {token}",
                             path.display(),
@@ -230,6 +234,17 @@ fn boundaries(root: &Path) -> Result<usize> {
         }
     }
     Ok(checked)
+}
+
+/// Whether `line` holds `token`. A token that starts with an identifier character must also start
+/// one, so `app::` is found in `crate::app::x` but not in `snapp::x`.
+fn contains_token(line: &str, token: &str) -> bool {
+    let identifier = |c: char| c.is_alphanumeric() || c == '_';
+    if !token.starts_with(identifier) {
+        return line.contains(token);
+    }
+    line.match_indices(token)
+        .any(|(at, _)| !line[..at].ends_with(identifier))
 }
 
 /// The references are independent by construction: `lightwell-reference` depends on no workspace
@@ -369,7 +384,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = tmp.path().join("crates/lightwell-app/src/state");
         fs::create_dir_all(&state).unwrap();
-        fs::write(state.join("clean.rs"), "use crate::app::fields::Fields;\n").unwrap();
+        fs::write(
+            state.join("clean.rs"),
+            "use crate::state::fields::Fields;\nlet snapp::x = wrapp::y;\n",
+        )
+        .unwrap();
         assert_eq!(boundaries(tmp.path()).unwrap(), 1);
         fs::write(state.join("bad.rs"), "use iced::widget::text;\n").unwrap();
         let error = boundaries(tmp.path()).unwrap_err().to_string();
@@ -377,6 +396,20 @@ mod tests {
             error.contains("bad.rs:1") && error.contains("use iced"),
             "{error}"
         );
+        // The view model never imports the update layer, in any spelling of the path.
+        for import in [
+            "use crate::app::message::Message;\n",
+            "\nlet step = super::app::crop::ANGLE_STEP;\n",
+            "use crate::{\n    app::fields::Fields,\n};\n",
+            "/// Seeded like [`crate::app::Editor`] seeds them.\n",
+        ] {
+            fs::write(state.join("bad.rs"), import).unwrap();
+            let error = boundaries(tmp.path()).unwrap_err().to_string();
+            assert!(
+                error.contains("bad.rs:") && error.contains("may not contain app::"),
+                "{import:?}: {error}"
+            );
+        }
         fs::remove_file(state.join("bad.rs")).unwrap();
         let view = tmp.path().join("crates/lightwell-app/src/view");
         fs::create_dir_all(&view).unwrap();

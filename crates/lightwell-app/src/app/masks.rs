@@ -232,7 +232,7 @@ impl Editor {
             else {
                 continue;
             };
-            if let Ok(text) = crate::app::fields::value_text(declared, &value) {
+            if let Ok(text) = crate::state::fields::value_text(declared, &value) {
                 self.fields.set(&key.0, &key.1, text);
             }
         }

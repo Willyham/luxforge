@@ -973,7 +973,7 @@ fn field_model(
         None => (None, None),
     };
     // A number reads as a module control's number does, from the same parameter declaration.
-    let number = |value: f64| crate::app::fields::format_number(&declared.parameter, value);
+    let number = |value: f64| crate::state::fields::format_number(&declared.parameter, value);
     let kind = match declared.kind() {
         ParameterKind::Number { min, max } => FieldKindModel::Number {
             display: value

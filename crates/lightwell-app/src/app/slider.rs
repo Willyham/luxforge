@@ -13,11 +13,10 @@ use crate::{
     app::{
         Editor,
         draft::Event,
-        fields,
         gesture::{Kind, SliderGesture, Starting},
         message::Message,
     },
-    state::tools,
+    state::{fields, tools},
 };
 use iced::Task;
 use lightwell_core::AssetId;

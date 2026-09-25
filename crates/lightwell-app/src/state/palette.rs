@@ -1,11 +1,50 @@
 //! The command palette model. Every entry is a declared control action, a module reset, a canvas
 //! mode, a library preset or a host command, so the palette can reach nothing the panels and the
 //! title bar cannot.
-use crate::{
-    app::message::{PaletteAction, Panel},
-    state::{Inputs, tools::palette_entries},
-};
+use crate::state::{Inputs, tools::palette_entries};
 use lightwell_core::{MASK_MODE, POINTER_MODE};
+use serde_json::{Map, Value};
+
+/// One of the two collapsible side panels, toggled from the title bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Panel {
+    State,
+    Tools,
+}
+
+impl Panel {
+    /// The `workspace.set` field this panel is stored in.
+    pub(crate) fn field(self) -> &'static str {
+        match self {
+            Self::State => "state_panel",
+            Self::Tools => "tools_panel",
+        }
+    }
+}
+
+/// What running one command palette entry does. Every entry is an existing message, so running an
+/// entry can reach nothing the panels and the title bar cannot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaletteAction {
+    /// A generated control action, with the control's own preset over the current field values.
+    Run {
+        action: String,
+        preset: Map<String, Value>,
+    },
+    /// The pointer mode or a module's declared canvas mode.
+    Mode(String),
+    /// Show or hide one side panel.
+    TogglePanel(Panel),
+    /// Open or close the state panel's Performance section.
+    TogglePerformance,
+    ToggleThirds,
+    Fit,
+    HundredPercent,
+    Undo,
+    Redo,
+    ReturnCurrent,
+    Restore,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PaletteEntry {
@@ -150,7 +189,7 @@ fn filter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testing::descriptors;
+    use crate::state::testing::descriptors;
     use crate::state::tools::palette_entries;
 
     fn sample() -> Vec<(String, String, PaletteAction)> {

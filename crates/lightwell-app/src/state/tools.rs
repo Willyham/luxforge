@@ -2,17 +2,15 @@
 //! A section keeps an input digest and a version, so a field change in one module re-derives that
 //! module alone and leaves every other section untouched.
 use crate::{
-    app::{
+    crop_draft::{AspectPreset, CropDraft, committed_aspect},
+    state::{
+        Inputs, MenuTarget,
+        capabilities::{self, CapabilityModel, TaskControl},
         fields::{
             action_params, channel_text, decimals_for, field_id, format_number, labelled,
             number_text, parse_field, undeclared_label, unsupported_label,
         },
-        message::{MenuTarget, PaletteAction},
-    },
-    crop_draft::{AspectPreset, CropDraft, committed_aspect},
-    state::{
-        Inputs,
-        capabilities::{self, CapabilityModel, TaskControl},
+        palette::PaletteAction,
         presets::{PresetsModel, presets_model},
     },
 };
@@ -1166,7 +1164,7 @@ fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupSt
         };
         *values += 1;
         *custom |= inputs.fields.get(action, parameter)
-            != Some(crate::app::fields::seed_text(parameter_desc).as_str());
+            != Some(crate::state::fields::seed_text(parameter_desc).as_str());
         true
     }
     fn walk(
@@ -1283,7 +1281,11 @@ fn value_model(
                 action: action.to_owned(),
                 parameter: parameter.to_owned(),
                 ids: [0, 1, 2].map(|index| {
-                    field_id(action, parameter, Some(crate::app::fields::CHANNELS[index]))
+                    field_id(
+                        action,
+                        parameter,
+                        Some(crate::state::fields::CHANNELS[index]),
+                    )
                 }),
                 label: labelled(label, declared),
                 channels: [0, 1, 2].map(|index| channel_text(text, index).to_owned()),
@@ -1450,7 +1452,7 @@ fn slider(
             .is_some_and(|(a, p)| a == action && p == parameter),
         integer,
         invalid,
-        default: crate::app::fields::seed_text(declared),
+        default: crate::state::fields::seed_text(declared),
     }
 }
 
@@ -1616,7 +1618,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
             .editing
             .is_some_and(|(action, parameter)| action == frame.action && parameter == frame.angle),
         guide: inputs.crop_guide,
-        nudge: crate::app::crop::ANGLE_STEP,
+        nudge: crate::crop_draft::ANGLE_STEP,
         enabled,
         ..CropSectionModel::default()
     };
@@ -1648,7 +1650,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
                 min: MIN_ANGLE,
                 max: MAX_ANGLE,
                 value: angle,
-                step: crate::app::crop::ANGLE_RAIL_STEP,
+                step: crate::crop_draft::ANGLE_RAIL_STEP,
                 live: false,
             }),
             lock_label: lock_label(locked),
@@ -1671,7 +1673,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
             min: MIN_ANGLE,
             max: MAX_ANGLE,
             value: draft.stage.angle,
-            step: crate::app::crop::ANGLE_RAIL_STEP,
+            step: crate::crop_draft::ANGLE_RAIL_STEP,
             live: true,
         }),
         ..base
@@ -2437,7 +2439,7 @@ fn collect_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testing::{CROP_ASPECTS, CROP_EFFECT, crop_descriptor};
+    use crate::state::testing::{CROP_ASPECTS, CROP_EFFECT, crop_descriptor};
     use lightwell_core::Availability;
     use serde_json::json;
 

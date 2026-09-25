@@ -4,7 +4,6 @@
 use crate::{
     app::{
         Editor,
-        fields::number_text,
         message::{
             BrushEdit, CropMessage, CropPointer, DraftMessage, MaskMessage, MenuTarget, Message,
             PaintTarget, PaletteAction, PresetMessage, RowEdit,
@@ -14,6 +13,7 @@ use crate::{
     },
     crop_draft::{Corner, Handle},
     mask_draft::MaskDraft,
+    state::fields::number_text,
     state::{
         presets::{PresetRow, presettable_groups},
         tools::crop_frame,

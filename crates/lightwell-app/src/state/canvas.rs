@@ -1,8 +1,5 @@
 //! The canvas model: the photograph, the mode strip, the draft bar and the notices over it.
-use crate::{
-    app::fields::number_text,
-    state::{Inputs, tools::canvas_pick},
-};
+use crate::state::{Inputs, fields::number_text, tools::canvas_pick};
 use lightwell_core::{
     Availability, CanvasInteraction, ErrorKind, MASK_MODE, ModuleDescriptor, POINTER_MODE, Zoom,
 };

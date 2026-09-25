@@ -1,6 +1,6 @@
 //! The state panel model: what has happened to this photograph. Versions, history and the recipe
 //! are three views of the same stored entries, never of the tools panel's values.
-use crate::{app::message::MenuTarget, state::Inputs};
+use crate::state::{Inputs, MenuTarget};
 use lightwell_core::{EntryId, LayerId, MaskId};
 use std::collections::HashSet;
 

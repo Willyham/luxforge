@@ -905,7 +905,7 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
             DraftField {
                 label: lightwell_core::mask::kind_title(name),
                 text: parameter
-                    .map(|declared| crate::app::fields::format_number(declared, value))
+                    .map(|declared| crate::state::fields::format_number(declared, value))
                     .unwrap_or_else(|| format!("{value:.4}")),
                 step: parameter
                     .and_then(|declared| declared.step)
@@ -1046,7 +1046,7 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
                 .map(str::to_owned)
                 .unwrap_or_else(|| lightwell_core::mask::kind_title(name)),
                 text: declared
-                    .map(|declared| crate::app::fields::format_number(declared, value))
+                    .map(|declared| crate::state::fields::format_number(declared, value))
                     .unwrap_or_else(|| format!("{value:.4}")),
                 value,
                 step: declared

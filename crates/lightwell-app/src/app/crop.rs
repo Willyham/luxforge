@@ -4,13 +4,15 @@ use crate::{
     app::{
         Editor,
         evidence::Settle,
-        fields::{decimals_of, number_text},
         gesture::Starting,
         message::{CropMessage, CropPointer, Message},
         tasks::{crop_preview_task, mutation},
     },
-    crop_draft::{CropDraft, Modifiers as DraftModifiers},
-    state::tools::crop_frame,
+    crop_draft::{ANGLE_RAIL_STEP, ANGLE_STEP, CropDraft, Modifiers as DraftModifiers},
+    state::{
+        fields::{decimals_of, number_text},
+        tools::crop_frame,
+    },
 };
 use iced::{Task, widget::operation};
 use lightwell_core::{
@@ -20,12 +22,6 @@ use lightwell_core::{
 use lightwell_ui::geometry::{quantize, value_from_fraction};
 use serde_json::{Value, json};
 
-/// How far one nudge button moves the straightening angle, in degrees.
-pub(crate) const ANGLE_STEP: f64 = 0.5;
-/// How finely a drag on the angle's rail moves the angle: the fine nudge (Option with an arrow),
-/// a tenth of [`ANGLE_STEP`], so the rail reaches exactly the angles the keyboard does. The crop
-/// descriptor declares no step or precision for its angle, so this is the host's own.
-pub(crate) const ANGLE_RAIL_STEP: f64 = ANGLE_STEP / 10.0;
 /// The scrollable around the photo, so a Space drag can scroll it while drafting a crop.
 pub(crate) const SURFACE_ID: &str = "lightwell.surface";
 /// How many changes from the idle section a starting draft holds for when it opens. A drag on the

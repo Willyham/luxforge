@@ -3,6 +3,7 @@
 //! follows is testable without a window.
 pub(crate) mod canvas;
 pub(crate) mod capabilities;
+pub(crate) mod fields;
 pub(crate) mod histogram;
 pub(crate) mod masks;
 pub(crate) mod palette;
@@ -10,19 +11,50 @@ pub(crate) mod panel;
 pub(crate) mod performance;
 pub(crate) mod presets;
 pub(crate) mod status;
+#[cfg(test)]
+pub(crate) mod testing;
 pub(crate) mod title;
 pub(crate) mod tools;
 
-use crate::{
-    app::{fields::Fields, message::MenuTarget},
-    crop_draft::CropDraft,
-    mask_draft::MaskDraft,
-};
+use crate::{crop_draft::CropDraft, mask_draft::MaskDraft};
+use fields::Fields;
 use lightwell_core::{
     ClientSession, ComponentId, ComponentMode, EditorState, EntryId, ErrorKind, HistoryPage,
     MaskId, ModuleDescriptor, RecipeDescription, Version, mask::commands::MaskListing,
 };
+use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
+
+/// What an inline menu was opened on. Menus carry no state of their own.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MenuTarget {
+    /// A saved version's chip: Delete.
+    Version(String),
+    /// A generated control: Copy as JSON request. `parameter` names the one field a control of a
+    /// patch action submits, so the copied request is exactly what that control would send.
+    Control {
+        action: String,
+        parameter: Option<String>,
+        preset: Option<Map<String, Value>>,
+    },
+    /// The open crop draft's own Apply: Copy as JSON request for its current values.
+    Draft,
+    /// A module's picker control: Copy as JSON request for the `workspace.set` a click sends.
+    Mode(String),
+    /// A module's task control: Copy as JSON request for the `task.<id>` a press sends.
+    Task { module_id: String, task: String },
+    /// A library preset's row, by its identity: Delete, Export and, for an imported preset, Copy
+    /// import report.
+    Preset(String),
+    /// A mask's row in the Masks panel, by its identity: Duplicate, Invert and Delete. Rename is the
+    /// row's own field rather than a menu item, because it needs one.
+    Mask(String),
+    /// A component's row in the open mask, by its identity: the Copy as JSON request of every
+    /// command that row's own controls send. They are a menu rather than four more buttons because
+    /// a copy is read once and a control is used often, and the row has to stay scannable.
+    Component(String),
+}
 
 /// The open slider gesture as the models read it: the control it drafts and whether its core draft
 /// is conflicted.
@@ -246,7 +278,7 @@ mod tests {
         tools::{ControlModel, ValueEdit},
         *,
     };
-    use crate::app::testing::{
+    use crate::state::testing::{
         controls_descriptor, crop_descriptor, crop_layer, descriptors, entry, listed,
         tabs_descriptor,
     };
@@ -357,7 +389,7 @@ mod tests {
                 current.snapshot = current.snapshot.append(layer).expect("a valid stack");
             }
             self.display_entry = Some(current.id.clone());
-            self.current_recipe = Some(crate::app::testing::described(&current));
+            self.current_recipe = Some(crate::state::testing::described(&current));
             self.lineage.insert(current.id.clone());
             self.history = HistoryPage {
                 entries: vec![lightwell_core::HistoryRow::from(&current)],
@@ -709,7 +741,7 @@ mod tests {
                     min: -45.0,
                     max: 45.0,
                     value: 0.0,
-                    step: crate::app::crop::ANGLE_RAIL_STEP,
+                    step: crate::crop_draft::ANGLE_RAIL_STEP,
                     live: false,
                 })
             );
@@ -724,8 +756,9 @@ mod tests {
         assert_eq!(chosen(&model), ["16:9"]);
         assert!(model.locked && model.can_swap);
         assert_eq!(model.lock_label, "Unlock ratio");
-        let presets =
-            crate::crop_draft::aspect_presets(&crate::app::testing::CROP_ASPECTS.map(String::from));
+        let presets = crate::crop_draft::aspect_presets(
+            &crate::state::testing::CROP_ASPECTS.map(String::from),
+        );
         let draft =
             CropDraft::from_layer(stage, wide, lightwell_core::LayerId::new(), 0, 3, &presets);
         assert_eq!(draft.preset, "16:9");
@@ -1287,7 +1320,7 @@ mod tests {
     /// temperature and tint, a neutral pick and explicit gains each have one.
     #[test]
     fn the_raw_section_is_active_only_when_its_development_is_not_as_shot_at_zero_ev() {
-        use crate::app::testing::{Z6_AS_SHOT, Z6_CAM_XYZ, raw_source};
+        use crate::state::testing::{Z6_AS_SHOT, Z6_CAM_XYZ, raw_source};
         use lightwell_core::{RawPayload, WhiteBalanceMode};
         let raw = descriptors()
             .into_iter()
@@ -1419,7 +1452,7 @@ mod tests {
             .expect("a valid stack");
         scene.session.preview.selection = lightwell_core::HistorySelection::Entry(older.id.clone());
         scene.display_entry = Some(older.id.clone());
-        scene.recipe = Some(crate::app::testing::described(&older));
+        scene.recipe = Some(crate::state::testing::described(&older));
         assert!(
             !section(&scene.derive(), &basic.id).active,
             "the previewed edit does not light the current entry's dot"
@@ -1440,7 +1473,7 @@ mod tests {
         edited.session.preview.selection =
             lightwell_core::HistorySelection::Entry(neutral.id.clone());
         edited.display_entry = Some(neutral.id.clone());
-        edited.recipe = Some(crate::app::testing::described(&neutral));
+        edited.recipe = Some(crate::state::testing::described(&neutral));
         assert!(
             section(&edited.derive(), &basic.id).active,
             "the current edit keeps its dot during a preview"
@@ -1990,7 +2023,7 @@ mod tests {
         let mut scene = Scene::new(modules.clone()).opened(Vec::new());
         scene.developer = true;
         if let Some(state) = &mut scene.state {
-            state.asset.source = crate::app::testing::raw_source();
+            state.asset.source = crate::state::testing::raw_source();
         }
         let workspace = scene.derive();
         let groups = |section: &tools::SectionModel| {
@@ -2387,7 +2420,7 @@ mod tests {
         assert_eq!(entries[0].detail, "edit.apply-preset \u{00b7} User presets");
         assert_eq!(
             entries[0].action,
-            crate::app::message::PaletteAction::Run {
+            crate::state::palette::PaletteAction::Run {
                 action: "apply-preset".into(),
                 preset: row.apply.expect("the row applies"),
             },

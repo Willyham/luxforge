@@ -3,12 +3,10 @@
 //! section says and publishes messages, exactly as the generated-control mapping in
 //! `state::tools` describes it.
 use crate::{
-    app::{
-        fields,
-        message::{ClipEndpoint, CropMessage, MenuTarget, Message, PresetMessage},
-    },
+    app::message::{ClipEndpoint, CropMessage, MenuTarget, Message, PresetMessage},
     state::{
         capabilities::CapabilityView,
+        fields,
         histogram::HistogramModel,
         presets::{PresetFormModel, PresetRow, PresetsModel},
         tools::{

@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn boolean_color_and_curve_fields_reflect_exact_authoritative_values() {
-        let descriptor = crate::app::testing::controls_descriptor();
+        let descriptor = crate::state::testing::controls_descriptor();
         let action = descriptor.action("fixture-set").unwrap();
         let mut fields = Fields::seeded(std::slice::from_ref(&descriptor));
         for (name, value, expected_text) in [
@@ -1170,7 +1170,7 @@ mod tests {
     /// field default; the same field without the declaration resets to its default again.
     #[test]
     fn a_declared_field_reset_runs_its_own_action() {
-        let mut descriptor = crate::app::testing::controls_descriptor();
+        let mut descriptor = crate::state::testing::controls_descriptor();
         // The declared reset sends another field, never the Amount default.
         let reset = lightwell_core::ResetAction {
             action: "fixture-set".into(),

@@ -7,12 +7,10 @@
 //! request it can send is that control's action with the preset's settings, name and identity.
 //! The parameter names are read from the action's descriptor by kind, and the only module-specific
 //! rule here is the create form's white-balance default.
-use crate::{
-    app::message::PaletteAction,
-    state::{
-        Inputs,
-        tools::{Rendered, classify, is_patch},
-    },
+use crate::state::{
+    Inputs,
+    palette::PaletteAction,
+    tools::{Rendered, classify, is_patch},
 };
 use lightwell_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterKind, PresetSummary, ReportCounts,
@@ -558,7 +556,7 @@ pub(crate) fn palette_entries(inputs: &Inputs<'_>) -> Vec<(String, String, Palet
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testing::{descriptors, listed};
+    use crate::state::testing::{descriptors, listed};
 
     fn labels(groups: &[PresettableGroup]) -> Vec<&str> {
         groups.iter().map(|group| group.label.as_str()).collect()

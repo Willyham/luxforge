@@ -202,7 +202,7 @@ impl Editor {
             hard_min(&declared.kind),
             hard_max(&declared.kind),
             fine_step,
-            crate::app::fields::fine_decimals_for(declared),
+            crate::state::fields::fine_decimals_for(declared),
         );
         let value = if integer {
             Value::from(value.round() as i64)
@@ -375,10 +375,10 @@ impl Editor {
         let text = if integer {
             (next.round() as i64).to_string()
         } else {
-            crate::app::fields::number_text(next)
+            crate::state::fields::number_text(next)
         };
         self.fields.set(&action, &parameter, text);
-        let id = crate::app::fields::field_id(&action, &parameter, None);
+        let id = crate::state::fields::field_id(&action, &parameter, None);
         self.editing = Some((action, parameter));
         iced::widget::operation::focus(iced::widget::Id::from(id))
     }

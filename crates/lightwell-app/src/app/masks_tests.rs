@@ -1700,7 +1700,7 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
             .unwrap_or_else(|| panic!("{name} is a field"));
         assert_eq!(
             shown,
-            crate::app::fields::value_text(declared, stored).expect("the stored value"),
+            crate::state::fields::value_text(declared, stored).expect("the stored value"),
             "{name} reads {shown} and is stored as {stored}"
         );
     }

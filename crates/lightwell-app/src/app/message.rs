@@ -1,6 +1,10 @@
 //! Semantic desktop messages: what happened, never how it was drawn. A gesture, a key or an owner
 //! response becomes exactly one of these; pixel deltas, pointer positions and key codes stay in the
 //! view and the keymap.
+pub(crate) use crate::state::{
+    MenuTarget,
+    palette::{PaletteAction, Panel},
+};
 use crate::{
     app::capabilities::Answer,
     app::controls::CurveSampleIdentity,
@@ -39,78 +43,6 @@ impl ClipEndpoint {
             Self::Highlights => "clip_highlights",
         }
     }
-}
-
-/// One of the two collapsible side panels, toggled from the title bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Panel {
-    State,
-    Tools,
-}
-
-impl Panel {
-    /// The `workspace.set` field this panel is stored in.
-    pub(crate) fn field(self) -> &'static str {
-        match self {
-            Self::State => "state_panel",
-            Self::Tools => "tools_panel",
-        }
-    }
-}
-
-/// What an inline menu was opened on. Menus carry no state of their own.
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum MenuTarget {
-    /// A saved version's chip: Delete.
-    Version(String),
-    /// A generated control: Copy as JSON request. `parameter` names the one field a control of a
-    /// patch action submits, so the copied request is exactly what that control would send.
-    Control {
-        action: String,
-        parameter: Option<String>,
-        preset: Option<Map<String, Value>>,
-    },
-    /// The open crop draft's own Apply: Copy as JSON request for its current values.
-    Draft,
-    /// A module's picker control: Copy as JSON request for the `workspace.set` a click sends.
-    Mode(String),
-    /// A module's task control: Copy as JSON request for the `task.<id>` a press sends.
-    Task { module_id: String, task: String },
-    /// A library preset's row, by its identity: Delete, Export and, for an imported preset, Copy
-    /// import report.
-    Preset(String),
-    /// A mask's row in the Masks panel, by its identity: Duplicate, Invert and Delete. Rename is the
-    /// row's own field rather than a menu item, because it needs one.
-    Mask(String),
-    /// A component's row in the open mask, by its identity: the Copy as JSON request of every
-    /// command that row's own controls send. They are a menu rather than four more buttons because
-    /// a copy is read once and a control is used often, and the row has to stay scannable.
-    Component(String),
-}
-
-/// What running one command palette entry does. Every entry is an existing message, so running an
-/// entry can reach nothing the panels and the title bar cannot.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PaletteAction {
-    /// A generated control action, with the control's own preset over the current field values.
-    Run {
-        action: String,
-        preset: Map<String, Value>,
-    },
-    /// The pointer mode or a module's declared canvas mode.
-    Mode(String),
-    /// Show or hide one side panel.
-    TogglePanel(Panel),
-    /// Open or close the state panel's Performance section.
-    TogglePerformance,
-    ToggleThirds,
-    Fit,
-    HundredPercent,
-    Undo,
-    Redo,
-    ReturnCurrent,
-    Restore,
 }
 
 /// Every change to the Presets section is one message, so a script drives the library through the

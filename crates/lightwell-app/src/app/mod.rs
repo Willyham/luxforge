@@ -10,7 +10,6 @@ mod controls_tests;
 pub(crate) mod crop;
 pub(crate) mod draft;
 pub(crate) mod evidence;
-pub(crate) mod fields;
 pub(crate) mod gesture;
 pub(crate) mod keymap;
 pub(crate) mod masks;
@@ -40,6 +39,7 @@ use crate::{
     state::{
         self, Workspace,
         capabilities::CapabilityStore,
+        fields::{self, Fields, action_params, number_text, submit_preset},
         histogram::{Analysis, Readout},
         presets::{PresetForm, PresetLibrary},
         tools,
@@ -47,7 +47,6 @@ use crate::{
     view,
 };
 use evidence::{EVIDENCE_DEADLINE, Evidence, SCRIPT_EVIDENCE_DEADLINE, Settle};
-use fields::{Fields, action_params, number_text, submit_preset};
 use gesture::{Gesture, Starting};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;

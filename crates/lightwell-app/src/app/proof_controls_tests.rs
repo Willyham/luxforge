@@ -1,7 +1,8 @@
 //! The registered developer module proves the generated desktop vocabulary against the same
 //! JSON method table an independent client uses. No descriptor-only desktop fixture is involved.
-use super::{Boot, Editor, controls::CurveSampleIdentity, fields, message::Message, tasks};
+use super::{Boot, Editor, controls::CurveSampleIdentity, message::Message, tasks};
 use crate::Config;
+use crate::state::fields;
 use crate::state::tools::ControlModel;
 use lightwell_core::{
     ApiRequest, AssetId, ClientId, ControlsModule, ModuleDescriptor, ModuleRegistry, OwnerHandle,
