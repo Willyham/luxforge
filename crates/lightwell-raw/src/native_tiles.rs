@@ -14,14 +14,17 @@ use std::{
 // Eight slots across *all* RawSource callers add at most 7,905,664 explicit
 // scratch bytes; there is no full-frame allocation per slot.
 const MAX_SCRATCH_SLOTS: usize = 8;
+// Leave capacity in the shared pool for concurrent preview rendering. Other
+// RawSource callers may use the remaining process-wide scratch slots.
+const MAX_WORKERS_PER_SOURCE: usize = 4;
 static SLOTS: OnceLock<(Mutex<usize>, Condvar)> = OnceLock::new();
 #[cfg(test)]
 static PEAK_SLOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 pub(super) struct ExecutorContext<'a> {
     pub cancel: &'a AtomicBool,
-    /// Zero chooses the available shared-pool width; nonzero is an exactness
-    /// test override. The process-wide scratch cap still applies.
+    /// Zero uses the production per-source cap; nonzero is an exactness-test
+    /// override up to the process-wide scratch cap.
     pub worker_limit: usize,
 }
 
@@ -96,13 +99,14 @@ pub(super) extern "C" fn execute(
         // executor synchronously; Markesteijn stores neither pointer.
         let state = unsafe { &*context.cast::<ExecutorContext<'_>>() };
         let width = rayon::current_num_threads();
+        let source_limit = if state.worker_limit == 0 {
+            MAX_WORKERS_PER_SOURCE
+        } else {
+            state.worker_limit
+        };
         let desired = job_count
             .min(width)
-            .min(if state.worker_limit == 0 {
-                width
-            } else {
-                state.worker_limit
-            })
+            .min(source_limit)
             .clamp(1, MAX_SCRATCH_SLOTS);
         // Raw pointers are converted to integer addresses solely to satisfy
         // Rayon closure Send bounds. The scope is synchronous and C++ joins
@@ -256,34 +260,40 @@ mod tests {
     fn one_callback_per_row_group_with_bounded_batches() {
         let _test_guard = TEST_BUDGET_LOCK.lock().unwrap();
         let cancel = AtomicBool::new(false);
-        let context = ExecutorContext {
-            cancel: &cancel,
-            worker_limit: 3,
-        };
-        let tracker = JobTracker {
-            seen: (0..11)
-                .map(|_| std::sync::atomic::AtomicUsize::new(0))
-                .collect(),
-            active: std::sync::atomic::AtomicUsize::new(0),
-            peak: std::sync::atomic::AtomicUsize::new(0),
-        };
-        assert_eq!(
-            execute(
-                (&context as *const ExecutorContext<'_>).cast_mut().cast(),
-                tracker.seen.len(),
-                track_one_group,
-                (&tracker as *const JobTracker).cast_mut().cast(),
-            ),
-            0
-        );
-        assert!(
-            tracker
-                .seen
-                .iter()
-                .all(|seen| seen.load(Ordering::Relaxed) == 1)
-        );
-        assert!(tracker.peak.load(Ordering::Relaxed) <= 3);
-        assert_eq!(tracker.active.load(Ordering::Relaxed), 0);
+        for (worker_limit, cap) in [
+            (3, 3),
+            (0, MAX_WORKERS_PER_SOURCE),
+            (usize::MAX, MAX_SCRATCH_SLOTS),
+        ] {
+            let context = ExecutorContext {
+                cancel: &cancel,
+                worker_limit,
+            };
+            let tracker = JobTracker {
+                seen: (0..17)
+                    .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                    .collect(),
+                active: std::sync::atomic::AtomicUsize::new(0),
+                peak: std::sync::atomic::AtomicUsize::new(0),
+            };
+            assert_eq!(
+                execute(
+                    (&context as *const ExecutorContext<'_>).cast_mut().cast(),
+                    tracker.seen.len(),
+                    track_one_group,
+                    (&tracker as *const JobTracker).cast_mut().cast(),
+                ),
+                0
+            );
+            assert!(
+                tracker
+                    .seen
+                    .iter()
+                    .all(|seen| seen.load(Ordering::Relaxed) == 1)
+            );
+            assert!(tracker.peak.load(Ordering::Relaxed) <= cap);
+            assert_eq!(tracker.active.load(Ordering::Relaxed), 0);
+        }
     }
 
     #[test]
