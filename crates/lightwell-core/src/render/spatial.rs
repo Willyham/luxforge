@@ -3289,7 +3289,7 @@ pub(crate) mod tests {
     /// `a_reduction_behind_a_spatial_segment_evaluates_each_tile_once`.
     #[test]
     fn a_point_query_evaluates_each_spatial_tile_at_most_once_on_both_paths() {
-        use crate::render::linear::{SpatialMode, terminal_pixel};
+        use crate::render::{SpatialMode, linear::terminal_pixel};
         let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
@@ -3325,7 +3325,7 @@ pub(crate) mod tests {
                     rendered.pixel(x, y),
                     "{case}"
                 );
-                let counts = evaluations_per_segment(&evaluation.tiles.evaluated(), &case);
+                let counts = evaluations_per_segment(&evaluation.point_tiles().evaluated(), &case);
                 assert_within(&counts, &bounds, &case);
             }
             clear_estimates();
@@ -3395,7 +3395,7 @@ pub(crate) mod tests {
             evaluation.pixel(x, y).unwrap();
             let case = format!("({x}, {y})");
             assert_eq!(
-                evaluations_per_segment(&evaluation.tiles.evaluated(), &case),
+                evaluations_per_segment(&evaluation.point_tiles().evaluated(), &case),
                 expected,
                 "{case}"
             );
@@ -3408,7 +3408,7 @@ pub(crate) mod tests {
     /// byte, whose render prepared its estimates from a cold store of its own.
     #[test]
     fn a_reduction_behind_a_spatial_segment_evaluates_each_tile_once() {
-        use crate::render::linear::{SpatialMode, terminal_pixel};
+        use crate::render::{SpatialMode, linear::terminal_pixel};
         let _guard = spatial_guard();
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
@@ -3423,7 +3423,7 @@ pub(crate) mod tests {
             .with_tile(POINT_TILE);
         let sampled = evaluation.pixel(x, y).unwrap();
         assert_eq!(
-            evaluations_per_segment(&evaluation.tiles.evaluated(), "byte path"),
+            evaluations_per_segment(&evaluation.point_tiles().evaluated(), "byte path"),
             [(1, every_tile), (2, 1)]
         );
         clear_estimates();
@@ -3528,12 +3528,12 @@ pub(crate) mod tests {
         budget.set_target(previous);
         let (x, y) = (64, 64);
         assert_eq!(evaluation.pixel(x, y).unwrap(), rendered.pixel(x, y));
-        let evaluated = evaluation.tiles.evaluated().len();
+        let evaluated = evaluation.point_tiles().evaluated().len();
         assert!(
             evaluated > POINT_TILES_FLOOR,
             "the point reads {evaluated} tiles, more than the floor holds"
         );
-        assert_eq!(evaluation.tiles.held(), POINT_TILES_FLOOR);
+        assert_eq!(evaluation.point_tiles().held(), POINT_TILES_FLOOR);
         let tile_bytes = Region {
             x0: 0,
             y0: 0,

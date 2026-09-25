@@ -4,14 +4,15 @@
 //! [`RenderContext`] whose budgets and estimate store it reads. What it returns, a [`Render`],
 //! answers everything a caller asks of an evaluated stack from that one compilation: the whole
 //! frame, one pixel, a grid of pixels, the output stage and its geometry. Every export, preview
-//! phase, analysis, sample and draft evaluation enters here, whichever interpretation the source has;
-//! the byte evaluator ([`super::Evaluation`] and [`super::rasterize`]) and the linear one
-//! ([`super::linear::LinearEvaluation`]) are what it dispatches to.
+//! phase, analysis, sample and draft evaluation enters here, whichever interpretation the source has.
+//! The source's interpretation picks the pixel domain ([`super::Byte`] or [`linear::Linear`]); the
+//! one pipeline ([`super::pipeline`]) evaluates either, and each domain's driver
+//! ([`super::rasterize`] or [`linear::rasterize`]) writes its frame.
 
 use super::{
-    Cancel, Compiled, Evaluation, LayerInput, Raster, Sample, StageTransform, check_source,
-    grid_centres,
-    linear::{self, LinearEvaluation, LinearImage, LinearSettings, SpatialMode},
+    Byte, Cancel, Compiled, Evaluation, LayerInput, PixelDomain, Raster, Sample, SpatialMode,
+    StageTransform, check_source, grid_centres,
+    linear::{self, Linear, LinearImage, LinearSettings},
     rasterize,
     spatial::PRODUCTION_TILE,
     transform_of,
@@ -222,16 +223,9 @@ impl<'a> Render<'a> {
             ),
             RenderSource::Linear { image, settings } => {
                 cancel.check()?;
-                let evaluation = LinearEvaluation::new(
-                    image,
-                    Cow::Borrowed(&self.compiled),
-                    settings,
-                    cancel,
-                    self.options.tile,
-                    SpatialMode::Frames,
-                    self.context,
-                )?;
-                linear::rasterize(&evaluation, image, snapshot_id, cancel, self.context)
+                let evaluation =
+                    self.evaluation(Linear::new(image, settings)?, SpatialMode::Frames)?;
+                linear::rasterize(&evaluation, snapshot_id, cancel, self.context)
             }
         }
     }
@@ -243,13 +237,9 @@ impl<'a> Render<'a> {
     pub fn sample(&self, x: u32, y: u32) -> Result<Sample, Error> {
         let (width, height) = self.stage();
         let rgba = match self.source {
-            RenderSource::Byte(image) => self.byte(image).pixel(x, y)?,
+            RenderSource::Byte(image) => self.sample_in(Byte(image), x, y)?,
             RenderSource::Linear { image, settings } => {
-                linear::output_len(width, height)?;
-                self.linear(image, settings, SpatialMode::Point)?
-                    .pixel(x, y)?
-                    .map(linear::terminal_pixel)
-                    .transpose()?
+                self.sample_in(Linear::new(image, settings)?, x, y)?
             }
         };
         Ok(Sample {
@@ -260,43 +250,20 @@ impl<'a> Render<'a> {
     }
 
     /// The output pixels at the centres of a `side` × `side` grid, row by row from the top-left,
-    /// through one evaluation, so each equals the rendered byte there: `O(side² × layers)` and no
-    /// frame on the byte path, where the points share one tile cache; on the linear path a spatial
-    /// operation materializes its output once for all of them, since the points spread over the
-    /// whole stage. `checkpoint` is asked before each point.
+    /// through one evaluation, so each equals the rendered byte there: `O(side² × layers)`, with
+    /// each spatial segment answered as the domain's [`PixelDomain::GRID`] says — the byte path's
+    /// points share one tile cache and allocate no frame, and the linear path materializes each
+    /// spatial output once for all of them, since the points spread over the whole stage.
+    /// `checkpoint` is asked before each point.
     pub(crate) fn grid(
         &self,
         side: u32,
         checkpoint: &dyn Fn() -> Result<(), Error>,
     ) -> Result<Vec<[u8; 4]>, Error> {
-        let (width, height) = self.stage();
-        let centres = grid_centres(side, width, height);
-        let outside = || Error::new(ErrorKind::Internal, "a grid centre lies outside the stage");
         match self.source {
-            RenderSource::Byte(image) => {
-                let evaluation = self.byte(image);
-                centres
-                    .into_iter()
-                    .map(|(x, y)| {
-                        checkpoint()?;
-                        evaluation.pixel(x, y)?.ok_or_else(outside)
-                    })
-                    .collect()
-            }
+            RenderSource::Byte(image) => self.grid_in(Byte(image), side, checkpoint),
             RenderSource::Linear { image, settings } => {
-                linear::output_len(width, height)?;
-                let evaluation = self.linear(image, settings, SpatialMode::Frames)?;
-                centres
-                    .into_iter()
-                    .map(|(x, y)| {
-                        checkpoint()?;
-                        evaluation
-                            .pixel(x, y)?
-                            .map(linear::terminal_pixel)
-                            .transpose()?
-                            .ok_or_else(outside)
-                    })
-                    .collect()
+                self.grid_in(Linear::new(image, settings)?, side, checkpoint)
             }
         }
     }
@@ -328,30 +295,50 @@ impl<'a> Render<'a> {
         self.source
     }
 
-    fn byte(&self, image: &'a SourceImage) -> Evaluation<'_> {
+    /// This compilation evaluated in `domain`, answering its spatial segments as `mode` says.
+    fn evaluation<D: PixelDomain>(
+        &self,
+        domain: D,
+        mode: SpatialMode,
+    ) -> Result<Evaluation<'_, D>, Error> {
         Evaluation::new(
-            image,
+            domain,
             Cow::Borrowed(&self.compiled),
             self.options.tile,
+            mode,
+            &self.options.cancel,
             self.context,
         )
     }
 
-    fn linear(
+    fn sample_in<D: PixelDomain>(
         &self,
-        image: &'a LinearImage,
-        settings: LinearSettings,
-        mode: SpatialMode,
-    ) -> Result<LinearEvaluation<'_>, Error> {
-        LinearEvaluation::new(
-            image,
-            Cow::Borrowed(&self.compiled),
-            settings,
-            &self.options.cancel,
-            self.options.tile,
-            mode,
-            self.context,
-        )
+        domain: D,
+        x: u32,
+        y: u32,
+    ) -> Result<Option<[u8; 4]>, Error> {
+        let (width, height) = self.stage();
+        domain.check_output(width, height)?;
+        self.evaluation(domain, SpatialMode::Point)?.terminal(x, y)
+    }
+
+    fn grid_in<D: PixelDomain>(
+        &self,
+        domain: D,
+        side: u32,
+        checkpoint: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<Vec<[u8; 4]>, Error> {
+        let (width, height) = self.stage();
+        domain.check_output(width, height)?;
+        let evaluation = self.evaluation(domain, D::GRID)?;
+        let outside = || Error::new(ErrorKind::Internal, "a grid centre lies outside the stage");
+        grid_centres(side, width, height)
+            .into_iter()
+            .map(|(x, y)| {
+                checkpoint()?;
+                evaluation.terminal(x, y)?.ok_or_else(outside)
+            })
+            .collect()
     }
 }
 
@@ -399,25 +386,30 @@ pub(crate) fn layer_input<'a>(
     match source {
         RenderSource::Byte(image) => {
             check_source(image)?;
-            Ok(LayerInput::Byte(Evaluation::new(
-                image,
-                Cow::Owned(compiled),
-                PRODUCTION_TILE,
-                context,
-            )))
+            Ok(LayerInput::Byte(point(Byte(image), compiled, context)?))
         }
-        RenderSource::Linear { image, settings } => Ok(LayerInput::Linear(LinearEvaluation::new(
-            image,
-            Cow::Owned(compiled),
-            settings,
-            &Cancel::never(),
-            PRODUCTION_TILE,
-            // A point query: this prefix is read one pixel per display cell, or once for a
-            // stroke's colour seed, never as a whole frame. A prefix holding a spatial layer is
-            // refused above, so the mode changes nothing admissible; it is named for what the read
-            // is.
-            SpatialMode::Point,
+        RenderSource::Linear { image, settings } => Ok(LayerInput::Linear(point(
+            Linear::new(image, settings)?,
+            compiled,
             context,
         )?)),
     }
+}
+
+/// A point query of `compiled` in `domain`: this prefix is read one pixel per display cell, or once
+/// for a stroke's colour seed, never as a whole frame. A prefix holding a spatial layer is refused
+/// before this, so the mode changes nothing admissible; it is named for what the read is.
+fn point<'a, D: PixelDomain>(
+    domain: D,
+    compiled: Compiled,
+    context: &'a RenderContext,
+) -> Result<Evaluation<'a, D>, Error> {
+    Evaluation::new(
+        domain,
+        Cow::Owned(compiled),
+        PRODUCTION_TILE,
+        SpatialMode::Point,
+        &Cancel::never(),
+        context,
+    )
 }

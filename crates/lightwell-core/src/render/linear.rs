@@ -3,23 +3,19 @@
 //! This module is deliberately independent of a RAW decoder. A decoder or source-preparation
 //! worker supplies immutable planar RGB values in unbounded linear sRGB/D65. The recipe is then
 //! evaluated in f64 and converted to the existing byte [`Raster`] only at the terminal boundary.
-//! The byte JPEG evaluator in [`super::render`] remains unchanged.
+//! [`Linear`] is this path's [`PixelDomain`]: the one pipeline in [`super::pipeline`] evaluates it
+//! exactly as it evaluates a JPEG's bytes, and only what a linear pixel is lives here.
 
 use super::{
-    Cancel, Compiled, Entry, Raster, RenderContext, ScratchBudget, Segment,
-    spatial::{
-        self, PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
-        run_tile,
-    },
+    Cancel, ColorRun, Compiled, Entry, Evaluation, PixelDomain, Raster, RenderContext,
+    ScratchBudget, Segment, SpatialMode, Taps, apply_units, spatial,
 };
 use crate::{
     Error, ErrorKind, SnapshotId,
     colour::{mat3, srgb},
-    modules::{Global, Processing, SpatialOperation, Stage},
+    modules::{Parallelism, Processing, Region, Stage},
 };
 use rayon::prelude::*;
-#[cfg(test)]
-use std::sync::Weak;
 use std::{borrow::Cow, sync::Arc};
 
 const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
@@ -635,110 +631,6 @@ fn terminal_srgb(linear: f64) -> Result<u8, Error> {
     Ok(rounded as u8)
 }
 
-fn clamp_index(value: f64, limit: u32) -> u32 {
-    let last = limit.saturating_sub(1);
-    if value <= 0.0 {
-        0
-    } else if value >= f64::from(last) {
-        last
-    } else {
-        value as u32
-    }
-}
-
-fn linear_bilinear(
-    u: f64,
-    v: f64,
-    width: u32,
-    height: u32,
-    fetch: impl Fn(u32, u32) -> Result<[f64; 3], Error>,
-) -> Result<[f64; 3], Error> {
-    if !u.is_finite() || !v.is_finite() || width == 0 || height == 0 {
-        return Err(Error::new(
-            ErrorKind::Render,
-            "linear resample has invalid coordinates or dimensions",
-        ));
-    }
-    let x = u - 0.5;
-    let y = v - 0.5;
-    let left = x.floor();
-    let top = y.floor();
-    let weight_x = x - left;
-    let weight_y = y - top;
-    let (left_x, right_x) = (clamp_index(left, width), clamp_index(left + 1.0, width));
-    let (top_y, bottom_y) = (clamp_index(top, height), clamp_index(top + 1.0, height));
-    let corners = [
-        (fetch(left_x, top_y)?, (1.0 - weight_x) * (1.0 - weight_y)),
-        (fetch(right_x, top_y)?, weight_x * (1.0 - weight_y)),
-        (fetch(left_x, bottom_y)?, (1.0 - weight_x) * weight_y),
-        (fetch(right_x, bottom_y)?, weight_x * weight_y),
-    ];
-    let output = std::array::from_fn(|channel| {
-        corners
-            .iter()
-            .map(|(pixel, weight)| pixel[channel] * weight)
-            .sum::<f64>()
-    });
-    if output.iter().all(|value| value.is_finite()) {
-        Ok(output)
-    } else {
-        Err(Error::new(
-            ErrorKind::Render,
-            "linear resample produced a non-finite value",
-        ))
-    }
-}
-
-/// How a [`LinearEvaluation`] answers the pixels of its spatial segments.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SpatialMode {
-    /// Materialize every spatial operation's output once over its whole stage, for a pass that
-    /// reads every pixel.
-    Frames,
-    /// Evaluate every spatial segment only in the tiles the requested pixels need, through one
-    /// [`PointTiles`] cache, for a point query, which is the declared exception to performance
-    /// rule 4. Nothing is materialized: a later segment's halo reads an earlier segment's tiles
-    /// from the same cache, and so does a reduction of a stage behind a spatial segment.
-    Point,
-}
-
-/// The output of the latest spatial segment an evaluation has materialized, with the index of the
-/// segment it enters.
-struct SpatialFrame {
-    index: usize,
-    planes: Arc<Vec<f32>>,
-}
-
-pub(crate) struct LinearEvaluation<'a> {
-    source: &'a LinearImage,
-    compiled: Cow<'a, Compiled>,
-    exposure_multiplier: f64,
-    /// Applied to each source pixel before the exposure multiply, when the settings carry one.
-    white_balance: Option<WhiteBalanceApproximation>,
-    /// The latest spatial frame, in [`SpatialMode::Frames`]. The linear path pulls single pixels
-    /// through the compiled prefix, and a neighbourhood cannot be pulled one pixel at a time, so for
-    /// a pass over every pixel each spatial operation's output is materialized once, in stage order,
-    /// as three `f32` planes inside the RAW planar limit. Nothing is quantized here: the values stay
-    /// float until the terminal boundary.
-    ///
-    /// Only the latest is kept. A pull stops at the first spatial entry it meets walking back — a
-    /// spatial entry reads its own frame and only a resample reads the segment before it — so a
-    /// spatial segment's input pulls stop at the frame before it, and once its own frame exists
-    /// nothing reads an earlier one. Building a frame therefore holds at most two, and the
-    /// evaluation keeps one.
-    frame: Option<SpatialFrame>,
-    /// Every frame this evaluation built, in order, with how many of them were alive when it was
-    /// finished and before the one it replaces was released, which is the peak.
-    #[cfg(test)]
-    built: Vec<(Weak<Vec<f32>>, usize)>,
-    /// In [`SpatialMode::Point`], the tiles of every spatial segment this query has evaluated.
-    tiles: Option<PointTiles<'a>>,
-    /// The output tile a spatial entry is evaluated in; [`spatial::PRODUCTION_TILE`] outside the
-    /// tests that prove the result does not depend on it.
-    tile: u32,
-    context: &'a RenderContext,
-}
-
 /// Refuse a stack the linear path cannot evaluate: more than one resample stage.
 pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
     let resamples = compiled
@@ -755,243 +647,33 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
     Ok(())
 }
 
-impl<'a> LinearEvaluation<'a> {
-    /// An evaluation of a stack compiled against `source`'s dimensions. In
-    /// [`SpatialMode::Frames`] every spatial operation's output is materialized here, in stage
-    /// order, under `cancel`; in [`SpatialMode::Point`] nothing is, and a spatial segment's pixels
-    /// are pulled through [`Self::point_pixel`] one tile at a time.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        source: &'a LinearImage,
-        compiled: Cow<'a, Compiled>,
-        settings: LinearSettings,
-        cancel: &Cancel,
-        tile: u32,
-        mode: SpatialMode,
-        context: &'a RenderContext,
-    ) -> Result<Self, Error> {
-        let exposure_multiplier = settings.multiplier()?;
-        check_resamples(&compiled)?;
-        let mut evaluation = Self {
+/// The linear domain: a developed RAW's planes in signed unbounded linear sRGB, with the exposure
+/// and any approximate white balance applied to each source pixel in `f64`. A segment with colour
+/// is `f32` from its entry to its end and one without stays `f64`; nothing is quantized before the
+/// terminal boundary, so a replacement is decoded rather than quantized at, a resample blends in
+/// `f64`, and a spatial operation's `f32` output is read back exactly. There is no alpha.
+#[derive(Clone, Copy)]
+pub(crate) struct Linear<'a> {
+    source: &'a LinearImage,
+    exposure_multiplier: f64,
+    /// Applied to each source pixel before the exposure multiply, when the settings carry one.
+    white_balance: Option<WhiteBalanceApproximation>,
+}
+
+impl<'a> Linear<'a> {
+    /// `source` under `settings`, refused when the exposure is out of range.
+    pub(crate) fn new(source: &'a LinearImage, settings: LinearSettings) -> Result<Self, Error> {
+        Ok(Self {
             source,
-            compiled,
-            exposure_multiplier,
+            exposure_multiplier: settings.multiplier()?,
             white_balance: settings.white_balance,
-            frame: None,
-            #[cfg(test)]
-            built: Vec::new(),
-            tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tile, context.spatial())),
-            tile,
-            context,
-        };
-        if mode == SpatialMode::Point {
-            return Ok(evaluation);
-        }
-        // In order, because a later spatial operation pulls its input through the earlier one, and
-        // each frame replaces the one before it once it exists.
-        for index in 0..evaluation.compiled.segments.len() {
-            let Some(Entry::Spatial {
-                operation,
-                prefix_hash,
-            }) = &evaluation.compiled.segments[index].entry
-            else {
-                continue;
-            };
-            let planes = Arc::new(evaluation.build_spatial_frame(
-                index,
-                &operation.clone(),
-                &prefix_hash.clone(),
-                cancel,
-            )?);
-            #[cfg(test)]
-            {
-                // This frame and every earlier one still alive.
-                let alive = 1 + evaluation
-                    .built
-                    .iter()
-                    .filter(|(frame, _)| frame.strong_count() > 0)
-                    .count();
-                evaluation.built.push((Arc::downgrade(&planes), alive));
-            }
-            // Releases the frame before it: every later pull stops at this one.
-            evaluation.frame = Some(SpatialFrame { index, planes });
-        }
-        Ok(evaluation)
-    }
-
-    /// Materialize one spatial operation's output over the whole stage, tile by tile, in the same
-    /// batches and against the same budget the byte path uses. Each tile's input region is pulled
-    /// through `pixel_in` of the previous segment, which already applies the source exposure,
-    /// every colour unit and every replacement, so the operation sees exactly the stage the design
-    /// says it does without an input frame ever existing.
-    fn build_spatial_frame(
-        &self,
-        index: usize,
-        operation: &SpatialOperation,
-        prefix_hash: &str,
-        cancel: &Cancel,
-    ) -> Result<Vec<f32>, Error> {
-        let stage = self.spatial_stage(index);
-        // The RAW planar limit applies to this float frame exactly as it does to the source's.
-        let (values, _) = layout(stage.width, stage.height)?;
-        let read = |x: u32, y: u32| self.spatial_read(index, x, y);
-        let plan = SpatialPlan::new(operation, stage, self.tile)?;
-        let globals = self.spatial_globals(index, operation, stage, prefix_hash)?;
-        let mut frame = vec![0.0_f32; values];
-        let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
-        run_batches(
-            &plan,
-            self.context.spatial(),
-            cancel,
-            |tile, parallelism| {
-                run_tile(
-                    &plan,
-                    operation,
-                    &globals,
-                    tile,
-                    parallelism,
-                    |region, planes| fill_planes(region, planes, parallelism, read),
-                )
-            },
-            |tile, (region, tile_values)| -> Result<(), Error> {
-                for y in tile.y0..tile.y1() {
-                    for x in tile.x0..tile.x1() {
-                        let pixel = spatial::plane_pixel(region, &tile_values, x, y);
-                        let offset =
-                            (u64::from(y) * u64::from(stage.width) + u64::from(x)) as usize;
-                        frame[offset] = pixel[0];
-                        frame[plane + offset] = pixel[1];
-                        frame[2 * plane + offset] = pixel[2];
-                    }
-                }
-                Ok(())
-            },
-        )?;
-        Ok(frame)
-    }
-
-    /// The stage spatial segment `index` reads, which is the stage it writes.
-    fn spatial_stage(&self, index: usize) -> Stage {
-        let previous = &self.compiled.segments[index - 1];
-        Stage {
-            width: previous.width,
-            height: previous.height,
-        }
-    }
-
-    /// One pixel of the stage spatial segment `index` reads: the previous segment's output, pulled
-    /// through `pixel_in`, which already applies the source exposure, every colour unit and every
-    /// replacement.
-    fn spatial_read(&self, index: usize, x: u32, y: u32) -> Result<[f32; 3], Error> {
-        let pixel = self.pixel_in(index - 1, x, y)?.ok_or_else(|| {
-            Error::new(
-                ErrorKind::Render,
-                "a spatial read was outside its input stage",
-            )
-        })?;
-        Ok(pixel.map(|value| value as f32))
-    }
-
-    /// The global estimates of spatial segment `index`, from the store or from one reduction of
-    /// its input stage. A frame and a point evaluation of the same recipe ask with the same key, so
-    /// they use the same estimate. A frame's reduction reads the frame before it; a point query's
-    /// reads through [`PointTiles::reduce`].
-    fn spatial_globals(
-        &self,
-        index: usize,
-        operation: &SpatialOperation,
-        stage: Stage,
-        prefix_hash: &str,
-    ) -> Result<Vec<Option<Global>>, Error> {
-        // Fingerprint alone does not identify developed pixels: public callers may omit it, two
-        // developments of a file differ, and crop/orientation views share their source's identity.
-        // Direct settings can also change exposure without changing the recipe prefix.
-        let input_prefix = format!(
-            "{prefix_hash}+linear:{}:{:?}:{:016x}",
-            self.source.development(),
-            self.source.view(),
-            self.exposure_multiplier.to_bits()
-        );
-        // The estimate store is keyed by the recipe prefix, which an approximate white balance
-        // does not change: the drafted recipe names the target gains whichever planes it is
-        // evaluated over. So an approximate evaluation keys its estimates apart, and a committed
-        // render of the same recipe never takes one estimated from approximate pixels.
-        let approximate_prefix = self.white_balance.map(|balance| {
-            format!(
-                "{input_prefix}+white-balance-approximation:{}",
-                balance.key()
-            )
-        });
-        let read = |x: u32, y: u32| self.spatial_read(index, x, y);
-        resolve_globals(
-            self.context.estimates(),
-            operation,
-            stage,
-            self.source.fingerprint(),
-            approximate_prefix.as_deref().unwrap_or(&input_prefix),
-            || match &self.tiles {
-                Some(tiles) => tiles.reduce(stage, self.compiled.spatial_before(index), read),
-                None => build_reduction(stage, read),
-            },
-        )
-    }
-
-    /// One pixel of spatial segment `index`'s output without its frame, from the query's
-    /// [`PointTiles`]: the stage-aligned tile that contains it, run through [`run_tile`] with the
-    /// plan, estimates and input pulls a frame would use, so the value is the frame's value by
-    /// construction rather than by agreement. An earlier spatial segment's pixels, which the halo
-    /// and a reduction pull, come from the same cache. Each evaluated tile costs
-    /// `O((tile + halo)² × layers)` and one working set from the spatial budget while it runs, plus
-    /// one reduction of the stage when an estimate is not in the store.
-    fn point_pixel(
-        &self,
-        index: usize,
-        operation: &SpatialOperation,
-        prefix_hash: &str,
-        x: u32,
-        y: u32,
-    ) -> Result<[f64; 3], Error> {
-        let tiles = self
-            .tiles
-            .as_ref()
-            .expect("a pull meets only the latest frame or a point query's tiles");
-        let stage = self.spatial_stage(index);
-        let pixel = tiles.pixel(
-            index,
-            operation,
-            stage,
-            x,
-            y,
-            || self.spatial_globals(index, operation, stage, prefix_hash),
-            |x, y| self.spatial_read(index, x, y),
-        )?;
-        Ok(pixel.map(f64::from))
-    }
-
-    /// The tiles this point evaluation has evaluated so far.
-    #[cfg(test)]
-    pub(crate) fn point_tiles(&self) -> &PointTiles<'a> {
-        self.tiles.as_ref().expect("a point evaluation holds tiles")
-    }
-
-    pub(crate) fn stage(&self) -> (u32, u32) {
-        let segment = self
-            .compiled
-            .segments
-            .last()
-            .expect("compiled recipe has a segment");
-        (segment.width, segment.height)
+        })
     }
 
     /// The one point where the settings touch a source pixel: `exposure · p`, or
-    /// `exposure · (W · p)` under an approximate white balance.
-    fn source_pixel(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
-        let pixel = self.source.pixel_f64(x, y)?;
-        self.adjust_source_pixel(pixel)
-    }
-
-    /// Shared with the bulk source reader: retain the exact f64 WB-then-exposure order and the
-    /// same finite-result failure for both point evaluation and rendered rows.
+    /// `exposure · (W · p)` under an approximate white balance. Shared by the point evaluation and
+    /// the rendered rows, so both keep the exact f64 WB-then-exposure order and the same
+    /// finite-result failure.
     #[inline]
     fn adjust_source_pixel(&self, pixel: [f64; 3]) -> Result<[f64; 3], Error> {
         let output = match &self.white_balance {
@@ -1010,127 +692,198 @@ impl<'a> LinearEvaluation<'a> {
             ))
         }
     }
+}
 
-    /// A plain source rendition can bypass generic per-pixel recipe resolution. This is called
-    /// only on an already validated/compiled evaluation; even neutral or unavailable layers must
-    /// have passed through the registry first. Source views still apply through the reader.
-    fn source_rows(&self) -> Option<ViewReader<'a>> {
-        self.source_segment()
-            .filter(|segment| segment.operations.is_empty())
-            .map(|_| self.source.reader())
+impl PixelDomain for Linear<'_> {
+    type Pixel = [f64; 3];
+    /// Three `f32` planes inside the RAW planar limit.
+    type SpatialFrame = Vec<f32>;
+    type TileOutput = (Region, Vec<f32>);
+
+    const GRID: SpatialMode = SpatialMode::Frames;
+
+    fn fingerprint(&self) -> &str {
+        self.source.fingerprint()
     }
 
-    /// The narrowly eligible source-only colour pass. Keeping replacements, geometry, masks and
-    /// stage boundaries on the generic evaluator preserves their per-pixel resolution semantics.
-    fn source_color_segment(&self) -> Option<&Segment> {
-        let segment = self.source_segment()?;
-        (!segment.operations.is_empty()
-            && segment.operations.iter().all(
-                |operation| matches!(operation, Processing::Color(color) if color.mask().is_none()),
-            ))
-        .then_some(segment)
+    /// Fingerprint alone does not identify developed pixels: public callers may omit it, two
+    /// developments of a file differ, and crop/orientation views share their source's identity.
+    /// Direct settings can also change exposure without changing the recipe prefix. And the
+    /// estimate store is keyed by the recipe prefix, which an approximate white balance does not
+    /// change: the drafted recipe names the target gains whichever planes it is evaluated over. So
+    /// an approximate evaluation keys its estimates apart, and a committed render of the same
+    /// recipe never takes one estimated from approximate pixels.
+    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
+        let input_prefix = format!(
+            "{prefix_hash}+linear:{}:{:?}:{:016x}",
+            self.source.development(),
+            self.source.view(),
+            self.exposure_multiplier.to_bits()
+        );
+        Cow::Owned(match self.white_balance {
+            Some(balance) => format!(
+                "{input_prefix}+white-balance-approximation:{}",
+                balance.key()
+            ),
+            None => input_prefix,
+        })
     }
 
-    fn source_segment(&self) -> Option<&Segment> {
-        let [segment] = self.compiled.segments.as_slice() else {
-            return None;
-        };
-        (segment.entry.is_none()
-            && segment
-                .geometry
-                .is_identity(self.source.width(), self.source.height()))
-        .then_some(segment)
+    fn check(&self, compiled: &Compiled) -> Result<(), Error> {
+        check_resamples(compiled)
     }
 
-    pub(crate) fn pixel(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
-        self.pixel_in(self.compiled.segments.len() - 1, x, y)
+    fn check_output(&self, width: u32, height: u32) -> Result<(), Error> {
+        output_len(width, height).map(drop)
     }
 
-    fn pixel_in(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
-        let segment = &self.compiled.segments[index];
-        let Some(resolved) = segment.resolve(x, y) else {
-            return Ok(None);
-        };
-        let mut pixel = match &segment.entry {
-            None => self.source_pixel(resolved.input_x, resolved.input_y)?,
-            Some(Entry::Spatial {
-                operation,
-                prefix_hash,
-            }) => match &self.frame {
-                Some(SpatialFrame {
-                    index: frame_index,
-                    planes,
-                }) if *frame_index == index => {
-                    let previous = &self.compiled.segments[index - 1];
-                    let plane = (u64::from(previous.width) * u64::from(previous.height)) as usize;
-                    let offset = (u64::from(resolved.input_y) * u64::from(previous.width)
-                        + u64::from(resolved.input_x)) as usize;
-                    [
-                        f64::from(planes[offset]),
-                        f64::from(planes[plane + offset]),
-                        f64::from(planes[2 * plane + offset]),
-                    ]
-                }
-                _ => self.point_pixel(
-                    index,
-                    operation,
-                    prefix_hash,
-                    resolved.input_x,
-                    resolved.input_y,
-                )?,
-            },
-            Some(Entry::Resample(resample)) => {
-                let resample = *resample;
-                let previous = &self.compiled.segments[index - 1];
-                let (u, v) = resample.input_at(resolved.input_x, resolved.input_y);
-                linear_bilinear(
-                    u,
-                    v,
-                    previous.width,
-                    previous.height,
-                    |sample_x, sample_y| {
-                        self.pixel_in(index - 1, sample_x, sample_y)
-                            .and_then(|pixel| {
-                                pixel.ok_or_else(|| {
-                                    Error::new(
-                                        ErrorKind::Render,
-                                        "linear recursive sample was outside stage",
-                                    )
-                                })
-                            })
-                    },
-                )?
-            }
-        };
-        if let Some((_, rgb)) = resolved.replacement {
-            pixel = decode_rgb(rgb);
+    #[inline]
+    fn source_pixel(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
+        self.adjust_source_pixel(self.source.pixel_f64(x, y)?)
+    }
+
+    fn source_alpha(&self, _: u32, _: u32) -> u8 {
+        255
+    }
+
+    #[inline]
+    fn replace(_: [f64; 3], rgb: [u8; 3]) -> [f64; 3] {
+        decode_rgb(rgb)
+    }
+
+    /// The colour phases are the byte path's, applied to one linear pixel: every run processes the
+    /// value in place and nothing is quantized between runs, which is the whole point of the linear
+    /// path: a scene value above 1 or below 0 survives to the next unit and only the terminal
+    /// boundary encodes it.
+    fn colour<'r>(
+        pixel: [f64; 3],
+        runs: impl Iterator<Item = ColorRun<'r>>,
+        x: u32,
+        y: u32,
+    ) -> Result<[f64; 3], Error> {
+        let mut linear = [pixel.map(|value| value as f32)];
+        // One pixel of snapshot scratch on the stack: a masked operation blends against its own
+        // input, and a point pulls single pixels, so nothing is allocated per pixel.
+        let mut scratch = [[0.0f32; 3]; 1];
+        for run in runs {
+            apply_units(&run, y, x, &mut linear, &mut scratch)?;
         }
-        // The colour phases are the 8-bit path's, applied to this one linear pixel: the replacement
-        // that wins here ends the runs before it, and every run after it processes the value in
-        // place. Nothing is quantized between runs, which is the whole point of the linear path: a
-        // scene value above 1 or below 0 survives to the next unit and only the terminal boundary
-        // encodes it.
-        if segment.has_color {
-            let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
-            let mut linear = [pixel.map(|value| value as f32)];
-            // The same coordinates the 8-bit path hands its units, so a position-dependent unit
-            // makes a linear sample and a linear frame agree pixel for pixel.
-            // One pixel of snapshot scratch on the stack: a masked operation blends against its
-            // own input, and this path pulls single pixels, so nothing is allocated per pixel.
-            let mut scratch = [[0.0f32; 3]; 1];
-            for run in super::color_runs(segment).filter(|run| run.start >= after) {
-                super::apply_units(&run, y, x, &mut linear, &mut scratch)?;
-            }
-            pixel = linear[0].map(f64::from);
-        }
+        Ok(linear[0].map(f64::from))
+    }
+
+    #[inline]
+    fn finish(pixel: [f64; 3]) -> Result<[f64; 3], Error> {
         if pixel.iter().all(|value| value.is_finite()) {
-            Ok(Some(pixel))
+            Ok(pixel)
         } else {
             Err(Error::new(
                 ErrorKind::Render,
                 "linear evaluation produced a non-finite pixel",
             ))
         }
+    }
+
+    fn blend(
+        u: f64,
+        v: f64,
+        width: u32,
+        height: u32,
+        mut fetch: impl FnMut(u32, u32) -> Result<[f64; 3], Error>,
+    ) -> Result<[f64; 3], Error> {
+        if !u.is_finite() || !v.is_finite() || width == 0 || height == 0 {
+            return Err(Error::new(
+                ErrorKind::Render,
+                "linear resample has invalid coordinates or dimensions",
+            ));
+        }
+        let taps = Taps::new(u, v, width, height);
+        let [top_left, top_right, bottom_left, bottom_right] = taps.corners;
+        let [w0, w1, w2, w3] = taps.weights;
+        let corners = [
+            (fetch(top_left.0, top_left.1)?, w0),
+            (fetch(top_right.0, top_right.1)?, w1),
+            (fetch(bottom_left.0, bottom_left.1)?, w2),
+            (fetch(bottom_right.0, bottom_right.1)?, w3),
+        ];
+        let output = std::array::from_fn(|channel| {
+            corners
+                .iter()
+                .map(|(pixel, weight)| pixel[channel] * weight)
+                .sum::<f64>()
+        });
+        if output.iter().all(|value: &f64| value.is_finite()) {
+            Ok(output)
+        } else {
+            Err(Error::new(
+                ErrorKind::Render,
+                "linear resample produced a non-finite value",
+            ))
+        }
+    }
+
+    #[inline]
+    fn spatial_input(pixel: [f64; 3]) -> [f32; 3] {
+        pixel.map(|value| value as f32)
+    }
+
+    #[inline]
+    fn spatial_output(rgb: [f32; 3], _: impl FnOnce() -> u8) -> Result<[f64; 3], Error> {
+        Ok(rgb.map(f64::from))
+    }
+
+    #[inline]
+    fn terminal(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
+        terminal_pixel(pixel)
+    }
+
+    #[inline]
+    fn mask_input(pixel: [f64; 3]) -> [f64; 3] {
+        pixel
+    }
+
+    /// The RAW planar limit applies to this float frame exactly as it does to the source's.
+    fn spatial_frame(stage: Stage) -> Result<Vec<f32>, Error> {
+        let (values, _) = layout(stage.width, stage.height)?;
+        Ok(vec![0.0_f32; values])
+    }
+
+    fn tile_output(
+        region: Region,
+        values: Vec<f32>,
+        _: Region,
+        _: Parallelism,
+    ) -> (Region, Vec<f32>) {
+        (region, values)
+    }
+
+    fn write_tile(
+        frame: &mut Vec<f32>,
+        stage: Stage,
+        tile: Region,
+        (region, values): (Region, Vec<f32>),
+        _: &(dyn Fn(u32, u32) -> u8 + Sync),
+    ) {
+        let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
+        for y in tile.y0..tile.y1() {
+            for x in tile.x0..tile.x1() {
+                let pixel = spatial::plane_pixel(region, &values, x, y);
+                let offset = (u64::from(y) * u64::from(stage.width) + u64::from(x)) as usize;
+                frame[offset] = pixel[0];
+                frame[plane + offset] = pixel[1];
+                frame[2 * plane + offset] = pixel[2];
+            }
+        }
+    }
+
+    #[inline]
+    fn frame_pixel(frame: &Vec<f32>, stage: Stage, x: u32, y: u32) -> [f64; 3] {
+        let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
+        let offset = (u64::from(y) * u64::from(stage.width) + u64::from(x)) as usize;
+        [
+            f64::from(frame[offset]),
+            f64::from(frame[plane + offset]),
+            f64::from(frame[2 * plane + offset]),
+        ]
     }
 }
 
@@ -1143,16 +896,48 @@ pub(super) fn terminal_pixel(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
     ])
 }
 
+/// A plain source rendition can bypass generic per-pixel recipe resolution. This is called only on
+/// an already validated/compiled evaluation; even neutral or unavailable layers must have passed
+/// through the registry first. Source views still apply through the reader.
+fn source_rows<'a>(evaluation: &Evaluation<'_, Linear<'a>>) -> Option<ViewReader<'a>> {
+    source_segment(evaluation)
+        .filter(|segment| segment.operations.is_empty())
+        .map(|_| evaluation.domain.source.reader())
+}
+
+/// The narrowly eligible source-only colour pass. Keeping replacements, geometry, masks and stage
+/// boundaries on the generic evaluator preserves their per-pixel resolution semantics.
+fn source_color_segment<'e>(evaluation: &'e Evaluation<'_, Linear<'_>>) -> Option<&'e Segment> {
+    let segment = source_segment(evaluation)?;
+    (!segment.operations.is_empty()
+        && segment.operations.iter().all(
+            |operation| matches!(operation, Processing::Color(color) if color.mask().is_none()),
+        ))
+    .then_some(segment)
+}
+
+fn source_segment<'e>(evaluation: &'e Evaluation<'_, Linear<'_>>) -> Option<&'e Segment> {
+    let [segment] = evaluation.compiled.segments.as_slice() else {
+        return None;
+    };
+    let source = evaluation.domain.source;
+    (segment.entry.is_none()
+        && segment
+            .geometry
+            .is_identity(source.width(), source.height()))
+    .then_some(segment)
+}
+
 /// The whole frame of a frames-mode evaluation, terminally produced as bytes: the linear path's half
 /// of [`super::Render::frame`], for the exact phase and the proxy phase alike.
 pub(super) fn rasterize(
-    evaluation: &LinearEvaluation<'_>,
-    source: &LinearImage,
+    evaluation: &Evaluation<'_, Linear<'_>>,
     snapshot_id: SnapshotId,
     cancel: &Cancel,
     context: &RenderContext,
 ) -> Result<Raster, Error> {
-    let (width, height) = evaluation.stage();
+    let source = evaluation.domain.source;
+    let Stage { width, height } = evaluation.stage();
     let output_len = output_len(width, height)?;
     let row_bytes = usize::try_from(u64::from(width) * 4).map_err(|_| {
         Error::new(
@@ -1163,7 +948,7 @@ pub(super) fn rasterize(
     // Write into the Arc-backed frame that the raster returns, avoiding an output publication copy.
     let mut frame = super::zeroed_frame(output_len);
     let output = super::frame_mut(&mut frame);
-    if let Some(segment) = evaluation.source_color_segment() {
+    if let Some(segment) = source_color_segment(evaluation) {
         render_source_color_rows(
             evaluation,
             segment,
@@ -1173,7 +958,7 @@ pub(super) fn rasterize(
             row_bytes,
         )?;
     } else {
-        let source_rows = evaluation.source_rows();
+        let source_rows = source_rows(evaluation);
         // One relaxed load per output row, ahead of that row's evaluations; the f64 evaluation and
         // the terminal boundary are untouched.
         let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
@@ -1188,7 +973,9 @@ pub(super) fn rasterize(
                 for (pixel, rgba) in pixels.zip(row.chunks_exact_mut(4)) {
                     // Immutable source planes were checked finite on construction. Widen at the
                     // same boundary as source_pixel, without an intermediate f32 exposure multiply.
-                    let pixel = evaluation.adjust_source_pixel(pixel.map(f64::from))?;
+                    let pixel = evaluation
+                        .domain
+                        .adjust_source_pixel(pixel.map(f64::from))?;
                     rgba.copy_from_slice(&terminal_pixel(pixel)?);
                 }
                 return Ok(());
@@ -1231,7 +1018,7 @@ pub(super) fn rasterize(
 /// before this call; only its already-compiled unmasked pointwise operations are shared across
 /// each row's pixels.
 fn render_source_color_rows(
-    evaluation: &LinearEvaluation<'_>,
+    evaluation: &Evaluation<'_, Linear<'_>>,
     segment: &Segment,
     cancel: &Cancel,
     budget: &ScratchBudget,
@@ -1265,7 +1052,7 @@ fn render_source_color_rows(
                 "linear colour row chunk is not addressable",
             )
         })?;
-    let reader = evaluation.source.reader();
+    let reader = evaluation.domain.source.reader();
     let process_chunk = |chunk_index: usize,
                          chunk: &mut [u8],
                          pixels: &mut Vec<[f32; 3]>,
@@ -1292,10 +1079,12 @@ fn render_source_color_rows(
             for source_pixel in source_row {
                 // Preserve the generic path's f64 WB/exposure step and its single f32 boundary
                 // before colour units.
-                let adjusted = evaluation.adjust_source_pixel(source_pixel.map(f64::from))?;
+                let adjusted = evaluation
+                    .domain
+                    .adjust_source_pixel(source_pixel.map(f64::from))?;
                 pixels.push(adjusted.map(|value| value as f32));
             }
-            super::apply_units(&run, y as u32, 0, pixels, scratch)?;
+            apply_units(&run, y as u32, 0, pixels, scratch)?;
             for (rgba, pixel) in row.chunks_exact_mut(4).zip(pixels.iter()) {
                 rgba.copy_from_slice(&terminal_pixel(pixel.map(f64::from))?);
             }
@@ -1382,7 +1171,7 @@ mod tests {
             SpatialMode::Frames,
         )
         .unwrap();
-        let (width, height) = evaluation.stage();
+        let Stage { width, height } = evaluation.stage();
         let mut frame = super::super::zeroed_frame(output_len(width, height).unwrap());
         let rgba = super::super::frame_mut(&mut frame);
         let row_bytes = width as usize * 4;
@@ -1609,7 +1398,7 @@ mod tests {
                 SpatialMode::Frames,
             )
             .unwrap();
-            assert!(evaluation.source_color_segment().is_some());
+            assert!(source_color_segment(&evaluation).is_some());
             let snapshot = SnapshotId::new();
             let actual =
                 render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap();
@@ -1688,7 +1477,7 @@ mod tests {
                 SpatialMode::Frames,
             )
             .unwrap();
-            assert!(evaluation.source_color_segment().is_none());
+            assert!(source_color_segment(&evaluation).is_none());
             let snapshot = SnapshotId::new();
             assert_eq!(
                 render_linear(&registry, &source, snapshot.clone(), recipe, settings).unwrap(),
@@ -2520,12 +2309,7 @@ mod tests {
                 SpatialMode::Frames,
             )
         };
-        assert!(
-            evaluate(&Recipe::default(), settings)
-                .unwrap()
-                .source_rows()
-                .is_some()
-        );
+        assert!(source_rows(&evaluate(&Recipe::default(), settings).unwrap()).is_some());
         for recipe in [
             Recipe {
                 layers: vec![Layer::pixel(1, 1, [30, 60, 90])],
@@ -2550,7 +2334,7 @@ mod tests {
             },
             cancellation_recipe(),
         ] {
-            assert!(evaluate(&recipe, settings).unwrap().source_rows().is_none());
+            assert!(source_rows(&evaluate(&recipe, settings).unwrap()).is_none());
             let snapshot = SnapshotId::new();
             assert_eq!(
                 render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap(),
@@ -2978,7 +2762,7 @@ mod tests {
             [0.0, 1.0, 2.0],
         ];
         let actual =
-            linear_bilinear(1.0, 1.0, 2, 2, |x, y| Ok(corners[(y * 2 + x) as usize])).unwrap();
+            Linear::blend(1.0, 1.0, 2, 2, |x, y| Ok(corners[(y * 2 + x) as usize])).unwrap();
         assert_eq!(actual, [1.0, 0.0, 1.0]);
 
         let precise = [
@@ -2988,7 +2772,7 @@ mod tests {
             [-0.321_098_765_432, 0.678_901_234_567, 1.890_123_456_789],
         ];
         let actual =
-            linear_bilinear(1.25, 1.25, 2, 2, |x, y| Ok(precise[(y * 2 + x) as usize])).unwrap();
+            Linear::blend(1.25, 1.25, 2, 2, |x, y| Ok(precise[(y * 2 + x) as usize])).unwrap();
         let expected: [f64; 3] = std::array::from_fn(|channel| {
             precise[0][channel] * 0.0625
                 + precise[1][channel] * 0.1875
@@ -3350,7 +3134,7 @@ mod tests {
             .multiplier()
             .is_err()
         );
-        assert!(linear_bilinear(1.0, 1.0, 2, 2, |_x, _y| Ok([f64::INFINITY; 3])).is_err());
+        assert!(Linear::blend(1.0, 1.0, 2, 2, |_x, _y| Ok([f64::INFINITY; 3])).is_err());
     }
 
     /// A synthetic linear source with a varying value in all three channels, filled
@@ -3576,14 +3360,14 @@ mod tests {
             )
             .unwrap()
         };
-        let alive = |evaluation: &LinearEvaluation<'_>| -> Vec<bool> {
+        let alive = |evaluation: &Evaluation<'_, Linear<'_>>| -> Vec<bool> {
             evaluation
                 .built
                 .iter()
                 .map(|(frame, _)| frame.strong_count() > 0)
                 .collect()
         };
-        let peaks = |evaluation: &LinearEvaluation<'_>| -> Vec<usize> {
+        let peaks = |evaluation: &Evaluation<'_, Linear<'_>>| -> Vec<usize> {
             evaluation.built.iter().map(|(_, peak)| *peak).collect()
         };
 

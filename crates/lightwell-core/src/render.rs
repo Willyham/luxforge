@@ -11,7 +11,6 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    cell::Cell,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -21,14 +20,15 @@ use std::{
 mod context;
 mod entry;
 pub mod linear;
+mod pipeline;
 pub mod spatial;
 pub use context::{RenderContext, ScratchBudget, SpatialBudget};
 pub(crate) use entry::layer_input;
 pub use entry::{Render, RenderOptions, RenderPhase, RenderSource, render};
 pub use linear::{LinearImage, LinearSettings, WhiteBalanceApproximation};
-use spatial::{
-    PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches, run_tile,
-};
+pub(crate) use pipeline::{Evaluation, PixelDomain, SpatialMode};
+use pipeline::{Taps, spatial_output};
+use spatial::{build_reduction, resolve_globals};
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
 
@@ -108,7 +108,7 @@ const NON_FINITE_COLOR: &str = "colour processing produced a non-finite value";
 /// colour, so it does not break a run; a point replacement does, because a replacement written
 /// before a run is processed by it and one written after it is not.
 #[derive(Clone, Copy)]
-struct ColorRun<'a> {
+pub(crate) struct ColorRun<'a> {
     /// The index of this run's first colour operation in the segment's operation list.
     start: usize,
     /// The index of this run's last colour operation, inclusive.
@@ -458,7 +458,8 @@ struct ColorScratch {
     snapshot: Vec<[f32; 3]>,
 }
 
-/// One bilinear sample of a frame in linear light, with indices clamped to the frame's edge.
+/// One bilinear sample of a byte frame in linear light, through the taps [`Taps`] clamps to the
+/// frame's edge, quantized: the byte domain's resample.
 ///
 /// `fetch` reads one pixel of that frame; the rasterizing path reads a buffer and the point-query
 /// path evaluates the previous segment recursively, so both produce identical bytes.
@@ -468,32 +469,16 @@ fn bilinear(
     v: f64,
     width: u32,
     height: u32,
-    fetch: impl Fn(u32, u32) -> [u8; 4],
-) -> [u8; 4] {
-    // The mapped coordinate is a pixel center, so index space starts half a pixel earlier.
-    let x = u - 0.5;
-    let y = v - 0.5;
-    let left = x.floor();
-    let top = y.floor();
-    let weight_x = x - left;
-    let weight_y = y - top;
-    let index = |value: f64, limit: u32| -> u32 {
-        let last = limit.saturating_sub(1);
-        if value <= 0.0 {
-            0
-        } else if value >= f64::from(last) {
-            last
-        } else {
-            value as u32
-        }
-    };
-    let (left_x, right_x) = (index(left, width), index(left + 1.0, width));
-    let (top_y, bottom_y) = (index(top, height), index(top + 1.0, height));
+    mut fetch: impl FnMut(u32, u32) -> Result<[u8; 4], Error>,
+) -> Result<[u8; 4], Error> {
+    let taps = Taps::new(u, v, width, height);
+    let [top_left, top_right, bottom_left, bottom_right] = taps.corners;
+    let [w0, w1, w2, w3] = taps.weights;
     let corners = [
-        (fetch(left_x, top_y), (1.0 - weight_x) * (1.0 - weight_y)),
-        (fetch(right_x, top_y), weight_x * (1.0 - weight_y)),
-        (fetch(left_x, bottom_y), (1.0 - weight_x) * weight_y),
-        (fetch(right_x, bottom_y), weight_x * weight_y),
+        (fetch(top_left.0, top_left.1)?, w0),
+        (fetch(top_right.0, top_right.1)?, w1),
+        (fetch(bottom_left.0, bottom_left.1)?, w2),
+        (fetch(bottom_right.0, bottom_right.1)?, w3),
     ];
     let mut pixel = [0; 4];
     for (channel, slot) in pixel.iter_mut().enumerate().take(3) {
@@ -509,7 +494,7 @@ fn bilinear(
         .map(|(corner, weight)| weight * f64::from(corner[3]))
         .sum();
     pixel[3] = alpha.round().clamp(0.0, 255.0) as u8;
-    pixel
+    Ok(pixel)
 }
 
 /// The input pixel one continuous input coordinate falls in, clamped to the frame exactly as the
@@ -843,10 +828,10 @@ fn resample_frame(
     let output = frame_mut(&mut frame);
     let row_bytes = usize::try_from(u64::from(width) * 4)
         .map_err(|_| Error::new(ErrorKind::ResourceLimit, "image row is not addressable"))?;
-    let fetch = |x: u32, y: u32| -> [u8; 4] {
+    let fetch = |x: u32, y: u32| -> Result<[u8; 4], Error> {
         let offset = ((u64::from(y) * u64::from(input_width) + u64::from(x)) * 4) as usize;
         let pixel = &input[offset..offset + 4];
-        [pixel[0], pixel[1], pixel[2], pixel[3]]
+        Ok([pixel[0], pixel[1], pixel[2], pixel[3]])
     };
     // One relaxed load per output row, ahead of that row's samples; the point sampler and the
     // bilinear blend are untouched.
@@ -854,7 +839,7 @@ fn resample_frame(
         cancel.check()?;
         for out_x in 0..width {
             let (u, v) = resample.input_at(out_x, out_y as u32);
-            let pixel = bilinear(u, v, input_width, input_height, fetch);
+            let pixel = bilinear(u, v, input_width, input_height, fetch)?;
             let to = out_x as usize * 4;
             row[to..to + 4].copy_from_slice(&pixel);
         }
@@ -899,84 +884,6 @@ impl Entry {
             Self::Spatial { .. } => None,
         }
     }
-}
-
-/// One neighbourhood pass over a finished byte frame: the operation reads that frame through the
-/// existing sRGB table, runs its unit chain over stage-aligned tiles and quantizes each tile into a
-/// new frame of the same size with the existing exact-threshold quantizer. Alpha is copied from the
-/// input; no full-frame float buffer exists at any point, only one tile's working set per tile in
-/// flight, charged to the spatial budget before each batch of tiles allocates.
-#[allow(clippy::too_many_arguments)]
-fn spatial_frame(
-    input: &[u8],
-    stage: Stage,
-    operation: &SpatialOperation,
-    prefix_hash: &str,
-    fingerprint: &str,
-    cancel: &Cancel,
-    tile_size: u32,
-    context: &RenderContext,
-) -> Result<Arc<[u8]>, Error> {
-    let plan = SpatialPlan::new(operation, stage, tile_size)?;
-    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
-        let offset = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
-        Ok(decode_pixel([
-            input[offset],
-            input[offset + 1],
-            input[offset + 2],
-        ]))
-    };
-    let globals = resolve_globals(
-        context.estimates(),
-        operation,
-        stage,
-        fingerprint,
-        prefix_hash,
-        || build_reduction(stage, read),
-    )?;
-    let mut frame = zeroed_frame(Raster::expected_len(stage.width, stage.height)?);
-    let output = frame_mut(&mut frame);
-    run_batches(
-        &plan,
-        context.spatial(),
-        cancel,
-        |tile, parallelism| -> Result<Vec<u8>, Error> {
-            let (region, values) = run_tile(
-                &plan,
-                operation,
-                &globals,
-                tile,
-                parallelism,
-                |region, planes| fill_planes(region, planes, parallelism, read),
-            )?;
-            let mut bytes = vec![0; (tile.pixels() * 3) as usize];
-            let row = |(row, bytes): (usize, &mut [u8])| {
-                let y = tile.y0 + row as u32;
-                for (column, x) in (tile.x0..tile.x1()).enumerate() {
-                    let rgb = quantize_pixel(spatial::plane_pixel(region, &values, x, y));
-                    bytes[column * 3..column * 3 + 3].copy_from_slice(&rgb);
-                }
-            };
-            let row_bytes = tile.width as usize * 3;
-            match parallelism {
-                Parallelism::Pool => bytes.par_chunks_mut(row_bytes).enumerate().for_each(row),
-                Parallelism::Serial => bytes.chunks_mut(row_bytes).enumerate().for_each(row),
-            }
-            Ok(bytes)
-        },
-        |tile, bytes| -> Result<(), Error> {
-            for (row, y) in (tile.y0..tile.y1()).enumerate() {
-                for (column, x) in (tile.x0..tile.x1()).enumerate() {
-                    let to = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
-                    let from = (row * tile.width as usize + column) * 3;
-                    output[to..to + 3].copy_from_slice(&bytes[from..from + 3]);
-                    output[to + 3] = input[to + 3];
-                }
-            }
-            Ok(())
-        },
-    )?;
-    Ok(frame)
 }
 
 /// One rasterizing pass: the exact operations that share an input frame, their composed geometry and
@@ -1081,7 +988,7 @@ impl Compiled {
     }
 
     /// Whether a spatial segment comes before segment `index`, so that, in a point query, the stage
-    /// `index` reads comes through [`PointTiles`] rather than from the source alone.
+    /// `index` reads comes through [`spatial::PointTiles`] rather than from the source alone.
     pub(crate) fn spatial_before(&self, index: usize) -> bool {
         self.segments[..index]
             .iter()
@@ -1337,210 +1244,153 @@ impl Affine {
     }
 }
 
-/// One compiled recipe bound to its source: the stage it produces and point queries that never
-/// allocate a frame. Compiling once serves any number of sampled pixels.
-pub(crate) struct Evaluation<'a> {
-    source: &'a SourceImage,
-    compiled: Cow<'a, Compiled>,
-    /// The spatial tiles this evaluation has evaluated, of every spatial segment, in tiles of
-    /// [`spatial::PRODUCTION_TILE`] everywhere but in the tests that prove the result does not
-    /// depend on it.
-    tiles: PointTiles<'a>,
-    context: &'a RenderContext,
-}
+/// The byte domain: a JPEG's decoded 8-bit sRGB, with alpha. Each colour run decodes through the
+/// sRGB table, runs its units in `f32` and quantizes at its end, so a point replacement, a resample,
+/// a spatial operation's output and the end of the recipe are all quantization boundaries, and a
+/// frame between two segments is exactly the bytes the next boundary reads.
+#[derive(Clone, Copy)]
+pub(crate) struct Byte<'a>(pub(crate) &'a SourceImage);
 
-impl<'a> Evaluation<'a> {
-    /// An evaluation of a stack compiled against `source`'s dimensions, whose source length the
-    /// caller has checked. Allocates only the per-query tile cache, and rasterizes nothing.
-    pub(crate) fn new(
-        source: &'a SourceImage,
-        compiled: Cow<'a, Compiled>,
-        tile: u32,
-        context: &'a RenderContext,
-    ) -> Self {
-        Self {
-            source,
-            compiled,
-            tiles: PointTiles::new(tile, context.spatial()),
-            context,
-        }
+impl PixelDomain for Byte<'_> {
+    type Pixel = [u8; 4];
+    type SpatialFrame = Arc<[u8]>;
+    /// A tile's quantized RGB, row-major; alpha is copied when the tile is placed.
+    type TileOutput = Vec<u8>;
+
+    const GRID: SpatialMode = SpatialMode::Point;
+
+    fn fingerprint(&self) -> &str {
+        &self.0.fingerprint
     }
 
-    #[cfg(test)]
-    /// The same evaluation with another spatial tile size. A spatial unit's value at a pixel
-    /// depends on that pixel's neighbourhood only, so this changes nothing but the schedule.
-    pub(crate) fn with_tile(mut self, tile: u32) -> Self {
-        self.tiles = PointTiles::new(tile, self.context.spatial());
-        self
+    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
+        Cow::Borrowed(prefix_hash)
     }
 
-    pub(crate) fn stage(&self) -> Stage {
-        self.compiled.stage()
+    fn check(&self, _: &Compiled) -> Result<(), Error> {
+        Ok(())
     }
 
-    /// `None` when the coordinate lies outside the output stage.
-    pub(crate) fn pixel(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
-        self.pixel_in(self.compiled.segments.len() - 1, x, y)
+    fn check_output(&self, _: u32, _: u32) -> Result<(), Error> {
+        Ok(())
     }
 
-    /// One pixel of one segment's output stage. A resample is evaluated recursively as the bilinear
-    /// blend of four pixels of the previous segment, so a point query costs `O(layers · 4^resamples)`
-    /// and never allocates a frame; a stack holds at most one crop layer.
-    ///
-    /// A spatial entry is the one exception to "a point query never rasterizes", declared in the
-    /// [performance rules](../../docs/engineering/performance-rules.md): see [`Self::spatial_pixel`].
-    ///
-    /// The colour phases are the rasterizing pass's, applied to this one pixel: the replacement that
-    /// wins here ends the runs before it, and every run after it is decoded, evaluated and quantized
-    /// in turn, so the sampled byte is the byte the frame holds.
-    fn pixel_in(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
-        let segment = &self.compiled.segments[index];
-        let Some(resolved) = segment.resolve(x, y) else {
-            return Ok(None);
-        };
-        let mut rgba = match &segment.entry {
-            None => source_pixel(self.source, resolved.input_x, resolved.input_y),
-            Some(Entry::Spatial {
-                operation,
-                prefix_hash,
-            }) => self.spatial_pixel(
-                index,
-                operation,
-                prefix_hash,
-                resolved.input_x,
-                resolved.input_y,
-            )?,
-            Some(Entry::Resample(resample)) => {
-                let resample = *resample;
-                let previous = &self.compiled.segments[index - 1];
-                let (u, v) = resample.input_at(resolved.input_x, resolved.input_y);
-                // `bilinear` fetches four pixels and cannot itself fail, so a failure from the
-                // previous segment is carried out of the closure and reported here.
-                let failure: Cell<Option<Error>> = Cell::new(None);
-                let blended = bilinear(u, v, previous.width, previous.height, |x, y| {
-                    match self.pixel_in(index - 1, x, y) {
-                        Ok(pixel) => pixel.expect("clamped indices stay inside the previous stage"),
-                        Err(error) => {
-                            failure.set(Some(error));
-                            [0; 4]
-                        }
-                    }
-                });
-                if let Some(error) = failure.take() {
-                    return Err(error);
-                }
-                blended
-            }
-        };
-        if let Some((_, rgb)) = resolved.replacement {
-            rgba[..3].copy_from_slice(&rgb);
-        }
-        if segment.has_color {
-            let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
-            let mut rgb = [rgba[0], rgba[1], rgba[2]];
-            for run in color_runs(segment).filter(|run| run.start >= after) {
-                rgb = color_pixel(rgb, &run, x, y)?;
-            }
-            rgba[..3].copy_from_slice(&rgb);
-        }
-        Ok(Some(rgba))
+    #[inline]
+    fn source_pixel(&self, x: u32, y: u32) -> Result<[u8; 4], Error> {
+        Ok(source_pixel(self.0, x, y))
     }
 
-    /// One pixel of the frame a spatial entry produces.
-    ///
-    /// The value at a pixel depends on a bounded neighbourhood of it, so there is no way to answer
-    /// this in `O(layers)`: the sample evaluates the stage-aligned tile that contains the pixel,
-    /// reading that tile plus the operation's summed halo through the compiled prefix, with exactly
-    /// the tile function the render uses, and holds it in this evaluation's [`PointTiles`]. The
-    /// sampled byte is therefore the byte a render of that tile produces, by construction rather than
-    /// by agreement. When the prefix holds an earlier spatial segment, the halo reads that segment's
-    /// tiles from the same cache, so each (segment, tile) is evaluated once per query. Its cost is
-    /// `O((tile + halo)² × layers)` per evaluated tile, plus one bounded reduction of the stage when
-    /// a unit's global estimate is not already stored, and it allocates one tile working set at a
-    /// time from the spatial budget and no frame. This is the declared exception to performance
-    /// rule 4.
-    fn spatial_pixel(
-        &self,
-        index: usize,
-        operation: &SpatialOperation,
-        prefix_hash: &str,
+    fn source_alpha(&self, x: u32, y: u32) -> u8 {
+        source_pixel(self.0, x, y)[3]
+    }
+
+    #[inline]
+    fn replace(mut pixel: [u8; 4], rgb: [u8; 3]) -> [u8; 4] {
+        pixel[..3].copy_from_slice(&rgb);
+        pixel
+    }
+
+    fn colour<'r>(
+        mut pixel: [u8; 4],
+        runs: impl Iterator<Item = ColorRun<'r>>,
         x: u32,
         y: u32,
     ) -> Result<[u8; 4], Error> {
-        let previous = &self.compiled.segments[index - 1];
-        let stage = Stage {
-            width: previous.width,
-            height: previous.height,
-        };
-        let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
-            let pixel = self.pixel_in(index - 1, x, y)?.ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Render,
-                    "a spatial read was outside its input stage",
-                )
-            })?;
-            Ok(decode_pixel([pixel[0], pixel[1], pixel[2]]))
-        };
-        let rgb = self.tiles.pixel(
-            index,
-            operation,
-            stage,
-            x,
-            y,
-            || {
-                resolve_globals(
-                    self.context.estimates(),
-                    operation,
-                    stage,
-                    &self.source.fingerprint,
-                    prefix_hash,
-                    || {
-                        let through_tiles = self.compiled.spatial_before(index);
-                        self.tiles.reduce(stage, through_tiles, read)
-                    },
-                )
-            },
-            read,
-        )?;
-        let rgb = quantize_pixel(rgb);
-        // Alpha is never touched by a unit; it is the input frame's, exactly as the render copies
-        // it.
-        let alpha = self.alpha_in(index - 1, x, y)?.unwrap_or(255);
-        Ok([rgb[0], rgb[1], rgb[2], alpha])
+        let mut rgb = [pixel[0], pixel[1], pixel[2]];
+        for run in runs {
+            rgb = color_pixel(rgb, &run, x, y)?;
+        }
+        pixel[..3].copy_from_slice(&rgb);
+        Ok(pixel)
     }
 
-    /// The alpha of one pixel of one segment's output stage, or `None` outside it. No unit, point
-    /// replacement or colour run writes alpha and a spatial boundary copies its input's, so this
-    /// walks the geometry alone, blending through a resample exactly as the frame does, and never
-    /// evaluates a colour run or a spatial tile.
-    fn alpha_in(&self, index: usize, x: u32, y: u32) -> Result<Option<u8>, Error> {
-        let segment = &self.compiled.segments[index];
-        let Some(resolved) = segment.resolve(x, y) else {
-            return Ok(None);
+    #[inline]
+    fn finish(pixel: [u8; 4]) -> Result<[u8; 4], Error> {
+        Ok(pixel)
+    }
+
+    fn blend(
+        u: f64,
+        v: f64,
+        width: u32,
+        height: u32,
+        fetch: impl FnMut(u32, u32) -> Result<[u8; 4], Error>,
+    ) -> Result<[u8; 4], Error> {
+        bilinear(u, v, width, height, fetch)
+    }
+
+    #[inline]
+    fn spatial_input(pixel: [u8; 4]) -> [f32; 3] {
+        decode_pixel([pixel[0], pixel[1], pixel[2]])
+    }
+
+    fn spatial_output(rgb: [f32; 3], alpha: impl FnOnce() -> u8) -> Result<[u8; 4], Error> {
+        let rgb = quantize_pixel(rgb);
+        Ok([rgb[0], rgb[1], rgb[2], alpha()])
+    }
+
+    #[inline]
+    fn terminal(pixel: [u8; 4]) -> Result<[u8; 4], Error> {
+        Ok(pixel)
+    }
+
+    fn mask_input(pixel: [u8; 4]) -> [f64; 3] {
+        decode_pixel([pixel[0], pixel[1], pixel[2]]).map(f64::from)
+    }
+
+    fn spatial_frame(stage: Stage) -> Result<Arc<[u8]>, Error> {
+        Ok(zeroed_frame(Raster::expected_len(
+            stage.width,
+            stage.height,
+        )?))
+    }
+
+    /// Quantized through the same exact thresholds as a colour run's end, on the pool under
+    /// [`Parallelism::Pool`].
+    fn tile_output(
+        region: Region,
+        values: Vec<f32>,
+        tile: Region,
+        parallelism: Parallelism,
+    ) -> Vec<u8> {
+        let mut bytes = vec![0; (tile.pixels() * 3) as usize];
+        let row = |(row, bytes): (usize, &mut [u8])| {
+            let y = tile.y0 + row as u32;
+            for (column, x) in (tile.x0..tile.x1()).enumerate() {
+                let rgb = quantize_pixel(spatial::plane_pixel(region, &values, x, y));
+                bytes[column * 3..column * 3 + 3].copy_from_slice(&rgb);
+            }
         };
-        let (x, y) = (resolved.input_x, resolved.input_y);
-        match &segment.entry {
-            None => Ok(Some(source_pixel(self.source, x, y)[3])),
-            Some(Entry::Spatial { .. }) => self.alpha_in(index - 1, x, y),
-            Some(Entry::Resample(resample)) => {
-                let previous = &self.compiled.segments[index - 1];
-                let (u, v) = resample.input_at(x, y);
-                let failure: Cell<Option<Error>> = Cell::new(None);
-                let blended = bilinear(u, v, previous.width, previous.height, |x, y| {
-                    match self.alpha_in(index - 1, x, y) {
-                        Ok(alpha) => [0, 0, 0, alpha.expect("clamped indices stay inside")],
-                        Err(error) => {
-                            failure.set(Some(error));
-                            [0; 4]
-                        }
-                    }
-                });
-                match failure.take() {
-                    Some(error) => Err(error),
-                    None => Ok(Some(blended[3])),
-                }
+        let row_bytes = tile.width as usize * 3;
+        match parallelism {
+            Parallelism::Pool => bytes.par_chunks_mut(row_bytes).enumerate().for_each(row),
+            Parallelism::Serial => bytes.chunks_mut(row_bytes).enumerate().for_each(row),
+        }
+        bytes
+    }
+
+    fn write_tile(
+        frame: &mut Arc<[u8]>,
+        stage: Stage,
+        tile: Region,
+        bytes: Vec<u8>,
+        alpha: &(dyn Fn(u32, u32) -> u8 + Sync),
+    ) {
+        let output = frame_mut(frame);
+        for (row, y) in (tile.y0..tile.y1()).enumerate() {
+            for (column, x) in (tile.x0..tile.x1()).enumerate() {
+                let to = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
+                let from = (row * tile.width as usize + column) * 3;
+                output[to..to + 3].copy_from_slice(&bytes[from..from + 3]);
+                output[to + 3] = alpha(x, y);
             }
         }
+    }
+
+    fn frame_pixel(frame: &Arc<[u8]>, stage: Stage, x: u32, y: u32) -> [u8; 4] {
+        let offset = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
+        let pixel = &frame[offset..offset + 4];
+        [pixel[0], pixel[1], pixel[2], pixel[3]]
     }
 }
 
@@ -1559,8 +1409,8 @@ impl<'a> Evaluation<'a> {
 /// brush's stored seed and `mask.sample-input` do, so the overlay and the seed read one value; the
 /// linear path never quantizes at all.
 pub(crate) enum LayerInput<'a> {
-    Byte(Evaluation<'a>),
-    Linear(linear::LinearEvaluation<'a>),
+    Byte(Evaluation<'a, Byte<'a>>),
+    Linear(Evaluation<'a, linear::Linear<'a>>),
 }
 
 impl LayerInput<'_> {
@@ -1568,25 +1418,15 @@ impl LayerInput<'_> {
     pub(crate) fn stage(&self) -> Stage {
         match self {
             Self::Byte(evaluation) => evaluation.stage(),
-            Self::Linear(evaluation) => {
-                let (width, height) = evaluation.stage();
-                Stage { width, height }
-            }
+            Self::Linear(evaluation) => evaluation.stage(),
         }
     }
 
     /// One pixel of the layer's input stage, in linear light, or `None` outside that stage.
     pub(crate) fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
         match self {
-            Self::Byte(evaluation) => Ok(evaluation.pixel(x, y)?.map(|rgba| {
-                let linear = decode_pixel([rgba[0], rgba[1], rgba[2]]);
-                [
-                    f64::from(linear[0]),
-                    f64::from(linear[1]),
-                    f64::from(linear[2]),
-                ]
-            })),
-            Self::Linear(evaluation) => evaluation.pixel(x, y),
+            Self::Byte(evaluation) => Ok(evaluation.pixel(x, y)?.map(Byte::mask_input)),
+            Self::Linear(evaluation) => Ok(evaluation.pixel(x, y)?.map(linear::Linear::mask_input)),
         }
     }
 }
@@ -1741,6 +1581,7 @@ pub(super) fn rasterize(
 ) -> Result<Raster, Error> {
     // A token already cancelled when the call arrives costs no frame at all.
     cancel.check()?;
+    let domain = Byte(source);
     let first = &compiled.segments[0];
     let mut width = first.width;
     let mut height = first.height;
@@ -1798,16 +1639,39 @@ pub(super) fn rasterize(
             Entry::Spatial {
                 operation,
                 prefix_hash,
-            } => spatial_frame(
-                input,
-                Stage { width, height },
-                operation,
-                prefix_hash,
-                &source.fingerprint,
-                cancel,
-                tile,
-                context,
-            )?,
+            } => {
+                let stage = Stage { width, height };
+                let at = |x: u32, y: u32| {
+                    ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize
+                };
+                let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+                    let offset = at(x, y);
+                    Ok(decode_pixel([
+                        input[offset],
+                        input[offset + 1],
+                        input[offset + 2],
+                    ]))
+                };
+                spatial_output::<Byte>(
+                    stage,
+                    operation,
+                    || {
+                        resolve_globals(
+                            context.estimates(),
+                            operation,
+                            stage,
+                            domain.fingerprint(),
+                            &domain.estimate_prefix(prefix_hash),
+                            || build_reduction(stage, read),
+                        )
+                    },
+                    tile,
+                    cancel,
+                    context,
+                    read,
+                    |x, y| input[at(x, y) + 3],
+                )?
+            }
         };
         // The frame the boundary read is released before the next pass, so two frames is the peak.
         drop(previous);
@@ -1845,8 +1709,8 @@ pub(super) fn rasterize(
 pub(crate) mod testing {
     use super::render as enter;
     use super::{
-        Cancel, Evaluation, LinearImage, LinearSettings, Raster, RenderContext, RenderOptions,
-        RenderSource, Sample, SourceImage, linear::LinearEvaluation, linear::SpatialMode,
+        Byte, Cancel, Evaluation, LinearImage, LinearSettings, Raster, RenderContext,
+        RenderOptions, RenderSource, Sample, SourceImage, SpatialMode, linear::Linear,
     };
     use crate::{Error, ModuleRegistry, Recipe, SnapshotId};
     use std::{borrow::Cow, sync::OnceLock};
@@ -2079,15 +1943,17 @@ pub(crate) mod testing {
         registry: &ModuleRegistry,
         source: &'a SourceImage,
         recipe: &Recipe,
-    ) -> Result<Evaluation<'a>, Error> {
+    ) -> Result<Evaluation<'a, Byte<'a>>, Error> {
         super::check_source(source)?;
         let compiled = registry.compile(source.width, source.height, recipe)?;
-        Ok(Evaluation::new(
-            source,
+        Evaluation::new(
+            Byte(source),
             Cow::Owned(compiled),
             super::spatial::PRODUCTION_TILE,
+            SpatialMode::Point,
+            &Cancel::never(),
             context(),
-        ))
+        )
     }
 
     /// A linear evaluation of `recipe` in either spatial mode, for a test that inspects the frames
@@ -2100,18 +1966,10 @@ pub(crate) mod testing {
         cancel: &Cancel,
         tile: u32,
         mode: SpatialMode,
-    ) -> Result<LinearEvaluation<'a>, Error> {
-        settings.multiplier()?;
+    ) -> Result<Evaluation<'a, Linear<'a>>, Error> {
+        let domain = Linear::new(source, settings)?;
         let compiled = registry.compile(source.width(), source.height(), recipe)?;
-        LinearEvaluation::new(
-            source,
-            Cow::Owned(compiled),
-            settings,
-            cancel,
-            tile,
-            mode,
-            context(),
-        )
+        Evaluation::new(domain, Cow::Owned(compiled), tile, mode, cancel, context())
     }
 
     /// The unit tests' own reading of a preview source: each method is one call to the entry point
