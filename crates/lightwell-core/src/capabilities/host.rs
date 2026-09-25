@@ -11,7 +11,7 @@
 //! [`activation`], [`permissions`], [`resources`] and [`tasks`] hold the other methods over the
 //! same [`CapabilityHost`].
 use super::{
-    descriptor::SettingKind,
+    descriptor::SettingDescriptor,
     grants::{Grant, GrantKind, GrantScope, GrantsStore},
     jobs::{Cancelled, Deliver, JobError, JobKind, JobRecord, JobStatus, Jobs, Origin},
     resources::{DEFAULT_RESOURCE_QUOTA_BYTES, ResourceStore, SharedTransport},
@@ -24,7 +24,7 @@ use super::{
 };
 use crate::{
     AssetId, EditorService, Error, ErrorKind, JobId, ModuleDescriptor, ModuleRegistry,
-    activity::ActivityBoard, api::params::host_params,
+    ParameterKind, activity::ActivityBoard, api::params::host_params,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -580,7 +580,7 @@ impl CapabilityHost {
                             .profiles
                             .as_ref()
                             .and_then(|profiles| profiles.field(id))
-                            .is_some_and(|field| matches!(field.kind, SettingKind::Endpoint { .. }))
+                            .is_some_and(SettingDescriptor::is_endpoint)
                     });
                     if endpoint {
                         revoked.extend(grants.revoke_matching(
@@ -783,7 +783,7 @@ fn effective_values(
             .settings
             .as_ref()
             .and_then(|settings| settings.field(id))
-            .is_some_and(|field| !matches!(field.kind, SettingKind::Endpoint { .. }))
+            .is_some_and(|field| !field.is_endpoint())
     };
     read.map(|read| {
         read.fields
@@ -806,8 +806,8 @@ fn secret_fields(descriptor: &ModuleDescriptor) -> Vec<String> {
         .settings
         .iter()
         .flat_map(|settings| settings.fields.iter())
-        .filter(|field| matches!(field.kind, SettingKind::Secret { .. }))
-        .map(|field| field.id.clone())
+        .filter(|field| field.is_secret())
+        .map(|field| field.id().to_owned())
         .collect()
 }
 
@@ -817,11 +817,14 @@ fn profile_endpoint(
     fields: &std::collections::BTreeMap<String, FieldRead>,
 ) -> Option<Endpoint> {
     let profiles = descriptor.settings.as_ref()?.profiles.as_ref()?;
-    let (field, classes) = profiles.fields.iter().find_map(|field| match &field.kind {
-        SettingKind::Endpoint { classes } => Some((field, classes)),
-        _ => None,
-    })?;
-    match fields.get(&field.id)? {
+    let (field, classes) = profiles
+        .fields
+        .iter()
+        .find_map(|field| match field.kind() {
+            ParameterKind::Endpoint { classes } => Some((field, classes)),
+            _ => None,
+        })?;
+    match fields.get(field.id())? {
         FieldRead::Value {
             value: Value::String(url),
             valid: true,

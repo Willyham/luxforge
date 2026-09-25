@@ -3,15 +3,16 @@
 //! requires and the worker tasks it offers. Registration validates them and does no I/O. See
 //! `docs/design/module-capabilities.md#configuration-contract`.
 //!
-//! A setting and a capability are serialized flat, exactly as a parameter is: the kind's tag and its
-//! own fields sit beside the identity, e.g. `{"id": "strength", "label": "Strength", "kind":
-//! "number", "min": 0, "max": 1, "required": false, …}`. Flattening the kind rules out
-//! `deny_unknown_fields` on those two types, so an unknown field there is ignored on read; every
-//! other capability type refuses unknown fields.
+//! A setting is a [`ParameterDescriptor`] with a label, serialized flat exactly as a parameter is:
+//! `{"name": "strength", "kind": "number", "min": 0, "max": 1, "required": false, …, "label":
+//! "Strength", "invalidates_activation": false}`. A capability is serialized flat the same way.
+//! Flattening rules out `deny_unknown_fields` on those two types, so an unknown field there is
+//! ignored on read; every other capability type refuses unknown fields.
 use super::transport::{EndpointClass, parse_endpoint};
 use crate::{
     Error, ErrorKind, ModuleDescriptor, ParameterDescriptor, ParameterKind,
-    modules::check_parameter_declarations, valid_name,
+    modules::{check_declaration, check_parameter_declarations},
+    valid_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,8 +24,6 @@ use url::Url;
 pub const MAX_SETTING_FIELDS: usize = 32;
 /// The most provider profiles one module may hold.
 pub const MAX_PROFILES: u8 = 16;
-/// The longest `text` or `secret` value a module may declare, in characters.
-pub const MAX_TEXT_LENGTH: u32 = 4096;
 /// The largest resource a module may pin, which is also the most a download may stream to disk.
 pub const MAX_RESOURCE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// The largest request body or response an adapter may declare. It is the artifact limit, since a
@@ -32,8 +31,6 @@ pub const MAX_RESOURCE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 pub const MAX_ADAPTER_BYTES: u64 = 256 * 1024 * 1024;
 /// The longest whole-request deadline an adapter may declare.
 pub const MAX_ADAPTER_TIMEOUT_MS: u64 = 10 * 60 * 1000;
-/// The largest number of decimals a number setting asks a client to show, as for parameters.
-const MAX_PRECISION: u8 = 6;
 /// A resource version names a directory under the resource root, so it is a short, plain name.
 const MAX_VERSION_LENGTH: usize = 64;
 
@@ -57,86 +54,59 @@ pub struct SettingsDescriptor {
 impl SettingsDescriptor {
     /// A module-level field.
     pub fn field(&self, id: &str) -> Option<&SettingDescriptor> {
-        self.fields.iter().find(|field| field.id == id)
+        self.fields.iter().find(|field| field.id() == id)
     }
 }
 
-/// One typed setting. A secret declares only its presence anywhere it is reported.
+/// One setting, declared in the module parameter vocabulary: its parameter's name is the setting's
+/// identity, and its kind, `required`, default, hints and notes mean what they mean for an action's
+/// parameter. A missing or invalid value of a required setting makes the module or profile
+/// incomplete. What only a setting has sits beside the parameter: the label a settings view shows
+/// and whether changing it deactivates the module. A secret declares only its presence anywhere it
+/// is reported.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SettingDescriptor {
-    pub id: String,
-    pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub help: Option<String>,
     #[serde(flatten)]
-    pub kind: SettingKind,
-    /// A missing or invalid value makes the module or profile incomplete.
-    #[serde(default)]
-    pub required: bool,
-    /// The value a field reads while nothing is stored. A `secret` or `endpoint` field never has
-    /// one: a secret is never plain data, and a destination is a person's choice, never a
-    /// module's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<Value>,
+    pub parameter: ParameterDescriptor,
+    pub label: String,
     /// Changing this field deactivates an active module, because what it loaded depends on it.
     #[serde(default)]
     pub invalidates_activation: bool,
 }
 
-/// The closed set of setting types.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum SettingKind {
-    Boolean,
-    Integer {
-        min: i64,
-        max: i64,
-    },
-    /// A finite `f64` within the closed range. Step and precision are client hints, as for a
-    /// parameter; a stored value is never rounded to them.
-    Number {
-        min: f64,
-        max: f64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        step: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        precision: Option<u8>,
-    },
-    Enum {
-        options: Vec<String>,
-    },
-    Text {
-        max_length: u32,
-    },
-    /// A URL the transport policy accepts as one of these classes, stored as the parsed URL.
-    Endpoint {
-        classes: Vec<EndpointClass>,
-    },
-    /// A credential held only by the secret store.
-    Secret {
-        max_length: u32,
-    },
-}
-
-impl SettingKind {
-    /// The kind's tag as it is serialized, for messages.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Boolean => "boolean",
-            Self::Integer { .. } => "integer",
-            Self::Number { .. } => "number",
-            Self::Enum { .. } => "enum",
-            Self::Text { .. } => "text",
-            Self::Endpoint { .. } => "endpoint",
-            Self::Secret { .. } => "secret",
+impl SettingDescriptor {
+    /// A setting that leaves activation alone.
+    pub fn new(parameter: ParameterDescriptor, label: impl Into<String>) -> Self {
+        Self {
+            parameter,
+            label: label.into(),
+            invalidates_activation: false,
         }
     }
-}
 
-/// Every setting kind tag, so a descriptor read from JSON names an unknown one precisely.
-const SETTING_KINDS: &[&str] = &[
-    "boolean", "integer", "number", "enum", "text", "endpoint", "secret",
-];
+    /// Changing this setting deactivates an active module.
+    pub fn invalidates_activation(mut self) -> Self {
+        self.invalidates_activation = true;
+        self
+    }
+
+    /// The setting's identity: its parameter's name.
+    pub fn id(&self) -> &str {
+        &self.parameter.name
+    }
+
+    pub fn kind(&self) -> &ParameterKind {
+        &self.parameter.kind
+    }
+
+    pub fn is_secret(&self) -> bool {
+        matches!(self.parameter.kind, ParameterKind::Secret { .. })
+    }
+
+    pub fn is_endpoint(&self) -> bool {
+        matches!(self.parameter.kind, ParameterKind::Endpoint { .. })
+    }
+}
 
 /// Named provider profiles: each profile names one declared adapter and holds its own values of
 /// `fields`, which include the endpoint it sends to.
@@ -156,7 +126,7 @@ impl ProfilesDescriptor {
     }
 
     pub fn field(&self, id: &str) -> Option<&SettingDescriptor> {
-        self.fields.iter().find(|field| field.id == id)
+        self.fields.iter().find(|field| field.id() == id)
     }
 }
 
@@ -374,6 +344,8 @@ pub(crate) fn check_raw(descriptor: &Value) -> Result<(), Error> {
             )));
         }
     }
+    // A setting is read on its own first, so a malformed one — an unknown kind above all — is
+    // named by the setting it belongs to rather than only by serde's position in the descriptor.
     let settings = descriptor.get("settings");
     let module_fields = settings.and_then(|settings| settings.get("fields"));
     let profile_fields = settings
@@ -385,20 +357,12 @@ pub(crate) fn check_raw(descriptor: &Value) -> Result<(), Error> {
         .filter_map(Value::as_array)
         .flatten()
     {
-        match field.get("kind").and_then(Value::as_str) {
-            Some(kind) if SETTING_KINDS.contains(&kind) => {}
-            Some(kind) => {
-                return Err(validation(format!(
-                    "setting {} declares unknown kind {kind}",
-                    id(field)
-                )));
-            }
-            None => {
-                return Err(validation(format!(
-                    "setting {} declares no kind",
-                    id(field)
-                )));
-            }
+        if let Err(error) = serde_json::from_value::<SettingDescriptor>(field.clone()) {
+            let name = field
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            return Err(validation(format!("setting {name}: {error}")));
         }
     }
     Ok(())
@@ -462,11 +426,7 @@ fn validate_settings(module: &str, settings: &SettingsDescriptor) -> Result<(), 
         validate_adapter(adapter, &mut adapters)?;
     }
     validate_fields(module, "profile setting", &profiles.fields)?;
-    if !profiles
-        .fields
-        .iter()
-        .any(|field| matches!(field.kind, SettingKind::Endpoint { .. }))
-    {
+    if !profiles.fields.iter().any(SettingDescriptor::is_endpoint) {
         return Err(validation(format!(
             "module {module} declares profile adapters but no endpoint profile field"
         )));
@@ -475,7 +435,7 @@ fn validate_settings(module: &str, settings: &SettingsDescriptor) -> Result<(), 
     let secrets = profiles
         .fields
         .iter()
-        .filter(|field| matches!(field.kind, SettingKind::Secret { .. }))
+        .filter(|field| field.is_secret())
         .count();
     if let Some(adapter) = profiles
         .adapters
@@ -500,16 +460,15 @@ fn validate_fields(module: &str, what: &str, fields: &[SettingDescriptor]) -> Re
     }
     let mut seen = HashSet::with_capacity(fields.len());
     for field in fields {
-        if !valid_name(&field.id) {
+        let id = field.id();
+        if !valid_name(id) {
             return Err(validation(format!(
-                "invalid {what} identity {} of module {module}",
-                field.id
+                "invalid {what} identity {id} of module {module}"
             )));
         }
-        if !seen.insert(field.id.as_str()) {
+        if !seen.insert(id) {
             return Err(validation(format!(
-                "duplicate {what} {} of module {module}",
-                field.id
+                "duplicate {what} {id} of module {module}"
             )));
         }
         validate_field(field)?;
@@ -517,158 +476,30 @@ fn validate_fields(module: &str, what: &str, fields: &[SettingDescriptor]) -> Re
     Ok(())
 }
 
+/// A setting takes the parameter kinds a settings store can hold and a settings view can edit: the
+/// plain values, an endpoint and a secret. A colour, a path, a curve, an artifact or a settings set
+/// belongs to an edit, not to a user-level preference, and is refused by name.
 fn validate_field(field: &SettingDescriptor) -> Result<(), Error> {
-    let id = &field.id;
+    let id = field.id();
     if field.label.trim().is_empty() {
         return Err(validation(format!("setting {id} has no label")));
     }
-    match &field.kind {
-        SettingKind::Boolean => {}
-        SettingKind::Integer { min, max } => {
-            if min > max {
-                return Err(validation(format!(
-                    "setting {id} declares an empty range {min}..={max}"
-                )));
-            }
-        }
-        SettingKind::Number {
-            min,
-            max,
-            step,
-            precision,
-        } => {
-            if !min.is_finite() || !max.is_finite() || min > max {
-                return Err(validation(format!(
-                    "setting {id} declares an empty range {min}..={max}"
-                )));
-            }
-            if let Some(step) = step
-                && (!step.is_finite() || *step <= 0.0)
-            {
-                return Err(validation(format!(
-                    "setting {id} declares a step that is not finite and positive"
-                )));
-            }
-            if let Some(precision) = precision
-                && *precision > MAX_PRECISION
-            {
-                return Err(validation(format!(
-                    "setting {id} declares a precision above {MAX_PRECISION}"
-                )));
-            }
-        }
-        SettingKind::Enum { options } => {
-            if options.is_empty() {
-                return Err(validation(format!("setting {id} declares no options")));
-            }
-            let mut seen = HashSet::with_capacity(options.len());
-            if let Some(option) = options
-                .iter()
-                .find(|option| option.is_empty() || !seen.insert(option.as_str()))
-            {
-                return Err(validation(format!(
-                    "setting {id} declares an empty or duplicate option {option:?}"
-                )));
-            }
-        }
-        SettingKind::Text { max_length } | SettingKind::Secret { max_length } => {
-            if !(1..=MAX_TEXT_LENGTH).contains(max_length) {
-                return Err(validation(format!(
-                    "setting {id} declares max_length {max_length}; it is 1..={MAX_TEXT_LENGTH}"
-                )));
-            }
-        }
-        SettingKind::Endpoint { classes } => {
-            if classes.is_empty() {
-                return Err(validation(format!(
-                    "endpoint setting {id} declares no class"
-                )));
-            }
-            let mut seen = HashSet::with_capacity(classes.len());
-            if !classes.iter().all(|class| seen.insert(class)) {
-                return Err(validation(format!(
-                    "endpoint setting {id} declares a class twice"
-                )));
-            }
+    match field.kind() {
+        ParameterKind::Boolean
+        | ParameterKind::Integer { .. }
+        | ParameterKind::Number { .. }
+        | ParameterKind::Enum { .. }
+        | ParameterKind::String { .. }
+        | ParameterKind::Endpoint { .. }
+        | ParameterKind::Secret { .. } => {}
+        kind => {
+            return Err(validation(format!(
+                "setting {id} declares kind {}, which a setting does not take",
+                kind.name()
+            )));
         }
     }
-    let Some(default) = &field.default else {
-        return Ok(());
-    };
-    match field.kind {
-        SettingKind::Secret { .. } => Err(validation(format!(
-            "secret setting {id} declares a default; a secret never has one"
-        ))),
-        SettingKind::Endpoint { .. } => Err(validation(format!(
-            "{} setting {id} declares a default; a destination is the person's choice",
-            field.kind.name()
-        ))),
-        _ => check_plain_value(field, default)
-            .map_err(|error| validation(format!("default of {}", error.detail))),
-    }
-}
-
-/// One value of a `boolean`, `integer`, `number`, `enum` or `text` setting. Pure: an endpoint and a
-/// secret need the transport policy or the secret store, so the settings store checks those
-/// itself.
-pub(crate) fn check_plain_value(field: &SettingDescriptor, value: &Value) -> Result<(), Error> {
-    let id = &field.id;
-    match &field.kind {
-        SettingKind::Boolean => {
-            if !value.is_boolean() {
-                return Err(validation(format!("setting {id} must be a boolean")));
-            }
-        }
-        SettingKind::Integer { min, max } => {
-            let number = value
-                .as_i64()
-                .ok_or_else(|| validation(format!("setting {id} must be an integer")))?;
-            if number < *min || number > *max {
-                return Err(validation(format!(
-                    "setting {id} must be an integer within {min}..={max}"
-                )));
-            }
-        }
-        SettingKind::Number { min, max, .. } => {
-            let number = value
-                .as_f64()
-                .filter(|number| number.is_finite())
-                .ok_or_else(|| validation(format!("setting {id} must be a number")))?;
-            if number < *min || number > *max {
-                return Err(validation(format!(
-                    "setting {id} must be a number within {min}..={max}"
-                )));
-            }
-        }
-        SettingKind::Enum { options } => {
-            let text = value
-                .as_str()
-                .ok_or_else(|| validation(format!("setting {id} must be a string")))?;
-            if !options.iter().any(|option| option == text) {
-                return Err(validation(format!(
-                    "setting {id} must be one of {}",
-                    options.join(", ")
-                )));
-            }
-        }
-        SettingKind::Text { max_length } => {
-            let text = value
-                .as_str()
-                .ok_or_else(|| validation(format!("setting {id} must be a string")))?;
-            if text.chars().count() > *max_length as usize {
-                return Err(validation(format!(
-                    "setting {id} is longer than {max_length} characters"
-                )));
-            }
-        }
-        SettingKind::Endpoint { .. } | SettingKind::Secret { .. } => {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                format!("setting {id} is not a plain value"),
-            ));
-        }
-    }
-    Ok(())
+    check_declaration(&field.parameter)
 }
 
 fn validate_adapter<'a>(
@@ -980,7 +811,7 @@ mod tests {
         settings(descriptor)
             .fields
             .iter_mut()
-            .find(|field| field.id == id)
+            .find(|field| field.id() == id)
             .unwrap()
     }
 
@@ -1005,20 +836,27 @@ mod tests {
         descriptor.validate().unwrap();
         let value = serde_json::to_value(&descriptor).unwrap();
         assert_eq!(ModuleDescriptor::parse(&value).unwrap(), descriptor);
-        // A setting and a capability are flat, like a parameter: the kind's tag beside its fields.
+        // A setting is a parameter, serialized exactly as an action's parameter is, with its label
+        // and activation flag beside it; a capability is flat the same way.
+        let strength = &descriptor.settings.as_ref().unwrap().fields[0];
+        let mut parameter = serde_json::to_value(&strength.parameter).unwrap();
+        parameter["label"] = json!("strength");
+        parameter["invalidates_activation"] = json!(false);
+        assert_eq!(value["settings"]["fields"][0], parameter);
         assert_eq!(
             value["settings"]["fields"][0],
             json!({
-                "id": "strength", "label": "strength", "kind": "number", "min": 0.0, "max": 1.0,
-                "step": 0.01, "precision": 2, "required": false, "default": 0.5,
-                "invalidates_activation": false,
+                "name": "strength", "kind": "number", "min": 0.0, "max": 1.0,
+                "required": false, "default": 0.5, "unit": null, "step": 0.01, "precision": 2,
+                "notes": "", "label": "strength", "invalidates_activation": false,
             })
         );
         assert_eq!(
             value["settings"]["profiles"]["fields"][1],
             json!({
-                "id": "api-key", "label": "api key", "kind": "secret", "max_length": 128,
-                "required": true, "invalidates_activation": false,
+                "name": "api-key", "kind": "secret", "max_length": 128, "required": true,
+                "default": null, "unit": null, "step": null, "precision": null, "notes": "",
+                "label": "api key", "invalidates_activation": false,
             }),
             "a secret declares its presence and limit only"
         );
@@ -1086,19 +924,19 @@ mod tests {
         let cases: Vec<(Change, &str)> = vec![
             // Identities: malformed and duplicate, in every namespace.
             (
-                |d| field(d, "strength").id = "Strength".into(),
+                |d| field(d, "strength").parameter.name = "Strength".into(),
                 "invalid setting identity Strength of module test.capabilities",
             ),
             (
                 |d| {
                     settings(d)
                         .fields
-                        .push(setting("strength", SettingKind::Boolean, None))
+                        .push(setting(ParameterDescriptor::boolean("strength")))
                 },
                 "duplicate setting strength of module test.capabilities",
             ),
             (
-                |d| profiles(d).fields[2].id = "model_name".into(),
+                |d| profiles(d).fields[2].parameter.name = "model_name".into(),
                 "invalid profile setting identity model_name",
             ),
             (
@@ -1149,104 +987,124 @@ mod tests {
                 },
                 "duplicate task generate-test-tint",
             ),
-            // Defaults outside their kind, and kinds that never take one.
+            // Defaults outside their kind, and kinds that never take one: the parameter
+            // vocabulary's own checks, naming the setting's parameter.
             (
-                |d| field(d, "strength").default = Some(json!(1.5)),
-                "default of setting strength must be a number within 0..=1",
+                |d| field(d, "strength").parameter.default = Some(json!(1.5)),
+                "parameter strength must be a number within 0..=1",
             ),
             (
-                |d| field(d, "mode").default = Some(json!("slow")),
-                "default of setting mode must be one of fast, exact",
+                |d| field(d, "mode").parameter.default = Some(json!("slow")),
+                "parameter mode must be one of fast, exact",
             ),
             (
-                |d| field(d, "count").default = Some(json!(0)),
-                "default of setting count must be an integer within 1..=8",
+                |d| field(d, "count").parameter.default = Some(json!(0)),
+                "parameter count must be an integer within 1..=8",
             ),
             (
-                |d| field(d, "enabled").default = Some(json!("yes")),
-                "default of setting enabled must be a boolean",
+                |d| field(d, "enabled").parameter.default = Some(json!("yes")),
+                "parameter enabled must be a boolean",
             ),
             (
-                |d| field(d, "note").default = Some(json!("x".repeat(17))),
-                "default of setting note is longer than 16 characters",
+                |d| field(d, "note").parameter.default = Some(json!("x".repeat(17))),
+                "parameter note must be at most 16 characters",
             ),
             (
-                |d| field(d, "token").default = Some(json!("abc")),
-                "secret setting token declares a default",
+                |d| field(d, "token").parameter.default = Some(json!("abc")),
+                "secret parameter token declares a default",
             ),
             (
-                |d| field(d, "local-service").default = Some(json!("http://127.0.0.1/")),
-                "endpoint setting local-service declares a default",
+                |d| field(d, "local-service").parameter.default = Some(json!("http://127.0.0.1/")),
+                "endpoint parameter local-service declares a default",
             ),
             // Kinds whose own declaration is unsound.
             (
-                |d| field(d, "count").kind = SettingKind::Integer { min: 5, max: 1 },
-                "setting count declares an empty range 5..=1",
+                |d| field(d, "count").parameter.kind = ParameterKind::Integer { min: 5, max: 1 },
+                "parameter count declares an empty range 5..=1",
             ),
             (
                 |d| {
-                    field(d, "strength").kind = SettingKind::Number {
+                    field(d, "strength").parameter.kind = ParameterKind::Number {
                         min: 0.0,
                         max: f64::INFINITY,
-                        step: None,
-                        precision: None,
                     }
                 },
-                "setting strength declares an empty range",
+                "parameter strength declares an empty range",
+            ),
+            (
+                |d| field(d, "strength").parameter.step = Some(0.0),
+                "parameter strength declares a step that is not finite and positive",
+            ),
+            (
+                |d| field(d, "strength").parameter.precision = Some(7),
+                "parameter strength declares a precision above 6",
             ),
             (
                 |d| {
-                    field(d, "strength").kind = SettingKind::Number {
-                        min: 0.0,
-                        max: 1.0,
-                        step: Some(0.0),
-                        precision: None,
-                    }
-                },
-                "setting strength declares a step that is not finite and positive",
-            ),
-            (
-                |d| {
-                    field(d, "strength").kind = SettingKind::Number {
-                        min: 0.0,
-                        max: 1.0,
-                        step: None,
-                        precision: Some(7),
-                    }
-                },
-                "setting strength declares a precision above 6",
-            ),
-            (
-                |d| {
-                    field(d, "mode").kind = SettingKind::Enum {
+                    field(d, "mode").parameter.kind = ParameterKind::Enum {
                         options: Vec::new(),
                     }
                 },
-                "setting mode declares no options",
+                "parameter mode declares no options",
             ),
             (
                 |d| {
-                    field(d, "mode").kind = SettingKind::Enum {
+                    field(d, "mode").parameter.kind = ParameterKind::Enum {
                         options: vec!["fast".into(), "fast".into()],
                     }
                 },
-                "setting mode declares an empty or duplicate option",
+                "parameter mode declares an empty or duplicate option",
             ),
             (
-                |d| field(d, "note").kind = SettingKind::Text { max_length: 4097 },
-                "setting note declares max_length 4097; it is 1..=4096",
+                |d| field(d, "note").parameter.kind = ParameterKind::String { max_length: 257 },
+                "parameter note declares a max_length 257 outside 1..=256",
             ),
             (
-                |d| field(d, "token").kind = SettingKind::Secret { max_length: 0 },
-                "setting token declares max_length 0; it is 1..=4096",
+                |d| field(d, "token").parameter.kind = ParameterKind::Secret { max_length: 0 },
+                "parameter token declares a max_length 0 outside 1..=4096",
             ),
             (
                 |d| {
-                    field(d, "local-service").kind = SettingKind::Endpoint {
+                    field(d, "local-service").parameter.kind = ParameterKind::Endpoint {
                         classes: Vec::new(),
                     }
                 },
-                "endpoint setting local-service declares no class",
+                "endpoint parameter local-service declares no class",
+            ),
+            (
+                |d| {
+                    field(d, "local-service").parameter.kind = ParameterKind::Endpoint {
+                        classes: vec![EndpointClass::Loopback, EndpointClass::Loopback],
+                    }
+                },
+                "endpoint parameter local-service declares a class twice",
+            ),
+            // A setting takes the kinds a settings store holds and a settings view edits.
+            (
+                |d| field(d, "note").parameter.kind = ParameterKind::Color,
+                "setting note declares kind color, which a setting does not take",
+            ),
+            (
+                |d| field(d, "note").parameter.kind = ParameterKind::Artifact,
+                "setting note declares kind artifact, which a setting does not take",
+            ),
+            // Only a setting declares an endpoint or a secret: an action or task parameter of either
+            // kind would put a destination or a credential in a request, a recipe or a job.
+            (
+                |d| {
+                    d.actions[0]
+                        .parameters
+                        .push(ParameterDescriptor::endpoint("to", [EndpointClass::Remote]))
+                },
+                "parameter to of action apply-test-tint declares kind endpoint, which only a module setting declares",
+            ),
+            (
+                |d| {
+                    d.tasks[0]
+                        .parameters
+                        .push(ParameterDescriptor::secret("key", 16))
+                },
+                "parameter key of task generate-test-tint declares kind secret, which only a module setting declares",
             ),
             (
                 |d| field(d, "note").label = " ".into(),
@@ -1260,7 +1118,7 @@ mod tests {
             (
                 |d| {
                     settings(d).fields.extend((0..25).map(|index| {
-                        setting(&format!("extra-{index}"), SettingKind::Boolean, None)
+                        setting(ParameterDescriptor::boolean(format!("extra-{index}")))
                     }))
                 },
                 "module test.capabilities declares 33 setting fields; at most 32",
@@ -1268,7 +1126,7 @@ mod tests {
             (
                 |d| {
                     profiles(d).fields.extend((0..30).map(|index| {
-                        setting(&format!("extra-{index}"), SettingKind::Boolean, None)
+                        setting(ParameterDescriptor::boolean(format!("extra-{index}")))
                     }))
                 },
                 "module test.capabilities declares 33 profile setting fields; at most 32",
@@ -1283,7 +1141,7 @@ mod tests {
             ),
             // Profiles and adapters.
             (
-                |d| profiles(d).fields.retain(|field| field.id != "endpoint"),
+                |d| profiles(d).fields.retain(|field| field.id() != "endpoint"),
                 "module test.capabilities declares profile adapters but no endpoint profile field",
             ),
             (
@@ -1295,7 +1153,7 @@ mod tests {
                 "module test.capabilities declares an unlabelled profile block",
             ),
             (
-                |d| profiles(d).fields.retain(|field| field.id != "api-key"),
+                |d| profiles(d).fields.retain(|field| field.id() != "api-key"),
                 "adapter echo-adapter authenticates with bearer but the profile fields declare 0 secret fields",
             ),
             (
@@ -1507,16 +1365,21 @@ mod tests {
         );
         let mut value = serde_json::to_value(capability_descriptor()).unwrap();
         value["settings"]["fields"][1]["kind"] = json!("colour");
-        assert_eq!(
-            parse_rejection(value),
-            "setting mode declares unknown kind colour"
+        let detail = parse_rejection(value);
+        assert!(
+            detail.starts_with("setting mode: unknown variant `colour`"),
+            "{detail}"
         );
         let mut value = serde_json::to_value(capability_descriptor()).unwrap();
         value["settings"]["profiles"]["fields"][0]
             .as_object_mut()
             .unwrap()
             .remove("kind");
-        assert_eq!(parse_rejection(value), "setting endpoint declares no kind");
+        let detail = parse_rejection(value);
+        assert!(
+            detail.starts_with("setting endpoint: missing field `kind`"),
+            "{detail}"
+        );
         let mut value = serde_json::to_value(capability_descriptor()).unwrap();
         value["tasks"][0]["unexpected"] = json!(true);
         assert!(parse_rejection(value).contains("unknown field `unexpected`"));

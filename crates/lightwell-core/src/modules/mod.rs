@@ -37,11 +37,14 @@ pub(crate) use descriptor::title_case;
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
     Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, MAX_COORDINATE,
-    MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, ModuleDescriptor, ModuleLayout, NumberStyle,
-    ParameterDescriptor, ParameterKind, RailDecoration, ResetAction, action_label,
-    check_parameters, check_value, render_summary, valid_identity, valid_name,
+    MAX_ENDPOINT_BYTES, MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS,
+    ModuleDescriptor, ModuleLayout, NumberStyle, ParameterDescriptor, ParameterKind,
+    RailDecoration, ResetAction, action_label, check_parameters, check_value, render_summary,
+    valid_identity, valid_name,
 };
-pub(crate) use descriptor::{check_declared_values, check_parameter_declarations};
+pub(crate) use descriptor::{
+    check_declaration, check_declared_values, check_parameter_declarations,
+};
 pub use mixer::{MIXER_EFFECT, MixerModule};
 pub use pixel::{PIXEL_EFFECT, PixelModule};
 pub use presence::{PRESENCE_EFFECT, PresenceModule};

@@ -12,9 +12,16 @@ use super::{
     PointwiseColor, Processing, Stage, StageContext, ToolModule,
 };
 use crate::{
-    ArtifactId, EFFECT_FORMAT, Error, ErrorKind,
+    ArtifactId, EFFECT_FORMAT, Error, ErrorKind, ParameterDescriptor,
     artifacts::{ArtifactMeta, PreparedArtifact},
-    capabilities::context::ModuleContext,
+    capabilities::{
+        context::ModuleContext,
+        descriptor::{
+            AdapterAuth, AdapterCost, AdapterDescriptor, DataClass, ProfilesDescriptor,
+            SettingDescriptor, SettingsDescriptor,
+        },
+        transport::EndpointClass,
+    },
 };
 use serde_json::{Map, Value, json};
 use std::{
@@ -167,6 +174,51 @@ impl PointwiseColor for Tint {
     }
 }
 
+/// The proof's settings, in the module parameter vocabulary: a module-level `strength` and a profile
+/// block whose one adapter authenticates with the profile's `api-key` and sends to its `endpoint`.
+fn proof_settings() -> SettingsDescriptor {
+    SettingsDescriptor {
+        schema: 1,
+        fields: vec![SettingDescriptor::new(
+            ParameterDescriptor::number("strength", 0.0, 1.0)
+                .default(0.5)
+                .step(0.05)
+                .precision(2)
+                .notes("How far the tint moves the photo away from neutral"),
+            "Strength",
+        )],
+        profiles: Some(ProfilesDescriptor {
+            label: "Endpoint".into(),
+            max: 4,
+            adapters: vec![AdapterDescriptor {
+                id: PROOF_ADAPTER.into(),
+                title: "Proof echo".into(),
+                auth: AdapterAuth::Bearer,
+                data: vec![DataClass::SampleGrid8],
+                max_request_bytes: 4096,
+                max_response_bytes: 4096,
+                timeout_ms: 5000,
+                retention: Some("The proof endpoint keeps nothing".into()),
+                cost: AdapterCost::Free,
+            }],
+            fields: vec![
+                SettingDescriptor::new(
+                    ParameterDescriptor::endpoint(
+                        "endpoint",
+                        [EndpointClass::Remote, EndpointClass::Loopback],
+                    )
+                    .required(true),
+                    "Endpoint",
+                ),
+                SettingDescriptor::new(
+                    ParameterDescriptor::secret("api-key", 256).required(true),
+                    "API key",
+                ),
+            ],
+        }),
+    }
+}
+
 /// The developer capability proof. Its activation loads the palette's gains and keeps them until it
 /// is deactivated.
 pub struct CapabilitiesProofModule {
@@ -216,43 +268,6 @@ impl CapabilitiesProofModule {
             "canvas": null,
             "developer": true,
             "availability": {"kind": "available"},
-            "settings": {
-                "schema": 1,
-                "fields": [
-                    {
-                        "id": "strength", "label": "Strength",
-                        "help": "How far the tint moves the photo away from neutral",
-                        "kind": "number", "min": 0.0, "max": 1.0, "step": 0.05, "precision": 2,
-                        "required": false, "default": 0.5, "invalidates_activation": false,
-                    },
-                ],
-                "profiles": {
-                    "label": "Endpoint",
-                    "max": 4,
-                    "adapters": [{
-                        "id": PROOF_ADAPTER,
-                        "title": "Proof echo",
-                        "auth": "bearer",
-                        "data": ["sample-grid-8"],
-                        "max_request_bytes": 4096,
-                        "max_response_bytes": 4096,
-                        "timeout_ms": 5000,
-                        "retention": "The proof endpoint keeps nothing",
-                        "cost": "free",
-                    }],
-                    "fields": [
-                        {
-                            "id": "endpoint", "label": "Endpoint", "kind": "endpoint",
-                            "classes": ["remote", "loopback"],
-                            "required": true, "invalidates_activation": false,
-                        },
-                        {
-                            "id": "api-key", "label": "API key", "kind": "secret", "max_length": 256,
-                            "required": true, "invalidates_activation": false,
-                        },
-                    ],
-                },
-            },
             "capabilities": [
                 {
                     "id": "echo", "kind": "remote-image-request", "adapter": PROOF_ADAPTER,
@@ -294,7 +309,10 @@ impl CapabilitiesProofModule {
         }))
         .expect("the proof descriptor's shape is static");
         Self {
-            descriptor,
+            descriptor: ModuleDescriptor {
+                settings: Some(proof_settings()),
+                ..descriptor
+            },
             palette: Mutex::new(None),
             activation_delay: Duration::ZERO,
         }

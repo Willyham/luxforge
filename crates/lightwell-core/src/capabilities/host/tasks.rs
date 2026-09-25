@@ -21,7 +21,6 @@ use crate::{
         data::DisclosedData,
         descriptor::{
             AdapterAuth, AdapterDescriptor, CapabilityDescriptor, CapabilityKind, DataClass,
-            SettingKind,
         },
         grants::{GrantScope, RemoteScope},
         jobs::{Admission, JobControl, JobKind, JobStatus, NewJob, Origin, Work},
@@ -88,12 +87,7 @@ fn profile_view(descriptor: &ModuleDescriptor, profile: &ProfileRead) -> Profile
     let plain = |id: &str| {
         fields
             .and_then(|profiles| profiles.field(id))
-            .is_some_and(|field| {
-                !matches!(
-                    field.kind,
-                    SettingKind::Endpoint { .. } | SettingKind::Secret { .. }
-                )
-            })
+            .is_some_and(|field| !field.kind().setting_only())
     };
     ProfileView {
         id: profile.id.clone(),
@@ -119,8 +113,8 @@ fn profile_secret_fields(descriptor: &ModuleDescriptor) -> Vec<String> {
         .iter()
         .flat_map(|settings| settings.profiles.iter())
         .flat_map(|profiles| profiles.fields.iter())
-        .filter(|field| matches!(field.kind, SettingKind::Secret { .. }))
-        .map(|field| field.id.clone())
+        .filter(|field| field.is_secret())
+        .map(|field| field.id().to_owned())
         .collect()
 }
 

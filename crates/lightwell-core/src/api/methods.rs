@@ -179,7 +179,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.settings.set",
         owner::capability::SetParams,
         owner::capability::settings_set,
-        "validates the named non-secret fields against their kinds and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts and a file as its canonical path; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, invalidates_activation, settings}"
+        "validates the named non-secret fields against their declared parameters (a module's settings.fields and settings.profiles.fields are parameter descriptors, checked exactly as an action's are) and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, invalidates_activation, settings}"
     ),
     owner!(
         "module.settings.set-secret",

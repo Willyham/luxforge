@@ -7,7 +7,7 @@ use super::{
     descriptor::{
         ActivationDescriptor, AdapterAuth, AdapterCost, AdapterDescriptor, CapabilityDescriptor,
         CapabilityKind, DataClass, ProfilesDescriptor, ResourceDescriptor, SettingDescriptor,
-        SettingKind, SettingsDescriptor, TaskApply, TaskDescriptor,
+        SettingsDescriptor, TaskApply, TaskDescriptor,
     },
     transport::{Connect, EndpointClass, Resolve},
 };
@@ -63,16 +63,10 @@ pub(crate) fn temp(name: &str) -> PathBuf {
     ))
 }
 
-pub(crate) fn setting(id: &str, kind: SettingKind, default: Option<Value>) -> SettingDescriptor {
-    SettingDescriptor {
-        id: id.into(),
-        label: id.replace('-', " "),
-        help: None,
-        kind,
-        required: false,
-        default,
-        invalidates_activation: false,
-    }
+/// A setting of `parameter`, labelled with its name.
+pub(crate) fn setting(parameter: ParameterDescriptor) -> SettingDescriptor {
+    let label = parameter.name.replace('-', " ");
+    SettingDescriptor::new(parameter, label)
 }
 
 pub(crate) fn adapter() -> AdapterDescriptor {
@@ -94,10 +88,6 @@ pub(crate) fn adapter() -> AdapterDescriptor {
 /// a required setting and the resource, and one task that uses both capabilities and applies its
 /// artifact.
 pub(crate) fn capability_descriptor() -> ModuleDescriptor {
-    let required = |setting: SettingDescriptor| SettingDescriptor {
-        required: true,
-        ..setting
-    };
     ModuleDescriptor {
         id: MODULE.into(),
         title: "Capabilities test".into(),
@@ -140,68 +130,42 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
             schema: 1,
             fields: vec![
                 setting(
-                    "strength",
-                    SettingKind::Number {
-                        min: 0.0,
-                        max: 1.0,
-                        step: Some(0.01),
-                        precision: Some(2),
-                    },
-                    Some(json!(0.5)),
+                    ParameterDescriptor::number("strength", 0.0, 1.0)
+                        .default(0.5)
+                        .step(0.01)
+                        .precision(2),
                 ),
                 setting(
-                    "mode",
-                    SettingKind::Enum {
-                        options: vec!["fast".into(), "exact".into()],
-                    },
-                    Some(json!("exact")),
+                    ParameterDescriptor::enumeration("mode", ["fast", "exact"]).default("exact"),
                 ),
-                setting(
-                    "count",
-                    SettingKind::Integer { min: 1, max: 8 },
-                    Some(json!(2)),
-                ),
-                setting("enabled", SettingKind::Boolean, Some(json!(true))),
-                setting("note", SettingKind::Text { max_length: 16 }, None),
-                SettingDescriptor {
-                    invalidates_activation: true,
-                    ..required(setting("label", SettingKind::Text { max_length: 32 }, None))
-                },
-                setting(
+                setting(ParameterDescriptor::integer("count", 1, 8).default(2)),
+                setting(ParameterDescriptor::boolean("enabled").default(true)),
+                setting(ParameterDescriptor::string("note", 16)),
+                setting(ParameterDescriptor::string("label", 32).required(true))
+                    .invalidates_activation(),
+                setting(ParameterDescriptor::endpoint(
                     "local-service",
-                    SettingKind::Endpoint {
-                        classes: vec![EndpointClass::Loopback],
-                    },
-                    None,
-                ),
-                setting("token", SettingKind::Secret { max_length: 64 }, None),
+                    [EndpointClass::Loopback],
+                )),
+                setting(ParameterDescriptor::secret("token", 64)),
             ],
             profiles: Some(ProfilesDescriptor {
                 label: "Providers".into(),
                 max: 2,
                 adapters: vec![adapter()],
                 fields: vec![
-                    SettingDescriptor {
-                        invalidates_activation: true,
-                        ..required(setting(
-                            "endpoint",
-                            SettingKind::Endpoint {
-                                classes: vec![EndpointClass::Remote, EndpointClass::Loopback],
-                            },
-                            None,
-                        ))
-                    },
-                    required(setting(
-                        "api-key",
-                        SettingKind::Secret { max_length: 128 },
-                        None,
-                    )),
                     setting(
-                        "model",
-                        SettingKind::Enum {
-                            options: vec!["small".into(), "large".into()],
-                        },
-                        Some(json!("small")),
+                        ParameterDescriptor::endpoint(
+                            "endpoint",
+                            [EndpointClass::Remote, EndpointClass::Loopback],
+                        )
+                        .required(true),
+                    )
+                    .invalidates_activation(),
+                    setting(ParameterDescriptor::secret("api-key", 128).required(true)),
+                    setting(
+                        ParameterDescriptor::enumeration("model", ["small", "large"])
+                            .default("small"),
                     ),
                 ],
             }),

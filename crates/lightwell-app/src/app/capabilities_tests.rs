@@ -341,14 +341,15 @@ fn settings_writes_send_the_envelope_and_show_refusals_and_conflicts_at_the_fiel
         matches!(&strength.kind, FieldKindModel::Number { display, typing: None, .. } if display == "0.80"),
         "{strength:?}"
     );
-    // The core refuses a value outside the declared range, and says so under the field.
+    // A value outside the declared range is read back against the setting's parameter exactly as a
+    // module control's text is: refused under the field, and nothing is sent.
     proof.type_and_commit(None, "strength", "7");
-    proof.answer();
-    assert!(
-        proof.state().errors[&(None, "strength".to_owned())].contains("0..=1"),
-        "{:?}",
-        proof.state().errors
+    assert!(proof.answer().is_empty(), "a refused value is not sent");
+    assert_eq!(
+        proof.state().errors[&(None, "strength".to_owned())],
+        "strength must be a number from 0 to 1",
     );
+    assert_eq!(proof.state().revision(), Some(1));
     // Another client writes first: the desktop's write is a conflict, the settings are read
     // again and the field says it changed elsewhere.
     let (_, _) = call(

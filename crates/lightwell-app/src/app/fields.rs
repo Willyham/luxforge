@@ -213,6 +213,9 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .as_ref()
             .map(Value::to_string)
             .unwrap_or_else(|| "[]".into()),
+        // A setting's endpoint and secret never have a default: a destination is the person's
+        // choice, and a secret is never shown.
+        ParameterKind::Endpoint { .. } | ParameterKind::Secret { .. } => String::new(),
     }
 }
 
@@ -254,7 +257,9 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
         | ParameterKind::Curve { .. }
         | ParameterKind::Points { .. }
         | ParameterKind::String { .. }
-        | ParameterKind::Settings => return 0,
+        | ParameterKind::Settings
+        | ParameterKind::Endpoint { .. }
+        | ParameterKind::Secret { .. } => return 0,
     };
     if let Some(precision) = parameter.precision {
         return usize::from(precision).min(lightwell_ui::geometry::MAX_DECIMALS);
@@ -393,6 +398,14 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
                     .map_err(|error| error.detail)
                     .map(|_| value)
             }),
+        ParameterKind::Endpoint { .. } => {
+            let value = Value::from(text.trim());
+            check_value(parameter, &value)
+                .map_err(|error| error.detail)
+                .map(|_| value)
+        }
+        // A secret is typed into its own masked field and sent only by `set-secret`.
+        ParameterKind::Secret { .. } => Err(format!("{name} is a secret and is set on its own")),
     }
 }
 
@@ -415,7 +428,11 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
         ParameterKind::Curve { .. } | ParameterKind::Points { .. } | ParameterKind::Settings => {
             value.to_string()
         }
-        ParameterKind::String { .. } => value.as_str().unwrap().to_owned(),
+        ParameterKind::String { .. } | ParameterKind::Endpoint { .. } => {
+            value.as_str().unwrap().to_owned()
+        }
+        // No plain value of a secret passes the check above.
+        ParameterKind::Secret { .. } => unreachable!("a secret has no plain value"),
     })
 }
 

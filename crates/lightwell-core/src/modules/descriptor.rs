@@ -2,9 +2,12 @@
 //! and every validation limit a module declares.
 use crate::{
     Error, ErrorKind,
-    capabilities::descriptor::{
-        ActivationDescriptor, CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor,
-        TaskDescriptor,
+    capabilities::{
+        descriptor::{
+            ActivationDescriptor, CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor,
+            TaskDescriptor,
+        },
+        transport::{EndpointClass, parse_endpoint},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -195,6 +198,53 @@ pub enum ParameterKind {
     /// non-empty objects of that action's fields. The generic check validates only this shape; the
     /// host checks every action and field against its own descriptor when the set is applied.
     Settings,
+    /// A network destination: a URL of at most [`MAX_ENDPOINT_BYTES`] that the capability
+    /// transport's policy accepts as one of `classes`. Only a module setting declares one, because
+    /// only the host contacts anything and a destination is the person's choice: an action, query
+    /// or task that declared one would let a request name where the host sends data. It never has a
+    /// default.
+    Endpoint {
+        classes: Vec<EndpointClass>,
+    },
+    /// A credential of 1..=`max_length` characters (at most [`MAX_SECRET_LENGTH`]), held only by the
+    /// OS secret store and reported only as present or absent. Only a module setting declares one,
+    /// so the one request that carries a secret is `module.settings.set-secret`, which is what
+    /// makes redaction structural: no recipe, history entry, draft or job parameter can hold one.
+    /// No plain value is ever valid for it, and it never has a default.
+    Secret {
+        max_length: usize,
+    },
+}
+
+/// The longest endpoint URL a value may be before it is parsed, in bytes.
+pub const MAX_ENDPOINT_BYTES: usize = 4096;
+/// The longest secret a module may declare, in characters.
+pub const MAX_SECRET_LENGTH: usize = 4096;
+
+impl ParameterKind {
+    /// The kind's tag as it is serialized, for messages.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Integer { .. } => "integer",
+            Self::Number { .. } => "number",
+            Self::Enum { .. } => "enum",
+            Self::Color => "color",
+            Self::Boolean => "boolean",
+            Self::Points { .. } => "points",
+            Self::Artifact => "artifact",
+            Self::Curve { .. } => "curve",
+            Self::String { .. } => "string",
+            Self::Settings => "settings",
+            Self::Endpoint { .. } => "endpoint",
+            Self::Secret { .. } => "secret",
+        }
+    }
+
+    /// Whether only a module setting may declare this kind: see [`Self::Endpoint`] and
+    /// [`Self::Secret`].
+    pub fn setting_only(&self) -> bool {
+        matches!(self, Self::Endpoint { .. } | Self::Secret { .. })
+    }
 }
 
 /// Serialized flat: `{"name": "x", "kind": "integer", "min": 0, "max": 16383, ...}`. Flattening
@@ -314,6 +364,22 @@ impl ParameterDescriptor {
 
     pub fn settings(name: impl Into<String>) -> Self {
         Self::new(name, ParameterKind::Settings)
+    }
+
+    pub fn endpoint(
+        name: impl Into<String>,
+        classes: impl IntoIterator<Item = EndpointClass>,
+    ) -> Self {
+        Self::new(
+            name,
+            ParameterKind::Endpoint {
+                classes: classes.into_iter().collect(),
+            },
+        )
+    }
+
+    pub fn secret(name: impl Into<String>, max_length: usize) -> Self {
+        Self::new(name, ParameterKind::Secret { max_length })
     }
 
     /// A pixel coordinate of a stage, `0..=MAX_COORDINATE` px, required: a descriptor cannot know
@@ -922,8 +988,8 @@ pub struct ModuleDescriptor {
     /// catalog. Discovery lists the declarations only, never a value or a secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<SettingsDescriptor>,
-    /// What the module may be granted: reading a file setting, sending an asset's data to a
-    /// profile's endpoint, or installing a declared resource.
+    /// What the module may be granted: sending an asset's data to a profile's endpoint, or
+    /// installing a declared resource.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<CapabilityDescriptor>,
     /// Pinned files the host may install for this module.
@@ -1561,82 +1627,141 @@ pub(crate) fn check_parameter_declarations(
                 parameter.name
             )));
         }
-        match &parameter.kind {
-            ParameterKind::Integer { min, max } if min > max => {
-                return Err(validation(format!(
-                    "parameter {} declares an empty range {min}..={max}",
-                    parameter.name
-                )));
-            }
-            ParameterKind::Number { min, max }
-                if !min.is_finite() || !max.is_finite() || min > max =>
-            {
-                return Err(validation(format!(
-                    "parameter {} declares an empty range {min}..={max}",
-                    parameter.name
-                )));
-            }
-            ParameterKind::Enum { options } if options.is_empty() => {
+        if parameter.kind.setting_only() {
+            return Err(validation(format!(
+                "parameter {} of {kind} {id} declares kind {}, which only a module setting declares",
+                parameter.name,
+                parameter.kind.name()
+            )));
+        }
+        check_declaration(parameter)?;
+    }
+    Ok(())
+}
+
+/// One declared parameter's kind, hints and default, wherever it is declared: an action, a query, a
+/// task or a module setting.
+pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), Error> {
+    match &parameter.kind {
+        ParameterKind::Integer { min, max } if min > max => {
+            return Err(validation(format!(
+                "parameter {} declares an empty range {min}..={max}",
+                parameter.name
+            )));
+        }
+        ParameterKind::Number { min, max } if !min.is_finite() || !max.is_finite() || min > max => {
+            return Err(validation(format!(
+                "parameter {} declares an empty range {min}..={max}",
+                parameter.name
+            )));
+        }
+        ParameterKind::Enum { options } => {
+            if options.is_empty() {
                 return Err(validation(format!(
                     "parameter {} declares no options",
                     parameter.name
                 )));
             }
-            ParameterKind::String { max_length }
-                if *max_length == 0 || *max_length > MAX_STRING_LENGTH =>
+            let mut seen = HashSet::with_capacity(options.len());
+            if let Some(option) = options
+                .iter()
+                .find(|option| option.is_empty() || !seen.insert(option.as_str()))
             {
                 return Err(validation(format!(
-                    "parameter {} declares a max_length {max_length} outside 1..={MAX_STRING_LENGTH}",
+                    "parameter {} declares an empty or duplicate option {option:?}",
                     parameter.name
                 )));
             }
-            ParameterKind::Points {
-                points_min,
-                points_max,
-            } if *points_min < 1
-                || *points_max > crate::path::POINTS_PER_STROKE
-                || points_min > points_max =>
-            {
+        }
+        ParameterKind::String { max_length }
+            if *max_length == 0 || *max_length > MAX_STRING_LENGTH =>
+        {
+            return Err(validation(format!(
+                "parameter {} declares a max_length {max_length} outside 1..={MAX_STRING_LENGTH}",
+                parameter.name
+            )));
+        }
+        ParameterKind::Points {
+            points_min,
+            points_max,
+        } if *points_min < 1
+            || *points_max > crate::path::POINTS_PER_STROKE
+            || points_min > points_max =>
+        {
+            return Err(validation(format!(
+                "parameter {} declares invalid path point bounds; 1..={} is the limit",
+                parameter.name,
+                crate::path::POINTS_PER_STROKE
+            )));
+        }
+        ParameterKind::Curve {
+            points_min,
+            points_max,
+            fixed_x,
+            ..
+        } => {
+            if *points_min < 2 || *points_max > 32 || points_min > points_max {
                 return Err(validation(format!(
-                    "parameter {} declares invalid path point bounds; 1..={} is the limit",
-                    parameter.name,
-                    crate::path::POINTS_PER_STROKE
+                    "parameter {} declares invalid curve point bounds",
+                    parameter.name
                 )));
             }
-            ParameterKind::Curve {
-                points_min,
-                points_max,
-                fixed_x,
-                ..
-            } => {
-                if *points_min < 2 || *points_max > 32 || points_min > points_max {
-                    return Err(validation(format!(
-                        "parameter {} declares invalid curve point bounds",
-                        parameter.name
-                    )));
-                }
-                if let Some(xs) = fixed_x
-                    && (xs.len() < *points_min
-                        || xs.len() > *points_max
-                        || xs
-                            .iter()
-                            .any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
-                        || xs.windows(2).any(|pair| pair[0] >= pair[1]))
-                {
-                    return Err(validation(format!(
-                        "parameter {} declares invalid fixed_x curve points",
-                        parameter.name
-                    )));
-                }
+            if let Some(xs) = fixed_x
+                && (xs.len() < *points_min
+                    || xs.len() > *points_max
+                    || xs
+                        .iter()
+                        .any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
+                    || xs.windows(2).any(|pair| pair[0] >= pair[1]))
+            {
+                return Err(validation(format!(
+                    "parameter {} declares invalid fixed_x curve points",
+                    parameter.name
+                )));
             }
-            _ => {}
         }
-        check_hints(parameter)?;
-        if let Some(default) = &parameter.default {
-            check_value(parameter, default)?;
+        ParameterKind::Secret { max_length }
+            if *max_length == 0 || *max_length > MAX_SECRET_LENGTH =>
+        {
+            return Err(validation(format!(
+                "parameter {} declares a max_length {max_length} outside 1..={MAX_SECRET_LENGTH}",
+                parameter.name
+            )));
         }
+        ParameterKind::Endpoint { classes } => {
+            if classes.is_empty() {
+                return Err(validation(format!(
+                    "endpoint parameter {} declares no class",
+                    parameter.name
+                )));
+            }
+            let mut seen = HashSet::with_capacity(classes.len());
+            if !classes.iter().all(|class| seen.insert(class)) {
+                return Err(validation(format!(
+                    "endpoint parameter {} declares a class twice",
+                    parameter.name
+                )));
+            }
+        }
+        _ => {}
     }
-    Ok(())
+    check_hints(parameter)?;
+    let Some(default) = &parameter.default else {
+        return Ok(());
+    };
+    match parameter.kind {
+        // A secret is never plain data, and a destination is a person's choice, never a
+        // module's.
+        ParameterKind::Secret { .. } => Err(validation(format!(
+            "secret parameter {} declares a default; a secret never has one",
+            parameter.name
+        ))),
+        ParameterKind::Endpoint { .. } => Err(validation(format!(
+            "endpoint parameter {} declares a default; a destination is the person's choice",
+            parameter.name
+        ))),
+        _ => check_value(parameter, default),
+    }
 }
 
 /// The largest number of decimals a client is asked to display. Beyond this a slider's text is
@@ -2017,6 +2142,25 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
             }
         }
         ParameterKind::Settings => check_settings(name, value)?,
+        ParameterKind::Endpoint { classes } => {
+            let text = value
+                .as_str()
+                .filter(|text| text.len() <= MAX_ENDPOINT_BYTES)
+                .ok_or_else(|| {
+                    validation(format!(
+                        "parameter {name} must be a string of at most {MAX_ENDPOINT_BYTES} bytes"
+                    ))
+                })?;
+            parse_endpoint(text, classes)
+                .map_err(|error| validation(format!("parameter {name}: {}", error.detail)))?;
+        }
+        // The one request that carries a secret's value is `module.settings.set-secret`, which
+        // hands it to the secret store without it ever being a JSON value here.
+        ParameterKind::Secret { .. } => {
+            return Err(validation(format!(
+                "parameter {name} is a secret, which is never a plain value"
+            )));
+        }
     }
     Ok(())
 }

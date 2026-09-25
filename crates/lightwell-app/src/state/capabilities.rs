@@ -10,10 +10,10 @@ use crate::state::{
     canvas::{Notice, NoticeAction, NoticeTone},
 };
 use lightwell_core::{
-    AssetId, EditorState, ModuleDescriptor,
+    AssetId, EditorState, ModuleDescriptor, ParameterKind,
     capabilities::{
         consent::Disclosure,
-        descriptor::{AdapterCost, SettingDescriptor, SettingKind},
+        descriptor::{AdapterCost, SettingDescriptor},
         grants::{Grant, GrantKind, GrantList},
         host::{ActivationRead, ActivationState, Requirement},
         jobs::{JobRecord, JobStatus},
@@ -869,7 +869,7 @@ fn settings_model(module: &ModuleDescriptor, state: &ModuleCapabilities) -> Opti
                 &module.id,
                 None,
                 field,
-                read.and_then(|read| read.fields.get(&field.id)),
+                read.and_then(|read| read.fields.get(field.id())),
                 state,
             )
         })
@@ -897,7 +897,7 @@ fn settings_model(module: &ModuleDescriptor, state: &ModuleCapabilities) -> Opti
                             &module.id,
                             Some(&profile.id),
                             field,
-                            profile.fields.get(&field.id),
+                            profile.fields.get(field.id()),
                             state,
                         )
                     })
@@ -965,32 +965,25 @@ fn field_model(
     read: Option<&FieldRead>,
     state: &ModuleCapabilities,
 ) -> FieldModel {
-    let key: FieldKey = (profile.cloned(), declared.id.clone());
+    let key: FieldKey = (profile.cloned(), declared.id().to_owned());
     let typing = state.edits.get(&key).cloned();
     let (value, read_error) = match read {
         Some(FieldRead::Value { value, error, .. }) => (Some(value), error.clone()),
         Some(FieldRead::Secret { error, .. }) => (None, error.clone()),
         None => (None, None),
     };
-    let kind = match &declared.kind {
-        SettingKind::Number {
-            min,
-            max,
-            step,
-            precision,
-        } => FieldKindModel::Number {
+    // A number reads as a module control's number does, from the same parameter declaration.
+    let number = |value: f64| crate::app::fields::format_number(&declared.parameter, value);
+    let kind = match declared.kind() {
+        ParameterKind::Number { min, max } => FieldKindModel::Number {
             display: value
                 .and_then(Value::as_f64)
-                .map(|value| setting_number(value, *step, *precision))
+                .map(number)
                 .unwrap_or_default(),
             typing,
-            range: format!(
-                "{} to {}",
-                setting_number(*min, *step, *precision),
-                setting_number(*max, *step, *precision)
-            ),
+            range: format!("{} to {}", number(*min), number(*max)),
         },
-        SettingKind::Integer { min, max } => FieldKindModel::Number {
+        ParameterKind::Integer { min, max } => FieldKindModel::Number {
             display: value
                 .and_then(Value::as_i64)
                 .map(|value| value.to_string())
@@ -998,21 +991,21 @@ fn field_model(
             typing,
             range: format!("{min} to {max}"),
         },
-        SettingKind::Boolean => FieldKindModel::Toggle {
+        ParameterKind::Boolean => FieldKindModel::Toggle {
             on: value.and_then(Value::as_bool).unwrap_or(false),
         },
-        SettingKind::Enum { options } => FieldKindModel::Choice {
+        ParameterKind::Enum { options } => FieldKindModel::Choice {
             selected: value
                 .and_then(Value::as_str)
                 .and_then(|chosen| options.iter().position(|option| option == chosen)),
             options: options.clone(),
         },
-        SettingKind::Text { .. } => FieldKindModel::Text {
+        ParameterKind::String { .. } => FieldKindModel::Text {
             display: value.and_then(Value::as_str).unwrap_or_default().to_owned(),
             typing,
             class: None,
         },
-        SettingKind::Endpoint { classes } => {
+        ParameterKind::Endpoint { classes } => {
             let text = value.and_then(Value::as_str).unwrap_or_default();
             FieldKindModel::Text {
                 display: text.to_owned(),
@@ -1026,7 +1019,7 @@ fn field_model(
                 }),
             }
         }
-        SettingKind::Secret { .. } => FieldKindModel::Secret {
+        ParameterKind::Secret { .. } => FieldKindModel::Secret {
             state: secret_state(read).into(),
             replacing: state
                 .secret
@@ -1034,13 +1027,24 @@ fn field_model(
                 .filter(|(open, _)| *open == key)
                 .map(|(_, text)| text.clone()),
         },
+        // Registration refuses every other kind for a setting, so none reaches a settings view;
+        // were one to, it would show its value and commit nothing.
+        ParameterKind::Color
+        | ParameterKind::Points { .. }
+        | ParameterKind::Artifact
+        | ParameterKind::Curve { .. }
+        | ParameterKind::Settings => FieldKindModel::Text {
+            display: value.map(Value::to_string).unwrap_or_default(),
+            typing,
+            class: None,
+        },
     };
     FieldModel {
         profile: profile.cloned(),
-        field: declared.id.clone(),
-        id: field_id(module, profile.map(String::as_str), &declared.id),
+        field: declared.id().to_owned(),
+        id: field_id(module, profile.map(String::as_str), declared.id()),
         label: declared.label.clone(),
-        help: declared.help.clone(),
+        help: Some(declared.parameter.notes.clone()).filter(|notes| !notes.is_empty()),
         kind,
         error: state.errors.get(&key).cloned().or(read_error),
         conflict: state.conflicts.contains(&key),
@@ -1063,22 +1067,6 @@ fn secret_state(read: Option<&FieldRead>) -> &'static str {
 }
 
 /// A number setting's value with the decimals its declared precision, else its step, gives.
-fn setting_number(value: f64, step: Option<f64>, precision: Option<u8>) -> String {
-    let decimals = precision.map(usize::from).unwrap_or_else(|| {
-        step.filter(|step| step.is_finite() && *step > 0.0)
-            .map(|step| {
-                (0..=6)
-                    .find(|decimals| {
-                        let scaled = step * 10f64.powi(*decimals);
-                        (scaled - scaled.round()).abs() <= 1e-9 * scaled.abs().max(1.0)
-                    })
-                    .unwrap_or(6) as usize
-            })
-            .unwrap_or(2)
-    });
-    format!("{value:.decimals$}")
-}
-
 /// The task control of one declared `task` control: the button, the profile it would send and the
 /// state of its newest run on the open asset.
 pub(crate) fn task_control(
@@ -1324,8 +1312,8 @@ fn module_summary(
                 declared
                     .iter()
                     .map(|field| {
-                        let model = field_model(&module.id, profile, field, reads.get(&field.id), state);
-                        (field.id.clone(), Value::from(field_text(&model.kind)))
+                        let model = field_model(&module.id, profile, field, reads.get(field.id()), state);
+                        (field.id().to_owned(), Value::from(field_text(&model.kind)))
                     })
                     .collect(),
             )

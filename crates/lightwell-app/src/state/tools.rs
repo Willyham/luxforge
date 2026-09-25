@@ -1362,6 +1362,13 @@ fn value_model(
             "points parameter {parameter} of action {action} is drawn on the canvas and has no \
              panel control"
         )),
+        // Registration refuses both on an action: only a module setting declares one.
+        ParameterKind::Endpoint { .. } | ParameterKind::Secret { .. } => {
+            ControlModel::Unsupported(format!(
+                "{} parameter {parameter} of action {action} is a module setting, not a control",
+                declared.kind.name()
+            ))
+        }
     }
 }
 

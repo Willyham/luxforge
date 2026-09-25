@@ -6,15 +6,12 @@
 //! rewritten. Secrets never enter this file: they go to the [`SecretStore`]. See
 //! `docs/design/module-capabilities.md#settings-store`.
 use super::{
-    descriptor::{
-        AdapterAuth, ProfilesDescriptor, SettingDescriptor, SettingKind, SettingsDescriptor,
-        check_plain_value,
-    },
+    descriptor::{AdapterAuth, ProfilesDescriptor, SettingDescriptor, SettingsDescriptor},
     document::JsonDocument,
     secrets::{SecretKey, SecretStore, SecretValue},
     transport::parse_endpoint,
 };
-use crate::{Error, ErrorKind, ModuleDescriptor, Mutation};
+use crate::{Error, ErrorKind, ModuleDescriptor, Mutation, ParameterKind, check_value};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
@@ -28,8 +25,6 @@ pub const SETTINGS_FORMAT: u32 = 1;
 pub const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 /// The longest profile label, in characters.
 pub const MAX_PROFILE_LABEL: usize = 128;
-/// The longest endpoint or path a setting accepts before it is parsed, in bytes.
-const MAX_LOCATOR_BYTES: usize = 4096;
 
 pub const SETTINGS_FILE: &str = "settings.json";
 
@@ -338,7 +333,7 @@ fn field<'a>(
     profile_id: Option<&str>,
     id: &str,
 ) -> Result<&'a SettingDescriptor, Error> {
-    fields.iter().find(|field| field.id == id).ok_or_else(|| {
+    fields.iter().find(|field| field.id() == id).ok_or_else(|| {
         validation(match profile_id {
             None => format!("unknown setting {id}"),
             Some(profile) => format!("unknown setting {id} of profile {profile}"),
@@ -346,38 +341,30 @@ fn field<'a>(
     })
 }
 
-/// The value to store for one field, or why it is refused. An endpoint is stored as the URL the
-/// transport policy parsed, so what is stored is what is used.
+/// The value to store for one field, or why it is refused: the parameter vocabulary's own check of
+/// its kind. An endpoint is stored as the URL the transport policy parsed, so what is stored is
+/// what is used.
 fn normalize(field: &SettingDescriptor, value: &Value) -> Result<Value, Error> {
-    let id = &field.id;
-    let locator = || {
-        value
-            .as_str()
-            .filter(|text| text.len() <= MAX_LOCATOR_BYTES)
-            .ok_or_else(|| {
-                validation(format!(
-                    "setting {id} must be a string of at most {MAX_LOCATOR_BYTES} bytes"
-                ))
-            })
-    };
-    match &field.kind {
-        SettingKind::Endpoint { classes } => {
-            let endpoint = parse_endpoint(locator()?, classes)
-                .map_err(|error| validation(format!("setting {id}: {}", error.detail)))?;
+    match field.kind() {
+        ParameterKind::Secret { .. } => Err(validation(format!(
+            "setting {} is a secret; set it with module.settings.set-secret",
+            field.id()
+        ))),
+        ParameterKind::Endpoint { classes } => {
+            check_value(&field.parameter, value)?;
+            let text = value.as_str().unwrap_or_default();
+            let endpoint = parse_endpoint(text, classes)?;
             Ok(Value::String(endpoint.url.as_str().to_owned()))
         }
-        SettingKind::Secret { .. } => Err(validation(format!(
-            "setting {id} is a secret; set it with module.settings.set-secret"
-        ))),
         _ => {
-            check_plain_value(field, value)?;
+            check_value(&field.parameter, value)?;
             Ok(value.clone())
         }
     }
 }
 
-/// Whether a stored value is still valid for its field: its kind may have narrowed, a URL may no
-/// longer be accepted and a selected file may have gone. Checking a file costs one metadata call.
+/// Whether a stored value is still valid for its field: its kind may have narrowed, or a URL may no
+/// longer be accepted.
 fn check_stored(field: &SettingDescriptor, value: &Value) -> Result<(), Error> {
     normalize(field, value).map(|_| ())
 }
@@ -389,14 +376,14 @@ fn field_read(
     stored: &Map<String, Value>,
     secrets: &dyn SecretStore,
 ) -> FieldRead {
-    if let SettingKind::Secret { .. } = field.kind {
-        return match secrets.present(&SecretKey::new(module_id, profile_id, &field.id)) {
+    if field.is_secret() {
+        return match secrets.present(&SecretKey::new(module_id, profile_id, field.id())) {
             Ok(present) => {
-                let valid = present || !field.required;
+                let valid = present || !field.parameter.required;
                 FieldRead::Secret {
                     secret_present: Some(present),
                     valid,
-                    error: (!valid).then(|| format!("setting {} is required", field.id)),
+                    error: (!valid).then(|| format!("setting {} is required", field.id())),
                 }
             }
             Err(error) => FieldRead::Secret {
@@ -406,8 +393,8 @@ fn field_read(
             },
         };
     }
-    let default = field.default.clone().unwrap_or(Value::Null);
-    match stored.get(&field.id) {
+    let default = field.parameter.default.clone().unwrap_or(Value::Null);
+    match stored.get(field.id()) {
         Some(value) => {
             let checked = check_stored(field, value);
             FieldRead::Value {
@@ -419,13 +406,13 @@ fn field_read(
             }
         }
         None => {
-            let valid = !field.required || field.default.is_some();
+            let valid = !field.parameter.required || field.parameter.default.is_some();
             FieldRead::Value {
                 value: default.clone(),
                 default,
                 source: ValueSource::Default,
                 valid,
-                error: (!valid).then(|| format!("setting {} is required", field.id)),
+                error: (!valid).then(|| format!("setting {} is required", field.id())),
             }
         }
     }
@@ -457,7 +444,7 @@ fn profile_read(
                 &profile.values,
                 secrets,
             );
-            (field.id.clone(), read)
+            (field.id().to_owned(), read)
         })
         .collect();
     let invalid_values = fields
@@ -525,7 +512,7 @@ fn settings_read(
         .iter()
         .map(|field| {
             let read = field_read(module_id, None, field, &entry.values, secrets);
-            (field.id.clone(), read)
+            (field.id().to_owned(), read)
         })
         .collect();
     let state = if fields.values().all(FieldRead::valid) {
@@ -579,7 +566,7 @@ impl Applied {
 
     fn change(&mut self, field: &SettingDescriptor) {
         self.outcome = WriteOutcome::Committed;
-        self.changed.push(field.id.clone());
+        self.changed.push(field.id().to_owned());
         self.invalidates_activation |= field.invalidates_activation;
     }
 }
@@ -650,7 +637,7 @@ impl SettingsStore {
         for (name, value) in values {
             let field = field(fields, profile_id, name)?;
             let stored = match value {
-                Value::Null if !matches!(field.kind, SettingKind::Secret { .. }) => None,
+                Value::Null if !field.is_secret() => None,
                 value => Some(normalize(field, value)?),
             };
             normalized.push((field, stored));
@@ -665,17 +652,17 @@ impl SettingsStore {
                 }
             };
             for (field, value) in normalized {
-                let previous = stored.get(&field.id).cloned();
+                let previous = stored.get(field.id()).cloned();
                 if previous == value {
                     continue;
                 }
                 applied.change(field);
                 applied
                     .previous
-                    .insert(field.id.clone(), previous.unwrap_or(Value::Null));
+                    .insert(field.id().to_owned(), previous.unwrap_or(Value::Null));
                 match value {
-                    Some(value) => stored.insert(field.id.clone(), value),
-                    None => stored.remove(&field.id),
+                    Some(value) => stored.insert(field.id().to_owned(), value),
+                    None => stored.remove(field.id()),
                 };
             }
             Ok(applied)
@@ -699,13 +686,13 @@ impl SettingsStore {
             profile_id,
             setting,
         )?;
-        let SettingKind::Secret { max_length } = field.kind else {
+        let ParameterKind::Secret { max_length } = *field.kind() else {
             return Err(validation(format!(
                 "setting {setting} is not a secret; set it with module.settings.set"
             )));
         };
         let length = value.chars();
-        if length == 0 || length > max_length as usize {
+        if length == 0 || length > max_length {
             return Err(validation(format!(
                 "secret {setting} must be 1..={max_length} characters; clear it with module.settings.clear-secret"
             )));
@@ -737,7 +724,7 @@ impl SettingsStore {
             profile_id,
             setting,
         )?;
-        if !matches!(field.kind, SettingKind::Secret { .. }) {
+        if !field.is_secret() {
             return Err(validation(format!("setting {setting} is not a secret")));
         }
         self.transact(descriptor, mutation, false, |entry| {
@@ -767,14 +754,14 @@ impl SettingsStore {
         self.transact(descriptor, mutation, true, |entry| {
             let mut applied = Applied::new(None);
             for field in &settings.fields {
-                let changed = match field.kind {
-                    SettingKind::Secret { .. } => {
-                        let key = SecretKey::new(&descriptor.id, None, &field.id);
+                let changed = match field.kind() {
+                    ParameterKind::Secret { .. } => {
+                        let key = SecretKey::new(&descriptor.id, None, field.id());
                         let present = secrets.present(&key)?;
                         secrets.clear(&key)?;
                         present
                     }
-                    _ => entry.values.contains_key(&field.id),
+                    _ => entry.values.contains_key(field.id()),
                 };
                 if changed {
                     applied.change(field);
@@ -786,13 +773,13 @@ impl SettingsStore {
                 .profiles
                 .iter()
                 .flat_map(|profiles| profiles.fields.iter())
-                .filter(|field| matches!(field.kind, SettingKind::Secret { .. }));
+                .filter(|field| field.is_secret());
             for profile in &entry.profiles {
                 for field in profile_secrets.clone() {
                     secrets.clear(&SecretKey::new(
                         &descriptor.id,
                         Some(&profile.id),
-                        &field.id,
+                        field.id(),
                     ))?;
                 }
             }
@@ -877,14 +864,14 @@ impl SettingsStore {
             let mut applied = Applied::new(Some(profile_id));
             applied.outcome = WriteOutcome::Committed;
             for field in &profiles.fields {
-                let changed = match field.kind {
-                    SettingKind::Secret { .. } => {
-                        let key = SecretKey::new(&descriptor.id, Some(profile_id), &field.id);
+                let changed = match field.kind() {
+                    ParameterKind::Secret { .. } => {
+                        let key = SecretKey::new(&descriptor.id, Some(profile_id), field.id());
                         let present = secrets.present(&key)?;
                         secrets.clear(&key)?;
                         present
                     }
-                    _ => entry.profiles[index].values.contains_key(&field.id),
+                    _ => entry.profiles[index].values.contains_key(field.id()),
                 };
                 if changed {
                     applied.change(field);
@@ -1061,37 +1048,41 @@ mod tests {
         let refused = [
             (
                 json!({"strength": 1.5}),
-                "setting strength must be a number within 0..=1",
+                "parameter strength must be a number within 0..=1",
             ),
             (
                 json!({"strength": "0.5"}),
-                "setting strength must be a number",
+                "parameter strength must be a number",
             ),
             (
                 json!({"mode": "slow"}),
-                "setting mode must be one of fast, exact",
+                "parameter mode must be one of fast, exact",
             ),
             (
                 json!({"count": 9}),
-                "setting count must be an integer within 1..=8",
+                "parameter count must be an integer within 1..=8",
             ),
-            (json!({"count": 1.5}), "setting count must be an integer"),
-            (json!({"enabled": 1}), "setting enabled must be a boolean"),
+            (json!({"count": 1.5}), "parameter count must be an integer"),
+            (json!({"enabled": 1}), "parameter enabled must be a boolean"),
             (
                 json!({"note": "x".repeat(17)}),
-                "setting note is longer than 16 characters",
+                "parameter note must be at most 16 characters",
+            ),
+            (
+                json!({"note": "a\u{7}b"}),
+                "parameter note must not contain control characters",
             ),
             (
                 json!({"local-service": "https://example.com/"}),
-                "setting local-service: remote endpoints are not allowed here",
+                "parameter local-service: remote endpoints are not allowed here",
             ),
             (
                 json!({"local-service": "ftp://127.0.0.1/"}),
-                "setting local-service: scheme ftp is not allowed",
+                "parameter local-service: scheme ftp is not allowed",
             ),
             (
                 json!({"local-service": "http://user:pass@127.0.0.1/"}),
-                "setting local-service: URLs with credentials are not allowed",
+                "parameter local-service: URLs with credentials are not allowed",
             ),
             (
                 json!({"token": "abc"}),
@@ -1101,7 +1092,7 @@ mod tests {
             // One refused field commits none of the others.
             (
                 json!({"strength": 0.25, "mode": "slow"}),
-                "setting mode must be one of",
+                "parameter mode must be one of",
             ),
         ];
         for (value, expected) in refused {

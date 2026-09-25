@@ -13,6 +13,7 @@ use crate::{
     app::{
         Editor,
         evidence::{CapabilityAction, CapabilitySection, CapabilityStep, Settle},
+        fields,
         message::{CapabilityMessage, Message},
         tasks::{REQUEST_NUMBER, mutation, request},
     },
@@ -26,9 +27,9 @@ use crate::{
 };
 use iced::{Subscription, Task};
 use lightwell_core::{
-    ApiRequest, AssetId, ClientId, ModuleDescriptor, OwnerHandle,
+    ApiRequest, AssetId, ClientId, ModuleDescriptor, OwnerHandle, ParameterKind,
     capabilities::{
-        descriptor::SettingKind,
+        descriptor::SettingDescriptor,
         host::Requirement,
         jobs::{JobRecord, JobStatus},
         settings::SettingsRead,
@@ -606,19 +607,19 @@ impl Editor {
             .ok_or_else(|| "The module's settings have not been read yet".into())
     }
 
-    /// A settings field's declared kind, module-level or of a profile block.
-    fn setting_kind(
+    /// A settings field's declaration, module-level or of a profile block.
+    fn setting(
         &self,
         module_id: &str,
         profile: Option<&String>,
         field: &str,
-    ) -> Option<SettingKind> {
+    ) -> Option<SettingDescriptor> {
         let settings = self.capability_module(module_id)?.settings.as_ref()?;
         match profile {
             None => settings.field(field),
             Some(_) => settings.profiles.as_ref()?.field(field),
         }
-        .map(|declared| declared.kind.clone())
+        .cloned()
     }
 
     /// A settings write, or the reason it cannot be sent, shown under the field.
@@ -686,23 +687,25 @@ impl Editor {
                 else {
                     return Task::none();
                 };
-                let value = match self.setting_kind(&module_id, profile.as_ref(), &field) {
-                    Some(SettingKind::Number { min, max, .. }) => text
-                        .trim()
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|value| value.is_finite())
-                        .map(Value::from)
-                        .ok_or_else(|| format!("Enter a number from {min} to {max}")),
-                    Some(SettingKind::Integer { min, max }) => text
-                        .trim()
-                        .parse::<i64>()
-                        .map(Value::from)
-                        .map_err(|_| format!("Enter a whole number from {min} to {max}")),
-                    // An emptied endpoint returns the field to having no value.
-                    Some(SettingKind::Endpoint { .. }) if text.trim().is_empty() => Ok(Value::Null),
-                    Some(SettingKind::Endpoint { .. }) => Ok(Value::from(text.trim())),
-                    Some(SettingKind::Text { .. }) => Ok(Value::from(text)),
+                // A typed field is read back exactly as a module control's text is, against the
+                // same parameter declaration.
+                let value = match self.setting(&module_id, profile.as_ref(), &field) {
+                    // An emptied endpoint returns the field to having no value; any other text is
+                    // sent for the transport policy to classify.
+                    Some(declared) if declared.is_endpoint() => match text.trim() {
+                        "" => Ok(Value::Null),
+                        trimmed => Ok(Value::from(trimmed)),
+                    },
+                    Some(declared)
+                        if matches!(
+                            declared.kind(),
+                            ParameterKind::Number { .. }
+                                | ParameterKind::Integer { .. }
+                                | ParameterKind::String { .. }
+                        ) =>
+                    {
+                        fields::parse_field(&declared.parameter, &text)
+                    }
                     Some(_) => Err(format!("{field} is not a typed field")),
                     None => Err(format!("{module_id} declares no setting {field}")),
                 };
@@ -1372,12 +1375,15 @@ impl Editor {
                 profile: index,
             } => {
                 let profile = profile(self, index)?;
-                match self.setting_kind(module, profile.as_ref(), &field) {
+                match self
+                    .setting(module, profile.as_ref(), &field)
+                    .map(|declared| declared.parameter.kind)
+                {
                     Some(
-                        SettingKind::Number { .. }
-                        | SettingKind::Integer { .. }
-                        | SettingKind::Text { .. }
-                        | SettingKind::Endpoint { .. },
+                        ParameterKind::Number { .. }
+                        | ParameterKind::Integer { .. }
+                        | ParameterKind::String { .. }
+                        | ParameterKind::Endpoint { .. },
                     ) => vec![
                         CapabilityMessage::FieldText {
                             module_id: module_id.clone(),
@@ -1394,7 +1400,7 @@ impl Editor {
                             field,
                         },
                     ],
-                    Some(SettingKind::Boolean | SettingKind::Enum { .. }) => {
+                    Some(ParameterKind::Boolean | ParameterKind::Enum { .. }) => {
                         vec![CapabilityMessage::FieldValue {
                             module_id,
                             profile,
