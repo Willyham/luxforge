@@ -8,7 +8,7 @@ use crate::{
         message::{CropMessage, CropPointer, Message},
         tasks::{crop_preview_task, mutation},
     },
-    crop_draft::{ANGLE_RAIL_STEP, ANGLE_STEP, CropDraft, Modifiers as DraftModifiers},
+    crop_draft::{ANGLE_RAIL_STEP, CropDraft, Modifiers as DraftModifiers},
     state::{
         fields::{decimals_of, number_text},
         tools::crop_frame,
@@ -581,7 +581,7 @@ mod tests {
         tasks::{ACTOR, SyncResult},
         testing::{CROP_ASPECTS, crop_layer, entry, finish, opened, refresh_for},
     };
-    use crate::crop_draft::{Corner, Handle};
+    use crate::crop_draft::{ANGLE_STEP, Corner, Handle};
     use lightwell_core::{ClientSession, HistorySelection};
 
     fn stage() -> CropStage {

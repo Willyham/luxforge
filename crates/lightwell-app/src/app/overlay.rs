@@ -10,12 +10,21 @@
 //! persistent thread, one active job and one replaceable pending job, results tagged with a
 //! generation — so a fast sequence of zoom steps costs one worker at a time. Unlike a preview
 //! frame, an overlay that a newer request superseded is dropped rather than delivered.
+use super::{
+    Editor,
+    evidence::Settle,
+    message::{ClipEndpoint, Message},
+};
+use crate::{state, view};
+use iced::Task;
+use iced_runtime::image as image_memory;
 use lightwell_core::{
     Error, Raster,
     analysis::{OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay},
     latest::Latest,
 };
 use lightwell_ui::theme;
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// What one overlay job should derive: which flags are on, and the cell grid to reduce into.
@@ -169,6 +178,189 @@ impl OverlayQueue {
             }
         }
         None
+    }
+}
+
+impl Editor {
+    /// Bring the clipping overlay into line with the current flags, zoom and photo surface.
+    ///
+    /// This is the whole "a view change re-renders nothing" rule for the overlay: it recomputes the
+    /// cell grid the current view calls for, and when that grid and the flags are the ones already
+    /// drawn it starts no work at all. A zoom, a pan or a panel collapse therefore either costs one
+    /// bounded reduction of the **retained** raster on a worker, or nothing — never a render, and
+    /// never a second histogram.
+    pub(super) fn refresh_overlay(&mut self) {
+        let wanted = self.overlay_wanted();
+        if wanted == self.overlay_request {
+            return;
+        }
+        let previous = self.overlay_request.take();
+        let source = self.overlay_source().map(|(_, raster, _)| raster.clone());
+        let Some((request, raster)) = wanted.clone().zip(source) else {
+            // Both overlays are off, or there is nothing to derive one from.
+            self.overlay_queue.cancel();
+            self.overlay_photo = None;
+            return;
+        };
+        // A mask derived from another image never stands in for this one while its replacement is
+        // derived; the same image at another cell grid keeps its overlay until the new one lands.
+        if previous.map(|request| request.generation) != Some(request.generation) {
+            self.overlay_photo = None;
+        }
+        self.overlay_request = wanted;
+        self.overlay_queue.request(raster, request);
+    }
+
+    /// One derived overlay: upload its bounded buffer, or report why there is none. A failed
+    /// derivation never leaves an empty overlay on screen, which would claim nothing is clipped.
+    pub(super) fn overlay_ready(&mut self, done: OverlayResult) -> Task<Message> {
+        let generation = done.request.generation;
+        let (width, height) = (done.width, done.height);
+        match done.result {
+            Ok(rgba) => {
+                let handle = iced::widget::image::Handle::from_rgba(
+                    width,
+                    height,
+                    iced_runtime::core::Bytes::from_owner(rgba),
+                );
+                image_memory::allocate(handle).map(move |result| {
+                    Message::OverlayUploaded(generation, (width, height), result)
+                })
+            }
+            Err(error) => {
+                self.overlay_photo = None;
+                self.status = format!("Clipping overlay unavailable: {error}");
+                self.event(
+                    "clipping_overlay_failed",
+                    json!({"generation":generation,"error_code":error.kind.code(),"approximate":done.request.approximate}),
+                );
+                // The step is released even so; a refused overlay is visible in the evidence
+                // rather than leaving the run waiting for a frame nothing will arm.
+                self.settle_step(Settle::Overlay);
+                Task::none()
+            }
+        }
+    }
+
+    /// The overlay the current session, zoom and surface ask for, or `None` when neither flag is on.
+    pub(super) fn overlay_wanted(&self) -> Option<OverlayRequest> {
+        let workspace = &self.session.workspace;
+        let (shadows, highlights) = (workspace.clip_shadows, workspace.clip_highlights);
+        if !(shadows || highlights) {
+            return None;
+        }
+        // The mask describes the photograph on screen. That is the exact raster of the presented
+        // generation when its exact phase has landed, and the proxy of that generation while it has
+        // not — which is what lets the overlay follow a drag. A proxy-derived mask says so.
+        let (generation, raster, approximate) = self.overlay_source()?;
+        let source = (raster.width, raster.height);
+        let surface = state::histogram::photo_surface(
+            self.window,
+            workspace.state_panel,
+            workspace.tools_panel,
+        );
+        let displayed = state::histogram::displayed_size(
+            match self.session.preview.view.zoom {
+                lightwell_core::Zoom::Fit => state::canvas::ZoomView::Fit,
+                lightwell_core::Zoom::Percent { value } => state::canvas::ZoomView::Percent(value),
+            },
+            source,
+            surface,
+            self.scale_factor,
+            view::canvas::PHOTO_PADDING,
+        )?;
+        let (cells_w, cells_h) = state::histogram::overlay_cells(source, displayed)?;
+        Some(OverlayRequest {
+            generation,
+            cells_w,
+            cells_h,
+            shadows,
+            highlights,
+            approximate,
+        })
+    }
+
+    /// The display cell grid an overlay is reduced into: the same bounded grid the clipping overlay
+    /// already defines, so the mask overlay allocates no plane of its own and costs no second
+    /// render — the preview worker fills it beside the frame it is already producing.
+    pub(crate) fn overlay_cells(&self) -> Option<(u32, u32)> {
+        // The displayed raster's size, or the source's own before the first frame has landed: the
+        // grid is bounded by what the display can show, and the aspect ratio is what decides how
+        // the cells divide, so a mask overlay can be asked for with the first preview job rather
+        // than only from the second one onwards.
+        let source = self.dimensions.or_else(|| {
+            self.state
+                .as_ref()
+                .map(|state| (state.asset.width, state.asset.height))
+        })?;
+        let workspace = &self.session.workspace;
+        let surface = state::histogram::photo_surface(
+            self.window,
+            workspace.state_panel,
+            workspace.tools_panel,
+        );
+        let displayed = state::histogram::displayed_size(
+            match self.session.preview.view.zoom {
+                lightwell_core::Zoom::Fit => state::canvas::ZoomView::Fit,
+                lightwell_core::Zoom::Percent { value } => state::canvas::ZoomView::Percent(value),
+            },
+            source,
+            surface,
+            self.scale_factor,
+            view::canvas::PHOTO_PADDING,
+        )?;
+        state::histogram::overlay_cells(source, displayed)
+    }
+
+    /// The raster a clipping overlay is derived from, with whether the mask is approximate: derived
+    /// from the display proxy, or from a frame that approximates a drafted RAW white balance.
+    ///
+    /// Only the frame on screen qualifies: a mask is never derived from an image the person is not
+    /// looking at. The exact raster is preferred, and the proxy stands in for it until that phase
+    /// lands, at which point the request changes and the mask is re-derived exactly. The full-size
+    /// phase of an approximate white balance is still approximate, and says so.
+    pub(super) fn overlay_source(&self) -> Option<(u64, &Arc<lightwell_core::Raster>, bool)> {
+        let generation = self.presented_generation;
+        if let Some(raster) = self.presented_exact_raster() {
+            return Some((generation, raster, self.raster_approximate_white_balance));
+        }
+        self.presented_proxy_frame()
+            .map(|frame| (generation, &frame.raster, true))
+    }
+
+    /// The overlay to draw over the photograph: the one on the GPU, when it belongs to the frame
+    /// that is on screen. An overlay derived from a superseded raster is held back rather than
+    /// drawn over another image.
+    pub(crate) fn overlay_surface(&self) -> Option<&image_memory::Allocation> {
+        let request = self.overlay_request.as_ref()?;
+        (request.generation == self.presented_generation)
+            .then_some(self.overlay_photo.as_ref())
+            .flatten()
+    }
+}
+
+/// The `workspace.set` body one clipping toggle sends: exactly the flag or flags it acts on, and
+/// nothing else. A single triangle flips its own flag and leaves the other alone; the title bar's
+/// Clipping button and `J` move the pair together, turning both on unless both are already on, so
+/// one key both shows and hides the overlays whatever state the two were left in.
+pub(crate) fn clip_params(
+    workspace: &lightwell_core::WorkspaceState,
+    endpoint: Option<ClipEndpoint>,
+) -> Value {
+    match endpoint {
+        Some(ClipEndpoint::Shadows) => {
+            json!({ ClipEndpoint::Shadows.field(): !workspace.clip_shadows })
+        }
+        Some(ClipEndpoint::Highlights) => {
+            json!({ ClipEndpoint::Highlights.field(): !workspace.clip_highlights })
+        }
+        None => {
+            let on = !(workspace.clip_shadows && workspace.clip_highlights);
+            json!({
+                ClipEndpoint::Shadows.field(): on,
+                ClipEndpoint::Highlights.field(): on,
+            })
+        }
     }
 }
 

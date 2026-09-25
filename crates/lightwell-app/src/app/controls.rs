@@ -1019,6 +1019,25 @@ pub(crate) fn initial_group_expanded(
     None
 }
 
+pub(super) fn group_reset(
+    controls: &[lightwell_core::Control],
+    path: &[usize],
+) -> Option<lightwell_core::ResetAction> {
+    let (index, rest) = path.split_first()?;
+    match controls.get(*index)? {
+        lightwell_core::Control::Group {
+            controls, reset, ..
+        } => {
+            if rest.is_empty() {
+                reset.clone()
+            } else {
+                group_reset(controls, rest)
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

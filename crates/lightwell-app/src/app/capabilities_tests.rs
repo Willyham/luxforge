@@ -57,7 +57,7 @@ impl Proof {
         let root = std::env::temp_dir().join(format!("lightwell-desktop-capabilities-{unique}"));
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        let registry = super::registry(&[], true, Some(&endpoint.base_url())).unwrap();
+        let registry = super::lifecycle::registry(&[], true, Some(&endpoint.base_url())).unwrap();
         let host = HostConfig {
             config_dir: Some(root.join("config")),
             resource_dir: Some(root.join("resources")),
