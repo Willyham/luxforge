@@ -14,7 +14,7 @@ use crate::{
         Editor,
         draft::Event,
         gesture::{Kind, SliderGesture, Starting},
-        message::Message,
+        message::{ActionMessage, Message},
     },
     state::{fields, tools},
 };
@@ -238,6 +238,6 @@ impl Editor {
             json!({"action":action,"preset":preset,"revision":revision,
                 "field":{"action":field.0,"parameter":field.1}}),
         );
-        self.dispatch(Message::RunAction { action, preset })
+        self.dispatch(Message::Action(ActionMessage::Run { action, preset }))
     }
 }

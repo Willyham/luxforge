@@ -1,7 +1,6 @@
 //! The state correlated with every logged event and captured frame: what the screen shows, read
 //! from the editor and the derived models, never including a source path.
-use super::Editor;
-use super::sync::module_summary;
+use super::{Editor, sync::module_summary};
 use crate::{draft_photo, state, state::tools, view};
 use serde_json::{Value, json};
 

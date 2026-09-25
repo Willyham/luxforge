@@ -1,12 +1,18 @@
 //! Opening a photograph and adopting what the owner answers: a command's read-back, the event
 //! sync's poll, the displayed entry's recipe rows and module discovery. Every answer is adopted
 //! only when it is newer than what the desktop holds, decided from what the answer carries.
-use super::short;
-use super::tasks::{self, PreviewPayload, Refresh, import_task, merge_current_entry, state_task};
-use super::{Editor, message::Message};
-use crate::state::fields;
+use super::{
+    Editor,
+    message::{Message, SyncMessage},
+    short,
+    tasks::{
+        self, PreviewPayload, Refresh, import_task, merge_current_entry, presets_task, state_task,
+        sync_task,
+    },
+};
+use crate::state::fields::{self, Fields};
 use iced::Task;
-use lightwell_core::{ClientSession, HistoryRow, HistorySelection, ModuleDescriptor};
+use lightwell_core::{ClientSession, ErrorKind, HistoryRow, HistorySelection, ModuleDescriptor};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::Ordering, time::Instant};
 
@@ -27,6 +33,205 @@ pub(super) fn module_summary(modules: &[ModuleDescriptor]) -> Value {
 }
 
 impl Editor {
+    /// One message about opening a photograph or an owner answer the editor adopts.
+    pub(super) fn sync_update(&mut self, message: SyncMessage) -> Task<Message> {
+        match message {
+            SyncMessage::Open => {
+                if self.picker_open || self.busy || self.evidence.is_some() {
+                    return Task::none();
+                }
+                self.picker_open = true;
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter(
+                                "Photos",
+                                &[
+                                    "jpg", "jpeg", "nef", "raf", "dng", "arw", "cr2", "cr3", "nrw",
+                                    "rw2", "orf", "pef",
+                                ],
+                            )
+                            .pick_file()
+                            .await
+                            .map(|file| file.path().to_path_buf())
+                    },
+                    |value| Message::Sync(SyncMessage::Picked(value)),
+                );
+            }
+            SyncMessage::Picked(path) => {
+                self.picker_open = false;
+                if let Some(path) = path {
+                    return self.open(path);
+                }
+            }
+            SyncMessage::ImportRefreshed(generation, result) => {
+                if self.open_generation.load(Ordering::Acquire) != generation {
+                    return Task::none();
+                }
+                // The event sync polls only while a photograph is open, so a library change
+                // another client made while none was reaches the screen with the photo rather
+                // than a poll later: list the library again beside it.
+                let opened = result.is_ok();
+                let refreshed = self.dispatch(Message::Sync(SyncMessage::Refreshed(result)));
+                if !opened {
+                    return refreshed;
+                }
+                return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
+            }
+            SyncMessage::Refreshed(result) => {
+                // Overtaken by a selection or a state this desktop already holds: whatever
+                // overtook it ended the request it answered, and brought its own frame.
+                if matches!(&result, Ok(refresh) if self.superseded(refresh)) {
+                    return Task::none();
+                }
+                self.busy = false;
+                let mask_command = std::mem::take(&mut self.mask_command_in_flight);
+                match result {
+                    Ok(refresh) => {
+                        if self.activity.pending {
+                            self.activity.source_dimensions =
+                                Some((refresh.state.asset.width, refresh.state.asset.height));
+                            self.activity.orientation = Some(refresh.job.source.orientation());
+                        }
+                        // A `mask.*` command that **created** a mask names none in its envelope, and
+                        // the mask it made has to be the one the panel opens: the adjustments below
+                        // the component list are bound to the open mask, so leaving the previous one
+                        // open would put the next slider on a mask the person was not looking at.
+                        // A drafted create already does this on its own commit; this is the same rule
+                        // for a **typed** kind, which is created by its button rather than by a
+                        // gesture and so never reaches that path.
+                        let created_a_mask = mask_command
+                            && self.last_mask_request.as_ref().is_some_and(|(_, request)| {
+                                request.get(lightwell_core::MASK_FIELD).is_none()
+                            });
+                        let before = self.listed_masks();
+                        self.accept(*refresh);
+                        if created_a_mask {
+                            self.open_created_mask(&before);
+                        }
+                    }
+                    Err(error) => {
+                        self.status = error.clone();
+                        // A refused `mask.*` command renders nothing, so the step that sent it has
+                        // no pixels to settle on: the refusal itself is what ends it, recorded on
+                        // the step with the frame that is on screen as its evidence. Without this
+                        // a driven run waits out its whole deadline on a step already answered.
+                        if mask_command {
+                            self.mask_command_failed(&error);
+                        }
+                        // Recorded, so a refused request is visible in the evidence log even when
+                        // a later frame's status line has replaced it.
+                        self.event("command_failed", json!({ "error": error }));
+                        // A failed Apply keeps the draft; a stale revision makes it conflicted so
+                        // the user chooses Discard or Reapply rather than losing the composition.
+                        if self.crop_applying.take().is_some() {
+                            let conflict = error.starts_with(ErrorKind::Conflict.code());
+                            if conflict && let Some(draft) = self.crop_mut() {
+                                draft.mark_conflicted();
+                            }
+                            if conflict {
+                                self.crop_changed("crop_draft_conflicted");
+                            }
+                        }
+                        if self.activity.pending {
+                            let (code, message) =
+                                error.split_once(": ").unwrap_or(("internal", &error));
+                            self.open_failed(code, message);
+                        }
+                    }
+                }
+            }
+            SyncMessage::RecipeDescribed(result) => match result {
+                Ok(read) => {
+                    let read = *read;
+                    self.recipe_failed = false;
+                    // Rows of the current entry, read when a preview returns to it, are also the
+                    // rows the section dot follows.
+                    if self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.current_entry.id == read.recipe.entry_id)
+                    {
+                        self.current_recipe = Some(read.recipe.clone());
+                    }
+                    self.recipe = Some(read.recipe);
+                    self.masks = Some(read.masks);
+                    self.seed_values();
+                }
+                Err(error) => {
+                    self.recipe_failed = true;
+                    self.status = format!("Recipe unavailable: {error}");
+                }
+            },
+            SyncMessage::Tick => {
+                if self.syncing || self.busy || self.state.is_none() {
+                    return Task::none();
+                }
+                self.syncing = true;
+                let proxy = self.proxy_bounds();
+                return sync_task(
+                    self.owner.clone(),
+                    self.client,
+                    self.state.as_ref().unwrap().asset.id.clone(),
+                    self.api_sequence,
+                    self.own_requests.iter().cloned().collect(),
+                    proxy,
+                );
+            }
+            SyncMessage::Synced(result) => {
+                self.syncing = false;
+                match result {
+                    Ok(sync) => {
+                        // Another client's preset change reaches the library in the same poll that
+                        // brings its asset changes, and costs no asset refresh of its own; a
+                        // capability event re-reads the modules and renders nothing.
+                        if let Some((presets, sequence)) = sync.presets {
+                            self.adopt_presets(presets, sequence);
+                        }
+                        // A poll whose state read was overtaken leaves the sequence where it was,
+                        // so the next poll reads the events it answered again rather than
+                        // skipping a change that never reached the screen.
+                        let superseded = sync
+                            .refresh
+                            .as_ref()
+                            .is_some_and(|refresh| self.superseded(refresh));
+                        if let Some(refresh) = sync.refresh.filter(|_| !superseded) {
+                            self.accept(*refresh);
+                        }
+                        if !superseded {
+                            self.api_sequence = self.api_sequence.max(sync.sequence);
+                            // Read past, so never asked about again.
+                            self.own_requests
+                                .retain(|request| !sync.own.contains(request));
+                        }
+                        if sync.capabilities {
+                            return self.reload_capabilities();
+                        }
+                    }
+                    Err(error) => self.status = format!("Live refresh failed: {error}"),
+                }
+            }
+            SyncMessage::ModulesLoaded(result) => {
+                self.modules_ready = true;
+                match result {
+                    Ok(modules) => {
+                        self.fields = Fields::seeded(&modules);
+                        self.event("modules_loaded", module_summary(&modules));
+                        self.modules = modules;
+                        // A photograph that opened before discovery answered already has its
+                        // recipe rows: seed the new fields from them.
+                        self.seed_values();
+                    }
+                    Err(error) => {
+                        self.status = format!("Tool discovery failed: {error}");
+                        self.event("modules_failed", json!({ "message": self.status }));
+                    }
+                }
+            }
+        }
+        Task::none()
+    }
+
     /// One request whose outcome a frame is captured for: the next generation is pending until its
     /// pixels are on screen or it fails.
     pub(crate) fn begin_request(&mut self) {

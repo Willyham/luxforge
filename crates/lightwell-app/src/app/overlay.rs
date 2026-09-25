@@ -13,7 +13,8 @@
 use super::{
     Editor,
     evidence::Settle,
-    message::{ClipEndpoint, Message},
+    message::{ClipEndpoint, Message, OverlayMessage},
+    tasks::workspace_task,
 };
 use crate::{state, view};
 use iced::Task;
@@ -182,6 +183,74 @@ impl OverlayQueue {
 }
 
 impl Editor {
+    /// One message about the clipping overlay or a mask coverage grid.
+    pub(super) fn overlay_update(&mut self, message: OverlayMessage) -> Task<Message> {
+        match message {
+            OverlayMessage::ClippingUploaded(generation, dimensions, result) => {
+                if self
+                    .overlay_request
+                    .as_ref()
+                    .map(|request| request.generation)
+                    != Some(generation)
+                {
+                    // The frame this overlay belongs to has been replaced; its pixels are dropped.
+                    return Task::none();
+                }
+                match result {
+                    Ok(allocation) => {
+                        let approximate = self
+                            .overlay_request
+                            .as_ref()
+                            .is_some_and(|request| request.approximate);
+                        self.overlay_photo = Some(allocation);
+                        self.event(
+                            "clipping_overlay",
+                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1],"approximate":approximate}),
+                        );
+                    }
+                    Err(_) => {
+                        self.overlay_photo = None;
+                        self.status = "Could not upload the clipping overlay".into();
+                    }
+                }
+                // A scripted step that switched an overlay on waits for exactly this, so its frame
+                // shows the mask rather than the photograph a moment before it.
+                self.settle_step(Settle::Overlay);
+            }
+            OverlayMessage::ToggleClipping(endpoint) => {
+                // Per-client view state through the same `workspace.set` an API client calls. It
+                // is not an edit: no mutation envelope, no expected revision, no history entry, and
+                // the catalog is untouched.
+                let params = clip_params(&self.session.workspace, endpoint);
+                return workspace_task(self.owner.clone(), self.client, params);
+            }
+            OverlayMessage::MaskUploaded(generation, dimensions, result) => {
+                let uploaded = result.is_ok();
+                match result {
+                    Ok(allocation) => self.mask_overlay_photo = Some((generation, allocation)),
+                    Err(_) => {
+                        self.mask_overlay_photo = None;
+                        self.status =
+                            "Mask overlay unavailable: the grid could not be uploaded".into();
+                        self.event(
+                            "mask_overlay_failed",
+                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1]}),
+                        );
+                    }
+                }
+                // Released either way: a refused overlay is visible in the evidence rather than
+                // leaving the run waiting for a frame nothing will arm.
+                self.settle_step(Settle::MaskOverlay);
+                if !uploaded && let Some(evidence) = &mut self.evidence {
+                    // And with no texture to draw, the capture is the frame as it is: waiting for
+                    // the overlay of the frame on screen would wait for one that failed.
+                    evidence.capture_overlay = false;
+                }
+            }
+        }
+        Task::none()
+    }
+
     /// Bring the clipping overlay into line with the current flags, zoom and photo surface.
     ///
     /// This is the whole "a view change re-renders nothing" rule for the overlay: it recomputes the
@@ -224,7 +293,11 @@ impl Editor {
                     iced_runtime::core::Bytes::from_owner(rgba),
                 );
                 image_memory::allocate(handle).map(move |result| {
-                    Message::OverlayUploaded(generation, (width, height), result)
+                    Message::Overlay(OverlayMessage::ClippingUploaded(
+                        generation,
+                        (width, height),
+                        result,
+                    ))
                 })
             }
             Err(error) => {

@@ -5,7 +5,7 @@
 //! does not have yet. Until it does, Open stays here as a plain button at the leading edge: without
 //! it a fresh launch could reach no photograph at all.
 use crate::{
-    app::message::{Message, Panel},
+    app::message::{HistoryMessage, Message, OverlayMessage, Panel, SyncMessage, ViewMessage},
     state::{
         Workspace,
         title::{SEGMENT_FIT, SEGMENT_HUNDRED, TitleBarModel},
@@ -43,7 +43,7 @@ pub(crate) fn identity(model: &TitleBarModel) -> Element<'_, Message> {
         "Open image",
         ButtonTone::Quiet,
         ButtonSize::Compact,
-        model.can_open.then_some(Message::Open),
+        model.can_open.then_some(Message::Sync(SyncMessage::Open)),
     ));
     content.into()
 }
@@ -63,9 +63,9 @@ pub(crate) fn view_controls(model: &Workspace) -> Element<'_, Message> {
         },
         |index| {
             if index == SEGMENT_FIT {
-                Message::Fit
+                Message::View(ViewMessage::Fit)
             } else {
-                Message::HundredPercent
+                Message::View(ViewMessage::HundredPercent)
             }
         },
     );
@@ -77,8 +77,8 @@ pub(crate) fn view_controls(model: &Workspace) -> Element<'_, Message> {
             &title.zoom_text,
             false,
             true,
-            Message::Zoom,
-            Message::ApplyZoom
+            |value| Message::View(ViewMessage::Zoom(value)),
+            Message::View(ViewMessage::ApplyZoom)
         )
         .width(Length::Fixed(ZOOM_FIELD_WIDTH)),
         compare(title.compare_held, can_view),
@@ -112,9 +112,9 @@ fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
         return face;
     }
     mouse_area(face)
-        .on_press(Message::CompareBegin)
-        .on_release(Message::CompareEnd)
-        .on_exit(Message::CompareEnd)
+        .on_press(Message::History(HistoryMessage::CompareBegin))
+        .on_release(Message::History(HistoryMessage::CompareEnd))
+        .on_exit(Message::History(HistoryMessage::CompareEnd))
         .into()
 }
 
@@ -130,7 +130,9 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
                 enabled: model.can_view,
                 selected: model.clipping_on,
             },
-            model.can_view.then_some(Message::ToggleClipping(None)),
+            model
+                .can_view
+                .then_some(Message::Overlay(OverlayMessage::ToggleClipping(None))),
         ),
         icon_button(
             &IconButtonModel {
@@ -139,7 +141,9 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
                 enabled: model.can_undo,
                 selected: false,
             },
-            model.can_undo.then_some(Message::Undo),
+            model
+                .can_undo
+                .then_some(Message::History(HistoryMessage::Undo)),
         ),
         icon_button(
             &IconButtonModel {
@@ -148,7 +152,9 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
                 enabled: model.can_redo,
                 selected: false,
             },
-            model.can_redo.then_some(Message::Redo),
+            model
+                .can_redo
+                .then_some(Message::History(HistoryMessage::Redo)),
         ),
         icon_button(
             &IconButtonModel {
@@ -157,7 +163,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
                 enabled: true,
                 selected: model.state_panel_open,
             },
-            Some(Message::TogglePanel(Panel::State)),
+            Some(Message::View(ViewMessage::TogglePanel(Panel::State))),
         ),
         icon_button(
             &IconButtonModel {
@@ -166,7 +172,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
                 enabled: true,
                 selected: model.tools_panel_open,
             },
-            Some(Message::TogglePanel(Panel::Tools)),
+            Some(Message::View(ViewMessage::TogglePanel(Panel::Tools))),
         ),
     ]
     .spacing(theme::SPACING / 2.0)
@@ -176,7 +182,9 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
             "Developer",
             ButtonTone::Quiet,
             ButtonSize::Compact,
-            model.can_open_gallery.then_some(Message::Gallery(Some(0))),
+            model
+                .can_open_gallery
+                .then_some(Message::View(ViewMessage::Gallery(Some(0)))),
         ));
     }
     actions.into()

@@ -13,7 +13,7 @@ use crate::{
     app::{
         Editor,
         evidence::Settle,
-        message::Message,
+        message::{Message, PerformanceMessage},
         tasks::{PerformanceRead, performance_task},
     },
     state::performance::{ActivityList, PerformanceHistory, ResourceSample},
@@ -96,6 +96,18 @@ impl Sampler {
 }
 
 impl Editor {
+    /// One message about the state panel's Performance section.
+    pub(super) fn performance_update(&mut self, message: PerformanceMessage) -> Task<Message> {
+        match message {
+            PerformanceMessage::Toggle => self.performance.expanded = !self.performance.expanded,
+            PerformanceMessage::Tick => return self.performance_tick(),
+            PerformanceMessage::Sampled { epoch, result } => {
+                return self.performance_sampled(epoch, result);
+            }
+        }
+        Task::none()
+    }
+
     /// Whether the Performance section samples now: expanded, with the state panel on screen. The
     /// component gallery replaces the whole workspace, panel included, so it counts as hidden.
     pub(crate) fn performance_sampling(&self) -> bool {
@@ -216,6 +228,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::message::{PaletteMessage, PerformanceMessage, ViewMessage};
     use crate::app::{
         message::PaletteAction,
         tasks::call,
@@ -238,7 +251,7 @@ mod tests {
     /// the state a test that opens the section itself begins from.
     fn boot_collapsed() -> (Editor, std::path::PathBuf) {
         let (mut editor, catalog) = boot();
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(!editor.performance.expanded);
         assert_eq!(editor.performance.requested, 0);
         (editor, catalog)
@@ -254,25 +267,29 @@ mod tests {
         let (mut editor, catalog) = boot();
         assert!(editor.performance.expanded, "open at start");
         assert!(editor.performance_sampling());
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(!editor.performance_sampling(), "collapsed");
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(editor.performance_sampling());
         // Hidden by a session answer — this client's toggle or another client's `workspace.set`.
         let mut session = editor.session.clone();
         session.workspace.state_panel = false;
         session.revision += 1;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok(session.clone())));
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(
+            session.clone()
+        ))));
         assert!(!editor.performance_sampling());
         session.workspace.state_panel = true;
         session.revision += 1;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok(session.clone())));
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(
+            session.clone()
+        ))));
         assert!(editor.performance_sampling());
         // The component gallery replaces the workspace, panel and all.
         editor.developer = true;
         session.workspace.component_gallery = Some(2);
         session.revision += 1;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok(session)));
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
         assert!(!editor.performance_sampling());
         finish(editor, catalog);
     }
@@ -285,7 +302,7 @@ mod tests {
             .performance
             .history
             .push(ResourceSample::default(), ActivityList::default());
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(editor.performance.expanded);
         assert_eq!(editor.performance.history.len(), 0, "a fresh window");
         assert_eq!(
@@ -302,10 +319,10 @@ mod tests {
 
         let epoch = editor.performance.epoch;
         let answer = read(&editor);
-        let _ = editor.update(Message::PerformanceSampled {
+        let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch,
             result: Ok(answer),
-        });
+        }));
         assert!(!editor.performance.in_flight);
         assert_eq!(editor.performance.history.len(), 1);
         let rows = &editor.workspace.performance.metrics;
@@ -321,9 +338,9 @@ mod tests {
             "CPU needs two"
         );
 
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(!editor.performance_sampling());
-        let _ = editor.update(Message::PerformanceTick);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
         assert_eq!(
             editor.performance.requested, 1,
             "collapsed, nothing is asked"
@@ -340,10 +357,10 @@ mod tests {
     #[test]
     fn a_tick_while_a_read_is_in_flight_does_nothing() {
         let (mut editor, catalog) = boot_collapsed();
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert_eq!(editor.performance.requested, 1);
         for _ in 0..3 {
-            let _ = editor.update(Message::PerformanceTick);
+            let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
         }
         assert_eq!(
             editor.performance.requested, 1,
@@ -351,11 +368,11 @@ mod tests {
         );
         let epoch = editor.performance.epoch;
         let answer = read(&editor);
-        let _ = editor.update(Message::PerformanceSampled {
+        let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch,
             result: Ok(answer),
-        });
-        let _ = editor.update(Message::PerformanceTick);
+        }));
+        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
         assert_eq!(editor.performance.requested, 2, "the next tick reads again");
         finish(editor, catalog);
     }
@@ -365,14 +382,14 @@ mod tests {
     #[test]
     fn a_read_from_before_a_collapse_is_dropped() {
         let (mut editor, catalog) = boot_collapsed();
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         let first = editor.performance.epoch;
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         let answer = read(&editor);
-        let _ = editor.update(Message::PerformanceSampled {
+        let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch: first,
             result: Ok(answer),
-        });
+        }));
         assert_eq!(
             editor.performance.history.len(),
             0,
@@ -386,16 +403,16 @@ mod tests {
 
         // Expanded, collapsed and expanded again with the first read still out: no second read is
         // sent beside it, and when it lands it is dropped and the fresh read goes out.
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         let stale = editor.performance.epoch;
-        let _ = editor.update(Message::TogglePerformance);
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert_eq!(editor.performance.requested, 2);
         let answer = read(&editor);
-        let _ = editor.update(Message::PerformanceSampled {
+        let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch: stale,
             result: Ok(answer),
-        });
+        }));
         assert_eq!(editor.performance.history.len(), 0);
         assert_eq!(
             editor.performance.requested, 3,
@@ -404,10 +421,10 @@ mod tests {
         assert!(editor.performance.in_flight);
         let current = editor.performance.epoch;
         let answer = read(&editor);
-        let _ = editor.update(Message::PerformanceSampled {
+        let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch: current,
             result: Ok(answer),
-        });
+        }));
         assert_eq!(editor.performance.history.len(), 1);
         finish(editor, catalog);
     }
@@ -416,21 +433,21 @@ mod tests {
     #[test]
     fn a_failed_read_leaves_its_reason_and_keeps_the_window() {
         let (mut editor, catalog) = boot_collapsed();
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         let epoch = editor.performance.epoch;
-        let _ = editor.update(Message::PerformanceSampled {
+        let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch,
             result: Err("owner stopped".into()),
-        });
+        }));
         assert_eq!(editor.performance.error.as_deref(), Some("owner stopped"));
-        let _ = editor.update(Message::PerformanceTick);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
         let mut answer = read(&editor);
         answer.resources = json!({"monotonic_ns": "soon"});
         let epoch = editor.performance.epoch;
-        let _ = editor.update(Message::PerformanceSampled {
+        let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch,
             result: Ok(answer),
-        });
+        }));
         assert!(
             editor
                 .performance
@@ -453,15 +470,15 @@ mod tests {
             editor.snapshot()["performance"]["reads_requested"],
             json!(0)
         );
-        let _ = editor.update(Message::TogglePerformance);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         for _ in 0..2 {
             let epoch = editor.performance.epoch;
             let answer = read(&editor);
-            let _ = editor.update(Message::PerformanceSampled {
+            let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
                 epoch,
                 result: Ok(answer),
-            });
-            let _ = editor.update(Message::PerformanceTick);
+            }));
+            let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
         }
         let summary = &editor.snapshot()["performance"];
         assert_eq!(summary["expanded"], json!(true));
@@ -504,8 +521,8 @@ mod tests {
             PaletteAction::TogglePerformance
         );
         assert!(index(&editor, "Hide performance").is_none());
-        let _ = editor.update(Message::OpenPalette);
-        let _ = editor.update(Message::PaletteRunIndex(show));
+        let _ = editor.update(Message::Palette(PaletteMessage::Open));
+        let _ = editor.update(Message::Palette(PaletteMessage::RunIndex(show)));
         assert!(editor.performance.expanded);
         assert_eq!(editor.performance.requested, 1);
         assert!(index(&editor, "Hide performance").is_some());

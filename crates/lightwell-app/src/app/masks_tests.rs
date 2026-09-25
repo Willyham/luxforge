@@ -8,7 +8,10 @@
 use super::{
     Boot, Editor,
     draft::Round,
-    message::{DraftMessage, MaskMessage, MaskPointer, MenuTarget, Message, PaintTarget, RowEdit},
+    message::{
+        ActionMessage, ControlMessage, DraftMessage, HistoryMessage, MaskMessage, MaskPointer,
+        MenuTarget, Message, PaintTarget, PreviewMessage, RowEdit, SyncMessage, ViewMessage,
+    },
     tasks::{self, call},
     testing,
 };
@@ -91,7 +94,7 @@ impl Masking {
             initial_import: None,
             window: (1440.0, 900.0),
         });
-        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
         let mut masking = Self {
             editor,
             catalog,
@@ -119,7 +122,9 @@ impl Masking {
         .unwrap();
         let _ = self
             .editor
-            .update(Message::Refreshed(Ok(Box::new(refreshed))));
+            .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+                refreshed,
+            )))));
     }
 
     /// Enter Mask mode the way the mode strip, the letter and the palette all do. The message runs
@@ -131,7 +136,9 @@ impl Masking {
     }
 
     fn set_mode(&mut self, mode: &str) {
-        let _ = self.editor.update(Message::SetMode(mode.to_owned()));
+        let _ = self
+            .editor
+            .update(Message::View(ViewMessage::SetMode(mode.to_owned())));
         // A refused mode change sends no request, so the session is only asked when one was sent.
         if self.editor.status.starts_with("Apply or Cancel")
             || self.editor.status.starts_with("Finish or discard")
@@ -157,7 +164,9 @@ impl Masking {
         )
         .unwrap();
         let session = serde_json::from_value(session).unwrap();
-        let _ = self.editor.update(Message::WorkspaceUpdated(Ok(session)));
+        let _ = self
+            .editor
+            .update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
     }
 
     fn message(&mut self, message: MaskMessage) {
@@ -286,10 +295,10 @@ impl Masking {
         )
         .unwrap();
         let gesture = testing::gesture_of(&self.editor);
-        let _ = self.editor.update(Message::MaskTransform(
+        let _ = self.editor.update(Message::Mask(MaskMessage::Transform(
             gesture,
             Ok(serde_json::from_value(transform).unwrap()),
-        ));
+        )));
         self.assert_geometry_sent();
     }
 
@@ -602,7 +611,9 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
         "the gesture was discarded by a refused mode change"
     );
     // Compare during a gesture is refused for the same reason.
-    let _ = masking.editor.update(Message::CompareBegin);
+    let _ = masking
+        .editor
+        .update(Message::History(HistoryMessage::CompareBegin));
     assert!(
         masking.editor.status.contains("mask gesture"),
         "{}",
@@ -754,10 +765,10 @@ fn a_masked_control_sends_and_copies_the_request_an_independent_client_sends() {
     masking
         .editor
         .set_control_field_value("set-basic", "exposure", &json!(0.4));
-    let _ = masking.editor.update(Message::RunAction {
+    let _ = masking.editor.update(Message::Action(ActionMessage::Run {
         action: "set-basic".into(),
         preset: serde_json::Map::new(),
-    });
+    }));
     let revision = masking.editor.state.as_ref().unwrap().revision;
     let (result, _) = call(
         &masking.owner(),
@@ -840,11 +851,13 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
 
     // The first move opens the draft. Its target is the open mask, so the previewed stack is the
     // masked layer the release will commit rather than the global one.
-    let _ = masking.editor.update(Message::SliderMoved {
-        action: "set-basic".into(),
-        parameter: "exposure".into(),
-        value: 0.3,
-    });
+    let _ = masking
+        .editor
+        .update(Message::Control(ControlMessage::SliderMoved {
+            action: "set-basic".into(),
+            parameter: "exposure".into(),
+            value: 0.3,
+        }));
     let target = masking.editor.draft_target("set-basic");
     assert_eq!(target.mask.as_ref(), Some(&mask));
     assert!(
@@ -872,10 +885,12 @@ fn a_masked_slider_drafts_through_its_mask_and_commits_one_entry() {
     );
 
     // Committing it writes exactly one masked layer.
-    let _ = masking.editor.update(Message::SliderReleased {
-        action: "set-basic".into(),
-        parameter: "exposure".into(),
-    });
+    let _ = masking
+        .editor
+        .update(Message::Control(ControlMessage::SliderReleased {
+            action: "set-basic".into(),
+            parameter: "exposure".into(),
+        }));
     assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Commit));
     assert!(
         masking.editor.gesture.is_none(),
@@ -1019,7 +1034,9 @@ fn shift_m_toggles_the_overlay_and_o_still_means_thirds() {
 
     // `O` still means thirds, in Mask mode as everywhere else.
     let thirds = masking.editor.session.workspace.thirds;
-    let _ = masking.editor.update(Message::ToggleThirds);
+    let _ = masking
+        .editor
+        .update(Message::View(ViewMessage::ToggleThirds));
     let _ = call(
         &masking.owner(),
         masking.editor.client,
@@ -1099,11 +1116,13 @@ fn a_mask_controls_request_matches_json_and_a_drag_rederives_one_section() {
             .collect()
     };
     let before = versions(&masking.editor);
-    let _ = masking.editor.update(Message::SliderMoved {
-        action: "set-basic".into(),
-        parameter: "exposure".into(),
-        value: 0.2,
-    });
+    let _ = masking
+        .editor
+        .update(Message::Control(ControlMessage::SliderMoved {
+            action: "set-basic".into(),
+            parameter: "exposure".into(),
+            value: 0.2,
+        }));
     let after = versions(&masking.editor);
     assert_eq!(before.len(), after.len());
     let moved: Vec<&str> = before
@@ -1150,7 +1169,7 @@ fn a_generated_mask_control_copies_the_request_it_sends() {
 
         // The preset is derived exactly as the field's own submit derives it, so the two paths are
         // given the same input and any difference in the request is theirs.
-        let preset = super::submit_preset(
+        let preset = crate::state::fields::submit_preset(
             &masking.editor.modules,
             action,
             Some(parameter),
@@ -1158,10 +1177,10 @@ fn a_generated_mask_control_copies_the_request_it_sends() {
         )
         .unwrap_or_else(|error| panic!("{action} refused its own field: {error}"));
         masking.editor.last_mask_request = None;
-        let _ = masking.editor.update(Message::RunAction {
+        let _ = masking.editor.update(Message::Action(ActionMessage::Run {
             action: action.to_owned(),
             preset,
-        });
+        }));
         let (method, sent) = masking
             .editor
             .last_mask_request
@@ -1188,9 +1207,11 @@ fn the_row_menu_duplicates_inverts_and_deletes_through_the_host() {
     let mask = masking.listing().masks[0].id.clone();
 
     // The menu opens on the row and is per-client state.
-    let _ = masking.editor.update(Message::OpenMenu(MenuTarget::Mask(
-        mask.as_str().to_owned(),
-    )));
+    let _ = masking
+        .editor
+        .update(Message::View(ViewMessage::OpenMenu(MenuTarget::Mask(
+            mask.as_str().to_owned(),
+        ))));
     assert_eq!(
         masking.editor.menu,
         Some(MenuTarget::Mask(mask.as_str().to_owned()))
@@ -1913,9 +1934,9 @@ fn a_refused_mask_command_ends_the_step_that_sent_it() {
         .expect("the step sent the row's own command");
     let error = call(&masking.owner(), masking.editor.client, &method, params)
         .expect_err("the host refuses a move that would leave a subtract leading");
-    let _ = masking
-        .editor
-        .update(Message::Refreshed(Err(error.to_string())));
+    let _ = masking.editor.update(Message::Sync(SyncMessage::Refreshed(
+        Err(error.to_string()),
+    )));
 
     let run = evidence(&masking.editor);
     assert_eq!(run.awaiting, None, "the refusal ended the wait");
@@ -2025,7 +2046,9 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
     let deadline = Instant::now() + Duration::from_secs(60);
     while evidence(&masking.editor).awaiting.is_some() {
         assert!(Instant::now() < deadline, "the frame never arrived");
-        let _ = masking.editor.update(Message::Poll);
+        let _ = masking
+            .editor
+            .update(Message::Preview(PreviewMessage::Poll));
         std::thread::sleep(Duration::from_millis(1));
     }
 
@@ -2385,7 +2408,9 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     let deadline = Instant::now() + Duration::from_secs(60);
     while masking.editor.preview_queue.is_busy() {
         assert!(Instant::now() < deadline, "the opening frame never arrived");
-        let _ = masking.editor.update(Message::Poll);
+        let _ = masking
+            .editor
+            .update(Message::Preview(PreviewMessage::Poll));
         std::thread::sleep(Duration::from_millis(1));
     }
     let presented = masking.editor.presented_generation;
@@ -2471,7 +2496,9 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     let deadline = Instant::now() + Duration::from_secs(60);
     while masking.editor.preview_queue.is_busy() {
         assert!(Instant::now() < deadline, "the drafted jobs never ended");
-        let _ = masking.editor.update(Message::Poll);
+        let _ = masking
+            .editor
+            .update(Message::Preview(PreviewMessage::Poll));
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(
@@ -2601,7 +2628,9 @@ fn drain_queue(masking: &mut Masking) {
     let deadline = Instant::now() + Duration::from_secs(60);
     while masking.editor.preview_queue.is_busy() {
         assert!(Instant::now() < deadline, "the preview queue never drained");
-        let _ = masking.editor.update(Message::Poll);
+        let _ = masking
+            .editor
+            .update(Message::Preview(PreviewMessage::Poll));
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -2812,11 +2841,13 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
     let mut masking = Masking::opened();
     drain_queue(&mut masking);
     let presented = masking.editor.presented_generation;
-    let _ = masking.editor.update(Message::SliderMoved {
-        action: "set-basic".into(),
-        parameter: "exposure".into(),
-        value: 0.3,
-    });
+    let _ = masking
+        .editor
+        .update(Message::Control(ControlMessage::SliderMoved {
+            action: "set-basic".into(),
+            parameter: "exposure".into(),
+            value: 0.3,
+        }));
     assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
     assert!(
         masking.editor.preview_queue.is_busy(),
@@ -2839,11 +2870,13 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
 #[test]
 fn race_f_a_discard_never_adopts_a_session_that_still_holds_the_draft() {
     let mut masking = Masking::opened();
-    let _ = masking.editor.update(Message::SliderMoved {
-        action: "set-basic".into(),
-        parameter: "exposure".into(),
-        value: 0.3,
-    });
+    let _ = masking
+        .editor
+        .update(Message::Control(ControlMessage::SliderMoved {
+            action: "set-basic".into(),
+            parameter: "exposure".into(),
+            value: 0.3,
+        }));
     assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Begin));
     masking.draft(DraftMessage::Cancel);
     let draft_id = testing::core_draft(&masking.editor)
@@ -2900,7 +2933,9 @@ fn race_g_a_proxy_refit_waits_for_a_mask_gesture() {
     masking.editor.presented_proxy = true;
     masking.editor.presented_bounds = masking.editor.proxy_bounds();
     masking.editor.refit_pending = false;
-    let _ = masking.editor.update(Message::ScaleFactor(2.0));
+    let _ = masking
+        .editor
+        .update(Message::View(ViewMessage::ScaleFactor(2.0)));
     assert!(
         !masking.editor.refit_pending,
         "a refit displaced the mask gesture's drafted frame"
@@ -2926,14 +2961,16 @@ fn every_start_answers_to_the_one_refusal() {
         masking.editor.status,
         "Apply or Cancel the mask gesture before editing a slider"
     );
-    let _ = masking.editor.update(Message::CompareBegin);
+    let _ = masking
+        .editor
+        .update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(
         masking.editor.status,
         "Apply or Cancel the mask gesture before comparing with the original"
     );
-    let _ = masking
-        .editor
-        .update(Message::SetMode(lightwell_core::POINTER_MODE.to_owned()));
+    let _ = masking.editor.update(Message::View(ViewMessage::SetMode(
+        lightwell_core::POINTER_MODE.to_owned(),
+    )));
     assert_eq!(
         masking.editor.status,
         "Apply or Cancel the new mask gesture before leaving Mask mode"
@@ -2954,7 +2991,9 @@ fn every_start_answers_to_the_one_refusal() {
         Some("Apply or Cancel the mask gesture before applying a preset")
     );
     masking.editor.developer = true;
-    let _ = masking.editor.update(Message::Gallery(Some(0)));
+    let _ = masking
+        .editor
+        .update(Message::View(ViewMessage::Gallery(Some(0))));
     assert!(!masking.editor.workspace.title.can_open_gallery);
     assert!(masking.editor.gallery_page().is_none());
     assert_eq!(
@@ -3059,10 +3098,10 @@ fn a_generated_mask_command_is_refused_while_a_gesture_is_open() {
     let before = masking.editor.mask_shape().cloned();
     let submit = |masking: &mut Masking| {
         masking.editor.last_mask_request = None;
-        let _ = masking.editor.update(Message::RunAction {
+        let _ = masking.editor.update(Message::Action(ActionMessage::Run {
             action: "mask.set-amount".into(),
             preset: serde_json::Map::from_iter([("amount".to_owned(), json!(40.0))]),
-        });
+        }));
     };
     submit(&mut masking);
     assert_eq!(masking.editor.last_mask_request, None, "nothing was sent");

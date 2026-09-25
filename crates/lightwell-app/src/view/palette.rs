@@ -1,6 +1,9 @@
 //! The command palette overlay: a query field and up to twelve matching entries, centred near the
 //! top of the window over a dimmed backdrop that closes it on click.
-use crate::{app::message::Message, state::palette::PaletteModel};
+use crate::{
+    app::message::{Message, PaletteMessage},
+    state::palette::PaletteModel,
+};
 use iced::{
     Alignment, Background, Color, Element, Length,
     widget::{Space, column, container, mouse_area, text_input},
@@ -20,8 +23,8 @@ pub(crate) fn palette(model: &PaletteModel) -> Option<Element<'_, Message>> {
     }
     let query = text_input("Type a command…", &model.query)
         .id(QUERY_ID)
-        .on_input(Message::PaletteQuery)
-        .on_submit(Message::PaletteRun)
+        .on_input(|value| Message::Palette(PaletteMessage::Query(value)))
+        .on_submit(Message::Palette(PaletteMessage::Run))
         .style(theme::text_input_style(false))
         .size(theme::SIZE_CONTROL)
         .width(Length::Fill);
@@ -42,7 +45,7 @@ pub(crate) fn palette(model: &PaletteModel) -> Option<Element<'_, Message>> {
                 tag: None,
                 enabled: true,
             },
-            Some(Message::PaletteRunIndex(index)),
+            Some(Message::Palette(PaletteMessage::RunIndex(index))),
             None,
         ));
     }
@@ -63,7 +66,7 @@ pub(crate) fn palette(model: &PaletteModel) -> Option<Element<'_, Message>> {
                 }))
             }),
     )
-    .on_press(Message::ClosePalette);
+    .on_press(Message::Palette(PaletteMessage::Close));
 
     Some(
         iced::widget::stack(vec![

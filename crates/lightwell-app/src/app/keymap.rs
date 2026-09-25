@@ -1,7 +1,10 @@
 //! The keyboard table, as one pure function. Key codes never reach the update function: an event
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
-use crate::app::message::{BrushEdit, CropMessage, DraftMessage, MaskMessage, Message, Panel};
+use crate::app::message::{
+    BrushEdit, CropMessage, DraftMessage, HistoryMessage, MaskMessage, Message, OverlayMessage,
+    PaletteMessage, Panel, SyncMessage, ViewMessage,
+};
 use iced::{
     Event,
     event::Status,
@@ -50,15 +53,15 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             Keys::KeyPressed {
                 key: Key::Named(Named::Escape),
                 ..
-            } => Some(Message::Gallery(None)),
+            } => Some(Message::View(ViewMessage::Gallery(None))),
             Keys::KeyPressed {
                 key: Key::Named(Named::Tab),
                 modifiers,
                 ..
             } => Some(if modifiers.shift() {
-                Message::FocusPrevious
+                Message::View(ViewMessage::FocusPrevious)
             } else {
-                Message::FocusNext
+                Message::View(ViewMessage::FocusNext)
             }),
             _ => None,
         };
@@ -68,7 +71,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if let Keys::KeyReleased { key, .. } = keyboard
         && character(key, "\\")
     {
-        return Some(Message::CompareEnd);
+        return Some(Message::History(HistoryMessage::CompareEnd));
     }
     // The slider guard emits one release for keyboard stepping. The window keymap must not send a
     // second commit for the same key-up; it only handles Escape for an open gesture below.
@@ -106,26 +109,26 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     };
     if modifiers.command() {
         if character(key, "o") {
-            return Some(Message::Open);
+            return Some(Message::Sync(SyncMessage::Open));
         }
         if character(key, "z") {
             return Some(if modifiers.shift() {
-                Message::Redo
+                Message::History(HistoryMessage::Redo)
             } else {
-                Message::Undo
+                Message::History(HistoryMessage::Undo)
             });
         }
         if character(key, "k") {
-            return Some(Message::OpenPalette);
+            return Some(Message::Palette(PaletteMessage::Open));
         }
         // The panel toggles are the one pair that also needs Option, so they cannot collide with a
         // bracket a field might want.
         if modifiers.alt() {
             if character(key, "[") {
-                return Some(Message::TogglePanel(Panel::State));
+                return Some(Message::View(ViewMessage::TogglePanel(Panel::State)));
             }
             if character(key, "]") {
-                return Some(Message::TogglePanel(Panel::Tools));
+                return Some(Message::View(ViewMessage::TogglePanel(Panel::Tools)));
             }
         }
         return None;
@@ -134,9 +137,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     // did with the key: the field has focus, so these must act regardless of `status`.
     if context.palette_open {
         match key {
-            Key::Named(Named::Escape) => return Some(Message::ClosePalette),
-            Key::Named(Named::ArrowUp) => return Some(Message::PaletteMove(-1)),
-            Key::Named(Named::ArrowDown) => return Some(Message::PaletteMove(1)),
+            Key::Named(Named::Escape) => return Some(Message::Palette(PaletteMessage::Close)),
+            Key::Named(Named::ArrowUp) => return Some(Message::Palette(PaletteMessage::Move(-1))),
+            Key::Named(Named::ArrowDown) => return Some(Message::Palette(PaletteMessage::Move(1))),
             _ => {}
         }
     }
@@ -147,9 +150,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         && !modifiers.logo()
     {
         return Some(if modifiers.shift() {
-            Message::FocusPrevious
+            Message::View(ViewMessage::FocusPrevious)
         } else {
-            Message::FocusNext
+            Message::View(ViewMessage::FocusNext)
         });
     }
     // Escape discards an open slider gesture. It is checked before `status` because the slider's
@@ -199,7 +202,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         && !context.mask_drafting
         && matches!(key, Key::Named(Named::Escape))
     {
-        return Some(Message::SetMode(POINTER_MODE.into()));
+        return Some(Message::View(ViewMessage::SetMode(POINTER_MODE.into())));
     }
     // Single-key shortcuts act only when no text field took the key, and only on the first press:
     // holding a letter down must not re-run its command once per repeat.
@@ -207,21 +210,21 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return None;
     }
     if character(key, "f") {
-        return Some(Message::Fit);
+        return Some(Message::View(ViewMessage::Fit));
     }
     if character(key, "1") {
-        return Some(Message::HundredPercent);
+        return Some(Message::View(ViewMessage::HundredPercent));
     }
     if character(key, "o") {
-        return Some(Message::ToggleThirds);
+        return Some(Message::View(ViewMessage::ToggleThirds));
     }
     // Both clipping overlays at once. The histogram's triangles toggle them one at a time; this
     // key and the title bar's Clipping button move the pair together.
     if character(key, "j") {
-        return Some(Message::ToggleClipping(None));
+        return Some(Message::Overlay(OverlayMessage::ToggleClipping(None)));
     }
     if character(key, "v") {
-        return Some(Message::SetMode(POINTER_MODE.into()));
+        return Some(Message::View(ViewMessage::SetMode(POINTER_MODE.into())));
     }
     // M enters Mask mode; Shift+M toggles its overlay. Both are host keys, because a mask is a host
     // object: no module declares this mode, so no module's letter can claim them.
@@ -229,11 +232,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return Some(if modifiers.shift() {
             Message::Mask(MaskMessage::ToggleOverlay)
         } else {
-            Message::SetMode(MASK_MODE.into())
+            Message::View(ViewMessage::SetMode(MASK_MODE.into()))
         });
     }
     if character(key, "\\") {
-        return Some(Message::CompareBegin);
+        return Some(Message::History(HistoryMessage::CompareBegin));
     }
     // A module's declared canvas-mode letter. The host's own letters above are reserved: the
     // registry rejects a duplicate shortcut, but not one that collides with a host key.
@@ -241,7 +244,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         .modes
         .iter()
         .find(|(letter, _)| character(key, letter.to_lowercase().to_string().as_str()))
-        .map(|(_, module)| Message::SetMode(module.clone()))
+        .map(|(_, module)| Message::View(ViewMessage::SetMode(module.clone())))
 }
 
 fn character(key: &Key, letter: &str) -> bool {
@@ -313,7 +316,7 @@ mod tests {
                 Status::Captured,
                 &context
             ),
-            Some(Message::Gallery(None))
+            Some(Message::View(ViewMessage::Gallery(None)))
         ));
         for (key, modifiers) in [
             (letter("z"), Modifiers::LOGO),
@@ -358,21 +361,21 @@ mod tests {
                 pressed(letter("o"), command),
                 Status::Ignored,
                 &plain,
-                Some("Open"),
+                Some("Sync(Open)"),
             ),
             (
                 "undo",
                 pressed(letter("z"), command),
                 Status::Ignored,
                 &plain,
-                Some("Undo"),
+                Some("History(Undo)"),
             ),
             (
                 "redo",
                 pressed(letter("Z"), shift_command),
                 Status::Ignored,
                 &plain,
-                Some("Redo"),
+                Some("History(Redo)"),
             ),
             (
                 "unbound command key",
@@ -386,35 +389,35 @@ mod tests {
                 pressed(letter("k"), command),
                 Status::Ignored,
                 &plain,
-                Some("OpenPalette"),
+                Some("Palette(Open)"),
             ),
             (
                 "close the palette",
                 pressed(Key::Named(Named::Escape), Modifiers::empty()),
                 Status::Captured,
                 &palette,
-                Some("ClosePalette"),
+                Some("Palette(Close)"),
             ),
             (
                 "the palette's Escape beats a draft's",
                 pressed(Key::Named(Named::Escape), Modifiers::empty()),
                 Status::Ignored,
                 &drafting_palette,
-                Some("ClosePalette"),
+                Some("Palette(Close)"),
             ),
             (
                 "the palette's down arrow moves the selection, even though its own field has focus",
                 pressed(Key::Named(Named::ArrowDown), Modifiers::empty()),
                 Status::Captured,
                 &palette,
-                Some("PaletteMove(1)"),
+                Some("Palette(Move(1))"),
             ),
             (
                 "the palette's up arrow moves the selection the other way",
                 pressed(Key::Named(Named::ArrowUp), Modifiers::empty()),
                 Status::Captured,
                 &palette,
-                Some("PaletteMove(-1)"),
+                Some("Palette(Move(-1))"),
             ),
             (
                 "an arrow key does nothing while the palette is closed",
@@ -428,14 +431,14 @@ mod tests {
                 pressed(letter("["), option_command),
                 Status::Ignored,
                 &plain,
-                Some("TogglePanel"),
+                Some("View(TogglePanel"),
             ),
             (
                 "toggle the tools panel",
                 pressed(letter("]"), option_command),
                 Status::Ignored,
                 &plain,
-                Some("TogglePanel"),
+                Some("View(TogglePanel"),
             ),
             (
                 "a bracket without Option",
@@ -449,35 +452,35 @@ mod tests {
                 pressed(letter("f"), Modifiers::empty()),
                 Status::Ignored,
                 &plain,
-                Some("Fit"),
+                Some("View(Fit)"),
             ),
             (
                 "one hundred percent",
                 pressed(letter("1"), Modifiers::empty()),
                 Status::Ignored,
                 &plain,
-                Some("HundredPercent"),
+                Some("View(HundredPercent)"),
             ),
             (
                 "thirds",
                 pressed(letter("o"), Modifiers::empty()),
                 Status::Ignored,
                 &plain,
-                Some("ToggleThirds"),
+                Some("View(ToggleThirds)"),
             ),
             (
                 "pointer mode",
                 pressed(letter("v"), Modifiers::empty()),
                 Status::Ignored,
                 &plain,
-                Some("SetMode"),
+                Some("View(SetMode"),
             ),
             (
                 "compare begins on the first press",
                 pressed(letter("\\"), Modifiers::empty()),
                 Status::Ignored,
                 &plain,
-                Some("CompareBegin"),
+                Some("History(CompareBegin)"),
             ),
             (
                 "a repeated backslash press",
@@ -512,21 +515,21 @@ mod tests {
                 pressed(Key::Named(Named::Tab), Modifiers::empty()),
                 Status::Captured,
                 &plain,
-                Some("FocusNext"),
+                Some("View(FocusNext)"),
             ),
             (
                 "focus previous",
                 pressed(Key::Named(Named::Tab), Modifiers::SHIFT),
                 Status::Captured,
                 &plain,
-                Some("FocusPrevious"),
+                Some("View(FocusPrevious)"),
             ),
             (
                 "mode letter",
                 pressed(letter("r"), Modifiers::empty()),
                 Status::Ignored,
                 &plain,
-                Some("SetMode"),
+                Some("View(SetMode"),
             ),
             (
                 "a mode letter a field consumed",
@@ -617,9 +620,9 @@ mod tests {
         ] {
             let mapped = keymap(&released(letter("\\")), status, context);
             assert!(
-                mapped
-                    .as_ref()
-                    .is_some_and(|message| format!("{message:?}").starts_with("CompareEnd")),
+                mapped.as_ref().is_some_and(
+                    |message| format!("{message:?}").starts_with("History(CompareEnd)")
+                ),
                 "{case}: {mapped:?}"
             );
         }

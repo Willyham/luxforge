@@ -5,6 +5,7 @@
 //! the update function without simulating a pointer, and every request the panel sends is the one an
 //! independent JSON client would send for the same edit. The shape gestures go through the delivered
 //! `draft.*` lifecycle — one drag is one history entry — and the list edits are ordinary mutations.
+use crate::app::message::{OverlayMessage, ViewMessage};
 use crate::{
     app::{
         Editor,
@@ -507,7 +508,7 @@ impl Editor {
                 } else {
                     mode
                 };
-                self.dispatch(Message::SetMode(target))
+                self.dispatch(Message::View(ViewMessage::SetMode(target)))
             }
             MaskMessage::Name(text) => {
                 self.mask_name = text;
@@ -532,6 +533,7 @@ impl Editor {
                     Map::new(),
                 )
             }
+            MaskMessage::Transform(gesture, result) => self.mask_transform(gesture, result),
         }
     }
 
@@ -1232,8 +1234,13 @@ impl Editor {
             height,
             iced_runtime::core::Bytes::from_owner(rgba),
         );
-        image_memory::allocate(handle)
-            .map(move |result| Message::MaskOverlayUploaded(generation, (width, height), result))
+        image_memory::allocate(handle).map(move |result| {
+            Message::Overlay(OverlayMessage::MaskUploaded(
+                generation,
+                (width, height),
+                result,
+            ))
+        })
     }
 
     /// The frame asked for a coverage grid and arrived without one, for a reason the host named.

@@ -2,18 +2,18 @@
 //! the preview worker finishes, and presenting the displayed frame — the display-size proxy, the
 //! exact frame behind it, the histogram analysis and the crop draft's input stage — in the order
 //! their generations allow.
-use super::{Editor, message::Message};
 use super::{
+    Editor,
     evidence::Settle,
     gesture::Starting,
+    message::{Message, PreviewMessage},
     short,
-    tasks::{self, Upload},
+    tasks::{self, Upload, recipe_task},
 };
-use crate::state::histogram::Analysis;
-use crate::{draft_photo, state, view};
+use crate::{draft_photo, state, state::histogram::Analysis, view};
 use iced::Task;
 use iced_runtime::image as image_memory;
-use lightwell_core::{PhaseOutcome, PreviewPhase, ProxyBounds, Zoom};
+use lightwell_core::{CropStage, PhaseOutcome, PreviewPhase, ProxyBounds, Zoom};
 use serde_json::json;
 use std::{sync::Arc, time::Instant};
 
@@ -72,6 +72,110 @@ pub(super) fn bounds_of((width, height): (f32, f32)) -> Option<ProxyBounds> {
 }
 
 impl Editor {
+    /// One message about taking up or presenting a preview frame.
+    pub(super) fn preview_update(&mut self, message: PreviewMessage) -> Task<Message> {
+        match message {
+            PreviewMessage::Loaded(result) => {
+                if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
+                    return Task::none();
+                }
+                match result {
+                    Ok(payload) => {
+                        let payload = *payload;
+                        self.adopt(payload.session);
+                        // History selection changes the authoritative values shown by generated
+                        // controls. A field being edited in the previous entry must not pin its
+                        // text while the selected entry is read-only; the entry's own values arrive
+                        // with its recipe rows, below.
+                        self.editing = None;
+                        self.dragging = None;
+                        let entry = payload.job.entry.id.clone();
+                        self.requested_render_entry = Some(payload.job.entry.clone());
+                        self.show_entry(entry.clone());
+                        self.preview_generation = self.request_preview(payload.job);
+                        self.status = "Rendering selected history state…".into();
+                        // The recipe rows follow the displayed entry: one payload read, no render.
+                        if let Some(state) = &self.state {
+                            return recipe_task(
+                                self.owner.clone(),
+                                self.client,
+                                state.asset.id.clone(),
+                                Some(entry),
+                            );
+                        }
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            PreviewMessage::Poll => {
+                // Both workers wake the event loop through one channel; neither has a poll of its
+                // own, and the subscription that carries their signals exists only while one of
+                // them is busy. Each worker starts its next job by itself, so nothing here keeps
+                // the work moving: this only takes up what has finished. `Poll` is idempotent, so
+                // a signal that arrives late costs nothing.
+                let mut tasks = Vec::new();
+                while let Some(done) = self.overlay_queue.poll() {
+                    tasks.push(self.overlay_ready(done));
+                }
+                tasks.push(self.deliver_previews());
+                tasks.push(self.poll_again());
+                return Task::batch(tasks);
+            }
+            PreviewMessage::DraftCut(upload, tiles) => {
+                if Some(upload.generation) != self.draft_generation {
+                    self.uploading = false;
+                    return self.poll_again();
+                }
+                return self.upload_draft(upload, tiles);
+            }
+            PreviewMessage::DraftUploaded(upload, index, result) => {
+                let current = Some(upload.generation) == self.draft_generation
+                    && self
+                        .draft_assembly
+                        .as_ref()
+                        .is_some_and(|assembly| assembly.generation == upload.generation);
+                if !current {
+                    // A tile of a stage the draft no longer waits for: nothing is assembled, and
+                    // the upload gate opens.
+                    self.draft_assembly = None;
+                    self.uploading = false;
+                    return self.poll_again();
+                }
+                match result {
+                    Ok(allocation) => {
+                        let Some(photo) = self
+                            .draft_assembly
+                            .as_mut()
+                            .and_then(|assembly| assembly.arrived(index, allocation))
+                        else {
+                            // More tiles are still on their way.
+                            return Task::none();
+                        };
+                        self.draft_assembly = None;
+                        self.uploading = false;
+                        self.draft_photo = Some(photo);
+                        self.open_draft(CropStage {
+                            width: upload.width,
+                            height: upload.height,
+                            angle: 0.0,
+                        });
+                    }
+                    Err(_) => {
+                        self.draft_assembly = None;
+                        self.uploading = false;
+                        self.set_crop_pending(None);
+                        self.draft_generation = None;
+                        self.status = "Could not upload the crop's input stage".into();
+                        self.settle_step(Settle::Draft);
+                    }
+                }
+                // The upload held back delivery, so ask for whatever finished meanwhile.
+                return self.poll_again();
+            }
+        }
+        Task::none()
+    }
+
     /// The physical pixels the photo area can show a frame in, when the view means a display-size
     /// render is what should be presented — or `None` when only the exact render will do.
     ///
@@ -199,7 +303,7 @@ impl Editor {
     /// a `Poll` that would find them still held.
     pub(super) fn poll_again(&self) -> Task<Message> {
         if self.overlay_queue.ready() || (!self.uploading && self.preview_queue.ready()) {
-            Task::done(Message::Poll)
+            Task::done(Message::Preview(PreviewMessage::Poll))
         } else {
             Task::none()
         }
@@ -419,7 +523,9 @@ impl Editor {
                     return (
                         Task::perform(
                             async move { draft_photo::handles(draft_photo::cut(&raster)) },
-                            move |tiles| Message::DraftCut(upload.clone(), tiles),
+                            move |tiles| {
+                                Message::Preview(PreviewMessage::DraftCut(upload.clone(), tiles))
+                            },
                         ),
                         true,
                     );
@@ -642,8 +748,9 @@ impl Editor {
         });
         Task::batch(tiles.into_iter().enumerate().map(|(index, (_, handle))| {
             let upload = upload.clone();
-            image_memory::allocate(handle)
-                .map(move |result| Message::DraftUploaded(upload.clone(), index, result))
+            image_memory::allocate(handle).map(move |result| {
+                Message::Preview(PreviewMessage::DraftUploaded(upload.clone(), index, result))
+            })
         }))
     }
 

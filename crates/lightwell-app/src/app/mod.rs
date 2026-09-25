@@ -1,6 +1,17 @@
 //! The Iced application: the editor's own state, the update function and the effects it starts.
 //! Every change to authoritative state goes through an owner call; the view models are re-derived
 //! after each message and the view renders those alone.
+//!
+//! This file holds the [`Editor`] state and the Iced entry points only. [`Message`] has one variant
+//! per seam, each carrying that seam's own message enum (declared together in `message.rs`), and
+//! `update` routes it to the seam's own update function: owner answers and sync (`sync.rs`),
+//! preview presentation (`preview.rs`), the overlays (`overlay.rs`), history and versions
+//! (`history.rs`), per-client view state (`view_state.rs`), the palette (`palette.rs`), generated
+//! controls (`controls.rs`), declared actions (`actions.rs`), the pointer and canvas picks
+//! (`pointer.rs`), crop (`crop.rs`), masks (`masks.rs`), the core-draft lifecycle (`gesture.rs`),
+//! presets (`presets.rs`), capabilities (`capabilities.rs`), the Performance section
+//! (`performance.rs`) and evidence mode (`evidence.rs`). Routing is one match on the calling
+//! thread: it adds no task and no runtime hop.
 mod actions;
 pub(crate) mod capabilities;
 #[cfg(test)]
@@ -20,6 +31,7 @@ pub(crate) mod masks;
 mod masks_tests;
 pub(crate) mod message;
 pub(crate) mod overlay;
+mod palette;
 pub(crate) mod performance;
 mod pointer;
 pub(crate) mod presets;
@@ -48,41 +60,35 @@ use crate::{
     state::{
         self, Workspace,
         capabilities::CapabilityStore,
-        fields::{self, Fields, action_params, number_text, submit_preset},
+        fields::Fields,
         histogram::{Analysis, Readout},
         presets::{PresetForm, PresetLibrary},
         tools,
     },
     view,
 };
-use controls::group_reset;
-use evidence::{EVIDENCE_DEADLINE, Evidence, SCRIPT_EVIDENCE_DEADLINE, Settle};
+use evidence::Evidence;
 use gesture::{Gesture, Starting};
-use iced::{Element, Subscription, Task, widget::operation};
+use iced::{Element, Subscription, Task};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ClientAuthority, ClientId, ClientSession, CropStage, EditorState, ErrorKind, HistoryPage,
+    ClientAuthority, ClientId, ClientSession, EditorState, ErrorKind, HistoryPage,
     HistorySelection, LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, PreviewQueue,
     ProxyBounds, RecipeDescription, Version,
 };
-use message::{CropMessage, MenuTarget, Message, PaletteAction, Panel};
-use overlay::{OverlayQueue, OverlayRequest, clip_params};
-use pointer::PickTarget;
-use serde_json::{Map, Value, json};
+use message::{
+    EvidenceMessage, MenuTarget, Message, PerformanceMessage, PreviewMessage, SyncMessage,
+    ViewMessage,
+};
+use overlay::{OverlayQueue, OverlayRequest};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::AtomicU64},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use sync::module_summary;
-use tasks::{
-    locate_task, modules_task, mutation, older_task, presets_task, preview_task, query_task,
-    recipe_task, sync_task, workspace_task,
-};
+use tasks::{modules_task, presets_task};
 
 /// What the editor was last asked to show, correlated with logged events and captured frames.
 pub(crate) struct Activity {
@@ -590,8 +596,9 @@ impl Editor {
         );
         let scale = iced::window::oldest()
             .and_then(iced::window::scale_factor)
-            .map(Message::ScaleFactor);
-        let backend = iced::system::information().map(Message::Info);
+            .map(|value| Message::View(ViewMessage::ScaleFactor(value)));
+        let backend = iced::system::information()
+            .map(|value| Message::Evidence(EvidenceMessage::Info(value)));
         // Tool controls are discovered once, through the same API every other client uses, and the
         // preset library is listed the same way; the event sync keeps it current afterwards.
         let modules = modules_task(editor.owner.clone(), editor.client);
@@ -681,7 +688,7 @@ impl Editor {
         // subscription for it. The signal is buffered rather than lost, so this is the second
         // guarantee and it is free: `Poll` against an empty queue does nothing at all.
         let woken = if !busy && (self.preview_queue.is_busy() || self.overlay_queue.is_busy()) {
-            Task::done(Message::Poll)
+            Task::done(Message::Preview(PreviewMessage::Poll))
         } else {
             Task::none()
         };
@@ -777,1552 +784,35 @@ impl Editor {
         self.workspace = workspace;
     }
 
+    /// Hand one message to the seam that owns it. Routing only: each seam's own update function
+    /// decides what its message does.
     fn dispatch(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Key(event, status) => {
                 // The whole keyboard table is one pure function; only its result reaches the state.
-                return match keymap::keymap(&event, status, &self.key_context()) {
+                match keymap::keymap(&event, status, &self.key_context()) {
                     Some(message) => self.dispatch(message),
                     None => Task::none(),
-                };
-            }
-            Message::GalleryPreview => return Task::none(),
-            Message::Gallery(page) => {
-                if !self.developer
-                    || page.is_some_and(|page| view::gallery_page_info(page).is_none())
-                {
-                    return Task::none();
-                }
-                if page.is_some()
-                    && (self.busy
-                        || self.gesture_refusal(Starting::Gallery).is_some()
-                        || self.compare_return.is_some())
-                {
-                    self.status = "Finish the current operation before opening Components".into();
-                    return Task::none();
-                }
-                self.palette_open = false;
-                self.menu = None;
-                return workspace_task(
-                    self.owner.clone(),
-                    self.client,
-                    json!({"component_gallery": page}),
-                );
-            }
-            Message::CopyStatus => {
-                // While the status still reads an import's summary, Copy copies its whole report.
-                let text = match &self.status_copy {
-                    Some((line, detail)) if *line == self.status => detail.clone(),
-                    _ => self.status.clone(),
-                };
-                return iced::clipboard::write(text);
-            }
-            Message::Open => {
-                if self.picker_open || self.busy || self.evidence.is_some() {
-                    return Task::none();
-                }
-                self.picker_open = true;
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter(
-                                "Photos",
-                                &[
-                                    "jpg", "jpeg", "nef", "raf", "dng", "arw", "cr2", "cr3", "nrw",
-                                    "rw2", "orf", "pef",
-                                ],
-                            )
-                            .pick_file()
-                            .await
-                            .map(|file| file.path().to_path_buf())
-                    },
-                    Message::Picked,
-                );
-            }
-            Message::Picked(path) => {
-                self.picker_open = false;
-                if let Some(path) = path {
-                    return self.open(path);
-                }
-            }
-            Message::ImportRefreshed(generation, result) => {
-                if self.open_generation.load(Ordering::Acquire) != generation {
-                    return Task::none();
-                }
-                // The event sync polls only while a photograph is open, so a library change
-                // another client made while none was reaches the screen with the photo rather
-                // than a poll later: list the library again beside it.
-                let opened = result.is_ok();
-                let refreshed = self.dispatch(Message::Refreshed(result));
-                if !opened {
-                    return refreshed;
-                }
-                return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
-            }
-            Message::Refreshed(result) => {
-                // Overtaken by a selection or a state this desktop already holds: whatever
-                // overtook it ended the request it answered, and brought its own frame.
-                if matches!(&result, Ok(refresh) if self.superseded(refresh)) {
-                    return Task::none();
-                }
-                self.busy = false;
-                let mask_command = std::mem::take(&mut self.mask_command_in_flight);
-                match result {
-                    Ok(refresh) => {
-                        if self.activity.pending {
-                            self.activity.source_dimensions =
-                                Some((refresh.state.asset.width, refresh.state.asset.height));
-                            self.activity.orientation = Some(refresh.job.source.orientation());
-                        }
-                        // A `mask.*` command that **created** a mask names none in its envelope, and
-                        // the mask it made has to be the one the panel opens: the adjustments below
-                        // the component list are bound to the open mask, so leaving the previous one
-                        // open would put the next slider on a mask the person was not looking at.
-                        // A drafted create already does this on its own commit; this is the same rule
-                        // for a **typed** kind, which is created by its button rather than by a
-                        // gesture and so never reaches that path.
-                        let created_a_mask = mask_command
-                            && self.last_mask_request.as_ref().is_some_and(|(_, request)| {
-                                request.get(lightwell_core::MASK_FIELD).is_none()
-                            });
-                        let before = self.listed_masks();
-                        self.accept(*refresh);
-                        if created_a_mask {
-                            self.open_created_mask(&before);
-                        }
-                    }
-                    Err(error) => {
-                        self.status = error.clone();
-                        // A refused `mask.*` command renders nothing, so the step that sent it has
-                        // no pixels to settle on: the refusal itself is what ends it, recorded on
-                        // the step with the frame that is on screen as its evidence. Without this
-                        // a driven run waits out its whole deadline on a step already answered.
-                        if mask_command {
-                            self.mask_command_failed(&error);
-                        }
-                        // Recorded, so a refused request is visible in the evidence log even when
-                        // a later frame's status line has replaced it.
-                        self.event("command_failed", json!({ "error": error }));
-                        // A failed Apply keeps the draft; a stale revision makes it conflicted so
-                        // the user chooses Discard or Reapply rather than losing the composition.
-                        if self.crop_applying.take().is_some() {
-                            let conflict = error.starts_with(ErrorKind::Conflict.code());
-                            if conflict && let Some(draft) = self.crop_mut() {
-                                draft.mark_conflicted();
-                            }
-                            if conflict {
-                                self.crop_changed("crop_draft_conflicted");
-                            }
-                        }
-                        if self.activity.pending {
-                            let (code, message) =
-                                error.split_once(": ").unwrap_or(("internal", &error));
-                            self.open_failed(code, message);
-                        }
-                    }
-                }
-            }
-            Message::Info(info) => {
-                self.activity.backend =
-                    Some(json!({"backend":info.graphics_backend,"adapter":info.graphics_adapter}));
-                self.event(
-                    "backend",
-                    self.activity.backend.clone().unwrap_or(Value::Null),
-                );
-            }
-            Message::EvidenceTick => {
-                let expired = self.evidence.as_ref().is_some_and(|evidence| {
-                    let deadline = if evidence.step > 0 || !evidence.script.is_empty() {
-                        SCRIPT_EVIDENCE_DEADLINE
-                    } else {
-                        EVIDENCE_DEADLINE
-                    };
-                    self.started.elapsed() > deadline
-                });
-                if expired {
-                    eprintln!("Evidence deadline exceeded; inspect retained subprocess output");
-                    std::process::exit(3);
-                }
-                self.wait_elapsed();
-            }
-            Message::PacedSliderTick => return self.slider_paced_tick(),
-            Message::PacedStrokeTick => return self.stroke_paced_tick(),
-            Message::DoubleClickSecond => return self.double_click_second(),
-            Message::Capture => {
-                let rows_shown = self.recipe_rows_shown();
-                let proxy_ready = self.capture_proxy_ready();
-                let Some(evidence) = &mut self.evidence else {
-                    return Task::none();
-                };
-                // Wait for the backend, for tool discovery and for the preset library, so a frame
-                // always shows real controls and the library rather than their loading lines.
-                let overlay_wanted = evidence.capture_overlay;
-                // The screenshot reads back the frame drawn last, so it waits for a frame built
-                // after every update so far; the next frame tick tries again.
-                if !evidence.capture_pending
-                    || evidence.saving
-                    || !evidence.sync.current()
-                    || self.activity.backend.is_none()
-                    || !self.modules_ready
-                    || !self.presets.ready()
-                    || self.curve_sample_in_flight
-                    || self.curve_sample_pending.is_some()
-                    || !rows_shown
-                    || !proxy_ready
-                {
-                    return Task::none();
-                }
-                // And, for a step the overlay armed, the grid of the frame that is on screen: an
-                // upload belongs to one generation, and a newer frame presented after it leaves the
-                // canvas drawing the photograph alone. This subscription runs per window frame, so
-                // waiting costs nothing and the grid of that newer frame arrives a message later.
-                if overlay_wanted && self.mask_overlay_surface().is_none() {
-                    return Task::none();
-                }
-                let Some(evidence) = &mut self.evidence else {
-                    return Task::none();
-                };
-                evidence.capture_pending = false;
-                evidence.saving = true;
-                let recorded = (self.snapshot(), self.activity.requested);
-                if let Some(evidence) = &mut self.evidence {
-                    evidence.sync.state = Some((recorded.0, recorded.1, self.photo_version));
-                }
-                return iced::window::oldest()
-                    .and_then(iced::window::screenshot)
-                    .map(Message::Captured);
-            }
-            Message::Captured(shot) => {
-                // The window readback is asynchronous. A newer proxy can reach the surface while
-                // it is in flight; its request-time snapshot then describes the old proxy even
-                // though the capture response arrives after the new one was displayed. Retry on
-                // the next drawn frame without publishing or saving that stale screenshot.
-                let stale = !self.capture_proxy_ready()
-                    || self.evidence.as_ref().is_some_and(|evidence| {
-                        evidence
-                            .sync
-                            .state
-                            .as_ref()
-                            .is_some_and(|(_, _, version)| *version != self.photo_version)
-                    });
-                if stale {
-                    if let Some(evidence) = &mut self.evidence {
-                        evidence.sync.state = None;
-                        evidence.saving = false;
-                        evidence.capture_pending = true;
-                    }
-                    return Task::none();
-                }
-                if let Some(evidence) = &mut self.evidence {
-                    evidence.capture_overlay = false;
-                }
-                self.event(
-                    "frame_captured",
-                    json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
-                );
-                // The state as it stood when the screenshot was asked for, which is the state the
-                // frame it reads back was built from.
-                let (state, generation, _) = self
-                    .evidence
-                    .as_mut()
-                    .and_then(|evidence| evidence.sync.state.take())
-                    .unwrap_or_else(|| {
-                        (self.snapshot(), self.activity.requested, self.photo_version)
-                    });
-                let scale = shot.scale_factor;
-                let logical_width = shot.size.width as f32 / scale;
-                // The photo surface spans the window minus padding, the sidebar and their spacing.
-                let columns = view::surface_columns(logical_width, scale, &self.workspace);
-                let canvas = view::canvas_rect(
-                    (logical_width, shot.size.height as f32 / scale),
-                    scale,
-                    &self.workspace,
-                );
-                let Some(evidence) = &self.evidence else {
-                    return Task::none();
-                };
-                // Open frames keep their generation's number; script frames continue after them.
-                let number = match evidence.step {
-                    0 => generation,
-                    step => evidence.opens + step,
-                };
-                let step = evidence.current.clone().unwrap_or(Value::Null);
-                let dir = evidence.dir.clone();
-                return Task::perform(
-                    async move {
-                        let name = format!("frame-{number}.png");
-                        ::image::save_buffer(
-                            dir.join(&name),
-                            &shot.rgba,
-                            shot.size.width,
-                            shot.size.height,
-                            ::image::ColorType::Rgba8,
-                        )
-                        .map_err(|e| e.to_string())?;
-                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns,"canvas_rect":canvas});
-                        std::fs::write(
-                            dir.join(format!("state-{number}.json")),
-                            serde_json::to_vec_pretty(&frame).expect("frame is serializable"),
-                        )
-                        .map_err(|e| e.to_string())?;
-                        Ok(frame)
-                    },
-                    Message::Saved,
-                );
-            }
-            Message::Saved(result) => {
-                let Some(evidence) = &mut self.evidence else {
-                    return Task::none();
-                };
-                evidence.saving = false;
-                match result {
-                    Ok(frame) => {
-                        // The step that produced this frame is recorded with the frame it produced.
-                        if let Some(mut record) = evidence.current.take() {
-                            if let Some(object) = record.as_object_mut() {
-                                object.insert("frame".into(), frame["file"].clone());
-                            }
-                            evidence.steps.push(record);
-                        }
-                        evidence.frames.push(frame);
-                    }
-                    Err(error) => {
-                        eprintln!("Evidence write failed: {error}");
-                        std::process::exit(4);
-                    }
-                }
-                return match evidence.queue.pop_front() {
-                    Some(path) => self.open(path),
-                    None => self.next_step(),
-                };
-            }
-            Message::Selected(result) => {
-                // The selection's own answer ends the request that set `busy`, whether or not
-                // something newer overtook the frame it carries.
-                self.busy = false;
-                return self.dispatch(Message::PreviewLoaded(result));
-            }
-            Message::PreviewLoaded(result) => {
-                if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
-                    return Task::none();
-                }
-                match result {
-                    Ok(payload) => {
-                        let payload = *payload;
-                        self.adopt(payload.session);
-                        // History selection changes the authoritative values shown by generated
-                        // controls. A field being edited in the previous entry must not pin its
-                        // text while the selected entry is read-only; the entry's own values arrive
-                        // with its recipe rows, below.
-                        self.editing = None;
-                        self.dragging = None;
-                        let entry = payload.job.entry.id.clone();
-                        self.requested_render_entry = Some(payload.job.entry.clone());
-                        self.show_entry(entry.clone());
-                        self.preview_generation = self.request_preview(payload.job);
-                        self.status = "Rendering selected history state…".into();
-                        // The recipe rows follow the displayed entry: one payload read, no render.
-                        if let Some(state) = &self.state {
-                            return recipe_task(
-                                self.owner.clone(),
-                                self.client,
-                                state.asset.id.clone(),
-                                Some(entry),
-                            );
-                        }
-                    }
-                    Err(error) => self.status = error,
-                }
-            }
-            Message::SessionUpdated(result) => {
-                self.busy = false;
-                match result {
-                    Ok(session) => {
-                        self.adopt(session);
-                        self.status = "View updated".into();
-                    }
-                    Err(error) => self.status = error,
-                }
-                self.settle_step(Settle::Session);
-            }
-            Message::WorkspaceUpdated(result) => {
-                match result {
-                    Ok(session) => {
-                        self.adopt(session);
-                        // A canvas mode that picks from the photograph says so while it waits,
-                        // whichever route entered it: the strip, its letter, the palette or a
-                        // script all arrive here through the same `workspace.set`.
-                        if let Some(hint) = self.canvas_mode_hint() {
-                            self.status = hint;
-                        }
-                    }
-                    Err(error) => self.status = error,
-                }
-                self.settle_step(Settle::Session);
-            }
-            Message::RecipeDescribed(result) => match result {
-                Ok(read) => {
-                    let read = *read;
-                    self.recipe_failed = false;
-                    // Rows of the current entry, read when a preview returns to it, are also the
-                    // rows the section dot follows.
-                    if self
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.current_entry.id == read.recipe.entry_id)
-                    {
-                        self.current_recipe = Some(read.recipe.clone());
-                    }
-                    self.recipe = Some(read.recipe);
-                    self.masks = Some(read.masks);
-                    self.seed_values();
-                }
-                Err(error) => {
-                    self.recipe_failed = true;
-                    self.status = format!("Recipe unavailable: {error}");
-                }
-            },
-            Message::PanSynced(result) => {
-                self.pan_in_flight = false;
-                match result {
-                    Ok(session) => self.adopt(session),
-                    Err(error) => self.status = error,
-                }
-                if let Some((x, y)) = self.pending_pan.take() {
-                    return self.pan(x, y);
-                }
-                self.settle_step(Settle::Pan);
-            }
-            Message::VersionsLoaded(result) => {
-                self.busy = false;
-                match result {
-                    Ok((versions, request)) => {
-                        self.versions = versions;
-                        self.read_back(request);
-                        self.version_name.clear();
-                        self.status = "Versions updated".into();
-                    }
-                    Err(error) => self.status = error,
-                }
-            }
-            Message::Sync => {
-                if self.syncing || self.busy || self.state.is_none() {
-                    return Task::none();
-                }
-                self.syncing = true;
-                let proxy = self.proxy_bounds();
-                return sync_task(
-                    self.owner.clone(),
-                    self.client,
-                    self.state.as_ref().unwrap().asset.id.clone(),
-                    self.api_sequence,
-                    self.own_requests.iter().cloned().collect(),
-                    proxy,
-                );
-            }
-            Message::Synced(result) => {
-                self.syncing = false;
-                match result {
-                    Ok(sync) => {
-                        // Another client's preset change reaches the library in the same poll that
-                        // brings its asset changes, and costs no asset refresh of its own; a
-                        // capability event re-reads the modules and renders nothing.
-                        if let Some((presets, sequence)) = sync.presets {
-                            self.adopt_presets(presets, sequence);
-                        }
-                        // A poll whose state read was overtaken leaves the sequence where it was,
-                        // so the next poll reads the events it answered again rather than
-                        // skipping a change that never reached the screen.
-                        let superseded = sync
-                            .refresh
-                            .as_ref()
-                            .is_some_and(|refresh| self.superseded(refresh));
-                        if let Some(refresh) = sync.refresh.filter(|_| !superseded) {
-                            self.accept(*refresh);
-                        }
-                        if !superseded {
-                            self.api_sequence = self.api_sequence.max(sync.sequence);
-                            // Read past, so never asked about again.
-                            self.own_requests
-                                .retain(|request| !sync.own.contains(request));
-                        }
-                        if sync.capabilities {
-                            return self.reload_capabilities();
-                        }
-                    }
-                    Err(error) => self.status = format!("Live refresh failed: {error}"),
-                }
-            }
-            Message::OlderLoaded(result) => {
-                self.busy = false;
-                match result {
-                    Ok(page) => {
-                        self.history.entries.extend(page.entries);
-                        self.history.next_before_sequence = page.next_before_sequence;
-                        self.status = "Loaded older history".into();
-                    }
-                    Err(error) => self.status = error,
-                }
-            }
-            Message::Poll => {
-                // Both workers wake the event loop through one channel; neither has a poll of its
-                // own, and the subscription that carries their signals exists only while one of
-                // them is busy. Each worker starts its next job by itself, so nothing here keeps
-                // the work moving: this only takes up what has finished. `Poll` is idempotent, so
-                // a signal that arrives late costs nothing.
-                let mut tasks = Vec::new();
-                while let Some(done) = self.overlay_queue.poll() {
-                    tasks.push(self.overlay_ready(done));
-                }
-                tasks.push(self.deliver_previews());
-                tasks.push(self.poll_again());
-                return Task::batch(tasks);
-            }
-            Message::DraftCut(upload, tiles) => {
-                if Some(upload.generation) != self.draft_generation {
-                    self.uploading = false;
-                    return self.poll_again();
-                }
-                return self.upload_draft(upload, tiles);
-            }
-            Message::DraftUploaded(upload, index, result) => {
-                let current = Some(upload.generation) == self.draft_generation
-                    && self
-                        .draft_assembly
-                        .as_ref()
-                        .is_some_and(|assembly| assembly.generation == upload.generation);
-                if !current {
-                    // A tile of a stage the draft no longer waits for: nothing is assembled, and
-                    // the upload gate opens.
-                    self.draft_assembly = None;
-                    self.uploading = false;
-                    return self.poll_again();
-                }
-                match result {
-                    Ok(allocation) => {
-                        let Some(photo) = self
-                            .draft_assembly
-                            .as_mut()
-                            .and_then(|assembly| assembly.arrived(index, allocation))
-                        else {
-                            // More tiles are still on their way.
-                            return Task::none();
-                        };
-                        self.draft_assembly = None;
-                        self.uploading = false;
-                        self.draft_photo = Some(photo);
-                        self.open_draft(CropStage {
-                            width: upload.width,
-                            height: upload.height,
-                            angle: 0.0,
-                        });
-                    }
-                    Err(_) => {
-                        self.draft_assembly = None;
-                        self.uploading = false;
-                        self.set_crop_pending(None);
-                        self.draft_generation = None;
-                        self.status = "Could not upload the crop's input stage".into();
-                        self.settle_step(Settle::Draft);
-                    }
-                }
-                // The upload held back delivery, so ask for whatever finished meanwhile.
-                return self.poll_again();
-            }
-            Message::OverlayUploaded(generation, dimensions, result) => {
-                if self
-                    .overlay_request
-                    .as_ref()
-                    .map(|request| request.generation)
-                    != Some(generation)
-                {
-                    // The frame this overlay belongs to has been replaced; its pixels are dropped.
-                    return Task::none();
-                }
-                match result {
-                    Ok(allocation) => {
-                        let approximate = self
-                            .overlay_request
-                            .as_ref()
-                            .is_some_and(|request| request.approximate);
-                        self.overlay_photo = Some(allocation);
-                        self.event(
-                            "clipping_overlay",
-                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1],"approximate":approximate}),
-                        );
-                    }
-                    Err(_) => {
-                        self.overlay_photo = None;
-                        self.status = "Could not upload the clipping overlay".into();
-                    }
-                }
-                // A scripted step that switched an overlay on waits for exactly this, so its frame
-                // shows the mask rather than the photograph a moment before it.
-                self.settle_step(Settle::Overlay);
-            }
-            Message::ToggleClipping(endpoint) => {
-                // Per-client view state through the same `workspace.set` an API client calls. It
-                // is not an edit: no mutation envelope, no expected revision, no history entry, and
-                // the catalog is untouched.
-                let params = clip_params(&self.session.workspace, endpoint);
-                return workspace_task(self.owner.clone(), self.client, params);
-            }
-            Message::Sampled { entry, result } => {
-                self.sample_in_flight = false;
-                // The answer is adopted only when it describes the stack still on screen.
-                self.readout = (self.displayed_entry() == Some(entry))
-                    .then_some(result)
-                    .and_then(Result::ok);
-                self.settle_step(Settle::Readout);
-                if let Some((x, y)) = self.pending_sample.take() {
-                    return self.sample(x, y);
-                }
-            }
-            Message::Resized(width, height) => self.window = (width, height),
-            Message::Crop(message) => return self.crop_update(message),
-            Message::Mask(message) => return self.mask_message(message),
-            Message::MaskTransform(gesture, result) => {
-                return self.mask_transform(gesture, result);
-            }
-            Message::Draft(message) => return self.draft_message(message),
-            Message::MaskOverlayUploaded(generation, dimensions, result) => {
-                let uploaded = result.is_ok();
-                match result {
-                    Ok(allocation) => self.mask_overlay_photo = Some((generation, allocation)),
-                    Err(_) => {
-                        self.mask_overlay_photo = None;
-                        self.status =
-                            "Mask overlay unavailable: the grid could not be uploaded".into();
-                        self.event(
-                            "mask_overlay_failed",
-                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1]}),
-                        );
-                    }
-                }
-                // Released either way: a refused overlay is visible in the evidence rather than
-                // leaving the run waiting for a frame nothing will arm.
-                self.settle_step(Settle::MaskOverlay);
-                if !uploaded && let Some(evidence) = &mut self.evidence {
-                    // And with no texture to draw, the capture is the frame as it is: waiting for
-                    // the overlay of the frame on screen would wait for one that failed.
-                    evidence.capture_overlay = false;
-                }
-            }
-            Message::Capability(message) => return self.capability_update(message),
-            Message::Preset(message) => return self.preset_update(message),
-            Message::HostAnswered(result) => self.host_answered(result.map(|answer| *answer)),
-            Message::ModulesLoaded(result) => {
-                self.modules_ready = true;
-                match result {
-                    Ok(modules) => {
-                        self.fields = Fields::seeded(&modules);
-                        self.event("modules_loaded", module_summary(&modules));
-                        self.modules = modules;
-                        // A photograph that opened before discovery answered already has its
-                        // recipe rows: seed the new fields from them.
-                        self.seed_values();
-                    }
-                    Err(error) => {
-                        self.status = format!("Tool discovery failed: {error}");
-                        self.event("modules_failed", json!({ "message": self.status }));
-                    }
-                }
-            }
-            Message::Field {
-                action,
-                parameter,
-                text,
-            } => {
-                self.fields.set(&action, &parameter, text);
-                // Typing is editing: the field shows what was typed until it is committed.
-                self.editing = Some((action, parameter));
-            }
-            Message::SliderMoved {
-                action,
-                parameter,
-                value,
-            } => {
-                // A control whose one field is already a whole request drafts: a patch action's
-                // field, or the only parameter its action declares. The move updates the field and
-                // the draft's pending value, and the gated tick is the only thing that sends
-                // anything. Every other slider keeps its old behaviour, which is to change the text
-                // and nothing else until release.
-                if tools::drafts(&self.modules, &action, &parameter) {
-                    return self.slider_moved(action, parameter, value);
-                }
-                let text = fields::declared(&self.modules, &action, &parameter)
-                    .map(|declared| fields::format_number(declared, value))
-                    .unwrap_or_else(|| number_text(value));
-                self.fields.set(&action, &parameter, text);
-                self.editing = None;
-                self.dragging = Some((action, parameter));
-            }
-            Message::ControlFraction {
-                action,
-                parameter,
-                fraction,
-            } => {
-                return self.control_fraction(action, parameter, fraction);
-            }
-            Message::ControlDiscrete {
-                action,
-                parameter,
-                value,
-            } => {
-                return self.control_value(action, parameter, value, false);
-            }
-            Message::ControlReleased { action, parameter } => {
-                return self.control_release(action, parameter);
-            }
-            Message::ControlStep {
-                action,
-                parameter,
-                direction,
-            } => {
-                return self.control_step(action, parameter, direction);
-            }
-            Message::ControlKeyNudge {
-                action,
-                parameter,
-                direction,
-                shift,
-                option,
-            } => {
-                return self.control_key_nudge(action, parameter, direction, shift, option);
-            }
-            Message::ControlFieldNudge {
-                action,
-                parameter,
-                direction,
-                shift,
-                option,
-            } => {
-                return self.control_field_nudge(action, parameter, direction, shift, option);
-            }
-            Message::TogglePicker { action, parameter } => {
-                let open = self
-                    .controls_ui
-                    .color_open
-                    .entry((action, parameter))
-                    .or_default();
-                *open = !*open;
-            }
-            Message::ToggleGroup { module_id, path } => {
-                // A module's only group is drawn without a header and is always shown, so there is
-                // no disclosure to toggle and no per-client state to record for it.
-                if tools::module_of(&self.modules, &module_id)
-                    .is_some_and(|module| tools::is_headerless_group(module, &path))
-                {
-                    return Task::none();
-                }
-                let key = format!(
-                    "{module_id}/{}",
-                    path.iter()
-                        .map(usize::to_string)
-                        .collect::<Vec<_>>()
-                        .join(".")
-                );
-                let initial = controls::initial_group_expanded(&self.modules, &module_id, &path)
-                    .unwrap_or(true);
-                let entry = self
-                    .controls_ui
-                    .group_expanded
-                    .entry(key)
-                    .or_insert(initial);
-                *entry = !*entry;
-            }
-            Message::SelectTab { module_id, index } => {
-                self.controls_ui.selected_tab.insert(module_id, index);
-            }
-            Message::ControlPicker {
-                action,
-                parameter,
-                event,
-            } => {
-                return self.control_picker(action, parameter, event);
-            }
-            Message::ControlCurve {
-                action,
-                parameter,
-                event,
-            } => {
-                return self.control_curve(action, parameter, event);
-            }
-            Message::CurveSampled { identity, result } => {
-                return self.curve_sampled(identity, result);
-            }
-            Message::EditValue { action, parameter } => {
-                let id = fields::field_id(&action, &parameter, None);
-                self.editing = Some((action, parameter));
-                self.seed_idle_angle();
-                return operation::focus(iced::widget::Id::from(id));
-            }
-            Message::CancelEdit => self.editing = None,
-            Message::SliderReleased { action, parameter } => {
-                // Release ends the gesture: an open draft commits once, and a slider that never
-                // drafted submits its own field exactly as Enter in that field does.
-                if self.slider_gesture().is_some() {
-                    return self.release();
-                }
-                if tools::drafts(&self.modules, &action, &parameter) {
-                    return self.release_without_draft(&action, &parameter);
-                }
-                return self.dispatch(Message::Submit {
-                    action,
-                    parameter: Some(parameter),
-                });
-            }
-            Message::Submit { action, parameter } => {
-                self.dragging = None;
-                if !self.editable() {
-                    return Task::none();
-                }
-                let preset =
-                    match submit_preset(&self.modules, &action, parameter.as_deref(), &self.fields)
-                    {
-                        Ok(preset) => preset,
-                        // The field only stops editing once the submit actually runs; a rejected
-                        // submit leaves the typed text on screen with its reason rather than
-                        // silently reverting to the last committed value.
-                        Err(message) => {
-                            self.status = message;
-                            return Task::none();
-                        }
-                    };
-                // Refused before the field lets go, so the typed text stays with its reason.
-                if let Some(reason) = self.action_refusal(&action) {
-                    self.status = reason;
-                    return Task::none();
-                }
-                self.editing = None;
-                return self.dispatch(Message::RunAction { action, preset });
-            }
-            Message::ResetField { action, parameter } => {
-                return self.reset_field(action, parameter);
-            }
-            Message::TogglePerformance => self.performance.expanded = !self.performance.expanded,
-            Message::PerformanceTick => return self.performance_tick(),
-            Message::PerformanceSampled { epoch, result } => {
-                return self.performance_sampled(epoch, result);
-            }
-            Message::ToggleSection(module_id) => {
-                let expanded = self
-                    .workspace
-                    .tools
-                    .all()
-                    .find(|section| section.module_id == module_id)
-                    .map(|section| section.expanded)
-                    .unwrap_or(true);
-                self.expanded.insert(module_id, !expanded);
-            }
-            Message::ResetModule(module_id) => {
-                let Some(reset) = tools::module_of(&self.modules, &module_id)
-                    .and_then(|module| module.reset.clone())
-                else {
-                    self.status = format!("{module_id} declares no reset action");
-                    return Task::none();
-                };
-                return self.dispatch(Message::RunAction {
-                    action: reset.action,
-                    preset: reset.preset,
-                });
-            }
-            Message::ResetGroup { module_id, path } => {
-                let Some(reset) = tools::module_of(&self.modules, &module_id)
-                    .and_then(|module| group_reset(&module.controls, &path))
-                else {
-                    self.status = format!("{module_id} declares no reset for that group");
-                    return Task::none();
-                };
-                return self.dispatch(Message::RunAction {
-                    action: reset.action,
-                    preset: reset.preset,
-                });
-            }
-            Message::TogglePanel(panel) => {
-                let open = match panel {
-                    Panel::State => self.session.workspace.state_panel,
-                    Panel::Tools => self.session.workspace.tools_panel,
-                };
-                let mut params = Map::new();
-                params.insert(panel.field().into(), Value::from(!open));
-                return workspace_task(self.owner.clone(), self.client, Value::Object(params));
-            }
-            Message::ToggleThirds => {
-                return workspace_task(
-                    self.owner.clone(),
-                    self.client,
-                    json!({"thirds": !self.session.workspace.thirds}),
-                );
-            }
-            Message::SetMode(mode) => {
-                // A draft is never discarded implicitly: leaving the crop mode or Mask mode with a
-                // draft open asks for Apply or Cancel, and a slider gesture is finished deliberately
-                // rather than replaced by a mode that would need the client's one draft.
-                if mode != self.session.workspace.mode
-                    && let Some(reason) = self.gesture_refusal(Starting::Mode)
-                {
-                    self.status = reason;
-                    return Task::none();
-                }
-                let opens_draft = tools::crop_frame(&self.modules)
-                    .is_some_and(|frame| frame.module.id == mode)
-                    && self.crop().is_none()
-                    && self.crop_pending().is_none();
-                self.mode_sync = None;
-                if opens_draft {
-                    // The crop mode is the draft's: a start asks the session to enter it, through
-                    // `sync_mode`, only once the draft has started, so a refused start sends
-                    // nothing and leaves the session's mode where it was.
-                    return self.crop_update(CropMessage::Start);
-                }
-                // This arm asks the session to follow the mode explicitly, having cleared the
-                // generic catch-up in `sync_mode`, so the same field is never asked for twice.
-                return workspace_task(self.owner.clone(), self.client, json!({ "mode": mode }));
-            }
-            Message::CompareBegin => {
-                // Compare selects the Original entry, which pauses an open draft: the draft would
-                // have to be resumed on release, and the design keeps one draft and one preview
-                // selection at a time. Refuse it and say so rather than pausing silently.
-                if let Some(reason) = self.gesture_refusal(Starting::Compare) {
-                    self.status = reason;
-                    return Task::none();
-                }
-                let (Some(state), Some(original)) = (&self.state, self.original_entry.clone())
-                else {
-                    return Task::none();
-                };
-                if self.compare_return.is_some() {
-                    return Task::none();
-                }
-                self.compare_return = Some(self.session.preview.selection.clone());
-                let asset = state.asset.id.clone();
-                self.status = "Comparing with the original…".into();
-                let proxy = self.proxy_bounds();
-                return preview_task(
-                    self.owner.clone(),
-                    self.client,
-                    asset.clone(),
-                    Some(original.clone()),
-                    "preview.select",
-                    json!({"asset_id":asset,"entry_id":original}),
-                    proxy,
-                    Message::PreviewLoaded,
-                );
-            }
-            Message::CompareEnd => {
-                let (Some(state), Some(previous)) = (&self.state, self.compare_return.take())
-                else {
-                    return Task::none();
-                };
-                let asset = state.asset.id.clone();
-                let proxy = self.proxy_bounds();
-                return match previous {
-                    HistorySelection::Current => preview_task(
-                        self.owner.clone(),
-                        self.client,
-                        asset,
-                        None,
-                        "preview.return-current",
-                        json!({}),
-                        proxy,
-                        Message::PreviewLoaded,
-                    ),
-                    HistorySelection::Entry(entry_id) => preview_task(
-                        self.owner.clone(),
-                        self.client,
-                        asset.clone(),
-                        Some(entry_id.clone()),
-                        "preview.select",
-                        json!({"asset_id":asset,"entry_id":entry_id}),
-                        proxy,
-                        Message::PreviewLoaded,
-                    ),
-                };
-            }
-            Message::OpenPalette => {
-                self.palette_open = true;
-                self.palette_query.clear();
-                self.palette_selected = 0;
-                return operation::focus(view::palette::QUERY_ID);
-            }
-            Message::ClosePalette => self.palette_open = false,
-            Message::PaletteQuery(query) => {
-                self.palette_query = query;
-                self.palette_selected = 0;
-            }
-            Message::PaletteMove(delta) => {
-                let last = self.workspace.palette.entries.len().saturating_sub(1);
-                let moved = self.palette_selected as i64 + i64::from(delta);
-                self.palette_selected = moved.clamp(0, last as i64) as usize;
-            }
-            Message::PaletteRun => {
-                let chosen = self
-                    .workspace
-                    .palette
-                    .entries
-                    .get(self.palette_selected)
-                    .map(|entry| entry.action.clone());
-                self.palette_open = false;
-                return match chosen {
-                    Some(PaletteAction::Run { action, preset }) => {
-                        self.dispatch(Message::RunAction { action, preset })
-                    }
-                    Some(PaletteAction::Mode(mode)) => self.dispatch(Message::SetMode(mode)),
-                    Some(PaletteAction::TogglePanel(panel)) => {
-                        self.dispatch(Message::TogglePanel(panel))
-                    }
-                    Some(PaletteAction::TogglePerformance) => {
-                        self.dispatch(Message::TogglePerformance)
-                    }
-                    Some(PaletteAction::ToggleThirds) => self.dispatch(Message::ToggleThirds),
-                    Some(PaletteAction::Fit) => self.dispatch(Message::Fit),
-                    Some(PaletteAction::HundredPercent) => self.dispatch(Message::HundredPercent),
-                    Some(PaletteAction::Undo) => self.dispatch(Message::Undo),
-                    Some(PaletteAction::Redo) => self.dispatch(Message::Redo),
-                    Some(PaletteAction::ReturnCurrent) => self.dispatch(Message::ReturnCurrent),
-                    Some(PaletteAction::Restore) => self.dispatch(Message::Restore),
-                    None => Task::none(),
-                };
-            }
-            Message::PaletteRunIndex(index) => {
-                self.palette_selected = index;
-                return self.dispatch(Message::PaletteRun);
-            }
-            Message::OpenMenu(target) => self.menu = Some(target),
-            Message::CloseMenu => self.menu = None,
-            Message::CopyRequest {
-                action,
-                parameter,
-                preset,
-            } => {
-                let Some(request) =
-                    self.request_for_preset(&action, parameter.as_deref(), preset.as_ref())
-                else {
-                    return Task::none();
-                };
-                // A `mask.*` command is its own method, so the status names the method the copied
-                // request actually carries rather than prefixing `edit.` to all of them. It reads the
-                // request's own method, so the line can only ever name what was copied.
-                self.status = match request["method"].as_str() {
-                    Some(method) => format!("Copied the {method} request"),
-                    None => format!("Copied the {} request", tools::published_method(&action)),
-                };
-                // A copied request passes through the same redaction as every recorded one.
-                let request = json!({
-                    "method": request["method"],
-                    "params": lightwell_core::redact_params(
-                        request["method"].as_str().unwrap_or_default(),
-                        &request["params"],
-                    ),
-                });
-                return iced::clipboard::write(
-                    serde_json::to_string_pretty(&request).unwrap_or_default(),
-                );
-            }
-            Message::CopyModeRequest(module_id) => {
-                self.status = "Copied the workspace.set request".into();
-                // Mask is a host mode with no module behind it, so its request is the host's own.
-                let request = if module_id == lightwell_core::MASK_MODE {
-                    self.mask_mode_request()
-                } else {
-                    self.mode_request(&module_id)
-                };
-                return iced::clipboard::write(
-                    serde_json::to_string_pretty(&request).unwrap_or_default(),
-                );
-            }
-            Message::CopyDraftRequest => match self.crop_request() {
-                Some(Ok((method, request, _))) => {
-                    self.status = format!("Copied the {method} request");
-                    return iced::clipboard::write(
-                        serde_json::to_string_pretty(&json!({
-                            "method": method,
-                            "params": request,
-                        }))
-                        .unwrap_or_default(),
-                    );
-                }
-                Some(Err(message)) => self.status = message,
-                None => self.status = "No crop draft to copy".into(),
-            },
-            Message::RunAction { action, preset } => {
-                if self.state.is_none() {
-                    return Task::none();
-                }
-                if let Some(reason) = self.action_refusal(&action) {
-                    self.status = reason;
-                    return Task::none();
-                }
-                // A host command of the `mask.*` family is its own method, and its identities are
-                // envelope fields: the generic builder below would spell it `edit.mask.set-amount`
-                // and drop the target, so it goes through the family's own path.
-                if lightwell_core::mask::commands::find(&action).is_some() {
-                    return self.run_mask_action(&action, &preset);
-                }
-                let Some(state) = &self.state else {
-                    return Task::none();
-                };
-                let Some(declared) = tools::declared_action(&self.modules, &action) else {
-                    self.status = format!("No module declares the action {action}");
-                    return Task::none();
-                };
-                let params = match action_params(declared, &preset, &self.fields) {
-                    Ok(params) => params,
-                    Err(message) => {
-                        self.status = message;
-                        return Task::none();
-                    }
-                };
-                let mut request =
-                    json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
-                let object = request.as_object_mut().expect("the envelope is an object");
-                object.extend(params);
-                self.add_mask_target(&action, object);
-                return self.command(format!("edit.{action}"), request);
-            }
-            Message::PointerMoved(point) => {
-                if self.pointer == point {
-                    return Task::none();
-                }
-                self.pointer = point;
-                return match point {
-                    Some((x, y)) => self.sample(x, y),
-                    None => {
-                        // The pointer left the photograph: the readout is cleared rather than left
-                        // naming a pixel nothing is over.
-                        self.readout = None;
-                        self.pending_sample = None;
-                        Task::none()
-                    }
-                };
-            }
-            Message::PointPicked { x, y } => {
-                // The widget hands over a pixel of the raster on screen. Which content pixel that
-                // is belongs to the core, so the pick leaves here as a read and fills nothing yet.
-                // A click answers to the canvas mode that is on screen, not to whichever module
-                // declares a pick first, so two modules can each declare one without colliding.
-                let mode = self.session.workspace.mode.clone();
-                if tools::canvas_pick(&self.modules, &mode).is_none() {
-                    return Task::none();
-                }
-                if let Some(reason) = self.pick_refusal() {
-                    self.event(
-                        "canvas_pick",
-                        json!({"mode":mode,"view_x":x,"view_y":y,"error":reason}),
-                    );
-                    self.status = reason;
-                    self.settle_step(Settle::Pick);
-                    return Task::none();
-                }
-                let Some(state) = &self.state else {
-                    return Task::none();
-                };
-                let entry = self
-                    .display_entry
-                    .clone()
-                    .unwrap_or_else(|| state.current_entry.id.clone());
-                return locate_task(
-                    self.owner.clone(),
-                    self.client,
-                    state.asset.id.clone(),
-                    entry,
-                    self.session.workspace.mode.clone(),
-                    x,
-                    y,
-                );
-            }
-            Message::PointLocated {
-                entry,
-                mode,
-                view: (view_x, view_y),
-                result,
-            } => {
-                if self.displayed_entry() != Some(entry.clone())
-                    || mode != self.session.workspace.mode
-                {
-                    // The canvas has moved to another stack or another mode; this answer
-                    // describes the one it left.
-                    return Task::none();
-                }
-                let Some(target) = PickTarget::of(&self.modules, &mode) else {
-                    return Task::none();
-                };
-                let point = match result {
-                    Ok(point) => point,
-                    Err(error) => {
-                        // Outside the content stage: say so and commit and fill nothing.
-                        self.event(
-                            "canvas_pick",
-                            json!({"mode":mode,"view_x":view_x,"view_y":view_y,"error":error}),
-                        );
-                        self.status = error;
-                        self.settle_step(Settle::Pick);
-                        return Task::none();
-                    }
-                };
-                let (x, y) = (point.content_x, point.content_y);
-                match target {
-                    PickTarget::Point {
-                        action,
-                        x: x_parameter,
-                        y: y_parameter,
-                    } => {
-                        self.event(
-                            "canvas_pick",
-                            json!({"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
-                        );
-                        if action == "pick-raw-neutral" {
-                            if !self.session.preview.can_edit() {
-                                self.status = "Return to current to edit white balance".into();
-                                return Task::none();
-                            }
-                            let Some(state) = &self.state else {
-                                return Task::none();
-                            };
-                            let mut request = json!({
-                                "asset_id": state.asset.id,
-                                "mutation": mutation(state.revision),
-                            });
-                            let object =
-                                request.as_object_mut().expect("the envelope is an object");
-                            object.insert(x_parameter, Value::from(x));
-                            object.insert(y_parameter, Value::from(y));
-                            return self.command(format!("edit.{action}"), request);
-                        }
-                        self.fields.set(&action, &x_parameter, x.to_string());
-                        self.fields.set(&action, &y_parameter, y.to_string());
-                        self.status = format!(
-                            "Picked ({x}, {y}) from view ({view_x}, {view_y}) into {action}"
-                        );
-                        // A point pick commits nothing, so the filled fields are its outcome.
-                        self.settle_step(Settle::Pick);
-                    }
-                    // A sample-apply mode asks its module's own read-only query about that pixel
-                    // before anything is committed. The answer, not the coordinate, is what the
-                    // action receives.
-                    PickTarget::Sample {
-                        query,
-                        x: x_parameter,
-                        y: y_parameter,
-                        action,
-                    } => {
-                        let Some(state) = &self.state else {
-                            return Task::none();
-                        };
-                        let asset = state.asset.id.clone();
-                        self.event(
-                            "canvas_pick",
-                            json!({"query":query,"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
-                        );
-                        self.status = format!("Sampling ({x}, {y})…");
-                        return query_task(
-                            self.owner.clone(),
-                            self.client,
-                            asset,
-                            entry,
-                            format!("query.{query}"),
-                            action,
-                            (x_parameter, y_parameter),
-                            Map::new(),
-                            (x, y),
-                        );
-                    }
-                    // The host's own pick: the same two steps, reaching the host's declarations
-                    // instead of a module's. The mask travels in the envelope because it is an
-                    // identity, and the component the answer lands on is the one the panel has
-                    // open — a pick fills the swatch list a person is looking at.
-                    PickTarget::HostSample {
-                        query,
-                        x: x_parameter,
-                        y: y_parameter,
-                        action,
-                    } => {
-                        let Some(state) = &self.state else {
-                            return Task::none();
-                        };
-                        let asset = state.asset.id.clone();
-                        let Some(mask) = self.selected_mask.clone() else {
-                            self.status = "Open a mask to pick a colour into it".into();
-                            self.settle_step(Settle::Pick);
-                            return Task::none();
-                        };
-                        let mut envelope = Map::new();
-                        envelope.insert("mask".into(), json!(mask.as_str()));
-                        self.event(
-                            "canvas_pick",
-                            json!({"query":query,"action":action,"mask":mask.as_str(),"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
-                        );
-                        self.status = format!("Sampling ({x}, {y})…");
-                        return query_task(
-                            self.owner.clone(),
-                            self.client,
-                            asset,
-                            entry,
-                            query,
-                            action,
-                            (x_parameter, y_parameter),
-                            envelope,
-                            (x, y),
-                        );
-                    }
-                }
-            }
-            Message::SampleQueried {
-                entry,
-                action,
-                point: (x, y),
-                result,
-            } => {
-                if self.displayed_entry() != Some(entry) {
-                    return Task::none();
-                }
-                let answer = match result {
-                    Ok(answer) => answer,
-                    Err(error) => {
-                        // The core's own refusal, whose prefix names the reason: clipped,
-                        // near-black, non-finite, out-of-range or outside the stage. Nothing is
-                        // committed, nothing is clamped and nothing is guessed.
-                        self.event(
-                            "canvas_sample",
-                            json!({"action":action,"x":x,"y":y,"error":error}),
-                        );
-                        self.status = error
-                            .split_once(": ")
-                            .map_or(error.clone(), |(_, reason)| reason.to_owned());
-                        self.settle_step(Settle::Pick);
-                        return Task::none();
-                    }
-                };
-                // Every top-level number the query answered that the action declares as a
-                // parameter, and nothing else: the answer may carry metadata the action knows
-                // nothing about, and an unknown field would be refused by the generic check. The
-                // declaration is read from whichever table owns the action — a module's or the
-                // host's command family — so one rule covers both kinds of pick.
-                let host = lightwell_core::mask::commands::find(&action);
-                let declared = match host {
-                    Some(command) => Some(&command.action),
-                    None => tools::declared_action(&self.modules, &action),
-                };
-                let fields = declared
-                    .zip(answer.as_object())
-                    .map(|(declared, answer)| {
-                        answer
-                            .iter()
-                            .filter(|(name, value)| {
-                                value.is_number() && declared.parameter(name).is_some()
-                            })
-                            .map(|(name, value)| (name.clone(), value.clone()))
-                            .collect::<Map<String, Value>>()
-                    })
-                    .unwrap_or_default();
-                if fields.is_empty() {
-                    self.status =
-                        format!("The sample answered no field {action} takes; nothing was applied");
-                    self.event(
-                        "canvas_sample",
-                        json!({"action":action,"x":x,"y":y,"fields":Value::Null}),
-                    );
-                    self.settle_step(Settle::Pick);
-                    return Task::none();
-                }
-                let Some(state) = &self.state else {
-                    return Task::none();
-                };
-                if self.busy {
-                    // Something else took the one request in flight while the query was out. The
-                    // answer is not committed behind it; the pick is simply refused and said so.
-                    self.status = "Waiting for the last request".into();
-                    self.settle_step(Settle::Pick);
-                    return Task::none();
                 }
-                let mut request =
-                    json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
-                let object = request.as_object_mut().expect("the envelope is an object");
-                object.extend(fields.clone());
-                // A host command addresses the objects it edits in the envelope, because no declared
-                // parameter kind carries an identity. The pick fills the component the panel has
-                // open, and a pick with nothing open is refused with its reason rather than sent.
-                let method = match host {
-                    None => format!("edit.{action}"),
-                    Some(command) => {
-                        let Some(mask) = self.selected_mask.clone() else {
-                            self.status = "Open a mask to pick a colour into it".into();
-                            self.settle_step(Settle::Pick);
-                            return Task::none();
-                        };
-                        let Some(component) = self.selected_component.clone() else {
-                            self.status =
-                                "Select the component this pick fills before picking".into();
-                            self.settle_step(Settle::Pick);
-                            return Task::none();
-                        };
-                        object.insert("mask".into(), json!(mask.as_str()));
-                        object.insert("component".into(), json!(component.as_str()));
-                        command.method.to_owned()
-                    }
-                };
-                self.event(
-                    "canvas_sample",
-                    json!({"action":action,"x":x,"y":y,"fields":fields}),
-                );
-                // This pick commits, so its evidence is the render that follows rather than the
-                // status it leaves.
-                self.await_step(Settle::Preview);
-                // One command for the whole pick: one history entry, labelled by its own family.
-                return self.command(method, request);
-            }
-            Message::FocusNext => return operation::focus_next(),
-            Message::FocusPrevious => return operation::focus_previous(),
-            Message::Zoom(value) => self.zoom = value,
-            Message::VersionName(value) => self.version_name = value,
-            Message::ToggleVersionForm => self.version_form_open = !self.version_form_open,
-            Message::Panned(x, y) => return self.pan(x, y),
-            Message::Undo | Message::Redo => {
-                let undo = matches!(message, Message::Undo);
-                let Some(state) = &self.state else {
-                    return Task::none();
-                };
-                let method = if undo { "history.undo" } else { "history.redo" };
-                let params = json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
-                return self.command(method, params);
-            }
-            Message::Preview(entry_id) => {
-                let Some(state) = &self.state else {
-                    return Task::none();
-                };
-                if self.busy {
-                    return Task::none();
-                }
-                // The current row is the live state: selecting it returns to current instead of
-                // starting a historical preview, which is also what the API does with that entry.
-                if state.current_entry.id == entry_id {
-                    return self.update(Message::ReturnCurrent);
-                }
-                let params = json!({"asset_id":state.asset.id,"entry_id":entry_id});
-                let asset = state.asset.id.clone();
-                self.busy = true;
-                self.status = "Selecting history state…".into();
-                let proxy = self.proxy_bounds();
-                return preview_task(
-                    self.owner.clone(),
-                    self.client,
-                    asset,
-                    Some(entry_id),
-                    "preview.select",
-                    params,
-                    proxy,
-                    Message::Selected,
-                );
-            }
-            Message::ReturnCurrent => {
-                let Some(state) = &self.state else {
-                    return Task::none();
-                };
-                if self.busy {
-                    return Task::none();
-                }
-                let asset = state.asset.id.clone();
-                self.busy = true;
-                self.status = "Returning to current state…".into();
-                let proxy = self.proxy_bounds();
-                return preview_task(
-                    self.owner.clone(),
-                    self.client,
-                    asset,
-                    None,
-                    "preview.return-current",
-                    json!({}),
-                    proxy,
-                    Message::Selected,
-                );
-            }
-            Message::Restore => {
-                let (Some(state), HistorySelection::Entry(entry_id)) =
-                    (&self.state, &self.session.preview.selection)
-                else {
-                    return Task::none();
-                };
-                let params = json!({"asset_id":state.asset.id,"mutation":mutation(state.revision),"entry_id":entry_id});
-                return self.command("history.restore", params);
-            }
-            Message::SaveVersion => {
-                let (Some(state), Some(entry_id)) = (&self.state, &self.display_entry) else {
-                    return Task::none();
-                };
-                let name = self.version_name.trim().to_string();
-                if name.is_empty() {
-                    self.status = "Enter a version name first".into();
-                    return Task::none();
-                }
-                let params = json!({"asset_id":state.asset.id,"name":name,"mutation":tasks::request(),"entry_id":entry_id});
-                self.version_form_open = false;
-                return self.version_command("version.create", params);
-            }
-            Message::DeleteVersion(name) => {
-                let Some(state) = &self.state else {
-                    return Task::none();
-                };
-                let params =
-                    json!({"asset_id":state.asset.id,"name":name,"mutation":tasks::request()});
-                return self.version_command("version.delete", params);
-            }
-            Message::LoadOlder => {
-                let (Some(state), Some(before)) = (&self.state, self.history.next_before_sequence)
-                else {
-                    return Task::none();
-                };
-                if self.busy {
-                    return Task::none();
-                }
-                let asset = state.asset.id.clone();
-                self.busy = true;
-                return older_task(self.owner.clone(), self.client, asset, before);
-            }
-            Message::Fit => {
-                self.zoom = "Fit".into();
-                return self.session_command("view.set", json!({"zoom":{"mode":"fit"}}));
-            }
-            Message::HundredPercent => {
-                self.zoom = "100".into();
-                return self
-                    .session_command("view.set", json!({"zoom":{"mode":"percent","value":100.0}}));
-            }
-            Message::ApplyZoom => {
-                let Ok(value) = self.zoom.parse::<f32>() else {
-                    self.status = "Zoom must be Fit or a percentage from 10 to 1600".into();
-                    return Task::none();
-                };
-                return self
-                    .session_command("view.set", json!({"zoom":{"mode":"percent","value":value}}));
-            }
-            Message::ScaleFactor(scale) => {
-                if scale.is_finite() && scale > 0.0 {
-                    self.scale_factor = scale;
-                }
-            }
-            Message::Close => {
-                self.event("shutdown", json!({"while_loading":self.activity.pending}));
-                self.live_server.take();
-                self.owner.disconnect(self.client);
-                self.owner.stop();
-                let join = self.owner_join.take();
-                let log = self.diagnostics.take();
-                return Task::perform(
-                    async move {
-                        if let Some(log) = log {
-                            log.finish();
-                        }
-                        if let Some(join) = join {
-                            let _ = join.join();
-                        }
-                    },
-                    |_| (),
-                )
-                .then(|_| iced::exit());
             }
+            Message::Sync(message) => self.sync_update(message),
+            Message::Preview(message) => self.preview_update(message),
+            Message::Overlay(message) => self.overlay_update(message),
+            Message::History(message) => self.history_update(message),
+            Message::View(message) => self.view_update(message),
+            Message::Palette(message) => self.palette_update(message),
+            Message::Control(message) => self.control_update(message),
+            Message::Action(message) => self.action_update(message),
+            Message::Pointer(message) => self.pointer_update(message),
+            Message::Crop(message) => self.crop_update(message),
+            Message::Mask(message) => self.mask_message(message),
+            Message::Draft(message) => self.draft_message(message),
+            Message::Preset(message) => self.preset_update(message),
+            Message::Capability(message) => self.capability_update(message),
+            Message::Performance(message) => self.performance_update(message),
+            Message::Evidence(message) => self.evidence_update(message),
+            Message::Close => self.close(),
         }
-        Task::none()
     }
 
     /// An edit is possible when an asset is open, the session shows the current state and no
@@ -2422,20 +912,28 @@ impl Editor {
         // The gesture needs no timer of its own: a slider move sends `draft.set` the moment
         // nothing is in flight, and records only the newest value while one is.
         if self.state.is_some() && self.evidence.is_none() {
-            subscriptions
-                .push(iced::time::every(Duration::from_millis(500)).map(|_| Message::Sync));
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(500))
+                    .map(|_| Message::Sync(SyncMessage::Tick)),
+            );
         }
         // The Performance section's sampler, gated on the section being expanded with the state
         // panel on screen. Collapsed or hidden, there is no timer at all, in evidence runs too.
         if self.performance_sampling() {
-            subscriptions
-                .push(iced::time::every(performance::INTERVAL).map(|_| Message::PerformanceTick));
+            subscriptions.push(
+                iced::time::every(performance::INTERVAL)
+                    .map(|_| Message::Performance(PerformanceMessage::Tick)),
+            );
         }
         if let Some(evidence) = &self.evidence {
-            subscriptions
-                .push(iced::time::every(Duration::from_millis(250)).map(|_| Message::EvidenceTick));
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(250))
+                    .map(|_| Message::Evidence(EvidenceMessage::Tick)),
+            );
             if evidence.capture_pending {
-                subscriptions.push(iced::window::frames().map(|_| Message::Capture));
+                subscriptions.push(
+                    iced::window::frames().map(|_| Message::Evidence(EvidenceMessage::Capture)),
+                );
             }
             // A paced slider step's own timer, which belongs to the evidence run rather than to
             // the editor: it is gated on the step still having values left to send, so a script
@@ -2443,7 +941,7 @@ impl Editor {
             if let Some(paced) = &evidence.paced_slider {
                 subscriptions.push(
                     iced::time::every(Duration::from_millis(paced.interval_ms))
-                        .map(|_| Message::PacedSliderTick),
+                        .map(|_| Message::Evidence(EvidenceMessage::PacedSliderTick)),
                 );
             }
             // A paced stroke's own timer, gated the same way: a script with no paced stroke in
@@ -2451,14 +949,14 @@ impl Editor {
             if let Some(paced) = &evidence.paced_stroke {
                 subscriptions.push(
                     iced::time::every(Duration::from_millis(paced.interval_ms))
-                        .map(|_| Message::PacedStrokeTick),
+                        .map(|_| Message::Evidence(EvidenceMessage::PacedStrokeTick)),
                 );
             }
             // A scripted double-click's gap before its second press, which the first tick ends.
             if let Some(second) = &evidence.second_click {
                 subscriptions.push(
                     iced::time::every(Duration::from_millis(second.gap_ms.max(1)))
-                        .map(|_| Message::DoubleClickSecond),
+                        .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
                 );
             }
         }
@@ -2484,7 +982,7 @@ fn raw_event(
         // overlay's cells may be. It rides the subscription that is already listening; nothing new
         // polls for it, and a resize with no overlay on starts no work.
         iced::Event::Window(iced::window::Event::Resized(size)) => {
-            Some(Message::Resized(size.width, size.height))
+            Some(Message::View(ViewMessage::Resized(size.width, size.height)))
         }
         _ => None,
     }
@@ -2498,15 +996,27 @@ pub(crate) fn short(value: &str) -> &str {
 mod tests {
     use super::lifecycle::{host_config, registry};
     use super::*;
-    use super::{message::ClipEndpoint, tasks::Upload};
+    use super::{
+        evidence::Settle,
+        message::{
+            ActionMessage, ClipEndpoint, ControlMessage, CropMessage, HistoryMessage,
+            OverlayMessage, PaletteAction, PaletteMessage, PointerMessage,
+        },
+        overlay::clip_params,
+        tasks::{Upload, mutation},
+    };
     use crate::Config;
+    use crate::state::fields;
     use crate::state::histogram::HistogramStatus;
+    use lightwell_core::CropStage;
     use lightwell_core::{
         AssetId, ContentPoint, EntryId, POINTER_MODE, PreviewJob, PreviewSource, RawPayload,
         SourceImage, WhiteBalanceMode, Zoom,
     };
     use lightwell_core::{HistoryRow, ModuleRegistry};
+    use serde_json::Map;
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
     use testing::{
         Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, boot, crop_descriptor, descriptors, entry, finish,
         logged, opened, pick_events, pick_fields, pick_mode, picking, raw_entry, raw_refresh,
@@ -2529,12 +1039,12 @@ mod tests {
         let mut session = editor.session.clone();
         session.workspace.component_gallery = Some(6);
         session.revision += 1;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok(session)));
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
         assert_eq!(editor.gallery_page(), Some(6));
         assert_eq!(editor.snapshot()["gallery"]["page"], json!(6));
         let before = editor.session.clone();
         let generation = editor.activity.requested;
-        let _ = editor.update(Message::GalleryPreview);
+        let _ = editor.update(Message::View(ViewMessage::GalleryPreview));
         assert_eq!(editor.session, before);
         assert_eq!(editor.activity.requested, generation);
         editor.developer = false;
@@ -2545,7 +1055,7 @@ mod tests {
         editor.busy = true;
         editor.rederive();
         assert!(!editor.workspace.title.can_open_gallery);
-        let _ = editor.update(Message::Gallery(Some(0)));
+        let _ = editor.update(Message::View(ViewMessage::Gallery(Some(0))));
         assert_eq!(editor.session, before);
         assert!(editor.status.contains("Finish the current operation"));
         finish(editor, catalog);
@@ -2575,11 +1085,11 @@ mod tests {
     /// attached, so the requests a gesture sends can be counted from the records the harness reads.
     fn drafting() -> (Editor, PathBuf, PathBuf, AssetId, String, String) {
         let (mut editor, catalog) = boot();
-        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
         let asset = AssetId::new();
         let current = entry(&asset, 4, None);
         let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
         let log = attach_log(&mut editor);
         let (action, parameter) = patch_control(&editor);
         (editor, catalog, log, asset, action, parameter)
@@ -2615,11 +1125,11 @@ mod tests {
         // the last. The values are ones the widget would send: it quantizes each drag to the
         // parameter's declared step and precision before the message is published.
         for value in [25.0, 50.0, 75.0] {
-            let _ = editor.update(Message::SliderMoved {
+            let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
                 action: action.clone(),
                 parameter: parameter.clone(),
                 value,
-            });
+            }));
         }
         assert_eq!(
             editor.fields.get(&action, &parameter),
@@ -2635,11 +1145,11 @@ mod tests {
 
         begun(&mut editor, &asset, &action, 4);
         // A move to the value already accepted sends nothing again.
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 75.0,
-        });
+        }));
 
         let records = logged(&mut editor, &log);
         assert_eq!(
@@ -2713,11 +1223,11 @@ mod tests {
         let (action, parameter) = single_parameter_control(&editor);
 
         for value in [0.25, 0.5] {
-            let _ = editor.update(Message::SliderMoved {
+            let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
                 action: action.clone(),
                 parameter: parameter.clone(),
                 value,
-            });
+            }));
         }
         assert!(
             editor.slider_gesture().is_some(),
@@ -2725,15 +1235,15 @@ mod tests {
             editor.status
         );
         begun(&mut editor, &asset, &action, 4);
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 0.75,
-        });
-        let _ = editor.update(Message::SliderReleased {
+        }));
+        let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
             action: action.clone(),
             parameter: parameter.clone(),
-        });
+        }));
 
         let records = logged(&mut editor, &log);
         assert_eq!(
@@ -2784,11 +1294,11 @@ mod tests {
             .expect("a built-in declares a multi-parameter action led by a slider field");
 
         for value in [3.0, 7.0] {
-            let _ = editor.update(Message::SliderMoved {
+            let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
                 action: action.clone(),
                 parameter: parameter.clone(),
                 value,
-            });
+            }));
         }
         assert!(editor.slider_gesture().is_none(), "no draft was opened");
         assert_eq!(
@@ -2801,10 +1311,10 @@ mod tests {
             "nothing was sent while dragging"
         );
 
-        let _ = editor.update(Message::SliderReleased {
+        let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
             action: action.clone(),
             parameter: parameter.clone(),
-        });
+        }));
         assert_eq!(
             editor.status,
             format!("Running edit.{action}…"),
@@ -2831,16 +1341,16 @@ mod tests {
             .expect("an open asset")
             .current_entry
             .clone();
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.into(),
             parameter: parameter.into(),
             value,
-        });
+        }));
         begun(editor, asset, action, current.sequence);
-        let _ = editor.update(Message::ControlReleased {
+        let _ = editor.update(Message::Control(ControlMessage::Released {
             action: action.into(),
             parameter: parameter.into(),
-        });
+        }));
         assert_eq!(
             editor
                 .core_gesture()
@@ -2848,10 +1358,10 @@ mod tests {
             Some(draft::Round::Commit),
             "the release's commit is in flight"
         );
-        let _ = editor.update(Message::ResetField {
+        let _ = editor.update(Message::Control(ControlMessage::ResetField {
             action: action.into(),
             parameter: parameter.into(),
-        });
+        }));
         entry(asset, current.sequence + 1, Some(&current.id))
     }
 
@@ -2953,8 +1463,8 @@ mod tests {
             custom.gains =
                 lightwell_core::gains_from_temperature_tint(5000.0, 12.0, Z6_CAM_XYZ).unwrap();
             let current = raw_entry(&asset, 5, None, &custom);
-            let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
-                &asset, &current,
+            let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+                raw_refresh(&asset, &current),
             )))));
             let committed = editor.fields.get(action, parameter).map(str::to_owned);
             assert_eq!(
@@ -2999,10 +1509,10 @@ mod tests {
             // Typed but not committed, then double-clicked.
             editor.fields.set(action, parameter, "7777".into());
             editor.editing = Some((action.into(), parameter.into()));
-            let _ = editor.update(Message::ResetField {
+            let _ = editor.update(Message::Control(ControlMessage::ResetField {
                 action: action.into(),
                 parameter: parameter.into(),
-            });
+            }));
             let records = logged(&mut editor, &log);
             let sent = draft_events(&records, "field_reset_sent");
             assert_eq!(sent.len(), 1, "{action}: {records:?}");
@@ -3018,8 +1528,8 @@ mod tests {
 
             // The answer: As shot, whose rows report the camera's equivalent.
             let answered = raw_entry(&asset, 6, Some(&current.id), &original);
-            let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
-                &asset, &answered,
+            let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+                raw_refresh(&asset, &answered),
             )))));
             assert_eq!(
                 editor.fields.get(action, parameter),
@@ -3036,10 +1546,10 @@ mod tests {
         ] {
             let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
             let log = attach_log(&mut editor);
-            let _ = editor.update(Message::ResetField {
+            let _ = editor.update(Message::Control(ControlMessage::ResetField {
                 action: action.into(),
                 parameter: parameter.into(),
-            });
+            }));
             let records = logged(&mut editor, &log);
             let sent = draft_events(&records, "field_reset_sent");
             assert_eq!(sent.len(), 1, "{action}");
@@ -3062,14 +1572,14 @@ mod tests {
             .current_entry
             .clone();
         editor.busy = true;
-        let _ = editor.update(Message::ResetField {
+        let _ = editor.update(Message::Control(ControlMessage::ResetField {
             action: action.clone(),
             parameter: parameter.clone(),
-        });
+        }));
         assert!(editor.pending_reset.is_some(), "it waits for the request");
         let next = entry(&asset, current.sequence + 1, Some(&current.id));
         let refresh = refresh_for(&asset, &next, Vec::new(), &[&next], false);
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
         let sent = draft_events(&logged(&mut editor, &log), "field_reset_sent")
             .into_iter()
             .cloned()
@@ -3079,15 +1589,15 @@ mod tests {
 
         // Asked for while a request is in flight, then the session shows a historical entry.
         let log = attach_log(&mut editor);
-        let _ = editor.update(Message::ResetField {
+        let _ = editor.update(Message::Control(ControlMessage::ResetField {
             action: action.clone(),
             parameter: parameter.clone(),
-        });
+        }));
         assert!(editor.pending_reset.is_some());
         editor.session.preview.selection =
             lightwell_core::HistorySelection::Entry(current.id.clone());
         editor.busy = false;
-        let _ = editor.update(Message::Sync);
+        let _ = editor.update(Message::Sync(SyncMessage::Tick));
         let records = logged(&mut editor, &log);
         let dropped = draft_events(&records, "field_reset_dropped");
         assert_eq!(dropped.len(), 1, "{records:?}");
@@ -3111,11 +1621,11 @@ mod tests {
     #[test]
     fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
         let (mut editor, catalog, log, asset, _, _) = drafting();
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: "set-raw-temperature".into(),
             parameter: "kelvin".into(),
             value: 5000.0,
-        });
+        }));
         // The owner accepts the value, but its preview job answers preparation-required.
         editor.fake_sets = Some(["preparation-required: source-job-7".to_owned()].into());
         begun(&mut editor, &asset, "set-raw-temperature", 4);
@@ -3153,14 +1663,14 @@ mod tests {
     fn releasing_a_drafting_slider_that_never_moved_sends_nothing() {
         for (action, parameter) in [("set-raw-temperature", "kelvin"), ("set-basic", "exposure")] {
             let (mut editor, catalog, log, _, _, _) = drafting();
-            let _ = editor.update(Message::ControlReleased {
+            let _ = editor.update(Message::Control(ControlMessage::Released {
                 action: action.into(),
                 parameter: parameter.into(),
-            });
-            let _ = editor.update(Message::SliderReleased {
+            }));
+            let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
                 action: action.into(),
                 parameter: parameter.into(),
-            });
+            }));
             assert!(!editor.busy, "{action}: no request is in flight");
             assert!(editor.editable());
             assert!(
@@ -3178,18 +1688,18 @@ mod tests {
     #[test]
     fn toggling_a_modules_only_group_records_nothing() {
         let (mut editor, catalog, _, _, _, _) = drafting();
-        let _ = editor.update(Message::ToggleGroup {
+        let _ = editor.update(Message::Control(ControlMessage::ToggleGroup {
             module_id: "lightwell.presence".into(),
             path: vec![0],
-        });
+        }));
         assert!(
             editor.controls_ui.group_expanded.is_empty(),
             "the only group has no disclosure"
         );
-        let _ = editor.update(Message::ToggleGroup {
+        let _ = editor.update(Message::Control(ControlMessage::ToggleGroup {
             module_id: "lightwell.basic".into(),
             path: vec![1],
-        });
+        }));
         assert_eq!(
             editor
                 .controls_ui
@@ -3222,10 +1732,10 @@ mod tests {
         );
 
         editor.fields.set(&action, &parameter, "1.25".to_owned());
-        let _ = editor.update(Message::ResetField {
+        let _ = editor.update(Message::Control(ControlMessage::ResetField {
             action: action.clone(),
             parameter: parameter.clone(),
-        });
+        }));
         assert_eq!(
             editor.fields.get(&action, &parameter),
             Some(fields::seed_text(
@@ -3250,21 +1760,21 @@ mod tests {
     fn release_commits_once_and_a_return_to_start_commits_nothing() {
         let (mut editor, catalog, log, asset, action, parameter) = drafting();
         let history = editor.history.entries.len();
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 1.0,
-        });
+        }));
         begun(&mut editor, &asset, &action, 4);
 
-        let _ = editor.update(Message::SliderReleased {
+        let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
             action: action.clone(),
             parameter: parameter.clone(),
-        });
-        let _ = editor.update(Message::SliderReleased {
+        }));
+        let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
             action: action.clone(),
             parameter: parameter.clone(),
-        });
+        }));
         let records = logged(&mut editor, &log);
         let commits = draft_events(&records, "slider_draft_commit");
         assert_eq!(commits.len(), 1, "one gesture is one commit: {commits:?}");
@@ -3298,11 +1808,11 @@ mod tests {
             .get(&action, &parameter)
             .expect("a seeded field")
             .to_owned();
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 2.0,
-        });
+        }));
         begun(&mut editor, &asset, &action, 4);
 
         // Exactly the message the keyboard table raises for Escape while a gesture is open.
@@ -3351,17 +1861,19 @@ mod tests {
     #[test]
     fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
         let (mut editor, catalog, log, asset, action, parameter) = drafting();
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 15.0,
-        });
+        }));
         begun(&mut editor, &asset, &action, 4);
 
         // Somebody else committed, which is also what this desktop's own undo looks like.
         let newer = entry(&asset, 9, None);
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Synced(Ok(tasks::SyncResult::changed(refresh))));
+        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(
+            tasks::SyncResult::changed(refresh),
+        ))));
         let draft = &editor.core_gesture().expect("the draft is kept").draft;
         assert!(draft.conflicted);
         assert_eq!(
@@ -3423,11 +1935,11 @@ mod tests {
     #[test]
     fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
         let (mut editor, catalog, log, asset, action, parameter) = drafting();
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 1.0,
-        });
+        }));
         begun(&mut editor, &asset, &action, 4);
         let sets = {
             let records = logged(&mut editor, &log);
@@ -3467,10 +1979,10 @@ mod tests {
         );
 
         // Enter in the field runs exactly that request.
-        let _ = editor.update(Message::Submit {
+        let _ = editor.update(Message::Control(ControlMessage::Submit {
             action: action.clone(),
             parameter: Some(parameter.clone()),
-        });
+        }));
         assert!(
             editor.status.starts_with(&format!("Running edit.{action}")),
             "{}",
@@ -3517,7 +2029,7 @@ mod tests {
                     neutral: false,
                 })
                 .collect();
-            let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+            let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
         };
 
         seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
@@ -3599,11 +2111,11 @@ mod tests {
             let log = attach_log(&mut editor);
             // The drag: one draft, one set for this field alone.
             editor.busy = false;
-            let _ = editor.update(Message::SliderMoved {
+            let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
                 action: action.clone(),
                 parameter: parameter.clone(),
                 value: *value,
-            });
+            }));
             assert!(
                 editor.slider_gesture().is_some(),
                 "{parameter} did not open a draft: {}",
@@ -3629,10 +2141,10 @@ mod tests {
 
             // The release: one commit, then the no-op outcome that ends the gesture.
             let log = attach_log(&mut editor);
-            let _ = editor.update(Message::SliderReleased {
+            let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
                 action: action.clone(),
                 parameter: parameter.clone(),
-            });
+            }));
             let records = logged(&mut editor, &log);
             assert_eq!(
                 draft_events(&records, "slider_draft_commit").len(),
@@ -3648,11 +2160,11 @@ mod tests {
             // Escape: the gesture ends and commits nothing.
             editor.busy = false;
             let log = attach_log(&mut editor);
-            let _ = editor.update(Message::SliderMoved {
+            let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
                 action: action.clone(),
                 parameter: parameter.clone(),
                 value: *value,
-            });
+            }));
             begun(&mut editor, &asset, &action, 4);
             let _ = editor.update(Message::Draft(message::DraftMessage::Cancel));
             let records = logged(&mut editor, &log);
@@ -3677,11 +2189,11 @@ mod tests {
 
             // An external commit under the gesture, then Reapply.
             editor.busy = false;
-            let _ = editor.update(Message::SliderMoved {
+            let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
                 action: action.clone(),
                 parameter: parameter.clone(),
                 value: *value,
-            });
+            }));
             begun(&mut editor, &asset, &action, 4);
             editor.gesture_revision(5);
             assert!(
@@ -3734,19 +2246,19 @@ mod tests {
             };
             let outside = fields::number_text(max + 150.0);
             editor.busy = false;
-            let _ = editor.update(Message::EditValue {
+            let _ = editor.update(Message::Control(ControlMessage::EditValue {
                 action: action.clone(),
                 parameter: parameter.name.clone(),
-            });
-            let _ = editor.update(Message::Field {
+            }));
+            let _ = editor.update(Message::Control(ControlMessage::Field {
                 action: action.clone(),
                 parameter: parameter.name.clone(),
                 text: outside.clone(),
-            });
-            let _ = editor.update(Message::Submit {
+            }));
+            let _ = editor.update(Message::Control(ControlMessage::Submit {
                 action: action.clone(),
                 parameter: Some(parameter.name.clone()),
-            });
+            }));
             assert!(
                 !editor.busy,
                 "{} committed an out-of-range value",
@@ -3780,10 +2292,10 @@ mod tests {
                 "{} is not shown as invalid",
                 parameter.name
             );
-            let _ = editor.update(Message::ResetField {
+            let _ = editor.update(Message::Control(ControlMessage::ResetField {
                 action: action.clone(),
                 parameter: parameter.name.clone(),
-            });
+            }));
         }
         finish(editor, catalog);
     }
@@ -3858,10 +2370,10 @@ mod tests {
                     "{label} sends more than its own preset"
                 );
                 editor.busy = false;
-                let _ = editor.update(Message::ResetGroup {
+                let _ = editor.update(Message::Control(ControlMessage::ResetGroup {
                     module_id: module.id.clone(),
                     path: vec![index],
-                });
+                }));
                 assert!(editor.busy, "{label}: {}", editor.status);
                 assert!(
                     editor
@@ -3875,7 +2387,9 @@ mod tests {
                 continue;
             };
             editor.busy = false;
-            let _ = editor.update(Message::ResetModule(module.id.clone()));
+            let _ = editor.update(Message::Control(ControlMessage::ResetModule(
+                module.id.clone(),
+            )));
             assert!(editor.busy, "{}: {}", module.id, editor.status);
             assert!(
                 editor
@@ -3892,10 +2406,10 @@ mod tests {
         let (action, parameter) = patch_control(&editor);
         editor.busy = false;
         editor.fields.set(&action, &parameter, "1.5".into());
-        let _ = editor.update(Message::ResetField {
+        let _ = editor.update(Message::Control(ControlMessage::ResetField {
             action: action.clone(),
             parameter: parameter.clone(),
-        });
+        }));
         let default = tools::declared_action(&editor.modules, &action)
             .and_then(|declared| declared.parameter(&parameter))
             .map(fields::seed_text)
@@ -3923,7 +2437,7 @@ mod tests {
         let entry_id = editor.displayed_entry().expect("a displayed entry");
         let log = attach_log(&mut editor);
 
-        let _ = editor.update(Message::PointLocated {
+        let _ = editor.update(Message::Pointer(PointerMessage::Located {
             entry: entry_id.clone(),
             mode: mode.clone(),
             view: (7, 9),
@@ -3933,7 +2447,7 @@ mod tests {
                 width: 480,
                 height: 320,
             }),
-        });
+        }));
         assert_eq!(editor.status, "Sampling (100, 42)…");
         assert!(!editor.busy, "the query committed before it answered");
         assert_eq!(
@@ -3956,12 +2470,12 @@ mod tests {
         answer.insert(named[0].into(), json!(-12.0));
         answer.insert(named[1].into(), json!(5.0));
         answer.insert("patch".into(), json!({"x": 98, "y": 40}));
-        let _ = editor.update(Message::SampleQueried {
+        let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
             entry: entry_id,
             action: action.clone(),
             point: (100, 42),
             result: Ok(Value::Object(answer)),
-        });
+        }));
         assert!(
             editor.busy,
             "the answer was not submitted: {}",
@@ -3996,7 +2510,7 @@ mod tests {
         let entry_id = editor.displayed_entry().expect("a displayed entry");
         let revision = editor.state.as_ref().expect("open").revision;
         let log = attach_log(&mut editor);
-        let _ = editor.update(Message::SampleQueried {
+        let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
             entry: entry_id,
             action,
             point: (100, 42),
@@ -4004,7 +2518,7 @@ mod tests {
                 "validation: clipped: a sampled pixel is at code 0 or 255, so this patch carries no usable colour"
                     .into(),
             ),
-        });
+        }));
         assert!(
             editor.status.starts_with("clipped:"),
             "the reason's own prefix is not what the status leads with: {}",
@@ -4034,13 +2548,13 @@ mod tests {
 
         // The pointer mode: a click reaches no module's pick at all.
         let before = editor.status.clone();
-        let _ = editor.update(Message::PointPicked { x: 7, y: 9 });
+        let _ = editor.update(Message::Pointer(PointerMessage::Picked { x: 7, y: 9 }));
         assert_eq!(editor.status, before, "a pick ran in the pointer mode");
 
         // The sample-apply mode: the located point is not written into the point-pick module's
         // coordinate fields, because that module's canvas is not the one on screen.
         editor.session.workspace.mode = sample_module.clone();
-        let _ = editor.update(Message::PointLocated {
+        let _ = editor.update(Message::Pointer(PointerMessage::Located {
             entry: entry_id,
             mode: sample_module.clone(),
             view: (7, 9),
@@ -4050,21 +2564,21 @@ mod tests {
                 width: 480,
                 height: 320,
             }),
-        });
+        }));
         assert_eq!(editor.fields.get(&pick_action, &x), Some("0"));
         assert_eq!(editor.fields.get(&pick_action, &y), Some("0"));
 
         // A pick while a slider gesture is open is refused, and the gesture is untouched.
         let (action, parameter) = patch_control(&editor);
         let asset = editor.state.as_ref().expect("open").asset.id.clone();
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter,
             value: 1.0,
-        });
+        }));
         begun(&mut editor, &asset, &action, 4);
         assert!(editor.slider_gesture().is_some());
-        let _ = editor.update(Message::PointPicked { x: 7, y: 9 });
+        let _ = editor.update(Message::Pointer(PointerMessage::Picked { x: 7, y: 9 }));
         assert!(editor.status.contains("slider draft"), "{}", editor.status);
         assert!(
             editor.slider_gesture().is_some(),
@@ -4086,13 +2600,15 @@ mod tests {
         let asset = current.asset_id.clone();
         let rows = |entry: &lightwell_core::HistoryEntry| testing::described(entry);
         let read = |entry: &lightwell_core::HistoryEntry| {
-            Message::RecipeDescribed(Ok(Box::new(crate::app::tasks::RecipeRead {
-                recipe: rows(entry),
-                masks: lightwell_core::mask::commands::MaskListing {
-                    entry_id: entry.id.clone(),
-                    masks: Vec::new(),
+            Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
+                crate::app::tasks::RecipeRead {
+                    recipe: rows(entry),
+                    masks: lightwell_core::mask::commands::MaskListing {
+                        entry_id: entry.id.clone(),
+                        masks: Vec::new(),
+                    },
                 },
-            })))
+            ))))
         };
         let current_rows = |editor: &Editor| {
             editor
@@ -4100,12 +2616,8 @@ mod tests {
                 .as_ref()
                 .map(|recipe| recipe.entry_id.clone())
         };
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh_for(
-            &asset,
-            &current,
-            vec![current.clone()],
-            &[&current],
-            false,
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            refresh_for(&asset, &current, vec![current.clone()], &[&current], false),
         )))));
         assert_eq!(current_rows(&editor), Some(current.id.clone()));
 
@@ -4125,7 +2637,9 @@ mod tests {
             refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
         previewing.recipe = rows(&older);
         previewing.current_recipe = Some(rows(&current));
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(previewing))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            previewing,
+        )))));
         assert_eq!(current_rows(&editor), Some(current.id.clone()));
 
         let _ = editor.update(read(&current));
@@ -4169,7 +2683,7 @@ mod tests {
 
         // The current state.
         let current = described(&mut editor, 2.0);
-        let _ = editor.update(Message::Refreshed(Ok(current)));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(current))));
         assert_eq!(editor.fields.get(&action, &parameter), Some("2"));
 
         // A historical entry is selected: its own rows seed the same fields, and the section is
@@ -4178,12 +2692,12 @@ mod tests {
         editor.session.preview.selection = HistorySelection::Entry(older.id.clone());
         editor.display_entry = Some(older.id.clone());
         let historical = described(&mut editor, -1.0);
-        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
+        let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
             crate::app::tasks::RecipeRead {
                 recipe: historical.recipe,
                 masks: historical.masks,
             },
-        ))));
+        )))));
         assert_eq!(
             editor.fields.get(&action, &parameter),
             Some("-1"),
@@ -4214,12 +2728,12 @@ mod tests {
         editor.session.preview.selection = HistorySelection::Current;
         let current = described(&mut editor, 2.0);
         editor.display_entry = Some(current.state.current_entry.id.clone());
-        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
+        let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
             crate::app::tasks::RecipeRead {
                 recipe: current.recipe,
                 masks: current.masks,
             },
-        ))));
+        )))));
         assert_eq!(
             editor.fields.get(&action, &parameter),
             Some("2"),
@@ -4259,11 +2773,11 @@ mod tests {
             .map(|(module, _)| module.id.clone())
             .expect("the presets control");
 
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 0.5,
-        });
+        }));
         let opened = versions(&editor);
         for (module, version) in &before {
             if module == &owner || module == &library {
@@ -4280,11 +2794,11 @@ mod tests {
             }
         }
 
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action,
             parameter,
             value: 0.75,
-        });
+        }));
         let after = versions(&editor);
         for (module, version) in &opened {
             if module == &owner {
@@ -4321,29 +2835,29 @@ mod tests {
             height: 320,
             angle: 0.0,
         });
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value: 1.0,
-        });
+        }));
         assert!(editor.slider_gesture().is_none(), "{}", editor.status);
         assert!(editor.status.contains("crop draft"), "{}", editor.status);
         let _ = editor.update(Message::Crop(CropMessage::Cancel));
 
         // The crop mode and Compare while a gesture is open.
         editor.busy = false;
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action,
             parameter,
             value: 1.0,
-        });
+        }));
         begun(&mut editor, &asset, "unused", 4);
         assert!(editor.slider_gesture().is_some());
-        let _ = editor.update(Message::SetMode(crop));
+        let _ = editor.update(Message::View(ViewMessage::SetMode(crop)));
         assert!(editor.crop().is_none() && editor.crop_pending().is_none());
         assert!(editor.status.contains("slider draft"), "{}", editor.status);
         editor.original_entry = Some(entry(&asset, 0, None).id);
-        let _ = editor.update(Message::CompareBegin);
+        let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
         assert!(editor.compare_return.is_none());
         assert!(editor.status.contains("slider draft"), "{}", editor.status);
         finish(editor, catalog);
@@ -4656,7 +3170,7 @@ mod tests {
         editor.presented_generation = 4;
         editor.incoming = Some((committed, raster));
         editor.adopt_analysis(4);
-        let _ = editor.update(Message::Resized(1440.0, 900.0));
+        let _ = editor.update(Message::View(ViewMessage::Resized(1440.0, 900.0)));
         let derived = editor.overlay_request.clone().expect("an overlay");
         assert_eq!(derived.generation, 4);
         assert!(derived.highlights && !derived.shadows);
@@ -4739,9 +3253,11 @@ mod tests {
             editor.history.entries.len(),
         );
         for message in [
-            Message::ToggleClipping(Some(ClipEndpoint::Shadows)),
-            Message::ToggleClipping(Some(ClipEndpoint::Highlights)),
-            Message::ToggleClipping(None),
+            Message::Overlay(OverlayMessage::ToggleClipping(Some(ClipEndpoint::Shadows))),
+            Message::Overlay(OverlayMessage::ToggleClipping(Some(
+                ClipEndpoint::Highlights,
+            ))),
+            Message::Overlay(OverlayMessage::ToggleClipping(None)),
         ] {
             let _ = editor.update(message);
             assert!(!editor.busy, "a view toggle never takes the mutation path");
@@ -4773,7 +3289,7 @@ mod tests {
         });
         assert!(matches!(
             keymap::keymap(&event, iced::event::Status::Ignored, &context),
-            Some(Message::ToggleClipping(None))
+            Some(Message::Overlay(OverlayMessage::ToggleClipping(None)))
         ));
         // A field that took the key keeps it: letters never act while text has focus.
         assert!(
@@ -4787,40 +3303,40 @@ mod tests {
     #[test]
     fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
         let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
-        let _ = editor.update(Message::PointerMoved(Some((3, 4))));
+        let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((3, 4)))));
         assert!(editor.sample_in_flight, "the first move asks");
         assert_eq!(editor.pending_sample, None);
         // Two further moves while the first is outstanding: only the newest is kept.
-        let _ = editor.update(Message::PointerMoved(Some((5, 6))));
-        let _ = editor.update(Message::PointerMoved(Some((7, 8))));
+        let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((5, 6)))));
+        let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((7, 8)))));
         assert_eq!(editor.pending_sample, Some((7, 8)));
         assert!(editor.sample_in_flight, "still exactly one in flight");
         // The same position again is not a second request.
-        let _ = editor.update(Message::PointerMoved(Some((7, 8))));
+        let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((7, 8)))));
         assert_eq!(editor.pending_sample, Some((7, 8)));
 
         // An answer for another stack describes an image the canvas has left.
-        let _ = editor.update(Message::Sampled {
+        let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
             entry: EntryId::new(),
             result: Ok(Readout {
                 x: 3,
                 y: 4,
                 rgba: [1, 2, 3, 255],
             }),
-        });
+        }));
         assert!(editor.readout.is_none(), "a mismatched identity is dropped");
         // The newest position was released as the next request when the first answered.
         assert!(editor.sample_in_flight);
         assert_eq!(editor.pending_sample, None);
 
-        let _ = editor.update(Message::Sampled {
+        let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
             entry: entry_id,
             result: Ok(Readout {
                 x: 7,
                 y: 8,
                 rgba: [128, 64, 255, 255],
             }),
-        });
+        }));
         let readout = editor.readout.as_ref().expect("an adopted readout");
         assert_eq!(readout.rgba, [128, 64, 255, 255]);
         assert!(!editor.sample_in_flight);
@@ -4844,7 +3360,7 @@ mod tests {
         assert_eq!(snapshot["histogram"]["notice"], json!("No analysis yet"));
 
         // The pointer leaving clears the readout and any waiting position.
-        let _ = editor.update(Message::PointerMoved(None));
+        let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
         assert!(editor.readout.is_none() && editor.pending_sample.is_none());
         editor.rederive();
         assert_eq!(editor.workspace.status.readout, None);
@@ -4870,12 +3386,12 @@ mod tests {
         );
         // No overlay is on, so a zoom or a pan derives nothing at all.
         for message in [
-            Message::Fit,
-            Message::HundredPercent,
-            Message::Zoom("50".into()),
-            Message::ApplyZoom,
-            Message::Panned(120.0, 40.0),
-            Message::Resized(1200.0, 800.0),
+            Message::View(ViewMessage::Fit),
+            Message::View(ViewMessage::HundredPercent),
+            Message::View(ViewMessage::Zoom("50".into())),
+            Message::View(ViewMessage::ApplyZoom),
+            Message::View(ViewMessage::Panned(120.0, 40.0)),
+            Message::View(ViewMessage::Resized(1200.0, 800.0)),
         ] {
             let _ = editor.update(message);
         }
@@ -4888,13 +3404,13 @@ mod tests {
         // retained raster: still no preview, no request and no second reduction.
         editor.session.workspace.clip_shadows = true;
         editor.session.preview.view.zoom = Zoom::Fit;
-        let _ = editor.update(Message::Resized(1440.0, 900.0));
+        let _ = editor.update(Message::View(ViewMessage::Resized(1440.0, 900.0)));
         let fitted = editor.overlay_request.clone().expect("a fitted overlay");
         assert!(fitted.shadows && !fitted.highlights);
         // The photograph is 2x2 and drawn far larger than itself, so the grid is the source.
         assert_eq!((fitted.cells_w, fitted.cells_h), (2, 2));
         editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
-        let _ = editor.update(Message::ApplyZoom);
+        let _ = editor.update(Message::View(ViewMessage::ApplyZoom));
         let hundred = editor.overlay_request.clone().expect("a 100% overlay");
         assert_eq!(
             (hundred.cells_w, hundred.cells_h),
@@ -4909,7 +3425,7 @@ mod tests {
         );
         // An unchanged view derives nothing a second time.
         let repeated = editor.overlay_request.clone();
-        let _ = editor.update(Message::Panned(10.0, 10.0));
+        let _ = editor.update(Message::View(ViewMessage::Panned(10.0, 10.0)));
         assert_eq!(editor.overlay_request, repeated, "a pan re-derives nothing");
         finish(editor, catalog);
     }
@@ -5367,13 +3883,13 @@ mod tests {
         let (mut editor, catalog, entry_id) = picking();
         let (action, x, y) = pick_fields(&editor);
         let log = attach_log(&mut editor);
-        let _ = editor.update(Message::PointerMoved(Some((7, 9))));
+        let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((7, 9)))));
         assert_eq!(editor.pointer, Some((7, 9)));
         // The click itself fills nothing: which content pixel it is is the core's answer.
-        let _ = editor.update(Message::PointPicked { x: 7, y: 9 });
+        let _ = editor.update(Message::Pointer(PointerMessage::Picked { x: 7, y: 9 }));
         assert_eq!(editor.fields.get(&action, &x), Some("0"));
         assert_eq!(editor.fields.get(&action, &y), Some("0"));
-        let _ = editor.update(Message::PointLocated {
+        let _ = editor.update(Message::Pointer(PointerMessage::Located {
             entry: entry_id,
             mode: pick_mode(&editor),
             view: (7, 9),
@@ -5383,7 +3899,7 @@ mod tests {
                 width: 400,
                 height: 300,
             }),
-        });
+        }));
         assert_eq!(editor.fields.get(&action, &x), Some("100"));
         assert_eq!(editor.fields.get(&action, &y), Some("42"));
         assert_eq!(
@@ -5399,11 +3915,11 @@ mod tests {
         let state = editor.state.as_ref().expect("the open asset");
         assert_eq!(state.revision, 4);
         assert!(state.current_entry.snapshot.recipe.layers.is_empty());
-        let _ = editor.update(Message::Field {
+        let _ = editor.update(Message::Control(ControlMessage::Field {
             action: action.clone(),
             parameter: x.clone(),
             text: "11".into(),
-        });
+        }));
         assert_eq!(editor.fields.get(&action, &x), Some("11"));
         assert_eq!(editor.editing, Some((action.clone(), x.clone())));
         // The correlated state carries the module identities and what the controls hold.
@@ -5426,7 +3942,7 @@ mod tests {
         let log = attach_log(&mut editor);
         let before = editor.status.clone();
         // The canvas moved to another stack while the mapping was in flight.
-        let _ = editor.update(Message::PointLocated {
+        let _ = editor.update(Message::Pointer(PointerMessage::Located {
             entry: EntryId::new(),
             mode: pick_mode(&editor),
             view: (7, 9),
@@ -5436,7 +3952,7 @@ mod tests {
                 width: 400,
                 height: 300,
             }),
-        });
+        }));
         assert_eq!(editor.fields.get(&action, &x), Some("0"));
         assert_eq!(editor.fields.get(&action, &y), Some("0"));
         assert_eq!(editor.status, before);
@@ -5448,19 +3964,19 @@ mod tests {
     fn a_point_outside_the_content_stage_reports_and_fills_nothing() {
         let (mut editor, catalog, entry_id) = picking();
         let (action, x, y) = pick_fields(&editor);
-        let _ = editor.update(Message::Field {
+        let _ = editor.update(Message::Control(ControlMessage::Field {
             action: action.clone(),
             parameter: x.clone(),
             text: "5".into(),
-        });
+        }));
         let log = attach_log(&mut editor);
         let refusal = "validation: point (7, 9) is outside the 4x3 rendered image";
-        let _ = editor.update(Message::PointLocated {
+        let _ = editor.update(Message::Pointer(PointerMessage::Located {
             entry: entry_id,
             mode: pick_mode(&editor),
             view: (7, 9),
             result: Err(refusal.into()),
-        });
+        }));
         assert_eq!(
             editor.fields.get(&action, &x),
             Some("5"),
@@ -5478,29 +3994,29 @@ mod tests {
     #[test]
     fn a_slider_drag_changes_the_field_and_sends_no_request() {
         let (mut editor, catalog) = boot();
-        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
         let (action, x, _) = tools::point_pick(&editor.modules).expect("a canvas pick");
         let (action, x) = (action.to_owned(), x.to_owned());
-        let _ = editor.update(Message::SliderMoved {
+        let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: x.clone(),
             value: 12.0,
-        });
+        }));
         assert_eq!(editor.fields.get(&action, &x), Some("12"));
         assert_eq!(editor.dragging, Some((action.clone(), x.clone())));
         assert_eq!(editor.api_sequence, 0, "a drag calls nothing");
-        let _ = editor.update(Message::SliderReleased {
+        let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
             action: action.clone(),
             parameter: x.clone(),
-        });
+        }));
         assert!(editor.dragging.is_none(), "release ends the drag");
         // Editing a value and cancelling leaves the text exactly as it was.
-        let _ = editor.update(Message::EditValue {
+        let _ = editor.update(Message::Control(ControlMessage::EditValue {
             action: action.clone(),
             parameter: x.clone(),
-        });
+        }));
         assert_eq!(editor.editing, Some((action.clone(), x.clone())));
-        let _ = editor.update(Message::CancelEdit);
+        let _ = editor.update(Message::Control(ControlMessage::CancelEdit));
         assert!(editor.editing.is_none());
         assert_eq!(editor.fields.get(&action, &x), Some("12"));
         finish(editor, catalog);
@@ -5510,11 +4026,11 @@ mod tests {
     /// real to submit against.
     fn opened_with_modules(modules: Vec<ModuleDescriptor>, revision: u64) -> (Editor, PathBuf) {
         let (mut editor, catalog) = boot();
-        let _ = editor.update(Message::ModulesLoaded(Ok(modules)));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(modules))));
         let asset = AssetId::new();
         let current = entry(&asset, revision, None);
         let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
         assert!(editor.editable(), "{}", editor.status);
         (editor, catalog)
     }
@@ -5526,11 +4042,11 @@ mod tests {
         let (action, x) = (action.to_owned(), x.to_owned());
 
         for step in 0..25 {
-            let _ = editor.update(Message::SliderMoved {
+            let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
                 action: action.clone(),
                 parameter: x.clone(),
                 value: f64::from(step),
-            });
+            }));
             assert!(!editor.busy, "a drag never starts a request");
             assert!(
                 !editor.status.starts_with("Running edit."),
@@ -5538,10 +4054,10 @@ mod tests {
                 editor.status
             );
         }
-        let _ = editor.update(Message::SliderReleased {
+        let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
             action: action.clone(),
             parameter: x.clone(),
-        });
+        }));
         assert!(editor.busy, "release submits exactly one request");
         assert!(
             editor.status.starts_with(&format!("Running edit.{action}")),
@@ -5551,10 +4067,10 @@ mod tests {
 
         // A second release while the first request is still in flight sends nothing further.
         let busy_status = editor.status.clone();
-        let _ = editor.update(Message::SliderReleased {
+        let _ = editor.update(Message::Control(ControlMessage::SliderReleased {
             action,
             parameter: x,
-        });
+        }));
         assert_eq!(
             editor.status, busy_status,
             "already busy: no second request"
@@ -5609,10 +4125,10 @@ mod tests {
             }
             // The exact message a click on the generated control raises runs the same request.
             editor.busy = false;
-            let _ = editor.update(Message::RunAction {
+            let _ = editor.update(Message::Action(ActionMessage::Run {
                 action: action.clone(),
                 preset: preset.clone(),
-            });
+            }));
             assert!(editor.busy, "{action} did not run through RunAction");
             assert!(
                 editor.status.starts_with(&format!("Running edit.{action}")),
@@ -5623,7 +4139,7 @@ mod tests {
         }
         assert!(checked > 0, "at least one built-in action was exercised");
 
-        // Every module's own header reset (`Message::ResetModule`) is the same round trip.
+        // Every module's own header reset (`ControlMessage::ResetModule`) is the same round trip.
         for module in &modules {
             let Some(reset) = &module.reset else {
                 continue;
@@ -5634,7 +4150,9 @@ mod tests {
                 module.id
             );
             editor.busy = false;
-            let _ = editor.update(Message::ResetModule(module.id.clone()));
+            let _ = editor.update(Message::Control(ControlMessage::ResetModule(
+                module.id.clone(),
+            )));
             assert!(editor.busy, "{} reset did not run", module.id);
             assert!(
                 editor
@@ -5653,8 +4171,8 @@ mod tests {
         finish(editor, catalog);
     }
 
-    /// `Message::ResetGroup` finds a group's reset by its position in the module's controls and
-    /// runs it exactly as `Message::ResetModule` runs a header reset. No built-in module declares
+    /// `ControlMessage::ResetGroup` finds a group's reset by its position in the module's controls and
+    /// runs it exactly as `ControlMessage::ResetModule` runs a header reset. No built-in module declares
     /// a group reset yet, so this drives the mechanism on a descriptor built for the purpose.
     #[test]
     fn reset_group_dispatches_the_action_at_its_declared_position() {
@@ -5668,10 +4186,10 @@ mod tests {
         });
         let (mut editor, catalog) = opened_with_modules(vec![module.clone()], 2);
 
-        let _ = editor.update(Message::ResetGroup {
+        let _ = editor.update(Message::Control(ControlMessage::ResetGroup {
             module_id: module.id.clone(),
             path: vec![0],
-        });
+        }));
         assert!(editor.busy, "{}", editor.status);
         assert!(
             editor.status.starts_with("Running edit.crop-reset"),
@@ -5686,14 +4204,18 @@ mod tests {
         let crop = crop_descriptor();
         let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
         assert!(editor.expanded.is_empty(), "defaults need no stored flag");
-        let _ = editor.update(Message::ToggleSection(crop.id.clone()));
+        let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
+            crop.id.clone(),
+        )));
         assert_eq!(editor.expanded.get(&crop.id), Some(&false));
         assert_eq!(editor.snapshot()["expanded"][&crop.id], json!(false));
-        let _ = editor.update(Message::ToggleSection(crop.id.clone()));
+        let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
+            crop.id.clone(),
+        )));
         assert_eq!(editor.expanded.get(&crop.id), Some(&true));
 
         // Entering the crop module's mode opens its draft; leaving it with a draft open is refused.
-        let _ = editor.update(Message::SetMode(crop.id.clone()));
+        let _ = editor.update(Message::View(ViewMessage::SetMode(crop.id.clone())));
         assert!(
             editor.crop_pending().is_some(),
             "the mode opens the draft: {}",
@@ -5705,7 +4227,7 @@ mod tests {
             angle: 0.0,
         });
         editor.session.workspace.mode = crop.id.clone();
-        let _ = editor.update(Message::SetMode(POINTER_MODE.into()));
+        let _ = editor.update(Message::View(ViewMessage::SetMode(POINTER_MODE.into())));
         assert!(editor.crop().is_some(), "the draft is never discarded");
         assert!(
             editor.status.contains("Apply or Cancel"),
@@ -5721,7 +4243,7 @@ mod tests {
     #[test]
     fn a_picker_control_enters_and_leaves_its_modules_mode_through_workspace_set() {
         let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 5);
-        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
         let (module_id, _, _) = sample_mode(&editor);
         let revision = editor.state.as_ref().expect("an open asset").revision;
         editor.rederive();
@@ -5747,7 +4269,7 @@ mod tests {
             json!({"method":"workspace.set","params":{"mode": module_id}}),
             "the copied request is the one the click sends"
         );
-        let _ = editor.update(Message::SetMode(before.target.clone()));
+        let _ = editor.update(Message::View(ViewMessage::SetMode(before.target.clone())));
 
         // The session adopts the mode, as the `workspace.set` round trip does.
         editor.session.workspace.mode = module_id.clone();
@@ -5762,8 +4284,10 @@ mod tests {
             editor.mode_request(&module_id),
             json!({"method":"workspace.set","params":{"mode": POINTER_MODE}})
         );
-        let _ = editor.update(Message::SetMode(after.target.clone()));
-        let _ = editor.update(Message::CopyModeRequest(module_id.clone()));
+        let _ = editor.update(Message::View(ViewMessage::SetMode(after.target.clone())));
+        let _ = editor.update(Message::Action(ActionMessage::CopyModeRequest(
+            module_id.clone(),
+        )));
         assert_eq!(editor.status, "Copied the workspace.set request");
 
         // Nothing about it is an edit: no history entry, no revision, no draft.
@@ -5802,11 +4326,11 @@ mod tests {
                 .is_some_and(|id| id.starts_with("desktop-")),
             "{request}"
         );
-        let _ = editor.update(Message::CopyRequest {
+        let _ = editor.update(Message::Action(ActionMessage::CopyRequest {
             action: "crop-reset".into(),
             parameter: None,
             preset: None,
-        });
+        }));
         assert!(editor.status.contains("Copied"), "{}", editor.status);
         finish(editor, catalog);
     }
@@ -5831,12 +4355,12 @@ mod tests {
         assert_eq!(request["mutation"]["expected_revision"], json!(6));
         assert!(request.get("angle").is_some() && request.get("width").is_some());
 
-        let _ = editor.update(Message::CopyDraftRequest);
+        let _ = editor.update(Message::Action(ActionMessage::CopyDraftRequest));
         assert_eq!(editor.status, "Copied the edit.crop request");
 
         // With no draft open there is nothing to copy, and the status says so plainly.
         editor.set_crop(None);
-        let _ = editor.update(Message::CopyDraftRequest);
+        let _ = editor.update(Message::Action(ActionMessage::CopyDraftRequest));
         assert_eq!(editor.status, "No crop draft to copy");
         finish(editor, catalog);
     }
@@ -5846,8 +4370,10 @@ mod tests {
     #[test]
     fn a_palette_entry_for_transform_runs_the_same_request_as_its_button() {
         let (mut editor, catalog) = opened_with_modules(descriptors(), 3);
-        let _ = editor.update(Message::OpenPalette);
-        let _ = editor.update(Message::PaletteQuery("Rotate right".into()));
+        let _ = editor.update(Message::Palette(PaletteMessage::Open));
+        let _ = editor.update(Message::Palette(PaletteMessage::Query(
+            "Rotate right".into(),
+        )));
         let entry = editor
             .workspace
             .palette
@@ -5864,7 +4390,7 @@ mod tests {
             panic!("expected a runnable action entry, got {:?}", entry.action);
         };
         assert_eq!(action, "transform");
-        let _ = editor.update(Message::PaletteRun);
+        let _ = editor.update(Message::Palette(PaletteMessage::Run));
         assert!(
             !editor.workspace.palette.open,
             "running an entry closes the palette"
@@ -5879,7 +4405,7 @@ mod tests {
 
         // The exact message the generated button's own click raises produces the identical request.
         editor.busy = false;
-        let _ = editor.update(Message::RunAction { action, preset });
+        let _ = editor.update(Message::Action(ActionMessage::Run { action, preset }));
         assert_eq!(editor.status, palette_status);
         finish(editor, catalog);
     }
@@ -5889,17 +4415,17 @@ mod tests {
         let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 1);
         let original = lightwell_core::EntryId::new();
         editor.original_entry = Some(original.clone());
-        let _ = editor.update(Message::CompareBegin);
+        let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
         assert_eq!(
             editor.compare_return,
             Some(HistorySelection::Current),
             "the selection Compare replaced is remembered"
         );
-        let _ = editor.update(Message::CompareEnd);
+        let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
         assert!(editor.compare_return.is_none());
         // From a historical preview Compare returns to that entry, not to current.
         editor.session.preview.selection = HistorySelection::Entry(entry_id.clone());
-        let _ = editor.update(Message::CompareBegin);
+        let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
         assert_eq!(
             editor.compare_return,
             Some(HistorySelection::Entry(entry_id))
@@ -5923,7 +4449,7 @@ mod tests {
         });
         let selection = editor.session.preview.selection.clone();
 
-        let _ = editor.update(Message::CompareBegin);
+        let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
         assert!(
             editor.compare_return.is_none(),
             "no compare hold was taken: {}",
@@ -5939,14 +4465,14 @@ mod tests {
         assert!(!editor.workspace.title.compare_held);
 
         // The release of a refused hold changes nothing.
-        let _ = editor.update(Message::CompareEnd);
+        let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
         assert!(editor.compare_return.is_none());
         assert_eq!(editor.session.preview.selection, selection);
         assert!(!editor.busy, "nothing was sent");
 
         // With the draft gone, Compare works as before and reaches the title bar model.
         let _ = editor.update(Message::Crop(CropMessage::Cancel));
-        let _ = editor.update(Message::CompareBegin);
+        let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
         assert_eq!(editor.compare_return, Some(HistorySelection::Current));
         assert!(editor.workspace.title.compare_held);
         assert_eq!(editor.snapshot()["compare"], json!(true));
@@ -5962,7 +4488,7 @@ mod tests {
         assert!(!editor.workspace.canvas.thirds);
 
         // The toggle sends the request; nothing changes until the owner answers.
-        let _ = editor.update(Message::ToggleThirds);
+        let _ = editor.update(Message::View(ViewMessage::ToggleThirds));
         assert!(
             !editor.workspace.canvas.thirds,
             "the desktop holds no flag of its own"
@@ -5972,7 +4498,9 @@ mod tests {
             ..ClientSession::default()
         };
         session.workspace.thirds = true;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok(session.clone())));
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(
+            session.clone()
+        ))));
         assert!(editor.workspace.canvas.thirds);
         assert_eq!(editor.snapshot()["workspace"]["thirds"], json!(true));
 
@@ -5983,7 +4511,9 @@ mod tests {
         assert_eq!(open[0], (view::STATE_PANEL_WIDTH * scale) as u32);
         session.revision = 3;
         session.workspace.state_panel = false;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok(session.clone())));
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(
+            session.clone()
+        ))));
         assert!(!editor.workspace.title.state_panel_open);
         let collapsed = view::surface_columns(width, scale, &editor.workspace);
         assert_eq!(collapsed[0], 0, "the canvas now starts at the window edge");
@@ -5992,7 +4522,7 @@ mod tests {
         // And one that hides the tools panel gives the canvas the rest of the width.
         session.revision = 4;
         session.workspace.tools_panel = false;
-        let _ = editor.update(Message::WorkspaceUpdated(Ok(session)));
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
         assert!(!editor.workspace.title.tools_panel_open);
         assert_eq!(
             view::surface_columns(width, scale, &editor.workspace),
@@ -6004,7 +4534,7 @@ mod tests {
     #[test]
     fn selecting_the_current_entry_returns_to_current_instead_of_previewing() {
         let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 1);
-        let _ = editor.update(Message::Preview(entry_id));
+        let _ = editor.update(Message::History(HistoryMessage::Select(entry_id)));
         assert!(editor.busy);
         assert!(
             editor.status.starts_with("Returning to current"),
@@ -6023,7 +4553,7 @@ mod tests {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
         // The real descriptors, because the RAW parameters' declared precision is what decides how
         // a seeded field reads.
-        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
         let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
         let historical = raw_entry(&asset, 0, None, &original);
         let mut adjusted = original.clone();
@@ -6035,8 +4565,8 @@ mod tests {
             lightwell_core::gains_from_temperature_tint(3500.0, 12.0, Z6_CAM_XYZ).unwrap();
         let current = raw_entry(&asset, 4, Some(&historical.id), &adjusted);
 
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
-            &asset, &current,
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            raw_refresh(&asset, &current),
         )))));
         let shown = |editor: &Editor| {
             [
@@ -6062,9 +4592,9 @@ mod tests {
             .select(HistorySelection::Entry(historical.id.clone()));
         session.revision += 1;
         let job = raw_refresh(&asset, &historical).job;
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+        let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
             tasks::PreviewPayload { job, session },
-        ))));
+        )))));
         assert_eq!(editor.display_entry, Some(historical.id.clone()));
         assert!(editor.editing.is_none());
         assert!(
@@ -6072,10 +4602,12 @@ mod tests {
             "an evidence frame waits for the displayed entry's own rows"
         );
         let read = raw_refresh(&asset, &historical);
-        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(tasks::RecipeRead {
-            recipe: read.recipe,
-            masks: read.masks,
-        }))));
+        let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
+            tasks::RecipeRead {
+                recipe: read.recipe,
+                masks: read.masks,
+            },
+        )))));
         assert!(editor.recipe_rows_shown());
         let [kelvin, tint] =
             lightwell_core::temperature_tint_from_gains(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
@@ -6090,17 +4622,19 @@ mod tests {
         let mut session = editor.session.clone();
         session.preview.return_current();
         session.revision += 1;
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+        let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
             tasks::PreviewPayload {
                 job: raw_refresh(&asset, &current).job,
                 session,
             },
-        ))));
+        )))));
         let read = raw_refresh(&asset, &current);
-        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(tasks::RecipeRead {
-            recipe: read.recipe,
-            masks: read.masks,
-        }))));
+        let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
+            tasks::RecipeRead {
+                recipe: read.recipe,
+                masks: read.masks,
+            },
+        )))));
         assert_eq!(editor.display_entry, Some(current.id));
         assert_eq!(
             shown(&editor),
@@ -6114,14 +4648,16 @@ mod tests {
             .preview
             .select(HistorySelection::Entry(historical.id.clone()));
         session.revision += 1;
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+        let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
             tasks::PreviewPayload {
                 job: raw_refresh(&asset, &historical).job,
                 session,
             },
-        ))));
+        )))));
         assert!(!editor.recipe_rows_shown());
-        let _ = editor.update(Message::RecipeDescribed(Err("unavailable".into())));
+        let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Err(
+            "unavailable".into(),
+        ))));
         assert!(editor.recipe_rows_shown());
         assert_eq!(editor.status, "Recipe unavailable: unavailable");
         finish(editor, catalog);
@@ -6239,7 +4775,9 @@ mod tests {
     #[test]
     fn failed_discovery_is_reported_and_never_blocks_evidence() {
         let (mut editor, catalog) = boot();
-        let _ = editor.update(Message::ModulesLoaded(Err("protocol: gone".into())));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Err(
+            "protocol: gone".into(),
+        ))));
         assert!(editor.modules_ready);
         assert!(editor.modules.is_empty());
         assert!(
@@ -6321,7 +4859,10 @@ mod tests {
             &[&old_entry],
             false,
         );
-        let _ = editor.update(Message::ImportRefreshed(4, Ok(Box::new(stale))));
+        let _ = editor.update(Message::Sync(SyncMessage::ImportRefreshed(
+            4,
+            Ok(Box::new(stale)),
+        )));
         assert_eq!(editor.state.as_ref().unwrap().asset.id, current_asset);
         assert_eq!(editor.display_entry, displayed);
         assert_eq!(editor.preview_generation, preview_generation);
@@ -6345,12 +4886,14 @@ mod tests {
             revision: 3,
             ..ClientSession::default()
         };
-        let _ = editor.update(Message::SessionUpdated(Ok(newer.clone())));
-        let _ = editor.update(Message::PanSynced(Ok(older)));
+        let _ = editor.update(Message::View(ViewMessage::SessionUpdated(
+            Ok(newer.clone()),
+        )));
+        let _ = editor.update(Message::View(ViewMessage::PanSynced(Ok(older))));
         assert_eq!(editor.session, newer);
         let mut same = newer.clone();
         same.preview.view.pan_to(4.0, 5.0).unwrap();
-        let _ = editor.update(Message::SessionUpdated(Ok(same.clone())));
+        let _ = editor.update(Message::View(ViewMessage::SessionUpdated(Ok(same.clone()))));
         assert_eq!(
             editor.session, same,
             "an equal revision may replace the copy"
@@ -6361,19 +4904,23 @@ mod tests {
     #[test]
     fn pan_keeps_one_request_in_flight_and_only_the_newest_pending_position() {
         let (mut editor, catalog) = boot();
-        let _ = editor.update(Message::Panned(1.0, 2.0));
+        let _ = editor.update(Message::View(ViewMessage::Panned(1.0, 2.0)));
         assert!(editor.pan_in_flight);
         assert_eq!(editor.pending_pan, None);
-        let _ = editor.update(Message::Panned(3.0, 4.0));
-        let _ = editor.update(Message::Panned(5.0, 6.0));
+        let _ = editor.update(Message::View(ViewMessage::Panned(3.0, 4.0)));
+        let _ = editor.update(Message::View(ViewMessage::Panned(5.0, 6.0)));
         assert_eq!(editor.pending_pan, Some((5.0, 6.0)));
-        let _ = editor.update(Message::PanSynced(Ok(ClientSession::default())));
+        let _ = editor.update(Message::View(ViewMessage::PanSynced(Ok(
+            ClientSession::default(),
+        ))));
         assert!(
             editor.pan_in_flight,
             "the pending position starts the next request"
         );
         assert_eq!(editor.pending_pan, None);
-        let _ = editor.update(Message::PanSynced(Ok(ClientSession::default())));
+        let _ = editor.update(Message::View(ViewMessage::PanSynced(Ok(
+            ClientSession::default(),
+        ))));
         assert!(!editor.pan_in_flight);
         finish(editor, catalog);
     }
@@ -6394,7 +4941,7 @@ mod tests {
             &[&c, &a, &original],
             false,
         );
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(full))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(full)))));
         assert!(!editor.busy);
         assert_eq!(editor.api_sequence, 0, "only a poll moves the event cursor");
         assert_eq!(editor.history.entries.len(), 4);
@@ -6417,7 +4964,7 @@ mod tests {
         );
         let d = entry(&asset, 4, Some(&c.id));
         let merged = refresh_for(&asset, &d, Vec::new(), &[&d, &c], true);
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(merged))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(merged)))));
         assert_eq!(editor.history.entries.len(), 5);
         assert_eq!(editor.history.entries[0].id, d.id);
         assert_eq!(branch(&editor, &d.id), Some(false));
@@ -6456,7 +5003,7 @@ mod tests {
             created_ms: 0,
         };
         opened.versions = Some(vec![version.clone()]);
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(opened))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(opened)))));
         let floor = editor.lineage_floor;
         assert_eq!(floor, Some(1));
 
@@ -6464,7 +5011,9 @@ mod tests {
         let mut committed = refresh_for(&asset, &d, Vec::new(), &[], false);
         committed.lineage = None;
         committed.versions = None;
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(committed))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            committed,
+        )))));
         assert_eq!(editor.history.entries[0], HistoryRow::from(&d));
         assert_eq!(editor.history.entries.len(), 5);
         assert!(editor.lineage.contains(&d.id) && editor.lineage.contains(&c.id));
@@ -6500,12 +5049,12 @@ mod tests {
             .preview
             .select(HistorySelection::Entry(older.id.clone()));
         selected.revision += 1;
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+        let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
             tasks::PreviewPayload {
                 job: refresh_for(&asset, &older, Vec::new(), &[&older], false).job,
                 session: selected.clone(),
             },
-        ))));
+        )))));
         assert_eq!(editor.display_entry, Some(older.id.clone()));
         let held = (
             editor.display_entry.clone(),
@@ -6535,52 +5084,54 @@ mod tests {
         let next = entry(&asset, 5, Some(&current.id));
         let before_selection = refresh_for(&asset, &next, Vec::new(), &[&next], false);
         editor.busy = true;
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(before_selection.clone()))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            before_selection.clone(),
+        )))));
         unchanged(&editor, "a refresh behind the selection");
         assert!(editor.busy, "the answer that overtook it ends the request");
         let mut polled = tasks::SyncResult::changed(before_selection);
         polled.sequence = 20;
-        let _ = editor.update(Message::Synced(Ok(polled)));
+        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(polled))));
         unchanged(&editor, "a poll behind the selection");
 
         // A refresh of an older revision than the one held.
         let mut stale = refresh_for(&asset, &older, Vec::new(), &[&older], false);
         stale.state.revision = 3;
         stale.session = selected.clone();
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(stale))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(stale)))));
         unchanged(&editor, "a refresh of an older revision");
 
         // A selection's frame planned before the newer selection.
         let mut earlier = editor.session.clone();
         earlier.preview.generation -= 1;
         earlier.preview.selection = HistorySelection::Current;
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+        let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
             tasks::PreviewPayload {
                 job: refresh_for(&asset, &current, Vec::new(), &[&current], false).job,
                 session: earlier,
             },
-        ))));
+        )))));
         unchanged(&editor, "a frame behind the selection");
 
         // Return to current whose frame shows a current entry this desktop does not hold.
         let mut returned = editor.session.clone();
         returned.preview.return_current();
         returned.revision += 1;
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+        let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
             tasks::PreviewPayload {
                 job: refresh_for(&asset, &next, Vec::new(), &[&next], false).job,
                 session: returned.clone(),
             },
-        ))));
+        )))));
         unchanged(&editor, "a current frame of another entry");
 
         // The same return with the entry held is shown.
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+        let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
             tasks::PreviewPayload {
                 job: refresh_for(&asset, &current, Vec::new(), &[&current], false).job,
                 session: returned,
             },
-        ))));
+        )))));
         assert_eq!(editor.display_entry, Some(current.id.clone()));
         finish(editor, catalog);
     }
@@ -6663,12 +5214,12 @@ mod tests {
         editor.presented_bounds = editor.proxy_bounds();
         let path = crate::app::testing::attach_log(&mut editor);
         // Same bounds: nothing is asked for.
-        let _ = editor.update(Message::ScaleFactor(1.0));
+        let _ = editor.update(Message::View(ViewMessage::ScaleFactor(1.0)));
         assert!(!editor.refit_pending);
         // The display scale arrives: the proxy on screen was made for half the pixels.
-        let _ = editor.update(Message::ScaleFactor(2.0));
+        let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));
         assert!(editor.refit_pending, "one refit is on its way");
-        let _ = editor.update(Message::ScaleFactor(2.0));
+        let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));
         let records = crate::app::testing::logged(&mut editor, &path);
         let refits = records
             .iter()
@@ -6699,7 +5250,7 @@ mod tests {
             evidence.awaiting = None;
             evidence.capture_pending = true;
         }
-        let _ = editor.update(Message::ScaleFactor(2.0));
+        let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));
         assert!(editor.refit_pending, "the new bounds asked for a frame");
         let evidence = crate::app::testing::evidence(&editor);
         assert!(!evidence.capture_pending, "the old proxy is not captured");
@@ -6833,7 +5384,7 @@ mod tests {
         evidence.saving = true;
         let shot =
             iced::window::Screenshot::new([0, 0, 0, 255].to_vec(), iced::Size::new(1, 1), 1.0);
-        let _ = editor.dispatch(Message::Captured(shot));
+        let _ = editor.dispatch(Message::Evidence(EvidenceMessage::Captured(shot)));
 
         let evidence = crate::app::testing::evidence(&editor);
         assert!(evidence.capture_pending, "retry is armed");

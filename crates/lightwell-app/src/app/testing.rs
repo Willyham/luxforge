@@ -7,7 +7,7 @@ use crate::{
         draft::{CoreDraft, GestureId, Round},
         evidence::{Evidence, parse_script},
         gesture::{Gesture, Kind},
-        message::{DraftMessage, Message},
+        message::{DraftMessage, Message, SyncMessage},
         tasks::{REQUEST_NUMBER, Refresh, RoundTrip},
     },
 };
@@ -174,7 +174,9 @@ pub(crate) fn opened(
     revision: u64,
 ) -> (Editor, PathBuf, AssetId, EntryId) {
     let (mut editor, catalog) = boot();
-    let _ = editor.update(Message::ModulesLoaded(Ok(vec![crop_descriptor()])));
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(vec![
+        crop_descriptor(),
+    ]))));
     let asset = AssetId::new();
     let mut current = entry(&asset, revision, None);
     for layer in layers {
@@ -182,7 +184,7 @@ pub(crate) fn opened(
     }
     let entry_id = current.id.clone();
     let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
-    let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     assert!(editor.editable(), "{}", editor.status);
     (editor, catalog, asset, entry_id)
 }
@@ -242,7 +244,7 @@ pub(crate) fn attach_script(editor: &mut Editor, steps: &str) -> PathBuf {
 /// that is on screen; the owner's copy is what a `workspace.set` round trip would have adopted.
 pub(crate) fn picking() -> (Editor, PathBuf, EntryId) {
     let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
-    let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
     assert!(editor.modules_ready);
     assert_eq!(editor.displayed_entry(), Some(entry_id.clone()));
     editor.session.workspace.mode = pick_mode(&editor);

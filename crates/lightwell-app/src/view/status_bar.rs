@@ -1,7 +1,10 @@
 //! The status bar: the last message and the one control that makes it usable elsewhere, then the
 //! pointer readout, then the run's own facts at the trailing edge — who else is connected, what the
 //! renderer did and what the current zoom means on this display.
-use crate::{app::message::Message, state::status::StatusBarModel};
+use crate::{
+    app::message::{Message, ViewMessage},
+    state::status::StatusBarModel,
+};
 use iced::{
     Alignment, Element, Length,
     alignment::Horizontal,
@@ -57,7 +60,7 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
         button(text("Copy").size(theme::SIZE_CAPTION))
             .padding([2.0, 6.0])
             .style(theme::button_plain)
-            .on_press(Message::CopyStatus),
+            .on_press(Message::View(ViewMessage::CopyStatus)),
         Space::new().width(Length::Fill),
         readout,
         trailing,

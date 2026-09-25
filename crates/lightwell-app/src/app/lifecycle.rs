@@ -1,11 +1,13 @@
 //! Starting and stopping the desktop: the registry this run serves, the capability host's paths,
 //! catalog ownership and the Iced application, and the shutdown that releases them.
-use super::{Editor, tasks};
+use super::{Editor, message::Message, tasks};
 use crate::{Config, paths::Paths};
+use iced::Task;
 use lightwell_core::{
     ClientAuthority, ClientId, ErrorKind, HostConfig, LocalServer, ModuleRegistry, OwnerHandle,
     capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
 };
+use serde_json::json;
 use std::{
     sync::{Arc, Mutex},
     thread::JoinHandle,
@@ -163,4 +165,29 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         .default_font(lightwell_ui::theme::FONT)
         .run()
         .map_err(|error| error.to_string())
+}
+
+impl Editor {
+    /// The window closed: stop the live server and the owner, finish the log and exit once the
+    /// owner thread has joined.
+    pub(super) fn close(&mut self) -> Task<Message> {
+        self.event("shutdown", json!({"while_loading":self.activity.pending}));
+        self.live_server.take();
+        self.owner.disconnect(self.client);
+        self.owner.stop();
+        let join = self.owner_join.take();
+        let log = self.diagnostics.take();
+        Task::perform(
+            async move {
+                if let Some(log) = log {
+                    log.finish();
+                }
+                if let Some(join) = join {
+                    let _ = join.join();
+                }
+            },
+            |_| (),
+        )
+        .then(|_| iced::exit())
+    }
 }

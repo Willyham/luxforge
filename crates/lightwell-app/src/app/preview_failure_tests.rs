@@ -7,9 +7,10 @@
 //! declared size is over the 512 MiB frame limit, so the worker answers `resource-limit` exactly as
 //! a refused render does.
 use super::{
-    Editor, ProxyFrame, Settle,
+    Editor, ProxyFrame,
     crop::PendingDraft,
-    message::{CropMessage, Message},
+    evidence::Settle,
+    message::{CropMessage, Message, PreviewMessage, SyncMessage},
     tasks::SyncResult,
     testing::{attach_log, crop_layer, entry, finish, logged, opened, refresh_for},
 };
@@ -35,7 +36,7 @@ fn poll_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
             "{what} never happened: {}",
             editor.status
         );
-        let _ = editor.update(Message::Poll);
+        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -130,7 +131,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
 
     let crop = cropped(&asset, &original, 5);
     let refresh = committed(&asset, &crop, &[&original], over_the_frame_limit());
-    let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     assert_eq!(
         editor.state.as_ref().expect("open").current_entry.id,
         crop.id,
@@ -199,7 +200,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     let mut next = entry(&asset, 6, Some(&crop.id));
     next.snapshot = crop.snapshot.clone();
     let refresh = committed(&asset, &next, &[&crop, &original], small());
-    let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     poll_until(&mut editor, "the next frame", |editor| {
         editor.photo.is_some()
     });
@@ -451,7 +452,9 @@ fn committed_elsewhere(
     let mut next = entry(asset, sequence, Some(&current.id));
     next.snapshot = current.snapshot.clone();
     let refresh = committed(asset, &next, &[&current], source);
-    let _ = editor.update(Message::Synced(Ok(SyncResult::changed(refresh))));
+    let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(SyncResult::changed(
+        refresh,
+    )))));
     next
 }
 
@@ -465,7 +468,7 @@ fn dispatch_polls_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) 
             "{what} never happened: {}",
             editor.status
         );
-        let _ = editor.dispatch(Message::Poll);
+        let _ = editor.dispatch(Message::Preview(PreviewMessage::Poll));
         std::thread::sleep(Duration::from_millis(1));
     }
 }

@@ -1,6 +1,7 @@
 //! The Presets section's driver. Every library change goes through [`Editor::preset_update`], so the
 //! section's buttons, its row menus and an evidence script share one path. Applying a preset is not
-//! here: a row's click and its palette entry are the section action's own [`Message::RunAction`],
+//! here: a row's click and its palette entry are the section action's own
+//! [`ActionMessage::Run`](crate::app::message::ActionMessage::Run),
 //! the path every declared action takes, with its one mutation, `asset.state` and preview job.
 //!
 //! The library calls are catalog work for the owner and file work for the task: none of them

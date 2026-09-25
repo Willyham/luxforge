@@ -1,7 +1,10 @@
 //! Behavioral checks for generated gestures, independent of a production module's identity.
 use super::{
     Editor,
-    message::{DraftMessage, Message},
+    message::{
+        ActionMessage, ControlMessage, DraftMessage, HistoryMessage, Message, PreviewMessage,
+        SyncMessage,
+    },
     testing::*,
 };
 use lightwell_core::{AssetId, Draft};
@@ -13,11 +16,13 @@ const ACTION: &str = "fixture-set";
 
 fn editor() -> (Editor, PathBuf, AssetId) {
     let (mut editor, catalog) = boot();
-    let _ = editor.update(Message::ModulesLoaded(Ok(vec![controls_descriptor()])));
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(vec![
+        controls_descriptor(),
+    ]))));
     let asset = AssetId::new();
     let current = entry(&asset, 4, None);
     let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
-    let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     (editor, catalog, asset)
 }
 
@@ -37,11 +42,11 @@ fn field_request(editor: &mut Editor, parameter: &str) -> Value {
 fn discrete_controls_submit_one_typed_field_without_a_draft() {
     for (parameter, value) in [("enabled", json!(true)), ("mode", json!("two"))] {
         let (mut editor, catalog, _) = editor();
-        let _ = editor.update(Message::ControlDiscrete {
+        let _ = editor.update(Message::Control(ControlMessage::Discrete {
             action: ACTION.into(),
             parameter: parameter.into(),
             value: value.clone(),
-        });
+        }));
         assert!(editor.busy, "selection starts one ordinary mutation");
         assert!(editor.slider_gesture().is_none());
         assert_eq!(field_request(&mut editor, parameter), value);
@@ -52,35 +57,35 @@ fn discrete_controls_submit_one_typed_field_without_a_draft() {
 #[test]
 fn typing_waits_for_enter_and_invalid_text_commits_nothing() {
     let (mut editor, catalog, _) = editor();
-    let _ = editor.update(Message::Field {
+    let _ = editor.update(Message::Control(ControlMessage::Field {
         action: ACTION.into(),
         parameter: "count".into(),
         text: "7".into(),
-    });
+    }));
     assert!(!editor.busy);
-    let _ = editor.update(Message::CancelEdit);
+    let _ = editor.update(Message::Control(ControlMessage::CancelEdit));
     assert!(!editor.busy, "leaving a field is not a commit");
-    let _ = editor.update(Message::Field {
+    let _ = editor.update(Message::Control(ControlMessage::Field {
         action: ACTION.into(),
         parameter: "count".into(),
         text: "bad".into(),
-    });
-    let _ = editor.update(Message::Submit {
+    }));
+    let _ = editor.update(Message::Control(ControlMessage::Submit {
         action: ACTION.into(),
         parameter: Some("count".into()),
-    });
+    }));
     assert!(!editor.busy);
     assert_eq!(editor.fields.get(ACTION, "count"), Some("bad"));
     assert!(editor.editing.is_some());
-    let _ = editor.update(Message::Field {
+    let _ = editor.update(Message::Control(ControlMessage::Field {
         action: ACTION.into(),
         parameter: "count".into(),
         text: "7".into(),
-    });
-    let _ = editor.update(Message::Submit {
+    }));
+    let _ = editor.update(Message::Control(ControlMessage::Submit {
         action: ACTION.into(),
         parameter: Some("count".into()),
-    });
+    }));
     assert!(editor.busy);
     assert!(editor.slider_gesture().is_none());
     assert_eq!(field_request(&mut editor, "count"), json!(7));
@@ -90,11 +95,11 @@ fn typing_waits_for_enter_and_invalid_text_commits_nothing() {
 #[test]
 fn slider_fractions_use_soft_bounds_and_preserve_fine_step() {
     let (mut editor, catalog, _) = editor();
-    let _ = editor.update(Message::ControlFraction {
+    let _ = editor.update(Message::Control(ControlMessage::Fraction {
         action: ACTION.into(),
         parameter: "amount".into(),
         fraction: 0.501,
-    });
+    }));
     let value = field_request(&mut editor, "amount").as_f64().unwrap();
     assert!(
         (value - 0.01).abs() < 1e-9,
@@ -109,23 +114,23 @@ fn picker_and_curve_share_bounded_draft_and_commit_once() {
     for (parameter, message, expected) in [
         (
             "rgb",
-            Message::ControlPicker {
+            Message::Control(ControlMessage::Picker {
                 action: ACTION.into(),
                 parameter: "rgb".into(),
                 event: ColorPickerEvent::Hue(0.0),
-            },
+            }),
             json!([128, 32, 32]),
         ),
         (
             "master",
-            Message::ControlCurve {
+            Message::Control(ControlMessage::Curve {
                 action: ACTION.into(),
                 parameter: "master".into(),
                 event: CurveEditorEvent::Move {
                     index: 1,
                     position: [0.5, 0.75],
                 },
-            },
+            }),
             json!([[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]]),
         ),
     ] {
@@ -138,10 +143,10 @@ fn picker_and_curve_share_bounded_draft_and_commit_once() {
         editor.fake_sets = Some(Default::default());
         answer_begin(&mut editor, Draft::new(ACTION, asset.clone(), 4));
         for _ in 0..2 {
-            let _ = editor.update(Message::ControlReleased {
+            let _ = editor.update(Message::Control(ControlMessage::Released {
                 action: ACTION.into(),
                 parameter: parameter.into(),
-            });
+            }));
         }
         let records = logged(&mut editor, &log);
         let events = |name: &str| {
@@ -164,27 +169,27 @@ fn picker_remembers_unrepresentable_gray_hue_without_a_noop_commit() {
     let (mut editor, catalog, _) = editor();
     editor.set_control_field_value(ACTION, "rgb", &json!([128, 128, 128]));
     let hue = 0.67_f32;
-    let _ = editor.update(Message::ControlPicker {
+    let _ = editor.update(Message::Control(ControlMessage::Picker {
         action: ACTION.into(),
         parameter: "rgb".into(),
         event: ColorPickerEvent::Hue(hue),
-    });
+    }));
     assert_eq!(
         editor.control_field_value(ACTION, "rgb"),
         Some(json!([128, 128, 128]))
     );
     assert!(editor.slider_gesture().is_none());
-    let _ = editor.update(Message::ControlPicker {
+    let _ = editor.update(Message::Control(ControlMessage::Picker {
         action: ACTION.into(),
         parameter: "rgb".into(),
         event: ColorPickerEvent::Release,
-    });
+    }));
     assert!(!editor.busy, "a hue-only gray gesture changes no RGB field");
-    let _ = editor.update(Message::ControlPicker {
+    let _ = editor.update(Message::Control(ControlMessage::Picker {
         action: ACTION.into(),
         parameter: "rgb".into(),
         event: ColorPickerEvent::Plane([1.0, 0.5]),
-    });
+    }));
     let expected = lightwell_ui::hsv_to_rgb([f64::from(hue), 1.0, 0.5]);
     assert_eq!(field_request(&mut editor, "rgb"), json!(expected));
     assert!(editor.slider_gesture().is_some());
@@ -195,17 +200,17 @@ fn picker_remembers_unrepresentable_gray_hue_without_a_noop_commit() {
 fn picker_rejects_cached_hsv_when_the_rgb_field_changes_elsewhere() {
     let (mut editor, catalog, _) = editor();
     editor.set_control_field_value(ACTION, "rgb", &json!([0, 0, 0]));
-    let _ = editor.update(Message::ControlPicker {
+    let _ = editor.update(Message::Control(ControlMessage::Picker {
         action: ACTION.into(),
         parameter: "rgb".into(),
         event: ColorPickerEvent::Hue(0.67),
-    });
+    }));
     editor.set_control_field_value(ACTION, "rgb", &json!([0, 255, 0]));
-    let _ = editor.update(Message::ControlPicker {
+    let _ = editor.update(Message::Control(ControlMessage::Picker {
         action: ACTION.into(),
         parameter: "rgb".into(),
         event: ColorPickerEvent::Plane([1.0, 0.5]),
-    });
+    }));
     assert_eq!(field_request(&mut editor, "rgb"), json!([0, 128, 0]));
     finish(editor, catalog);
 }
@@ -218,18 +223,18 @@ fn picker_keeps_black_saturation_until_value_becomes_visible() {
         ColorPickerEvent::Plane([1.0, 0.0]),
         ColorPickerEvent::Hue(0.5),
     ] {
-        let _ = editor.update(Message::ControlPicker {
+        let _ = editor.update(Message::Control(ControlMessage::Picker {
             action: ACTION.into(),
             parameter: "rgb".into(),
             event,
-        });
+        }));
     }
     assert!(editor.slider_gesture().is_none());
-    let _ = editor.update(Message::ControlPicker {
+    let _ = editor.update(Message::Control(ControlMessage::Picker {
         action: ACTION.into(),
         parameter: "rgb".into(),
         event: ColorPickerEvent::Plane([1.0, 0.5]),
-    });
+    }));
     assert_eq!(field_request(&mut editor, "rgb"), json!([0, 128, 128]));
     finish(editor, catalog);
 }
@@ -238,11 +243,11 @@ fn picker_keeps_black_saturation_until_value_becomes_visible() {
 fn curve_channel_selection_changes_no_request_value_or_recipe() {
     let (mut editor, catalog, _) = editor();
     let fields = editor.fields.clone();
-    let _ = editor.update(Message::ControlCurve {
+    let _ = editor.update(Message::Control(ControlMessage::Curve {
         action: ACTION.into(),
         parameter: "master".into(),
         event: CurveEditorEvent::Channel(1),
-    });
+    }));
     assert_eq!(editor.fields, fields);
     assert!(editor.slider_gesture().is_none());
     assert!(!editor.busy);
@@ -253,19 +258,19 @@ fn curve_channel_selection_changes_no_request_value_or_recipe() {
 #[test]
 fn escape_cancels_picker_and_curve_even_while_begin_is_in_flight() {
     for message in [
-        Message::ControlPicker {
+        Message::Control(ControlMessage::Picker {
             action: ACTION.into(),
             parameter: "rgb".into(),
             event: ColorPickerEvent::Hue(0.0),
-        },
-        Message::ControlCurve {
+        }),
+        Message::Control(ControlMessage::Curve {
             action: ACTION.into(),
             parameter: "master".into(),
             event: CurveEditorEvent::Move {
                 index: 1,
                 position: [0.5, 0.75],
             },
-        },
+        }),
     ] {
         let (mut editor, catalog, asset) = editor();
         let log = attach_log(&mut editor);
@@ -301,11 +306,11 @@ fn escape_cancels_picker_and_curve_even_while_begin_is_in_flight() {
 #[test]
 fn stepper_button_is_one_complete_draft_gesture() {
     let (mut editor, catalog, _) = editor();
-    let _ = editor.update(Message::ControlStep {
+    let _ = editor.update(Message::Control(ControlMessage::Step {
         action: ACTION.into(),
         parameter: "count".into(),
         direction: 1,
-    });
+    }));
     assert_eq!(field_request(&mut editor, "count"), json!(3));
     assert_eq!(
         editor.core_gesture().unwrap().draft.finishing(),
@@ -318,21 +323,21 @@ fn stepper_button_is_one_complete_draft_gesture() {
 #[test]
 fn field_arrow_nudge_stays_local_until_enter() {
     let (mut editor, catalog, _) = editor();
-    let _ = editor.update(Message::ControlFieldNudge {
+    let _ = editor.update(Message::Control(ControlMessage::FieldNudge {
         action: ACTION.into(),
         parameter: "coordinate".into(),
         direction: 1,
         shift: false,
         option: true,
-    });
+    }));
     assert!(!editor.busy);
     assert!(editor.slider_gesture().is_none());
     assert_eq!(editor.editing, Some((ACTION.into(), "coordinate".into())));
     assert!((field_request(&mut editor, "coordinate").as_f64().unwrap() - 5.1).abs() < 1e-9);
-    let _ = editor.update(Message::Submit {
+    let _ = editor.update(Message::Control(ControlMessage::Submit {
         action: ACTION.into(),
         parameter: Some("coordinate".into()),
-    });
+    }));
     assert!(editor.busy);
     assert!(editor.slider_gesture().is_none());
     finish(editor, catalog);
@@ -374,11 +379,11 @@ fn a_discrete_control_is_refused_while_a_gesture_is_open() {
     };
 
     let before = editor.fields.get(ACTION, "enabled").map(str::to_owned);
-    let _ = editor.update(Message::ControlDiscrete {
+    let _ = editor.update(Message::Control(ControlMessage::Discrete {
         action: ACTION.into(),
         parameter: "enabled".into(),
         value: json!(true),
-    });
+    }));
     unchanged(&editor, "a toggle");
     assert_eq!(
         editor.fields.get(ACTION, "enabled").map(str::to_owned),
@@ -387,32 +392,32 @@ fn a_discrete_control_is_refused_while_a_gesture_is_open() {
     );
 
     editor.status.clear();
-    let _ = editor.update(Message::RunAction {
+    let _ = editor.update(Message::Action(ActionMessage::Run {
         action: ACTION.into(),
         preset: serde_json::Map::from_iter([("amount".to_owned(), json!(0.0))]),
-    });
+    }));
     unchanged(&editor, "an action button");
 
     editor.status.clear();
-    let _ = editor.update(Message::Field {
+    let _ = editor.update(Message::Control(ControlMessage::Field {
         action: ACTION.into(),
         parameter: "count".into(),
         text: "7".into(),
-    });
-    let _ = editor.update(Message::Submit {
+    }));
+    let _ = editor.update(Message::Control(ControlMessage::Submit {
         action: ACTION.into(),
         parameter: Some("count".into()),
-    });
+    }));
     unchanged(&editor, "a field's Enter");
     assert_eq!(editor.fields.get(ACTION, "count"), Some("7"));
     assert!(editor.editing.is_some(), "the field keeps its typed text");
 
     // With the gesture gone, the same button runs.
     editor.gesture = None;
-    let _ = editor.update(Message::RunAction {
+    let _ = editor.update(Message::Action(ActionMessage::Run {
         action: ACTION.into(),
         preset: serde_json::Map::from_iter([("amount".to_owned(), json!(0.0))]),
-    });
+    }));
     assert!(editor.busy, "{}", editor.status);
     finish(editor, catalog);
 }
@@ -443,15 +448,17 @@ fn a_gesture_answer_leaves_busy_to_the_request_that_set_it() {
     assert_eq!(editor.state.as_ref().unwrap().revision, 5);
     assert!(editor.busy, "the commit's answer leaves busy set");
 
-    let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+    let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
         super::tasks::PreviewPayload {
             job,
             session: editor.session.clone(),
         },
-    ))));
+    )))));
     assert!(editor.busy, "and so does a frame read back after a gesture");
 
-    let _ = editor.update(Message::Selected(Err("cancelled".into())));
+    let _ = editor.update(Message::History(HistoryMessage::Selected(Err(
+        "cancelled".into()
+    ))));
     assert!(!editor.busy, "a selection's own answer clears it");
     finish(editor, catalog);
 }

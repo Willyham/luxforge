@@ -6,7 +6,7 @@ use super::{
     Boot, Editor,
     capabilities::{poll, run},
     evidence::{CapabilityAction, Step, parse_script, record},
-    message::{CapabilityMessage, Message},
+    message::{CapabilityMessage, ControlMessage, Message, SyncMessage},
     tasks::{ACTOR, REQUEST_NUMBER, Scope, call, refresh},
     testing::{attach_log, logged},
 };
@@ -82,7 +82,7 @@ impl Proof {
         let (mut listed, _) = call(&owner, editor.client, "module.list", json!({})).unwrap();
         let modules: Vec<ModuleDescriptor> =
             serde_json::from_value(listed["modules"].take()).unwrap();
-        let _ = editor.update(Message::ModulesLoaded(Ok(modules)));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(modules))));
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/s0/orientation-1.jpg")
             .canonicalize()
@@ -118,7 +118,7 @@ impl Proof {
         )
         .unwrap();
         let shown = refresh(&owner, client, asset.clone(), Scope::Open, None).unwrap();
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(shown))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(shown)))));
         Self {
             editor,
             endpoint,
@@ -206,7 +206,11 @@ impl Proof {
     /// Expand the section, fill every setting a task needs and install and activate, allowing each
     /// consent the core asks for.
     fn ready(&mut self) -> String {
-        let _ = self.editor.update(Message::ToggleSection(MODULE.into()));
+        let _ = self
+            .editor
+            .update(Message::Control(ControlMessage::ToggleSection(
+                MODULE.into(),
+            )));
         self.answer();
         self.send(CapabilityMessage::ProfileLabel {
             module_id: MODULE.into(),
@@ -267,7 +271,11 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
             .as_ref()
             .is_some_and(|model| model.loading)
     );
-    let _ = proof.editor.update(Message::ToggleSection(MODULE.into()));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::ToggleSection(
+            MODULE.into(),
+        )));
     assert_eq!(
         proof.editor.capability_started,
         vec![(MODULE.to_owned(), Operation::Load)],
@@ -293,8 +301,16 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
     assert_eq!(model.resources[0].detail, "v1 · 20 B");
     assert_eq!(model.permissions.summary, "0 permissions");
     // Collapsing and expanding again reads nothing more.
-    let _ = proof.editor.update(Message::ToggleSection(MODULE.into()));
-    let _ = proof.editor.update(Message::ToggleSection(MODULE.into()));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::ToggleSection(
+            MODULE.into(),
+        )));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::ToggleSection(
+            MODULE.into(),
+        )));
     assert!(proof.editor.capability_started.is_empty());
     // With nothing in flight there is no poll timer.
     assert!(proof.editor.capability_poll_subscription().is_none());
@@ -304,7 +320,11 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
 #[test]
 fn settings_writes_send_the_envelope_and_show_refusals_and_conflicts_at_the_field() {
     let mut proof = Proof::start();
-    let _ = proof.editor.update(Message::ToggleSection(MODULE.into()));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::ToggleSection(
+            MODULE.into(),
+        )));
     proof.answer();
     proof.send(CapabilityMessage::Show {
         module_id: MODULE.into(),
@@ -386,7 +406,11 @@ fn settings_writes_send_the_envelope_and_show_refusals_and_conflicts_at_the_fiel
 fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere() {
     let mut proof = Proof::start();
     let log = attach_log(&mut proof.editor);
-    let _ = proof.editor.update(Message::ToggleSection(MODULE.into()));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::ToggleSection(
+            MODULE.into(),
+        )));
     proof.answer();
     proof.send(CapabilityMessage::ProfileLabel {
         module_id: MODULE.into(),
@@ -624,7 +648,9 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     assert_eq!(applied["outcome"], "applied");
     let scope = Scope::after("edit.apply-proof-tint", &applied);
     let shown = refresh(&owner, client, proof.asset.clone(), scope, None).unwrap();
-    let _ = proof.editor.update(Message::Refreshed(Ok(Box::new(shown))));
+    let _ = proof
+        .editor
+        .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(shown)))));
     assert!(matches!(
         &proof.task_control().state,
         TaskControlState::Succeeded { summary, apply: None } if summary.starts_with("Applied")
@@ -849,7 +875,11 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
 #[test]
 fn a_scripted_gesture_is_captured_only_once_its_round_trip_has_answered() {
     let mut proof = Proof::start();
-    let _ = proof.editor.update(Message::ToggleSection(MODULE.into()));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::ToggleSection(
+            MODULE.into(),
+        )));
     proof.answer();
     proof.editor.evidence = Some(crate::app::testing::scripted_evidence(
         r#"[{"capability":{"module":"lightwell.capabilities","set":{"field":"strength","value":0.8}}},

@@ -1,7 +1,7 @@
 //! The actual app's components board. It draws the widget crate's named gallery states; there is
 //! no second set of mock widgets that could drift away from the generated controls.
 
-use crate::app::message::Message;
+use crate::app::message::{Message, ViewMessage};
 use iced::{
     Element, Length,
     widget::{button, column, container, row, scrollable, text},
@@ -60,7 +60,7 @@ pub(crate) fn gallery(page: usize) -> Element<'static, Message> {
                 text(format!("{:02} · {name}", first + offset + 1))
                     .size(theme::SIZE_CAPTION)
                     .color(theme::TEXT_SECONDARY),
-                widget.map(|_| Message::GalleryPreview),
+                widget.map(|_| Message::View(ViewMessage::GalleryPreview)),
             ]
             .spacing(theme::SPACING / 2.0),
         )
@@ -76,7 +76,7 @@ pub(crate) fn gallery(page: usize) -> Element<'static, Message> {
     let navigation = row![
         button(lightwell_ui::label("Back to editor"))
             .style(theme::button_plain)
-            .on_press(Message::Gallery(None)),
+            .on_press(Message::View(ViewMessage::Gallery(None))),
         container(menu_choice(
             &MenuChoiceModel {
                 label: "Page".into(),
@@ -87,15 +87,21 @@ pub(crate) fn gallery(page: usize) -> Element<'static, Message> {
                 selected: page,
                 enabled: true,
             },
-            |page| Message::Gallery(Some(page))
+            |page| Message::View(ViewMessage::Gallery(Some(page)))
         ))
         .width(Length::Fixed(330.0)),
         button(lightwell_ui::label("Previous"))
             .style(theme::button_plain)
-            .on_press_maybe(page.checked_sub(1).map(|page| Message::Gallery(Some(page)))),
+            .on_press_maybe(
+                page.checked_sub(1)
+                    .map(|page| Message::View(ViewMessage::Gallery(Some(page))))
+            ),
         button(lightwell_ui::label("Next"))
             .style(theme::button_plain)
-            .on_press_maybe((page + 1 < page_count()).then_some(Message::Gallery(Some(page + 1)))),
+            .on_press_maybe(
+                (page + 1 < page_count())
+                    .then_some(Message::View(ViewMessage::Gallery(Some(page + 1))))
+            ),
     ]
     .spacing(theme::SPACING)
     .align_y(iced::Alignment::Center);

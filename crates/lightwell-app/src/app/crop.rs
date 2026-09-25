@@ -577,7 +577,7 @@ impl Editor {
 mod tests {
     use super::*;
     use crate::app::{
-        message::Message,
+        message::{ControlMessage, Message, PointerMessage, SyncMessage, ViewMessage},
         tasks::{ACTOR, SyncResult},
         testing::{CROP_ASPECTS, crop_layer, entry, finish, opened, refresh_for},
     };
@@ -680,10 +680,10 @@ mod tests {
         let frame = crop_frame(&editor.modules).expect("a crop frame");
         let key = (frame.action.to_owned(), frame.angle.to_owned());
         assert!(!editor.editing_angle());
-        let _ = editor.update(Message::EditValue {
+        let _ = editor.update(Message::Control(ControlMessage::EditValue {
             action: key.0.clone(),
             parameter: key.1.clone(),
-        });
+        }));
         assert!(editor.editing_angle());
         let _ = editor.update(Message::Crop(CropMessage::AngleText("two".into())));
         let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
@@ -876,7 +876,9 @@ mod tests {
         // Somebody else committed: the draft survives and says so, and Apply is refused.
         let newer = entry(&asset, 9, None);
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Synced(Ok(SyncResult::changed(refresh))));
+        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(SyncResult::changed(
+            refresh,
+        )))));
         let draft = editor.crop().expect("the draft is kept");
         assert!(draft.conflicted);
         assert_eq!(draft.rect, composed, "the composition is untouched");
@@ -980,10 +982,10 @@ mod tests {
             }],
             ..lightwell_core::ModuleDescriptor::default()
         };
-        let _ = editor.update(Message::ModulesLoaded(Ok(vec![
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(vec![
             crate::app::testing::crop_descriptor(),
             finishing,
-        ])));
+        ]))));
         let _ = editor.update(Message::Crop(CropMessage::Start));
         let pending = editor.crop_pending().cloned().expect("a pending draft");
         assert_eq!(pending.layer, None);
@@ -1033,7 +1035,9 @@ mod tests {
             newer.snapshot = newer.snapshot.append(layer).expect("a valid stack");
         }
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Synced(Ok(SyncResult::changed(refresh))));
+        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(SyncResult::changed(
+            refresh,
+        )))));
         assert!(editor.crop().expect("the draft is kept").conflicted);
 
         editor.busy = false;
@@ -1067,7 +1071,9 @@ mod tests {
         editor.open_draft(stage());
         // A stale revision comes back as a conflict: the draft is kept and marked.
         editor.crop_applying = Some("desktop-1".into());
-        let _ = editor.update(Message::Refreshed(Err("conflict: stale revision".into())));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Err(
+            "conflict: stale revision".into(),
+        ))));
         assert!(editor.crop().expect("the draft is kept").conflicted);
         assert!(editor.crop_applying.is_none());
 
@@ -1076,7 +1082,7 @@ mod tests {
         editor.crop_applying = Some("desktop-2".into());
         let newer = entry(&asset, 5, None);
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
         assert!(editor.crop().is_none());
         assert!(editor.draft_photo.is_none());
         assert!(editor.status.contains("Crop applied"), "{}", editor.status);
@@ -1093,7 +1099,7 @@ mod tests {
             .to_owned();
 
         // The section's own "Crop & straighten" button, `R` and a scripted `draft.start` all send
-        // this message directly, never through `Message::SetMode`; starting still asks the session
+        // this message directly, never through `ViewMessage::SetMode`; starting still asks the session
         // to enter the crop mode.
         let _ = editor.dispatch(Message::Crop(CropMessage::Start));
         assert_eq!(
@@ -1103,7 +1109,7 @@ mod tests {
         );
         // The public entry point folds that into the returned task and consumes the flag.
         editor.session.workspace.mode = crop_id.clone();
-        let _ = editor.update(Message::PointerMoved(None));
+        let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
         assert_eq!(editor.mode_sync, None, "the wrapper always consumes it");
 
         editor.open_draft(stage());
@@ -1137,7 +1143,7 @@ mod tests {
             .to_owned();
         let mode = editor.session.workspace.mode.clone();
         let refused = |editor: &mut Editor, case: &str| {
-            let task = editor.dispatch(Message::SetMode(crop_id.clone()));
+            let task = editor.dispatch(Message::View(ViewMessage::SetMode(crop_id.clone())));
             assert_eq!(task.units(), 0, "{case}: nothing is sent");
             assert_eq!(editor.mode_sync, None, "{case}: no mode change is queued");
             assert!(editor.crop_pending().is_none() && editor.crop().is_none());
@@ -1164,7 +1170,7 @@ mod tests {
         editor.session.preview.selection = current;
 
         // Nothing refuses it: the draft starts and asks the session for the mode once.
-        let task = editor.dispatch(Message::SetMode(crop_id.clone()));
+        let task = editor.dispatch(Message::View(ViewMessage::SetMode(crop_id.clone())));
         assert_eq!(task.units(), 1, "the truncated preview's own task");
         assert!(editor.crop_pending().is_some());
         assert_eq!(editor.mode_sync.as_deref(), Some(crop_id.as_str()));
@@ -1182,7 +1188,7 @@ mod tests {
             ..ClientSession::default()
         };
         session.preview.selection = HistorySelection::Entry(entry_id);
-        let _ = editor.update(Message::SessionUpdated(Ok(session)));
+        let _ = editor.update(Message::View(ViewMessage::SessionUpdated(Ok(session))));
         assert!(!editor.session.preview.can_edit());
         assert!(
             editor.crop().is_some(),
@@ -1338,25 +1344,25 @@ mod tests {
         let frame = crop_frame(&editor.modules).expect("a crop frame");
         let key = (frame.action.to_owned(), frame.angle.to_owned());
         editor.crop_angle = "31".into();
-        let _ = editor.update(Message::EditValue {
+        let _ = editor.update(Message::Control(ControlMessage::EditValue {
             action: key.0.clone(),
             parameter: key.1.clone(),
-        });
+        }));
         assert_eq!(
             editor.crop_angle, "0",
             "the idle box opens at the committed angle"
         );
         let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
         assert!(editor.crop_pending().is_none() && !editor.editing_angle());
-        let _ = editor.update(Message::EditValue {
+        let _ = editor.update(Message::Control(ControlMessage::EditValue {
             action: key.0,
             parameter: key.1,
-        });
+        }));
         let _ = editor.update(Message::Crop(CropMessage::AngleText("level".into())));
         let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
         assert!(editor.crop_pending().is_none() && editor.editing_angle());
         assert!(editor.status.contains("Angle must be"), "{}", editor.status);
-        let _ = editor.update(Message::CancelEdit);
+        let _ = editor.update(Message::Control(ControlMessage::CancelEdit));
         let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
         let _ = editor.update(Message::Crop(CropMessage::Guide(false)));
         assert!(editor.crop_pending().is_none());

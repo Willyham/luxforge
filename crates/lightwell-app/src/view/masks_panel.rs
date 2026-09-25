@@ -4,6 +4,7 @@
 //! Nothing here decides what a row means, and nothing is reachable only by pointer: every list edit
 //! is a button with a label, every refusal the command family makes is shown as the reason on the
 //! control it would refuse, and every number a handle can be dragged to is also a field.
+use crate::app::message::ViewMessage;
 use crate::{
     app::message::{BrushEdit, MaskMessage, MenuTarget, Message, PaintTarget, RowEdit},
     state::{
@@ -144,7 +145,9 @@ fn mask_row<'a>(mask: &'a MaskRow, menu: Option<&'a MenuTarget>) -> Element<'a, 
             enabled: true,
             selected: false,
         },
-        Some(Message::OpenMenu(MenuTarget::Mask(id.clone()))),
+        Some(Message::View(ViewMessage::OpenMenu(MenuTarget::Mask(
+            id.clone(),
+        )))),
     ));
     let mut block = column![line].spacing(theme::LIST_ROW_SPACING);
     // Reorder is a pair of labelled buttons rather than a drag handle alone, because a drag is not
@@ -503,7 +506,7 @@ fn component_row<'a>(
             enabled: true,
             selected: menu == Some(&target),
         },
-        Some(Message::OpenMenu(target.clone())),
+        Some(Message::View(ViewMessage::OpenMenu(target.clone()))),
     ));
     let mut block = column![line].spacing(theme::LIST_ROW_SPACING);
     let down = RowEdit::MoveComponent {

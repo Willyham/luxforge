@@ -5,6 +5,7 @@
 //! at the bottom centre, the draft bar and the notices at the top centre. None of it reads state:
 //! the [`CanvasModel`] already says which mode is selected, what the draft reads and which notices
 //! apply, and every control here publishes one semantic message.
+use crate::app::message::{HistoryMessage, PointerMessage, ViewMessage};
 use crate::{
     app::{
         crop::SURFACE_ID,
@@ -96,9 +97,9 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
     let ids: Vec<String> = model.modes.iter().map(|mode| mode.id.clone()).collect();
     let bar = mode_strip(
         &modes,
-        move |index| Message::SetMode(ids[index].clone()),
+        move |index| Message::View(ViewMessage::SetMode(ids[index].clone())),
         &toggles,
-        |_| Message::ToggleThirds,
+        |_| Message::View(ViewMessage::ToggleThirds),
     );
     container(bar)
         .width(Length::Fill)
@@ -190,7 +191,7 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                     NoticeAction::ReapplyDraft => Message::Crop(CropMessage::Reapply),
                     NoticeAction::DiscardGesture => Message::Draft(DraftMessage::Cancel),
                     NoticeAction::ReapplyGesture => Message::Draft(DraftMessage::Reapply),
-                    NoticeAction::ReturnCurrent => Message::ReturnCurrent,
+                    NoticeAction::ReturnCurrent => Message::History(HistoryMessage::ReturnCurrent),
                     NoticeAction::AllowConsent => {
                         Message::Capability(CapabilityMessage::Consent(true))
                     }
@@ -386,11 +387,15 @@ fn plain<'a>(
                 // module's pick would use; a move that maps to the same pixel is dropped in the
                 // update function rather than here.
                 let mut area = mouse_area(layered).on_move(move |point| {
-                    Message::PointerMoved(fit_pick((width, height), available, point))
+                    Message::Pointer(PointerMessage::Moved(fit_pick(
+                        (width, height),
+                        available,
+                        point,
+                    )))
                 });
-                area = area.on_exit(Message::PointerMoved(None));
+                area = area.on_exit(Message::Pointer(PointerMessage::Moved(None)));
                 if picking && let Some((x, y)) = pointer {
-                    area = area.on_press(Message::PointPicked { x, y });
+                    area = area.on_press(Message::Pointer(PointerMessage::Picked { x, y }));
                 }
                 area.into()
             })
@@ -442,11 +447,15 @@ fn plain<'a>(
             // Inside the scrollable the reported point is already content-space: the scrollable
             // translates the cursor by its offset before its content sees it.
             let mut area = mouse_area(layered).on_move(move |point| {
-                Message::PointerMoved(percent_pick((width, height), scale, point))
+                Message::Pointer(PointerMessage::Moved(percent_pick(
+                    (width, height),
+                    scale,
+                    point,
+                )))
             });
-            area = area.on_exit(Message::PointerMoved(None));
+            area = area.on_exit(Message::Pointer(PointerMessage::Moved(None)));
             if picking && let Some((x, y)) = pointer {
-                area = area.on_press(Message::PointPicked { x, y });
+                area = area.on_press(Message::Pointer(PointerMessage::Picked { x, y }));
             }
             scrolled(area.into())
         }
@@ -525,7 +534,7 @@ fn scrolled(content: Element<'_, Message>) -> Element<'_, Message> {
         })
         .on_scroll(|viewport| {
             let offset = viewport.absolute_offset();
-            Message::Panned(offset.x, offset.y)
+            Message::View(ViewMessage::Panned(offset.x, offset.y))
         })
         .into()
 }

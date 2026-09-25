@@ -10,7 +10,8 @@ use crate::{
     app::controls::CurveSampleIdentity,
     app::draft::GestureId,
     app::tasks::{
-        HostAnswer, PerformanceRead, PresetChange, PreviewPayload, Refresh, SyncResult, Upload,
+        HostAnswer, PerformanceRead, PresetChange, PreviewPayload, RecipeRead, Refresh, SyncResult,
+        Upload,
     },
     crop_draft::Handle,
     mask_draft::MaskHandle,
@@ -47,7 +48,7 @@ impl ClipEndpoint {
 
 /// Every change to the Presets section is one message, so a script drives the library through the
 /// update function exactly as the section's buttons, fields and menus do. Applying a preset is not
-/// one of them: a row's click is [`Message::RunAction`] with the section's own action, the same
+/// one of them: a row's click is [`ActionMessage::Run`] with the section's own action, the same
 /// path every other declared action takes.
 #[derive(Clone, Debug)]
 pub(crate) enum PresetMessage {
@@ -242,6 +243,8 @@ pub(crate) enum MaskMessage {
     /// component's own contribution while a row is under the pointer, which is what makes a subtract
     /// on top of a gradient legible, and the composed mask again when the pointer leaves.
     Hover(Option<String>),
+    /// `render.transform` answered for the mask gesture it names: the affine it maps pointers with.
+    Transform(GestureId, Result<StageTransform, String>),
 }
 
 /// What the next stroke will land on, chosen before the gesture starts rather than guessed from
@@ -457,71 +460,37 @@ pub(crate) enum CapabilityMessage {
     Polled(Vec<(String, String, Result<JobRecord, String>)>),
 }
 
-/// The semantic messages the desktop understands. Variants the current layout does not yet raise
-/// are declared here because the panels that raise them land in the tasks that follow; every arm
-/// whose meaning the design fixes is implemented now.
-#[allow(dead_code)]
+/// Opening a photograph and the owner's answers the editor adopts as authoritative: a command's
+/// read-back, the event sync, the displayed entry's recipe rows and module discovery. Handled in
+/// `app/sync.rs`.
 #[derive(Clone, Debug)]
-pub(crate) enum Message {
-    /// One raw window or keyboard event, handed to the keyboard table with the live context.
-    Key(iced::Event, iced::event::Status),
-    /// Browse a developer component page, or return to the editor with None.
-    Gallery(Option<usize>),
-    /// Reference gallery examples never operate the photograph.
-    GalleryPreview,
+pub(crate) enum SyncMessage {
     /// Open the native file picker.
     Open,
-    /// Copy the status message to the clipboard.
-    CopyStatus,
     /// The picker closed, with a chosen path or nothing.
     Picked(Option<PathBuf>),
     /// Authoritative state read back after a change.
     Refreshed(Result<Box<Refresh>, String>),
     /// A source-open result tied to the generation that requested it.
     ImportRefreshed(u64, Result<Box<Refresh>, String>),
-    /// A preview job and the session that selects it, read by something that did not set `busy`:
-    /// a comparison, or the displayed entry again once a gesture ended without committing.
-    PreviewLoaded(Result<Box<PreviewPayload>, String>),
-    /// The same for a history selection or a return to current, which set `busy` and whose answer
-    /// is what clears it.
-    Selected(Result<Box<PreviewPayload>, String>),
-    /// A view change returned the owner's session.
-    SessionUpdated(Result<ClientSession, String>),
-    /// A workspace change returned the owner's session.
-    WorkspaceUpdated(Result<ClientSession, String>),
-    /// A pan round trip completed.
-    PanSynced(Result<ClientSession, String>),
-    /// The named versions after a create or delete, and the request that created or deleted one.
-    VersionsLoaded(Result<(Vec<Version>, String), String>),
     /// The displayed entry's layers and masks as the panels read them.
-    RecipeDescribed(Result<Box<crate::app::tasks::RecipeRead>, String>),
+    RecipeDescribed(Result<Box<RecipeRead>, String>),
+    /// Every tool control is generated from these; the desktop knows no tool by name.
+    ModulesLoaded(Result<Vec<ModuleDescriptor>, String>),
+    /// Poll the owner for events while an asset is open.
+    Tick,
     /// The result of one live-refresh poll.
     Synced(Result<SyncResult, String>),
-    /// An older history page.
-    OlderLoaded(Result<HistoryPage, String>),
-    /// Poll the owner for events while an asset is open.
-    Sync,
+}
+
+/// Taking up what the preview worker finished and presenting it. Handled in `app/preview.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum PreviewMessage {
     /// Take up what the preview and overlay workers have finished. Their wake produces it.
     Poll,
-    /// One derived clipping overlay reached the GPU. The generation says which photograph it
-    /// belongs to, so an overlay for a replaced frame is dropped instead of drawn over the new one.
-    OverlayUploaded(
-        u64,
-        (u32, u32),
-        Result<image_memory::Allocation, image_memory::Error>,
-    ),
-    /// Turn one clipping overlay on or off. `None` toggles both together, which is what the title
-    /// bar's Clipping button and `J` do; `Some` toggles the one triangle that was clicked.
-    ToggleClipping(Option<ClipEndpoint>),
-    /// One sampled pixel of the displayed stack, as `render.sample` answered it. The entry it was
-    /// asked for travels with it, so an answer for a stack the canvas has left is dropped.
-    Sampled {
-        entry: EntryId,
-        result: Result<Readout, String>,
-    },
-    /// The window's logical size, which decides how large a fitted photograph is drawn and so how
-    /// fine a clipping overlay's cell grid can be.
-    Resized(f32, f32),
+    /// A preview job and the session that selects it, read by something that did not set `busy`:
+    /// a comparison, or the displayed entry again once a gesture ended without committing.
+    Loaded(Result<Box<PreviewPayload>, String>),
     /// The crop layer's input stage, cut into tiles the toolkit's image atlas holds whole.
     DraftCut(
         Upload,
@@ -533,30 +502,123 @@ pub(crate) enum Message {
         usize,
         Result<image_memory::Allocation, image_memory::Error>,
     ),
-    /// One crop draft change.
-    Crop(CropMessage),
-    /// One Masks-panel change.
-    Mask(MaskMessage),
-    /// `render.transform` answered for the mask gesture it names: the affine it maps pointers with.
-    MaskTransform(GestureId, Result<StageTransform, String>),
-    /// One decision about, or owner answer for, the open slider or mask gesture's core draft.
-    Draft(DraftMessage),
-    /// One painted mask coverage grid reached the GPU. The generation says which frame it belongs
-    /// to, so a grid for a replaced frame is dropped instead of drawn over the new one.
-    MaskOverlayUploaded(
+}
+
+/// The bounded overlays drawn over the photograph: the clipping overlay and a mask's coverage grid.
+/// Handled in `app/overlay.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum OverlayMessage {
+    /// Turn one clipping overlay on or off. `None` toggles both together, which is what the title
+    /// bar's Clipping button and `J` do; `Some` toggles the one triangle that was clicked.
+    ToggleClipping(Option<ClipEndpoint>),
+    /// One derived clipping overlay reached the GPU. The generation says which photograph it
+    /// belongs to, so an overlay for a replaced frame is dropped instead of drawn over the new one.
+    ClippingUploaded(
         u64,
         (u32, u32),
         Result<image_memory::Allocation, image_memory::Error>,
     ),
-    /// One Presets-section change.
-    Preset(PresetMessage),
-    /// A host method an evidence script called directly answered, with the preset library read
-    /// after it when the method was one of the library's own.
-    HostAnswered(Result<Box<HostAnswer>, String>),
-    /// Every tool control is generated from these; the desktop knows no tool by name.
-    ModulesLoaded(Result<Vec<ModuleDescriptor>, String>),
-    /// A module capability gesture or answer.
-    Capability(CapabilityMessage),
+    /// One painted mask coverage grid reached the GPU. The generation says which frame it belongs
+    /// to, so a grid for a replaced frame is dropped instead of drawn over the new one.
+    MaskUploaded(
+        u64,
+        (u32, u32),
+        Result<image_memory::Allocation, image_memory::Error>,
+    ),
+}
+
+/// History and versions: undo, redo, restore, a history selection, the Original held for
+/// comparison, older rows and named versions. Handled in `app/history.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum HistoryMessage {
+    Undo,
+    Redo,
+    /// Select one history entry for preview.
+    Select(EntryId),
+    ReturnCurrent,
+    Restore,
+    /// A history selection or a return to current answered. It set `busy`, and this answer is what
+    /// clears it.
+    Selected(Result<Box<PreviewPayload>, String>),
+    /// Hold the Original entry's preview.
+    CompareBegin,
+    /// Release the compare hold and restore the previous selection.
+    CompareEnd,
+    LoadOlder,
+    /// An older history page.
+    OlderLoaded(Result<HistoryPage, String>),
+    /// The version name field's text.
+    VersionName(String),
+    /// Show or hide the version-naming field the "+" chip reveals.
+    ToggleVersionForm,
+    SaveVersion,
+    DeleteVersion(String),
+    /// The named versions after a create or delete, and the request that created or deleted one.
+    VersionsLoaded(Result<(Vec<Version>, String), String>),
+}
+
+/// Per-client view state: zoom and pan, the side panels, thirds, the canvas mode, the developer
+/// gallery, menus, focus and the window's own facts. Handled in `app/view_state.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum ViewMessage {
+    /// The zoom field's text.
+    Zoom(String),
+    Fit,
+    HundredPercent,
+    ApplyZoom,
+    /// A view change returned the owner's session.
+    SessionUpdated(Result<ClientSession, String>),
+    /// The photo surface scrolled to this absolute offset.
+    Panned(f32, f32),
+    /// A pan round trip completed.
+    PanSynced(Result<ClientSession, String>),
+    /// Show or hide one side panel; the owner holds the flag.
+    TogglePanel(Panel),
+    /// Show or hide the thirds overlay.
+    ToggleThirds,
+    /// Enter the pointer mode or a module's canvas mode.
+    SetMode(String),
+    /// A workspace change returned the owner's session.
+    WorkspaceUpdated(Result<ClientSession, String>),
+    /// Browse a developer component page, or return to the editor with None.
+    Gallery(Option<usize>),
+    /// Reference gallery examples never operate the photograph.
+    GalleryPreview,
+    /// Open an inline menu on a version chip, a control or the open crop draft.
+    OpenMenu(MenuTarget),
+    /// Close the open inline menu.
+    CloseMenu,
+    /// Move focus to the next generated field.
+    FocusNext,
+    /// Move focus to the previous generated field.
+    FocusPrevious,
+    /// Copy the status message to the clipboard.
+    CopyStatus,
+    /// The window's logical size, which decides how large a fitted photograph is drawn and so how
+    /// fine a clipping overlay's cell grid can be.
+    Resized(f32, f32),
+    /// The window's display scale factor.
+    ScaleFactor(f32),
+}
+
+/// The command palette. Handled in `app/palette.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum PaletteMessage {
+    Open,
+    Close,
+    /// The palette's query text.
+    Query(String),
+    /// Move the palette selection by this many entries.
+    Move(i32),
+    /// Run the selected palette entry.
+    Run,
+    /// Select and run one specific entry directly, as a click on it does.
+    RunIndex(usize),
+}
+
+/// A generated control or a tools-panel section changed. Handled in `app/controls.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum ControlMessage {
     /// A generated field changed: the text the user typed for one declared parameter.
     Field {
         action: String,
@@ -576,36 +638,36 @@ pub(crate) enum Message {
         value: f64,
     },
     /// A slider rail position in 0..=1; the host maps it through the descriptor's soft range.
-    ControlFraction {
+    Fraction {
         action: String,
         parameter: String,
         fraction: f64,
     },
     /// A discrete control sends one field of its declared action once.
-    ControlDiscrete {
+    Discrete {
         action: String,
         parameter: String,
         value: Value,
     },
     /// The end of a continuous control gesture.
-    ControlReleased {
+    Released {
         action: String,
         parameter: String,
     },
     /// One explicit stepper button press or keyboard step.
-    ControlStep {
+    Step {
         action: String,
         parameter: String,
         direction: i8,
     },
-    ControlKeyNudge {
+    KeyNudge {
         action: String,
         parameter: String,
         direction: i8,
         shift: bool,
         option: bool,
     },
-    ControlFieldNudge {
+    FieldNudge {
         action: String,
         parameter: String,
         direction: i8,
@@ -626,12 +688,12 @@ pub(crate) enum Message {
         module_id: String,
         index: usize,
     },
-    ControlPicker {
+    Picker {
         action: String,
         parameter: String,
         event: ColorPickerEvent,
     },
-    ControlCurve {
+    Curve {
         action: String,
         parameter: String,
         event: CurveEditorEvent,
@@ -659,6 +721,7 @@ pub(crate) enum Message {
         parameter: String,
     },
     /// Typing ended without committing.
+    #[allow(dead_code)]
     CancelEdit,
     /// Collapse or expand one module's section.
     ToggleSection(String),
@@ -669,44 +732,16 @@ pub(crate) enum Message {
         module_id: String,
         path: Vec<usize>,
     },
-    /// Show or hide one side panel; the owner holds the flag.
-    TogglePanel(Panel),
-    /// Open or close the state panel's Performance section. The flag is local to this client and
-    /// this launch, like a tools-panel section's, so no request carries it.
-    TogglePerformance,
-    /// One tick of the Performance section's sampler. It exists only while the section is
-    /// expanded and the state panel is shown, which is also when the timer that produces it exists.
-    PerformanceTick,
-    /// `resources.read` and `activity.list` answered, with the sampling epoch that asked, so a read
-    /// that was in flight when the section stopped or restarted sampling is dropped.
-    PerformanceSampled {
-        epoch: u64,
-        result: Result<Box<PerformanceRead>, String>,
+}
+
+/// Running a declared action, or copying the request one would send. Handled in `app/actions.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum ActionMessage {
+    /// Run one declared action with a fixed preset over the current field values.
+    Run {
+        action: String,
+        preset: Map<String, Value>,
     },
-    /// Enter the pointer mode or a module's canvas mode.
-    SetMode(String),
-    /// Show or hide the thirds overlay.
-    ToggleThirds,
-    /// Hold the Original entry's preview.
-    CompareBegin,
-    /// Release the compare hold and restore the previous selection.
-    CompareEnd,
-    /// Open the command palette.
-    OpenPalette,
-    /// Close the command palette.
-    ClosePalette,
-    /// The palette's query text.
-    PaletteQuery(String),
-    /// Move the palette selection by this many entries.
-    PaletteMove(i32),
-    /// Run the selected palette entry.
-    PaletteRun,
-    /// Select and run one specific entry directly, as a click on it does.
-    PaletteRunIndex(usize),
-    /// Open an inline menu on a version chip, a control or the open crop draft.
-    OpenMenu(MenuTarget),
-    /// Close the open inline menu.
-    CloseMenu,
     /// Copy the JSON request this control would send to the clipboard.
     CopyRequest {
         action: String,
@@ -717,24 +752,28 @@ pub(crate) enum Message {
     CopyDraftRequest,
     /// Copy the `workspace.set` request this module's picker control would send.
     CopyModeRequest(String),
-    /// Run one declared action with a fixed preset over the current field values.
-    RunAction {
-        action: String,
-        preset: Map<String, Value>,
-    },
+}
+
+/// The pointer over the photograph: the hover readout and canvas picks. Handled in
+/// `app/pointer.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum PointerMessage {
     /// The last pointer position over the photo, already mapped to the displayed raster's pixels.
     /// That is the view pixel; the content pixel behind it is asked for only when a pick happens.
-    PointerMoved(Option<(u32, u32)>),
+    Moved(Option<(u32, u32)>),
+    /// One sampled pixel of the displayed stack, as `render.sample` answered it. The entry it was
+    /// asked for travels with it, so an answer for a stack the canvas has left is dropped.
+    Sampled {
+        entry: EntryId,
+        result: Result<Readout, String>,
+    },
     /// A canvas pick asks the core where that view pixel lands in the content stage; it never
     /// commits and it fills nothing until the answer arrives.
-    PointPicked {
-        x: u32,
-        y: u32,
-    },
+    Picked { x: u32, y: u32 },
     /// The content pixel one picked view pixel shows, as the core's mapping answered it. The entry
     /// it was located in travels with it so an answer for a stack that has since been replaced is
     /// dropped instead of filling the fields with a coordinate from another image.
-    PointLocated {
+    Located {
         entry: EntryId,
         mode: String,
         view: (u32, u32),
@@ -750,36 +789,31 @@ pub(crate) enum Message {
         point: (u32, u32),
         result: Result<Value, String>,
     },
-    /// Move focus to the next generated field.
-    FocusNext,
-    /// Move focus to the previous generated field.
-    FocusPrevious,
-    /// The zoom field's text.
-    Zoom(String),
-    /// The version name field's text.
-    VersionName(String),
-    /// Show or hide the version-naming field the "+" chip reveals.
-    ToggleVersionForm,
-    /// The photo surface scrolled to this absolute offset.
-    Panned(f32, f32),
-    Undo,
-    Redo,
-    /// Select one history entry for preview.
-    Preview(EntryId),
-    ReturnCurrent,
-    Restore,
-    SaveVersion,
-    DeleteVersion(String),
-    LoadOlder,
-    Fit,
-    HundredPercent,
-    ApplyZoom,
-    /// The window's display scale factor.
-    ScaleFactor(f32),
-    /// The graphics backend, recorded with every captured frame.
-    Info(iced::system::Information),
+}
+
+/// The state panel's Performance section. Handled in `app/performance.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum PerformanceMessage {
+    /// Open or close the section. The flag is local to this client and this launch, like a
+    /// tools-panel section's, so no request carries it.
+    Toggle,
+    /// One tick of the section's sampler. It exists only while the section is expanded and the
+    /// state panel is shown, which is also when the timer that produces it exists.
+    Tick,
+    /// `resources.read` and `activity.list` answered, with the sampling epoch that asked, so a read
+    /// that was in flight when the section stopped or restarted sampling is dropped.
+    Sampled {
+        epoch: u64,
+        result: Result<Box<PerformanceRead>, String>,
+    },
+}
+
+/// Evidence mode: its timers, frame captures and the host methods its scripts call. Handled in
+/// `app/evidence.rs`.
+#[derive(Clone, Debug)]
+pub(crate) enum EvidenceMessage {
     /// The evidence deadline check.
-    EvidenceTick,
+    Tick,
     /// One tick of a paced evidence slider step: send its next value. Exists only while a paced
     /// step has values left to send, which is also when the subscription that produces it exists.
     PacedSliderTick,
@@ -797,5 +831,40 @@ pub(crate) enum Message {
     Captured(iced::window::Screenshot),
     /// One captured frame was written to the evidence directory.
     Saved(Result<Value, String>),
+    /// A host method an evidence script called directly answered, with the preset library read
+    /// after it when the method was one of the library's own.
+    HostAnswered(Result<Box<HostAnswer>, String>),
+    /// The graphics backend, recorded with every captured frame.
+    Info(iced::system::Information),
+}
+
+/// The semantic messages the desktop understands: one variant per seam, each carrying that seam's
+/// own message, which the seam's update function handles. [`Editor::update`](super::Editor::update)
+/// only routes.
+#[derive(Clone, Debug)]
+pub(crate) enum Message {
+    /// One raw window or keyboard event, handed to the keyboard table with the live context.
+    Key(iced::Event, iced::event::Status),
+    Sync(SyncMessage),
+    Preview(PreviewMessage),
+    Overlay(OverlayMessage),
+    History(HistoryMessage),
+    View(ViewMessage),
+    Palette(PaletteMessage),
+    Control(ControlMessage),
+    Action(ActionMessage),
+    Pointer(PointerMessage),
+    /// One crop draft change.
+    Crop(CropMessage),
+    /// One Masks-panel change.
+    Mask(MaskMessage),
+    /// One decision about, or owner answer for, the open slider or mask gesture's core draft.
+    Draft(DraftMessage),
+    /// One Presets-section change.
+    Preset(PresetMessage),
+    /// A module capability gesture or answer.
+    Capability(CapabilityMessage),
+    Performance(PerformanceMessage),
+    Evidence(EvidenceMessage),
     Close,
 }

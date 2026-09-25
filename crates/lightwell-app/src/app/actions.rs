@@ -1,7 +1,11 @@
 //! Running a declared action, and copying the JSON request a control would send. A control's
 //! request is built by one path whether it is sent or copied, so the two cannot differ.
-use super::{Editor, message::Message};
-use super::{gesture::Starting, tasks::mutation};
+use super::{
+    Editor,
+    gesture::Starting,
+    message::{ActionMessage, Message},
+    tasks::mutation,
+};
 use crate::state::{
     fields::{action_params, submit_preset},
     tools,
@@ -11,6 +15,103 @@ use lightwell_core::POINTER_MODE;
 use serde_json::{Map, Value, json};
 
 impl Editor {
+    /// Run a declared action, or copy the request one would send.
+    pub(super) fn action_update(&mut self, message: ActionMessage) -> Task<Message> {
+        match message {
+            ActionMessage::CopyRequest {
+                action,
+                parameter,
+                preset,
+            } => {
+                let Some(request) =
+                    self.request_for_preset(&action, parameter.as_deref(), preset.as_ref())
+                else {
+                    return Task::none();
+                };
+                // A `mask.*` command is its own method, so the status names the method the copied
+                // request actually carries rather than prefixing `edit.` to all of them. It reads the
+                // request's own method, so the line can only ever name what was copied.
+                self.status = match request["method"].as_str() {
+                    Some(method) => format!("Copied the {method} request"),
+                    None => format!("Copied the {} request", tools::published_method(&action)),
+                };
+                // A copied request passes through the same redaction as every recorded one.
+                let request = json!({
+                    "method": request["method"],
+                    "params": lightwell_core::redact_params(
+                        request["method"].as_str().unwrap_or_default(),
+                        &request["params"],
+                    ),
+                });
+                return iced::clipboard::write(
+                    serde_json::to_string_pretty(&request).unwrap_or_default(),
+                );
+            }
+            ActionMessage::CopyModeRequest(module_id) => {
+                self.status = "Copied the workspace.set request".into();
+                // Mask is a host mode with no module behind it, so its request is the host's own.
+                let request = if module_id == lightwell_core::MASK_MODE {
+                    self.mask_mode_request()
+                } else {
+                    self.mode_request(&module_id)
+                };
+                return iced::clipboard::write(
+                    serde_json::to_string_pretty(&request).unwrap_or_default(),
+                );
+            }
+            ActionMessage::CopyDraftRequest => match self.crop_request() {
+                Some(Ok((method, request, _))) => {
+                    self.status = format!("Copied the {method} request");
+                    return iced::clipboard::write(
+                        serde_json::to_string_pretty(&json!({
+                            "method": method,
+                            "params": request,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                Some(Err(message)) => self.status = message,
+                None => self.status = "No crop draft to copy".into(),
+            },
+            ActionMessage::Run { action, preset } => {
+                if self.state.is_none() {
+                    return Task::none();
+                }
+                if let Some(reason) = self.action_refusal(&action) {
+                    self.status = reason;
+                    return Task::none();
+                }
+                // A host command of the `mask.*` family is its own method, and its identities are
+                // envelope fields: the generic builder below would spell it `edit.mask.set-amount`
+                // and drop the target, so it goes through the family's own path.
+                if lightwell_core::mask::commands::find(&action).is_some() {
+                    return self.run_mask_action(&action, &preset);
+                }
+                let Some(state) = &self.state else {
+                    return Task::none();
+                };
+                let Some(declared) = tools::declared_action(&self.modules, &action) else {
+                    self.status = format!("No module declares the action {action}");
+                    return Task::none();
+                };
+                let params = match action_params(declared, &preset, &self.fields) {
+                    Ok(params) => params,
+                    Err(message) => {
+                        self.status = message;
+                        return Task::none();
+                    }
+                };
+                let mut request =
+                    json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
+                let object = request.as_object_mut().expect("the envelope is an object");
+                object.extend(params);
+                self.add_mask_target(&action, object);
+                return self.command(format!("edit.{action}"), request);
+            }
+        }
+        Task::none()
+    }
+
     /// The `workspace.set` request this module's picker control would send: its own mode when the
     /// mode is not active, and the pointer when it is, which is exactly what clicking it does. The
     /// panel gesture and the copied request are the same request by construction.

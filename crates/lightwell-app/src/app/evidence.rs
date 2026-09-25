@@ -5,19 +5,22 @@ use crate::{
     app::{
         Editor,
         message::{
-            BrushEdit, CropMessage, CropPointer, DraftMessage, MaskMessage, MenuTarget, Message,
-            PaintTarget, PaletteAction, PresetMessage, RowEdit,
+            ActionMessage, BrushEdit, ControlMessage, CropMessage, CropPointer, DraftMessage,
+            EvidenceMessage, HistoryMessage, MaskMessage, MenuTarget, Message, PaintTarget,
+            PaletteAction, PaletteMessage, PerformanceMessage, PointerMessage, PresetMessage,
+            RowEdit, ViewMessage,
         },
         performance,
         tasks::{HostAnswer, host_task, mutation, request, workspace_task},
     },
     crop_draft::{Corner, Handle},
     mask_draft::MaskDraft,
-    state::fields::number_text,
     state::{
+        fields::number_text,
         presets::{PresetRow, presettable_groups},
         tools::crop_frame,
     },
+    view,
 };
 use iced::Task;
 use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
@@ -283,6 +286,190 @@ pub(crate) enum Settle {
 }
 
 impl Editor {
+    /// One of evidence mode's own messages.
+    pub(super) fn evidence_update(&mut self, message: EvidenceMessage) -> Task<Message> {
+        match message {
+            EvidenceMessage::Info(info) => {
+                self.activity.backend =
+                    Some(json!({"backend":info.graphics_backend,"adapter":info.graphics_adapter}));
+                self.event(
+                    "backend",
+                    self.activity.backend.clone().unwrap_or(Value::Null),
+                );
+            }
+            EvidenceMessage::Tick => {
+                let expired = self.evidence.as_ref().is_some_and(|evidence| {
+                    let deadline = if evidence.step > 0 || !evidence.script.is_empty() {
+                        SCRIPT_EVIDENCE_DEADLINE
+                    } else {
+                        EVIDENCE_DEADLINE
+                    };
+                    self.started.elapsed() > deadline
+                });
+                if expired {
+                    eprintln!("Evidence deadline exceeded; inspect retained subprocess output");
+                    std::process::exit(3);
+                }
+                self.wait_elapsed();
+            }
+            EvidenceMessage::PacedSliderTick => return self.slider_paced_tick(),
+            EvidenceMessage::PacedStrokeTick => return self.stroke_paced_tick(),
+            EvidenceMessage::DoubleClickSecond => return self.double_click_second(),
+            EvidenceMessage::Capture => {
+                let rows_shown = self.recipe_rows_shown();
+                let proxy_ready = self.capture_proxy_ready();
+                let Some(evidence) = &mut self.evidence else {
+                    return Task::none();
+                };
+                // Wait for the backend, for tool discovery and for the preset library, so a frame
+                // always shows real controls and the library rather than their loading lines.
+                let overlay_wanted = evidence.capture_overlay;
+                // The screenshot reads back the frame drawn last, so it waits for a frame built
+                // after every update so far; the next frame tick tries again.
+                if !evidence.capture_pending
+                    || evidence.saving
+                    || !evidence.sync.current()
+                    || self.activity.backend.is_none()
+                    || !self.modules_ready
+                    || !self.presets.ready()
+                    || self.curve_sample_in_flight
+                    || self.curve_sample_pending.is_some()
+                    || !rows_shown
+                    || !proxy_ready
+                {
+                    return Task::none();
+                }
+                // And, for a step the overlay armed, the grid of the frame that is on screen: an
+                // upload belongs to one generation, and a newer frame presented after it leaves the
+                // canvas drawing the photograph alone. This subscription runs per window frame, so
+                // waiting costs nothing and the grid of that newer frame arrives a message later.
+                if overlay_wanted && self.mask_overlay_surface().is_none() {
+                    return Task::none();
+                }
+                let Some(evidence) = &mut self.evidence else {
+                    return Task::none();
+                };
+                evidence.capture_pending = false;
+                evidence.saving = true;
+                let recorded = (self.snapshot(), self.activity.requested);
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.sync.state = Some((recorded.0, recorded.1, self.photo_version));
+                }
+                return iced::window::oldest()
+                    .and_then(iced::window::screenshot)
+                    .map(|value| Message::Evidence(EvidenceMessage::Captured(value)));
+            }
+            EvidenceMessage::Captured(shot) => {
+                // The window readback is asynchronous. A newer proxy can reach the surface while
+                // it is in flight; its request-time snapshot then describes the old proxy even
+                // though the capture response arrives after the new one was displayed. Retry on
+                // the next drawn frame without publishing or saving that stale screenshot.
+                let stale = !self.capture_proxy_ready()
+                    || self.evidence.as_ref().is_some_and(|evidence| {
+                        evidence
+                            .sync
+                            .state
+                            .as_ref()
+                            .is_some_and(|(_, _, version)| *version != self.photo_version)
+                    });
+                if stale {
+                    if let Some(evidence) = &mut self.evidence {
+                        evidence.sync.state = None;
+                        evidence.saving = false;
+                        evidence.capture_pending = true;
+                    }
+                    return Task::none();
+                }
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.capture_overlay = false;
+                }
+                self.event(
+                    "frame_captured",
+                    json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
+                );
+                // The state as it stood when the screenshot was asked for, which is the state the
+                // frame it reads back was built from.
+                let (state, generation, _) = self
+                    .evidence
+                    .as_mut()
+                    .and_then(|evidence| evidence.sync.state.take())
+                    .unwrap_or_else(|| {
+                        (self.snapshot(), self.activity.requested, self.photo_version)
+                    });
+                let scale = shot.scale_factor;
+                let logical_width = shot.size.width as f32 / scale;
+                // The photo surface spans the window minus padding, the sidebar and their spacing.
+                let columns = view::surface_columns(logical_width, scale, &self.workspace);
+                let canvas = view::canvas_rect(
+                    (logical_width, shot.size.height as f32 / scale),
+                    scale,
+                    &self.workspace,
+                );
+                let Some(evidence) = &self.evidence else {
+                    return Task::none();
+                };
+                // Open frames keep their generation's number; script frames continue after them.
+                let number = match evidence.step {
+                    0 => generation,
+                    step => evidence.opens + step,
+                };
+                let step = evidence.current.clone().unwrap_or(Value::Null);
+                let dir = evidence.dir.clone();
+                return Task::perform(
+                    async move {
+                        let name = format!("frame-{number}.png");
+                        ::image::save_buffer(
+                            dir.join(&name),
+                            &shot.rgba,
+                            shot.size.width,
+                            shot.size.height,
+                            ::image::ColorType::Rgba8,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns,"canvas_rect":canvas});
+                        std::fs::write(
+                            dir.join(format!("state-{number}.json")),
+                            serde_json::to_vec_pretty(&frame).expect("frame is serializable"),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        Ok(frame)
+                    },
+                    |value| Message::Evidence(EvidenceMessage::Saved(value)),
+                );
+            }
+            EvidenceMessage::Saved(result) => {
+                let Some(evidence) = &mut self.evidence else {
+                    return Task::none();
+                };
+                evidence.saving = false;
+                match result {
+                    Ok(frame) => {
+                        // The step that produced this frame is recorded with the frame it produced.
+                        if let Some(mut record) = evidence.current.take() {
+                            if let Some(object) = record.as_object_mut() {
+                                object.insert("frame".into(), frame["file"].clone());
+                            }
+                            evidence.steps.push(record);
+                        }
+                        evidence.frames.push(frame);
+                    }
+                    Err(error) => {
+                        eprintln!("Evidence write failed: {error}");
+                        std::process::exit(4);
+                    }
+                }
+                return match evidence.queue.pop_front() {
+                    Some(path) => self.open(path),
+                    None => self.next_step(),
+                };
+            }
+            EvidenceMessage::HostAnswered(result) => {
+                self.host_answered(result.map(|answer| *answer))
+            }
+        }
+        Task::none()
+    }
+
     /// Run the next script step, or finish the run when the script is exhausted. One step is in
     /// flight at a time and every step ends in exactly one captured frame.
     pub(crate) fn next_step(&mut self) -> Task<Message> {
@@ -1151,11 +1338,11 @@ impl Editor {
         }
         let mut tasks = Vec::new();
         for value in &step.values {
-            tasks.push(self.update(Message::SliderMoved {
+            tasks.push(self.update(Message::Control(ControlMessage::SliderMoved {
                 action: step.action.clone(),
                 parameter: step.parameter.clone(),
                 value: *value,
-            }));
+            })));
         }
         if self.slider_gesture().is_none() && step.end != SliderEnd::Cancel {
             return self.fail_step(format!(
@@ -1181,21 +1368,21 @@ impl Editor {
             ));
         }
         self.note_step(json!({ "revision_before": revision }));
-        let mut tasks = vec![self.update(Message::SliderMoved {
+        let mut tasks = vec![self.update(Message::Control(ControlMessage::SliderMoved {
             action: step.action.clone(),
             parameter: step.parameter.clone(),
             value: step.value,
-        })];
+        }))];
         if self.slider_gesture().is_none() {
             return self.fail_step(format!(
                 "the first press opened no gesture: {}",
                 self.status
             ));
         }
-        tasks.push(self.update(Message::ControlReleased {
+        tasks.push(self.update(Message::Control(ControlMessage::Released {
             action: step.action.clone(),
             parameter: step.parameter.clone(),
-        }));
+        })));
         self.event(
             "double_click_first",
             json!({"action":step.action,"parameter":step.parameter,"value":step.value}),
@@ -1228,10 +1415,10 @@ impl Editor {
                 "gesture_open":self.slider_gesture().is_some()}),
         );
         self.await_step(Settle::Quiet);
-        self.update(Message::ResetField {
+        self.update(Message::Control(ControlMessage::ResetField {
             action: second.action,
             parameter: second.parameter,
-        })
+        }))
     }
 
     /// Settle a step waiting for quiet once this client has nothing in flight: no gesture, no
@@ -1282,11 +1469,11 @@ impl Editor {
             evidence.paced_slider = None;
         }
         self.event("slider_step_value", json!({"value": value, "index": index}));
-        let mut tasks = vec![self.update(Message::SliderMoved {
+        let mut tasks = vec![self.update(Message::Control(ControlMessage::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
             value,
-        })];
+        }))];
         if done {
             if self.slider_gesture().is_none() && end != SliderEnd::Cancel {
                 return self.fail_step(format!(
@@ -1359,7 +1546,10 @@ impl Editor {
             // produces; a return-to-start gesture settles the same step with no entry at all.
             SliderEnd::Release => {
                 self.await_step(Settle::Preview);
-                self.update(Message::SliderReleased { action, parameter })
+                self.update(Message::Control(ControlMessage::SliderReleased {
+                    action,
+                    parameter,
+                }))
             }
             // Escape, through the same message the keyboard table produces.
             SliderEnd::Cancel => {
@@ -1401,11 +1591,11 @@ impl Editor {
             } => {
                 let mut tasks = Vec::new();
                 for fraction in fractions {
-                    tasks.push(self.update(Message::ControlFraction {
+                    tasks.push(self.update(Message::Control(ControlMessage::Fraction {
                         action: action.clone(),
                         parameter: parameter.clone(),
                         fraction,
-                    }));
+                    })));
                 }
                 self.finish_generated_gesture(
                     action,
@@ -1421,11 +1611,11 @@ impl Editor {
                 value,
             } => {
                 self.begin_request();
-                let task = self.update(Message::ControlDiscrete {
+                let task = self.update(Message::Control(ControlMessage::Discrete {
                     action,
                     parameter,
                     value,
-                });
+                }));
                 if !self.busy {
                     return self.fail_step(format!("the control did not submit: {}", self.status));
                 }
@@ -1447,24 +1637,24 @@ impl Editor {
             .unwrap_or(false);
         let mut tasks = Vec::new();
         if current_open != step.open.unwrap_or(true) {
-            tasks.push(self.update(Message::TogglePicker {
+            tasks.push(self.update(Message::Control(ControlMessage::TogglePicker {
                 action: step.action.clone(),
                 parameter: step.parameter.clone(),
-            }));
+            })));
         }
         if let Some(hue) = step.hue {
-            tasks.push(self.update(Message::ControlPicker {
+            tasks.push(self.update(Message::Control(ControlMessage::Picker {
                 action: step.action.clone(),
                 parameter: step.parameter.clone(),
                 event: ColorPickerEvent::Hue(hue),
-            }));
+            })));
         }
         if let Some(plane) = step.plane {
-            tasks.push(self.update(Message::ControlPicker {
+            tasks.push(self.update(Message::Control(ControlMessage::Picker {
                 action: step.action.clone(),
                 parameter: step.parameter.clone(),
                 event: ColorPickerEvent::Plane(plane),
-            }));
+            })));
         }
         if step.hue.is_none() && step.plane.is_none() {
             self.capture_next_frame();
@@ -1487,11 +1677,11 @@ impl Editor {
         match step.event {
             CurveStepEvent::Move { index, points } => {
                 for position in points {
-                    tasks.push(self.update(Message::ControlCurve {
+                    tasks.push(self.update(Message::Control(ControlMessage::Curve {
                         action: step.action.clone(),
                         parameter: step.parameter.clone(),
                         event: CurveEditorEvent::Move { index, position },
-                    }));
+                    })));
                 }
                 self.finish_generated_gesture(
                     step.action,
@@ -1503,11 +1693,11 @@ impl Editor {
             }
             CurveStepEvent::Add(point) => {
                 self.begin_request();
-                let task = self.update(Message::ControlCurve {
+                let task = self.update(Message::Control(ControlMessage::Curve {
                     action: step.action,
                     parameter: step.parameter,
                     event: CurveEditorEvent::Add(point),
-                });
+                }));
                 if !self.busy {
                     return self
                         .fail_step(format!("the curve point was not added: {}", self.status));
@@ -1516,11 +1706,11 @@ impl Editor {
             }
             CurveStepEvent::Remove(index) => {
                 self.begin_request();
-                let task = self.update(Message::ControlCurve {
+                let task = self.update(Message::Control(ControlMessage::Curve {
                     action: step.action,
                     parameter: step.parameter,
                     event: CurveEditorEvent::Remove(index),
-                });
+                }));
                 if !self.busy {
                     return self
                         .fail_step(format!("the curve point was not removed: {}", self.status));
@@ -1528,11 +1718,11 @@ impl Editor {
                 task
             }
             CurveStepEvent::Channel(index) => {
-                let task = self.update(Message::ControlCurve {
+                let task = self.update(Message::Control(ControlMessage::Curve {
                     action: step.action.clone(),
                     parameter: step.parameter.clone(),
                     event: CurveEditorEvent::Channel(index),
-                });
+                }));
                 if selected_curve_channel(&self.workspace.tools, &step.action, &step.parameter)
                     != Some(index)
                 {
@@ -1566,17 +1756,19 @@ impl Editor {
             SliderEnd::Release => {
                 self.await_step(Settle::Preview);
                 let release = match kind {
-                    GeneratedKind::Slider => Message::ControlReleased { action, parameter },
-                    GeneratedKind::Picker => Message::ControlPicker {
+                    GeneratedKind::Slider => {
+                        Message::Control(ControlMessage::Released { action, parameter })
+                    }
+                    GeneratedKind::Picker => Message::Control(ControlMessage::Picker {
                         action,
                         parameter,
                         event: ColorPickerEvent::Release,
-                    },
-                    GeneratedKind::Curve => Message::ControlCurve {
+                    }),
+                    GeneratedKind::Curve => Message::Control(ControlMessage::Curve {
                         action,
                         parameter,
                         event: CurveEditorEvent::Release,
-                    },
+                    }),
                 };
                 tasks.push(self.update(release));
             }
@@ -1611,10 +1803,10 @@ impl Editor {
         let task = if expanded == step.expanded {
             Task::none()
         } else {
-            self.update(Message::ToggleGroup {
+            self.update(Message::Control(ControlMessage::ToggleGroup {
                 module_id: step.module,
                 path: step.path,
-            })
+            }))
         };
         self.capture_next_frame();
         task
@@ -1627,10 +1819,10 @@ impl Editor {
         if !tabbed {
             return self.fail_step("the module declares no tabbed layout");
         }
-        let task = self.update(Message::SelectTab {
+        let task = self.update(Message::Control(ControlMessage::SelectTab {
             module_id: step.module,
             index: step.index,
-        });
+        }));
         self.capture_next_frame();
         task
     }
@@ -1647,7 +1839,7 @@ impl Editor {
         let task = if section.expanded == step.expanded {
             Task::none()
         } else {
-            self.update(Message::ToggleSection(step.module))
+            self.update(Message::Control(ControlMessage::ToggleSection(step.module)))
         };
         self.capture_next_frame();
         task
@@ -1663,7 +1855,7 @@ impl Editor {
             return self.fail_step("gallery cannot interrupt the current operation");
         }
         self.await_step(Settle::Session);
-        self.update(Message::Gallery(page))
+        self.update(Message::View(ViewMessage::Gallery(page)))
     }
 
     /// Ask nothing of the editor until `ms` have passed; the evidence tick captures the frame then.
@@ -1740,25 +1932,25 @@ impl Editor {
             ));
         }
         let mut tasks = vec![
-            self.update(Message::EditValue {
+            self.update(Message::Control(ControlMessage::EditValue {
                 action: step.action.clone(),
                 parameter: step.parameter.clone(),
-            }),
-            self.update(Message::Field {
+            })),
+            self.update(Message::Control(ControlMessage::Field {
                 action: step.action.clone(),
                 parameter: step.parameter.clone(),
                 text: step.text.clone(),
-            }),
+            })),
         ];
         if !step.submit {
             self.capture_next_frame();
             return Task::batch(tasks);
         }
         self.begin_request();
-        tasks.push(self.update(Message::Submit {
+        tasks.push(self.update(Message::Control(ControlMessage::Submit {
             action: step.action,
             parameter: Some(step.parameter),
-        }));
+        })));
         if !self.busy {
             return self.fail_step(format!("the field was not submitted: {}", self.status));
         }
@@ -1775,15 +1967,15 @@ impl Editor {
             return self.fail_step(format!("no module is registered as {}", step.module));
         };
         let message = match &step.group {
-            None => Message::ResetModule(step.module.clone()),
+            None => Message::Control(ControlMessage::ResetModule(step.module.clone())),
             Some(label) => {
                 let Some(path) = group_path(&module.controls, label) else {
                     return self.fail_step(format!("{} declares no group {label}", step.module));
                 };
-                Message::ResetGroup {
+                Message::Control(ControlMessage::ResetGroup {
                     module_id: step.module.clone(),
                     path,
-                }
+                })
             }
         };
         self.begin_request();
@@ -1810,10 +2002,10 @@ impl Editor {
             return self.fail_step(reason);
         }
         self.await_step(Settle::Pick);
-        self.update(Message::PointPicked {
+        self.update(Message::Pointer(PointerMessage::Picked {
             x: step.x,
             y: step.y,
-        })
+        }))
     }
 
     /// Answer an open slider draft's Changed elsewhere notice, through the same messages its two
@@ -1844,10 +2036,10 @@ impl Editor {
         }
         self.await_step(Settle::Session);
         match step {
-            ViewStep::Fit => self.update(Message::Fit),
+            ViewStep::Fit => self.update(Message::View(ViewMessage::Fit)),
             ViewStep::Percent(value) => {
                 self.zoom = number_text(f64::from(value));
-                self.update(Message::ApplyZoom)
+                self.update(Message::View(ViewMessage::ApplyZoom))
             }
         }
     }
@@ -1972,7 +2164,7 @@ impl Editor {
         match step {
             PreviewStep::Current => {
                 self.await_step(Settle::Preview);
-                self.update(Message::ReturnCurrent)
+                self.update(Message::History(HistoryMessage::ReturnCurrent))
             }
             PreviewStep::Sequence(sequence) => {
                 let Some(entry_id) = self
@@ -1986,7 +2178,7 @@ impl Editor {
                         .fail_step(format!("no loaded history entry has sequence {sequence}"));
                 };
                 self.await_step(Settle::Preview);
-                self.update(Message::Preview(entry_id))
+                self.update(Message::History(HistoryMessage::Select(entry_id)))
             }
         }
     }
@@ -2000,10 +2192,10 @@ impl Editor {
         if self.pointer == Some((x, y)) {
             // The pointer is already there, so no sample would be asked for and nothing would
             // settle the step; clearing it first makes the move a real one.
-            let _ = self.update(Message::PointerMoved(None));
+            let _ = self.update(Message::Pointer(PointerMessage::Moved(None)));
         }
         self.await_step(Settle::Readout);
-        let task = self.update(Message::PointerMoved(Some((x, y))));
+        let task = self.update(Message::Pointer(PointerMessage::Moved(Some((x, y)))));
         if !self.sample_in_flight {
             return self.fail_step("the pointer readout could not be requested");
         }
@@ -2016,8 +2208,8 @@ impl Editor {
         let query = match &step {
             PaletteStep::Query(query) | PaletteStep::Run(query) => query.clone(),
         };
-        let _ = self.update(Message::OpenPalette);
-        let _ = self.update(Message::PaletteQuery(query.clone()));
+        let _ = self.update(Message::Palette(PaletteMessage::Open));
+        let _ = self.update(Message::Palette(PaletteMessage::Query(query.clone())));
         match step {
             PaletteStep::Query(_) => {
                 self.capture_next_frame();
@@ -2034,7 +2226,7 @@ impl Editor {
                     return self.fail_step(format!("no palette entry matches {query:?}"));
                 };
                 self.arm_palette_settle(&action);
-                self.dispatch(Message::PaletteRun)
+                self.dispatch(Message::Palette(PaletteMessage::Run))
             }
         }
     }
@@ -2084,7 +2276,7 @@ impl Editor {
             return Task::none();
         }
         self.arm_performance_settle();
-        self.update(Message::TogglePerformance)
+        self.update(Message::Performance(PerformanceMessage::Toggle))
     }
 
     /// Click one row, exactly as the section does: the section's own action with that preset's
@@ -2114,10 +2306,10 @@ impl Editor {
         };
         self.note_step(json!({"preset_id":row.id}));
         self.begin_request();
-        let task = self.update(Message::RunAction {
+        let task = self.update(Message::Action(ActionMessage::Run {
             action: presets.action,
             preset,
-        });
+        }));
         if !self.busy {
             return self.fail_step(format!("the preset was not applied: {}", self.status));
         }
@@ -2164,7 +2356,9 @@ impl Editor {
             Err(reason) => return self.fail_step(reason),
         };
         self.note_step(json!({"preset_id":row.id}));
-        let open = self.update(Message::OpenMenu(MenuTarget::Preset(row.id.clone())));
+        let open = self.update(Message::View(ViewMessage::OpenMenu(MenuTarget::Preset(
+            row.id.clone(),
+        ))));
         self.await_step(Settle::Presets);
         let delete = self.update(Message::Preset(PresetMessage::Delete(row.id)));
         Task::batch([open, delete])
@@ -2542,6 +2736,7 @@ pub(crate) fn envelope_free(method: &str) -> Option<HostStep> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::message::SyncMessage;
     use crate::app::testing::{evidence, finish, scripted};
     use lightwell_core::CropStage;
 
@@ -2611,9 +2806,9 @@ mod tests {
     #[test]
     fn a_paced_slider_step_sends_one_value_per_tick() {
         let (mut editor, catalog, _, _) = crate::app::testing::opened(Vec::new(), 4);
-        let _ = editor.update(Message::ModulesLoaded(Ok(
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(
             crate::app::testing::descriptors(),
-        )));
+        ))));
         editor.evidence = Some(Evidence {
             dir: std::env::temp_dir().join("lightwell-paced-slider-test"),
             queue: VecDeque::new(),
@@ -2654,7 +2849,7 @@ mod tests {
             "the step queues every value for its own timer to send"
         );
 
-        let _ = editor.update(Message::PacedSliderTick);
+        let _ = editor.update(Message::Evidence(EvidenceMessage::PacedSliderTick));
         assert_eq!(
             editor.fields.get("set-basic", "exposure"),
             Some("0.10"),
@@ -2672,7 +2867,7 @@ mod tests {
             "the step has not settled while values remain"
         );
 
-        let _ = editor.update(Message::PacedSliderTick);
+        let _ = editor.update(Message::Evidence(EvidenceMessage::PacedSliderTick));
         assert_eq!(editor.fields.get("set-basic", "exposure"), Some("0.20"));
         assert_eq!(
             evidence(&editor)
@@ -2682,7 +2877,7 @@ mod tests {
             Some((1, 2))
         );
 
-        let _ = editor.update(Message::PacedSliderTick);
+        let _ = editor.update(Message::Evidence(EvidenceMessage::PacedSliderTick));
         assert_eq!(
             editor.fields.get("set-basic", "exposure"),
             Some("0.30"),
@@ -2699,7 +2894,7 @@ mod tests {
         );
 
         // A tick with nothing left to send is harmless.
-        let _ = editor.update(Message::PacedSliderTick);
+        let _ = editor.update(Message::Evidence(EvidenceMessage::PacedSliderTick));
         finish(editor, catalog);
     }
 
@@ -2707,9 +2902,9 @@ mod tests {
     #[test]
     fn a_scripted_pick_needs_a_canvas_mode_that_declares_one() {
         let (mut editor, catalog, _, _) = scripted(r#"[{"pick":{"x":7,"y":9}}]"#);
-        let _ = editor.update(Message::ModulesLoaded(Ok(
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(
             crate::app::testing::descriptors(),
-        )));
+        ))));
         // The pointer mode declares no pick, so the step is recorded as refused, not silently
         // dropped, and its frame is still captured.
         let _ = editor.next_step();
@@ -2799,14 +2994,14 @@ mod tests {
             crate::app::tasks::call(&editor.owner, editor.client, "resources.read", json!({}))
                 .unwrap();
         let epoch = editor.performance.epoch;
-        let _ = editor.update(Message::PerformanceSampled {
+        let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
             epoch,
             result: Ok(Box::new(crate::app::tasks::PerformanceRead {
                 resources,
                 activity: json!({"sequence":0,"active":[],"recent":[],"untracked":0}),
                 wall_ms: 0,
             })),
-        });
+        }));
         assert!(evidence(&editor).capture_pending, "captured on the answer");
         assert_eq!(editor.performance.history.len(), 1);
 
@@ -2832,13 +3027,13 @@ mod tests {
         let _ = editor.next_step();
         assert!(!evidence(&editor).capture_pending);
         assert!(evidence(&editor).wait_until.is_some());
-        let _ = editor.update(Message::EvidenceTick);
+        let _ = editor.update(Message::Evidence(EvidenceMessage::Tick));
         assert!(
             !evidence(&editor).capture_pending,
             "a tick before the interval captures nothing"
         );
         std::thread::sleep(Duration::from_millis(30));
-        let _ = editor.update(Message::EvidenceTick);
+        let _ = editor.update(Message::Evidence(EvidenceMessage::Tick));
         assert!(evidence(&editor).capture_pending);
         assert!(evidence(&editor).wait_until.is_none());
         finish(editor, catalog);
@@ -3093,9 +3288,9 @@ mod tests {
     /// A scripted editor with every built-in discovered and this library listed.
     fn with_library(steps: &str, presets: Vec<lightwell_core::PresetSummary>) -> (Editor, PathBuf) {
         let (mut editor, catalog, _, _) = scripted(steps);
-        let _ = editor.update(Message::ModulesLoaded(Ok(
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(
             crate::app::testing::descriptors(),
-        )));
+        ))));
         let _ = editor.update(Message::Preset(PresetMessage::Listed(Ok((presets, 1)))));
         (editor, catalog)
     }

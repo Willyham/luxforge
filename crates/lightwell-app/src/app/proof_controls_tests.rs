@@ -1,6 +1,11 @@
 //! The registered developer module proves the generated desktop vocabulary against the same
 //! JSON method table an independent client uses. No descriptor-only desktop fixture is involved.
-use super::{Boot, Editor, controls::CurveSampleIdentity, message::Message, tasks};
+use super::{
+    Boot, Editor,
+    controls::CurveSampleIdentity,
+    message::{ActionMessage, ControlMessage, Message, SyncMessage},
+    tasks,
+};
 use crate::Config;
 use crate::state::fields;
 use crate::state::tools::ControlModel;
@@ -82,7 +87,7 @@ impl Proof {
         assert_eq!(modules[0].id, MODULE);
         assert!(modules[0].developer);
         editor.expanded.insert(MODULE.into(), true);
-        let _ = editor.update(Message::ModulesLoaded(Ok(modules)));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(modules))));
         let refreshed = tasks::refresh(
             &owner,
             editor.client,
@@ -91,7 +96,9 @@ impl Proof {
             None,
         )
         .unwrap();
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(refreshed))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            refreshed,
+        )))));
         assert!(editor.editable());
         assert_eq!(editor.workspace.tools.developer.len(), 1);
         Self {
@@ -148,11 +155,13 @@ impl Proof {
     fn copy_and_post(&mut self, parameter: &str, expected: Value) {
         let action = ACTION.to_owned();
         let parameter_name = parameter.to_owned();
-        let _ = self.editor.update(Message::CopyRequest {
-            action: action.clone(),
-            parameter: Some(parameter_name.clone()),
-            preset: None,
-        });
+        let _ = self
+            .editor
+            .update(Message::Action(ActionMessage::CopyRequest {
+                action: action.clone(),
+                parameter: Some(parameter_name.clone()),
+                preset: None,
+            }));
         assert_eq!(
             self.editor.status,
             format!("Copied the edit.{ACTION} request")
@@ -205,7 +214,9 @@ impl Proof {
         .unwrap();
         let _ = self
             .editor
-            .update(Message::Refreshed(Ok(Box::new(refreshed))));
+            .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+                refreshed,
+            )))));
         assert_eq!(
             self.editor.control_field_value(ACTION, parameter),
             Some(expected.clone()),
@@ -220,11 +231,13 @@ impl Proof {
     }
 
     fn post_preset(&mut self, preset: &Map<String, Value>) {
-        let _ = self.editor.update(Message::CopyRequest {
-            action: ACTION.into(),
-            parameter: None,
-            preset: Some(preset.clone()),
-        });
+        let _ = self
+            .editor
+            .update(Message::Action(ActionMessage::CopyRequest {
+                action: ACTION.into(),
+                parameter: None,
+                preset: Some(preset.clone()),
+            }));
         assert_eq!(
             self.editor.status,
             format!("Copied the edit.{ACTION} request")
@@ -261,7 +274,9 @@ impl Proof {
         .unwrap();
         let _ = self
             .editor
-            .update(Message::Refreshed(Ok(Box::new(refreshed))));
+            .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+                refreshed,
+            )))));
         for (parameter, value) in preset {
             assert_eq!(
                 self.editor.control_field_value(ACTION, parameter),
@@ -389,18 +404,20 @@ fn proof_curve_query_samples_the_active_channel_through_the_json_method_table() 
         .get(&(ACTION.into(), "master".into()))
         .copied()
         .expect("initial visible query");
-    let _ = proof.editor.update(Message::CurveSampled {
-        identity: CurveSampleIdentity {
-            sequence,
-            asset: proof.asset.clone(),
-            entry,
-            action: ACTION.into(),
-            parameter: "master".into(),
-            channel: 0,
-            points,
-        },
-        result: Ok(sampled),
-    });
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::CurveSampled {
+            identity: CurveSampleIdentity {
+                sequence,
+                asset: proof.asset.clone(),
+                entry,
+                action: ACTION.into(),
+                parameter: "master".into(),
+                channel: 0,
+                points,
+            },
+            result: Ok(sampled),
+        }));
     let mut models = Vec::new();
     flatten(
         &proof.editor.workspace.tools.developer[0].controls,
@@ -422,29 +439,31 @@ fn proof_curve_query_samples_the_active_channel_through_the_json_method_table() 
 fn every_proof_value_control_matches_independent_json_and_authoritative_ui() {
     let mut proof = Proof::new();
     let ui = &mut proof.editor;
-    let _ = ui.update(Message::ControlFraction {
+    let _ = ui.update(Message::Control(ControlMessage::Fraction {
         action: ACTION.into(),
         parameter: "amount".into(),
         fraction: 0.6,
-    });
+    }));
     proof.copy_and_post("amount", json!(1.0));
 
-    let _ = proof.editor.update(Message::Field {
+    let _ = proof.editor.update(Message::Control(ControlMessage::Field {
         action: ACTION.into(),
         parameter: "coordinate".into(),
         text: "55".into(),
-    });
-    let _ = proof.editor.update(Message::Submit {
-        action: ACTION.into(),
-        parameter: Some("coordinate".into()),
-    });
+    }));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::Submit {
+            action: ACTION.into(),
+            parameter: Some("coordinate".into()),
+        }));
     proof.copy_and_post("coordinate", json!(55.0));
 
-    let _ = proof.editor.update(Message::ControlStep {
+    let _ = proof.editor.update(Message::Control(ControlMessage::Step {
         action: ACTION.into(),
         parameter: "count".into(),
         direction: 1,
-    });
+    }));
     proof.copy_and_post("count", json!(1));
 
     for (parameter, value) in [
@@ -453,31 +472,39 @@ fn every_proof_value_control_matches_independent_json_and_authoritative_ui() {
         ("mode-chips", json!("three")),
         ("mode-menu", json!("five")),
     ] {
-        let _ = proof.editor.update(Message::ControlDiscrete {
-            action: ACTION.into(),
-            parameter: parameter.into(),
-            value: value.clone(),
-        });
+        let _ = proof
+            .editor
+            .update(Message::Control(ControlMessage::Discrete {
+                action: ACTION.into(),
+                parameter: parameter.into(),
+                value: value.clone(),
+            }));
         proof.copy_and_post(parameter, value);
     }
 
-    let _ = proof.editor.update(Message::TogglePicker {
-        action: ACTION.into(),
-        parameter: "rgb".into(),
-    });
-    let _ = proof.editor.update(Message::ControlPicker {
-        action: ACTION.into(),
-        parameter: "rgb".into(),
-        event: ColorPickerEvent::Text {
-            field: 3,
-            text: "#112233".into(),
-        },
-    });
-    let _ = proof.editor.update(Message::ControlPicker {
-        action: ACTION.into(),
-        parameter: "rgb".into(),
-        event: ColorPickerEvent::Submit(3),
-    });
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::TogglePicker {
+            action: ACTION.into(),
+            parameter: "rgb".into(),
+        }));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::Picker {
+            action: ACTION.into(),
+            parameter: "rgb".into(),
+            event: ColorPickerEvent::Text {
+                field: 3,
+                text: "#112233".into(),
+            },
+        }));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::Picker {
+            action: ACTION.into(),
+            parameter: "rgb".into(),
+            event: ColorPickerEvent::Submit(3),
+        }));
     proof.copy_and_post("rgb", json!([17, 34, 51]));
 
     let original = proof
@@ -486,40 +513,42 @@ fn every_proof_value_control_matches_independent_json_and_authoritative_ui() {
         .get(ACTION, "rgb-fields")
         .unwrap()
         .to_owned();
-    let _ = proof.editor.update(Message::Field {
+    let _ = proof.editor.update(Message::Control(ControlMessage::Field {
         action: ACTION.into(),
         parameter: "rgb-fields".into(),
         text: fields::replace_channel(&original, 0, "17"),
-    });
-    let _ = proof.editor.update(Message::Submit {
-        action: ACTION.into(),
-        parameter: Some("rgb-fields".into()),
-    });
+    }));
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::Submit {
+            action: ACTION.into(),
+            parameter: Some("rgb-fields".into()),
+        }));
     proof.copy_and_post("rgb-fields", json!([17, 0, 0]));
 
-    let _ = proof.editor.update(Message::ControlCurve {
+    let _ = proof.editor.update(Message::Control(ControlMessage::Curve {
         action: ACTION.into(),
         parameter: "master".into(),
         event: CurveEditorEvent::Move {
             index: 1,
             position: [0.5, 0.75],
         },
-    });
+    }));
     proof.copy_and_post("master", json!([[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]]));
 
-    let _ = proof.editor.update(Message::ControlCurve {
+    let _ = proof.editor.update(Message::Control(ControlMessage::Curve {
         action: ACTION.into(),
         parameter: "master".into(),
         event: CurveEditorEvent::Channel(1),
-    });
-    let _ = proof.editor.update(Message::ControlCurve {
+    }));
+    let _ = proof.editor.update(Message::Control(ControlMessage::Curve {
         action: ACTION.into(),
         parameter: "red".into(),
         event: CurveEditorEvent::Move {
             index: 1,
             position: [0.5, 0.25],
         },
-    });
+    }));
     proof.copy_and_post("red", json!([[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]]));
     let mut models = Vec::new();
     flatten(
@@ -563,10 +592,10 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
             1,
             "each patch action button changes one field"
         );
-        let _ = proof.editor.update(Message::RunAction {
+        let _ = proof.editor.update(Message::Action(ActionMessage::Run {
             action: ACTION.into(),
             preset: preset.clone(),
-        });
+        }));
         proof.post_preset(&preset);
     }
     // The proof's controls are one declared group, which the panel draws without a header: its
@@ -592,12 +621,16 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
         reset.action, declared.action,
         "the band resets what the group declares"
     );
-    let _ = proof.editor.update(Message::ResetModule(MODULE.into()));
-    let _ = proof.editor.update(Message::CopyRequest {
-        action: reset.action.clone(),
-        parameter: None,
-        preset: Some(reset.preset.clone()),
-    });
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::ResetModule(MODULE.into())));
+    let _ = proof
+        .editor
+        .update(Message::Action(ActionMessage::CopyRequest {
+            action: reset.action.clone(),
+            parameter: None,
+            preset: Some(reset.preset.clone()),
+        }));
     assert_eq!(
         proof.editor.status,
         "Copied the edit.reset-controls request"
@@ -634,7 +667,9 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
     .unwrap();
     let _ = proof
         .editor
-        .update(Message::Refreshed(Ok(Box::new(refreshed))));
+        .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            refreshed,
+        )))));
     for parameter in &proof.descriptor().action(ACTION).unwrap().parameters {
         let expected = parameter.default.as_ref().unwrap();
         assert_eq!(

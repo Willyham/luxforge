@@ -13,7 +13,7 @@ use crate::{
     app::{
         Editor,
         evidence::{CapabilityAction, CapabilitySection, CapabilityStep, Settle},
-        message::{CapabilityMessage, Message},
+        message::{ActionMessage, CapabilityMessage, Message},
         tasks::{REQUEST_NUMBER, mutation, request},
     },
     state::{
@@ -893,7 +893,9 @@ impl Editor {
             }
             CapabilityMessage::Apply { module_id, task } => {
                 return match self.apply_preset(&module_id, &task) {
-                    Ok((action, preset)) => self.dispatch(Message::RunAction { action, preset }),
+                    Ok((action, preset)) => {
+                        self.dispatch(Message::Action(ActionMessage::Run { action, preset }))
+                    }
                     Err(reason) => {
                         self.status = reason;
                         Task::none()

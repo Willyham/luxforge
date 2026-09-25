@@ -1,8 +1,15 @@
 //! Host mapping for generated controls. Widgets report fractions and events; descriptors own values.
 
-use crate::app::{Editor, message::Message, tasks::call};
-use crate::state::tools;
-use iced::Task;
+use crate::app::{
+    Editor,
+    message::{ActionMessage, ControlMessage, Message},
+    tasks::call,
+};
+use crate::state::{
+    fields::{self, number_text, submit_preset},
+    tools,
+};
+use iced::{Task, widget::operation};
 use lightwell_core::{AssetId, Control, EntryId, ParameterKind, check_value};
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent, hex_to_rgb, hsv_to_rgb, rgb_to_hsv};
 use serde_json::{Value, json};
@@ -26,6 +33,219 @@ pub(crate) struct CurveSampleRequest {
 }
 
 impl Editor {
+    /// One generated-control or tools-panel section message.
+    pub(super) fn control_update(&mut self, message: ControlMessage) -> Task<Message> {
+        match message {
+            ControlMessage::Field {
+                action,
+                parameter,
+                text,
+            } => {
+                self.fields.set(&action, &parameter, text);
+                // Typing is editing: the field shows what was typed until it is committed.
+                self.editing = Some((action, parameter));
+            }
+            ControlMessage::SliderMoved {
+                action,
+                parameter,
+                value,
+            } => {
+                // A control whose one field is already a whole request drafts: a patch action's
+                // field, or the only parameter its action declares. The move updates the field and
+                // the draft's pending value, and the gated tick is the only thing that sends
+                // anything. Every other slider keeps its old behaviour, which is to change the text
+                // and nothing else until release.
+                if tools::drafts(&self.modules, &action, &parameter) {
+                    return self.slider_moved(action, parameter, value);
+                }
+                let text = fields::declared(&self.modules, &action, &parameter)
+                    .map(|declared| fields::format_number(declared, value))
+                    .unwrap_or_else(|| number_text(value));
+                self.fields.set(&action, &parameter, text);
+                self.editing = None;
+                self.dragging = Some((action, parameter));
+            }
+            ControlMessage::Fraction {
+                action,
+                parameter,
+                fraction,
+            } => {
+                return self.control_fraction(action, parameter, fraction);
+            }
+            ControlMessage::Discrete {
+                action,
+                parameter,
+                value,
+            } => {
+                return self.control_value(action, parameter, value, false);
+            }
+            ControlMessage::Released { action, parameter } => {
+                return self.control_release(action, parameter);
+            }
+            ControlMessage::Step {
+                action,
+                parameter,
+                direction,
+            } => {
+                return self.control_step(action, parameter, direction);
+            }
+            ControlMessage::KeyNudge {
+                action,
+                parameter,
+                direction,
+                shift,
+                option,
+            } => {
+                return self.control_key_nudge(action, parameter, direction, shift, option);
+            }
+            ControlMessage::FieldNudge {
+                action,
+                parameter,
+                direction,
+                shift,
+                option,
+            } => {
+                return self.control_field_nudge(action, parameter, direction, shift, option);
+            }
+            ControlMessage::TogglePicker { action, parameter } => {
+                let open = self
+                    .controls_ui
+                    .color_open
+                    .entry((action, parameter))
+                    .or_default();
+                *open = !*open;
+            }
+            ControlMessage::ToggleGroup { module_id, path } => {
+                // A module's only group is drawn without a header and is always shown, so there is
+                // no disclosure to toggle and no per-client state to record for it.
+                if tools::module_of(&self.modules, &module_id)
+                    .is_some_and(|module| tools::is_headerless_group(module, &path))
+                {
+                    return Task::none();
+                }
+                let key = format!(
+                    "{module_id}/{}",
+                    path.iter()
+                        .map(usize::to_string)
+                        .collect::<Vec<_>>()
+                        .join(".")
+                );
+                let initial =
+                    initial_group_expanded(&self.modules, &module_id, &path).unwrap_or(true);
+                let entry = self
+                    .controls_ui
+                    .group_expanded
+                    .entry(key)
+                    .or_insert(initial);
+                *entry = !*entry;
+            }
+            ControlMessage::SelectTab { module_id, index } => {
+                self.controls_ui.selected_tab.insert(module_id, index);
+            }
+            ControlMessage::Picker {
+                action,
+                parameter,
+                event,
+            } => {
+                return self.control_picker(action, parameter, event);
+            }
+            ControlMessage::Curve {
+                action,
+                parameter,
+                event,
+            } => {
+                return self.control_curve(action, parameter, event);
+            }
+            ControlMessage::CurveSampled { identity, result } => {
+                return self.curve_sampled(identity, result);
+            }
+            ControlMessage::EditValue { action, parameter } => {
+                let id = fields::field_id(&action, &parameter, None);
+                self.editing = Some((action, parameter));
+                self.seed_idle_angle();
+                return operation::focus(iced::widget::Id::from(id));
+            }
+            ControlMessage::CancelEdit => self.editing = None,
+            ControlMessage::SliderReleased { action, parameter } => {
+                // Release ends the gesture: an open draft commits once, and a slider that never
+                // drafted submits its own field exactly as Enter in that field does.
+                if self.slider_gesture().is_some() {
+                    return self.release();
+                }
+                if tools::drafts(&self.modules, &action, &parameter) {
+                    return self.release_without_draft(&action, &parameter);
+                }
+                return self.dispatch(Message::Control(ControlMessage::Submit {
+                    action,
+                    parameter: Some(parameter),
+                }));
+            }
+            ControlMessage::Submit { action, parameter } => {
+                self.dragging = None;
+                if !self.editable() {
+                    return Task::none();
+                }
+                let preset =
+                    match submit_preset(&self.modules, &action, parameter.as_deref(), &self.fields)
+                    {
+                        Ok(preset) => preset,
+                        // The field only stops editing once the submit actually runs; a rejected
+                        // submit leaves the typed text on screen with its reason rather than
+                        // silently reverting to the last committed value.
+                        Err(message) => {
+                            self.status = message;
+                            return Task::none();
+                        }
+                    };
+                // Refused before the field lets go, so the typed text stays with its reason.
+                if let Some(reason) = self.action_refusal(&action) {
+                    self.status = reason;
+                    return Task::none();
+                }
+                self.editing = None;
+                return self.dispatch(Message::Action(ActionMessage::Run { action, preset }));
+            }
+            ControlMessage::ResetField { action, parameter } => {
+                return self.reset_field(action, parameter);
+            }
+            ControlMessage::ToggleSection(module_id) => {
+                let expanded = self
+                    .workspace
+                    .tools
+                    .all()
+                    .find(|section| section.module_id == module_id)
+                    .map(|section| section.expanded)
+                    .unwrap_or(true);
+                self.expanded.insert(module_id, !expanded);
+            }
+            ControlMessage::ResetModule(module_id) => {
+                let Some(reset) = tools::module_of(&self.modules, &module_id)
+                    .and_then(|module| module.reset.clone())
+                else {
+                    self.status = format!("{module_id} declares no reset action");
+                    return Task::none();
+                };
+                return self.dispatch(Message::Action(ActionMessage::Run {
+                    action: reset.action,
+                    preset: reset.preset,
+                }));
+            }
+            ControlMessage::ResetGroup { module_id, path } => {
+                let Some(reset) = tools::module_of(&self.modules, &module_id)
+                    .and_then(|module| group_reset(&module.controls, &path))
+                else {
+                    self.status = format!("{module_id} declares no reset for that group");
+                    return Task::none();
+                };
+                return self.dispatch(Message::Action(ActionMessage::Run {
+                    action: reset.action,
+                    preset: reset.preset,
+                }));
+            }
+        }
+        Task::none()
+    }
+
     /// Ask for one missing displayed curve at a time. The query channel carries no timer and one
     /// in-flight request plus one replaceable pending request at most.
     pub(crate) fn request_visible_curve_samples(&mut self) -> Task<Message> {
@@ -140,10 +360,10 @@ impl Editor {
         if tools::drafts(&self.modules, &action, &parameter) {
             return self.release_without_draft(&action, &parameter);
         }
-        self.dispatch(Message::Submit {
+        self.dispatch(Message::Control(ControlMessage::Submit {
             action,
             parameter: Some(parameter),
-        })
+        }))
     }
     pub(crate) fn control_field_value(&self, action: &str, parameter: &str) -> Option<Value> {
         let declared = tools::declared_action(&self.modules, action)?.parameter(parameter)?;
@@ -238,10 +458,10 @@ impl Editor {
         }
         self.dragging = None;
         self.editing = None;
-        self.dispatch(Message::RunAction {
+        self.dispatch(Message::Action(ActionMessage::Run {
             action,
             preset: serde_json::Map::from_iter([(parameter, value)]),
-        })
+        }))
     }
 
     pub(crate) fn control_step(
@@ -466,7 +686,12 @@ impl Editor {
                     }
                 }
             }
-            ColorPickerEvent::Reset => self.dispatch(Message::ResetField { action, parameter }),
+            ColorPickerEvent::Reset => {
+                self.dispatch(Message::Control(ControlMessage::ResetField {
+                    action,
+                    parameter,
+                }))
+            }
         }
     }
 
@@ -794,9 +1019,11 @@ impl Editor {
                     .insert(sent.parameter.clone(), sent.points.clone());
                 call(&owner, client, &format!("query.{query}"), params).map(|(value, _)| value)
             },
-            move |result| Message::CurveSampled {
-                identity: identity.clone(),
-                result,
+            move |result| {
+                Message::Control(ControlMessage::CurveSampled {
+                    identity: identity.clone(),
+                    result,
+                })
             },
         )
     }

@@ -2,7 +2,7 @@
 //! [`TaskControl`]. The view knows no module and no setting: it lays out what the model says, with
 //! the widget library, and publishes the one [`CapabilityMessage`] each control stands for.
 use crate::{
-    app::message::{CapabilityMessage, MenuTarget, Message},
+    app::message::{CapabilityMessage, MenuTarget, Message, ViewMessage},
     state::capabilities::{
         ActivationRow, CapabilityModel, CapabilityView, FieldKindModel, FieldModel,
         PermissionsModel, ResourceAction, ResourceRowModel, SettingsModel, TaskControl,
@@ -596,7 +596,7 @@ pub(crate) fn task_view<'a>(
         task: task.task.clone(),
     };
     let area: Element<'a, Message> = mouse_area(buttons)
-        .on_right_press(Message::OpenMenu(target.clone()))
+        .on_right_press(Message::View(ViewMessage::OpenMenu(target.clone())))
         .into();
     body = body.push(area);
     if menu == Some(&target) {
@@ -608,7 +608,7 @@ pub(crate) fn task_view<'a>(
                     task: task.task.clone(),
                 }),
             ),
-            ("Cancel".to_owned(), Message::CloseMenu),
+            ("Cancel".to_owned(), Message::View(ViewMessage::CloseMenu)),
         ]));
     }
     let line: Option<Element<'a, Message>> = match &task.state {

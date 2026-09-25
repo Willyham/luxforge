@@ -3,7 +3,10 @@
 //! section says and publishes messages, exactly as the generated-control mapping in
 //! `state::tools` describes it.
 use crate::{
-    app::message::{ClipEndpoint, CropMessage, MenuTarget, Message, PresetMessage},
+    app::message::{
+        ActionMessage, ClipEndpoint, ControlMessage, CropMessage, MenuTarget, Message,
+        OverlayMessage, PresetMessage, ViewMessage,
+    },
     state::{
         capabilities::CapabilityView,
         fields,
@@ -148,7 +151,9 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
                 active: model.shadow.active,
                 enabled: model.shadow.enabled,
             },
-            Some(Message::ToggleClipping(Some(ClipEndpoint::Shadows))),
+            Some(Message::Overlay(OverlayMessage::ToggleClipping(Some(
+                ClipEndpoint::Shadows
+            )))),
         ),
         iced::widget::Space::new().width(Length::Fill),
         clip_triangle(
@@ -160,7 +165,9 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
                 active: model.highlight.active,
                 enabled: model.highlight.enabled,
             },
-            Some(Message::ToggleClipping(Some(ClipEndpoint::Highlights))),
+            Some(Message::Overlay(OverlayMessage::ToggleClipping(Some(
+                ClipEndpoint::Highlights
+            )))),
         ),
     ]
     .align_y(Alignment::Center);
@@ -247,8 +254,8 @@ fn section_view<'a>(
             status: section.status.clone(),
             enabled: section.enabled,
         },
-        Message::ToggleSection(section.module_id.clone()),
-        Message::ResetModule(section.module_id.clone()),
+        Message::Control(ControlMessage::ToggleSection(section.module_id.clone())),
+        Message::Control(ControlMessage::ResetModule(section.module_id.clone())),
         body,
     )
 }
@@ -293,15 +300,17 @@ fn tabbed_rows<'a>(
         },
         {
             let module_id = module_id.to_owned();
-            move |index| Message::SelectTab {
-                module_id: module_id.clone(),
-                index,
+            move |index| {
+                Message::Control(ControlMessage::SelectTab {
+                    module_id: module_id.clone(),
+                    index,
+                })
             }
         },
-        Message::ResetGroup {
+        Message::Control(ControlMessage::ResetGroup {
             module_id: module_id.to_owned(),
             path: visible.path.clone(),
-        },
+        }),
     );
     let tabs = match &visible.reset {
         Some(reset) => {
@@ -471,9 +480,11 @@ fn icon_run<'a>(controls: &[&'a ControlModel]) -> Option<Vec<(&'a ActionControl,
 
 /// One action as a cell of an icon row: focusable, and right-clickable for its request.
 fn icon_action_cell<'a>(action: &'a ActionControl, icon: Icon) -> Element<'a, Message> {
-    let press = action.runnable.then(|| Message::RunAction {
-        action: action.action.clone(),
-        preset: action.preset.clone(),
+    let press = action.runnable.then(|| {
+        Message::Action(ActionMessage::Run {
+            action: action.action.clone(),
+            preset: action.preset.clone(),
+        })
     });
     let control = row_icon_button(
         &IconButtonModel {
@@ -490,17 +501,19 @@ fn icon_action_cell<'a>(action: &'a ActionControl, icon: Icon) -> Element<'a, Me
     let action_name = action.action.clone();
     let preset = action.preset.clone();
     let control = focus_control(control, action.runnable, move |event| {
-        activates(event).then(|| Message::RunAction {
-            action: action_name.clone(),
-            preset: preset.clone(),
+        activates(event).then(|| {
+            Message::Action(ActionMessage::Run {
+                action: action_name.clone(),
+                preset: preset.clone(),
+            })
         })
     });
     mouse_area(control)
-        .on_right_press(Message::OpenMenu(control_target_preset(
+        .on_right_press(Message::View(ViewMessage::OpenMenu(control_target_preset(
             &action.action,
             None,
             Some(&action.preset),
-        )))
+        ))))
         .into()
 }
 
@@ -664,14 +677,12 @@ fn preset_row_view<'a>(
             tooltip: row.counts.clone(),
         }));
     }
-    let press = row
-        .apply
-        .clone()
-        .filter(|_| row.enabled)
-        .map(|preset| Message::RunAction {
+    let press = row.apply.clone().filter(|_| row.enabled).map(|preset| {
+        Message::Action(ActionMessage::Run {
             action: action.to_owned(),
             preset,
-        });
+        })
+    });
     let target = MenuTarget::Preset(row.id.clone());
     let control: Element<'a, Message> = mouse_area(
         button(content)
@@ -680,7 +691,7 @@ fn preset_row_view<'a>(
             .style(theme::button_plain)
             .on_press_maybe(press),
     )
-    .on_right_press(Message::OpenMenu(target.clone()))
+    .on_right_press(Message::View(ViewMessage::OpenMenu(target.clone())))
     .into();
     let mut block = column![control].spacing(2.0);
     if let Some(reason) = &row.unavailable {
@@ -703,7 +714,7 @@ fn preset_row_view<'a>(
             "Delete".to_owned(),
             Message::Preset(PresetMessage::Delete(row.id.clone())),
         ));
-        items.push(("Cancel".to_owned(), Message::CloseMenu));
+        items.push(("Cancel".to_owned(), Message::View(ViewMessage::CloseMenu)));
         block = block.push(inline_menu(items));
     }
     block.into()
@@ -757,13 +768,13 @@ fn control_menu_preset(
         inline_menu(vec![
             (
                 "Copy as JSON request".to_owned(),
-                Message::CopyRequest {
+                Message::Action(ActionMessage::CopyRequest {
                     action: action.to_owned(),
                     parameter: parameter.map(str::to_owned),
                     preset: preset.cloned(),
-                },
+                }),
             ),
-            ("Cancel".to_owned(), Message::CloseMenu),
+            ("Cancel".to_owned(), Message::View(ViewMessage::CloseMenu)),
         ])
     ]
     .spacing(3.0)
@@ -789,9 +800,9 @@ fn with_control_menu_preset<'a>(
     menu: Option<&MenuTarget>,
 ) -> Element<'a, Message> {
     let area: Element<'a, Message> = mouse_area(control)
-        .on_right_press(Message::OpenMenu(control_target_preset(
+        .on_right_press(Message::View(ViewMessage::OpenMenu(control_target_preset(
             action, parameter, preset,
-        )))
+        ))))
         .into();
     if menu_open_for_preset(menu, action, parameter, preset) {
         column![area, control_menu_preset(action, parameter, preset)]
@@ -838,24 +849,26 @@ fn number_view<'a>(
     let step = field.step;
     let edit = ui_edit(&field.edit, &field.display, &field.invalid);
     let (action, parameter) = (field.action.clone(), field.parameter.clone());
-    let edit_start = Message::EditValue {
+    let edit_start = Message::Control(ControlMessage::EditValue {
         action: action.clone(),
         parameter: parameter.clone(),
-    };
-    let submit = Message::Submit {
+    });
+    let submit = Message::Control(ControlMessage::Submit {
         action: action.clone(),
         parameter: Some(parameter.clone()),
-    };
-    let reset = Message::ResetField {
+    });
+    let reset = Message::Control(ControlMessage::ResetField {
         action: action.clone(),
         parameter: parameter.clone(),
-    };
+    });
     let text_action = action.clone();
     let text_parameter = parameter.clone();
-    let on_text = move |text| Message::Field {
-        action: text_action.clone(),
-        parameter: text_parameter.clone(),
-        text,
+    let on_text = move |text| {
+        Message::Control(ControlMessage::Field {
+            action: text_action.clone(),
+            parameter: text_parameter.clone(),
+            text,
+        })
     };
     let field_model = NumberFieldModel {
         label: field.label.clone(),
@@ -896,15 +909,17 @@ fn number_view<'a>(
                     dragging: field.dragging,
                     enabled,
                 },
-                move |fraction| Message::ControlFraction {
-                    action: move_action.clone(),
-                    parameter: move_parameter.clone(),
-                    fraction,
+                move |fraction| {
+                    Message::Control(ControlMessage::Fraction {
+                        action: move_action.clone(),
+                        parameter: move_parameter.clone(),
+                        fraction,
+                    })
                 },
-                Message::ControlReleased {
+                Message::Control(ControlMessage::Released {
                     action: action.clone(),
                     parameter: parameter.clone(),
-                },
+                }),
                 edit_start,
                 on_text,
                 submit,
@@ -921,16 +936,16 @@ fn number_view<'a>(
                 increment_tooltip: "Increase".into(),
                 rail: None,
             },
-            Message::ControlStep {
+            Message::Control(ControlMessage::Step {
                 action: action.clone(),
                 parameter: parameter.clone(),
                 direction: -1,
-            },
-            Message::ControlStep {
+            }),
+            Message::Control(ControlMessage::Step {
                 action: action.clone(),
                 parameter: parameter.clone(),
                 direction: 1,
-            },
+            }),
             edit_start,
             on_text,
             submit,
@@ -944,15 +959,15 @@ fn number_view<'a>(
             let action = field.action.clone();
             let parameter = field.parameter.clone();
             let enter = if matches!(field.edit, ValueEdit::Typing(_)) {
-                Message::Submit {
+                Message::Control(ControlMessage::Submit {
                     action: action.clone(),
                     parameter: Some(parameter.clone()),
-                }
+                })
             } else {
-                Message::EditValue {
+                Message::Control(ControlMessage::EditValue {
                     action: action.clone(),
                     parameter: parameter.clone(),
-                }
+                })
             };
             focus_control(control, enabled, move |event| match event {
                 ControlKeyEvent::Pressed {
@@ -960,12 +975,14 @@ fn number_view<'a>(
                     ..
                 } => Some(enter.clone()),
                 ControlKeyEvent::Pressed { key, shift, option } => {
-                    key_direction(key).map(|direction| Message::ControlFieldNudge {
-                        action: action.clone(),
-                        parameter: parameter.clone(),
-                        direction,
-                        shift,
-                        option,
+                    key_direction(key).map(|direction| {
+                        Message::Control(ControlMessage::FieldNudge {
+                            action: action.clone(),
+                            parameter: parameter.clone(),
+                            direction,
+                            shift,
+                            option,
+                        })
                     })
                 }
                 _ => None,
@@ -975,15 +992,15 @@ fn number_view<'a>(
             let action = field.action.clone();
             let parameter = field.parameter.clone();
             let enter = if matches!(field.edit, ValueEdit::Typing(_)) {
-                Message::Submit {
+                Message::Control(ControlMessage::Submit {
                     action: action.clone(),
                     parameter: Some(parameter.clone()),
-                }
+                })
             } else {
-                Message::EditValue {
+                Message::Control(ControlMessage::EditValue {
                     action: action.clone(),
                     parameter: parameter.clone(),
-                }
+                })
             };
             focus_control(control, enabled, move |event| match event {
                 ControlKeyEvent::Pressed {
@@ -991,19 +1008,21 @@ fn number_view<'a>(
                     ..
                 } => Some(enter.clone()),
                 ControlKeyEvent::Pressed { key, shift, option } => {
-                    key_direction(key).map(|direction| Message::ControlKeyNudge {
-                        action: action.clone(),
-                        parameter: parameter.clone(),
-                        direction,
-                        shift,
-                        option,
+                    key_direction(key).map(|direction| {
+                        Message::Control(ControlMessage::KeyNudge {
+                            action: action.clone(),
+                            parameter: parameter.clone(),
+                            direction,
+                            shift,
+                            option,
+                        })
                     })
                 }
                 ControlKeyEvent::Released(key) if key_direction(key).is_some() => {
-                    Some(Message::ControlReleased {
+                    Some(Message::Control(ControlMessage::Released {
                         action: action.clone(),
                         parameter: parameter.clone(),
-                    })
+                    }))
                 }
                 _ => None,
             })
@@ -1043,10 +1062,12 @@ fn toggle_view<'a>(
             on: control.on,
             enabled,
         },
-        move |on| Message::ControlDiscrete {
-            action: action.clone(),
-            parameter: parameter.clone(),
-            value: Value::Bool(on),
+        move |on| {
+            Message::Control(ControlMessage::Discrete {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                value: Value::Bool(on),
+            })
         },
     );
     let action = control.action.clone();
@@ -1056,11 +1077,11 @@ fn toggle_view<'a>(
         ControlKeyEvent::Pressed {
             key: ControlKey::Space | ControlKey::Enter,
             ..
-        } => Some(Message::ControlDiscrete {
+        } => Some(Message::Control(ControlMessage::Discrete {
             action: action.clone(),
             parameter: parameter.clone(),
             value: Value::Bool(!on),
-        }),
+        })),
         _ => None,
     });
     with_control_menu(widget, &control.action, Some(&control.parameter), menu)
@@ -1085,10 +1106,12 @@ fn enum_view<'a>(
                     selected: choice.selected.unwrap_or(0),
                     enabled,
                 },
-                move |index| Message::ControlDiscrete {
-                    action: action.clone(),
-                    parameter: parameter.clone(),
-                    value: Value::String(options[index].clone()),
+                move |index| {
+                    Message::Control(ControlMessage::Discrete {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                        value: Value::String(options[index].clone()),
+                    })
                 },
             ));
         }
@@ -1101,11 +1124,11 @@ fn enum_view<'a>(
                         selected: choice.selected == Some(index),
                         enabled,
                     },
-                    Some(Message::ControlDiscrete {
+                    Some(Message::Control(ControlMessage::Discrete {
                         action: action.clone(),
                         parameter: parameter.clone(),
                         value: Value::String(option.clone()),
-                    }),
+                    })),
                     None,
                 )
             });
@@ -1122,10 +1145,12 @@ fn enum_view<'a>(
                     selected: choice.selected.unwrap_or(0),
                     enabled,
                 },
-                move |index| Message::ControlDiscrete {
-                    action: action.clone(),
-                    parameter: parameter.clone(),
-                    value: Value::String(options[index].clone()),
+                move |index| {
+                    Message::Control(ControlMessage::Discrete {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                        value: Value::String(options[index].clone()),
+                    })
                 },
             ));
         }
@@ -1138,10 +1163,12 @@ fn enum_view<'a>(
         ControlKeyEvent::Pressed { key, .. } => key_direction(key).and_then(|direction| {
             let next = (selected as isize + direction as isize)
                 .clamp(0, options.len().saturating_sub(1) as isize) as usize;
-            options.get(next).map(|option| Message::ControlDiscrete {
-                action: action.clone(),
-                parameter: parameter.clone(),
-                value: Value::String(option.clone()),
+            options.get(next).map(|option| {
+                Message::Control(ControlMessage::Discrete {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                    value: Value::String(option.clone()),
+                })
             })
         }),
         _ => None,
@@ -1160,10 +1187,10 @@ fn color_view<'a>(
             enabled: enabled && color.style == ColorControlStyle::Picker,
             open: color.picker_open,
         },
-        Message::TogglePicker {
+        Message::Control(ControlMessage::TogglePicker {
             action: color.action.clone(),
             parameter: color.parameter.clone(),
-        },
+        }),
     );
     let action = color.action.clone();
     let parameter = color.parameter.clone();
@@ -1171,9 +1198,11 @@ fn color_view<'a>(
         swatch,
         enabled && color.style == ColorControlStyle::Picker,
         move |event| {
-            activates(event).then(|| Message::TogglePicker {
-                action: action.clone(),
-                parameter: parameter.clone(),
+            activates(event).then(|| {
+                Message::Control(ControlMessage::TogglePicker {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                })
             })
         },
     );
@@ -1194,15 +1223,17 @@ fn color_view<'a>(
                     theme::CHANNEL_FIELD_WIDTH,
                     color.invalid.is_some(),
                     enabled,
-                    move |text| Message::Field {
-                        action: action.clone(),
-                        parameter: parameter.clone(),
-                        text: fields::replace_channel(&current, index, &text),
+                    move |text| {
+                        Message::Control(ControlMessage::Field {
+                            action: action.clone(),
+                            parameter: parameter.clone(),
+                            text: fields::replace_channel(&current, index, &text),
+                        })
                     },
-                    Message::Submit {
+                    Message::Control(ControlMessage::Submit {
                         action: color.action.clone(),
                         parameter: Some(color.parameter.clone()),
-                    },
+                    }),
                 )
                 .id(color.ids[index].clone())
                 .into()
@@ -1241,10 +1272,12 @@ fn color_view<'a>(
             };
             let action = color.action.clone();
             let parameter = color.parameter.clone();
-            body = body.push(color_picker(&model, move |event| Message::ControlPicker {
-                action: action.clone(),
-                parameter: parameter.clone(),
-                event,
+            body = body.push(color_picker(&model, move |event| {
+                Message::Control(ControlMessage::Picker {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                    event,
+                })
             }));
         }
         ColorControlStyle::Picker => {}
@@ -1309,11 +1342,13 @@ fn curve_view<'a>(
     let parameter = channel.parameter.clone();
     let widget = column![
         label_line(curve.label.clone(), enabled),
-        curve_editor(&model, move |event| Message::ControlCurve {
-            action: action.clone(),
-            parameter: parameter.clone(),
-            event,
-        })
+        curve_editor(&model, move |event| Message::Control(
+            ControlMessage::Curve {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                event,
+            }
+        ))
     ]
     .spacing(theme::SLIDER_GAP);
     with_control_menu(widget.into(), &curve.action, Some(&channel.parameter), menu)
@@ -1336,14 +1371,14 @@ fn group_rows<'a>(
             reset: group.reset.is_some(),
             enabled,
         },
-        Some(Message::ToggleGroup {
+        Some(Message::Control(ControlMessage::ToggleGroup {
+            module_id: module_id.to_owned(),
+            path: group.path.clone(),
+        })),
+        Message::Control(ControlMessage::ResetGroup {
             module_id: module_id.to_owned(),
             path: group.path.clone(),
         }),
-        Message::ResetGroup {
-            module_id: module_id.to_owned(),
-            path: group.path.clone(),
-        },
     );
     let header = match &group.reset {
         Some(reset) => {
@@ -1370,9 +1405,11 @@ fn action_view<'a>(
     size: ButtonSize,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let press = action.runnable.then(|| Message::RunAction {
-        action: action.action.clone(),
-        preset: action.preset.clone(),
+    let press = action.runnable.then(|| {
+        Message::Action(ActionMessage::Run {
+            action: action.action.clone(),
+            preset: action.preset.clone(),
+        })
     });
     let control: Element<'a, Message> = match (
         action.style,
@@ -1407,9 +1444,11 @@ fn action_view<'a>(
     let action_name = action.action.clone();
     let preset = action.preset.clone();
     let control = focus_control(control, action.runnable, move |event| {
-        activates(event).then(|| Message::RunAction {
-            action: action_name.clone(),
-            preset: preset.clone(),
+        activates(event).then(|| {
+            Message::Action(ActionMessage::Run {
+                action: action_name.clone(),
+                preset: preset.clone(),
+            })
         })
     });
     let control =
@@ -1450,7 +1489,7 @@ fn picker_view<'a>(
             fill: false,
             enabled: picker.enabled,
         },
-        Some(Message::SetMode(picker.target.clone())),
+        Some(Message::View(ViewMessage::SetMode(picker.target.clone()))),
     );
     // The mode strip named the mode and its letter in a tooltip; the panel says the same thing.
     let control: Element<'a, Message> = match &picker.shortcut {
@@ -1466,7 +1505,7 @@ fn picker_view<'a>(
     };
     let target = MenuTarget::Mode(picker.module_id.clone());
     let area: Element<'a, Message> = mouse_area(control)
-        .on_right_press(Message::OpenMenu(target.clone()))
+        .on_right_press(Message::View(ViewMessage::OpenMenu(target.clone())))
         .into();
     if menu == Some(&target) {
         column![
@@ -1474,9 +1513,9 @@ fn picker_view<'a>(
             inline_menu(vec![
                 (
                     "Copy as JSON request".to_owned(),
-                    Message::CopyModeRequest(picker.module_id.clone()),
+                    Message::Action(ActionMessage::CopyModeRequest(picker.module_id.clone())),
                 ),
-                ("Cancel".to_owned(), Message::CloseMenu),
+                ("Cancel".to_owned(), Message::View(ViewMessage::CloseMenu)),
             ])
         ]
         .spacing(4.0)
@@ -1530,7 +1569,7 @@ fn crop_section_view<'a>(
     rows.push(sub_group_header_with_actions(
         &crop_group("Ratio", model.enabled),
         None,
-        Message::CloseMenu,
+        Message::View(ViewMessage::CloseMenu),
         vec![
             (
                 IconButtonModel {
@@ -1606,7 +1645,7 @@ fn crop_section_view<'a>(
     rows.push(sub_group_header(
         &crop_group("Angle", model.enabled),
         None,
-        Message::CloseMenu,
+        Message::View(ViewMessage::CloseMenu),
     ));
     rows.push(angle_stepper(model));
     rows.push(straighten_toggle(model));
@@ -1648,7 +1687,7 @@ fn crop_section_view<'a>(
         model.can_apply.then_some(Message::Crop(CropMessage::Apply)),
     );
     let apply: Element<'a, Message> = mouse_area(apply)
-        .on_right_press(Message::OpenMenu(MenuTarget::Draft))
+        .on_right_press(Message::View(ViewMessage::OpenMenu(MenuTarget::Draft)))
         .into();
     let draft_menu = matches!(menu, Some(MenuTarget::Draft));
     rows.push(equal_button_row(
@@ -1660,8 +1699,11 @@ fn crop_section_view<'a>(
     ));
     if draft_menu {
         rows.push(inline_menu(vec![
-            ("Copy as JSON request".to_owned(), Message::CopyDraftRequest),
-            ("Cancel".to_owned(), Message::CloseMenu),
+            (
+                "Copy as JSON request".to_owned(),
+                Message::Action(ActionMessage::CopyDraftRequest),
+            ),
+            ("Cancel".to_owned(), Message::View(ViewMessage::CloseMenu)),
         ]));
     }
     column(rows).spacing(theme::ROW_SPACING).into()
@@ -1747,10 +1789,10 @@ fn angle_stepper(model: &CropSectionModel) -> Element<'_, Message> {
         },
         Message::Crop(CropMessage::NudgeAngle(-model.nudge)),
         Message::Crop(CropMessage::NudgeAngle(model.nudge)),
-        Message::EditValue {
+        Message::Control(ControlMessage::EditValue {
             action: model.angle_action.clone(),
             parameter: model.angle_parameter.clone(),
-        },
+        }),
         |text| Message::Crop(CropMessage::AngleText(text)),
         Message::Crop(CropMessage::SubmitAngle),
         Message::Crop(CropMessage::AngleText("0".into())),

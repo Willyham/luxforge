@@ -4,7 +4,11 @@
 use crate::{
     app::{
         draft::GestureId,
-        message::{DraftMessage, Message, PresetMessage},
+        message::{
+            DraftMessage, EvidenceMessage, HistoryMessage, MaskMessage, Message,
+            PerformanceMessage, PointerMessage, PresetMessage, PreviewMessage, SyncMessage,
+            ViewMessage,
+        },
     },
     state::histogram::Readout,
 };
@@ -530,7 +534,7 @@ pub(crate) fn modules_task(owner: OwnerHandle, client: ClientId) -> Task<Message
             let (mut listed, _) = call(&owner, client, "module.list", json!({}))?;
             parse::<Vec<ModuleDescriptor>>(listed["modules"].take())
         },
-        Message::ModulesLoaded,
+        |value| Message::Sync(SyncMessage::ModulesLoaded(value)),
     )
 }
 
@@ -555,7 +559,12 @@ pub(crate) fn import_task(
                 queued,
             )
         },
-        move |result| Message::ImportRefreshed(generation, result.map(Box::new)),
+        move |result| {
+            Message::Sync(SyncMessage::ImportRefreshed(
+                generation,
+                result.map(Box::new),
+            ))
+        },
     )
 }
 
@@ -652,7 +661,7 @@ pub(crate) fn state_task(
 ) -> Task<Message> {
     Task::perform(
         async move { command_now(&owner, client, asset_id, &method, params, proxy) },
-        |result| Message::Refreshed(result.map(Box::new)),
+        |result| Message::Sync(SyncMessage::Refreshed(result.map(Box::new))),
     )
 }
 
@@ -715,7 +724,7 @@ pub(crate) fn recipe_task(
                 masks: parse::<MaskListing>(masks)?,
             })
         },
-        |result| Message::RecipeDescribed(result.map(Box::new)),
+        |result| Message::Sync(SyncMessage::RecipeDescribed(result.map(Box::new))),
     )
 }
 
@@ -1051,7 +1060,7 @@ pub(crate) fn current_preview_task(
 ) -> Task<Message> {
     Task::perform(
         async move { current_preview(&owner, client, asset_id, entry_id, proxy) },
-        |result| Message::PreviewLoaded(result.map(Box::new)),
+        |result| Message::Preview(PreviewMessage::Loaded(result.map(Box::new))),
     )
 }
 
@@ -1100,7 +1109,7 @@ pub(crate) fn transform_task(
             )?;
             parse::<StageTransform>(transform)
         },
-        move |result| Message::MaskTransform(gesture, result),
+        move |result| Message::Mask(MaskMessage::Transform(gesture, result)),
     )
 }
 
@@ -1115,7 +1124,7 @@ pub(crate) fn session_task(
             let (result, _) = call(&owner, client, method, params)?;
             parse::<ClientSession>(result)
         },
-        Message::SessionUpdated,
+        |value| Message::View(ViewMessage::SessionUpdated(value)),
     )
 }
 
@@ -1127,7 +1136,7 @@ pub(crate) fn workspace_task(owner: OwnerHandle, client: ClientId, params: Value
             let (result, _) = call(&owner, client, "workspace.set", params)?;
             parse::<ClientSession>(result)
         },
-        Message::WorkspaceUpdated,
+        |value| Message::View(ViewMessage::WorkspaceUpdated(value)),
     )
 }
 
@@ -1156,11 +1165,13 @@ pub(crate) fn locate_task(
             )?;
             parse::<ContentPoint>(located)
         },
-        move |result| Message::PointLocated {
-            entry: picked.clone(),
-            mode: picked_mode.clone(),
-            view: (x, y),
-            result,
+        move |result| {
+            Message::Pointer(PointerMessage::Located {
+                entry: picked.clone(),
+                mode: picked_mode.clone(),
+                view: (x, y),
+                result,
+            })
         },
     )
 }
@@ -1198,11 +1209,13 @@ pub(crate) fn query_task(
             object.insert(coordinates.1, Value::from(point.1));
             call(&owner, client, &method, params).map(|(value, _)| value)
         },
-        move |result| Message::SampleQueried {
-            entry: answered.clone(),
-            action: action.clone(),
-            point,
-            result,
+        move |result| {
+            Message::Pointer(PointerMessage::SampleQueried {
+                entry: answered.clone(),
+                action: action.clone(),
+                point,
+                result,
+            })
         },
     )
 }
@@ -1235,9 +1248,11 @@ pub(crate) fn sample_task(
             rgba.map(|rgba| Readout { x, y, rgba })
                 .ok_or_else(|| format!("({x}, {y}) is outside the rendered image"))
         },
-        move |result| Message::Sampled {
-            entry: sampled.clone(),
-            result,
+        move |result| {
+            Message::Pointer(PointerMessage::Sampled {
+                entry: sampled.clone(),
+                result,
+            })
         },
     )
 }
@@ -1248,7 +1263,7 @@ pub(crate) fn pan_task(owner: OwnerHandle, client: ClientId, x: f32, y: f32) -> 
             let (result, _) = call(&owner, client, "view.set", json!({"pan_x":x,"pan_y":y}))?;
             parse::<ClientSession>(result)
         },
-        Message::PanSynced,
+        |value| Message::View(ViewMessage::PanSynced(value)),
     )
 }
 
@@ -1266,7 +1281,7 @@ pub(crate) fn versions_task(
                 call(&owner, client, "version.list", json!({"asset_id":asset_id}))?;
             Ok((parse::<Vec<Version>>(listed["versions"].take())?, request))
         },
-        Message::VersionsLoaded,
+        |value| Message::History(HistoryMessage::VersionsLoaded(value)),
     )
 }
 
@@ -1280,7 +1295,7 @@ pub(crate) fn sync_task(
 ) -> Task<Message> {
     Task::perform(
         async move { sync_now(&owner, client, asset_id, after, &own, proxy) },
-        Message::Synced,
+        |value| Message::Sync(SyncMessage::Synced(value)),
     )
 }
 
@@ -1302,9 +1317,11 @@ pub(crate) struct PerformanceRead {
 pub(crate) fn performance_task(owner: OwnerHandle, client: ClientId, epoch: u64) -> Task<Message> {
     Task::perform(
         async move { read_performance(&owner, client) },
-        move |result| Message::PerformanceSampled {
-            epoch,
-            result: result.map(Box::new),
+        move |result| {
+            Message::Performance(PerformanceMessage::Sampled {
+                epoch,
+                result: result.map(Box::new),
+            })
         },
     )
 }
@@ -1627,7 +1644,7 @@ pub(crate) fn host_task(
                 sequence,
             })
         },
-        |result| Message::HostAnswered(result.map(Box::new)),
+        |result| Message::Evidence(EvidenceMessage::HostAnswered(result.map(Box::new))),
     )
 }
 
@@ -1647,7 +1664,7 @@ pub(crate) fn older_task(
             )?;
             parse::<HistoryPage>(page)
         },
-        Message::OlderLoaded,
+        |value| Message::History(HistoryMessage::OlderLoaded(value)),
     )
 }
 
@@ -1875,7 +1892,7 @@ mod tests {
         let opened = import_now(&owner, client, &fixture, 0, &AtomicU64::new(0), None, None)
             .expect("the import opens");
         let asset = opened.state.asset.id.clone();
-        let _ = editor.update(Message::Refreshed(Ok(Box::new(opened))));
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(opened)))));
         assert_eq!(editor.api_sequence, 0, "an open reads no event");
         let mut cursor = editor.api_sequence;
         let mut poll = |editor: &mut Editor| {
@@ -1890,7 +1907,7 @@ mod tests {
             )
             .expect("the poll answers");
             let result = (polled.refresh.is_some(), polled.own.len());
-            let _ = editor.update(Message::Synced(Ok(polled)));
+            let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(polled))));
             assert!(editor.api_sequence >= cursor, "never backwards");
             cursor = editor.api_sequence;
             result
@@ -1913,7 +1930,9 @@ mod tests {
                 None,
             )
             .expect("the command commits");
-            let _ = editor.update(Message::Refreshed(Ok(Box::new(refreshed))));
+            let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+                refreshed,
+            )))));
         };
         command(&mut editor, "rotate-left");
         call(
@@ -1963,7 +1982,7 @@ mod tests {
             capabilities: false,
             own: Vec::new(),
         };
-        let _ = editor.update(Message::Synced(Ok(stale)));
+        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));
         assert_eq!(editor.api_sequence, caught_up + 3);
         testing::finish(editor, catalog);
     }

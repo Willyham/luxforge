@@ -3,7 +3,7 @@
 //! render straight from their models with the widget library; nothing here decides what a row
 //! means, which figure a counter shows or which jobs are listed.
 use crate::{
-    app::message::{MenuTarget, Message},
+    app::message::{HistoryMessage, MenuTarget, Message, PerformanceMessage, ViewMessage},
     state::{
         panel::{Marker as PanelMarker, StatePanelModel},
         performance::{PerformanceModel, WINDOW},
@@ -59,7 +59,7 @@ fn performance(model: &PerformanceModel) -> Element<'_, Message> {
         "Performance",
         model.caption.clone(),
         model.expanded,
-        Message::TogglePerformance,
+        Message::Performance(PerformanceMessage::Toggle),
     );
     if !model.expanded {
         return container(heading)
@@ -139,8 +139,11 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
                 selected: version.selected,
                 enabled: !model.busy,
             },
-            (!model.busy).then(|| Message::Preview(version.entry_id.clone())),
-            Some(Message::OpenMenu(MenuTarget::Version(version.name.clone()))),
+            (!model.busy)
+                .then(|| Message::History(HistoryMessage::Select(version.entry_id.clone()))),
+            Some(Message::View(ViewMessage::OpenMenu(MenuTarget::Version(
+                version.name.clone(),
+            )))),
         )
     });
     let chip_row = chip_wrap(chips.collect());
@@ -156,7 +159,7 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
                     enabled: true,
                     selected: model.version_form_open,
                 },
-                Some(Message::ToggleVersionForm),
+                Some(Message::History(HistoryMessage::ToggleVersionForm)),
             ),
         ]
         .align_y(Alignment::Center),
@@ -168,8 +171,8 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
         block = block.push(
             row![
                 text_input("Name this version", &model.version_name)
-                    .on_input(Message::VersionName)
-                    .on_submit(Message::SaveVersion)
+                    .on_input(|value| Message::History(HistoryMessage::VersionName(value)))
+                    .on_submit(Message::History(HistoryMessage::SaveVersion))
                     .style(theme::text_input_style(false))
                     .size(theme::SIZE_CONTROL)
                     .width(Length::Fill),
@@ -182,8 +185,11 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
 
     if let Some(MenuTarget::Version(name)) = &model.menu {
         block = block.push(inline_menu(vec![
-            ("Delete".to_string(), Message::DeleteVersion(name.clone())),
-            ("Cancel".to_string(), Message::CloseMenu),
+            (
+                "Delete".to_string(),
+                Message::History(HistoryMessage::DeleteVersion(name.clone())),
+            ),
+            ("Cancel".to_string(), Message::View(ViewMessage::CloseMenu)),
         ]));
     }
 
@@ -195,7 +201,7 @@ fn save_button(can_save: bool) -> Element<'static, Message> {
         "Save",
         ButtonTone::Control,
         ButtonSize::Compact,
-        can_save.then_some(Message::SaveVersion),
+        can_save.then_some(Message::History(HistoryMessage::SaveVersion)),
     )
 }
 
@@ -213,7 +219,9 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
                 tag: entry.branch.then(|| "branch".to_string()),
                 enabled: editable,
             },
-            Some(Message::Preview(entry.entry_id.clone())),
+            Some(Message::History(HistoryMessage::Select(
+                entry.entry_id.clone(),
+            ))),
             None,
         ));
     }
@@ -222,7 +230,7 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
             "Load older",
             ButtonTone::Quiet,
             ButtonSize::Compact,
-            editable.then_some(Message::LoadOlder),
+            editable.then_some(Message::History(HistoryMessage::LoadOlder)),
         ));
     }
     if let Some(preview) = model.preview {
@@ -232,13 +240,17 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
                     "Return to current",
                     ButtonTone::Control,
                     ButtonSize::Compact,
-                    preview.can_return.then_some(Message::ReturnCurrent),
+                    preview
+                        .can_return
+                        .then_some(Message::History(HistoryMessage::ReturnCurrent)),
                 ),
                 text_button(
                     "Restore",
                     ButtonTone::Primary,
                     ButtonSize::Compact,
-                    preview.can_restore.then_some(Message::Restore),
+                    preview
+                        .can_restore
+                        .then_some(Message::History(HistoryMessage::Restore)),
                 ),
             ]
             .spacing(theme::BUTTON_ROW_SPACING),

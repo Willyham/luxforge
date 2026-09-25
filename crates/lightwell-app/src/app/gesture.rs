@@ -18,7 +18,7 @@ use crate::{
         crop::PendingDraft,
         draft::{CoreDraft, Event, GestureId, Round, Step},
         evidence::Settle,
-        message::{DraftMessage, Message},
+        message::{DraftMessage, Message, PreviewMessage},
         tasks::{self, Refresh, RoundTrip, mutation},
     },
     crop_draft::CropDraft,
@@ -1141,7 +1141,7 @@ impl Editor {
             );
         }
         match reseed {
-            Some(result) => self.dispatch(Message::PreviewLoaded(result)),
+            Some(result) => self.dispatch(Message::Preview(PreviewMessage::Loaded(result))),
             None => Task::none(),
         }
     }

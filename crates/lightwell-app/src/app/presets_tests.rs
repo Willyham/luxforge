@@ -4,7 +4,9 @@
 //! functions they wrap, so the answers reach the editor as the same messages the runtime delivers.
 use super::{
     Boot, Editor,
-    message::{MenuTarget, Message, PaletteAction, PresetMessage},
+    message::{
+        ActionMessage, MenuTarget, Message, PaletteAction, PresetMessage, SyncMessage, ViewMessage,
+    },
     tasks::{self, call},
 };
 use crate::{
@@ -82,7 +84,7 @@ impl Library {
             initial_import: None,
             window: (1440.0, 900.0),
         });
-        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
         let mut library = Self {
             editor,
             catalog,
@@ -114,7 +116,9 @@ impl Library {
         .unwrap();
         let _ = self
             .editor
-            .update(Message::Refreshed(Ok(Box::new(refreshed))));
+            .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+                refreshed,
+            )))));
     }
 
     /// Import one fixture through the section's own import path, answered by the task's function.
@@ -228,10 +232,10 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
         }
     );
     // The click takes the ordinary action path: one command, with its refresh and preview.
-    let _ = library.editor.update(Message::RunAction {
+    let _ = library.editor.update(Message::Action(ActionMessage::Run {
         action,
         preset: fields,
-    });
+    }));
     assert!(library.editor.busy, "the command was sent");
     assert_eq!(library.editor.status, "Running edit.apply-preset…");
     // The same request, sent as the task sends it, commits one entry labelled by the preset.
@@ -380,7 +384,9 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
         None,
     )
     .unwrap();
-    let _ = library.editor.update(Message::Synced(Ok(caught_up)));
+    let _ = library
+        .editor
+        .update(Message::Sync(SyncMessage::Synced(Ok(caught_up))));
     let quiet = tasks::sync_now(
         &library.owner(),
         library.editor.client,
@@ -414,7 +420,9 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
     .unwrap();
     assert!(polled.presets.is_some(), "a preset event lists the library");
     assert!(polled.refresh.is_none(), "and costs no asset refresh");
-    let _ = library.editor.update(Message::Synced(Ok(polled)));
+    let _ = library
+        .editor
+        .update(Message::Sync(SyncMessage::Synced(Ok(polled))));
     assert_eq!(
         library.names(),
         [("Soft film".to_owned(), "Synthetic".to_owned())],
@@ -543,7 +551,9 @@ fn delete_from_a_rows_menu_lists_the_library_again() {
     let id = library.row("Soft film").id;
     let _ = library
         .editor
-        .update(Message::OpenMenu(MenuTarget::Preset(id.clone())));
+        .update(Message::View(ViewMessage::OpenMenu(MenuTarget::Preset(
+            id.clone(),
+        ))));
     assert_eq!(library.editor.menu, Some(MenuTarget::Preset(id.clone())));
     let _ = library
         .editor

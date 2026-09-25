@@ -2,7 +2,7 @@
 //!
 //! Idle means asleep: there is no timer that wakes up to ask whether a frame is ready. A worker
 //! posts one signal when it has something to deliver, and the subscription that carries it into the
-//! event loop as [`Message::Poll`] exists only while one of the queues is busy.
+//! event loop as [`PreviewMessage::Poll`] exists only while one of the queues is busy.
 //!
 //! The channel itself is created once and outlives every subscription, which is what makes the
 //! gating safe. A queue can go busy and post its signal before the runtime has built the
@@ -11,10 +11,10 @@
 //! is gone is buffered in the same way and delivered to the next one.
 //!
 //! The signal carries no payload and the channel holds one: a full channel already says "there is
-//! something to poll", and `Message::Poll` is idempotent and asks for itself again while a worker
-//! still holds a finished result, so coalescing loses nothing. The waker runs on a worker thread,
+//! something to poll", and `PreviewMessage::Poll` is idempotent and asks for itself again while a
+//! worker still holds a finished result, so coalescing loses nothing. The waker runs on a worker thread,
 //! never on the catalog owner thread, and does nothing but post it.
-use crate::app::message::Message;
+use crate::app::message::{Message, PreviewMessage};
 use iced::futures::{
     Stream,
     channel::mpsc::{Receiver, Sender, channel},
@@ -55,7 +55,7 @@ pub(crate) fn waker() -> Arc<dyn Fn() + Send + Sync> {
     })
 }
 
-/// The stream the subscription runs: the borrowed receiver, mapped to `Message::Poll`.
+/// The stream the subscription runs: the borrowed receiver, mapped to `PreviewMessage::Poll`.
 struct Wakes(Option<Receiver<()>>);
 
 impl Stream for Wakes {
@@ -65,7 +65,7 @@ impl Stream for Wakes {
         match self.0.as_mut() {
             Some(receiver) => Pin::new(receiver)
                 .poll_next(context)
-                .map(|signal| signal.map(|()| Message::Poll)),
+                .map(|signal| signal.map(|()| Message::Preview(PreviewMessage::Poll))),
             // The receiver is already lent out, which the gating makes impossible: the subscription
             // is dropped — returning it — before it can be started again. Ending the stream is the
             // honest answer if it ever happens; the `Poll` issued after a request from idle and
@@ -83,7 +83,7 @@ impl Drop for Wakes {
     }
 }
 
-/// One `Message::Poll` per signal a worker posts. Gated by the caller on either queue being busy.
+/// One `PreviewMessage::Poll` per signal a worker posts. Gated by the caller on either queue being busy.
 pub(crate) fn subscription() -> iced::Subscription<Message> {
     iced::Subscription::run(|| {
         Wakes(
@@ -112,13 +112,16 @@ mod tests {
         let mut stream = subscription_stream();
         assert!(matches!(
             futures_lite_next(&mut stream),
-            Some(Message::Poll)
+            Some(Message::Preview(PreviewMessage::Poll))
         ));
         drop(stream);
         // The receiver came back, so the next subscription still works.
         wake();
         let mut again = subscription_stream();
-        assert!(matches!(futures_lite_next(&mut again), Some(Message::Poll)));
+        assert!(matches!(
+            futures_lite_next(&mut again),
+            Some(Message::Preview(PreviewMessage::Poll))
+        ));
     }
 
     fn subscription_stream() -> Wakes {
