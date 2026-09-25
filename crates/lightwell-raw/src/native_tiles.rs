@@ -123,12 +123,14 @@ pub(super) extern "C" fn execute(
                 break;
             }
             let end = (first + desired).min(job_count);
-            rayon::scope(|scope| {
-                for job in first + 1..end {
+            // Keep the batch coordinator on its calling thread. `scope` may
+            // inject the whole closure into Rayon when called externally, so
+            // a preview worker could steal its native work and joined wait.
+            rayon::in_place_scope(|scope| {
+                for job in first..end {
                     let run_job = &run_job;
                     scope.spawn(move |_| run_job(job));
                 }
-                run_job(first);
             });
         }
         status.load(Ordering::Relaxed)
@@ -162,6 +164,25 @@ mod tests {
         tracker.peak.fetch_max(active, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(1));
         tracker.active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    struct PlacementTracker {
+        caller: std::thread::ThreadId,
+        seen: Vec<std::sync::atomic::AtomicUsize>,
+        ran_on_caller: AtomicBool,
+        ran_outside_pool: AtomicBool,
+    }
+
+    extern "C" fn track_placement(context: *mut c_void, group: usize) {
+        // SAFETY: execute joins all callbacks before this tracker drops.
+        let tracker = unsafe { &*context.cast::<PlacementTracker>() };
+        tracker.seen[group].fetch_add(1, Ordering::Relaxed);
+        if std::thread::current().id() == tracker.caller {
+            tracker.ran_on_caller.store(true, Ordering::Relaxed);
+        }
+        if rayon::current_thread_index().is_none() {
+            tracker.ran_outside_pool.store(true, Ordering::Relaxed);
+        }
     }
 
     #[test]
@@ -263,5 +284,42 @@ mod tests {
         );
         assert!(tracker.peak.load(Ordering::Relaxed) <= 3);
         assert_eq!(tracker.active.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn external_caller_only_coordinates_bounded_native_batches() {
+        let _test_guard = TEST_BUDGET_LOCK.lock().unwrap();
+        assert!(rayon::current_thread_index().is_none());
+        let cancel = AtomicBool::new(false);
+        let context = ExecutorContext {
+            cancel: &cancel,
+            worker_limit: 2,
+        };
+        let tracker = PlacementTracker {
+            caller: std::thread::current().id(),
+            seen: (0..5)
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect(),
+            ran_on_caller: AtomicBool::new(false),
+            ran_outside_pool: AtomicBool::new(false),
+        };
+        assert_eq!(
+            execute(
+                (&context as *const ExecutorContext<'_>).cast_mut().cast(),
+                tracker.seen.len(),
+                track_placement,
+                (&tracker as *const PlacementTracker).cast_mut().cast(),
+            ),
+            0
+        );
+        assert!(
+            tracker
+                .seen
+                .iter()
+                .all(|seen| seen.load(Ordering::Relaxed) == 1)
+        );
+        assert!(!tracker.ran_on_caller.load(Ordering::Relaxed));
+        assert!(!tracker.ran_outside_pool.load(Ordering::Relaxed));
+        assert!(PEAK_SLOTS.load(Ordering::Relaxed) <= MAX_SCRATCH_SLOTS);
     }
 }
