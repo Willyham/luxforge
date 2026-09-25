@@ -2216,11 +2216,13 @@ pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &s
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CanvasPick<'a> {
     /// Fill these coordinate parameters of an action with the located content pixel. It commits
-    /// nothing: the person submits the action themselves.
+    /// only when the module declares `commit`: then the two coordinates are the whole request and
+    /// the pick submits it; otherwise the person submits the action themselves.
     Point {
         action: &'a str,
         x: &'a str,
         y: &'a str,
+        commit: bool,
     },
     /// Run this module query at the located content pixel and submit the fields it answers with to
     /// the module action once. A refused query commits nothing and its reason is shown.
@@ -2268,10 +2270,17 @@ pub(crate) fn canvas_pick<'a>(
     }
     let module = module_of(modules, mode).filter(|module| module.is_available())?;
     match module.canvas.as_ref()? {
-        CanvasInteraction::PointPick { action, x, y, .. } => Some(CanvasPick::Point {
+        CanvasInteraction::PointPick {
+            action,
+            x,
+            y,
+            commit,
+            ..
+        } => Some(CanvasPick::Point {
             action: action.as_str(),
             x: x.as_str(),
             y: y.as_str(),
+            commit: *commit,
         }),
         CanvasInteraction::SampleApply {
             query,
@@ -2451,13 +2460,14 @@ mod tests {
             .cloned()
             .collect();
         // The RAW sensor picker and the pixel proof both declare a plain point pick, and each
-        // answers only for its own mode.
+        // answers only for its own mode. RAW's declares that the pick commits; the proof's fills.
         assert_eq!(
             canvas_pick(&modules, "lightwell.raw"),
             Some(CanvasPick::Point {
                 action: "pick-raw-neutral",
                 x: "x",
-                y: "y"
+                y: "y",
+                commit: true,
             })
         );
         assert_eq!(
@@ -2465,7 +2475,8 @@ mod tests {
             Some(CanvasPick::Point {
                 action: "set-pixel",
                 x: "x",
-                y: "y"
+                y: "y",
+                commit: false,
             })
         );
         // Basic's neutral picker is a sample-apply pick: a query first, then one command.

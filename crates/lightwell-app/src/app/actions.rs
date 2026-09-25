@@ -4,7 +4,6 @@ use super::{
     Editor,
     gesture::Starting,
     message::{ActionMessage, Message},
-    tasks::mutation,
 };
 use crate::state::{
     fields::{action_params, submit_preset},
@@ -81,35 +80,55 @@ impl Editor {
                     self.status = reason;
                     return Task::none();
                 }
-                // A host command of the `mask.*` family is its own method, and its identities are
-                // envelope fields: the generic builder below would spell it `edit.mask.set-amount`
-                // and drop the target, so it goes through the family's own path.
-                if lightwell_core::mask::commands::find(&action).is_some() {
-                    return self.run_mask_action(&action, &preset);
-                }
-                let Some(state) = &self.state else {
-                    return Task::none();
-                };
-                let Some(declared) = tools::declared_action(&self.modules, &action) else {
-                    self.status = format!("No module declares the action {action}");
-                    return Task::none();
-                };
-                let params = match action_params(declared, &preset, &self.fields) {
-                    Ok(params) => params,
+                let (method, request) = match self.control_request(&action, &preset) {
+                    Ok(request) => request,
                     Err(message) => {
                         self.status = message;
                         return Task::none();
                     }
                 };
-                let mut request =
-                    json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
-                let object = request.as_object_mut().expect("the envelope is an object");
-                object.extend(params);
-                self.add_mask_target(&action, object);
-                return self.command(format!("edit.{action}"), request);
+                // A generated `mask.*` control's request is recorded as the Masks panel's own
+                // commands are, so "what is copied is what is sent" is a comparison a test can
+                // make for it and not only an argument about one builder.
+                if lightwell_core::mask::commands::find(&action).is_some() {
+                    self.last_mask_request = Some((method.clone(), request.clone()));
+                }
+                return self.command(method, request);
             }
         }
         Task::none()
+    }
+
+    /// The one request this desktop sends for an action with these fields: the method the action
+    /// is published as, and its params — the mutation envelope, the identities the panel is bound
+    /// to and the fields beside them. Every control, canvas pick and copied request is built here,
+    /// so what a control sends and what Copy as JSON request copies cannot differ.
+    ///
+    /// A module action is `edit.<action>`, carrying the bound mask when its module declares a
+    /// maskable effect; a host `mask.*` command is its own method, carrying the mask and component
+    /// the panel has open when the command declares them. The fields are sent as given.
+    pub(crate) fn request(
+        &self,
+        action: &str,
+        fields: &Map<String, Value>,
+    ) -> Result<(String, Value), String> {
+        let params = self
+            .mask_request(&self.draft_target(action), fields)
+            .ok_or_else(|| String::from("No photograph is open"))?;
+        Ok((tools::published_method(action), params))
+    }
+
+    /// The request one control sends for its action and preset: the fields [`action_params`]
+    /// reads for that action, in the one [`Self::request`].
+    pub(crate) fn control_request(
+        &self,
+        action: &str,
+        preset: &Map<String, Value>,
+    ) -> Result<(String, Value), String> {
+        let declared = tools::declared_action(&self.modules, action)
+            .ok_or_else(|| format!("No module declares the action {action}"))?;
+        let fields = action_params(declared, preset, &self.fields)?;
+        self.request(action, &fields)
     }
 
     /// The `workspace.set` request this module's picker control would send: its own mode when the
@@ -141,51 +160,26 @@ impl Editor {
         self.request_for_preset(action, parameter, None)
     }
 
+    /// The `{method, params}` one control would send right now: its preset, or what its field
+    /// submits, through [`Self::control_request`], byte for byte the request the control sends.
     pub(crate) fn request_for_preset(
         &mut self,
         action: &str,
         parameter: Option<&str>,
         preset: Option<&Map<String, Value>>,
     ) -> Option<Value> {
-        let Some(state) = &self.state else {
-            self.status = "No photograph is open".into();
-            return None;
-        };
-        let Some(declared) = tools::declared_action(&self.modules, action) else {
-            self.status = format!("No module declares the action {action}");
-            return None;
-        };
-        let preset = match preset
-            .cloned()
-            .map(Ok)
-            .unwrap_or_else(|| submit_preset(&self.modules, action, parameter, &self.fields))
-        {
-            Ok(preset) => preset,
-            Err(message) => {
-                self.status = message;
-                return None;
-            }
-        };
-        let params = match action_params(declared, &preset, &self.fields) {
-            Ok(params) => params,
-            Err(message) => {
-                self.status = message;
-                return None;
-            }
-        };
-        // A `mask.*` command is its own method and carries the panel's identities in its envelope;
-        // a module action is an `edit.<action>` with the bound mask beside its fields. Either way
-        // this is byte for byte the request the control sends.
-        if lightwell_core::mask::commands::find(action).is_some() {
-            let target = self.draft_target(action);
-            let envelope = self.mask_request(&target, &params)?;
-            return Some(json!({"method":action,"params":envelope}));
+        let built = match preset {
+            Some(preset) => Ok(preset.clone()),
+            None => submit_preset(&self.modules, action, parameter, &self.fields),
         }
-        let mut envelope = json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
-        let object = envelope.as_object_mut().expect("the envelope is an object");
-        object.extend(params);
-        self.add_mask_target(action, object);
-        Some(json!({"method":format!("edit.{action}"),"params":envelope}))
+        .and_then(|preset| self.control_request(action, &preset));
+        match built {
+            Ok((method, params)) => Some(json!({"method":method,"params":params})),
+            Err(message) => {
+                self.status = message;
+                None
+            }
+        }
     }
 
     /// Why a discrete control's action cannot commit now, in the words the status bar uses.
@@ -202,54 +196,12 @@ impl Editor {
         })
     }
 
-    /// One generated `mask.*` control submitting its own field. The method is the action, the
-    /// identities are the envelope and the declared fields go beside them, exactly as in the request
-    /// an independent JSON client sends.
-    pub(super) fn run_mask_action(
-        &mut self,
-        action: &str,
-        preset: &Map<String, Value>,
-    ) -> Task<Message> {
-        let Some(declared) = tools::declared_action(&self.modules, action) else {
-            return Task::none();
-        };
-        let params = match action_params(declared, preset, &self.fields) {
-            Ok(params) => params,
-            Err(message) => {
-                self.status = message;
-                return Task::none();
-            }
-        };
-        let target = self.draft_target(action);
-        let Some(request) = self.mask_request(&target, &params) else {
-            return Task::none();
-        };
-        let method = declared.id.clone();
-        // Recorded exactly as a row control's is, so "what is copied is what is sent" is a comparison
-        // a test can make for a generated `mask.*` control and not only an argument about the two
-        // functions sharing `mask_request`.
-        self.last_mask_request = Some((method.clone(), request.clone()));
-        self.command(method, request)
-    }
-
-    /// Put the host's one optional `mask` field on a module action's request when the panel's
-    /// sections are bound to a mask and that action's module declares a maskable effect.
-    ///
-    /// It is the same field an independent JSON client sends, in the same place, which is what makes
-    /// a control's Copy as JSON request exactly the request that control sent. An action whose
-    /// module declares no maskable effect never carries it: the host refuses it by name rather than
-    /// ignoring it, and a client that believes it edited through a mask must be told it did not.
-    pub(crate) fn add_mask_target(&self, action: &str, request: &mut Map<String, Value>) {
-        let Some(mask) = self.section_target() else {
-            return;
-        };
-        if self.maskable_action(action) {
-            request.insert(lightwell_core::MASK_FIELD.to_owned(), json!(mask));
-        }
-    }
-
     /// This action belongs to a module that declares a maskable effect, so the host accepts the
     /// target field on it. Read from the descriptors, so no module is named here.
+    ///
+    /// An action whose module declares no maskable effect never carries the bound mask: the host
+    /// refuses it by name rather than ignoring it, and a client that believes it edited through a
+    /// mask must be told it did not.
     pub(crate) fn maskable_action(&self, action: &str) -> bool {
         self.modules.iter().any(|module| {
             module.action(action).is_some() && module.effects.iter().any(|effect| effect.maskable)

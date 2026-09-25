@@ -1991,8 +1991,9 @@ impl Editor {
 
     /// One click on the photograph, at a pixel of the raster on screen, exactly as the canvas
     /// publishes it. What the click means is the active canvas mode's own declared pick: a point
-    /// pick fills that mode's coordinate fields and commits nothing, and a sample-apply pick runs
-    /// its module's query and submits the answer once. Nothing here names either.
+    /// pick fills that mode's coordinate fields, or commits them when it declares `commit`, and a
+    /// sample-apply pick runs its module's query and submits the answer once. Nothing here names
+    /// any of them.
     fn pick_step(&mut self, step: PickStep) -> Task<Message> {
         if self.state.is_none() {
             return self.fail_step("no photograph is open");

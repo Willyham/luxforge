@@ -898,7 +898,8 @@ impl Control {
     }
 }
 
-/// How a module lets the canvas drive its action. Neither kind commits by itself.
+/// How a module lets the canvas drive its action. A point pick commits only when it declares
+/// `commit`; a sample-apply pick submits its query's answer once; a crop frame commits on Apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CanvasInteraction {
@@ -911,6 +912,13 @@ pub enum CanvasInteraction {
         title: String,
         /// One uppercase ASCII letter that selects the mode, unique across the registry.
         shortcut: Option<String>,
+        /// The pick is the whole request: a client submits `action` with the picked `x` and `y`
+        /// at once, as one commit, instead of filling its fields for the person to submit. Only an
+        /// action that declares no other parameter may commit on a pick, which
+        /// [`ModuleDescriptor::validate`] checks. RAW's sensor neutral pick commits; the pixel
+        /// proof's pick does not.
+        #[serde(default)]
+        commit: bool,
     },
     /// A pointer pick on the image runs a query at the picked content pixel and, when the query
     /// answers, submits its numeric result fields to `action` once. `x`/`y` name that query's integer
@@ -1198,6 +1206,7 @@ impl ModuleDescriptor {
                 y,
                 title,
                 shortcut,
+                commit,
             }) => {
                 self.check_canvas_mode(title, shortcut.as_deref())?;
                 self.check_picker(pickers)?;
@@ -1209,6 +1218,19 @@ impl ModuleDescriptor {
                             "canvas parameter {name} of action {action} is not an integer"
                         )));
                     }
+                }
+                // A committing pick sends the two coordinates and nothing else, so they must be
+                // the whole request its action takes.
+                if *commit
+                    && let Some(other) = declared
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.name != *x && parameter.name != *y)
+                {
+                    return Err(validation(format!(
+                        "canvas action {action} commits on a pick but declares parameter {}",
+                        other.name
+                    )));
                 }
             }
             Some(CanvasInteraction::SampleApply {
@@ -2969,6 +2991,7 @@ mod tests {
                         y: "rgb".into(),
                         title: "Pick".into(),
                         shortcut: None,
+                        commit: false,
                     }),
                     ..descriptor()
                 },
@@ -3194,6 +3217,7 @@ mod tests {
                         y: "x".into(),
                         title: "  ".into(),
                         shortcut: None,
+                        commit: false,
                     }),
                     ..descriptor()
                 },
@@ -3207,6 +3231,7 @@ mod tests {
                         y: "x".into(),
                         title: "Pick".into(),
                         shortcut: Some("r".into()),
+                        commit: false,
                     }),
                     ..descriptor()
                 },
@@ -3220,6 +3245,22 @@ mod tests {
                         y: "x".into(),
                         title: "Pick".into(),
                         shortcut: Some("RR".into()),
+                        commit: false,
+                    }),
+                    ..descriptor()
+                },
+            ),
+            (
+                // `set-thing` also declares `rgb` and `mode`, which a pick cannot supply.
+                "a committing pick whose action takes more than the coordinates",
+                ModuleDescriptor {
+                    canvas: Some(CanvasInteraction::PointPick {
+                        action: "set-thing".into(),
+                        x: "x".into(),
+                        y: "x".into(),
+                        title: "Pick".into(),
+                        shortcut: None,
+                        commit: true,
                     }),
                     ..descriptor()
                 },
@@ -3379,6 +3420,7 @@ mod tests {
                         y: "x".into(),
                         title: "Pick".into(),
                         shortcut: Some("W".into()),
+                        commit: false,
                     }),
                     ..descriptor()
                 },

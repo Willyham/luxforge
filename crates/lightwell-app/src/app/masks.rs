@@ -286,11 +286,12 @@ impl Editor {
             .find(|report| &report.id == id)
     }
 
-    /// The whole request one mask command sends: the mutation envelope, the host-owned identities
-    /// and the command's own declared fields, in the one shape every client uses.
+    /// The params of one request: the mutation envelope, the host-owned identities and the
+    /// action's own declared fields, in the one shape every client uses. A module action's target
+    /// is at most its bound mask; a mask command's is the identities it declares.
     ///
-    /// The identities are the command's declared identity parameters, sent as top-level fields
-    /// beside its values like every other parameter.
+    /// The identities are sent as top-level fields beside the values like every other parameter.
+    /// [`Editor::request`] is this with the target the panel is bound to.
     pub(crate) fn mask_request(
         &self,
         target: &MaskTarget,

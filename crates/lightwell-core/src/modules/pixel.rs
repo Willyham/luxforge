@@ -94,6 +94,8 @@ parameters: vec![
                     y: "y".into(),
                     title: "Pick pixel".into(),
                     shortcut: None,
+                    // The pick fills the coordinates; the person submits the colour with them.
+                    commit: false,
                 }),
                 // A proof tool, not a photo-editing one.
                 developer: true,

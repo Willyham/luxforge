@@ -5,7 +5,7 @@ use super::{
     evidence::Settle,
     gesture::Starting,
     message::{Message, PointerMessage},
-    tasks::{locate_task, mutation, query_task, sample_task},
+    tasks::{locate_task, query_task, sample_task},
 };
 use crate::state::tools;
 use iced::Task;
@@ -22,6 +22,8 @@ pub(super) enum PickTarget {
         action: String,
         x: String,
         y: String,
+        /// The module declares that the pick is the whole request and commits it.
+        commit: bool,
     },
     Sample {
         query: String,
@@ -42,10 +44,16 @@ pub(super) enum PickTarget {
 impl PickTarget {
     pub(super) fn of(modules: &[ModuleDescriptor], mode: &str) -> Option<Self> {
         match tools::canvas_pick(modules, mode)? {
-            tools::CanvasPick::Point { action, x, y } => Some(Self::Point {
+            tools::CanvasPick::Point {
+                action,
+                x,
+                y,
+                commit,
+            } => Some(Self::Point {
                 action: action.to_owned(),
                 x: x.to_owned(),
                 y: y.to_owned(),
+                commit,
             }),
             tools::CanvasPick::Sample {
                 query,
@@ -174,28 +182,37 @@ impl Editor {
                         action,
                         x: x_parameter,
                         y: y_parameter,
+                        commit,
                     } => {
                         self.event(
                             "canvas_pick",
                             json!({"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
                         );
-                        if action == "pick-raw-neutral" {
+                        // The module declares that the two coordinates are the whole request, so
+                        // the pick submits it as one commit through the one request builder.
+                        if commit {
                             if !self.session.preview.can_edit() {
-                                self.status = "Return to current to edit white balance".into();
+                                self.status = "Return to the current state before editing".into();
+                                self.settle_step(Settle::Pick);
                                 return Task::none();
                             }
-                            let Some(state) = &self.state else {
-                                return Task::none();
+                            let fields = Map::from_iter([
+                                (x_parameter, Value::from(x)),
+                                (y_parameter, Value::from(y)),
+                            ]);
+                            return match self.request(&action, &fields) {
+                                Ok((method, request)) => {
+                                    // This pick commits, so its evidence is the render that
+                                    // follows rather than the status it leaves.
+                                    self.await_step(Settle::Preview);
+                                    self.command(method, request)
+                                }
+                                Err(message) => {
+                                    self.status = message;
+                                    self.settle_step(Settle::Pick);
+                                    Task::none()
+                                }
                             };
-                            let mut request = json!({
-                                "asset_id": state.asset.id,
-                                "mutation": mutation(state.revision),
-                            });
-                            let object =
-                                request.as_object_mut().expect("the envelope is an object");
-                            object.insert(x_parameter, Value::from(x));
-                            object.insert(y_parameter, Value::from(y));
-                            return self.command(format!("edit.{action}"), request);
                         }
                         self.fields.set(&action, &x_parameter, x.to_string());
                         self.fields.set(&action, &y_parameter, y.to_string());
@@ -333,9 +350,6 @@ impl Editor {
                     self.settle_step(Settle::Pick);
                     return Task::none();
                 }
-                let Some(state) = &self.state else {
-                    return Task::none();
-                };
                 if self.busy {
                     // Something else took the one request in flight while the query was out. The
                     // answer is not committed behind it; the pick is simply refused and said so.
@@ -343,30 +357,28 @@ impl Editor {
                     self.settle_step(Settle::Pick);
                     return Task::none();
                 }
-                let mut request =
-                    json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
-                let object = request.as_object_mut().expect("the envelope is an object");
-                object.extend(fields.clone());
-                // A host command addresses the objects it edits in the envelope, because no declared
-                // parameter kind carries an identity. The pick fills the component the panel has
-                // open, and a pick with nothing open is refused with its reason rather than sent.
-                let method = match host {
-                    None => format!("edit.{action}"),
-                    Some(command) => {
-                        let Some(mask) = self.selected_mask.clone() else {
-                            self.status = "Open a mask to pick a colour into it".into();
-                            self.settle_step(Settle::Pick);
-                            return Task::none();
-                        };
-                        let Some(component) = self.selected_component.clone() else {
-                            self.status =
-                                "Select the component this pick fills before picking".into();
-                            self.settle_step(Settle::Pick);
-                            return Task::none();
-                        };
-                        object.insert("mask".into(), json!(mask.as_str()));
-                        object.insert("component".into(), json!(component.as_str()));
-                        command.method.to_owned()
+                // A host command addresses the objects it edits by its declared identities, which
+                // the one request builder fills from the panel. The pick fills the component the
+                // panel has open, and a pick with nothing open is refused with its reason rather
+                // than sent.
+                if host.is_some() {
+                    if self.selected_mask.is_none() {
+                        self.status = "Open a mask to pick a colour into it".into();
+                        self.settle_step(Settle::Pick);
+                        return Task::none();
+                    }
+                    if self.selected_component.is_none() {
+                        self.status = "Select the component this pick fills before picking".into();
+                        self.settle_step(Settle::Pick);
+                        return Task::none();
+                    }
+                }
+                let (method, request) = match self.request(&action, &fields) {
+                    Ok(request) => request,
+                    Err(message) => {
+                        self.status = message;
+                        self.settle_step(Settle::Pick);
+                        return Task::none();
                     }
                 };
                 self.event(

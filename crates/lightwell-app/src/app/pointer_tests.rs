@@ -354,3 +354,67 @@ fn a_point_outside_the_content_stage_reports_and_fills_nothing() {
     );
     finish(editor, catalog);
 }
+
+/// A point pick commits exactly when its module declares `commit`: the two located coordinates are
+/// the whole request, sent as one command through the one request builder. The desktop names no
+/// action to decide it, so the same module with the declaration turned off fills its fields
+/// instead.
+#[test]
+fn a_point_pick_commits_only_when_its_module_declares_it() {
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+    let (mode, action) = editor
+        .modules
+        .iter()
+        .find_map(|module| match module.canvas.as_ref()? {
+            lightwell_core::CanvasInteraction::PointPick {
+                action,
+                commit: true,
+                ..
+            } => Some((module.id.clone(), action.clone())),
+            _ => None,
+        })
+        .expect("a module whose point pick commits");
+    editor.session.workspace.mode = mode.clone();
+    let entry_id = editor.displayed_entry().expect("a displayed entry");
+    let located = |entry: EntryId| {
+        Message::Pointer(PointerMessage::Located {
+            entry,
+            mode: mode.clone(),
+            view: (7, 9),
+            result: Ok(ContentPoint {
+                content_x: 100,
+                content_y: 42,
+                width: 480,
+                height: 320,
+            }),
+        })
+    };
+
+    // The copied request of that pick is the one the pick sends: the envelope and the two fields.
+    let fields = Map::from_iter([("x".to_owned(), json!(100)), ("y".to_owned(), json!(42))]);
+    let (method, request) = editor.request(&action, &fields).expect("a request");
+    assert_eq!(method, format!("edit.{action}"));
+    assert_eq!(request["x"], json!(100));
+    assert_eq!(request["y"], json!(42));
+    assert_eq!(request["mutation"]["expected_revision"], json!(4));
+
+    let _ = editor.update(located(entry_id.clone()));
+    assert!(editor.busy, "the pick was not committed: {}", editor.status);
+    assert_eq!(editor.status, format!("Running edit.{action}…"));
+    editor.busy = false;
+
+    // Without the declaration the same pick fills the coordinates and commits nothing.
+    for module in &mut editor.modules {
+        if let Some(lightwell_core::CanvasInteraction::PointPick { commit, .. }) =
+            module.canvas.as_mut()
+            && module.id == mode
+        {
+            *commit = false;
+        }
+    }
+    let _ = editor.update(located(entry_id));
+    assert!(!editor.busy, "a filling pick committed");
+    assert_eq!(editor.fields.get(&action, "x"), Some("100"));
+    assert_eq!(editor.fields.get(&action, "y"), Some("42"));
+    finish(editor, catalog);
+}

@@ -616,6 +616,7 @@ fn shortcut_module(id: &str, effect: &str, action: &str, letter: &str) -> Arc<dy
         y: "y".into(),
         title: "Test mode".into(),
         shortcut: Some(letter.into()),
+        commit: false,
     });
     // A pick canvas is reached from the panel, so it declares its picker control.
     descriptor.controls = vec![crate::Control::Picker {

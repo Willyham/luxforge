@@ -372,6 +372,8 @@ impl RawModule {
                     y: "y".into(),
                     title: "Neutral WB".into(),
                     shortcut: Some("N".into()),
+                    // The pick is the whole white balance: it commits at the located pixel.
+                    commit: true,
                 }),
                 developer: false,
                 collapsed: false,
