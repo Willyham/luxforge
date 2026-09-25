@@ -170,12 +170,13 @@
     {
       "id": "TASK-004",
       "description": "Make the `raw-panel` scenario pass on the DJI Air 2S, whose approximate white-balance drag frame misses the one-code average agreement check.",
-      "status": "ready",
+      "status": "blocked",
       "dependencies": [],
       "extra_context": [
-        "`raw-panel` on the Air 2S fails the check that the released exact frame is within one code of the drafted approximate frame on average: 1.226 codes was measured.",
-        "The approximation's error is larger on the Air 2S than on the Z6 and X100VI: at 3200 K about 10% of display-proxy pixels differ by more than two codes (mean red error 1.23 codes), concentrated on glittering water and sand, where the demosaic's nonlinearity under a strong gain change dominates.",
-        "Decide between improving the approximation for such scenes and a per-source threshold justified by the measurements; the release always lands the exact frame."
+        "Blocked on the owner's decision about the check; measured, and no sound approximation fix was found.",
+        "`raw-panel` fails on the Air 2S only at 100% (3500 K to 2500 K, red gain × 0.741, blue × 1.664): released against drafted is 1.223 codes on average, deterministic across three runs; Fit passes at 0.345, and the Z6 and X100VI pass at both zooms. The error is the demosaic's colour-difference interpolation, which is not equivariant under a strong gain change, spread broadly rather than on specular pixels.",
+        "Two candidate approximations were measured on the full sensor and rejected (a clip-aware clamp, 1.13 to 1.06 codes; a green high-pass correction, 1.00, which breaks the per-pixel matrix and its commuting with the proxy downscale).",
+        "The measured case and the proposed drag-relative check (released within a tenth of the drag's own difference at both zooms, the absolute one-code check kept at Fit) are in the instant-preview design's proposals, awaiting the owner."
       ],
       "context_links": [
         {
@@ -697,6 +698,52 @@
           "A retried task returns the original job."
         ]
       }
+    },
+    {
+      "id": "TASK-017",
+      "description": "Reconcile the Bayer demosaic's input clamp with the documented highlight latitude.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The adapter's normalization comment says no pre-demosaic clamp is applied and under-black and over-white latitude is retained, and the initial RAW design describes that headroom. The vendored RCD clamps its input to 0–1 (`LIM01(rawData / 65536)`), so on Bayer sources (Z6, Air 2S) the gained mosaic is clipped at sensor white before the demosaic. X-Trans (Markesteijn) is not affected in the same way.",
+        "Found while measuring the Air 2S white-balance approximation; the clip ceiling times the Air 2S gain map is where part of that error concentrates."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW adapter",
+          "target": "crates/lightwell-raw/native/adapter.cpp",
+          "relevance": "The normalization and its comment."
+        },
+        {
+          "kind": "file",
+          "label": "Vendored RCD",
+          "target": "crates/lightwell-raw/vendor/librtprocess-9a858270/src/demosaic/rcd.cc",
+          "relevance": "The input clamp."
+        },
+        {
+          "kind": "file",
+          "label": "Initial RAW design",
+          "target": "docs/design/initial-raw.md",
+          "relevance": "The documented latitude."
+        }
+      ],
+      "acceptance_criteria": [
+        "Either the documents and comment state the Bayer clamp as current behaviour, or the owner decides to retain the latitude and the demosaic is changed with its rendered effect measured on the supplied files.",
+        "A test pins the chosen behaviour on a synthetic Bayer mosaic with values above white."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "A lightwell-raw test over a synthetic over-white mosaic."
+        ],
+        "commands": [
+          "cargo test -p lightwell-raw"
+        ],
+        "expected_results": [
+          "The behaviour matches the documents."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -718,7 +765,8 @@
         "TASK-013",
         "TASK-014",
         "TASK-015",
-        "TASK-016"
+        "TASK-016",
+        "TASK-017"
       ]
     }
   ]
