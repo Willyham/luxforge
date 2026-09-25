@@ -253,16 +253,23 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
     }
 
     // The original 98-pixel tile origins and retained interiors are unchanged.
-    // A worker processes each assigned row's tiles left-to-right: the pinned
-    // final-column code reuses scratch from its preceding tile. The last two
-    // rows stay together because the partial final row starts from the prior
-    // row's scratch. Full-size first tiles initialize the read regions.
+    // A full tile initializes every scratch region read by its later stages,
+    // so ordinary full-height rows can start a job at any full tile. The
+    // partial rightmost tile stays with its full predecessor. The final two
+    // rows stay together: the partial bottom row inherits the previous full
+    // row's scratch after its right edge. Only the final job may be long, and
+    // the Rust executor runs it on the source caller instead of the pool.
     const size_t tileRows = height > 22 ? size_t((height - 23) / (ts - 16) + 1) : 0;
     const size_t tileCols = width > 22 ? size_t((width - 23) / (ts - 16) + 1) : 0;
     const size_t tileCount = tileRows * tileCols;
-    const size_t rowGroups = tileRows > 1 ? tileRows - 1 : tileRows;
-    const size_t jobs = executor && width >= 120 && tileRows > 1 && tileCount > 4 &&
-                        passes == 1 && !useCieLab ? rowGroups : 1;
+    constexpr size_t maxOrdinaryJobTiles = 8;
+    const size_t ordinaryRows = tileRows > 1 ? tileRows - 2 : 0;
+    const size_t ordinaryChunks = tileCols >= 3
+                                      ? (tileCols - 2 + maxOrdinaryJobTiles - 1) / maxOrdinaryJobTiles + 1
+                                      : 0;
+    const size_t jobs = executor && width >= 120 && tileRows > 2 && tileCols >= 3 &&
+                        tileCount > 4 && passes == 1 && !useCieLab
+                            ? ordinaryRows * ordinaryChunks + 1 : 1;
     std::atomic<rpError> tileError{RP_NO_ERROR};
     MarkWorkerCall call{
         [&](size_t job) {
@@ -292,20 +299,27 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
             uint8_t (*homosum)[ts][ts] = (uint8_t (*)[ts][ts]) (drv); // we can reuse the drv-buffer because they are not used together
             uint8_t (*homosummax)[ts] = (uint8_t (*)[ts]) homo[ndir - 1]; // we can reuse the homo-buffer because they are not used together
 
-            // A production callback owns exactly one row group. The serial
-            // fallback owns all groups in original raster order.
-            const size_t firstGroup = jobs == 1 ? 0 : job;
-            const size_t lastGroup = jobs == 1 ? rowGroups : job + 1;
-            for (size_t group = firstGroup; group < lastGroup; ++group) {
+            // The serial fallback keeps the original complete raster order.
+            // Ordinary jobs contain only full-height tiles, and their final
+            // two columns share scratch. The last job owns the final two rows.
+            const bool finalJob = jobs != 1 && job == jobs - 1;
+            const size_t firstRow = jobs == 1 ? 0 : finalJob ? tileRows - 2 : job / ordinaryChunks;
+            const size_t lastRow = jobs == 1 || finalJob ? tileRows : firstRow + 1;
+            const size_t chunk = jobs == 1 || finalJob ? 0 : job % ordinaryChunks;
+            const size_t firstCol = jobs == 1 || finalJob ? 0
+                                    : chunk == ordinaryChunks - 1 ? tileCols - 2
+                                    : chunk * maxOrdinaryJobTiles;
+            const size_t lastCol = jobs == 1 || finalJob ? tileCols
+                                   : chunk == ordinaryChunks - 1 ? tileCols
+                                   : std::min(firstCol + maxOrdinaryJobTiles, tileCols - 2);
+            for (size_t tileRow = firstRow; tileRow < lastRow; ++tileRow) {
                 if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) break;
                 if (shouldCancel && shouldCancel(cancelContext)) {
                     rpError expected = RP_NO_ERROR;
                     tileError.compare_exchange_strong(expected, RP_CANCELLED);
                     break;
                 }
-                const size_t groupEnd = group == rowGroups - 1 ? tileRows : group + 1;
-                for (size_t tileRow = group; tileRow < groupEnd; ++tileRow) {
-                for (size_t tileCol = 0; tileCol < tileCols; ++tileCol) {
+                for (size_t tileCol = firstCol; tileCol < lastCol; ++tileCol) {
                 if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) return;
                 if (shouldCancel && shouldCancel(cancelContext)) {
                     rpError expected = RP_NO_ERROR;
@@ -952,7 +966,6 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
                             blue[row + top][col + left] = avg[2] / avg[3];
                         }
 
-                }
                 }
                 }
             }

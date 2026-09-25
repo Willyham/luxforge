@@ -1251,9 +1251,13 @@ mod tests {
             (413, 119),
             (120, 413),
             (121, 221),
+            (219, 219),
             (219, 121),
             (317, 315),
             (317, 120),
+            (1003, 413),
+            (1004, 511),
+            (1005, 413),
         ] {
             let mut edge = raw.clone();
             edge.native.width = width as u32;
@@ -1283,6 +1287,14 @@ mod tests {
             let serial = edge
                 .develop_uncorrected_with_workers(adjusted, &cancel, 1)
                 .unwrap();
+            let default_serial = without_executor(&edge, adjusted, &cancel);
+            assert!(
+                default_serial
+                    .iter()
+                    .zip(&serial.data)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "default serial differs at edge geometry {width}x{height}"
+            );
             let pooled = edge
                 .develop_uncorrected_with_workers(adjusted, &cancel, 0)
                 .unwrap();

@@ -14,17 +14,14 @@ use std::{
 // Eight slots across *all* RawSource callers add at most 7,905,664 explicit
 // scratch bytes; there is no full-frame allocation per slot.
 const MAX_SCRATCH_SLOTS: usize = 8;
-// Leave capacity in the shared pool for concurrent preview rendering. Other
-// RawSource callers may use the remaining process-wide scratch slots.
-const MAX_WORKERS_PER_SOURCE: usize = 4;
 static SLOTS: OnceLock<(Mutex<usize>, Condvar)> = OnceLock::new();
 #[cfg(test)]
 static PEAK_SLOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 pub(super) struct ExecutorContext<'a> {
     pub cancel: &'a AtomicBool,
-    /// Zero uses the production per-source cap; nonzero is an exactness-test
-    /// override up to the process-wide scratch cap.
+    /// Zero chooses the available shared-pool width; nonzero is an exactness
+    /// test override. The process-wide scratch cap still applies.
     pub worker_limit: usize,
 }
 
@@ -82,11 +79,12 @@ fn admit(desired: usize, cancel: &AtomicBool) -> Result<ScratchPermit, c_int> {
 /// # Safety contract
 ///
 /// C++ supplies a live immutable job context and a no-throw worker entry.
-/// Each callback evaluates one C++ row group with its own scratch. At most
-/// `desired` callbacks are queued in a batch; every batch joins before the
-/// next is dispatched. A scratch permit is held only while a native callback
-/// executes, never by a Rayon scope waiting for children. The final scope
-/// joins before borrowed context or image buffers drop.
+/// Each callback evaluates one C++ tile job with its own scratch. At most
+/// `desired` callbacks run in a batch; every batch joins before the next is
+/// dispatched. The final two-row C++ job runs on the source caller, while
+/// shorter ordinary jobs enter Rayon. A scratch permit is held only while a
+/// native callback executes, never by a scope waiting for children. The final
+/// scope joins before borrowed context or image buffers drop.
 /// This trampoline catches Rust panics so none crosses the C ABI.
 pub(super) extern "C" fn execute(
     context: *mut c_void,
@@ -99,14 +97,13 @@ pub(super) extern "C" fn execute(
         // executor synchronously; Markesteijn stores neither pointer.
         let state = unsafe { &*context.cast::<ExecutorContext<'_>>() };
         let width = rayon::current_num_threads();
-        let source_limit = if state.worker_limit == 0 {
-            MAX_WORKERS_PER_SOURCE
-        } else {
-            state.worker_limit
-        };
         let desired = job_count
             .min(width)
-            .min(source_limit)
+            .min(if state.worker_limit == 0 {
+                width
+            } else {
+                state.worker_limit
+            })
             .clamp(1, MAX_SCRATCH_SLOTS);
         // Raw pointers are converted to integer addresses solely to satisfy
         // Rayon closure Send bounds. The scope is synchronous and C++ joins
@@ -122,11 +119,33 @@ pub(super) extern "C" fn execute(
                 Err(code) => status.store(code, Ordering::Relaxed),
             }
         };
-        for first in (0..job_count).step_by(desired) {
+        if desired == 1 {
+            for job in 0..job_count {
+                run_job(job);
+                if status.load(Ordering::Relaxed) != 0 {
+                    break;
+                }
+            }
+            return status.load(Ordering::Relaxed);
+        }
+        // The last C++ job retains the final two rows' scratch history. Run
+        // it on the source caller while the first ordinary jobs use the pool.
+        // Its permit is dropped before this scope joins, including for nested
+        // callers that are themselves Rayon workers.
+        let ordinary_jobs = job_count - 1;
+        let first_end = ordinary_jobs.min(desired - 1);
+        rayon::in_place_scope(|scope| {
+            for job in 0..first_end {
+                let run_job = &run_job;
+                scope.spawn(move |_| run_job(job));
+            }
+            run_job(job_count - 1);
+        });
+        for first in (first_end..ordinary_jobs).step_by(desired) {
             if status.load(Ordering::Relaxed) != 0 {
                 break;
             }
-            let end = (first + desired).min(job_count);
+            let end = (first + desired).min(ordinary_jobs);
             // Keep the batch coordinator on its calling thread. `scope` may
             // inject the whole closure into Rayon when called externally, so
             // a preview worker could steal its native work and joined wait.
@@ -160,10 +179,10 @@ mod tests {
         peak: std::sync::atomic::AtomicUsize,
     }
 
-    extern "C" fn track_one_group(context: *mut c_void, group: usize) {
+    extern "C" fn track_one_job(context: *mut c_void, job: usize) {
         // SAFETY: execute joins every callback before this tracker drops.
         let tracker = unsafe { &*context.cast::<JobTracker>() };
-        tracker.seen[group].fetch_add(1, Ordering::Relaxed);
+        tracker.seen[job].fetch_add(1, Ordering::Relaxed);
         let active = tracker.active.fetch_add(1, Ordering::Relaxed) + 1;
         tracker.peak.fetch_max(active, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(1));
@@ -173,8 +192,8 @@ mod tests {
     struct PlacementTracker {
         caller: std::thread::ThreadId,
         seen: Vec<std::sync::atomic::AtomicUsize>,
-        ran_on_caller: AtomicBool,
-        ran_outside_pool: AtomicBool,
+        on_caller: Vec<AtomicBool>,
+        noncaller_outside_pool: AtomicBool,
     }
 
     extern "C" fn track_placement(context: *mut c_void, group: usize) {
@@ -182,10 +201,11 @@ mod tests {
         let tracker = unsafe { &*context.cast::<PlacementTracker>() };
         tracker.seen[group].fetch_add(1, Ordering::Relaxed);
         if std::thread::current().id() == tracker.caller {
-            tracker.ran_on_caller.store(true, Ordering::Relaxed);
-        }
-        if rayon::current_thread_index().is_none() {
-            tracker.ran_outside_pool.store(true, Ordering::Relaxed);
+            tracker.on_caller[group].store(true, Ordering::Relaxed);
+        } else if rayon::current_thread_index().is_none() {
+            tracker
+                .noncaller_outside_pool
+                .store(true, Ordering::Relaxed);
         }
     }
 
@@ -257,12 +277,12 @@ mod tests {
     }
 
     #[test]
-    fn one_callback_per_row_group_with_bounded_batches() {
+    fn one_callback_per_tile_job_with_bounded_batches() {
         let _test_guard = TEST_BUDGET_LOCK.lock().unwrap();
         let cancel = AtomicBool::new(false);
         for (worker_limit, cap) in [
             (3, 3),
-            (0, MAX_WORKERS_PER_SOURCE),
+            (0, MAX_SCRATCH_SLOTS),
             (usize::MAX, MAX_SCRATCH_SLOTS),
         ] {
             let context = ExecutorContext {
@@ -280,7 +300,7 @@ mod tests {
                 execute(
                     (&context as *const ExecutorContext<'_>).cast_mut().cast(),
                     tracker.seen.len(),
-                    track_one_group,
+                    track_one_job,
                     (&tracker as *const JobTracker).cast_mut().cast(),
                 ),
                 0
@@ -297,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn external_caller_only_coordinates_bounded_native_batches() {
+    fn external_caller_runs_only_final_job_with_bounded_native_batches() {
         let _test_guard = TEST_BUDGET_LOCK.lock().unwrap();
         assert!(rayon::current_thread_index().is_none());
         let cancel = AtomicBool::new(false);
@@ -310,8 +330,8 @@ mod tests {
             seen: (0..5)
                 .map(|_| std::sync::atomic::AtomicUsize::new(0))
                 .collect(),
-            ran_on_caller: AtomicBool::new(false),
-            ran_outside_pool: AtomicBool::new(false),
+            on_caller: (0..5).map(|_| AtomicBool::new(false)).collect(),
+            noncaller_outside_pool: AtomicBool::new(false),
         };
         assert_eq!(
             execute(
@@ -328,8 +348,13 @@ mod tests {
                 .iter()
                 .all(|seen| seen.load(Ordering::Relaxed) == 1)
         );
-        assert!(!tracker.ran_on_caller.load(Ordering::Relaxed));
-        assert!(!tracker.ran_outside_pool.load(Ordering::Relaxed));
+        assert!(tracker.on_caller[4].load(Ordering::Relaxed));
+        assert!(
+            tracker.on_caller[..4]
+                .iter()
+                .all(|on_caller| !on_caller.load(Ordering::Relaxed))
+        );
+        assert!(!tracker.noncaller_outside_pool.load(Ordering::Relaxed));
         assert!(PEAK_SLOTS.load(Ordering::Relaxed) <= MAX_SCRATCH_SLOTS);
     }
 }
