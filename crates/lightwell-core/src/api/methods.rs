@@ -16,7 +16,8 @@ use super::{
 use crate::{
     ActionRef, ArtifactId, AssetId, ComponentId, DraftId, EditorService, EntryId, Error, ErrorKind,
     HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome, ParameterDescriptor,
-    PresetId, Zoom, capabilities::host::TASK_PREFIX, mask::commands::MaskTarget, path,
+    PixelSample, PresetId, Zoom, capabilities::host::TASK_PREFIX, editor::PointPlan,
+    mask::commands::MaskTarget, path,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -25,12 +26,45 @@ use serde_json::{Map, Value, json};
 pub(super) type ServiceHandler =
     fn(&mut EditorService, &mut ClientSession, &Value) -> Result<Value, Error>;
 
+/// A method the editor service plans with the caller's session, whose answer may be evaluated
+/// after the catalog owner has moved on: [`Planned`].
+pub(super) type PlannedHandler =
+    fn(&mut EditorService, &mut ClientSession, &Value) -> Result<Planned, Error>;
+
 /// A method the catalog owner answers from its own state.
 pub(super) type OwnerHandler = fn(&mut Owner, &Call<'_>) -> Result<Value, Error>;
 
 pub(super) enum Handler {
     Service(ServiceHandler),
+    Planned(PlannedHandler),
     Owner(OwnerHandler),
+}
+
+/// What a planned service method answers: a value, or a point sample through a spatial layer,
+/// planned on the catalog owner in `O(layers)` and evaluated by whoever holds it. The owner hands
+/// the sample to its point worker; every other caller evaluates it where it stands. A planned
+/// method carries no mutation envelope, so no request table waits for its answer.
+pub(super) enum Planned {
+    Value(Value),
+    Sample(Box<PointPlan>),
+}
+
+impl Planned {
+    /// The answer, evaluating a planned sample here.
+    pub(super) fn answer(self) -> Result<Value, Error> {
+        match self {
+            Self::Value(value) => Ok(value),
+            Self::Sample(plan) => sample_value((*plan).evaluate()?),
+        }
+    }
+
+    /// The value, when there is one already.
+    pub(super) fn value(&self) -> Option<&Value> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Sample(_) => None,
+        }
+    }
 }
 
 pub(super) struct MethodSpec {
@@ -50,6 +84,20 @@ macro_rules! service {
             params: &<$params as HostParams>::SCHEMA,
             notes: $notes,
             handler: Handler::Service(|service, session, request| {
+                $handler(service, session, parse::<$params>(request)?)
+            }),
+        }
+    };
+}
+
+/// One planned service method, parsed the same way.
+macro_rules! planned {
+    ($name:literal, $params:ty, $handler:path, $notes:expr $(,)?) => {
+        MethodSpec {
+            name: $name,
+            params: &<$params as HostParams>::SCHEMA,
+            notes: $notes,
+            handler: Handler::Planned(|service, session, request| {
                 $handler(service, session, parse::<$params>(request)?)
             }),
         }
@@ -446,11 +494,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
         draft_reapply,
         "rebases the draft on the asset's current revision, keeping and revalidating only the fields this client set"
     ),
-    service!(
+    // Planned on the owner; a sample through a spatial layer is evaluated on the point worker.
+    planned!(
         "render.sample",
         RenderSample,
         render_sample,
-        "one pixel of the session's selected entry, or of an open draft's effective recipe, evaluated without rasterizing"
+        "one pixel of the session's selected entry, or of an open draft's effective recipe, evaluated without rasterizing; names the entry and snapshot it was planned against, and its response sequence is the event sequence when it was planned; a sample through a spatial layer is evaluated off the catalog owner, and resource-limit means too many such samples are already waiting"
     ),
     service!(
         "render.locate",
@@ -564,15 +613,33 @@ impl Method {
         }
     }
 
-    /// Answer a method the editor service answers. The owner never sends it one of its own, which
-    /// [`Method::route`] names.
+    /// Answer a method the editor service answers, evaluating a planned sample here, for the tests
+    /// that serve a method against a service and a session directly. The owner plans instead
+    /// ([`Method::plan`]) and never sends it one of its own, which [`Method::route`] names.
+    #[cfg(test)]
     pub(super) fn serve(
         &self,
         service: &mut EditorService,
         session: &mut ClientSession,
         params: &Value,
     ) -> Result<Value, Error> {
-        match self {
+        self.plan(service, session, params)?.answer()
+    }
+
+    /// Plan a method the editor service answers: its value, or a sample for the caller to
+    /// evaluate where it chooses. The catalog owner calls this, so a sample through a spatial layer
+    /// never runs on its thread.
+    pub(super) fn plan(
+        &self,
+        service: &mut EditorService,
+        session: &mut ClientSession,
+        params: &Value,
+    ) -> Result<Planned, Error> {
+        let value = match self {
+            Self::Host(MethodSpec {
+                handler: Handler::Planned(handler),
+                ..
+            }) => return handler(service, session, params),
             Self::Host(MethodSpec {
                 handler: Handler::Service(handler),
                 ..
@@ -585,7 +652,8 @@ impl Method {
                 ..
             }) => Err(owner_answered(name)),
             Self::Task => Err(owner_answered("a task")),
-        }
+        };
+        value.map(Planned::Value)
     }
 }
 
@@ -1519,23 +1587,35 @@ fn resources_read(
     value(crate::resources::read(service.render_context()))
 }
 
+/// Plan one pixel against the stack the caller names, reading the session and the catalog now. A
+/// point that costs `O(layers)` is answered here; one through a spatial layer is returned planned,
+/// for the catalog owner to hand to its point worker.
 fn render_sample(
     service: &mut EditorService,
     session: &mut ClientSession,
     p: RenderSample,
-) -> Result<Value, Error> {
-    let mut sampled = match &p.draft_id {
+) -> Result<Planned, Error> {
+    let plan = match &p.draft_id {
         // A draft's effective recipe answers the point, so a readout during a gesture matches the
         // frame the same draft is previewing.
         Some(draft_id) => {
             let draft = session.held_draft(draft_id)?;
-            value(service.sample_draft(&p.asset_id, draft, p.x, p.y)?)?
+            service.point_draft(&p.asset_id, draft, p.x, p.y)?
         }
         None => {
             let entry_id = selected_entry(service, session, &p.asset_id, None)?;
-            value(service.sample_entry(&p.asset_id, &entry_id, p.x, p.y)?)?
+            service.point_entry(&p.asset_id, &entry_id, p.x, p.y)?
         }
     };
+    if plan.evaluates_spatial() {
+        Ok(Planned::Sample(Box::new(plan)))
+    } else {
+        sample_value(plan.evaluate()?).map(Planned::Value)
+    }
+}
+
+fn sample_value(sample: PixelSample) -> Result<Value, Error> {
+    let mut sampled = value(sample)?;
     sampled["source_detail_ready"] = json!(true);
     Ok(sampled)
 }

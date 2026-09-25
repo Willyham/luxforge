@@ -3,7 +3,7 @@
 //! events the call announced; the owner handlers the table names live here.
 use super::{
     ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult,
-    methods::{self, Route},
+    methods::{self, Planned, Route},
     params::{Envelope, NoParams, host_params},
 };
 use crate::{
@@ -20,6 +20,7 @@ use crate::{
     editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
     source::{PlaneGate, RawPrepared},
 };
+use point::{POINT_QUEUE_CAPACITY, PointWorker};
 use requests::{RequestKey, RequestTable};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -39,6 +40,7 @@ use std::{thread, time::Duration};
 #[cfg(test)]
 mod artifact_tests;
 pub(super) mod capability;
+mod point;
 mod requests;
 
 const EVENT_CAPACITY: usize = 256;
@@ -100,6 +102,12 @@ enum OwnerMessage {
     /// How many capability lane threads have started, for tests that prove discovery is inert.
     #[cfg(test)]
     CapabilityThreads(SyncSender<usize>),
+    /// Hold the point worker before each evaluation, or release that hold.
+    #[cfg(test)]
+    HoldPoints(Option<point::Hold>),
+    /// How many planned samples wait behind the one the point worker is evaluating.
+    #[cfg(test)]
+    PointsWaiting(SyncSender<usize>),
     Disconnect(ClientId),
     Stop,
 }
@@ -996,6 +1004,24 @@ impl OwnerHandle {
         answer.recv().expect("the owner answered")
     }
 
+    /// Have the point worker call `hold` before each evaluation, or stop holding it.
+    #[cfg(test)]
+    pub(crate) fn hold_points(&self, hold: Option<point::Hold>) {
+        self.sender
+            .send(OwnerMessage::HoldPoints(hold))
+            .expect("the owner is running");
+    }
+
+    /// How many planned samples wait behind the one the point worker is evaluating.
+    #[cfg(test)]
+    pub(crate) fn points_waiting(&self) -> usize {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::PointsWaiting(reply))
+            .expect("the owner is running");
+        answer.recv().expect("the owner answered")
+    }
+
     /// Forget a client's session. Its committed edits and jobs are unaffected.
     pub fn disconnect(&self, client: ClientId) {
         let _ = self.sender.send(OwnerMessage::Disconnect(client));
@@ -1073,13 +1099,17 @@ fn owner_loop(
         log: EventLog::default(),
         requests: RequestTable::default(),
         announced: Vec::new(),
+        points: PointWorker::new(POINT_QUEUE_CAPACITY),
     };
     while let Ok(message) = receiver.recv() {
         match message {
             OwnerMessage::Stop => break,
-            OwnerMessage::Call(call) => {
-                let response = owner.call(call.client, &call.request);
-                let _ = call.response.send(response);
+            OwnerMessage::Call(call) => owner.call(call),
+            #[cfg(test)]
+            OwnerMessage::HoldPoints(hold) => owner.points.hold(hold),
+            #[cfg(test)]
+            OwnerMessage::PointsWaiting(reply) => {
+                let _ = reply.send(owner.points.waiting());
             }
             OwnerMessage::Preview { request, response } => {
                 let _ = response.send(owner.preview(request));
@@ -1116,6 +1146,8 @@ fn owner_loop(
             }
         }
     }
+    // The sample being evaluated finishes; the ones waiting are dropped with every other call.
+    owner.points.stop();
     for job in owner.jobs.jobs.values() {
         job.cancelled.store(true, Ordering::Relaxed);
     }
@@ -1195,21 +1227,40 @@ pub(super) struct Owner {
     /// What the message being handled changed, each change once. The owner records them as events
     /// when the message is handled, before it answers.
     pub(super) announced: Vec<Origin>,
+    /// Evaluates the samples through a spatial layer this owner planned, off its thread.
+    points: PointWorker,
 }
 
 impl Owner {
     /// Answer one request: find its method, answer a retried revision-less mutation from the request
-    /// table, otherwise call its handler, then record the events its changes announced.
-    fn call(&mut self, client: ClientId, request: &ApiRequest) -> ApiResponse {
-        let result = self.answer(client, request);
+    /// table, otherwise call its handler, then record the events its changes announced. A sample
+    /// through a spatial layer is only planned here: the point worker evaluates it and answers on
+    /// the call's own channel, with the sequence the owner had now, while the owner moves on.
+    fn call(&mut self, call: OwnerCall) {
+        let OwnerCall {
+            client,
+            request,
+            response,
+        } = call;
+        let result = self.answer(client, &request);
         self.record_announced();
+        let reply = point::Reply {
+            id: request.id,
+            sequence: self.log.sequence,
+            response,
+        };
         match result {
-            Ok(value) => ApiResponse::success(request.id.clone(), self.log.sequence, value),
-            Err(error) => ApiResponse::failure(request.id.clone(), self.log.sequence, error),
+            Ok(Planned::Sample(plan)) => self.points.submit(point::PointCall {
+                client,
+                evaluate: Box::new(move || Planned::Sample(plan).answer()),
+                reply,
+            }),
+            Ok(Planned::Value(value)) => reply.answer(Ok(value)),
+            Err(error) => reply.answer(Err(error)),
         }
     }
 
-    fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Value, Error> {
+    fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Planned, Error> {
         let method = methods::find(&self.service, &request.method).ok_or_else(|| {
             Error::new(
                 ErrorKind::Protocol,
@@ -1228,7 +1279,7 @@ impl Owner {
         if let Some(key) = &key
             && let Some(first) = self.requests.answered(key)?
         {
-            return Ok(first);
+            return Ok(Planned::Value(first));
         }
         let call = Call {
             client,
@@ -1236,15 +1287,15 @@ impl Owner {
             origin: Origin::new(&request.method, &request.id),
         };
         let result = match method.route() {
-            Route::Owner(handler) => handler(self, &call),
+            Route::Owner(handler) => handler(self, &call).map(Planned::Value),
             Route::Service => {
                 let session = self.sessions.entry(client).or_default();
-                let result = method.serve(&mut self.service, session, &request.params);
+                let result = method.plan(&mut self.service, session, &request.params);
                 // A service answer says whether it changed anything: a no-op and a retry answered
-                // from a store's request log did not.
+                // from a store's request log did not. A planned sample carries no envelope.
                 if result
                     .as_ref()
-                    .is_ok_and(|value| methods::mutates(&method, Some(value)))
+                    .is_ok_and(|planned| methods::mutates(&method, planned.value()))
                 {
                     announce_once(&mut self.announced, &call.origin);
                 }
@@ -1255,9 +1306,9 @@ impl Owner {
         // names and answers with the job to wait for, whichever handler evaluated it.
         let result = result.map_err(|error| self.prepare(client, error));
         match (result, key) {
-            (Ok(mut value), Some(key)) => {
+            (Ok(Planned::Value(mut value)), Some(key)) => {
                 self.requests.record(key, &mut value);
-                Ok(value)
+                Ok(Planned::Value(value))
             }
             (result, _) => result,
         }
@@ -1338,6 +1389,7 @@ impl Owner {
         }
         self.latest_import.remove(&client);
         self.jobs.disconnect(client);
+        self.points.disconnect(client);
     }
 
     /// A source job finished on the worker: commit what it prepared for the clients still waiting,
@@ -3935,6 +3987,374 @@ mod tests {
                 .code,
             "protocol"
         );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Hold the point worker before each evaluation: `reached` receives once per sample it takes,
+    /// and each send on `release` lets one go.
+    fn hold_points(owner: &OwnerHandle) -> (std::sync::mpsc::Receiver<()>, SyncSender<()>) {
+        let (reached, reaches) = std::sync::mpsc::channel();
+        let (release, released) = sync_channel::<()>(64);
+        let reached = std::sync::Mutex::new(reached);
+        let released = std::sync::Mutex::new(released);
+        owner.hold_points(Some(Arc::new(move || {
+            let _ = reached.lock().unwrap().send(());
+            let _ = released.lock().unwrap().recv();
+        })));
+        (reaches, release)
+    }
+
+    fn presence(
+        owner: &OwnerHandle,
+        client: ClientId,
+        asset: &Value,
+        revision: u64,
+        request: &str,
+        fields: Value,
+    ) -> Value {
+        let mut params = json!({
+            "asset_id": asset,
+            "mutation": {"expected_revision": revision, "request_id": request, "actor": "test"},
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        ok(owner, client, request, "edit.set-presence", params)
+    }
+
+    /// The whole frame of what `request` names, rendered exactly from the job the owner plans for
+    /// it: the independent reference a sample is compared against.
+    fn rendered(owner: &OwnerHandle, request: PreviewRequest) -> crate::Raster {
+        let job = owner.preview_job(request).expect("a preview job");
+        job.source
+            .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
+            .expect("a rendered frame")
+    }
+
+    fn sample_at(owner: &OwnerHandle, client: ClientId, id: &str, params: Value) -> ApiResponse {
+        send(owner, client, id, "render.sample", params)
+    }
+
+    /// Through a spatial layer the owner only plans a sample: while the point worker holds it,
+    /// another client reads state and commits, and the held sample then answers with the value, the
+    /// entry and the snapshot it was planned against and the event sequence of that moment. Every
+    /// sample, of an entry and of a draft, equals the full render at its pixel.
+    #[test]
+    fn a_spatial_sample_is_answered_off_the_owner_against_the_entry_it_was_planned_against() {
+        let catalog = temp("point-worker.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let sampler = owner.register();
+        let editor = owner.register();
+        let state = import_asset(&owner, sampler, &fixture());
+        let asset = state["asset"]["id"].clone();
+        let asset_id = AssetId::parse(asset.as_str().unwrap()).unwrap();
+        let sample = |client: ClientId, id: &str, x: u32, y: u32| {
+            sample_at(
+                &owner,
+                client,
+                id,
+                json!({"asset_id": asset, "x": x, "y": y}),
+            )
+        };
+        let points = [(0, 0), (479, 319), (240, 160), (17, 301), (300, 5)];
+
+        let planned = presence(
+            &owner,
+            editor,
+            &asset,
+            0,
+            "clarity",
+            json!({"clarity": 60.0, "dehaze": 30.0}),
+        );
+        let frame = rendered(&owner, PreviewRequest::new(editor, asset_id.clone()));
+        for (x, y) in points {
+            let sampled = sample(sampler, "exact", x, y);
+            assert!(sampled.error.is_none(), "{:?}", sampled.error);
+            let sampled = sampled.result.unwrap();
+            assert_eq!(
+                sampled["rgba"],
+                json!(frame.pixel(x, y).unwrap()),
+                "({x}, {y})"
+            );
+            assert_eq!(sampled["entry_id"], planned["current_entry_id"]);
+            assert_eq!(sampled["source_detail_ready"], json!(true));
+        }
+
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let held = scope.spawn(|| sample(sampler, "held", 10, 10));
+            reached
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the point worker took the sample");
+            // The owner is free: another client reads state and commits while the sample is held.
+            let before = send(
+                &owner,
+                editor,
+                "state",
+                "asset.state",
+                json!({"asset_id": asset}),
+            );
+            assert!(before.error.is_none(), "{:?}", before.error);
+            let recommitted = presence(
+                &owner,
+                editor,
+                &asset,
+                1,
+                "recommit",
+                json!({"clarity": -40.0}),
+            );
+            assert_ne!(recommitted["current_entry_id"], planned["current_entry_id"]);
+            release.send(()).unwrap();
+            let held = held.join().unwrap();
+            assert!(held.error.is_none(), "{:?}", held.error);
+            assert_eq!(
+                held.sequence, before.sequence,
+                "the answer carries the sequence the owner had when it planned the sample"
+            );
+            let held = held.result.unwrap();
+            assert_eq!(held["entry_id"], planned["current_entry_id"]);
+            assert_eq!(
+                held["snapshot_id"],
+                before.result.unwrap()["current_entry"]["snapshot"]["id"]
+            );
+            assert_eq!(held["rgba"], json!(frame.pixel(10, 10).unwrap()));
+        });
+        owner.hold_points(None);
+        let _ = release.send(());
+
+        // A draft's sample is planned from the drafting client's session and evaluated the same way.
+        let begun = ok(
+            &owner,
+            editor,
+            "begin",
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-presence"}),
+        );
+        let draft_id = begun["draft_id"].clone();
+        ok(
+            &owner,
+            editor,
+            "set",
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"texture": 70.0}}),
+        );
+        let drafted = rendered(
+            &owner,
+            PreviewRequest::new(editor, asset_id)
+                .draft(crate::DraftId::parse(draft_id.as_str().unwrap()).unwrap()),
+        );
+        for (x, y) in points {
+            let sampled = sample_at(
+                &owner,
+                editor,
+                "drafted",
+                json!({"asset_id": asset, "x": x, "y": y, "draft_id": draft_id}),
+            );
+            assert!(sampled.error.is_none(), "{:?}", sampled.error);
+            let sampled = sampled.result.unwrap();
+            assert_eq!(
+                sampled["rgba"],
+                json!(drafted.pixel(x, y).unwrap()),
+                "({x}, {y})"
+            );
+            assert_eq!(sampled["draft"]["draft_id"], draft_id);
+        }
+        // Another client cannot sample this draft.
+        assert!(
+            sample_at(
+                &owner,
+                sampler,
+                "foreign",
+                json!({"asset_id": asset, "x": 0, "y": 0, "draft_id": draft_id}),
+            )
+            .error
+            .is_some()
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The point worker's queue is bounded: with one sample held and the queue full, the next is
+    /// refused with `resource-limit` at once, a disconnect drops only that client's waiting sample,
+    /// and a sample without a spatial layer is answered by the owner itself meanwhile.
+    #[test]
+    fn a_full_point_queue_refuses_and_a_disconnect_drops_the_waiting_sample() {
+        let catalog = temp("point-queue.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let editor = owner.register();
+        let state = import_asset(&owner, editor, &fixture());
+        let asset = state["asset"]["id"].clone();
+        let plain = sample_at(
+            &owner,
+            editor,
+            "plain",
+            json!({"asset_id": asset, "x": 1, "y": 1}),
+        )
+        .result
+        .expect("a sample of the Original");
+        presence(
+            &owner,
+            editor,
+            &asset,
+            0,
+            "clarity",
+            json!({"clarity": 60.0}),
+        );
+
+        let (reached, release) = hold_points(&owner);
+        let clients: Vec<ClientId> = (0..=POINT_QUEUE_CAPACITY)
+            .map(|_| owner.register())
+            .collect();
+        std::thread::scope(|scope| {
+            let sample = |client: ClientId| {
+                let owner = &owner;
+                let asset = &asset;
+                scope.spawn(move || {
+                    owner.call(
+                        client,
+                        ApiRequest {
+                            id: "queued".into(),
+                            method: "render.sample".into(),
+                            params: json!({"asset_id": asset, "x": 5, "y": 5}),
+                            token: None,
+                        },
+                    )
+                })
+            };
+            let running = sample(clients[0]);
+            reached
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the first sample is being evaluated");
+            let waiting: Vec<_> = clients[1..].iter().map(|client| sample(*client)).collect();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while owner.points_waiting() < POINT_QUEUE_CAPACITY {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the queue never filled"
+                );
+                std::thread::yield_now();
+            }
+            let refused = failure(
+                &owner,
+                editor,
+                "refused",
+                "render.sample",
+                json!({"asset_id": asset, "x": 5, "y": 5}),
+            );
+            assert_eq!(refused.code, "resource-limit", "{refused:?}");
+
+            // The owner still answers everything else, and the one client that goes loses only its
+            // own waiting sample.
+            let undone = ok(
+                &owner,
+                editor,
+                "undo",
+                "history.undo",
+                json!({"asset_id": asset, "mutation": {"expected_revision": 1, "request_id": "undo", "actor": "test"}}),
+            );
+            assert_eq!(undone["revision"], json!(2));
+            assert_eq!(
+                ok(
+                    &owner,
+                    editor,
+                    "plain",
+                    "render.sample",
+                    json!({"asset_id": asset, "x": 1, "y": 1})
+                )["rgba"],
+                plain["rgba"],
+                "a sample without a spatial layer is answered by the owner while the worker is held"
+            );
+            owner.disconnect(clients[1]);
+            assert_eq!(owner.points_waiting(), POINT_QUEUE_CAPACITY - 1);
+            for _ in 0..=POINT_QUEUE_CAPACITY {
+                release.send(()).unwrap();
+            }
+            let answered = running.join().unwrap().expect("answered");
+            assert!(answered.error.is_none(), "{:?}", answered.error);
+            let mut waiting = waiting.into_iter();
+            let dropped = waiting.next().unwrap().join().unwrap();
+            assert!(
+                dropped.is_err(),
+                "a disconnected client's waiting sample is dropped, not answered"
+            );
+            for queued in waiting {
+                let response = queued.join().unwrap().expect("answered");
+                assert!(response.error.is_none(), "{:?}", response.error);
+                assert_eq!(
+                    response.result.unwrap()["rgba"],
+                    answered.result.as_ref().unwrap()["rgba"]
+                );
+            }
+        });
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// On a real RAW file through Presence: every sample the point worker answers equals the full
+    /// linear render at its pixel, far corner included. Run in release with LIGHTWELL_RAW_FIXTURE
+    /// pointing to a private qualified NEF, RAF or DNG.
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn a_raw_sample_through_presence_off_the_owner_equals_the_render() {
+        let path =
+            PathBuf::from(std::env::var("LIGHTWELL_RAW_FIXTURE").expect("LIGHTWELL_RAW_FIXTURE"));
+        let catalog = temp("point-worker-raw.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &path);
+        let asset = state["asset"]["id"].clone();
+        let asset_id = AssetId::parse(asset.as_str().unwrap()).unwrap();
+        for (revision, fields) in [
+            (0, json!({"clarity": 60.0})),
+            (1, json!({"clarity": 60.0, "dehaze": 30.0})),
+        ] {
+            presence(
+                &owner,
+                client,
+                &asset,
+                revision,
+                &format!("presence-{revision}"),
+                fields.clone(),
+            );
+            let frame = rendered(&owner, PreviewRequest::new(client, asset_id.clone()));
+            let mut state = 0x2545_f491_4f6c_dd1d_u64;
+            let mut points: Vec<(u32, u32)> = (0..20)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (
+                        (state % u64::from(frame.width)) as u32,
+                        ((state >> 32) % u64::from(frame.height)) as u32,
+                    )
+                })
+                .collect();
+            points.push((frame.width - 1, frame.height - 1));
+            for (x, y) in &points {
+                let sampled = sample_at(
+                    &owner,
+                    client,
+                    "raw",
+                    json!({"asset_id": asset, "x": x, "y": y}),
+                );
+                assert!(sampled.error.is_none(), "{:?}", sampled.error);
+                assert_eq!(
+                    sampled.result.unwrap()["rgba"],
+                    json!(frame.pixel(*x, *y).unwrap()),
+                    "{fields} at ({x}, {y})"
+                );
+            }
+            println!(
+                "{fields}: {} samples off the owner equal the render",
+                points.len()
+            );
+        }
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

@@ -17,7 +17,8 @@ use std::{
 };
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
-const MAX_CLIENTS: usize = 8;
+/// How many loopback connections are served at once; the point worker's queue is sized from it.
+pub(super) const MAX_CLIENTS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

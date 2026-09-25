@@ -189,6 +189,18 @@ impl<'a> Render<'a> {
         })
     }
 
+    /// Whether a point of this stack evaluates a spatial tile, the declared exception to a point
+    /// query costing `O(layers)`. `O(segments)` and reads no pixel.
+    pub(crate) fn evaluates_spatial(&self) -> bool {
+        self.compiled.evaluates_spatial()
+    }
+
+    /// The compilation, for a caller that plans a render on one thread and evaluates it on another
+    /// through [`Self::compiled`], against the same source and at the same phase.
+    pub(crate) fn into_compiled(self) -> Compiled {
+        self.compiled
+    }
+
     /// The output stage's dimensions.
     pub fn stage(&self) -> (u32, u32) {
         let stage = self.compiled.stage();

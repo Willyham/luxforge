@@ -1221,8 +1221,9 @@ pub(crate) fn query_task(
 }
 
 /// One pixel of the displayed stack for the pointer readout. It is a point query: `render.sample`
-/// evaluates the compiled recipe at one coordinate and rasterizes nothing, so hovering costs
-/// O(layers) on the owner thread and never a frame. The entry travels back with the answer, so a
+/// evaluates the compiled recipe at one coordinate and rasterizes nothing, so hovering costs the
+/// owner thread O(layers) and never a frame; through a spatial layer the one tile the pixel needs is
+/// evaluated on the owner's point worker. The entry travels back with the answer, so a
 /// response that arrives after the canvas moved to another stack is dropped rather than shown.
 pub(crate) fn sample_task(
     owner: OwnerHandle,

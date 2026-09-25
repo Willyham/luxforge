@@ -39,6 +39,7 @@ mod source;
 mod test_support;
 
 pub(crate) use catalog::{decode, encode, now_ms, write};
+pub(crate) use evaluate::PointPlan;
 pub use masks::{MASK_FIELD, mask_target_parameter};
 pub(crate) use plan::prefix;
 pub use source::RawInterpretation;

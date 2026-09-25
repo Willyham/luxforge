@@ -5,9 +5,10 @@ use super::{
 };
 use crate::{
     AssetId, ContentPoint, Draft, EntryId, Error, ErrorKind, HistoryEntry, PreviewJob,
-    PreviewSource, ProxyBounds, Raster, Recipe, RenderOptions, StageTransform,
+    PreviewSource, ProxyBounds, Raster, Recipe, Render, RenderContext, RenderOptions, SnapshotId,
+    StageTransform,
     analysis::AnalysisIdentity,
-    render::{locate_dimensions, stage_transform},
+    render::{Compiled, locate_dimensions, stage_transform},
     source::PreparedSource,
 };
 
@@ -300,10 +301,22 @@ impl EditorService {
         x: u32,
         y: u32,
     ) -> Result<PixelSample, Error> {
+        self.point_entry(asset_id, entry_id, x, y)?.evaluate()
+    }
+
+    /// Plan one output pixel of a saved entry for evaluation here or on another thread: a state
+    /// read, a cached source verification, the entry's artifacts bound and one `O(layers)` compile
+    /// that refuses a stack the host cannot evaluate now. No pixel is read.
+    pub(crate) fn point_entry(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+        x: u32,
+        y: u32,
+    ) -> Result<PointPlan, Error> {
         let state = self.state(asset_id)?;
         let (entry, source) = self.exact_entry(&state, entry_id)?;
-        let sampled = self.sample_point(&source, &entry.snapshot.recipe, x, y)?;
-        pixel_sample(entry, &state.asset.fingerprint, sampled, x, y, None)
+        self.point_plan(source, &entry.snapshot.recipe, &entry, x, y, None)
     }
 
     /// Bind the asset's current entry for sampling off the catalog owner: its verified source and
@@ -337,6 +350,19 @@ impl EditorService {
         x: u32,
         y: u32,
     ) -> Result<PixelSample, Error> {
+        self.point_draft(asset_id, draft, x, y)?.evaluate()
+    }
+
+    /// Plan one output pixel of an open draft's effective recipe, as [`Self::point_entry`] plans a
+    /// saved entry's: the draft's action is planned against the current stack at the revision the
+    /// draft holds now, and the plan names the current entry and that revision.
+    pub(crate) fn point_draft(
+        &self,
+        asset_id: &AssetId,
+        draft: &Draft,
+        x: u32,
+        y: u32,
+    ) -> Result<PointPlan, Error> {
         let (mut recipe, state) = self.draft_recipe(asset_id, draft)?;
         // A sampled code is a number, so a drafted white balance the planes do not hold is
         // `preparation-required` here even while the draft's preview approximates it, and the
@@ -344,37 +370,46 @@ impl EditorService {
         let result = self.bound_source(&state.asset, &mut recipe, RawSettingsMode::Strict);
         let stack = Evaluated::exactly(&state.asset, &state.current_entry.id, &recipe);
         let source = self.needing(stack, result)?;
-        let sampled = self.sample_point(&source, &recipe, x, y)?;
-        let fingerprint = state.asset.fingerprint.clone();
-        pixel_sample(
-            state.current_entry,
-            &fingerprint,
-            sampled,
-            x,
-            y,
-            Some(DraftStamp {
-                draft_id: draft.draft_id.clone(),
-                draft_revision: draft.draft_revision,
-            }),
-        )
+        let stamp = DraftStamp {
+            draft_id: draft.draft_id.clone(),
+            draft_revision: draft.draft_revision,
+        };
+        self.point_plan(source, &recipe, &state.current_entry, x, y, Some(stamp))
     }
 
-    /// One output pixel of `recipe` over `source`, through the one render entry point: no frame.
-    fn sample_point(
+    /// Compile `recipe` over `source` through the one render entry point, which refuses what no
+    /// evaluation of it could accept, and keep the compilation with the identities the answer
+    /// names. `O(layers)`: no pixel is read and no frame is allocated.
+    fn point_plan(
         &self,
-        source: &PreviewSource,
+        source: PreviewSource,
         recipe: &Recipe,
+        entry: &HistoryEntry,
         x: u32,
         y: u32,
-    ) -> Result<crate::Sample, Error> {
-        crate::render(
+        draft: Option<DraftStamp>,
+    ) -> Result<PointPlan, Error> {
+        let render = crate::render(
             &self.registry,
-            source,
+            &source,
             recipe,
             RenderOptions::default(),
             &self.render,
-        )?
-        .sample(x, y)
+        )?;
+        let spatial = render.evaluates_spatial();
+        let compiled = render.into_compiled();
+        Ok(PointPlan {
+            fingerprint: source.fingerprint().to_owned(),
+            source,
+            compiled,
+            spatial,
+            context: self.render.clone(),
+            entry_id: entry.id.clone(),
+            snapshot_id: entry.snapshot.id.clone(),
+            x,
+            y,
+            draft,
+        })
     }
 
     /// Map one output pixel of a saved entry back to the pixel of the content stage it shows: the
@@ -430,36 +465,73 @@ impl EditorService {
     }
 }
 
-/// One evaluated point with the identities that produced it. A point outside the rendered image is
-/// a validation error naming the stage it missed.
-fn pixel_sample(
-    entry: HistoryEntry,
-    source_fingerprint: &str,
-    sampled: crate::Sample,
+/// One output pixel planned on the catalog owner and evaluated wherever its caller chooses: the
+/// verified source it reads, the stack compiled against it with the verified bytes of every
+/// artifact it references, and the entry, snapshot and draft revision it was planned against, which
+/// the answer names whatever is committed before it is evaluated. It shares the source's
+/// allocation and owns nothing that scales with the image.
+pub(crate) struct PointPlan {
+    source: PreviewSource,
+    compiled: Compiled,
+    /// Whether the point evaluates a spatial tile: the only point that costs more than
+    /// `O(layers)`, and the one the catalog owner hands to its point worker.
+    spatial: bool,
+    context: RenderContext,
+    fingerprint: String,
+    entry_id: EntryId,
+    snapshot_id: SnapshotId,
     x: u32,
     y: u32,
     draft: Option<DraftStamp>,
-) -> Result<PixelSample, Error> {
-    let rgba = sampled.rgba.ok_or_else(|| {
-        Error::new(
-            ErrorKind::Validation,
-            format!(
-                "sample ({x}, {y}) is outside the {}x{} rendered image",
-                sampled.width, sampled.height
-            ),
-        )
-    })?;
-    Ok(PixelSample {
-        entry_id: entry.id,
-        snapshot_id: entry.snapshot.id,
-        source_fingerprint: source_fingerprint.to_owned(),
-        width: sampled.width,
-        height: sampled.height,
-        x,
-        y,
-        rgba,
-        draft,
-    })
+}
+
+impl PointPlan {
+    /// Whether evaluating this point evaluates a spatial tile, the declared exception to point
+    /// queries costing `O(layers)`.
+    pub(crate) fn evaluates_spatial(&self) -> bool {
+        self.spatial
+    }
+
+    /// Evaluate the point from the plan's own compilation: `O(layers)`, and through a spatial
+    /// layer the one tile that contains it, whose byte is the byte a render writes there. A point
+    /// outside the rendered image is a validation error naming the stage it missed.
+    pub(crate) fn evaluate(self) -> Result<PixelSample, Error> {
+        let Self {
+            source,
+            compiled,
+            context,
+            fingerprint,
+            entry_id,
+            snapshot_id,
+            x,
+            y,
+            draft,
+            ..
+        } = self;
+        let sampled =
+            Render::compiled(source.input(), compiled, RenderOptions::default(), &context)?
+                .sample(x, y)?;
+        let rgba = sampled.rgba.ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "sample ({x}, {y}) is outside the {}x{} rendered image",
+                    sampled.width, sampled.height
+                ),
+            )
+        })?;
+        Ok(PixelSample {
+            entry_id,
+            snapshot_id,
+            source_fingerprint: fingerprint,
+            width: sampled.width,
+            height: sampled.height,
+            x,
+            y,
+            rgba,
+            draft,
+        })
+    }
 }
 
 #[cfg(test)]
