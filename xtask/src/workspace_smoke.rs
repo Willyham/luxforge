@@ -9,6 +9,7 @@ use crate::{
     *,
 };
 use lightwell_core::CROP_EFFECT;
+use lightwell_evidence::{self as script, DraftStep, PaletteStep, PreviewStep, WorkspaceStep};
 
 /// `edit.transform rotate-right` on an orientation-1 fixture reorders its quadrants exactly as
 /// EXIF orientation 6 does (a 90 degree clockwise turn: new top-left is old bottom-left, and so
@@ -24,55 +25,59 @@ const POINTER_MODE: &str = "pointer";
 /// criteria name what each step proves; the plan says what it commits, and `verify` below checks
 /// the workspace, the status and the photograph each step produces.
 pub fn plan(_: &[PathBuf]) -> Plan {
-    let workspace =
-        |name: &str, request: Value| Step::new(name, json!({ "workspace": request })).commits(0);
+    let workspace = |name: &str, request: WorkspaceStep| Step::new(name, request).commits(0);
     Plan::new(vec![
         Step::opened("opened"),
         // `edit.transform rotate-right` commits one entry; the panels are untouched.
         Step::new(
             "rotated",
-            json!({"api":{"method":"edit.transform","params":{"transform":"rotate-right"}}}),
+            script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
         )
         .commits(1)
         .label("Rotate right"),
         // Each workspace step, its own columns, the photograph still centred in them.
-        workspace("state-hidden", json!({"state_panel":false})),
+        workspace("state-hidden", WorkspaceStep::default().state_panel(false)),
         workspace(
             "tools-hidden",
-            json!({"state_panel":true,"tools_panel":false}),
+            WorkspaceStep::default()
+                .state_panel(true)
+                .tools_panel(false),
         ),
-        workspace("thirds", json!({"tools_panel":true,"thirds":true})),
+        workspace(
+            "thirds",
+            WorkspaceStep::default().tools_panel(true).thirds(true),
+        ),
         // A historical preview of entry 0, the Original, then back to current.
-        Step::new("preview", json!({"preview":{"sequence":0}})).commits(0),
-        Step::new("current", json!({"preview":"current"})).commits(0),
+        Step::new("preview", PreviewStep::Sequence(0)).commits(0),
+        Step::new("current", PreviewStep::Current).commits(0),
         // Transforms, collapsed by its own default, expanded under a collapsed Basic: its four
         // exact operations as one row of icon buttons, both view state alone.
         Step::new(
             "basic-collapsed",
-            json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
+            script::Step::section(BASIC_MODULE, false),
         )
         .commits(0)
         .collapsed(BASIC_MODULE),
         Step::new(
             "transform-expanded",
-            json!({"section":{"module":TRANSFORM_MODULE,"expanded":true}}),
+            script::Step::section(TRANSFORM_MODULE, true),
         )
         .commits(0)
         .expanded(TRANSFORM_MODULE)
         .collapsed(BASIC_MODULE),
         // Starting a crop draft, by the `draft.start` route, enters the crop mode.
-        Step::new("draft", json!({"draft":{"start":true}})).commits(0),
+        Step::new("draft", DraftStep::Start).commits(0),
         // A commit while the draft is open is the conflict, whoever made it.
         Step::new(
             "conflict",
-            json!({"api":{"method":"edit.transform","params":{"transform":"rotate-left"}}}),
+            script::Step::call("edit.transform", json!({"transform":"rotate-left"})),
         )
         .commits(1)
         .label("Rotate left"),
         // The palette, opened and queried by the script.
-        Step::new("palette", json!({"palette":{"query":"rotate"}})).commits(0),
+        Step::new("palette", PaletteStep::Query("rotate".into())).commits(0),
         // Cancelling the draft returns the session to pointer.
-        Step::new("cancelled", json!({"draft":{"cancel":true}})).commits(0),
+        Step::new("cancelled", DraftStep::Cancel).commits(0),
     ])
 }
 
@@ -333,7 +338,7 @@ pub fn unavailable_first(_: &[PathBuf]) -> Plan {
         Step::opened("opened").no_layer(CROP_EFFECT),
         Step::new(
             "cropped",
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9"}}}),
+            script::Step::call("edit.crop-fit", json!({"aspect":"16:9"})),
         )
         .commits(1)
         .label("Crop 16:9"),

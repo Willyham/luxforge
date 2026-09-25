@@ -14,6 +14,7 @@ use crate::{
     *,
 };
 use lightwell_core::{AssetId, CapabilitiesProofModule, EditorService, EntryId, ModuleRegistry};
+use lightwell_evidence::{self as script, CapabilityAction, CapabilitySection, CapabilityStep};
 use lightwell_testkit::ProofEndpoint;
 use std::{sync::Arc, time::Duration};
 
@@ -27,94 +28,98 @@ const DELAY: Duration = Duration::from_millis(1200);
 /// A captured tinted frame and the core's own render of the same stack may differ by this much per
 /// channel, in 8-bit codes, over the window's mean: linear filtering of the magnified photograph.
 const MEAN_TOLERANCE: f64 = 2.0;
-/// What a secret step's value is kept and recorded as.
-const REDACTED: &str = "<redacted>";
-
-/// One capability step of the proof module.
-fn step(gesture: Value) -> Value {
-    let mut object = gesture.as_object().expect("a gesture object").clone();
-    object.insert("module".into(), json!(MODULE));
-    json!({ "capability": object })
+/// One capability step of the proof module, whose frame waits for the jobs it starts.
+fn step(action: CapabilityAction) -> CapabilityStep {
+    CapabilityStep::new(MODULE, action)
 }
 
 /// Every frame, in order, with the sentinel key in the secret steps' script and redacted in what is
 /// kept and recorded. Only Apply commits anything: every settings write, consent, install, task
 /// and grant is the capability's own state, not the photograph's history.
 pub fn plan(generate: &str, key: &str, wrong: &str) -> Plan {
-    let layout = |name: &str, script: Value| Step::new(name, script).commits(0);
-    let capability = |name: &str, gesture: Value| Step::new(name, step(gesture)).commits(0);
-    let secret = |name: &str, value: &str| {
-        let gesture =
-            |value: &str| json!({"secret": {"field": "api-key", "value": value, "profile": 0}});
-        Step::secret(name, step(gesture(value)), step(gesture(REDACTED))).commits(0)
+    let layout = |name: &str, script: script::Step| Step::new(name, script).commits(0);
+    let capability = |name: &str, step: CapabilityStep| Step::new(name, step).commits(0);
+    let gesture = |name: &str, action: CapabilityAction| capability(name, step(action));
+    let set = |field: &str, value: Value, profile: Option<usize>| CapabilityAction::Set {
+        field: field.into(),
+        value,
+        profile,
     };
+    // A secret step is sent with its value, and kept and recorded with it redacted.
+    let secret = |name: &str, value: &str| {
+        gesture(
+            name,
+            CapabilityAction::Secret {
+                field: "api-key".into(),
+                value: script::Secret::new(value.into()),
+                profile: Some(0),
+            },
+        )
+    };
+    let install = || CapabilityAction::Install("proof-palette".into());
     Plan::new(vec![
         Step::opened("opened"),
         // Layout: the sections that start expanded are collapsed, the proof section is expanded
         // and the panel is scrolled to its end, so the whole capability block is on screen.
         layout(
             "basic-collapsed",
-            json!({"section":{"module":"lightwell.basic","expanded":false}}),
+            script::Step::section("lightwell.basic", false),
         )
         .collapsed("lightwell.basic"),
         layout(
             "transform-collapsed",
-            json!({"section":{"module":"lightwell.transform","expanded":false}}),
+            script::Step::section("lightwell.transform", false),
         )
         .collapsed("lightwell.transform"),
         layout(
             "crop-collapsed",
-            json!({"section":{"module":"lightwell.crop","expanded":false}}),
+            script::Step::section("lightwell.crop", false),
         )
         .collapsed("lightwell.crop"),
-        layout(
-            "expanded",
-            json!({"section":{"module":MODULE,"expanded":true}}),
-        )
-        .expanded(MODULE),
-        layout("scrolled", json!({"tools_scroll":1.0})).expanded(MODULE),
+        layout("expanded", script::Step::section(MODULE, true)).expanded(MODULE),
+        layout("scrolled", script::Step::tools_scroll(1.0)).expanded(MODULE),
         // Its settings: strength, a profile, the profile's endpoint and its key.
-        capability("settings", json!({"section": "settings"})),
-        capability(
-            "strength",
-            json!({"set": {"field": "strength", "value": 0.8}}),
+        gesture(
+            "settings",
+            CapabilityAction::Section(CapabilitySection::Settings),
         ),
-        capability(
+        gesture("strength", set("strength", json!(0.8), None)),
+        gesture(
             "profile",
-            json!({"profile": {"create": {"adapter": "proof-echo", "label": "Local proof"}}}),
+            CapabilityAction::CreateProfile {
+                adapter: "proof-echo".into(),
+                label: "Local proof".into(),
+            },
         ),
-        capability(
-            "endpoint",
-            json!({"set": {"field": "endpoint", "value": generate, "profile": 0}}),
-        ),
+        gesture("endpoint", set("endpoint", json!(generate), Some(0))),
         secret("key", key),
-        capability("status", json!({"section": "status"})),
+        gesture(
+            "status",
+            CapabilityAction::Section(CapabilitySection::Status),
+        ),
         // The download's consent, declined, then asked again and allowed: installing, then
         // installed, then active.
+        gesture("install-asked", install()),
+        gesture("denied", CapabilityAction::Consent(false)),
+        gesture("install-asked-again", install()),
         capability(
-            "install-asked",
-            json!({"install": {"resource": "proof-palette"}}),
+            "installing",
+            step(CapabilityAction::Consent(true)).no_wait(),
         ),
-        capability("denied", json!({"consent": "deny"})),
-        capability(
-            "install-asked-again",
-            json!({"install": {"resource": "proof-palette"}}),
-        ),
-        capability("installing", json!({"consent": "allow", "wait": false})),
-        capability("installed", json!({"settle": true})),
-        capability("activated", json!({"activate": true})),
+        gesture("installed", CapabilityAction::Settle),
+        gesture("activated", CapabilityAction::Activate(true)),
         // The photo-data consent, the running task and its result, and Apply.
-        capability("task-asked", json!({"task": {"task": TASK}})),
-        capability("running", json!({"consent": "allow", "wait": false})),
-        capability("succeeded", json!({"settle": true})),
-        Step::new("applied", step(json!({"apply": true})))
+        gesture("task-asked", CapabilityAction::Task(TASK.into())),
+        capability("running", step(CapabilityAction::Consent(true)).no_wait()),
+        gesture("succeeded", CapabilityAction::Settle),
+        Step::new("applied", step(CapabilityAction::Apply))
             .commits(1)
             .label("Apply proof tint"),
         // A wrong key makes the endpoint refuse, and the failure is shown; then the photo-data
         // grant is revoked.
         secret("wrong-key", wrong),
-        capability("refused-task", json!({"task": {"task": TASK}})),
-        capability("revoked", json!({"revoke": 1})),
+        gesture("refused-task", CapabilityAction::Task(TASK.into())),
+        gesture("revoked", CapabilityAction::Revoke(1)),
     ])
 }
 
@@ -668,7 +673,7 @@ mod tests {
         assert!(sent.contains("planted-key") && sent.contains("planted-wrong"));
         let kept = plan.kept().to_string();
         assert!(!kept.contains("planted-key") && !kept.contains("planted-wrong"));
-        assert_eq!(kept.matches(REDACTED).count(), 2);
+        assert_eq!(kept.matches(script::REDACTED).count(), 2);
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("nested")).unwrap();
         fs::write(dir.path().join("clean.json"), kept).unwrap();

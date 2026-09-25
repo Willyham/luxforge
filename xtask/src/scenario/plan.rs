@@ -12,6 +12,7 @@
 //! itself over the [`Checked`] launch, reading each frame by its step's name.
 use super::{Frame, preamble};
 use crate::*;
+use lightwell_evidence as script;
 
 /// The slider draft a frame's client holds.
 #[derive(Clone, Debug, PartialEq)]
@@ -129,23 +130,20 @@ impl Expect {
 }
 
 /// One frame of a launch: the script step that produces it — none for a frame an open captures —
-/// and what it must show.
+/// and what it must show. The step is the shared evidence script's own type, so the script a
+/// launch writes is the one the editor parses.
 #[derive(Clone, Debug)]
 pub struct Step {
     name: String,
-    script: Option<Value>,
-    /// The step as the kept script and the editor's record show it, when that is not what is sent:
-    /// a step carrying a secret is kept, and recorded, redacted.
-    kept: Option<Value>,
+    script: Option<script::Step>,
     expect: Expect,
 }
 
 impl Step {
-    fn with(name: impl Into<String>, script: Option<Value>) -> Self {
+    fn with(name: impl Into<String>, script: Option<script::Step>) -> Self {
         Self {
             name: name.into(),
             script,
-            kept: None,
             expect: Expect::default(),
         }
     }
@@ -155,18 +153,10 @@ impl Step {
         Self::with(name, None)
     }
 
-    /// A frame captured for one script step.
-    pub fn new(name: impl Into<String>, script: Value) -> Self {
-        Self::with(name, Some(script))
-    }
-
-    /// A script step that carries a secret: `script` is what is sent, and `kept`, the step with
-    /// its secret redacted, is what the kept script holds and what the editor records.
-    pub fn secret(name: impl Into<String>, script: Value, kept: Value) -> Self {
-        Self {
-            kept: Some(kept),
-            ..Self::new(name, script)
-        }
+    /// A frame captured for one script step, built from one of the shared script's steps or a
+    /// payload that converts into one.
+    pub fn new(name: impl Into<String>, script: impl Into<script::Step>) -> Self {
+        Self::with(name, Some(script.into()))
     }
 
     #[cfg(test)]
@@ -174,9 +164,10 @@ impl Step {
         &self.name
     }
 
+    /// The step as the script writes it.
     #[cfg(test)]
-    pub fn script(&self) -> Option<&Value> {
-        self.script.as_ref()
+    pub fn script(&self) -> Option<Value> {
+        self.script.as_ref().map(script::Step::to_value)
     }
 
     #[cfg(test)]
@@ -184,9 +175,9 @@ impl Step {
         &self.expect
     }
 
-    /// The step as the kept script holds it and the editor records it.
-    fn kept(&self) -> Option<&Value> {
-        self.kept.as_ref().or(self.script.as_ref())
+    /// The step as the kept script holds it and the editor records it: a secret redacted.
+    fn kept(&self) -> Option<Value> {
+        self.script.as_ref().map(script::Step::kept)
     }
 
     /// `n` revisions committed since the frame before: `0` for none.
@@ -304,24 +295,19 @@ impl Plan {
         self.steps.iter().any(|step| step.script.is_some())
     }
 
-    /// The evidence script: every scripted step, in order.
+    /// The evidence script: every scripted step, in order, as the editor reads it.
     pub fn script(&self) -> Value {
-        Value::Array(
-            self.steps
-                .iter()
-                .filter_map(|step| step.script.clone())
-                .collect(),
-        )
+        let steps: Vec<script::Step> = self
+            .steps
+            .iter()
+            .filter_map(|step| step.script.clone())
+            .collect();
+        script::write(&steps)
     }
 
     /// The script as it is kept beside the evidence: [`Plan::script`] with each secret redacted.
     pub fn kept(&self) -> Value {
-        Value::Array(
-            self.steps
-                .iter()
-                .filter_map(|step| step.kept().cloned())
-                .collect(),
-        )
+        Value::Array(self.steps.iter().filter_map(Step::kept).collect())
     }
 
     /// Where the named step's frame is in capture order.
@@ -354,6 +340,13 @@ impl Plan {
                         step.name
                     ),
                 )?;
+            }
+        }
+        for step in &self.steps {
+            if let Some(script) = &step.script {
+                script.validate().map_err(|error| {
+                    format!("Step {:?} is not a valid script step: {error}", step.name)
+                })?;
             }
         }
         let first_scripted = self.steps.iter().position(|step| step.script.is_some());
@@ -463,6 +456,7 @@ impl Plan {
                     }
                 }
                 Some(scripted) => {
+                    let scripted = &scripted;
                     number += 1;
                     ensure(
                         recorded["step"] == json!(number),
@@ -847,24 +841,36 @@ mod tests {
 
     #[test]
     fn a_plan_derives_its_script_and_refuses_a_malformed_order() {
+        let secret = |value: &str| {
+            script::CapabilityStep::new(
+                "m",
+                script::CapabilityAction::Secret {
+                    field: "key".into(),
+                    value: script::Secret::new(value.into()),
+                    profile: None,
+                },
+            )
+        };
         let plan = Plan::new(vec![
             Step::opened("opened"),
-            Step::new("expand", json!({"section":{"module":"m","expanded":true}})).commits(0),
-            Step::secret("key", json!({"secret":"k"}), json!({"secret":"<redacted>"})),
+            Step::new("expand", script::Step::section("m", true)).commits(0),
+            Step::new("key", secret("k")),
         ]);
         assert!(plan.validate().is_ok());
         assert_eq!(plan.len(), 3);
+        let secret = |value: &str| json!({"capability":{"module":"m","secret":{"field":"key","value":value}}});
         assert_eq!(
             plan.script(),
-            json!([{"section":{"module":"m","expanded":true}},{"secret":"k"}])
+            json!([{"section":{"module":"m","expanded":true}},secret("k")])
         );
+        // What is kept, and recorded, holds the secret redacted.
         assert_eq!(
             plan.kept(),
-            json!([{"section":{"module":"m","expanded":true}},{"secret":"<redacted>"}])
+            json!([{"section":{"module":"m","expanded":true}},secret("<redacted>")])
         );
         assert_eq!(plan.index("key"), Some(2));
         let late = Plan::new(vec![
-            Step::new("a", json!({"wait":{"ms":1}})),
+            Step::new("a", script::Step::wait(1)),
             Step::opened("b"),
         ]);
         assert!(late.validate().is_err());
@@ -872,9 +878,19 @@ mod tests {
         assert!(twice.validate().is_err());
         let forward = Plan::new(vec![
             Step::opened("a").same_layer("e", "b"),
-            Step::new("b", json!({})),
+            Step::new("b", script::Step::wait(1)),
         ]);
         assert!(forward.validate().is_err());
+        // A step the editor would refuse to parse is refused by the plan first.
+        let invalid = Plan::new(vec![
+            Step::opened("a"),
+            Step::new("b", script::Step::wait(0)),
+        ]);
+        let error = invalid.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("Step \"b\" is not a valid script step"),
+            "{error}"
+        );
     }
 
     /// A three-frame launch written the way the editor writes one, for the checks below.
@@ -936,11 +952,11 @@ mod tests {
             Step::opened("opened").no_draft(),
             Step::new(
                 "release",
-                json!({"slider":{"action":"set-x","parameter":"p","values":[1.0],"release":true}}),
+                script::SliderStep::new("set-x", "p", [1.0]).release(),
             )
             .commits(1)
             .label(label),
-            Step::new("wait", json!({"wait":{"ms":10}})).commits(0),
+            Step::new("wait", script::Step::wait(10)).commits(0),
         ])
     }
 
@@ -967,7 +983,7 @@ mod tests {
 
         // A scripted step the editor recorded differently fails on that step.
         let mut other = plan("X 1");
-        other.steps[2].script = Some(json!({"wait":{"ms":20}}));
+        other.steps[2].script = Some(script::Step::wait(20));
         let error = other.check(tmp.path()).unwrap_err().to_string();
         assert!(error.starts_with("Step \"wait\" (frame 2"), "{error}");
 

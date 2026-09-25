@@ -18,6 +18,7 @@ use crate::{
     scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
+use lightwell_evidence::{self as script, PresetCreateStep, PresetPick};
 use std::collections::BTreeMap;
 
 pub const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
@@ -66,60 +67,79 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // 1-2: Basic out of the way, the Presets section open. Nothing is committed.
         Step::new(
             "basic-collapsed",
-            json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
+            script::Step::section(BASIC_MODULE, false),
         )
         .commits(0)
         .collapsed(BASIC_MODULE),
         Step::new(
             "presets-expanded",
-            json!({"section":{"module":PRESETS_MODULE,"expanded":true}}),
+            script::Step::section(PRESETS_MODULE, true),
         )
         .commits(0)
         .expanded(PRESETS_MODULE),
         // 3-4: two imports through the section's own task; an import commits no edit.
-        Step::new("xmp", json!({"preset_import":{"path":XMP}})).commits(0),
-        Step::new("document", json!({"preset_import":{"path":DOCUMENT}})).commits(0),
+        Step::new("xmp", script::Step::preset_import(XMP)).commits(0),
+        Step::new("document", script::Step::preset_import(DOCUMENT)).commits(0),
         // 5: the document's preset, whose name differs from the XMP's only in case: one entry.
         Step::new(
             "soft-film",
-            json!({"preset":{"name":"Soft film","group":"Synthetic"}}),
+            script::Step::Preset(PresetPick {
+                name: "Soft film".into(),
+                group: Some("Synthetic".into()),
+            }),
         )
         .commits(1)
         .label("Preset: Soft film"),
         // 6: the XMP's preset over it, by its exact name alone: one more entry.
-        Step::new("soft-film-xmp", json!({"preset":{"name":"Soft Film"}}))
+        Step::new("soft-film-xmp", script::Step::preset("Soft Film"))
             .commits(1)
             .label("Preset: Soft Film"),
         // 7: undo returns to the document's preset.
-        Step::new("undo", json!({"api":{"method":"history.undo"}}))
+        Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
             .label("Preset: Soft film"),
         // 8: the create form filled, Basic Tone alone, and left open for its frame.
         Step::new(
             "form",
-            json!({"preset_create":{"name":NATIVE,"groups":[TONE_GROUP],"submit":false}}),
+            PresetCreateStep {
+                name: NATIVE.into(),
+                group: None,
+                groups: vec![TONE_GROUP.into()],
+                submit: false,
+            },
         )
         .commits(0),
         // 9: the same form submitted: a native preset captured from that entry, no edit.
         Step::new(
             "created",
-            json!({"preset_create":{"name":NATIVE,"groups":[TONE_GROUP]}}),
+            PresetCreateStep {
+                name: NATIVE.into(),
+                group: None,
+                groups: vec![TONE_GROUP.into()],
+                submit: true,
+            },
         )
         .commits(0),
         // 10: undo to the Original.
-        Step::new("undo-original", json!({"api":{"method":"history.undo"}}))
+        Step::new("undo-original", script::Step::api("history.undo"))
             .commits(1)
             .label("Original"),
         // 11: the native preset on the Original: one entry.
-        Step::new("native", json!({"preset":{"name":NATIVE}}))
+        Step::new("native", script::Step::preset(NATIVE))
             .commits(1)
             .label(format!("Preset: {NATIVE}")),
         // 12: the library through the generic api step, a host method that takes no asset.
-        Step::new("list", json!({"api":{"method":"preset.list"}})).commits(0),
+        Step::new("list", script::Step::api("preset.list")).commits(0),
         // 13: the native preset deleted through its row's menu. History keeps the entry.
-        Step::new("deleted", json!({"preset_delete":{"name":NATIVE}}))
-            .commits(0)
-            .label(format!("Preset: {NATIVE}")),
+        Step::new(
+            "deleted",
+            script::Step::PresetDelete(PresetPick {
+                name: NATIVE.into(),
+                group: None,
+            }),
+        )
+        .commits(0)
+        .label(format!("Preset: {NATIVE}")),
     ])
 }
 

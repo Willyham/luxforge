@@ -11,6 +11,7 @@ use crate::{
     *,
 };
 use lightwell_core::{BoxRect, CROP_EFFECT, CropPayload, CropStage};
+use lightwell_evidence::{self as script, DraftStep, ViewStep};
 
 /// The fixture both scenarios open, and therefore the crop layer's input stage.
 const STAGE: (u32, u32) = (480, 320);
@@ -101,7 +102,7 @@ fn idle_section(frame: &Value, chosen: &str, angle: &str) -> Result<Value> {
 }
 
 /// A step on the crop draft or the view: it commits nothing.
-fn uncommitted(name: &str, script: Value) -> Step {
+fn uncommitted(name: &str, script: script::Step) -> Step {
     Step::new(name, script).commits(0)
 }
 
@@ -117,26 +118,26 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // A 16:9 fit at angle zero appends the one crop layer.
         Step::new(
             "fit",
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":0.0}}}),
+            script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":0.0})),
         )
         .commits(1)
         .label("Crop 16:9"),
         // An off-centre straightened rectangle updates that same layer in place.
         Step::new(
             "straightened",
-            json!({"api":{"method":"edit.crop","params":{"angle":ANGLE,"x":payload.x,"y":payload.y,"width":payload.width,"height":payload.height}}}),
+            script::Step::call("edit.crop", json!({"angle":ANGLE,"x":payload.x,"y":payload.y,"width":payload.width,"height":payload.height})),
         )
         .commits(1)
         .label("Crop 7\u{b0}")
         .same_layer(CROP_EFFECT, "fit"),
         // A draft on that layer, an angle change and a discard: nothing commits.
-        uncommitted("started", json!({"draft":{"start":true}})),
-        uncommitted("angled", json!({"draft":{"angle":12.0}})),
-        uncommitted("cancelled", json!({"draft":{"cancel":true}})),
+        uncommitted("started", script::Step::Draft(DraftStep::Start)),
+        uncommitted("angled", script::Step::Draft(DraftStep::Angle(12.0))),
+        uncommitted("cancelled", script::Step::Draft(DraftStep::Cancel)),
         // A second draft, one nudge and Apply, which commits once to the same layer.
-        uncommitted("restarted", json!({"draft":{"start":true}})),
-        uncommitted("nudged", json!({"draft":{"nudge":NUDGE}})),
-        Step::new("applied", json!({"draft":{"apply":true}}))
+        uncommitted("restarted", script::Step::Draft(DraftStep::Start)),
+        uncommitted("nudged", script::Step::Draft(DraftStep::Nudge(NUDGE))),
+        Step::new("applied", DraftStep::Apply)
             .commits(1)
             .label("Crop 7.5\u{b0}")
             .same_layer(CROP_EFFECT, "fit"),
@@ -154,35 +155,41 @@ pub fn draft_plan(_: &[PathBuf]) -> Plan {
         Step::opened("opened"),
         uncommitted(
             "basic-collapsed",
-            json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
+            script::Step::section(BASIC_MODULE, false),
         )
         .collapsed(BASIC_MODULE),
         // The idle section, expanded under a collapsed Basic.
-        uncommitted(
-            "crop-expanded",
-            json!({"section":{"module":CROP_MODULE,"expanded":true}}),
-        )
-        .expanded(CROP_MODULE)
-        .collapsed(BASIC_MODULE),
+        uncommitted("crop-expanded", script::Step::section(CROP_MODULE, true))
+            .expanded(CROP_MODULE)
+            .collapsed(BASIC_MODULE),
         // A neutral draft on a stack without a crop layer.
-        uncommitted("started", json!({"draft":{"start":true}})).no_layer(CROP_EFFECT),
-        uncommitted("rect", json!({"draft":{"rect":[40.0,24.0,300.0,200.0]}})),
-        uncommitted("square", json!({"draft":{"preset":"1:1"}})),
-        uncommitted("scrolled", json!({"tools_scroll":1.0})),
+        uncommitted("started", script::Step::Draft(DraftStep::Start)).no_layer(CROP_EFFECT),
+        uncommitted(
+            "rect",
+            script::Step::Draft(DraftStep::Rect([40.0, 24.0, 300.0, 200.0])),
+        ),
+        uncommitted(
+            "square",
+            script::Step::Draft(DraftStep::Preset("1:1".into())),
+        ),
+        uncommitted("scrolled", script::Step::tools_scroll(1.0)),
         uncommitted(
             "rail",
-            json!({"draft":{"angle_rail":[0.6,RAIL_ANGLE_FRACTION]}}),
+            script::Step::Draft(DraftStep::AngleRail(vec![0.6, RAIL_ANGLE_FRACTION])),
         ),
-        uncommitted("percent", json!({"view":{"zoom":"100"}})),
-        uncommitted("fit", json!({"view":{"zoom":"fit"}})),
+        uncommitted("percent", script::Step::View(ViewStep::Percent(100.0))),
+        uncommitted("fit", script::Step::View(ViewStep::Fit)),
         // Apply commits the straightened square once.
-        Step::new("applied", json!({"draft":{"apply":true}}))
+        Step::new("applied", DraftStep::Apply)
             .commits(1)
             .label("Crop 2.4\u{b0}"),
         // 16:9 pressed in the idle section opens a draft on the committed layer.
-        uncommitted("idle-preset", json!({"draft":{"preset":"16:9"}})),
+        uncommitted(
+            "idle-preset",
+            script::Step::Draft(DraftStep::Preset("16:9".into())),
+        ),
         // Cancel ends it with the committed layer untouched.
-        uncommitted("cancelled", json!({"draft":{"cancel":true}}))
+        uncommitted("cancelled", script::Step::Draft(DraftStep::Cancel))
             .same_layer(CROP_EFFECT, "applied"),
     ])
 }

@@ -25,6 +25,7 @@ use crate::{
     scenario::{Checked, Plan, Run, Step, launch::Guard, plan::only},
     *,
 };
+use lightwell_evidence::{self as script};
 use std::{
     process::ExitStatus,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -83,11 +84,11 @@ fn is_raw(sources: &[PathBuf]) -> bool {
 }
 
 /// The heavy step for this source: Presence Clarity on the JPEG, a temperature commit on a RAW.
-fn heavy_step(raw: bool) -> Value {
+fn heavy_step(raw: bool) -> script::Step {
     if raw {
-        json!({"api":{"method":"edit.set-raw-temperature","params":{"kelvin":KELVIN}}})
+        script::Step::call("edit.set-raw-temperature", json!({"kelvin":KELVIN}))
     } else {
-        json!({"api":{"method":"edit.set-presence","params":{"clarity":CLARITY}}})
+        script::Step::call("edit.set-presence", json!({"clarity":CLARITY}))
     }
 }
 
@@ -107,22 +108,22 @@ pub fn plan(sources: &[PathBuf]) -> Plan {
         // The photograph opened with the section open and sampling, as every launch starts it.
         Step::opened("opened"),
         // The window fills; the section has sampled since the photograph opened.
-        Step::new("filled", json!({"wait":{"ms":FILL_WAIT_MS}})).commits(0),
+        Step::new("filled", script::Step::wait(FILL_WAIT_MS)).commits(0),
         // The straighten, then the heavy edit over it, each one entry, captured on its exact frame.
         Step::new(
             "straightened",
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":ANGLE}}}),
+            script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":ANGLE})),
         )
         .commits(1)
         .label("Crop 16:9"),
         heavy,
         // Its render listed as finished.
-        Step::new("finished", json!({"wait":{"ms":FINISHED_WAIT_MS}})).commits(0),
+        Step::new("finished", script::Step::wait(FINISHED_WAIT_MS)).commits(0),
         // Collapsed, then asleep.
-        Step::new("collapsed", json!({"performance":{"expanded":false}})).commits(0),
-        Step::new("asleep", json!({"wait":{"ms":ASLEEP_WAIT_MS}})).commits(0),
+        Step::new("collapsed", script::Step::performance(false)).commits(0),
+        Step::new("asleep", script::Step::wait(ASLEEP_WAIT_MS)).commits(0),
         // Opened again, captured on the first read of a fresh window.
-        Step::new("reopened", json!({"performance":{"expanded":true}})).commits(0),
+        Step::new("reopened", script::Step::performance(true)).commits(0),
     ])
 }
 

@@ -19,6 +19,7 @@ use crate::{
     smoke::Scenario,
     *,
 };
+use lightwell_evidence::{self as script, ViewStep};
 
 pub const SCENARIO: &str = "zoom";
 
@@ -79,15 +80,15 @@ const PLAN: [(&str, Kind, Zoom); 13] = [
 
 /// The step each planned frame after the open one is captured for, as the script writes it and as
 /// the editor records it back.
-fn request(kind: Kind, zoom: Zoom) -> Option<Value> {
+fn request(kind: Kind, zoom: Zoom) -> Option<script::Step> {
     match kind {
         Kind::Open => None,
-        Kind::Settle => Some(json!({"wait":{"ms":SETTLE_MS}})),
-        Kind::Wait => Some(json!({"wait":{"ms":WAIT_MS}})),
-        Kind::Pan(x, y) => Some(json!({"pan":{"x":x,"y":y}})),
+        Kind::Settle => Some(script::Step::wait(SETTLE_MS)),
+        Kind::Wait => Some(script::Step::wait(WAIT_MS)),
+        Kind::Pan(x, y) => Some(script::Step::pan(x as f32, y as f32)),
         Kind::View => Some(match zoom {
-            Zoom::Fit => json!({"view":{"zoom":"fit"}}),
-            Zoom::Percent(value) => json!({"view":{"zoom":value}}),
+            Zoom::Fit => script::Step::View(ViewStep::Fit),
+            Zoom::Percent(value) => script::Step::View(ViewStep::Percent(value as f32)),
         }),
     }
 }
@@ -630,12 +631,15 @@ mod tests {
         let script = plan.script();
         let steps = script.as_array().expect("an array");
         assert_eq!(steps.len(), PLAN.len() - 1);
-        assert_eq!(steps[0], json!({"wait":{"ms":SETTLE_MS}}));
-        assert_eq!(steps[2], json!({"view":{"zoom":50.0}}));
-        assert_eq!(steps[8], json!({"pan":{"x":0.5,"y":0.5}}));
+        assert_eq!(steps[0], script::Step::wait(SETTLE_MS).to_value());
+        assert_eq!(
+            steps[2],
+            script::Step::View(ViewStep::Percent(50.0)).to_value()
+        );
+        assert_eq!(steps[8], script::Step::pan(0.5, 0.5).to_value());
         assert_eq!(
             *steps.last().expect("a last step"),
-            json!({"view":{"zoom":"fit"}})
+            script::Step::View(ViewStep::Fit).to_value()
         );
     }
 

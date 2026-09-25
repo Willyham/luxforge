@@ -12,7 +12,7 @@
 use crate::{
     app::{
         Editor,
-        evidence::{CapabilityAction, CapabilityStep, Settle},
+        evidence::{CapabilityAction, CapabilitySection, CapabilityStep, Settle},
         message::{CapabilityMessage, Message},
         tasks::{REQUEST_NUMBER, mutation, request},
     },
@@ -1290,7 +1290,8 @@ impl Editor {
         // A settings gesture is made on the settings sub-view and every other one on the status
         // view, so each frame shows the control the step used.
         let view = match &step.action {
-            CapabilityAction::Section(view) => *view,
+            CapabilityAction::Section(CapabilitySection::Status) => CapabilityView::Status,
+            CapabilityAction::Section(CapabilitySection::Settings) => CapabilityView::Settings,
             CapabilityAction::Set { .. }
             | CapabilityAction::Secret { .. }
             | CapabilityAction::CreateProfile { .. }
@@ -1419,7 +1420,7 @@ impl Editor {
                     },
                     CapabilityMessage::SecretText {
                         module_id: module_id.clone(),
-                        text: value,
+                        text: SecretText::new(value.expose().to_owned()),
                     },
                     CapabilityMessage::SecretCommit(module_id),
                 ]

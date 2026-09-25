@@ -1,6 +1,7 @@
 //! Reproducible full-editor RAW evidence. Every app run uses the background-only smoke launcher.
 use crate::*;
 use lightwell_core::{EditorService, SourceKind};
+use lightwell_evidence::{self as script, PreviewStep, ViewStep};
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
@@ -41,20 +42,21 @@ const CURRENT_FRAME: usize = 11;
 const FINAL_FRAME: usize = 13;
 
 fn script(source: &Source) -> Value {
-    json!([
-        {"api":{"method":"edit.set-raw-exposure","params":{"ev":1.0}}},
-        {"api":{"method":"edit.set-raw-red-gain","params":{"gain":3.0}}},
-        {"api":{"method":"edit.set-raw-blue-gain","params":{"gain":0.9}}},
-        {"api":{"method":"edit.set-raw-temperature","params":{"kelvin":5500.0}}},
-        {"api":{"method":"edit.set-raw-tint","params":{"tint":10.0}}},
-        {"api":{"method":"edit.pick-raw-neutral","params":{"x":source.neutral_point[0],"y":source.neutral_point[1]}}},
-        {"api":{"method":"edit.transform","params":{"transform":"rotate-right"}}},
-        {"api":{"method":"edit.crop-fit","params":{"aspect":"4:3","angle":0.0}}},
-        {"api":{"method":"history.undo","params":{}}},
-        {"preview":{"sequence":0}},
-        {"preview":"current"},
-        {"view":{"zoom":100.0}},
-        {"view":{"zoom":"fit"}}
+    let [x, y] = source.neutral_point;
+    script::write(&[
+        script::Step::call("edit.set-raw-exposure", json!({"ev":1.0})),
+        script::Step::call("edit.set-raw-red-gain", json!({"gain":3.0})),
+        script::Step::call("edit.set-raw-blue-gain", json!({"gain":0.9})),
+        script::Step::call("edit.set-raw-temperature", json!({"kelvin":5500.0})),
+        script::Step::call("edit.set-raw-tint", json!({"tint":10.0})),
+        script::Step::call("edit.pick-raw-neutral", json!({"x":x,"y":y})),
+        script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
+        script::Step::call("edit.crop-fit", json!({"aspect":"4:3","angle":0.0})),
+        script::Step::api("history.undo"),
+        script::Step::Preview(PreviewStep::Sequence(0)),
+        script::Step::Preview(PreviewStep::Current),
+        script::Step::View(ViewStep::Percent(100.0)),
+        script::Step::View(ViewStep::Fit),
     ])
 }
 
@@ -871,6 +873,33 @@ mod tests {
         wrong.model = "other".into();
         assert!(profile(&catalog, &wrong).is_err());
     }
+    /// The journey's script, into `$SCRIPT_DUMP/raw-editor/`, beside the scenarios' own from
+    /// `smoke::tests::dump_scripts`: the proof that a change to how scripts are written leaves the
+    /// script this journey runs the same.
+    #[test]
+    #[ignore]
+    fn dump_script() {
+        let dir =
+            PathBuf::from(std::env::var("SCRIPT_DUMP").expect("SCRIPT_DUMP names a directory"))
+                .join("raw-editor");
+        fs::create_dir_all(&dir).unwrap();
+        let source = Source {
+            id: "z6".into(),
+            path: PathBuf::from("z6.nef"),
+            sha256: "0".repeat(64),
+            mode: "NikonZ6Lossless14".into(),
+            make: "Nikon".into(),
+            model: "Z 6".into(),
+            sensor_dimensions: None,
+            active_area: None,
+            default_crop: None,
+            source_dimensions: [1, 1],
+            orientation: 1,
+            neutral_point: [123, 456],
+        };
+        write_json(&dir.join("script.json"), &script(&source)).unwrap();
+    }
+
     #[test]
     fn statistics_use_nearest_rank() {
         let values = [4.0, 1.0, 2.0, 3.0];

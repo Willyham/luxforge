@@ -26,6 +26,9 @@ use crate::{
     *,
 };
 use lightwell_core::PRESENCE_EFFECT;
+use lightwell_evidence::{
+    self as script, MaskRow, MaskStep, Reference, RowStep, SliderStep, WorkspaceStep,
+};
 
 pub const SCENARIO: &str = "mask-combine";
 /// The Presence fixture: its bottom-right quadrant is a flat mid-grey, which is where the two
@@ -126,14 +129,17 @@ fn hover(row: usize) -> String {
 /// radius, and committed as one entry. Only the commit moves the history.
 fn component(name: &str, mode: &str, shape: &Shape, label: &str) -> [Step; 4] {
     [
-        Step::new(format!("{name}-mode"), json!({"mask":{"mode":mode}})).commits(0),
-        Step::new(format!("{name}-new"), json!({"mask":{"add":RADIAL}})).commits(0),
+        Step::new(format!("{name}-mode"), MaskStep::Mode(mode.into())).commits(0),
+        Step::new(format!("{name}-new"), MaskStep::Add(RADIAL.into())).commits(0),
         Step::new(
             format!("{name}-swept"),
-            json!({"mask":{"sweep":{"from":shape.from(),"to":shape.to()}}}),
+            MaskStep::Sweep {
+                from: shape.from(),
+                to: shape.to(),
+            },
         )
         .commits(0),
-        Step::new(format!("{name}-applied"), json!({"mask":{"apply":true}}))
+        Step::new(format!("{name}-applied"), MaskStep::Apply)
             .commits(1)
             .label(label)
             .no_draft(),
@@ -148,24 +154,27 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // The fixture as launched: no Presence layer and nothing drafted.
         Step::opened("opened").no_layer(PRESENCE_EFFECT).no_draft(),
         // 1: Mask mode, through the same `workspace.set` the mode strip sends.
-        Step::new("mask-mode", json!({"workspace":{"mode":"mask"}})).commits(0),
+        Step::new("mask-mode", WorkspaceStep::default().mode("mask")).commits(0),
         // 2-5: the first component. A new mask whose first component is a radial, swept from its
         // centre out to one radius, the pointer lifted, then committed.
-        Step::new("add-new", json!({"mask":{"new":RADIAL}})).commits(0),
+        Step::new("add-new", MaskStep::New(RADIAL.into())).commits(0),
         Step::new(
             "add-swept",
-            json!({"mask":{"sweep":{"from":A.from(),"to":A.to()}}}),
+            MaskStep::Sweep {
+                from: A.from(),
+                to: A.to(),
+            },
         )
         .commits(0),
-        Step::new("add-released", json!({"mask":{"release":true}})).commits(0),
-        Step::new("add-applied", json!({"mask":{"apply":true}}))
+        Step::new("add-released", MaskStep::Release).commits(0),
+        Step::new("add-applied", MaskStep::Apply)
             .commits(1)
             .label("Add radial")
             .no_draft(),
         // 6: the coverage itself on screen, which is what every reading below is taken from.
         Step::new(
             "overlay-on",
-            json!({"workspace":{"mask_overlay":"mask-on-black"}}),
+            WorkspaceStep::default().mask_overlay("mask-on-black"),
         )
         .commits(0),
     ];
@@ -183,17 +192,24 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     // 19-22: each component's own contribution, by putting the pointer on its row. This is what
     // makes a subtraction on top of a gradient legible instead of guesswork. Pointing commits
     // nothing.
-    steps.extend((0..4).map(|row| Step::new(hover(row), json!({"mask":{"hover":row}})).commits(0)));
+    steps.extend(
+        (0..4).map(|row| {
+            Step::new(hover(row), MaskStep::Hover(Some(Reference::Index(row)))).commits(0)
+        }),
+    );
     steps.extend([
         // 23: the pointer off the list, so the composition is shown again.
-        Step::new("hover-off", json!({"mask":{"hover":null}})).commits(0),
+        Step::new("hover-off", MaskStep::Hover(None)).commits(0),
         // 24: the one move this list refuses: a subtract at the front. The panel states that rule
         // on the row rather than offering the move, so only an explicit position reaches the
         // host's own refusal — and the refusal is what ends this step, because a refused command
         // renders nothing for it to settle on. It commits nothing.
         Step::new(
             "front-refused",
-            json!({"mask":{"row":{"component":1,"index":0}}}),
+            MaskStep::Row(MaskRow {
+                component: Reference::Index(1),
+                edit: RowStep::Move(0),
+            }),
         )
         .commits(0)
         .refused("validation: mask Mask 1 begins with a subtract component"),
@@ -201,25 +217,28 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // what it put back is taken out again.
         Step::new(
             "reorder",
-            json!({"mask":{"row":{"component":3,"index":1}}}),
+            MaskStep::Row(MaskRow {
+                component: Reference::Index(3),
+                edit: RowStep::Move(1),
+            }),
         )
         .commits(1)
         .label("Move Radial 4")
         .no_draft(),
         // 26: the overlay off, leaving the photograph.
-        Step::new("overlay-off", json!({"workspace":{"mask_overlay":"off"}})).commits(0),
+        Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off")).commits(0),
         // 27: Presence through the mask, as the panel's own drag: the sections below the list are
         // bound to the open mask, so this commits a masked spatial layer.
         Step::new(
             "dehaze",
-            json!({"slider":{"action":PRESENCE,"parameter":DEHAZE,"values":[12.0,DEHAZED],"release":true}}),
+            SliderStep::new(PRESENCE, DEHAZE, [12.0, DEHAZED]).release(),
         )
         .commits(1)
         .label("Mask 1 · Dehaze +30")
         .no_draft()
         .payload(PRESENCE_EFFECT, json!({ DEHAZE: DEHAZED })),
         // 28: and undone: the layer gone, the reorder's entry current again.
-        Step::new("undo", json!({"api":{"method":"history.undo","params":{}}}))
+        Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
             .label("Move Radial 4")
             .no_draft()

@@ -13,6 +13,7 @@ use crate::{
     *,
 };
 use lightwell_core::MIXER_EFFECT;
+use lightwell_evidence::{self as script, SliderStep, TabStep, ViewStep};
 
 const MIXER_MODULE: &str = "lightwell.mixer";
 /// The one section the registry lists above the Colour mixer's own that is both a real toggleable
@@ -60,23 +61,20 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // screen without scrolling once it expands.
         Step::new(
             "basic-collapsed",
-            json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
+            script::Step::section(BASIC_MODULE, false),
         )
         .commits(0)
         .collapsed(BASIC_MODULE),
         // 2: expand the section. Hue starts expanded by the module's own descriptor, so this
         // alone exposes its eight rails.
-        Step::new(
-            "expanded",
-            json!({"section":{"module":MIXER_MODULE,"expanded":true}}),
-        )
-        .commits(0)
-        .expanded(MIXER_MODULE)
-        .collapsed(BASIC_MODULE),
+        Step::new("expanded", script::Step::section(MIXER_MODULE, true))
+            .commits(0)
+            .expanded(MIXER_MODULE)
+            .collapsed(BASIC_MODULE),
         // 3: a drag on Red hue, left open: the frame shows the drafted preview.
         Step::new(
             "drag",
-            json!({"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[30.0,60.0,90.0]}}),
+            SliderStep::new(SET_MIXER, RED_HUE, [30.0, 60.0, 90.0]),
         )
         .commits(0)
         .draft(SET_MIXER, json!({ RED_HUE: 90.0 }))
@@ -85,21 +83,21 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // 4: the same gesture released: one entry, one revision, committed at Fit.
         Step::new(
             "release",
-            json!({"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[90.0],"release":true}}),
+            SliderStep::new(SET_MIXER, RED_HUE, [90.0]).release(),
         )
         .no_draft()
         .commits(1)
         .label("Red hue +90")
         .payload(MIXER_EFFECT, json!({ RED_HUE: 90.0 })),
         // 5: the same committed state at 100%.
-        Step::new("percent", json!({"view":{"zoom":"100"}}))
+        Step::new("percent", ViewStep::Percent(100.0))
             .no_draft()
             .commits(0),
         // 6: a Saturation field, so its group's reset below has something to undo. The same layer
         // merges the second field.
         Step::new(
             "saturation",
-            json!({"field":{"action":SET_MIXER,"parameter":AQUA_SATURATION,"text":"-40","submit":true}}),
+            script::Step::field(SET_MIXER, AQUA_SATURATION, "-40", true),
         )
         .commits(1)
         .label("Aqua saturation -40")
@@ -113,7 +111,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // lives on the group header and runs the same way whether or not that group is expanded.
         Step::new(
             "saturation-reset",
-            json!({"reset":{"module":MIXER_MODULE,"group":SATURATION_GROUP}}),
+            script::Step::reset(MIXER_MODULE, Some(SATURATION_GROUP)),
         )
         .commits(1)
         .label(format!("Reset {SATURATION_GROUP}"))
@@ -125,7 +123,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // the Colour mixer still the only expanded section above it.
         Step::new(
             "stronger",
-            json!({"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[100.0],"release":true}}),
+            SliderStep::new(SET_MIXER, RED_HUE, [100.0]).release(),
         )
         .no_draft()
         .commits(1)
@@ -136,13 +134,19 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // 9: the Saturation tab: the mixer's groups are tabs, and choosing one is view state.
         Step::new(
             "saturation-tab",
-            json!({"tab":{"module":MIXER_MODULE,"index":1}}),
+            TabStep {
+                module: MIXER_MODULE.into(),
+                index: 1,
+            },
         )
         .commits(0),
         // 10: the Luminance tab, the last of the three.
         Step::new(
             "luminance-tab",
-            json!({"tab":{"module":MIXER_MODULE,"index":2}}),
+            TabStep {
+                module: MIXER_MODULE.into(),
+                index: 2,
+            },
         )
         .commits(0),
     ])

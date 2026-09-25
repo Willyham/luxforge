@@ -14,6 +14,7 @@ use crate::{
     *,
 };
 use lightwell_core::BASIC_EFFECT;
+use lightwell_evidence::{self as script, PreviewStep, SliderDraftStep, SliderStep, WorkspaceStep};
 
 const BASIC_MODULE: &str = "lightwell.basic";
 const SET_BASIC: &str = "set-basic";
@@ -33,12 +34,9 @@ const SAME: f64 = 2.0;
 /// one decision; the expectations here are what it commits and records, and `verify` below checks
 /// what the photograph shows.
 pub fn plan(_: &[PathBuf]) -> Plan {
-    let slider = |name: &str, values: Value, release: bool| {
-        let mut slider = json!({"action":SET_BASIC,"parameter":EXPOSURE,"values":values});
-        if release {
-            slider["release"] = json!(true);
-        }
-        Step::new(name, json!({ "slider": slider }))
+    let slider = |name: &str, values: &[f64], release: bool| {
+        let slider = SliderStep::new(SET_BASIC, EXPOSURE, values);
+        Step::new(name, if release { slider.release() } else { slider })
     };
     Plan::new(vec![
         // The fixture opens with the Basic section listed, its slider at the declared default and
@@ -48,65 +46,57 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .no_draft()
             .no_layer(BASIC_EFFECT),
         // A drag to +1.00 EV, left open: the frame shows the drafted preview, nothing committed.
-        slider("drag", json!([0.25, 0.5, 1.0]), false)
+        slider("drag", &[0.25, 0.5, 1.0], false)
             .commits(0)
             .draft(SET_BASIC, json!({ EXPOSURE: 1.0 }))
             .no_layer(BASIC_EFFECT)
             .field(SET_BASIC, EXPOSURE, "1.00"),
         // The same gesture released: one entry, labelled by the module, one revision.
-        slider("release", json!([1.0]), true)
+        slider("release", &[1.0], true)
             .no_draft()
             .commits(1)
             .label("Exposure +1.00 EV")
             .payload(BASIC_EFFECT, json!({ EXPOSURE: 1.0 })),
         // A second drag that returns to where it started: no entry at all.
-        slider("return", json!([0.5, 1.0]), true)
-            .no_draft()
-            .commits(0),
+        slider("return", &[0.5, 1.0], true).no_draft().commits(0),
         // The value field and Enter, which commits one field without a draft.
         Step::new(
             "typed",
-            json!({"field":{"action":SET_BASIC,"parameter":EXPOSURE,"text":"-0.5","submit":true}}),
+            script::Step::field(SET_BASIC, EXPOSURE, "-0.5", true),
         )
         .no_draft()
         .commits(1)
         .label("Exposure -0.50 EV")
         .payload(BASIC_EFFECT, json!({ EXPOSURE: -0.5 })),
         // Undo: the slider re-seeds from the entry that is current again.
-        Step::new("undo", json!({"api":{"method":"history.undo"}}))
+        Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
             .field(SET_BASIC, EXPOSURE, "1.00"),
         // The Tone group's own reset button: the slider at 0, the layer kept with its neutral
         // payload.
-        Step::new(
-            "reset",
-            json!({"reset":{"module":BASIC_MODULE,"group":TONE_GROUP}}),
-        )
-        .commits(1)
-        .label("Reset Tone")
-        .field(SET_BASIC, EXPOSURE, "0.00")
-        .payload(BASIC_EFFECT, json!({})),
+        Step::new("reset", script::Step::reset(BASIC_MODULE, Some(TONE_GROUP)))
+            .commits(1)
+            .label("Reset Tone")
+            .field(SET_BASIC, EXPOSURE, "0.00")
+            .payload(BASIC_EFFECT, json!({})),
         // A drag left open, then somebody else commits under it: the draft is kept, marked
         // conflicted.
-        Step::new(
-            "drag-open",
-            json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[2.0]}}),
-        )
-        .commits(0)
-        .draft(SET_BASIC, json!({ EXPOSURE: 2.0 })),
+        Step::new("drag-open", SliderStep::new(SET_BASIC, EXPOSURE, [2.0]))
+            .commits(0)
+            .draft(SET_BASIC, json!({ EXPOSURE: 2.0 })),
         Step::new(
             "conflict",
-            json!({"api":{"method":"edit.transform","params":{"transform":"rotate-right"}}}),
+            script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
         )
         .commits(1)
         .conflicted(SET_BASIC, json!({ EXPOSURE: 2.0 }))
         .field(SET_BASIC, EXPOSURE, "2.00"),
         // The notice's two decisions, in turn: Reapply rebases the draft and re-sends its value;
         // Discard ends the gesture with nothing committed and the authoritative value back.
-        Step::new("reapply", json!({"slider_draft":"reapply"}))
+        Step::new("reapply", SliderDraftStep::Reapply)
             .commits(0)
             .draft(SET_BASIC, json!({ EXPOSURE: 2.0 })),
-        Step::new("discard", json!({"slider_draft":"discard"}))
+        Step::new("discard", SliderDraftStep::Discard)
             .no_draft()
             .commits(0)
             .field(SET_BASIC, EXPOSURE, "0.00"),
@@ -372,7 +362,10 @@ pub fn restart_first(_: &[PathBuf]) -> Plan {
         Step::opened("opened").no_layer(BASIC_EFFECT),
         Step::new(
             "committed",
-            json!({"api":{"method":"edit.set-basic","params":{"exposure":RESTART_EXPOSURE,"temperature":RESTART_TEMPERATURE}}}),
+            script::Step::call(
+                "edit.set-basic",
+                json!({"exposure":RESTART_EXPOSURE,"temperature":RESTART_TEMPERATURE}),
+            ),
         )
         .commits(1)
         .label(RESTART_LABEL)
@@ -606,7 +599,7 @@ pub fn panel_plan(_: &[PathBuf]) -> Plan {
         // The White balance group: a drag to +40 temperature, released. One entry, one revision.
         Step::new(
             "temperature",
-            json!({"slider":{"action":SET_BASIC,"parameter":TEMPERATURE,"values":[10.0,25.0,40.0],"release":true}}),
+            SliderStep::new(SET_BASIC, TEMPERATURE, [10.0, 25.0, 40.0]).release(),
         )
         .no_draft()
         .commits(1)
@@ -616,7 +609,7 @@ pub fn panel_plan(_: &[PathBuf]) -> Plan {
         // The Colour group: a typed value committed with Enter, merged into the same layer.
         Step::new(
             "vibrance",
-            json!({"field":{"action":SET_BASIC,"parameter":VIBRANCE,"text":"25","submit":true}}),
+            script::Step::field(SET_BASIC, VIBRANCE, "25", true),
         )
         .commits(1)
         .label("Vibrance +25")
@@ -624,19 +617,19 @@ pub fn panel_plan(_: &[PathBuf]) -> Plan {
         .same_layer(BASIC_EFFECT, "temperature"),
         // The Temperature entry, previewed: its own saved values fill the disabled sliders, which
         // are not the current ones, and nothing is committed.
-        Step::new("preview", json!({"preview":{"sequence":1}}))
+        Step::new("preview", PreviewStep::Sequence(1))
             .commits(0)
             .field(SET_BASIC, TEMPERATURE, "40")
             .field(SET_BASIC, VIBRANCE, "0"),
         // Return to current: the current entry's values come back.
-        Step::new("current", json!({"preview":"current"}))
+        Step::new("current", PreviewStep::Current)
             .commits(0)
             .field(SET_BASIC, VIBRANCE, "25"),
         // The Colour group's own reset button: that group neutral, every other field untouched and
         // the layer kept.
         Step::new(
             "colour-reset",
-            json!({"reset":{"module":BASIC_MODULE,"group":COLOUR_GROUP}}),
+            script::Step::reset(BASIC_MODULE, Some(COLOUR_GROUP)),
         )
         .commits(1)
         .label(format!("Reset {COLOUR_GROUP}"))
@@ -645,13 +638,13 @@ pub fn panel_plan(_: &[PathBuf]) -> Plan {
         .field(SET_BASIC, VIBRANCE, "0")
         .field(SET_BASIC, TEMPERATURE, "40"),
         // The neutral picker's canvas mode, which `W` also selects.
-        Step::new("picker-mode", json!({"workspace":{"mode":BASIC_MODULE}})).commits(0),
+        Step::new("picker-mode", WorkspaceStep::default().mode(BASIC_MODULE)).commits(0),
         // A pick on a neutral grey patch: the picker answers 0 and 0 and commits that, once,
         // through the ordinary action path. The module labels a patch that returns exactly one
         // group to neutral by that group's name, whatever route sent it.
         Step::new(
             "neutral-pick",
-            json!({"pick":{"x":NEUTRAL_PICK[0],"y":NEUTRAL_PICK[1]}}),
+            script::Step::pick(NEUTRAL_PICK[0], NEUTRAL_PICK[1]),
         )
         .commits(1)
         .field(SET_BASIC, TEMPERATURE, "0")
@@ -662,7 +655,7 @@ pub fn panel_plan(_: &[PathBuf]) -> Plan {
         // A pick on a clipped patch: refused with its reason in the status bar, nothing committed.
         Step::new(
             "clipped-pick",
-            json!({"pick":{"x":CLIPPED_PICK[0],"y":CLIPPED_PICK[1]}}),
+            script::Step::pick(CLIPPED_PICK[0], CLIPPED_PICK[1]),
         )
         .commits(0),
     ])

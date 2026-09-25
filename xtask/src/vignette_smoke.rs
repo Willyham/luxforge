@@ -19,6 +19,7 @@ use crate::{
     *,
 };
 use lightwell_core::{CROP_EFFECT, VIGNETTE_EFFECT};
+use lightwell_evidence::{self as script, SliderStep, ViewStep};
 
 const VIGNETTE_MODULE: &str = "lightwell.vignette";
 /// The sections the registry lists above Vignette that declare a real toggleable section (Pixel
@@ -64,7 +65,7 @@ const SAME: f64 = 10.0;
 fn release(name: &str, parameter: &str, value: f64) -> Step {
     Step::new(
         name,
-        json!({"slider":{"action":SET_VIGNETTE,"parameter":parameter,"values":[value],"release":true}}),
+        SliderStep::new(SET_VIGNETTE, parameter, [value]).release(),
     )
     .no_draft()
     .commits(1)
@@ -75,11 +76,7 @@ fn release(name: &str, parameter: &str, value: f64) -> Step {
 /// the photograph shows.
 pub fn plan(_: &[PathBuf]) -> Plan {
     let section = |name: &str, module: &str, expanded: bool| {
-        Step::new(
-            name,
-            json!({"section":{"module":module,"expanded":expanded}}),
-        )
-        .commits(0)
+        Step::new(name, script::Step::section(module, expanded)).commits(0)
     };
     Plan::new(vec![
         // The fixture opens with the Vignette section listed and collapsed, Amount at its default,
@@ -107,7 +104,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // 5: a drag on Amount, left open: the frame shows the drafted preview, nothing committed.
         Step::new(
             "drag",
-            json!({"slider":{"action":SET_VIGNETTE,"parameter":AMOUNT,"values":[-20.0,-40.0,-60.0]}}),
+            SliderStep::new(SET_VIGNETTE, AMOUNT, [-20.0, -40.0, -60.0]),
         )
         .commits(0)
         .draft(SET_VIGNETTE, json!({ AMOUNT: -60.0 }))
@@ -118,13 +115,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .label("Vignette amount -60")
             .payload(VIGNETTE_EFFECT, json!({ AMOUNT: -60.0 })),
         // 7: the same committed state at 100%.
-        Step::new("percent", json!({"view":{"zoom":"100"}}))
+        Step::new("percent", ViewStep::Percent(100.0))
             .no_draft()
             .commits(0),
         // 8: back to Fit for the roundness and feather commits below.
-        Step::new("fit", json!({"view":{"zoom":"fit"}}))
-            .no_draft()
-            .commits(0),
+        Step::new("fit", ViewStep::Fit).no_draft().commits(0),
         // 9: Roundness -100, a rounded rectangle, updating the same layer.
         release("rectangle", ROUNDNESS, -100.0)
             .label("Vignette roundness -100")
@@ -155,12 +150,12 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // before it regardless, so the mask recentres on the cropped output stage.
         Step::new(
             "cropped",
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"1:1","angle":0}}}),
+            script::Step::call("edit.crop-fit", json!({"aspect":"1:1","angle":0})),
         )
         .commits(1)
         .same_layer(VIGNETTE_EFFECT, "release"),
         // 14: the module's own header reset: the layer kept at its all-default payload.
-        Step::new("reset", json!({"reset":{"module":VIGNETTE_MODULE}}))
+        Step::new("reset", script::Step::reset(VIGNETTE_MODULE, None))
             .commits(1)
             .label("Reset Vignette")
             .payload(VIGNETTE_EFFECT, json!({}))

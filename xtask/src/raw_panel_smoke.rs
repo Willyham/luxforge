@@ -19,6 +19,7 @@ use crate::{
     *,
 };
 use lightwell_core::CROP_EFFECT;
+use lightwell_evidence::{self as script, DoubleClickStep, DraftStep, SliderStep, ViewStep};
 
 pub const SCENARIO: &str = "raw-panel";
 const RAW_MODULE: &str = "lightwell.raw";
@@ -141,8 +142,8 @@ const READOUTS: [(&str, (u32, u32)); 2] = [
     ("crop-readout-far", (1100, 700)),
 ];
 
-fn hover((x, y): (u32, u32)) -> Value {
-    json!({"hover":{"x":x,"y":y}})
+fn hover((x, y): (u32, u32)) -> script::Step {
+    script::Step::hover(x, y)
 }
 
 /// The crop steps follow the double-clicks: a draft opened on the RAW's whole input stage, given
@@ -150,26 +151,23 @@ fn hover((x, y): (u32, u32)) -> Value {
 /// replaced by a `crop-fit` through the API at 100% and read again, then Fit.
 fn crop_steps() -> Vec<Step> {
     vec![
-        Step::new(names::CROP_STARTED, json!({"draft":{"start":true}})),
-        Step::new("crop-ratio", json!({"draft":{"preset":"16:9"}})),
-        Step::new(
-            names::CROP_STRAIGHTENED,
-            json!({"draft":{"angle":CROP_ANGLE}}),
-        ),
+        Step::new(names::CROP_STARTED, DraftStep::Start),
+        Step::new("crop-ratio", DraftStep::Preset("16:9".into())),
+        Step::new(names::CROP_STRAIGHTENED, DraftStep::Angle(CROP_ANGLE)),
         // Apply commits one entry.
-        Step::new(names::CROP_APPLIED, json!({"draft":{"apply":true}})).commits(1),
-        Step::new(names::CROP_AT_100, json!({"view":{"zoom":100.0}})),
+        Step::new(names::CROP_APPLIED, DraftStep::Apply).commits(1),
+        Step::new(names::CROP_AT_100, ViewStep::Percent(100.0)),
         Step::new(READOUTS[0].0, hover(READOUTS[0].1)),
         Step::new(READOUTS[1].0, hover(READOUTS[1].1)),
         // The API's `crop-fit` updates the applied crop's own layer in one entry.
         Step::new(
             names::CROP_FITTED,
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"3:2","angle":FIT_ANGLE}}}),
+            script::Step::call("edit.crop-fit", json!({"aspect":"3:2","angle":FIT_ANGLE})),
         )
         .commits(1)
         .same_layer(CROP_EFFECT, names::CROP_APPLIED),
         Step::new(names::FITTED_READOUT, hover(READOUTS[1].1)),
-        Step::new(names::FITTED_AT_FIT, json!({"view":{"zoom":"fit"}})),
+        Step::new(names::FITTED_AT_FIT, ViewStep::Fit),
     ]
 }
 
@@ -183,33 +181,33 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // collapsed bands under it are on screen together.
         Step::new(
             names::BASIC_COLLAPSED,
-            json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
+            script::Step::section(BASIC_MODULE, false),
         )
         .collapsed(BASIC_MODULE),
     ];
     for drag in &DRAGS {
         if !drag.fit {
             // 100%, where a frame shows a stage pixel per display pixel and has no proxy.
-            steps.push(Step::new("zoom-100", json!({"view":{"zoom":100.0}})));
+            steps.push(Step::new("zoom-100", ViewStep::Percent(100.0)));
         }
         // A Custom temperature drag left open. Its frame is the drafted value approximated on the
         // planes developed at the committed white balance.
         steps.push(Step::new(
             drag.drag,
-            json!({"slider":{"action":SET_TEMPERATURE,"parameter":"kelvin","values":[drag.kelvin]}}),
+            SliderStep::new(SET_TEMPERATURE, "kelvin", [drag.kelvin]),
         ));
         // Its release at the same value, which commits it and redevelops the mosaic.
         steps.push(
             Step::new(
                 drag.release,
-                json!({"slider":{"action":SET_TEMPERATURE,"parameter":"kelvin","values":[drag.kelvin],"release":true}}),
+                SliderStep::new(SET_TEMPERATURE, "kelvin", [drag.kelvin]).release(),
             )
             .commits(1)
             .no_draft(),
         );
         if !drag.fit {
             // Back to Fit for the double-clicks.
-            steps.push(Step::new("zoom-fit", json!({"view":{"zoom":"fit"}})));
+            steps.push(Step::new("zoom-fit", ViewStep::Fit));
         }
     }
     // A double-click on each RAW slider's rail, then on Basic's Exposure. The first press moves the
@@ -217,8 +215,12 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     steps.extend(DOUBLE_CLICKS.iter().map(|click| {
         let step = Step::new(
             click.step,
-            json!({"double_click":{"action":click.action,"parameter":click.parameter,
-                "value":click.value,"gap_ms":GAP_MS}}),
+            DoubleClickStep {
+                action: click.action.into(),
+                parameter: click.parameter.into(),
+                value: click.value,
+                gap_ms: GAP_MS,
+            },
         )
         .commits(2);
         match click.shows {
@@ -1089,7 +1091,6 @@ mod tests {
             .unwrap_or_else(|| panic!("{step:?} is not planned"));
         plan.steps()[at]
             .script()
-            .cloned()
             .unwrap_or_else(|| panic!("{step:?} scripts nothing"))
     }
 
@@ -1113,17 +1114,17 @@ mod tests {
             let open = &scripted(&plan, drag.drag)["slider"];
             let release = &scripted(&plan, drag.release)["slider"];
             assert_eq!(open["values"], json!([drag.kelvin]));
-            assert_eq!(open["release"], Value::Null);
+            assert_eq!(open["release"], json!(false));
             assert_eq!(release["values"], json!([drag.kelvin]));
             assert_eq!(release["release"], json!(true));
             if !drag.fit {
                 assert_eq!(
                     plan.steps()[at - 1].script(),
-                    Some(&json!({"view":{"zoom":100.0}}))
+                    Some(script::Step::View(ViewStep::Percent(100.0)).to_value())
                 );
                 assert_eq!(
                     plan.steps()[at + 2].script(),
-                    Some(&json!({"view":{"zoom":"fit"}}))
+                    Some(script::Step::View(ViewStep::Fit).to_value())
                 );
             }
         }
@@ -1153,33 +1154,41 @@ mod tests {
         }));
         assert_eq!(
             scripted(&plan, names::BASIC_COLLAPSED),
-            json!({"section":{"module":BASIC_MODULE,"expanded":false}})
+            script::Step::section(BASIC_MODULE, false).to_value()
         );
         for click in &DOUBLE_CLICKS {
             assert_eq!(
                 scripted(&plan, click.step),
-                json!({"double_click":{"action":click.action,"parameter":click.parameter,
-                    "value":click.value,"gap_ms":GAP_MS}})
+                script::Step::DoubleClick(DoubleClickStep {
+                    action: click.action.into(),
+                    parameter: click.parameter.into(),
+                    value: click.value,
+                    gap_ms: GAP_MS
+                })
+                .to_value()
             );
         }
         for (step, request) in [
-            (names::CROP_STARTED, json!({"draft":{"start":true}})),
+            (names::CROP_STARTED, script::Step::Draft(DraftStep::Start)),
             (
                 names::CROP_STRAIGHTENED,
-                json!({"draft":{"angle":CROP_ANGLE}}),
+                script::Step::Draft(DraftStep::Angle(CROP_ANGLE)),
             ),
-            (names::CROP_APPLIED, json!({"draft":{"apply":true}})),
-            (names::CROP_AT_100, json!({"view":{"zoom":100.0}})),
+            (names::CROP_APPLIED, script::Step::Draft(DraftStep::Apply)),
+            (
+                names::CROP_AT_100,
+                script::Step::View(ViewStep::Percent(100.0)),
+            ),
             (READOUTS[0].0, hover(READOUTS[0].1)),
             (READOUTS[1].0, hover(READOUTS[1].1)),
             (
                 names::CROP_FITTED,
-                json!({"api":{"method":"edit.crop-fit","params":{"aspect":"3:2","angle":FIT_ANGLE}}}),
+                script::Step::call("edit.crop-fit", json!({"aspect":"3:2","angle":FIT_ANGLE})),
             ),
             (names::FITTED_READOUT, hover(READOUTS[1].1)),
-            (names::FITTED_AT_FIT, json!({"view":{"zoom":"fit"}})),
+            (names::FITTED_AT_FIT, script::Step::View(ViewStep::Fit)),
         ] {
-            assert_eq!(scripted(&plan, step), request, "{step}");
+            assert_eq!(scripted(&plan, step), request.to_value(), "{step}");
         }
         let row = crate::smoke::find(SCENARIO).unwrap();
         assert_eq!((row.launches[0].plan)(&raw).script(), script);

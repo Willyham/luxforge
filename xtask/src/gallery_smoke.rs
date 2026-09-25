@@ -3,6 +3,7 @@ use crate::{
     scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
+use lightwell_evidence::{self as script};
 
 pub const WINDOW: [&str; 2] = ["1440", "1000"];
 pub const PAGES: usize = 10;
@@ -19,10 +20,10 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     Plan::new(
         std::iter::once(Step::opened("opened"))
             .chain((0..PAGES).map(|page| {
-                Step::new(page_step(page), json!({"gallery":{"page":page}})).commits(0)
+                Step::new(page_step(page), script::Step::gallery(Some(page))).commits(0)
             }))
             .chain(std::iter::once(
-                Step::new("returned", json!({"gallery":{"page":null}}))
+                Step::new("returned", script::Step::gallery(None))
                     .commits(0)
                     .label("Original"),
             ))

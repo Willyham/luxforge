@@ -5,7 +5,7 @@
 use super::{
     Boot, Editor,
     capabilities::{poll, run},
-    evidence::{CapabilityAction, Step, parse_script},
+    evidence::{CapabilityAction, Step, parse_script, record},
     message::{CapabilityMessage, Message},
     tasks::{ACTOR, REQUEST_NUMBER, Scope, call, refresh},
     testing::{attach_log, logged},
@@ -779,10 +779,10 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
         &secret.action,
         CapabilityAction::Secret { value, profile: Some(0), .. } if value.expose() == "script-sentinel"
     ));
-    let recorded = steps[3].record().to_string();
+    let recorded = record(&steps[3]).to_string();
     assert!(!recorded.contains("script-sentinel"), "{recorded}");
     assert_eq!(
-        steps[3].record(),
+        record(&steps[3]),
         json!({"capability": {"module": MODULE, "secret": {"field": "api-key", "value": "<redacted>", "profile": 0}}})
     );
     assert!(!format!("{:?}", steps[3]).contains("script-sentinel"));
@@ -792,9 +792,9 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
             .to_string(),
     )
     .expect("a valid script");
-    assert_eq!(raw[0].record()["api"]["params"]["value"], "<redacted>");
+    assert_eq!(record(&raw[0])["api"]["params"]["value"], "<redacted>");
     assert_eq!(
-        steps[10].record(),
+        record(&steps[10]),
         json!({"capability": {"module": MODULE, "consent": "allow", "wait": false}})
     );
     for (script, expected) in [
@@ -805,36 +805,43 @@ fn capability_steps_parse_strictly_and_record_a_secret_as_redacted() {
         ),
         (
             json!({"capability": {"section": "status"}}),
-            "needs a module",
+            "missing field `module`",
         ),
         (
             json!({"capability": {"module": MODULE, "section": "elsewhere"}}),
-            "\"status\" or \"settings\"",
+            "unknown variant `elsewhere`, expected `status` or `settings`",
         ),
         (
             json!({"capability": {"module": MODULE, "consent": "maybe"}}),
-            "\"allow\" or \"deny\"",
+            "unknown variant `maybe`, expected `allow` or `deny`",
         ),
         (
             json!({"capability": {"module": MODULE, "revoke": -1}}),
-            "non-negative index",
+            "expected usize",
         ),
         (
             json!({"capability": {"module": MODULE, "wait": "no", "apply": true}}),
-            "true or false",
+            "expected a boolean",
         ),
         (
             json!({"capability": {"module": MODULE, "nowhere": 1}}),
-            "unknown capability field",
+            "unknown field `nowhere`",
         ),
         (
             json!({"capability": {"module": MODULE, "secret": {"field": "api-key", "value": "leaky", "extra": 1}}}),
-            "unknown capability secret field",
+            "unknown field `extra`",
+        ),
+        (
+            json!({"capability": {"module": MODULE, "secret": {"field": "api-key", "value": 31_415_926}}}),
+            "a secret is text",
         ),
     ] {
         let error = parse_script(&json!([script]).to_string()).expect_err(expected);
         assert!(error.contains(expected), "{error}");
-        assert!(!error.contains("leaky"), "a refusal never echoes a value");
+        assert!(
+            !error.contains("leaky") && !error.contains("31415926"),
+            "a refusal never echoes a value: {error}"
+        );
     }
 }
 

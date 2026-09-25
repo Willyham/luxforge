@@ -31,6 +31,10 @@ use crate::{
     *,
 };
 use lightwell_core::PRESENCE_EFFECT;
+use lightwell_evidence::{
+    self as script, BrushStep, MaskRow, MaskStep, PaintStep, Reference, RowStep, SliderStep,
+    ViewStep, WorkspaceStep,
+};
 
 pub const SCENARIO: &str = "mask-brush";
 /// The Presence fixture: its bottom-right quadrant is a flat mid-grey, which is where the two
@@ -156,7 +160,7 @@ const PRESENCE_UNTOUCHED: f64 = 1.0;
 
 /// A script step that commits nothing: the same revision and the same current entry as the frame
 /// before.
-fn uncommitted(name: &str, script: Value) -> Step {
+fn uncommitted(name: &str, script: script::Step) -> Step {
     Step::new(name, script).commits(0)
 }
 
@@ -164,7 +168,11 @@ fn uncommitted(name: &str, script: Value) -> Step {
 fn stroke(name: &str, points: [[f64; 2]; 2], label: &str) -> Step {
     Step::new(
         name,
-        json!({"mask":{"stroke":{"points":points,"release":true}}}),
+        MaskStep::Stroke {
+            points: Vec::from(points),
+            release: true,
+            interval_ms: None,
+        },
     )
     .commits(1)
     .label(label)
@@ -181,15 +189,26 @@ pub fn plan1(_: &[PathBuf]) -> Plan {
         // The fixture as launched, with no mask in the recipe.
         Step::opened("opened"),
         // 1: Mask mode, through the same `workspace.set` the mode strip sends.
-        uncommitted("mask-mode", json!({"workspace":{"mode":"mask"}})),
+        uncommitted(
+            "mask-mode",
+            script::Step::Workspace(WorkspaceStep::default().mode("mask")),
+        ),
         // 2: the brush the first strokes are drawn with: one size, and the hard edge.
         uncommitted(
             "hard-brush",
-            json!({"mask":{"brush":{"size":SIZE,"feather":HARD,"flow":100.0}}}),
+            script::Step::Mask(MaskStep::Brush(BrushStep {
+                size: Some(SIZE),
+                feather: Some(HARD),
+                flow: Some(100.0),
+                ..BrushStep::default()
+            })),
         ),
         // 3: a new mask whose first component is an add brush. A brush is reached from its own
         // section and not from the Add row, because it declares no geometry to type.
-        uncommitted("new-mask", json!({"mask":{"paint":"new-mask"}})),
+        uncommitted(
+            "new-mask",
+            script::Step::Mask(MaskStep::Paint(PaintStep::NewMask)),
+        ),
         // 4: the first stroke: one mask, one component and one stroke, in one history entry.
         stroke("stroke-a", A, "Add brush"),
         // 5: the second, on the same component, with no second gesture: the brush re-arms itself.
@@ -197,27 +216,49 @@ pub fn plan1(_: &[PathBuf]) -> Plan {
         // 6: the coverage itself on screen, which is what every reading below is taken from.
         uncommitted(
             "overlay",
-            json!({"workspace":{"mask_overlay":"mask-on-black"}}),
+            script::Step::Workspace(WorkspaceStep::default().mask_overlay("mask-on-black")),
         ),
         // 7-8: the same brush at the other end of its feather range, and a third stroke with it.
-        uncommitted("soft-brush", json!({"mask":{"brush":{"feather":SOFT}}})),
+        uncommitted(
+            "soft-brush",
+            script::Step::Mask(MaskStep::Brush(BrushStep {
+                feather: Some(SOFT),
+                ..BrushStep::default()
+            })),
+        ),
         stroke("stroke-c", C, "Update Brush 1"),
         // 9-10: an erase stroke across the second one. The erase flag is the brush's, held for the
         // stroke's whole life.
         uncommitted(
             "erase-brush",
-            json!({"mask":{"brush":{"feather":HARD,"erase":true}}}),
+            script::Step::Mask(MaskStep::Brush(BrushStep {
+                feather: Some(HARD),
+                erase: Some(true),
+                ..BrushStep::default()
+            })),
         ),
         stroke("erase", ERASE, "Update Brush 1"),
         // 11: back to adding, so nothing later inherits the erase.
-        uncommitted("add-brush", json!({"mask":{"brush":{"erase":false}}})),
+        uncommitted(
+            "add-brush",
+            script::Step::Mask(MaskStep::Brush(BrushStep {
+                erase: Some(false),
+                ..BrushStep::default()
+            })),
+        ),
         // 12: the component selected, which is what lists its strokes on the row.
-        uncommitted("select", json!({"mask":{"select_component":0}})),
+        uncommitted(
+            "select",
+            script::Step::Mask(MaskStep::SelectComponent(Some(Reference::Index(0)))),
+        ),
         // 13: one stroke deleted on its own — the feathered one — as a forward edit: one entry
         // appended, every other stroke exactly where it was.
         Step::new(
             "delete-stroke",
-            json!({"mask":{"row":{"component":0,"delete_stroke":2}}}),
+            MaskStep::Row(MaskRow {
+                component: Reference::Index(0),
+                edit: RowStep::DeleteStroke(Reference::Index(2)),
+            }),
         )
         .commits(1)
         .label("Delete a stroke from Brush 1"),
@@ -234,37 +275,52 @@ pub fn plan2(_: &[PathBuf]) -> Plan {
             .no_layer(PRESENCE_EFFECT),
         // 1-2: Mask mode and the coverage on screen, in a new process: what the first launch
         // painted is read back from the pixels before anything is added to it.
-        uncommitted("mask-mode", json!({"workspace":{"mode":"mask"}})),
+        uncommitted(
+            "mask-mode",
+            script::Step::Workspace(WorkspaceStep::default().mode("mask")),
+        ),
         uncommitted(
             "overlay",
-            json!({"workspace":{"mask_overlay":"mask-on-black"}}),
+            script::Step::Workspace(WorkspaceStep::default().mask_overlay("mask-on-black")),
         ),
         // 3-5: a radial gradient in the same mask, swept from its centre out to one radius. The Add
         // row is at Add, which is where a reopened panel starts.
-        uncommitted("add-radial", json!({"mask":{"add":RADIAL}})),
+        uncommitted(
+            "add-radial",
+            script::Step::Mask(MaskStep::Add(RADIAL.into())),
+        ),
         uncommitted(
             "sweep",
-            json!({"mask":{"sweep":{"from":RADIAL_AT,"to":radial_to()}}}),
+            script::Step::Mask(MaskStep::Sweep {
+                from: RADIAL_AT,
+                to: radial_to(),
+            }),
         ),
-        Step::new("apply-radial", json!({"mask":{"apply":true}}))
+        Step::new("apply-radial", MaskStep::Apply)
             .commits(1)
             .label("Add radial"),
         // 6-8: a second brush component, in subtract mode, painted inside that gradient. This is
         // the owner's own requirement, and it is one more row in the same list.
-        uncommitted("subtract-mode", json!({"mask":{"mode":"subtract"}})),
-        uncommitted("new-brush", json!({"mask":{"paint":"new-brush"}})),
+        uncommitted(
+            "subtract-mode",
+            script::Step::Mask(MaskStep::Mode("subtract".into())),
+        ),
+        uncommitted(
+            "new-brush",
+            script::Step::Mask(MaskStep::Paint(PaintStep::NewBrush)),
+        ),
         stroke("subtract-stroke", SUBTRACT, "Add subtract brush"),
         // 9: the overlay off, leaving the photograph.
         uncommitted(
             "overlay-off",
-            json!({"workspace":{"mask_overlay":"off"}}),
+            script::Step::Workspace(WorkspaceStep::default().mask_overlay("off")),
         ),
         // 10: Presence through the finished mask, as the panel's own drag. The brush is still armed
         // from the stroke above and gives its draft up to this gesture, exactly as it gives it up to
         // every other one.
         Step::new(
             "dehaze",
-            json!({"slider":{"action":PRESENCE,"parameter":DEHAZE,"values":[12.0,DEHAZED],"release":true}}),
+            SliderStep::new(PRESENCE, DEHAZE, [12.0, DEHAZED]).release(),
         )
         .commits(1)
         .label("Mask 1 · Dehaze +30")
@@ -272,7 +328,7 @@ pub fn plan2(_: &[PathBuf]) -> Plan {
         .payload(PRESENCE_EFFECT, json!({ DEHAZE: DEHAZED })),
         // 11: and undone. An undo moves the revision on by one, to the entry before, which is the
         // subtract stroke's.
-        Step::new("undo", json!({"api":{"method":"history.undo","params":{}}}))
+        Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
             .label("Add subtract brush")
             .no_layer(PRESENCE_EFFECT),
@@ -286,57 +342,66 @@ pub fn plan3(_: &[PathBuf]) -> Plan {
         // The catalog reopened in a third process, holding no gesture.
         Step::opened("reopened").no_draft(),
         // 1-2: Mask mode and the coverage, in a third process.
-        uncommitted("mask-mode", json!({"workspace":{"mode":"mask"}})),
+        uncommitted(
+            "mask-mode",
+            script::Step::Workspace(WorkspaceStep::default().mode("mask")),
+        ),
         uncommitted(
             "overlay",
-            json!({"workspace":{"mask_overlay":"mask-on-black"}}),
+            script::Step::Workspace(WorkspaceStep::default().mask_overlay("mask-on-black")),
         ),
         // 3-4: the brush in hand again — a reopened editor holds no gesture — armed on the
         // component the first launch painted, by the name the panel gives it.
         uncommitted(
             "brush",
-            json!({"mask":{"brush":{"size":SIZE,"feather":HARD,"flow":100.0}}}),
+            script::Step::Mask(MaskStep::Brush(BrushStep {
+                size: Some(SIZE),
+                feather: Some(HARD),
+                flow: Some(100.0),
+                ..BrushStep::default()
+            })),
         ),
         uncommitted(
             "arm",
-            json!({"mask":{"paint":{"component":{"name":"Brush 1"}}}}),
+            script::Step::Mask(MaskStep::Paint(PaintStep::Component(Reference::name(
+                "Brush 1",
+            )))),
         ),
         // 5: a stroke that starts off the picture and paints in over its left edge.
         stroke("edge-stroke", EDGE, "Update Brush 1"),
         // 6-8: painting at 100%, where the exact frame is what is on screen, and back to Fit, where
         // that stroke is where the content coordinates it was painted in put it.
-        uncommitted("zoom-100", json!({"view":{"zoom":"100"}})),
+        uncommitted("zoom-100", script::Step::View(ViewStep::Percent(100.0))),
         stroke("zoomed-stroke", ZOOMED, "Update Brush 1"),
-        uncommitted("fit", json!({"view":{"zoom":"fit"}})),
+        uncommitted("fit", script::Step::View(ViewStep::Fit)),
         // 9: the overlay off, so the cropped photograph below can be found in the capture at all.
-        uncommitted("overlay-off", json!({"workspace":{"mask_overlay":"off"}})),
+        uncommitted(
+            "overlay-off",
+            script::Step::Workspace(WorkspaceStep::default().mask_overlay("off")),
+        ),
         // 10: the geometry tail as one affine, before the crop: the map a gesture places a stroke
         // with, read through the same method the canvas reads it through.
-        uncommitted(
-            "transform-before",
-            json!({"api":{"method":"render.transform","params":{}}}),
-        ),
+        uncommitted("transform-before", script::Step::api("render.transform")),
         // 11: a straightened, fitted crop: the picture is now rotated under the mask.
         Step::new(
             "crop",
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":8.0}}}),
+            script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":8.0})),
         )
         .commits(1)
         .label("Crop 16:9"),
         // 12: the affine again, which is what the probe below is placed by.
-        uncommitted(
-            "transform-after",
-            json!({"api":{"method":"render.transform","params":{}}}),
-        ),
+        uncommitted("transform-after", script::Step::api("render.transform")),
         // 13-15: the coverage back on, the brush re-armed on that component after the crop, and one
         // more stroke painted in content coordinates under the rotated picture.
         uncommitted(
             "overlay-again",
-            json!({"workspace":{"mask_overlay":"mask-on-black"}}),
+            script::Step::Workspace(WorkspaceStep::default().mask_overlay("mask-on-black")),
         ),
         uncommitted(
             "rearm",
-            json!({"mask":{"paint":{"component":{"name":"Brush 1"}}}}),
+            script::Step::Mask(MaskStep::Paint(PaintStep::Component(Reference::name(
+                "Brush 1",
+            )))),
         ),
         stroke("rotated-stroke", ROTATED, "Update Brush 1"),
     ])

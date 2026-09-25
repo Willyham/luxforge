@@ -1902,6 +1902,7 @@ dependencies = [
  "iced_runtime",
  "image",
  "lightwell-core",
+ "lightwell-evidence",
  "lightwell-testkit",
  "lightwell-ui",
  "rfd",
@@ -1931,6 +1932,15 @@ dependencies = [
  "ureq-proto",
  "url",
  "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "lightwell-evidence"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "zeroize",
 ]
 
@@ -4822,6 +4832,7 @@ dependencies = [
  "flate2",
  "image",
  "lightwell-core",
+ "lightwell-evidence",
  "lightwell-testkit",
  "percent-encoding",
  "regex",

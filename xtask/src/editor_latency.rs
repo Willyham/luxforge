@@ -27,6 +27,10 @@
 //! [design]: ../../../docs/design/basic-and-histogram.md
 use crate::*;
 use lightwell_core::{ModuleRegistry, ParameterKind};
+use lightwell_evidence::{
+    self as script, BrushStep, CurveStep, CurveStepEvent, MaskStep, PaintStep, Reference,
+    SliderEnd, SliderStep, WorkspaceStep,
+};
 use std::{
     collections::BTreeSet,
     time::{Duration, Instant},
@@ -426,31 +430,41 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
 /// displayed, which is the queue cancellation this gesture actually performs. Its latency is
 /// therefore excluded from the per-input distribution and measured through to the settled exact
 /// histogram instead.
-fn curve_step(points: Vec<f64>, finish: &str) -> Value {
-    json!({"curve":{"action":SET_CONTROLS,"parameter":MASTER,"event":"move",
-        "index":1,"points":points.into_iter().map(|y| [0.5,y]).collect::<Vec<_>>(),
-        "finish":finish}})
+/// The middle point of the proof curve dragged through `points`, each a height the widget
+/// publishes in single precision.
+fn curve_step(points: Vec<f64>, finish: SliderEnd) -> script::Step {
+    script::Step::Curve(CurveStep {
+        action: SET_CONTROLS.into(),
+        parameter: MASTER.into(),
+        event: CurveStepEvent::Move {
+            index: 1,
+            points: points.into_iter().map(|y| [0.5, y as f32]).collect(),
+        },
+        finish,
+    })
 }
 
-fn gesture_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<Value> {
-    if control == Control::Curve {
-        let mut steps: Vec<Value> = values
-            .iter()
-            .map(|value| curve_step(vec![*value], "open"))
-            .collect();
-        if let Some(last) = steps.last_mut() {
-            last["curve"]["finish"] = json!("release");
-        }
-        return steps;
-    }
-    let mut steps: Vec<Value> = values
+fn gesture_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<script::Step> {
+    let last = values.len().saturating_sub(1);
+    values
         .iter()
-        .map(|value| json!({"slider":{"action":field.action,"parameter":field.parameter,"values":[value]}}))
-        .collect();
-    if let Some(last) = steps.last_mut() {
-        last["slider"]["release"] = json!(true);
-    }
-    steps
+        .enumerate()
+        .map(|(index, value)| {
+            let release = index == last;
+            if control == Control::Curve {
+                return curve_step(
+                    vec![*value],
+                    if release {
+                        SliderEnd::Release
+                    } else {
+                        SliderEnd::Open
+                    },
+                );
+            }
+            let slider = SliderStep::new(&field.action, &field.parameter, [*value]);
+            script::Step::Slider(if release { slider.release() } else { slider })
+        })
+        .collect()
 }
 
 /// One gesture that sends every value at once, as a fast drag does between two ticks. The driver
@@ -460,7 +474,7 @@ fn gesture_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<V
 /// (`min + max - value`), which is exactly negation on Basic exposure's symmetric -5..5 and stays
 /// inside an asymmetric range like a mixer or vignette field's too, so the gesture commits a real
 /// change rather than the value already current.
-fn burst_step(values: &[f64], control: Control, field: &FieldTarget) -> Value {
+fn burst_step(values: &[f64], control: Control, field: &FieldTarget) -> script::Step {
     if control == Control::Curve {
         // Reverse the middle point's vertical journey while remaining in the declared [0,1]
         // range. The burst measures one replaceable pending draft value, not visible frames.
@@ -469,14 +483,14 @@ fn burst_step(values: &[f64], control: Control, field: &FieldTarget) -> Value {
                 .iter()
                 .map(|value| f64::from((1.0 - value) as f32))
                 .collect(),
-            "release",
+            SliderEnd::Release,
         );
     }
     let reflected: Vec<f64> = values
         .iter()
         .map(|value| field.min + field.max - value)
         .collect();
-    json!({"slider":{"action":field.action,"parameter":field.parameter,"values":reflected,"release":true}})
+    script::Step::Slider(SliderStep::new(&field.action, &field.parameter, reflected).release())
 }
 
 /// One step per commit: each value is its own complete gesture, moved and released at once, so the
@@ -486,36 +500,33 @@ fn burst_step(values: &[f64], control: Control, field: &FieldTarget) -> Value {
 /// one value, commits it, and the commit's own refresh renders and reduces the committed frame; the
 /// drafted preview requested in between is superseded before it can be displayed, so this mode also
 /// counts one cancelled preview job per commit.
-fn commit_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<Value> {
-    if control == Control::Curve {
-        return values
-            .iter()
-            .map(|value| curve_step(vec![*value], "release"))
-            .collect();
-    }
+fn commit_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<script::Step> {
     values
         .iter()
-        .map(
-            |value| json!({"slider":{"action":field.action,"parameter":field.parameter,"values":[value],"release":true}}),
-        )
+        .map(|value| match control {
+            Control::Curve => curve_step(vec![*value], SliderEnd::Release),
+            _ => script::Step::Slider(
+                SliderStep::new(&field.action, &field.parameter, [*value]).release(),
+            ),
+        })
         .collect()
 }
 
 /// Keep the proof curve, including its canvas, in the real tools-panel viewport during the
 /// measurement. A hidden curve would measure only controller/render work and miss tessellation.
-fn curve_view_steps() -> Vec<Value> {
+fn curve_view_steps() -> Vec<script::Step> {
     // The latency source is JPEG; the RAW section is absent from its tools model entirely.
-    let mut steps: Vec<Value> = [
+    let mut steps: Vec<script::Step> = [
         "lightwell.basic",
         "lightwell.pixel",
         "lightwell.transform",
         "lightwell.crop",
     ]
     .into_iter()
-    .map(|module| json!({"section":{"module":module,"expanded":false}}))
+    .map(|module| script::Step::section(module, false))
     .collect();
-    steps.push(json!({"section":{"module":CONTROLS_MODULE,"expanded":true}}));
-    steps.push(json!({"tools_scroll":1.0}));
+    steps.push(script::Step::section(CONTROLS_MODULE, true));
+    steps.push(script::Step::tools_scroll(1.0));
     steps
 }
 
@@ -633,14 +644,12 @@ impl FieldTarget {
 
 /// The one scripted step a burst run sends: every value paced by its own timer, released at the
 /// end exactly as a real drag's release ends it.
-fn burst_gesture_step(field: &FieldTarget, values: &[f64], interval_ms: u64) -> Value {
-    json!({"slider":{
-        "action":field.action,
-        "parameter":field.parameter,
-        "values":values,
-        "interval_ms":interval_ms,
-        "release":true,
-    }})
+fn burst_gesture_step(field: &FieldTarget, values: &[f64], interval_ms: u64) -> script::Step {
+    script::Step::Slider(
+        SliderStep::new(&field.action, &field.parameter, values)
+            .release()
+            .paced(interval_ms),
+    )
 }
 
 pub struct Options<'a> {
@@ -674,18 +683,20 @@ pub struct Options<'a> {
 /// `mask.create-linear` assigns the identity, so a script has nothing else to name it by. From the
 /// selection on, every generated slider gesture carries that mask, exactly as the panel's own drag
 /// does.
-fn mask_precondition() -> [Value; 3] {
+fn mask_precondition() -> [script::Step; 3] {
     [
-        json!({"api":{"method":"mask.create-linear",
-            "params":{"x0":0.5,"y0":0.3,"x1":0.5,"y1":0.7}}}),
-        json!({"workspace":{"mode":"mask"}}),
-        json!({"mask":{"select":{"name":"Mask 1"}}}),
+        script::Step::call(
+            "mask.create-linear",
+            json!({"x0":0.5,"y0":0.3,"x1":0.5,"y1":0.7}),
+        ),
+        script::Step::Workspace(WorkspaceStep::default().mode("mask")),
+        script::Step::Mask(MaskStep::Select(Reference::name("Mask 1"))),
     ]
 }
 
 /// The step that commits the full Basic layer a `--basic` run drags over.
-fn basic_precondition() -> Value {
-    json!({"api":{"method":"edit.set-basic","params":full_basic()}})
+fn basic_precondition() -> script::Step {
+    script::Step::call("edit.set-basic", full_basic())
 }
 
 /// The paint gesture's own pacing and brush, each a named constant because the report quotes it.
@@ -724,17 +735,100 @@ fn paint_path(positions: usize) -> Vec<[f64; 2]> {
 /// The seeding stroke is what creates the mask and its `Brush 1`, because a brush declares no
 /// geometry and therefore has no `mask.create-brush` to call; the mask it makes is the one that
 /// opens, so the Exposure slider under the component list binds to it with nothing to name it by.
-fn paint_precondition() -> Vec<Value> {
+fn paint_precondition() -> Vec<script::Step> {
     vec![
-        json!({"workspace":{"mode":"mask"}}),
-        json!({"mask":{"brush":{"size":PAINT_SIZE,"feather":PAINT_FEATHER,"flow":100.0,
-            "erase":false,"limit_to_colour":false}}}),
-        json!({"mask":{"paint":"new-mask"}}),
-        json!({"mask":{"stroke":{"points":[[0.2,0.3],[0.8,0.3]],"release":true}}}),
-        json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,
-            "values":[PAINT_EV],"release":true}}),
-        json!({"mask":{"paint":{"component":0}}}),
+        script::Step::Workspace(WorkspaceStep::default().mode("mask")),
+        script::Step::Mask(MaskStep::Brush(BrushStep {
+            size: Some(PAINT_SIZE),
+            feather: Some(PAINT_FEATHER),
+            flow: Some(100.0),
+            erase: Some(false),
+            limit_to_colour: Some(false),
+            ..BrushStep::default()
+        })),
+        script::Step::Mask(MaskStep::Paint(PaintStep::NewMask)),
+        script::Step::Mask(MaskStep::Stroke {
+            points: vec![[0.2, 0.3], [0.8, 0.3]],
+            release: true,
+            interval_ms: None,
+        }),
+        script::Step::Slider(SliderStep::new(SET_BASIC, EXPOSURE, [PAINT_EV]).release()),
+        script::Step::Mask(MaskStep::Paint(PaintStep::Component(Reference::Index(0)))),
     ]
+}
+
+/// The optional straightening crop every mode may commit before its gesture.
+fn crop_precondition(options: &Options) -> Option<script::Step> {
+    options
+        .crop
+        .map(|angle| script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":angle})))
+}
+
+/// The paint run's script: its preconditions, then the one paced stroke along `path`.
+fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
+    let mut steps = Vec::new();
+    steps.extend(crop_precondition(options));
+    if options.basic {
+        steps.push(basic_precondition());
+    }
+    steps.extend(paint_precondition());
+    steps.push(script::Step::Mask(MaskStep::Stroke {
+        points: path,
+        release: true,
+        interval_ms: Some(PAINT_INTERVAL_MS),
+    }));
+    steps
+}
+
+/// A drag or commit run's script: its preconditions, then the gesture's steps.
+fn gesture_script(
+    options: &Options,
+    field: &FieldTarget,
+    values: &[f64],
+    drag: bool,
+) -> Vec<script::Step> {
+    let mut steps = Vec::new();
+    steps.extend(crop_precondition(options));
+    if options.mask {
+        steps.extend(mask_precondition());
+    }
+    if options.basic {
+        steps.push(basic_precondition());
+    }
+    if options.control == Control::Curve {
+        steps.extend(curve_view_steps());
+    }
+    if drag {
+        steps.extend(gesture_steps(values, options.control, field));
+        steps.push(burst_step(values, options.control, field));
+    } else {
+        steps.extend(commit_steps(values, options.control, field));
+    }
+    steps
+}
+
+/// A burst run's script: its preconditions, then the one paced gesture.
+fn burst_script(
+    options: &Options,
+    field: &FieldTarget,
+    values: &[f64],
+    interval_ms: u64,
+) -> Vec<script::Step> {
+    let mut steps = Vec::new();
+    steps.extend(crop_precondition(options));
+    if options.mask {
+        steps.extend(mask_precondition());
+    }
+    if options.basic {
+        steps.push(basic_precondition());
+    }
+    steps.push(burst_gesture_step(field, values, interval_ms));
+    steps
+}
+
+/// The hold run's script: the full Basic layer it commits.
+fn hold_script() -> Value {
+    script::write(&[basic_precondition()])
 }
 
 #[derive(Clone, Debug)]
@@ -933,20 +1027,9 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     let source_hash = hash(&source)?;
     let path = paint_path(options.samples);
 
-    let mut script = Vec::new();
-    if let Some(angle) = options.crop {
-        script.push(
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
-        );
-    }
-    if options.basic {
-        script.push(basic_precondition());
-    }
-    script.extend(paint_precondition());
-    script.push(json!({"mask":{"stroke":{"points":path,"release":true,
-        "interval_ms":PAINT_INTERVAL_MS}}}));
+    let steps = paint_script(options, path.clone());
     let script_file = out.join("gesture-script.json");
-    write_json(&script_file, &json!(script))?;
+    write_json(&script_file, &script::write(&steps))?;
 
     let load_start = crate::verify::load_average(root);
     let evidence = out.join("app");
@@ -979,7 +1062,7 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         app["had_input_errors"] == json!(false)
             && app["script"]
                 .as_array()
-                .is_some_and(|steps| steps.len() == script.len()),
+                .is_some_and(|recorded| recorded.len() == steps.len()),
         format!("A paint step failed or never ran: {}", app["script"]),
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
@@ -1175,33 +1258,13 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         )?;
     }
 
-    let mut script = Vec::new();
-    if let Some(angle) = options.crop {
-        script.push(
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
-        );
-    }
-    if options.mask {
-        script.extend(mask_precondition());
-    }
-    if options.basic {
-        script.push(basic_precondition());
-    }
-    if options.control == Control::Curve {
-        script.extend(curve_view_steps());
-    }
-    if drag {
-        script.extend(gesture_steps(&values, options.control, &field));
-        script.push(burst_step(&values, options.control, &field));
-    } else {
-        script.extend(commit_steps(&values, options.control, &field));
-    }
+    let steps = gesture_script(&options, &field, &values, drag);
     ensure(
-        script.len() <= 64,
+        steps.len() <= script::MAX_SCRIPT_STEPS,
         "The latency script exceeds the 64-step evidence bound",
     )?;
     let script_file = out.join("gesture-script.json");
-    write_json(&script_file, &json!(script))?;
+    write_json(&script_file, &script::write(&steps))?;
 
     let evidence = out.join("app");
     let mut args: Vec<OsString> = vec![
@@ -1235,7 +1298,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         app["had_input_errors"] == json!(false)
             && app["script"]
                 .as_array()
-                .is_some_and(|steps| steps.len() == script.len()),
+                .is_some_and(|recorded| recorded.len() == steps.len()),
         format!("A gesture step failed or never ran: {}", app["script"]),
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
@@ -1679,21 +1742,9 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         ),
     )?;
 
-    let mut script = Vec::new();
-    if let Some(angle) = options.crop {
-        script.push(
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
-        );
-    }
-    if options.mask {
-        script.extend(mask_precondition());
-    }
-    if options.basic {
-        script.push(basic_precondition());
-    }
-    script.push(burst_gesture_step(&field, &values, interval_ms));
+    let steps = burst_script(options, &field, &values, interval_ms);
     let script_file = out.join("gesture-script.json");
-    write_json(&script_file, &json!(script))?;
+    write_json(&script_file, &script::write(&steps))?;
 
     let evidence = out.join("app");
     let args: Vec<OsString> = vec![
@@ -1726,7 +1777,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         app["had_input_errors"] == json!(false)
             && app["script"]
                 .as_array()
-                .is_some_and(|steps| steps.len() == script.len()),
+                .is_some_and(|recorded| recorded.len() == steps.len()),
         format!("The burst step failed or never ran: {}", app["script"]),
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
@@ -1817,11 +1868,8 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
 fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
     let catalog = out.join("held-catalog.sqlite");
     let evidence = out.join("hold");
-    let script = out.join("hold-script.json");
-    write_json(
-        &script,
-        &json!([{"api":{"method":"edit.set-basic","params":full_basic()}}]),
-    )?;
+    let hold = out.join("hold-script.json");
+    write_json(&hold, &hold_script())?;
     let hold_usage = evidence_run(
         root,
         bin,
@@ -1833,7 +1881,7 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
             "--catalog".into(),
             catalog.clone().into_os_string(),
             "--evidence-script".into(),
-            script.into_os_string(),
+            hold.into_os_string(),
             "--open".into(),
             source.to_path_buf().into_os_string(),
         ],
@@ -1922,6 +1970,84 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every script this harness can write, into `$SCRIPT_DUMP/editor-latency/`, over each mode,
+    /// control and precondition: the proof that a change to how scripts are written leaves the
+    /// scripts these measurements run the same.
+    #[test]
+    #[ignore]
+    fn dump_scripts() {
+        let dir =
+            PathBuf::from(std::env::var("SCRIPT_DUMP").expect("SCRIPT_DUMP names a directory"))
+                .join("editor-latency");
+        fs::create_dir_all(&dir).unwrap();
+        let put = |name: String, steps: Value| {
+            write_json(&dir.join(format!("{name}.json")), &steps).unwrap();
+        };
+        let source = PathBuf::from("/photo.jpg");
+        let mixer = || FieldTarget {
+            action: "set-mixer".into(),
+            parameter: "red-hue".into(),
+            min: -100.0,
+            max: 100.0,
+            step: 1.0,
+            origin: 0.0,
+        };
+        for crop in [None, Some(8.0)] {
+            for mask in [false, true] {
+                for basic in [false, true] {
+                    let options = |control| Options {
+                        source: &source,
+                        samples: 5,
+                        mode: Mode::Drag,
+                        control,
+                        action: None,
+                        parameter: None,
+                        crop,
+                        idle: false,
+                        basic,
+                        mask,
+                    };
+                    let tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
+                    for (control, name, field) in [
+                        (Control::Slider, "slider", FieldTarget::basic_exposure()),
+                        (Control::Slider, "mixer", mixer()),
+                        (Control::Curve, "curve", FieldTarget::basic_exposure()),
+                    ] {
+                        for drag in [true, false] {
+                            let values = gesture_values(5 + usize::from(drag), control, &field);
+                            put(
+                                format!("{name}-{}-{tag}", if drag { "drag" } else { "commit" }),
+                                script::write(&gesture_script(
+                                    &options(control),
+                                    &field,
+                                    &values,
+                                    drag,
+                                )),
+                            );
+                        }
+                        if control == Control::Slider {
+                            let values = field.burst_values();
+                            put(
+                                format!("{name}-burst-{tag}"),
+                                script::write(&burst_script(
+                                    &options(control),
+                                    &field,
+                                    &values,
+                                    burst_interval_ms(),
+                                )),
+                            );
+                        }
+                    }
+                    put(
+                        format!("paint-{tag}"),
+                        script::write(&paint_script(&options(Control::Slider), paint_path(6))),
+                    );
+                }
+            }
+        }
+        put("hold".into(), hold_script());
+    }
 
     /// The default Basic exposure target: the field the synthetic burst events carry, and a
     /// placeholder for the curve control, which ignores its `field` argument entirely.
@@ -2207,16 +2333,16 @@ mod tests {
     fn curve_script_keeps_every_point_in_range_and_below_the_evidence_bound() {
         let field = unused_field();
         let values = gesture_values(31, Control::Curve, &field);
-        let steps = gesture_steps(&values, Control::Curve, &field);
-        assert_eq!(steps.len(), 31);
+        let gesture = gesture_steps(&values, Control::Curve, &field);
+        assert_eq!(gesture.len(), 31);
+        let steps = script::write(&gesture);
         assert_eq!(steps[0]["curve"]["finish"], "open");
         assert_eq!(steps[30]["curve"]["finish"], "release");
         assert_eq!(steps[0]["curve"]["points"][0][0], 0.5);
         assert_eq!(values[0], 1.0 / 32.0);
         assert_eq!(values[30], 31.0 / 32.0);
         assert_eq!(gesture_values(33, Control::Curve, &field)[32], 33.0 / 64.0);
-        let wire: Vec<Value> =
-            serde_json::from_str(&serde_json::to_string(&steps).unwrap()).unwrap();
+        let wire: Vec<Value> = serde_json::from_str(&steps.to_string()).unwrap();
         for (step, expected) in wire.iter().zip(&values) {
             let fraction = step["curve"]["points"][0][1].as_f64().unwrap();
             assert_eq!(fraction, *expected);
@@ -2224,13 +2350,13 @@ mod tests {
         }
         let setup = curve_view_steps();
         assert_eq!(setup.len(), 6);
-        assert_eq!(setup.last().unwrap(), &json!({"tools_scroll":1.0}));
-        let burst = burst_step(&values, Control::Curve, &field);
+        assert_eq!(setup.last().unwrap(), &script::Step::tools_scroll(1.0));
+        let burst = burst_step(&values, Control::Curve, &field).to_value();
         assert_eq!(burst["curve"]["points"].as_array().unwrap().len(), 31);
         for point in burst["curve"]["points"].as_array().unwrap() {
             assert!((0.0..=1.0).contains(&point[1].as_f64().unwrap()));
         }
-        assert!(setup.len() + steps.len() + 2 <= 64); // optional crop, then burst
+        assert!(setup.len() + gesture.len() + 2 <= script::MAX_SCRIPT_STEPS); // optional crop, then burst
     }
 
     #[test]

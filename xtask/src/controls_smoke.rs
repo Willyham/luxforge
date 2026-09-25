@@ -3,6 +3,9 @@ use crate::{
     scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
+use lightwell_evidence::{
+    self as script, ControlsStep, CurveStep, CurveStepEvent, GroupStep, PickerStep, SliderEnd,
+};
 
 const MODULE: &str = "lightwell.controls";
 const ACTION: &str = "set-controls";
@@ -18,117 +21,198 @@ const RESET: &str = "Reset controls";
 /// Every frame, in order: the open, then one per interaction. Opening, scrolling and drafting
 /// create no history; one release or one discrete event makes exactly one entry.
 pub fn plan(_: &[PathBuf]) -> Plan {
-    let step = |name: &str, script: Value| Step::new(name, script);
-    let set = |name: &str, script: Value| step(name, script).commits(1).label(SET);
-    let view = |name: &str, script: Value| step(name, script).commits(0);
+    let step = |name: &str, script: script::Step| Step::new(name, script);
+    let set = |name: &str, script: script::Step| step(name, script).commits(1).label(SET);
+    let view = |name: &str, script: script::Step| step(name, script).commits(0);
     Plan::new(vec![
         Step::opened("opened").no_layer(EFFECT),
         // Expose the proof section, then capture both its beginning and end in the tools panel.
         view(
             "basic-collapsed",
-            json!({"section":{"module":"lightwell.basic","expanded":false}}),
+            script::Step::section("lightwell.basic", false),
         )
         .collapsed("lightwell.basic"),
         view(
             "crop-collapsed",
-            json!({"section":{"module":"lightwell.crop","expanded":false}}),
+            script::Step::section("lightwell.crop", false),
         )
         .collapsed("lightwell.crop"),
-        view(
-            "controls-expanded",
-            json!({"section":{"module":MODULE,"expanded":true}}),
-        )
-        .expanded(MODULE),
-        view("scroll-half", json!({"tools_scroll":0.5})),
+        view("controls-expanded", script::Step::section(MODULE, true)).expanded(MODULE),
+        view("scroll-half", script::Step::tools_scroll(0.5)),
         view(
             "picker-open",
-            json!({"picker":{"action":ACTION,"parameter":"rgb","open":true,"finish":"open"}}),
+            script::Step::Picker(PickerStep {
+                action: ACTION.into(),
+                parameter: "rgb".into(),
+                open: Some(true),
+                hue: None,
+                plane: None,
+                finish: SliderEnd::Open,
+            }),
         ),
-        view("scroll-end", json!({"tools_scroll":1.0})),
+        view("scroll-end", script::Step::tools_scroll(1.0)),
         // Continuous values are drafts until the release. The proof module is pixel identity.
         view(
             "slider-drag",
-            json!({"controls":{"action":ACTION,"parameter":"amount","gesture":"slider","fractions":[0.25,0.75],"finish":"open"}}),
+            script::Step::Controls(ControlsStep::Slider {
+                action: ACTION.into(),
+                parameter: "amount".into(),
+                fractions: vec![0.25, 0.75],
+                finish: SliderEnd::Open,
+            }),
         ),
         set(
             "slider-release",
-            json!({"controls":{"action":ACTION,"parameter":"amount","gesture":"slider","fractions":[0.75],"finish":"release"}}),
+            script::Step::Controls(ControlsStep::Slider {
+                action: ACTION.into(),
+                parameter: "amount".into(),
+                fractions: vec![0.75],
+                finish: SliderEnd::Release,
+            }),
         ),
         // A cancelled picker leaves both history and the photograph unchanged; the next commits.
         view(
             "picker-drag",
-            json!({"picker":{"action":ACTION,"parameter":"rgb","hue":0.125,"plane":[0.75,0.625],"finish":"open"}}),
+            script::Step::Picker(PickerStep {
+                action: ACTION.into(),
+                parameter: "rgb".into(),
+                open: None,
+                hue: Some(0.125),
+                plane: Some([0.75, 0.625]),
+                finish: SliderEnd::Open,
+            }),
         ),
         view(
             "picker-cancel",
-            json!({"picker":{"action":ACTION,"parameter":"rgb","hue":0.125,"plane":[0.75,0.625],"finish":"cancel"}}),
+            script::Step::Picker(PickerStep {
+                action: ACTION.into(),
+                parameter: "rgb".into(),
+                open: None,
+                hue: Some(0.125),
+                plane: Some([0.75, 0.625]),
+                finish: SliderEnd::Cancel,
+            }),
         )
         .no_draft(),
         set(
             "picker-release",
-            json!({"picker":{"action":ACTION,"parameter":"rgb","hue":0.875,"plane":[0.75,0.875],"finish":"release"}}),
+            script::Step::Picker(PickerStep {
+                action: ACTION.into(),
+                parameter: "rgb".into(),
+                open: None,
+                hue: Some(0.875),
+                plane: Some([0.75, 0.875]),
+                finish: SliderEnd::Release,
+            }),
         ),
         // Master point add is discrete; moving the point drafts and commits once.
         set(
             "curve-add",
-            json!({"curve":{"action":ACTION,"parameter":"master","event":"add","point":[0.25,0.25]}}),
+            script::Step::Curve(CurveStep {
+                action: ACTION.into(),
+                parameter: "master".into(),
+                event: CurveStepEvent::Add([0.25, 0.25]),
+                finish: SliderEnd::Open,
+            }),
         ),
         view(
             "curve-drag",
-            json!({"curve":{"action":ACTION,"parameter":"master","event":"move","index":1,"points":[[0.375,0.375]],"finish":"open"}}),
+            script::Step::Curve(CurveStep {
+                action: ACTION.into(),
+                parameter: "master".into(),
+                event: CurveStepEvent::Move {
+                    index: 1,
+                    points: vec![[0.375, 0.375]],
+                },
+                finish: SliderEnd::Open,
+            }),
         ),
         set(
             "curve-release",
-            json!({"curve":{"action":ACTION,"parameter":"master","event":"move","index":1,"points":[[0.375,0.375]],"finish":"release"}}),
+            script::Step::Curve(CurveStep {
+                action: ACTION.into(),
+                parameter: "master".into(),
+                event: CurveStepEvent::Move {
+                    index: 1,
+                    points: vec![[0.375, 0.375]],
+                },
+                finish: SliderEnd::Release,
+            }),
         ),
         view(
             "red-channel",
-            json!({"curve":{"action":ACTION,"parameter":"master","event":"channel","index":1}}),
+            script::Step::Curve(CurveStep {
+                action: ACTION.into(),
+                parameter: "master".into(),
+                event: CurveStepEvent::Channel(1),
+                finish: SliderEnd::Open,
+            }),
         ),
         set(
             "red-move",
-            json!({"curve":{"action":ACTION,"parameter":"red","event":"move","index":1,"points":[[0.5,0.75]],"finish":"release"}}),
+            script::Step::Curve(CurveStep {
+                action: ACTION.into(),
+                parameter: "red".into(),
+                event: CurveStepEvent::Move {
+                    index: 1,
+                    points: vec![[0.5, 0.75]],
+                },
+                finish: SliderEnd::Release,
+            }),
         ),
         set(
             "red-remove",
-            json!({"curve":{"action":ACTION,"parameter":"red","event":"remove","index":1}}),
+            script::Step::Curve(CurveStep {
+                action: ACTION.into(),
+                parameter: "red".into(),
+                event: CurveStepEvent::Remove(1),
+                finish: SliderEnd::Open,
+            }),
         ),
         // Discrete controls commit exactly once each.
         set(
             "toggle",
-            json!({"controls":{"action":ACTION,"parameter":"enabled","gesture":"discrete","value":true}}),
+            script::Step::Controls(ControlsStep::Discrete {
+                action: ACTION.into(),
+                parameter: "enabled".into(),
+                value: json!(true),
+            }),
         ),
         set(
             "choice",
-            json!({"controls":{"action":ACTION,"parameter":"mode","gesture":"discrete","value":"two"}}),
+            script::Step::Controls(ControlsStep::Discrete {
+                action: ACTION.into(),
+                parameter: "mode".into(),
+                value: json!("two"),
+            }),
         ),
         // The proof's controls are its module's only group, which the panel draws without a
         // header and cannot collapse; group disclosure is a group of a module with several.
         view(
             "group-collapsed",
-            json!({"group":{"module":"lightwell.basic","path":[2],"expanded":false}}),
+            script::Step::Group(GroupStep {
+                module: "lightwell.basic".into(),
+                path: vec![2],
+                expanded: false,
+            }),
         ),
         view(
             "group-expanded",
-            json!({"group":{"module":"lightwell.basic","path":[2],"expanded":true}}),
+            script::Step::Group(GroupStep {
+                module: "lightwell.basic".into(),
+                path: vec![2],
+                expanded: true,
+            }),
         ),
-        step("reset", json!({"reset":{"module":MODULE}}))
+        step("reset", script::Step::reset(MODULE, None))
             .commits(1)
             .label(RESET)
             .payload(EFFECT, json!({})),
         // The pixel proof's section on its own: X and Y as labelled px fields, RGB, the picker
         // and Apply pixel.
-        view(
-            "controls-collapsed",
-            json!({"section":{"module":MODULE,"expanded":false}}),
-        )
-        .collapsed(MODULE),
-        view(
-            "pixel-expanded",
-            json!({"section":{"module":PIXEL_MODULE,"expanded":true}}),
-        )
-        .expanded(PIXEL_MODULE),
-        view("pixel-scrolled", json!({"tools_scroll":1.0}))
+        view("controls-collapsed", script::Step::section(MODULE, false)).collapsed(MODULE),
+        view("pixel-expanded", script::Step::section(PIXEL_MODULE, true)).expanded(PIXEL_MODULE),
+        view("pixel-scrolled", script::Step::tools_scroll(1.0))
             .expanded(PIXEL_MODULE)
             .collapsed(MODULE),
     ])

@@ -47,6 +47,9 @@ use crate::{
     *,
 };
 use lightwell_core::BASIC_EFFECT;
+use lightwell_evidence::{
+    self as script, BrushStep, MaskStep, PaintStep, Reference, SliderStep, WorkspaceStep,
+};
 
 pub const SCENARIO: &str = "mask-range";
 /// The range fixture: twelve flat patches of the 24-patch chart's own sRGB renderings, laid out so
@@ -184,20 +187,24 @@ fn pick_at(name: &str) -> [u32; 2] {
 /// and not a side effect of having clicked once: every pick is left this way too. A mode commits
 /// nothing.
 fn mask_mode(name: &str) -> Step {
-    Step::new(name, json!({"workspace":{"mode":"mask"}})).commits(0)
+    Step::new(name, WorkspaceStep::default().mode("mask")).commits(0)
 }
 
 /// One row of the open mask selected, which opens it: its number fields, its samples and, above
 /// them, what its kind cannot do. A panel state, so nothing is committed.
 fn select(name: &str, component: usize) -> Step {
-    Step::new(name, json!({"mask":{"select_component":component}})).commits(0)
+    Step::new(
+        name,
+        MaskStep::SelectComponent(Some(Reference::Index(component))),
+    )
+    .commits(0)
 }
 
 /// One of the band's declared fields typed and submitted: its own entry.
 fn typed(name: &str, parameter: &str, value: f64) -> Step {
     Step::new(
         name,
-        json!({"field":{"action":SET_LUMINANCE,"parameter":parameter,"text":value.to_string(),"submit":true}}),
+        script::Step::field(SET_LUMINANCE, parameter, value.to_string(), true),
     )
     .commits(1)
     .label("Update Luminance range 1")
@@ -207,7 +214,7 @@ fn typed(name: &str, parameter: &str, value: f64) -> Step {
 fn masked_exposure(name: &str, label: &str) -> Step {
     Step::new(
         name,
-        json!({"slider":{"action":BASIC,"parameter":EXPOSURE,"values":[PASSING_EV,MASKED_EV],"release":true}}),
+        SliderStep::new(BASIC, EXPOSURE, [PASSING_EV, MASKED_EV]).release(),
     )
     .commits(1)
     .label(label)
@@ -215,14 +222,14 @@ fn masked_exposure(name: &str, label: &str) -> Step {
 
 /// The host's own pick entered on the open row. Nothing is committed until the click.
 fn pick_entered(name: &str) -> Step {
-    Step::new(name, json!({"mask":{"pick":true}})).commits(0)
+    Step::new(name, MaskStep::Pick).commits(0)
 }
 
 /// One click on the named patch, in output-stage pixels. What it commits is the caller's: a new
 /// colour is one entry and a colour the component already holds is none.
 fn pick(name: &str, patch: &str) -> Step {
     let [x, y] = pick_at(patch);
-    Step::new(name, json!({"pick":{"x":x,"y":y}}))
+    Step::new(name, script::Step::pick(x, y))
 }
 
 /// Launch 1: the band, the gradient, the failure, the remedy, the input dependence and the overlays.
@@ -235,7 +242,7 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         // its geometry carries a default, so the button creates it in one history entry rather than
         // opening a gesture with no shape to drag. It starts as the whole tonal range with soft
         // shoulders, which is the picture, and is narrowed from there.
-        Step::new("band-created", json!({"mask":{"new":LUMINANCE_RANGE}}))
+        Step::new("band-created", MaskStep::New(LUMINANCE_RANGE.into()))
             .commits(1)
             .label("Add luminance range")
             .no_draft(),
@@ -252,11 +259,14 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         // the side it selects, and committed. It is what gives the two sky patches their
         // difference: the top row is inside it, the bottom row outside. The sweep is a drafted
         // gesture holding the swept geometry, and the apply commits it as one entry.
-        Step::new("gradient-mode", json!({"mask":{"mode":"intersect"}})).commits(0),
-        Step::new("gradient-added", json!({"mask":{"add":LINEAR}})).commits(0),
+        Step::new("gradient-mode", MaskStep::Mode("intersect".into())).commits(0),
+        Step::new("gradient-added", MaskStep::Add(LINEAR.into())).commits(0),
         Step::new(
             "gradient-swept",
-            json!({"mask":{"sweep":{"from":GRADIENT_FROM,"to":GRADIENT_TO}}}),
+            MaskStep::Sweep {
+                from: GRADIENT_FROM,
+                to: GRADIENT_TO,
+            },
         )
         .commits(0)
         .draft(
@@ -264,7 +274,7 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
             json!({"mode":"intersect","x0":GRADIENT_FROM[0],"y0":GRADIENT_FROM[1],
                    "x1":GRADIENT_TO[0],"y1":GRADIENT_TO[1]}),
         ),
-        Step::new("gradient-applied", json!({"mask":{"apply":true}}))
+        Step::new("gradient-applied", MaskStep::Apply)
             .commits(1)
             .label("Add intersect linear")
             .no_draft(),
@@ -276,8 +286,8 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         // A colour range intersected with both. Created with no swatches, which selects nothing:
         // the picture goes back to the one the mask never touched, and that is what an unsampled
         // colour range means rather than a component that does nothing.
-        Step::new("colour-mode", json!({"mask":{"mode":"intersect"}})).commits(0),
-        Step::new("colour-added", json!({"mask":{"add":COLOUR_RANGE}}))
+        Step::new("colour-mode", MaskStep::Mode("intersect".into())).commits(0),
+        Step::new("colour-added", MaskStep::Add(COLOUR_RANGE.into()))
             .commits(1)
             .label("Add intersect colour range"),
         // Its row open, the host's own pick entered, and one click on the sky. **This is the
@@ -296,7 +306,7 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         // layer stops applying to it entirely.
         Step::new(
             "global",
-            json!({"api":{"method":"edit.set-basic","params":{"exposure":GLOBAL_EV}}}),
+            script::Step::call("edit.set-basic", json!({"exposure":GLOBAL_EV})),
         )
         .commits(1)
         .label("Exposure +0.75 EV")
@@ -304,38 +314,39 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         // Undone, and the selection comes back with the input it was drawn against. An undo moves
         // the revision on like any commit, to the entry the pick made, and the masked layer is the
         // stack's first Basic layer again.
-        Step::new(
-            "global-undone",
-            json!({"api":{"method":"history.undo","params":{}}}),
-        )
-        .commits(1)
-        .label("Sample Colour range 1")
-        .payload(BASIC_EFFECT, json!({ EXPOSURE: MASKED_EV }))
-        .same_layer(BASIC_EFFECT, "failure"),
+        Step::new("global-undone", script::Step::api("history.undo"))
+            .commits(1)
+            .label("Sample Colour range 1")
+            .payload(BASIC_EFFECT, json!({ EXPOSURE: MASKED_EV }))
+            .same_layer(BASIC_EFFECT, "failure"),
         // The overlay on with the pointer off the list, which asks for the **composed** mask's
         // grid. This mask reads pixels, and a layer is bound to it — the masked Exposure of
         // `failure` — so the grid is read on that layer's own input and drawn. It is checked against
         // `global-undone`: the patches it calls selected are the patches that frame moved.
         Step::new(
             "overlay-composed",
-            json!({"workspace":{"mask_overlay":"mask-on-black"}}),
+            WorkspaceStep::default().mask_overlay("mask-on-black"),
         )
         .commits(0),
         // The pointer on the gradient's row, which asks for that one component's grid.
-        Step::new("overlay-gradient", json!({"mask":{"hover":1}})).commits(0),
+        Step::new(
+            "overlay-gradient",
+            MaskStep::Hover(Some(Reference::Index(1))),
+        )
+        .commits(0),
         // The pointer on each range component's row in turn. Each has its own grid now, and the pair
         // is the study's failure and its remedy as pictures: the band takes the grey card beside the
         // sky, and the picked colour range does not.
-        Step::new("overlay-band", json!({"mask":{"hover":0}})).commits(0),
-        Step::new("overlay-colour", json!({"mask":{"hover":2}})).commits(0),
+        Step::new("overlay-band", MaskStep::Hover(Some(Reference::Index(0)))).commits(0),
+        Step::new("overlay-colour", MaskStep::Hover(Some(Reference::Index(2)))).commits(0),
         // The overlay off, leaving the photograph.
-        Step::new("overlay-off", json!({"workspace":{"mask_overlay":"off"}})).commits(0),
+        Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off")).commits(0),
         // The band's own row open and the tools panel scrolled to it, so the frame carries **the
         // product's own statement of what a band cannot separate** where a person reads it: above
         // the four numbers it applies to, on the row they belong to. The statement is checked in the
         // state on every frame that has the row open; this is the one that shows it.
         select("band-row-again", 0),
-        Step::new("statement", json!({"tools_scroll":STATEMENT_SCROLL})).commits(0),
+        Step::new("statement", script::Step::tools_scroll(STATEMENT_SCROLL)).commits(0),
     ])
 }
 
@@ -349,7 +360,7 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         // sampled. The order is the host's rule and not a convenience: a pick reads the pixel the
         // operation this mask modulates receives, so a mask no layer is bound to is refused by name.
         // With no swatch the mask selects nothing, so this commits a layer and changes no pixel.
-        Step::new("grey-mask", json!({"mask":{"new":COLOUR_RANGE}}))
+        Step::new("grey-mask", MaskStep::New(COLOUR_RANGE.into()))
             .commits(1)
             .label("Mask 2 · Add colour range"),
         masked_exposure("grey-mask-exposure", "Mask 2 · Exposure -1.00 EV"),
@@ -381,7 +392,7 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         // A third mask, its own adjustment, and one click on the **light skin** patch. Dark skin is
         // `0.0108` away in the frozen metric, a third of what one face's own shading spans, so any
         // setting that holds a lit face takes both — and the frame shows both move.
-        Step::new("skin-mask", json!({"mask":{"new":COLOUR_RANGE}}))
+        Step::new("skin-mask", MaskStep::New(COLOUR_RANGE.into()))
             .commits(1)
             .label("Mask 3 · Add colour range"),
         masked_exposure("skin-mask-exposure", "Mask 3 · Exposure -1.00 EV"),
@@ -397,13 +408,24 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         // entry.
         Step::new(
             "brush",
-            json!({"mask":{"brush":{"size":BRUSH_SIZE,"feather":BRUSH_HARD,"flow":100.0,"erase":false,"limit_to_colour":false}}}),
+            MaskStep::Brush(BrushStep {
+                size: Some(BRUSH_SIZE),
+                feather: Some(BRUSH_HARD),
+                flow: Some(100.0),
+                erase: Some(false),
+                limit_to_colour: Some(false),
+                ..BrushStep::default()
+            }),
         )
         .commits(0),
-        Step::new("brush-mask", json!({"mask":{"paint":"new-mask"}})).commits(0),
+        Step::new("brush-mask", MaskStep::Paint(PaintStep::NewMask)).commits(0),
         Step::new(
             "stroke",
-            json!({"mask":{"stroke":{"points":[at("sky-bottom"),at("foliage")],"release":true}}}),
+            MaskStep::Stroke {
+                points: vec![at("sky-bottom"), at("foliage")],
+                release: true,
+                interval_ms: None,
+            },
         )
         .commits(1)
         .label("Mask 4 · Add brush"),
@@ -416,13 +438,25 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         // metric whose radius here is `0.035`.
         Step::new(
             "held-erase",
-            json!({"mask":{"brush":{"erase":true,"limit_to_colour":true}}}),
+            MaskStep::Brush(BrushStep {
+                erase: Some(true),
+                limit_to_colour: Some(true),
+                ..BrushStep::default()
+            }),
         )
         .commits(0),
-        Step::new("held-erase-paint", json!({"mask":{"paint":{"component":0}}})).commits(0),
+        Step::new(
+            "held-erase-paint",
+            MaskStep::Paint(PaintStep::Component(Reference::Index(0))),
+        )
+        .commits(0),
         Step::new(
             "constrained",
-            json!({"mask":{"stroke":{"points":[at("foliage"),at("sky-bottom")],"release":true}}}),
+            MaskStep::Stroke {
+                points: vec![at("foliage"), at("sky-bottom")],
+                release: true,
+                interval_ms: None,
+            },
         )
         .commits(1)
         .label("Mask 4 · Update Brush 1"),
@@ -434,22 +468,19 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         // exactly where it was.
         Step::new(
             "held-overlay",
-            json!({"workspace":{"mask_overlay":"mask-on-black"}}),
+            WorkspaceStep::default().mask_overlay("mask-on-black"),
         )
         .commits(0),
         Step::new(
             "held-overlay-off",
-            json!({"workspace":{"mask_overlay":"off"}}),
+            WorkspaceStep::default().mask_overlay("off"),
         )
         .commits(0),
         // Undone. The erase is one entry like any other stroke, so the foliage is selected again and
         // the current entry is the adjustment's once more.
-        Step::new(
-            "held-erase-undone",
-            json!({"api":{"method":"history.undo","params":{}}}),
-        )
-        .commits(1)
-        .label("Mask 4 · Exposure -1.00 EV"),
+        Step::new("held-erase-undone", script::Step::api("history.undo"))
+            .commits(1)
+            .label("Mask 4 · Exposure -1.00 EV"),
         // One **paced** stroke, which is the measurement rather than a claim about pixels. Every
         // stroke above sends its whole path in one update, which is what a fast drag does and what a
         // correctness reading wants; this one sends a position every `STROKE_INTERVAL_MS` in real
@@ -458,18 +489,30 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         // drives field-patch sliders, and a stroke is a different gesture.
         Step::new(
             "plain-brush",
-            json!({"mask":{"brush":{"erase":false,"limit_to_colour":false}}}),
+            MaskStep::Brush(BrushStep {
+                erase: Some(false),
+                limit_to_colour: Some(false),
+                ..BrushStep::default()
+            }),
         )
         .commits(0),
-        Step::new("paced-paint", json!({"mask":{"paint":{"component":0}}})).commits(0),
+        Step::new(
+            "paced-paint",
+            MaskStep::Paint(PaintStep::Component(Reference::Index(0))),
+        )
+        .commits(0),
         Step::new(
             "paced-stroke",
-            json!({"mask":{"stroke":{"points":paced_path(),"release":true,"interval_ms":STROKE_INTERVAL_MS}}}),
+            MaskStep::Stroke {
+                points: paced_path(),
+                release: true,
+                interval_ms: Some(STROKE_INTERVAL_MS),
+            },
         )
         .commits(1)
         .label("Mask 4 · Update Brush 1"),
         // Mask mode left, which returns the tools panel and leaves every selection where it is.
-        Step::new("pointer-mode", json!({"workspace":{"mode":"pointer"}})).commits(0),
+        Step::new("pointer-mode", WorkspaceStep::default().mode("pointer")).commits(0),
     ])
 }
 

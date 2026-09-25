@@ -707,7 +707,10 @@ mod tests {
             .open_all(&[PathBuf::from("/f.jpg")])
             .window(["1440", "900"])
             .catalog(Path::new("/c.sqlite"))
-            .script("script2.json", json!([{"wait":{"ms":1}}]))
+            .script(
+                "script2.json",
+                lightwell_evidence::write(&[lightwell_evidence::Step::wait(1)]),
+            )
             .disable("lightwell.crop");
         // The binary is absent, so the spawn fails, and nothing is recorded as started.
         assert!(run.launch(launch).is_err());

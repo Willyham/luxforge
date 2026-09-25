@@ -14,6 +14,7 @@ use crate::{
     *,
 };
 use lightwell_core::BASIC_EFFECT;
+use lightwell_evidence::{self as script, MaskStep, PreviewStep, SliderStep, WorkspaceStep};
 
 pub const SCENARIO: &str = "mask-linear";
 /// The golden four-quadrant fixture, unrotated: content and output coordinates coincide, so the
@@ -63,25 +64,28 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         Step::opened("opened").no_layer(BASIC_EFFECT).no_draft(),
         // 1: Mask mode, through the same `workspace.set` the mode strip sends. A canvas mode
         // commits nothing.
-        Step::new("mask-mode", json!({"workspace":{"mode":"mask"}})).commits(0),
+        Step::new("mask-mode", WorkspaceStep::default().mode("mask")).commits(0),
         // 2: a new mask whose first component is a linear gradient: the gesture opens and drafts,
         // and nothing is committed.
-        Step::new("new", json!({"mask":{"new":"linear"}})).commits(0),
+        Step::new("new", MaskStep::New("linear".into())).commits(0),
         // 3: the drag itself, one sweep from the untouched side towards the affected one, with the
         // pointer still down: the frame is the picture mid-gesture, the gradient drafted exactly
         // where the sweep drew it and still uncommitted.
         Step::new(
             "sweep",
-            json!({"mask":{"sweep":{"from":[0.5,Y0],"to":[0.5,Y1]}}}),
+            MaskStep::Sweep {
+                from: [0.5, Y0],
+                to: [0.5, Y1],
+            },
         )
         .commits(0)
         .draft(LINEAR_METHOD, swept()),
         // 4: the pointer lifted. The gradient stays; nothing is committed by a release.
-        Step::new("release", json!({"mask":{"release":true}}))
+        Step::new("release", MaskStep::Release)
             .commits(0)
             .draft(LINEAR_METHOD, swept()),
         // 5: Apply: one history entry, one mask, no layer bound to it yet.
-        Step::new("apply", json!({"mask":{"apply":true}}))
+        Step::new("apply", MaskStep::Apply)
             .commits(1)
             .label("Add linear")
             .no_draft()
@@ -90,7 +94,7 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         // commit opened, so this is the panel's own drag on the masked layer.
         Step::new(
             "drag",
-            json!({"slider":{"action":BASIC,"parameter":EXPOSURE,"values":[0.8,1.4,DRAGGED],"release":true}}),
+            SliderStep::new(BASIC, EXPOSURE, [0.8, 1.4, DRAGGED]).release(),
         )
         .commits(1)
         .label(DRAGGED_LABEL)
@@ -100,18 +104,21 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         // place, not replaced.
         Step::new(
             "json-edit",
-            json!({"api":{"method":"edit.set-basic","params":{"mask":{"name":"Mask 1"},"exposure":RETYPED}}}),
+            script::Step::call(
+                "edit.set-basic",
+                json!({"mask":{"name":"Mask 1"},"exposure":RETYPED}),
+            ),
         )
         .commits(1)
         .label(RETYPED_LABEL)
         .payload(BASIC_EFFECT, json!({ EXPOSURE: RETYPED }))
         .same_layer(BASIC_EFFECT, "drag"),
         // 8: the coverage overlay on, which commits nothing.
-        Step::new("overlay-on", json!({"workspace":{"mask_overlay":"tint"}})).commits(0),
+        Step::new("overlay-on", WorkspaceStep::default().mask_overlay("tint")).commits(0),
         // 9: and off again.
-        Step::new("overlay-off", json!({"workspace":{"mask_overlay":"off"}})).commits(0),
+        Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off")).commits(0),
         // 10: undo, back to the exposure the drag committed, on the same layer.
-        Step::new("undo", json!({"api":{"method":"history.undo","params":{}}}))
+        Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
             .label(DRAGGED_LABEL)
             .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED }))
@@ -128,11 +135,11 @@ pub fn launch2(_: &[PathBuf]) -> Plan {
             .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED }))
             .no_draft(),
         // 1: Mask mode again, so the reopened masks are shown as well as stored.
-        Step::new("mask-mode", json!({"workspace":{"mode":"mask"}})).commits(0),
+        Step::new("mask-mode", WorkspaceStep::default().mode("mask")).commits(0),
         // 2: the entry the gradient was committed in, selected from the history.
-        Step::new("mask-entry", json!({"preview":{"sequence":1}})).commits(0),
+        Step::new("mask-entry", PreviewStep::Sequence(1)).commits(0),
         // 3: back to the current state.
-        Step::new("current", json!({"preview":"current"}))
+        Step::new("current", PreviewStep::Current)
             .commits(0)
             .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED })),
     ])

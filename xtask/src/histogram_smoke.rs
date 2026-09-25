@@ -22,6 +22,7 @@ use lightwell_core::{
     BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, PIXEL_EFFECT,
     RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
 };
+use lightwell_evidence::{self as script, PreviewStep, SliderStep, ViewStep, WorkspaceStep};
 
 /// The fixture: 480x320, orientation 1, the quadrant pattern with the white centre line and the
 /// black dash band.
@@ -64,14 +65,17 @@ const CLEAN: [(u32, u32); 4] = [(120, 60), (400, 60), (120, 270), (420, 285)];
 /// each step commits and records; `verify` checks the counts, the readout and the overlays.
 pub fn plan(_: &[PathBuf]) -> Plan {
     // A step that changes what is shown and commits nothing.
-    let view = |name: &str, script: Value| Step::new(name, script).commits(0);
+    let view = |name: &str, script: script::Step| Step::new(name, script).commits(0);
     Plan::new(vec![
         // The default screen: the fixture's own counts, both overlays off.
         Step::opened("opened"),
         // One both-endpoint pixel, committed through the ordinary edit path.
         Step::new(
             "pixel",
-            json!({"api":{"method":"edit.set-pixel","params":{"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}}}),
+            script::Step::call(
+                "edit.set-pixel",
+                json!({"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}),
+            ),
         )
         .commits(1)
         .label("Pixel 360, 240")
@@ -80,39 +84,43 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             json!({"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}),
         ),
         // The pointer readout over exactly that pixel.
-        view(
-            "hover",
-            json!({"hover":{"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1}}),
-        ),
+        view("hover", script::Step::hover(BOTH_PIXEL.0, BOTH_PIXEL.1)),
         // The shadow overlay alone.
-        view("shadows", json!({"workspace":{"clip_shadows":true}})),
+        view(
+            "shadows",
+            script::Step::Workspace(WorkspaceStep::default().clip_shadows(true)),
+        ),
         // Both overlays, which is where magenta appears.
-        view("both", json!({"workspace":{"clip_highlights":true}})),
+        view(
+            "both",
+            script::Step::Workspace(WorkspaceStep::default().clip_highlights(true)),
+        ),
         // 100%, one overlay cell per source pixel.
-        view("percent", json!({"view":{"zoom":100}})),
+        view("percent", script::Step::View(ViewStep::Percent(100.0))),
         // Back to Fit.
-        view("fit", json!({"view":{"zoom":"fit"}})),
+        view("fit", script::Step::View(ViewStep::Fit)),
         // Both overlays off again; the photograph is untouched underneath.
         view(
             "overlays-off",
-            json!({"workspace":{"clip_shadows":false,"clip_highlights":false}}),
+            script::Step::Workspace(
+                WorkspaceStep::default()
+                    .clip_shadows(false)
+                    .clip_highlights(false),
+            ),
         ),
         // The Original entry, whose counts are the fixture's own again.
-        view("original", json!({"preview":{"sequence":0}})),
+        view("original", script::Step::Preview(PreviewStep::Sequence(0))),
         // Back to current, because a gesture is refused while a historical entry is shown.
-        view("current", json!({"preview":"current"})),
+        view("current", script::Step::Preview(PreviewStep::Current)),
         // An Exposure drag left open, so the photograph on screen is the drafted render.
-        Step::new(
-            "drag",
-            json!({"slider":{"action":"set-basic","parameter":"exposure","values":[0.5,1.0]}}),
-        )
-        .commits(0)
-        .draft("set-basic", json!({"exposure": 1.0}))
-        .no_layer(BASIC_EFFECT),
+        Step::new("drag", SliderStep::new("set-basic", "exposure", [0.5, 1.0]))
+            .commits(0)
+            .draft("set-basic", json!({"exposure": 1.0}))
+            .no_layer(BASIC_EFFECT),
         // The same gesture released, which commits once; the plot follows the new stack.
         Step::new(
             "release",
-            json!({"slider":{"action":"set-basic","parameter":"exposure","values":[1.0],"release":true}}),
+            SliderStep::new("set-basic", "exposure", [1.0]).release(),
         )
         .commits(1)
         .no_draft()
@@ -130,7 +138,7 @@ pub fn crop_plan(_: &[PathBuf]) -> Plan {
         // One Basic commit, so every later frame composes colour with geometry.
         Step::new(
             "exposure",
-            json!({"api":{"method":"edit.set-basic","params":{"exposure":1.0}}}),
+            script::Step::call("edit.set-basic", json!({"exposure":1.0})),
         )
         .commits(1)
         .label("Exposure +1.00 EV")
@@ -138,7 +146,7 @@ pub fn crop_plan(_: &[PathBuf]) -> Plan {
         // A 16:9 fit at angle zero, which is an exact copy of its input stage.
         Step::new(
             "fit",
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":0.0}}}),
+            script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":0.0})),
         )
         .commits(1)
         .label("Crop 16:9")
@@ -147,7 +155,7 @@ pub fn crop_plan(_: &[PathBuf]) -> Plan {
         // place.
         Step::new(
             "straightened",
-            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":7.0}}}),
+            script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":7.0})),
         )
         .commits(1)
         .label("Crop 16:9")

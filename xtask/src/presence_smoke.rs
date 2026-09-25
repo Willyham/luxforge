@@ -18,6 +18,7 @@ use crate::{
     *,
 };
 use lightwell_core::PRESENCE_EFFECT;
+use lightwell_evidence::{self as script, SliderStep, ViewStep};
 
 const PRESENCE_MODULE: &str = "lightwell.presence";
 /// The one section the registry lists above Presence that is both a real toggleable section
@@ -67,16 +68,14 @@ const UNCHANGED: f64 = 3.0;
 fn release(name: &str, parameter: &str, value: f64) -> Step {
     Step::new(
         name,
-        json!({"slider":{"action":SET_PRESENCE,"parameter":parameter,"values":[value],"release":true}}),
+        SliderStep::new(SET_PRESENCE, parameter, [value]).release(),
     )
     .commits(1)
 }
 
 /// A zoom change: nothing committed and no draft.
-fn view(name: &str, zoom: &str) -> Step {
-    Step::new(name, json!({"view":{"zoom":zoom}}))
-        .no_draft()
-        .commits(0)
+fn view(name: &str, zoom: ViewStep) -> Step {
+    Step::new(name, zoom).no_draft().commits(0)
 }
 
 /// Every frame, in order: the open, then one per step. Each step is one gesture, one request or one
@@ -96,22 +95,19 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // scrolling once it expands.
         Step::new(
             "basic-collapsed",
-            json!({"section":{"module":BASIC_MODULE,"expanded":false}}),
+            script::Step::section(BASIC_MODULE, false),
         )
         .commits(0)
         .collapsed(BASIC_MODULE),
         // 2: expand the section: its one group and three sliders, with Basic still collapsed.
-        Step::new(
-            "expanded",
-            json!({"section":{"module":PRESENCE_MODULE,"expanded":true}}),
-        )
-        .commits(0)
-        .expanded(PRESENCE_MODULE)
-        .collapsed(BASIC_MODULE),
+        Step::new("expanded", script::Step::section(PRESENCE_MODULE, true))
+            .commits(0)
+            .expanded(PRESENCE_MODULE)
+            .collapsed(BASIC_MODULE),
         // 3: a drag on Clarity, left open: the frame shows the drafted preview.
         Step::new(
             "drag",
-            json!({"slider":{"action":SET_PRESENCE,"parameter":CLARITY,"values":[30.0,60.0,90.0]}}),
+            SliderStep::new(SET_PRESENCE, CLARITY, [30.0, 60.0, 90.0]),
         )
         .commits(0)
         .draft(SET_PRESENCE, json!({ CLARITY: 90.0 }))
@@ -121,7 +117,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // stack (still empty) actually holds.
         Step::new(
             "cancel",
-            json!({"slider":{"action":SET_PRESENCE,"parameter":CLARITY,"values":[90.0],"cancel":true}}),
+            SliderStep::new(SET_PRESENCE, CLARITY, [90.0]).cancel(),
         )
         .no_draft()
         .commits(0)
@@ -131,18 +127,18 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .label("Texture +100")
             .payload(PRESENCE_EFFECT, json!({ TEXTURE: 100.0 })),
         // 6: the same committed state at 100%, where the checker's own fine detail shows.
-        view("texture-100", "100"),
+        view("texture-100", ViewStep::Percent(100.0)),
         // 7: back to Fit for the Clarity commit below.
-        view("texture-fit", "fit"),
+        view("texture-fit", ViewStep::Fit),
         // 8: Clarity +100, committed at Fit, merged with Texture.
         release("clarity", CLARITY, 100.0)
             .label("Clarity +100")
             .payload(PRESENCE_EFFECT, json!({ TEXTURE: 100.0, CLARITY: 100.0 }))
             .same_layer(PRESENCE_EFFECT, "texture"),
         // 9: the same committed state at 100%, where the step edge's own halo shows.
-        view("clarity-100", "100"),
+        view("clarity-100", ViewStep::Percent(100.0)),
         // 10: back to Fit for the Dehaze commits below.
-        view("clarity-fit", "fit"),
+        view("clarity-fit", ViewStep::Fit),
         // 11: Dehaze +100, committed at Fit, merged with Texture and Clarity.
         release("dehaze", DEHAZE, 100.0)
             .label("Dehaze +100")
@@ -165,7 +161,10 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // flips back, so the merged payload is a genuine change, not a no-op.
         Step::new(
             "api",
-            json!({"api":{"method":"edit.set-presence","params":{"texture":100.0,"clarity":100.0,"dehaze":100.0}}}),
+            script::Step::call(
+                "edit.set-presence",
+                json!({"texture":100.0,"clarity":100.0,"dehaze":100.0}),
+            ),
         )
         .commits(1)
         .label("Presence (3 fields)")
@@ -175,7 +174,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .same_layer(PRESENCE_EFFECT, "texture"),
         // 14: the module's own header reset: the layer kept at its neutral payload.
-        Step::new("reset", json!({"reset":{"module":PRESENCE_MODULE}}))
+        Step::new("reset", script::Step::reset(PRESENCE_MODULE, None))
             .commits(1)
             .label("Reset Presence")
             .payload(PRESENCE_EFFECT, json!({}))

@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 image.workspace = true
 lightwell-core = { path = "../crates/lightwell-core" }
+lightwell-evidence = { path = "../crates/lightwell-evidence" }
 lightwell-testkit = { path = "../crates/lightwell-testkit" }
 sha2 = "=0.10.9"
 regex = "=1.12.3"
