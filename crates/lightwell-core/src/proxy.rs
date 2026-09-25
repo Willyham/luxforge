@@ -345,7 +345,7 @@ fn float_values(width: u32, height: u32, what: &str) -> Result<usize, Error> {
 ///
 /// The whole table is built once per axis and holds at most `source + output` weights, so nothing
 /// here scales with the area and no weight is recomputed per row or per column.
-pub(crate) struct Coverage {
+struct Coverage {
     /// Per output index, the first source index it reads.
     first: Vec<u32>,
     /// Per output index, the half-open range of `weights` that belongs to it.
@@ -355,7 +355,7 @@ pub(crate) struct Coverage {
 
 impl Coverage {
     /// `source` and `output` are both at least one, and `output` is at most `source`.
-    pub(crate) fn new(source: u32, output: u32) -> Self {
+    fn new(source: u32, output: u32) -> Self {
         debug_assert!(output >= 1 && source >= output);
         let ratio = f64::from(source) / f64::from(output);
         let mut first = Vec::with_capacity(output as usize);
@@ -384,54 +384,60 @@ impl Coverage {
 
     /// The first source index and the consecutive weights for one output index.
     #[inline]
-    pub(crate) fn span(&self, index: usize) -> (u32, &[f64]) {
+    fn span(&self, index: usize) -> (u32, &[f64]) {
         (
             self.first[index],
             &self.weights[self.offsets[index]..self.offsets[index + 1]],
         )
     }
 
-    pub(crate) fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.first.len()
     }
 }
 
-/// The separable area average of a JPEG source, in linear light.
+/// The one separable area average every proxy source is built with, whatever the source's pixels
+/// are: a horizontal pass that reads each source pixel once, in linear light, into one intermediate
+/// row per source row, and a vertical pass that averages those rows into each output pixel.
 ///
-/// Both passes accumulate in f64. The horizontal pass decodes each source pixel through the render
-/// path's own sRGB table and writes one intermediate row per source row; the vertical pass averages
-/// those rows and re-quantizes through the render path's own threshold boundary. A uniform region
-/// therefore comes out as exactly its own code, and the proxy of an identity stack agrees with the
-/// exact render's arithmetic everywhere it can.
+/// Both passes accumulate in f64 with the [`Coverage`] weights, so an output pixel is the exact mean
+/// over its source rectangle up to the one f32 store between the passes. The two source kinds differ
+/// only in how a source pixel is read — a JPEG code decoded through the render path's own sRGB
+/// table, a RAW value read through its view — and in how the output is stored, which each caller
+/// does with [`Self::pixel`]; the arithmetic is this one implementation.
 ///
-/// Allocations: one intermediate of `width × source_height × 3` f32 and the output frame, each
-/// bounded by the 512 MiB frame limit. Every source pixel is read at most twice, so no per-row
-/// scratch exists at all.
-fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<SourceImage, Error> {
-    let source_len = Raster::expected_len(source.width, source.height)?;
-    if source.rgba.len() != source_len {
-        return Err(validation(
-            "source buffer length does not match its dimensions",
-        ));
-    }
-    let output_len = Raster::expected_len(width, height)?;
-    let intermediate_len = float_values(width, source.height, "proxy downscale intermediate")?;
-    let horizontal = Coverage::new(source.width, width);
-    let vertical = Coverage::new(source.height, height);
-    let parallel = u64::from(source.width) * u64::from(source.height) >= PARALLEL_PROXY_PIXELS;
-    let stride = width as usize * 3;
-    let source_stride = source.width as usize * 4;
+/// Allocations: the intermediate of `width × source_height × 3` f32, bounded by the 512 MiB frame
+/// limit. Every source pixel is read exactly once, so no per-row scratch exists at all.
+struct BoxDownscale {
+    vertical: Coverage,
+    /// The intermediate rows: `width × 3` values per source row.
+    rows: Vec<f32>,
+    stride: usize,
+    parallel: bool,
+}
 
-    let mut rows = vec![0f32; intermediate_len];
-    {
+impl BoxDownscale {
+    /// Run the horizontal pass. `read(x, y)` is one source pixel in linear light; it is only asked
+    /// for coordinates inside the source.
+    fn new(
+        source_width: u32,
+        source_height: u32,
+        width: u32,
+        height: u32,
+        read: impl Fn(u32, u32) -> [f32; 3] + Sync,
+    ) -> Result<Self, Error> {
+        let intermediate_len = float_values(width, source_height, "proxy downscale intermediate")?;
+        let horizontal = Coverage::new(source_width, width);
+        let vertical = Coverage::new(source_height, height);
+        let parallel = u64::from(source_width) * u64::from(source_height) >= PARALLEL_PROXY_PIXELS;
+        let stride = width as usize * 3;
+        let mut rows = vec![0f32; intermediate_len];
         let pass = |(y, row): (usize, &mut [f32])| {
-            let bytes = &source.rgba[y * source_stride..(y + 1) * source_stride];
             for index in 0..horizontal.len() {
                 let (first, weights) = horizontal.span(index);
                 let mut sum = [0f64; 3];
                 for (offset, weight) in weights.iter().enumerate() {
-                    let at = (first as usize + offset) * 4;
-                    let linear = decode_pixel([bytes[at], bytes[at + 1], bytes[at + 2]]);
+                    let linear = read(first + offset as u32, y as u32);
                     for (channel, value) in sum.iter_mut().enumerate() {
                         *value += f64::from(linear[channel]) * weight;
                     }
@@ -446,23 +452,53 @@ fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<Sourc
         } else {
             rows.chunks_exact_mut(stride).enumerate().for_each(pass);
         }
+        Ok(Self {
+            vertical,
+            rows,
+            stride,
+            parallel,
+        })
     }
 
-    // Written in place and returned as the proxy's pixels, with no copy.
+    /// The vertical pass for one output pixel: the weighted mean of its column of intermediate
+    /// rows, in f64, for the caller to store.
+    #[inline]
+    fn pixel(&self, x: usize, y: usize) -> [f64; 3] {
+        let (first, weights) = self.vertical.span(y);
+        let mut sum = [0f64; 3];
+        for (offset, weight) in weights.iter().enumerate() {
+            let at = (first as usize + offset) * self.stride + x * 3;
+            for (channel, value) in sum.iter_mut().enumerate() {
+                *value += f64::from(self.rows[at + channel]) * weight;
+            }
+        }
+        sum
+    }
+}
+
+/// The area average of a JPEG source, re-quantized through the render path's own threshold
+/// boundary. A uniform region therefore comes out as exactly its own code, and the proxy of an
+/// identity stack agrees with the exact render's arithmetic everywhere it can. The output frame is
+/// written in place and returned as the proxy's pixels, with no copy.
+fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<SourceImage, Error> {
+    let source_len = Raster::expected_len(source.width, source.height)?;
+    if source.rgba.len() != source_len {
+        return Err(validation(
+            "source buffer length does not match its dimensions",
+        ));
+    }
+    let output_len = Raster::expected_len(width, height)?;
+    let source_stride = source.width as usize * 4;
+    let downscale = BoxDownscale::new(source.width, source.height, width, height, |x, y| {
+        let at = y as usize * source_stride + x as usize * 4;
+        decode_pixel([source.rgba[at], source.rgba[at + 1], source.rgba[at + 2]])
+    })?;
     let mut frame = zeroed_frame(output_len);
     {
         let output = frame_mut(&mut frame);
-        let rows = &rows;
         let pass = |(y, row): (usize, &mut [u8])| {
-            let (first, weights) = vertical.span(y);
             for x in 0..width as usize {
-                let mut sum = [0f64; 3];
-                for (offset, weight) in weights.iter().enumerate() {
-                    let at = (first as usize + offset) * stride + x * 3;
-                    for (channel, value) in sum.iter_mut().enumerate() {
-                        *value += f64::from(rows[at + channel]) * weight;
-                    }
-                }
+                let sum = downscale.pixel(x, y);
                 let pixel = &mut row[x * 4..x * 4 + 4];
                 for (channel, value) in sum.iter().enumerate() {
                     pixel[channel] = quantize_channel(*value);
@@ -471,7 +507,7 @@ fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<Sourc
             }
         };
         let output_stride = width as usize * 4;
-        if parallel {
+        if downscale.parallel {
             output
                 .par_chunks_exact_mut(output_stride)
                 .enumerate()
@@ -498,7 +534,7 @@ fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<Sourc
 /// one closure serves both.
 type PlanarRow<'a> = (usize, ((&'a mut [f32], &'a mut [f32]), &'a mut [f32]));
 
-/// The separable area average of a prepared RAW source's planes, read through its view.
+/// The area average of a prepared RAW source's planes, read through its view.
 ///
 /// The result is a smaller [`LinearImage`] with the same fingerprint and an identity view: the
 /// crop and orientation of the input view are resolved by the averaging itself, so the proxy is
@@ -507,64 +543,26 @@ type PlanarRow<'a> = (usize, ((&'a mut [f32], &'a mut [f32]), &'a mut [f32]));
 fn downscale_linear(image: &LinearImage, width: u32, height: u32) -> Result<LinearImage, Error> {
     let reader = image.reader();
     let (source_width, source_height) = reader.dimensions();
-    let intermediate_len = float_values(width, source_height, "proxy downscale intermediate")?;
     let plane_values = float_values(width, height, "proxy linear source")?;
     let plane_len = plane_values / 3;
-    let horizontal = Coverage::new(source_width, width);
-    let vertical = Coverage::new(source_height, height);
-    let parallel = u64::from(source_width) * u64::from(source_height) >= PARALLEL_PROXY_PIXELS;
-    let stride = width as usize * 3;
-
-    let mut rows = vec![0f32; intermediate_len];
-    {
-        let reader = &reader;
-        let pass = |(y, row): (usize, &mut [f32])| {
-            for index in 0..horizontal.len() {
-                let (first, weights) = horizontal.span(index);
-                let mut sum = [0f64; 3];
-                for (offset, weight) in weights.iter().enumerate() {
-                    // Inside the view by construction: the coverage never leaves `0..source_width`.
-                    let pixel = reader
-                        .pixel(first + offset as u32, y as u32)
-                        .unwrap_or([0.0; 3]);
-                    for (channel, value) in sum.iter_mut().enumerate() {
-                        *value += f64::from(pixel[channel]) * weight;
-                    }
-                }
-                for (channel, value) in sum.iter().enumerate() {
-                    row[index * 3 + channel] = *value as f32;
-                }
-            }
-        };
-        if parallel {
-            rows.par_chunks_exact_mut(stride).enumerate().for_each(pass);
-        } else {
-            rows.chunks_exact_mut(stride).enumerate().for_each(pass);
-        }
-    }
-
+    // Inside the view by construction: the coverage never leaves the source.
+    let downscale = BoxDownscale::new(source_width, source_height, width, height, |x, y| {
+        reader.pixel(x, y).unwrap_or([0.0; 3])
+    })?;
     let mut planes = vec![0f32; plane_values];
     {
-        let rows = &rows;
         let (red, rest) = planes.split_at_mut(plane_len);
         let (green, blue) = rest.split_at_mut(plane_len);
         let pass = |(y, ((red, green), blue)): PlanarRow<'_>| {
-            let (first, weights) = vertical.span(y);
             for x in 0..width as usize {
-                let mut sum = [0f64; 3];
-                for (offset, weight) in weights.iter().enumerate() {
-                    let at = (first as usize + offset) * stride + x * 3;
-                    for (channel, value) in sum.iter_mut().enumerate() {
-                        *value += f64::from(rows[at + channel]) * weight;
-                    }
-                }
+                let sum = downscale.pixel(x, y);
                 red[x] = sum[0] as f32;
                 green[x] = sum[1] as f32;
                 blue[x] = sum[2] as f32;
             }
         };
         let row = width as usize;
-        if parallel {
+        if downscale.parallel {
             red.par_chunks_exact_mut(row)
                 .zip(green.par_chunks_exact_mut(row))
                 .zip(blue.par_chunks_exact_mut(row))
