@@ -3,6 +3,7 @@
 //! write the catalog, never keep an undo stack and never render.
 pub(crate) mod basic;
 mod capabilities_proof;
+mod capability;
 mod controls;
 mod crop;
 mod descriptor;
@@ -25,6 +26,7 @@ pub use capabilities_proof::{
     PROOF_RESOURCE, PROOF_RESOURCE_VERSION, PROOF_TASK, PROOF_TINT_KIND, RESET_PROOF_TINT,
     palette_bytes,
 };
+pub use capability::CapabilityModule;
 pub use controls::{
     CONTROLS_EFFECT, ControlsModule, RESET_CONTROLS, SAMPLE_CONTROLS_CURVE, SET_CONTROLS,
 };
@@ -69,12 +71,8 @@ pub use spatial::{
 pub use transform::{ORIENTATION_EFFECT, TransformModule};
 pub use vignette::{VIGNETTE_EFFECT, VignetteModule};
 
-use crate::{
-    ArtifactId, Error, Layer, LayerId, MaskId, artifacts::PreparedArtifact,
-    capabilities::context::ModuleContext,
-};
+use crate::{ArtifactId, Error, Layer, LayerId, MaskId};
 use serde_json::{Map, Value};
-use std::{path::Path, sync::Arc};
 
 /// A normalized action request: the durable history action identity and the parameter object
 /// stored on the history entry.
@@ -399,67 +397,11 @@ pub trait ToolModule: Send + Sync {
         payload: &Value,
         stage: Stage,
     ) -> Result<Processing, Error>;
-    /// Compile a layer that references derived artifacts: the same as [`ToolModule::compile`], with
-    /// the verified bytes of every artifact the layer lists, in the layer's order. The host calls
-    /// this instead of `compile` only for a layer whose `artifacts` list is not empty, which only an
-    /// effect declaring `artifacts: true` may have. The bytes are immutable and already checked
-    /// against their hash; the module decides what they mean and refuses what it cannot use. The
-    /// default ignores them, so a module that declares no such effect never implements it.
-    fn compile_bound(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &Value,
-        stage: Stage,
-        artifacts: &[Arc<PreparedArtifact>],
-    ) -> Result<Processing, Error> {
-        let _ = artifacts;
-        self.compile(effect_id, format, payload, stage)
-    }
-    /// Load what the module's declared activation needs, on the capability worker's module lane,
-    /// after the host checked every required setting and resource. `context` gives the installed
-    /// resources' paths, the settings and the declared secrets; the module keeps what it loads
-    /// until [`ToolModule::deactivate`]. Call `context.checkpoint()` between units of work and
-    /// return its error when cancelled. After an activation that does not succeed, or one cancelled
-    /// as it finished, the host calls `deactivate` itself, so partial state is released in one
-    /// place. Never called on the owner or UI thread, and never by discovery or catalog reopen.
-    fn activate(&self, context: &ModuleContext) -> Result<(), Error> {
-        let _ = context;
-        Ok(())
-    }
-    /// Release everything `activate` loaded. Called on the module lane, after any work queued
-    /// before it; it must tolerate being called when nothing is loaded.
-    fn deactivate(&self) {}
-    /// Check that a staged resource's bytes are the format the module declares, before the host
-    /// installs it. The bytes already match the pinned length and SHA-256. Called on the transfer
-    /// lane; a refusal leaves nothing installed. Read the file; never execute or load it with a
-    /// general object loader.
-    fn validate_resource(&self, resource_id: &str, path: &Path) -> Result<(), Error> {
-        let _ = (resource_id, path);
-        Ok(())
-    }
-    /// Run one declared worker task on the capability worker's module lane and return its result
-    /// value, which the host reports as the job's `result`.
-    ///
-    /// Before the job was queued the host checked the task's parameters (`parameters` holds them
-    /// with their declared defaults), its asset and profile, its activation requirement and a live
-    /// grant for every capability it `uses`, and prepared the data it may send. `context` is the
-    /// only way to reach any of it: `send` for a granted `remote-image-request` whose body the host
-    /// built, `publish_artifact` for a result the catalog records when the task succeeds, and the
-    /// settings, secrets, progress and cancellation every job has. Call `context.checkpoint()`
-    /// between units of work and return its error when cancelled; artifacts a task publishes before
-    /// it fails or is cancelled are never recorded. Never called on the owner or UI thread. The
-    /// default refuses, so a module that declares no tasks never implements it.
-    fn run_task(
-        &self,
-        task_id: &str,
-        parameters: &Map<String, Value>,
-        context: &ModuleContext,
-    ) -> Result<Value, Error> {
-        let _ = (task_id, parameters, context);
-        Err(Error::new(
-            crate::ErrorKind::Validation,
-            format!("module {} declares no tasks", self.descriptor().id),
-        ))
+    /// The module's capability hooks, when it declares worker tasks, an activation, managed
+    /// resources or an effect evaluated with derived artifacts: such a module implements
+    /// [`CapabilityModule`] and returns itself here, and [`ModuleRegistry::register`] refuses one
+    /// whose descriptor needs the hooks when this is `None`. Every other module keeps the default.
+    fn capabilities(&self) -> Option<&dyn CapabilityModule> {
+        None
     }
 }

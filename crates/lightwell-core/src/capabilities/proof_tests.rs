@@ -16,9 +16,9 @@ use super::{
 };
 use crate::{
     ApiFailure, ApiRequest, ApiResponse, ArtifactId, AssetId, CapabilitiesProofModule,
-    ClientAuthority, ClientId, EditorService, EntryId, Error, ErrorKind, Layer, LayerUpdate,
-    ModuleDescriptor, ModuleRegistry, OwnerHandle, PROOF_PALETTE_GAINS, PROOF_TASK, Processing,
-    Stage, StageContext, ToolModule,
+    CapabilityModule, ClientAuthority, ClientId, EditorService, EntryId, Error, ErrorKind, Layer,
+    LayerUpdate, ModuleDescriptor, ModuleRegistry, OwnerHandle, PROOF_PALETTE_GAINS, PROOF_TASK,
+    Processing, Stage, StageContext, ToolModule,
     capabilities::context::ModuleContext,
     colour::srgb::{decode_u8, quantize_pixel},
     modules::{ActionInput, ActionPlan},
@@ -94,6 +94,12 @@ impl ToolModule for Publisher {
             "the publisher never renders",
         ))
     }
+    fn capabilities(&self) -> Option<&dyn CapabilityModule> {
+        Some(self)
+    }
+}
+
+impl CapabilityModule for Publisher {
     fn run_task(
         &self,
         _: &str,

@@ -186,7 +186,7 @@ impl ArtifactRecord {
 }
 
 /// An artifact's verified bytes with the metadata its row records: what
-/// [`crate::ToolModule::compile_bound`] receives. Immutable and shared: a recipe bound with it
+/// [`crate::CapabilityModule::compile_bound`] receives. Immutable and shared: a recipe bound with it
 /// holds it in its [`ArtifactTable`], so an eviction from the owner's cache never breaks an
 /// evaluation of that recipe.
 pub struct PreparedArtifact {
@@ -231,7 +231,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// The verified bytes of the artifacts one recipe's layers list, by identity: what compilation
-/// hands [`crate::ToolModule::compile_bound`]. It is [`crate::Recipe::artifacts`], filled by the
+/// hands [`crate::CapabilityModule::compile_bound`]. It is [`crate::Recipe::artifacts`], filled by the
 /// catalog owner's binding step ([`crate::EditorService::bind_artifacts`]) where a recipe enters
 /// evaluation or admission. It is never stored, and a recipe that lists no artifact — every recipe
 /// without a module-published layer — carries an empty one, which costs eight bytes and no

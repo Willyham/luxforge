@@ -398,7 +398,7 @@ impl CapabilityHost {
             let task_id = task_id.to_owned();
             let outcome = run.outcome.clone();
             Box::new(move || {
-                let module = registry.module(&module_id).ok_or_else(|| {
+                let module = registry.capabilities(&module_id).ok_or_else(|| {
                     Error::new(
                         ErrorKind::Internal,
                         format!("module {module_id} is not registered"),

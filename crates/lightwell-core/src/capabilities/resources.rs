@@ -473,7 +473,7 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
         )));
     }
     job.control.set_progress(Some(1.0), "checking the format");
-    let module = job.registry.module(&job.module_id).ok_or_else(|| {
+    let module = job.registry.capabilities(&job.module_id).ok_or_else(|| {
         Error::new(
             ErrorKind::Internal,
             format!("module {} is not registered", job.module_id),

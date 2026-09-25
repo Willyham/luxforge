@@ -4,9 +4,9 @@
 //! of it that lists one proves the host refuses it.
 use super::{ArtifactMeta, PreparedArtifact};
 use crate::{
-    ActionInput, ActionPlan, ColorOperation, EFFECT_FORMAT, Error, ErrorKind, LayerUpdate,
-    ModuleDescriptor, ModuleRegistry, NewLayer, PointwiseColor, Processing, Stage, StageContext,
-    ToolModule,
+    ActionInput, ActionPlan, CapabilityModule, ColorOperation, EFFECT_FORMAT, Error, ErrorKind,
+    LayerUpdate, ModuleDescriptor, ModuleRegistry, NewLayer, PointwiseColor, Processing, Stage,
+    StageContext, ToolModule,
 };
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -164,6 +164,12 @@ impl ToolModule for TintModule {
             Ok(Processing::Color(ColorOperation::neutral()))
         }
     }
+    fn capabilities(&self) -> Option<&dyn CapabilityModule> {
+        Some(self)
+    }
+}
+
+impl CapabilityModule for TintModule {
     fn compile_bound(
         &self,
         _: &str,

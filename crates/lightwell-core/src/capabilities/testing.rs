@@ -12,8 +12,9 @@ use super::{
     transport::{Connect, EndpointClass, Resolve},
 };
 use crate::{
-    ActionDescriptor, ActionInput, ActionPlan, Control, EffectDescriptor, EffectStage, Error,
-    ErrorKind, ModuleDescriptor, ParameterDescriptor, Processing, Stage, StageContext, ToolModule,
+    ActionDescriptor, ActionInput, ActionPlan, CapabilityModule, Control, EffectDescriptor,
+    EffectStage, Error, ErrorKind, ModuleDescriptor, ParameterDescriptor, Processing, Stage,
+    StageContext, ToolModule,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -357,6 +358,12 @@ impl ToolModule for LifecycleModule {
             "the lifecycle module never renders",
         ))
     }
+    fn capabilities(&self) -> Option<&dyn CapabilityModule> {
+        Some(self)
+    }
+}
+
+impl CapabilityModule for LifecycleModule {
     fn activate(&self, context: &ModuleContext) -> Result<(), Error> {
         self.probe.activations.fetch_add(1, Ordering::SeqCst);
         self.probe.running.store(true, Ordering::SeqCst);

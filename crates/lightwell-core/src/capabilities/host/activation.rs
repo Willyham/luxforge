@@ -219,7 +219,7 @@ impl CapabilityHost {
             let module_id = module_id.to_owned();
             let control = control.clone();
             Box::new(move || {
-                let module = registry.module(&module_id).ok_or_else(|| {
+                let module = registry.capabilities(&module_id).ok_or_else(|| {
                     Error::new(
                         ErrorKind::Internal,
                         format!("module {module_id} is not registered"),
@@ -359,7 +359,7 @@ impl CapabilityHost {
         let registry = registry.clone();
         let owned = module_id.to_owned();
         let work: Work = Box::new(move || {
-            if let Some(module) = registry.module(&owned) {
+            if let Some(module) = registry.capabilities(&owned) {
                 module.deactivate();
             }
             Ok(json!({"activation": ActivationState::Inactive.name()}))

@@ -2,10 +2,10 @@
 //! action, query and task identity. Registration touches no image, catalog, settings, secret,
 //! network or resource file.
 use super::{
-    ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
-    MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, MixerModule, ModuleDescriptor, PixelModule,
-    PresenceModule, PresetsModule, Processing, RawModule, SPATIAL_TILE, Stage, ToolModule,
-    TransformModule, VignetteModule,
+    ActionDescriptor, BasicModule, CanvasInteraction, CapabilityModule, CropModule,
+    EffectDescriptor, EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, MixerModule,
+    ModuleDescriptor, PixelModule, PresenceModule, PresetsModule, Processing, RawModule,
+    SPATIAL_TILE, Stage, ToolModule, TransformModule, VignetteModule,
 };
 use crate::{
     Error, ErrorKind, Layer, Mask, MaskId, Recipe,
@@ -154,33 +154,8 @@ impl ToolModule for Unavailable {
     ) -> Result<Processing, Error> {
         self.inner.compile(effect_id, format, payload, stage)
     }
-    fn compile_bound(
-        &self,
-        effect_id: &str,
-        format: u32,
-        payload: &serde_json::Value,
-        stage: Stage,
-        artifacts: &[Arc<crate::artifacts::PreparedArtifact>],
-    ) -> Result<Processing, Error> {
-        self.inner
-            .compile_bound(effect_id, format, payload, stage, artifacts)
-    }
-    fn activate(&self, context: &crate::capabilities::context::ModuleContext) -> Result<(), Error> {
-        self.inner.activate(context)
-    }
-    fn deactivate(&self) {
-        self.inner.deactivate();
-    }
-    fn validate_resource(&self, resource_id: &str, path: &std::path::Path) -> Result<(), Error> {
-        self.inner.validate_resource(resource_id, path)
-    }
-    fn run_task(
-        &self,
-        task_id: &str,
-        parameters: &serde_json::Map<String, serde_json::Value>,
-        context: &crate::capabilities::context::ModuleContext,
-    ) -> Result<serde_json::Value, Error> {
-        self.inner.run_task(task_id, parameters, context)
+    fn capabilities(&self) -> Option<&dyn CapabilityModule> {
+        self.inner.capabilities()
     }
 }
 
@@ -333,6 +308,15 @@ impl ModuleRegistry {
             }
         }
         descriptor.validate()?;
+        if module.capabilities().is_none()
+            && let Some(declared) = super::capability::needs_capabilities(descriptor)
+        {
+            return Err(validation(format!(
+                "{} declares {declared}, which needs the module's capability hooks, and it \
+                 provides none",
+                descriptor.id
+            )));
+        }
         if self.module_ids.contains(&descriptor.id) {
             return Err(validation(format!("duplicate module {}", descriptor.id)));
         }
@@ -491,6 +475,14 @@ impl ModuleRegistry {
             .iter()
             .map(AsRef::as_ref)
             .find(|module| module.descriptor().id == id)
+    }
+
+    /// The capability hooks of the registered module with this identity, which the capability
+    /// host calls to activate it, check its resources and run its tasks. Registration refused every
+    /// module whose declarations need them and that provides none, so `None` means the module is
+    /// not registered or declares nothing that needs them.
+    pub fn capabilities(&self, id: &str) -> Option<&dyn CapabilityModule> {
+        self.module(id)?.capabilities()
     }
 
     pub fn effect(&self, id: &str) -> Option<(&dyn ToolModule, &EffectDescriptor)> {
@@ -1078,7 +1070,18 @@ impl ModuleRegistry {
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
-                module.compile_bound(
+                // Registration refused a module that declares an artifact effect without its
+                // capability hooks, so this is only a guard.
+                let capabilities = module.capabilities().ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Internal,
+                        format!(
+                            "module {} compiles artifact layers without capability hooks",
+                            module.descriptor().id
+                        ),
+                    )
+                })?;
+                capabilities.compile_bound(
                     &layer.effect_id,
                     layer.effect_format,
                     &layer.payload,
@@ -1374,7 +1377,14 @@ pub(crate) mod tests {
         fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
             Err(Error::new(ErrorKind::Internal, "test module never renders"))
         }
+        /// A test writes any descriptor, capability declarations included, so the module offers
+        /// the default hooks for whatever it declares.
+        fn capabilities(&self) -> Option<&dyn CapabilityModule> {
+            Some(self)
+        }
     }
+
+    impl CapabilityModule for TestModule {}
 
     pub(crate) const PATCH_MODULE: &str = "test.patch";
     pub(crate) const PATCH_EFFECT: &str = "test.patch.effect";
@@ -3594,8 +3604,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// A colour effect that declares artifacts and compiles one named unit per bound artifact.
-    struct BoundModule(ModuleDescriptor);
+    /// A colour effect that declares artifacts and compiles one named unit per bound artifact, or,
+    /// when its flag is false, a module that declares them and offers no capability hooks.
+    struct BoundModule(ModuleDescriptor, bool);
 
     impl ToolModule for BoundModule {
         fn descriptor(&self) -> &ModuleDescriptor {
@@ -3619,6 +3630,12 @@ pub(crate) mod tests {
         fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
             Ok(Processing::Color(crate::ColorOperation::neutral()))
         }
+        fn capabilities(&self) -> Option<&dyn CapabilityModule> {
+            self.1.then_some(self)
+        }
+    }
+
+    impl CapabilityModule for BoundModule {
         fn compile_bound(
             &self,
             _: &str,
@@ -3638,9 +3655,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// The built-in providers and [`BoundModule`].
-    fn bound_registry() -> ModuleRegistry {
-        let descriptor = ModuleDescriptor::parse(&json!({
+    fn bound_descriptor() -> ModuleDescriptor {
+        ModuleDescriptor::parse(&json!({
             "id": "test.bound",
             "title": "Bound",
             "effects": [{"id": BOUND_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "artifacts": true}],
@@ -3648,12 +3664,79 @@ pub(crate) mod tests {
             "controls": [],
             "availability": {"kind": "available"},
         }))
-        .unwrap();
+        .unwrap()
+    }
+
+    /// The built-in providers and [`BoundModule`].
+    fn bound_registry() -> ModuleRegistry {
         let mut registry = ModuleRegistry::builtin();
         registry
-            .register(Arc::new(BoundModule(descriptor)))
+            .register(Arc::new(BoundModule(bound_descriptor(), true)))
             .unwrap();
         registry
+    }
+
+    /// A module whose declarations need capability hooks — an artifact effect, a task, an
+    /// activation or a resource — registers only when it provides them, and only such a module is
+    /// found by the capability lookup.
+    #[test]
+    fn a_module_that_declares_capabilities_registers_only_with_its_hooks() {
+        let mut registry = ModuleRegistry::builtin();
+        let error = registry
+            .register(Arc::new(BoundModule(bound_descriptor(), false)))
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error.detail.contains("test.bound")
+                && error.detail.contains(BOUND_EFFECT)
+                && error.detail.contains("capability hooks"),
+            "{}",
+            error.detail
+        );
+        assert!(
+            registry.module("test.bound").is_none(),
+            "nothing registered"
+        );
+        let capable = crate::capabilities::testing::capability_descriptor();
+        for (declares, descriptor) in [
+            ("task", capable.clone()),
+            (
+                "activation",
+                ModuleDescriptor {
+                    tasks: Vec::new(),
+                    controls: Vec::new(),
+                    ..capable.clone()
+                },
+            ),
+            (
+                "resource",
+                ModuleDescriptor {
+                    tasks: Vec::new(),
+                    controls: Vec::new(),
+                    activation: None,
+                    ..capable.clone()
+                },
+            ),
+        ] {
+            let error = ModuleRegistry::new()
+                .register(Arc::new(BoundModule(descriptor, false)))
+                .unwrap_err();
+            assert!(
+                error.detail.contains(declares) && error.detail.contains("capability hooks"),
+                "{}",
+                error.detail
+            );
+        }
+        registry
+            .register(Arc::new(BoundModule(bound_descriptor(), true)))
+            .unwrap();
+        assert!(registry.capabilities("test.bound").is_some());
+        assert!(
+            registry
+                .capabilities(crate::BasicModule::new().descriptor().id.as_str())
+                .is_none()
+        );
+        assert!(registry.capabilities("test.missing").is_none());
     }
 
     /// One byte of verified artifact under an identity that starts with `digit`.

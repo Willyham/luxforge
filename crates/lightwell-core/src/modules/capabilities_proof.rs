@@ -8,8 +8,8 @@
 //! harness started (`lightwell-testkit`'s `ProofEndpoint`, which ships in no binary). See
 //! `docs/design/module-capabilities.md#proof-module`.
 use super::{
-    ActionInput, ActionPlan, ColorOperation, LayerUpdate, ModuleDescriptor, NewLayer,
-    PointwiseColor, Processing, Stage, StageContext, ToolModule,
+    ActionInput, ActionPlan, CapabilityModule, ColorOperation, LayerUpdate, ModuleDescriptor,
+    NewLayer, PointwiseColor, Processing, Stage, StageContext, ToolModule,
 };
 use crate::{
     ArtifactId, EFFECT_FORMAT, Error, ErrorKind, ParameterDescriptor,
@@ -468,7 +468,7 @@ impl ToolModule for CapabilitiesProofModule {
     }
 
     /// A neutral payload is no processing at all. A tint needs its artifact's bytes, which only
-    /// [`ToolModule::compile_bound`] receives.
+    /// [`CapabilityModule::compile_bound`] receives.
     fn compile(
         &self,
         effect_id: &str,
@@ -484,6 +484,12 @@ impl ToolModule for CapabilitiesProofModule {
         }
     }
 
+    fn capabilities(&self) -> Option<&dyn CapabilityModule> {
+        Some(self)
+    }
+}
+
+impl CapabilityModule for CapabilitiesProofModule {
     /// One pointwise unit multiplying the linear channels by the artifact's three gains. The layer
     /// binds exactly the artifact its payload names, of the tint kind, holding three finite
     /// positive gains; anything else is refused.
