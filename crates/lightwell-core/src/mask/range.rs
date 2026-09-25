@@ -30,13 +30,14 @@
 //! The luminance axis and the Oklab conversion are the **delivered** ones, read from the Basic
 //! module's own `f64` constants rather than copied here, so the editor keeps one definition of
 //! luminance and one colour space.
-use super::smooth;
+use super::{Binding, ComponentField, Field, smooth};
 use crate::{
     Component, Error, ErrorKind, ParameterDescriptor,
     colour::{luma::rec709_f64, oklab::lab_f64, srgb},
     modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// The token a stored luminance-range component carries.
 pub(super) const LUMINANCE_KIND: &str = "luminance-range";
@@ -582,6 +583,78 @@ pub(super) fn value_support(stage: Stage) -> Region {
 pub(super) fn value_feature_px(stage: Stage) -> f64 {
     let _ = stage;
     f64::INFINITY
+}
+
+// ---------------------------------------------------------------------------
+// The two kinds' rows of the kind table
+// ---------------------------------------------------------------------------
+
+/// The luminance range's row of the kind table: a stored payload checked without a stage.
+pub(super) fn validate_luminance(component: &Component) -> Result<(), Error> {
+    parse_luminance(component).map(|_| ())
+}
+
+/// The colour range's row of the kind table: a stored payload checked without a stage.
+pub(super) fn validate_colour(component: &Component) -> Result<(), Error> {
+    parse_colour(component).map(|_| ())
+}
+
+/// Nothing about a range selection's legality depends on the stage: its numbers live on an axis the
+/// picture defines and not on the frame, so the parser has already checked everything there is to
+/// check and binding one cannot fail.
+pub(super) fn compile_luminance(
+    component: &Component,
+    _binding: &Binding<'_>,
+) -> Result<Field, Error> {
+    Ok(Arc::new(CompiledLuminance::new(parse_luminance(
+        component,
+    )?)))
+}
+
+/// See [`compile_luminance`]: the colour range binds to no stage either.
+pub(super) fn compile_colour(
+    component: &Component,
+    _binding: &Binding<'_>,
+) -> Result<Field, Error> {
+    Ok(Arc::new(CompiledColour::new(&parse_colour(component)?)))
+}
+
+// A value-based component ignores the position instead, and its rectangle and feature are the
+// stated ones above: the whole stage, drawn or inverted, and no feature a pixel grid can miss.
+impl ComponentField for CompiledLuminance {
+    fn coverage(&self, _u: f64, _v: f64, rgb: [f64; 3]) -> f64 {
+        CompiledLuminance::coverage(self, rgb)
+    }
+
+    fn reads_pixels(&self) -> bool {
+        true
+    }
+
+    fn support(&self, stage: Stage, _inverted: bool) -> Region {
+        value_support(stage)
+    }
+
+    fn feature_px(&self, stage: Stage) -> f64 {
+        value_feature_px(stage)
+    }
+}
+
+impl ComponentField for CompiledColour {
+    fn coverage(&self, _u: f64, _v: f64, rgb: [f64; 3]) -> f64 {
+        CompiledColour::coverage(self, rgb)
+    }
+
+    fn reads_pixels(&self) -> bool {
+        true
+    }
+
+    fn support(&self, stage: Stage, _inverted: bool) -> Region {
+        value_support(stage)
+    }
+
+    fn feature_px(&self, stage: Stage) -> f64 {
+        value_feature_px(stage)
+    }
 }
 
 #[cfg(test)]

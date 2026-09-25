@@ -44,6 +44,7 @@ use crate::{
     modules::{Region, Stage},
     path::StrokeTable,
 };
+use std::sync::Arc;
 
 mod brush;
 #[cfg(test)]
@@ -104,24 +105,38 @@ fn smooth(s: f64) -> f64 {
     s * s * (3.0 - 2.0 * s)
 }
 
-/// One entry of the host's component-kind table: the token a stored component carries, the parser
-/// that turns that component's payload into geometry this build can evaluate, and the parameters
-/// that payload's fields are declared as.
+/// One entry of the host's component-kind table: the token a stored component carries, how that
+/// component's payload is checked and bound to a stage, and the parameters that payload's fields are
+/// declared as.
 ///
-/// This is the **one** table describing a component kind. It is what makes retention of an unknown
-/// kind work — a component's `kind` and `payload` are to a component what `effect_id` and `payload`
-/// are to a layer, so a kind no entry here claims is refused by name and its bytes are left exactly
-/// as they were read — and it is equally what makes a *known* kind reachable: the `mask.*` command
-/// family generates `mask.create-<kind>`, `mask.add-<kind>` and `mask.set-<kind>` from these rows,
-/// each declaring exactly the parameters [`ComponentKind::parameters`] returns. Registering a kind is
-/// therefore sufficient to make it evaluable, and sufficient to make it creatable, addable and
-/// patchable **when it declares geometry**; there is no second table to remember. A row whose
-/// `parameters` is `None` declares none and generates none, which is what [`declared_geometry_kinds`]
-/// filters on and what a brush is: registering is necessary, not sufficient, and the one kind that
-/// shows the difference is the one whose shape is drawn rather than typed.
+/// This is the **one** table describing a component kind, and the one place a component is
+/// dispatched on its kind: [`validate_component_kinds`] and [`CompiledMask::new`] look the kind up
+/// here and call its row, and nothing else in the host matches on a kind token. Adding a kind is
+/// therefore one module beside `linear` and `radial` — its payload, its [`ComponentField`] and its
+/// two functions — and one row here.
+///
+/// It is what makes retention of an unknown kind work — a component's `kind` and `payload` are to a
+/// component what `effect_id` and `payload` are to a layer, so a kind no entry here claims is refused
+/// by name and its bytes are left exactly as they were read — and it is equally what makes a *known*
+/// kind reachable: the `mask.*` command family generates `mask.create-<kind>`, `mask.add-<kind>` and
+/// `mask.set-<kind>` from these rows, each declaring exactly the parameters
+/// [`ComponentKind::parameters`] returns. Registering a kind is therefore sufficient to make it
+/// evaluable, and sufficient to make it creatable, addable and patchable **when it declares
+/// geometry**; there is no second table to remember. A row whose `parameters` is `None` declares none
+/// and generates none, which is what [`declared_geometry_kinds`] filters on and what a brush is:
+/// registering is necessary, not sufficient, and the one kind that shows the difference is the one
+/// whose shape is drawn rather than typed.
 struct ComponentKind {
     kind: &'static str,
-    parse: fn(&Component) -> Result<Geometry, Error>,
+    /// Everything about a stored payload that can be checked without a stage: its shape, and every
+    /// stored value being finite and inside its legal range. It is the stage-free half of `compile`
+    /// and is what admission runs on a mask no layer draws yet.
+    validate: fn(&Component) -> Result<(), Error>,
+    /// The payload parsed and bound to the stage its layer receives, with every term that does not
+    /// depend on the pixel already computed. What needs a stage — an axis length, which is a
+    /// mask-space distance through the aspect ratio — or the recipe's stroke store is checked here,
+    /// naming the component.
+    compile: fn(&Component, &Binding<'_>) -> Result<Field, Error>,
     /// The kind's declared geometry, from its own module beside its parser. `required` is false for
     /// the patch method, where every field is optional.
     ///
@@ -187,12 +202,13 @@ struct ColourSamples {
     parameters: fn() -> Vec<ParameterDescriptor>,
 }
 
-/// Every component kind this build knows. A later kind — a brush, a range selection — is one more
-/// entry with its own module beside `linear` and `radial`, and nothing else here changes.
+/// Every component kind this build knows. A later kind is one more entry with its own module beside
+/// `linear` and `radial`, and nothing else here changes.
 const COMPONENT_KINDS: &[ComponentKind] = &[
     ComponentKind {
         kind: linear::KIND,
-        parse: parse_linear,
+        validate: linear::validate,
+        compile: linear::compile,
         parameters: Some(linear::parameters),
         samples: None,
         value_based: false,
@@ -200,7 +216,8 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     },
     ComponentKind {
         kind: radial::KIND,
-        parse: parse_radial,
+        validate: radial::validate,
+        compile: radial::compile,
         parameters: Some(radial::parameters),
         samples: None,
         value_based: false,
@@ -208,7 +225,8 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     },
     ComponentKind {
         kind: brush::KIND,
-        parse: parse_brush,
+        validate: brush::validate,
+        compile: brush::compile,
         parameters: None,
         samples: None,
         value_based: false,
@@ -216,7 +234,8 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     },
     ComponentKind {
         kind: range::LUMINANCE_KIND,
-        parse: parse_luminance_range,
+        validate: range::validate_luminance,
+        compile: range::compile_luminance,
         parameters: Some(range::luminance_parameters),
         samples: None,
         value_based: true,
@@ -224,7 +243,8 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     },
     ComponentKind {
         kind: range::COLOUR_KIND,
-        parse: parse_colour_range,
+        validate: range::validate_colour,
+        compile: range::compile_colour,
         parameters: Some(range::colour_parameters),
         samples: Some(ColourSamples {
             max: range::MAX_SAMPLES,
@@ -234,26 +254,6 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         limits: range::COLOUR_LIMITS,
     },
 ];
-
-fn parse_luminance_range(component: &Component) -> Result<Geometry, Error> {
-    range::parse_luminance(component).map(Geometry::LuminanceRange)
-}
-
-fn parse_colour_range(component: &Component) -> Result<Geometry, Error> {
-    range::parse_colour(component).map(Geometry::ColourRange)
-}
-
-fn parse_linear(component: &Component) -> Result<Geometry, Error> {
-    linear::parse(component).map(Geometry::Linear)
-}
-
-fn parse_radial(component: &Component) -> Result<Geometry, Error> {
-    radial::parse(component).map(Geometry::Radial)
-}
-
-fn parse_brush(component: &Component) -> Result<Geometry, Error> {
-    brush::parse(component).map(Geometry::Brush)
-}
 
 /// Whether this build can evaluate `kind`, which is the question the refusal below answers in the
 /// negative. It reads the table rather than a second list, so the two cannot drift.
@@ -388,128 +388,44 @@ pub fn component_sample_parameters(kind: &str) -> Option<Vec<ParameterDescriptor
         .map(|samples| (samples.parameters)())
 }
 
-/// One component's stored geometry, validated but not yet bound to a stage. Everything checkable
-/// without a stage is checked here: the kind is known, the payload has the shape its kind declares,
-/// and every stored position is finite and inside the legal range. What needs a stage — an axis
-/// length, which is a mask-space distance and therefore depends on the aspect ratio — is checked
-/// when the component is compiled.
-#[derive(Clone, Debug)]
-enum Geometry {
-    Linear(LinearGradient),
-    Radial(RadialGradient),
-    Brush(BrushStrokes),
-    LuminanceRange(LuminanceRange),
-    ColourRange(ColourRange),
+/// What compiling one component is bound to besides its own payload: the stage its layer receives,
+/// the recipe's resolved stroke table, which the drawn kinds read and the typed kinds ignore, and the
+/// mask's name for a refusal to name.
+struct Binding<'a> {
+    stage: Stage,
+    strokes: &'a StrokeTable,
+    mask: &'a str,
 }
 
-impl Geometry {
-    fn compile(
-        self,
-        stage: Stage,
-        strokes: &StrokeTable,
-        mask: &str,
-        name: &str,
-    ) -> Result<CompiledGeometry, Error> {
-        match self {
-            Self::Linear(gradient) => {
-                linear::Compiled::new(gradient, stage, name).map(CompiledGeometry::Linear)
-            }
-            // Nothing about a radial's legality depends on the stage — a stored radius is a
-            // mask-space distance as written, unlike an axis whose length is a projection through
-            // the aspect ratio — so compiling one cannot fail and has nothing to name.
-            Self::Radial(gradient) => Ok(CompiledGeometry::Radial(radial::Compiled::new(
-                gradient, stage,
-            ))),
-            // A brush resolves its stroke references against the store the recipe was read from,
-            // checks each radius against the study's distance rule and builds its grid index, and
-            // every one of those can refuse — by name, and before any pixel is read.
-            Self::Brush(held) => {
-                brush::Compiled::new(&held, stage, strokes, mask, name).map(CompiledGeometry::Brush)
-            }
-            // Nothing about a range selection's legality depends on the stage: its numbers live on
-            // an axis the picture defines and not on the frame, so the parser has already checked
-            // everything there is to check and compiling one cannot fail.
-            Self::LuminanceRange(band) => Ok(CompiledGeometry::LuminanceRange(
-                range::CompiledLuminance::new(band),
-            )),
-            Self::ColourRange(colours) => Ok(CompiledGeometry::ColourRange(
-                range::CompiledColour::new(&colours),
-            )),
-        }
-    }
-}
+/// A compiled component as the kind table hands it back: shared, so a compiled mask clones cheaply.
+type Field = Arc<dyn ComponentField>;
 
 /// One component's geometry bound to a stage, with every term that does not depend on the pixel
-/// already computed.
-#[derive(Clone, Debug)]
-enum CompiledGeometry {
-    Linear(linear::Compiled),
-    Radial(radial::Compiled),
-    Brush(brush::Compiled),
-    LuminanceRange(range::CompiledLuminance),
-    ColourRange(range::CompiledColour),
-}
-
-impl CompiledGeometry {
+/// already computed: what a kind's `compile` returns, and everything the composition asks of it.
+///
+/// Each kind implements it in its own module, beside its parser, so the composition below never
+/// names a kind. The per-pixel method is reached through one indirection per component and computes
+/// exactly what the kind's own transcription computes, in the reference's spelling and order, so
+/// coverage is bit-identical to the frozen references whichever way it is dispatched.
+trait ComponentField: std::fmt::Debug + Send + Sync {
     /// The component's own falloff at a mask-space point, before its inversion and before the
-    /// composition. This is the per-pixel path: it is the reference's spelling, in the reference's
-    /// order.
-    fn coverage(&self, u: f64, v: f64, rgb: [f64; 3]) -> f64 {
-        match self {
-            // A geometric component ignores `rgb`. That is the whole of what proposal P12 costs
-            // them: the same expressions on the same `(u, v)`, so their coverage is bit-identical
-            // across the change and the frozen references still hold bit for bit.
-            Self::Linear(linear) => linear.coverage(u, v),
-            Self::Radial(radial) => radial.coverage(u, v),
-            // A brush ignores `rgb` for every stroke that is not limited to a colour, and a limited
-            // one multiplies its own coverage by the similarity frozen in
-            // `docs/design/mask-study.md#the-colour-constraint`.
-            Self::Brush(brush) => brush.coverage(u, v, rgb),
-            // A value-based component ignores the position instead.
-            Self::LuminanceRange(band) => band.coverage(rgb),
-            Self::ColourRange(colours) => colours.coverage(rgb),
-        }
-    }
+    /// composition. A geometric kind ignores `rgb`, which is the whole of what proposal P12 costs
+    /// it; a value-based kind ignores the position instead.
+    fn coverage(&self, u: f64, v: f64, rgb: [f64; 3]) -> f64;
 
     /// Whether this component's coverage depends on the pixel's value rather than on its position.
     /// It is what makes a mask's bounds the whole stage, what decides whether the coverage overlay
     /// needs the masked operation's input, and what a client is told so it can say the 100% view is
-    /// the truth for such a selection.
-    fn reads_pixels(&self) -> bool {
-        match self {
-            Self::Linear(_) | Self::Radial(_) => false,
-            // A brush reads pixels exactly when one of its strokes is limited to a colour. That is
-            // the whole of what the colour-constrained brush costs the rest of the mask, and it is
-            // the range selections' cost too: the overlay has to be handed the masked operation's
-            // input before it can draw such a mask, and what the stroke paints moves when a layer
-            // ahead of the masked one changes that input.
-            Self::Brush(brush) => brush.reads_pixels(),
-            Self::LuminanceRange(_) | Self::ColourRange(_) => true,
-        }
-    }
+    /// the truth for such a selection. A brush answers yes exactly when one of its strokes is limited
+    /// to a colour, which is a property of the stroke and not of the kind.
+    fn reads_pixels(&self) -> bool;
 
     /// A conservative pixel rectangle of this component's own support: outside it the component's
     /// coverage, already carrying `inverted`, is exactly zero.
-    fn support(&self, stage: Stage, inverted: bool) -> Region {
-        match self {
-            Self::Linear(linear) => linear.support(stage, inverted),
-            Self::Radial(radial) => radial.support(stage, inverted),
-            Self::Brush(brush) => brush.support(stage, inverted),
-            // Stated, not guessed: a value-based component's coverage can be non-zero at any pixel
-            // of the frame, drawn or inverted, so no rectangle smaller than the stage is correct.
-            Self::LuminanceRange(_) | Self::ColourRange(_) => range::value_support(stage),
-        }
-    }
+    fn support(&self, stage: Stage, inverted: bool) -> Region;
 
     /// The smallest feature this component draws at `stage`, in that stage's pixels.
-    fn feature_px(&self, stage: Stage) -> f64 {
-        match self {
-            Self::Linear(linear) => linear.feature_px(stage),
-            Self::Radial(radial) => radial.feature_px(stage),
-            Self::Brush(brush) => brush.feature_px(stage),
-            Self::LuminanceRange(_) | Self::ColourRange(_) => range::value_feature_px(stage),
-        }
-    }
+    fn feature_px(&self, stage: Stage) -> f64;
 }
 
 /// One compiled component: its mode, its own inversion and its stage-bound geometry.
@@ -517,7 +433,7 @@ impl CompiledGeometry {
 struct CompiledComponent {
     mode: ComponentMode,
     invert: bool,
-    geometry: CompiledGeometry,
+    geometry: Field,
 }
 
 impl CompiledComponent {
@@ -578,10 +494,14 @@ impl CompiledMask {
                 ),
             ));
         }
+        let binding = Binding {
+            stage,
+            strokes,
+            mask: &mask.name,
+        };
         let mut components = Vec::with_capacity(mask.components.len());
         for component in &mask.components {
-            let geometry =
-                parse_component(component)?.compile(stage, strokes, &mask.name, &component.name)?;
+            let geometry = (kind_of(component)?.compile)(component, &binding)?;
             components.push(CompiledComponent {
                 mode: component.mode,
                 invert: component.invert,
@@ -708,13 +628,13 @@ impl CompiledMask {
     }
 }
 
-/// Parse one stored component through the host's kind table.
+/// The kind table's row for one stored component: the one dispatch on a component's kind.
 ///
 /// A kind no entry claims is `incompatible`, naming the kind as stored. It is not a validation
 /// error: the stack is well formed and this build simply cannot draw part of it, which is a reason
 /// to refuse the stack whole and keep every byte, not to render something else.
-fn parse_component(component: &Component) -> Result<Geometry, Error> {
-    let entry = COMPONENT_KINDS
+fn kind_of(component: &Component) -> Result<&'static ComponentKind, Error> {
+    COMPONENT_KINDS
         .iter()
         .find(|entry| entry.kind == component.kind)
         .ok_or_else(|| {
@@ -722,11 +642,10 @@ fn parse_component(component: &Component) -> Result<Geometry, Error> {
                 ErrorKind::Incompatible,
                 format!("unknown mask component {}", component.kind),
             )
-        })?;
-    (entry.parse)(component)
+        })
 }
 
-/// Every component of one stored mask, parsed by the kind table without being bound to a stage.
+/// Every component of one stored mask, checked by its kind's row without being bound to a stage.
 ///
 /// This is the stage-free half of [`CompiledMask::new`], for the mask-table check a recipe gets once
 /// when it enters the service ([`crate::Recipe::validate_mask_table`]), before any stage is known:
@@ -735,7 +654,7 @@ fn parse_component(component: &Component) -> Result<Geometry, Error> {
 /// no pixels.
 pub fn validate_component_kinds(mask: &Mask) -> Result<(), Error> {
     for component in &mask.components {
-        parse_component(component)?;
+        (kind_of(component)?.validate)(component)?;
     }
     Ok(())
 }

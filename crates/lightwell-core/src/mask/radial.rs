@@ -33,7 +33,7 @@
 //! per-pixel path receives the pixel-centre spelling from [`super::CompiledMask`]. The two agree to
 //! `2.220e-16` and not bit for bit, so each is used only where the study froze it.
 use super::{
-    DISTANCE_MAX, DISTANCE_MIN, POSITION_MAX, POSITION_MIN,
+    Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, POSITION_MAX, POSITION_MIN,
     parameters::{angle, distance, percentage, position},
     smooth,
 };
@@ -42,6 +42,7 @@ use crate::{
     modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// The token a stored component of this kind carries.
 pub(super) const KIND: &str = "radial";
@@ -303,6 +304,39 @@ impl Compiled {
     /// have.
     pub(super) fn feature_px(&self, stage: Stage) -> f64 {
         self.span * self.radius_x.min(self.radius_y) * f64::from(stage.height)
+    }
+}
+
+/// This kind's row of the kind table: a stored payload checked without a stage.
+pub(super) fn validate(component: &Component) -> Result<(), Error> {
+    parse(component).map(|_| ())
+}
+
+/// This kind's row of the kind table: a stored payload parsed and bound to the stage its layer
+/// receives. Nothing about a radial's legality depends on the stage — a stored radius is a
+/// mask-space distance as written, unlike an axis whose length is a projection through the aspect
+/// ratio — so binding one cannot fail once it has parsed.
+pub(super) fn compile(component: &Component, binding: &Binding<'_>) -> Result<Field, Error> {
+    Ok(Arc::new(Compiled::new(parse(component)?, binding.stage)))
+}
+
+impl ComponentField for Compiled {
+    // A geometric component ignores `rgb`: the same expressions on the same `(u, v)`, so its coverage
+    // is bit-identical to the frozen reference whatever pixel it is handed.
+    fn coverage(&self, u: f64, v: f64, _rgb: [f64; 3]) -> f64 {
+        Compiled::coverage(self, u, v)
+    }
+
+    fn reads_pixels(&self) -> bool {
+        false
+    }
+
+    fn support(&self, stage: Stage, inverted: bool) -> Region {
+        Compiled::support(self, stage, inverted)
+    }
+
+    fn feature_px(&self, stage: Stage) -> f64 {
+        Compiled::feature_px(self, stage)
     }
 }
 

@@ -94,6 +94,8 @@ So overlapping masks apply in the order the mask list shows, which is visible, r
 
 The linear, radial and brush equations below are **frozen by the [mask study](mask-study.md)** against an independent `f64` reference, in the exact form and order a production unit transcribes; the range equations are frozen by the [range study](range-study.md). `smooth(s) = s²(3 − 2s)` throughout — the delivered [vignette](vignette-study.md#falloff-midpoint-and-feather)'s falloff, kept so the editor has one falloff shape — so every falloff is C¹ and symmetric.
 
+Every kind is one row of the host's kind table (`crates/lightwell-core/src/mask/mod.rs`), and that row carries the kind's own `validate` (the stage-free check admission runs) and `compile` (the payload bound to a stage, as that kind's coverage field). Admission and compilation look the kind up there and call its row; nothing else in the host matches on a kind token, so a new kind is one module and one row.
+
 ### Linear gradient (phase A)
 
 Payload `{x0, y0, x1, y1}`: the two ends of the gradient axis as normalized positions, `p0` at coverage 0 and `p1` at coverage 1.

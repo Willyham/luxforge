@@ -37,13 +37,14 @@
 //! Compiling uses the **stored position** spelling of mask space (`u = x · W/H`, `v = y`); the
 //! per-pixel path receives the pixel-centre spelling from [`super::CompiledMask`]. The two agree to
 //! `2.220e-16` and not bit for bit, so each is used only where the study froze it.
-use super::{DISTANCE_MAX, DISTANCE_MIN, range, smooth};
+use super::{Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, range, smooth};
 use crate::{
     Component, Error, ErrorKind,
     modules::{Region, Stage},
     path::{Stroke, StrokeId, StrokeTable},
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// The token a stored component of this kind carries.
 pub(super) const KIND: &str = "brush";
@@ -647,6 +648,45 @@ impl Compiled {
     /// `INFINITY`, which is what an empty mask answers.
     pub(super) fn feature_px(&self, stage: Stage) -> f64 {
         self.narrowest_band * f64::from(stage.height)
+    }
+}
+
+/// This kind's row of the kind table: a stored payload checked without a stage or a store.
+pub(super) fn validate(component: &Component) -> Result<(), Error> {
+    parse(component).map(|_| ())
+}
+
+/// This kind's row of the kind table: a stored payload parsed, its stroke references resolved
+/// against the store the recipe was read from, each radius checked against the study's distance rule
+/// and its grid index built — every one of which can refuse, by name, before any pixel is read.
+pub(super) fn compile(component: &Component, binding: &Binding<'_>) -> Result<Field, Error> {
+    Ok(Arc::new(Compiled::new(
+        &parse(component)?,
+        binding.stage,
+        binding.strokes,
+        binding.mask,
+        &component.name,
+    )?))
+}
+
+impl ComponentField for Compiled {
+    // A brush ignores `rgb` for every stroke that is not limited to a colour, and a limited one
+    // multiplies its own coverage by the similarity frozen in
+    // `docs/design/mask-study.md#the-colour-constraint`.
+    fn coverage(&self, u: f64, v: f64, rgb: [f64; 3]) -> f64 {
+        Compiled::coverage(self, u, v, rgb)
+    }
+
+    fn reads_pixels(&self) -> bool {
+        Compiled::reads_pixels(self)
+    }
+
+    fn support(&self, stage: Stage, inverted: bool) -> Region {
+        Compiled::support(self, stage, inverted)
+    }
+
+    fn feature_px(&self, stage: Stage) -> f64 {
+        Compiled::feature_px(self, stage)
     }
 }
 
