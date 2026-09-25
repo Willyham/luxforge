@@ -3152,11 +3152,12 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "no preview arrived");
             std::thread::yield_now();
         };
-        let raster = result.result.expect("a frame");
-        let report = result.report.expect("the job asked for a report");
+        let exact = result.exact().expect("the exact phase");
+        let raster = exact.result.as_ref().expect("a frame");
+        let report = exact.report.clone().expect("the job asked for a report");
         assert_eq!(
             report,
-            crate::analysis::reduce_raster(&raster).unwrap(),
+            crate::analysis::reduce_raster(raster).unwrap(),
             "the report is the exact reduction of the frame that was rendered"
         );
         let encoded = serde_json::to_value(&report).unwrap();

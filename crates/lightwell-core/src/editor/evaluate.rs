@@ -497,7 +497,7 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 if let Some(result) = queue.poll() {
-                    return result.result.unwrap();
+                    return result.into_raster().unwrap();
                 }
                 assert!(Instant::now() < deadline, "the preview worker answered");
                 std::thread::yield_now();

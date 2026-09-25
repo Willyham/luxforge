@@ -54,8 +54,8 @@ use iced_runtime::image as image_memory;
 use lightwell_core::{
     ClientAuthority, ClientId, ClientSession, CropStage, EditorState, ErrorKind, HistoryPage,
     HistoryRow, HistorySelection, HostConfig, LocalServer, ModuleDescriptor, ModuleRegistry,
-    OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue, ProxyBounds, RecipeDescription, Version,
-    Zoom,
+    OwnerHandle, POINTER_MODE, PhaseOutcome, PreviewPhase, PreviewQueue, ProxyBounds,
+    RecipeDescription, Version, Zoom,
     capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
 };
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
@@ -1484,10 +1484,7 @@ impl Editor {
     /// Take up one preview result that carries something to show. Returns what it asks the runtime
     /// for, and whether it handed a frame to the display — the photograph's surface, or the crop
     /// draft's upload.
-    fn preview_ready(
-        &mut self,
-        mut result: lightwell_core::PreviewResult,
-    ) -> (Task<Message>, bool) {
+    fn preview_ready(&mut self, result: lightwell_core::PreviewResult) -> (Task<Message>, bool) {
         // The crop draft's truncated preview shares the queue; its generation says which texture
         // the pixels belong to. It is never analysed, because its identity describes the whole
         // stack rather than the layer prefix it renders. A slider gesture's drafted preview is not
@@ -1495,7 +1492,7 @@ impl Editor {
         // like any other frame.
         let for_draft = Some(result.generation) == self.draft_generation;
         if let Some(queue_wait_ms) = result.queue_wait_ms {
-            let phase = match result.phase {
+            let phase = match result.phase() {
                 PreviewPhase::Proxy => "proxy",
                 PreviewPhase::Exact => "exact",
             };
@@ -1518,26 +1515,48 @@ impl Editor {
         if !for_draft && result.generation < self.presented_generation {
             return (Task::none(), false);
         }
-        let proxy = result.phase == PreviewPhase::Proxy;
         // Taken apart before the frame is matched out of it, so the report and the
-        // identity are still in hand on both paths below.
+        // identity are still in hand on both paths below. What only one phase carries is
+        // read from that phase's own outcome.
         let generation = result.generation;
-        let identity = result.identity.clone();
-        let report = result.report.take();
-        let entry_id = result.entry_id.clone();
-        let proxy_dimensions = result.proxy_dimensions;
-        let proxy_built = result.proxy_built;
-        let proxy_approximation = result.proxy_approximation;
+        let identity = result.identity;
+        let entry_id = result.entry_id;
+        let draft_revision = result.draft_revision;
         let approximate_white_balance = result.approximate_white_balance;
         let render_ms = result.render_ms;
+        let (proxy, frame, proxy_dimensions, proxy_built, proxy_approximation, exact) =
+            match result.outcome {
+                PhaseOutcome::Proxy(outcome) => (
+                    true,
+                    Ok(outcome.raster),
+                    Some(outcome.dimensions),
+                    outcome.built,
+                    outcome.approximation,
+                    None,
+                ),
+                PhaseOutcome::Exact(outcome) => (
+                    false,
+                    outcome.result,
+                    None,
+                    false,
+                    lightwell_core::ProxyApproximation::default(),
+                    Some((
+                        outcome.report,
+                        outcome.mask_overlay,
+                        outcome.mask_overlay_absent,
+                        outcome.proxy_declined,
+                    )),
+                ),
+            };
+        let (report, mask_overlay, mask_overlay_absent, proxy_declined) = exact.unwrap_or_default();
         // The mask overlay's coverage grid rides the frame the worker already produced,
         // so the overlay costs no second render. Only the exact phase fills it; the
         // proxy phase leaves the previous grid on screen until it lands. The upload is
         // handed to `update_inner`, which is the one place a task can be added to
         // whatever this arm returns.
-        if let Some(overlay) = result.mask_overlay.take() {
+        if let Some(overlay) = mask_overlay {
             self.mask_overlay_pending = Some((generation, overlay));
-        } else if let Some(reason) = result.mask_overlay_absent.take() {
+        } else if let Some(reason) = mask_overlay_absent {
             // The overlay was asked for and the host will not draw it: a mask whose
             // coverage depends on the pixel it reads has no grid until there is an
             // operation whose input to read that pixel from, and one it can afford to
@@ -1549,9 +1568,9 @@ impl Editor {
         // Only an exact result can say why a job that offered bounds has no proxy phase,
         // and it says nothing when the job had one.
         if !for_draft && !proxy {
-            self.proxy_declined = result.proxy_declined.clone();
+            self.proxy_declined = proxy_declined;
         }
-        match result.result {
+        match frame {
             Ok(raster) => {
                 // The exact phase of a job whose proxy is already on screen, while the
                 // view still wants a display-size frame: its report and its raster are
@@ -1646,7 +1665,7 @@ impl Editor {
                 }
                 let upload = Upload {
                     generation,
-                    draft_revision: result.draft_revision,
+                    draft_revision,
                     width: stage.0,
                     height: stage.1,
                     entry_id,
