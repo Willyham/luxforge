@@ -208,7 +208,28 @@ impl LinearImage {
         planes: impl Into<Arc<Vec<f32>>>,
         fingerprint: impl Into<String>,
     ) -> Result<Self, Error> {
-        let planes = planes.into();
+        Self::construct(width, height, planes.into(), fingerprint.into(), false)
+    }
+
+    /// Adopt planes whose producer has already checked every output value after its final math.
+    /// The RAW camera conversion is the only caller. This remains private to the core: public
+    /// constructors must scan untrusted input and reject non-finite values.
+    pub(crate) fn from_validated_planes(
+        width: u32,
+        height: u32,
+        planes: Vec<f32>,
+        fingerprint: String,
+    ) -> Result<Self, Error> {
+        Self::construct(width, height, Arc::new(planes), fingerprint, true)
+    }
+
+    fn construct(
+        width: u32,
+        height: u32,
+        planes: Arc<Vec<f32>>,
+        fingerprint: String,
+        already_finite: bool,
+    ) -> Result<Self, Error> {
         let (expected, _) = layout(width, height)?;
         if planes.len() != expected {
             return Err(Error::new(
@@ -228,7 +249,7 @@ impl LinearImage {
                 "linear RGB source capacity exceeds 1.5 GiB",
             ));
         }
-        if planes.iter().any(|value| !value.is_finite()) {
+        if !already_finite && planes.iter().any(|value| !value.is_finite()) {
             return Err(Error::new(
                 ErrorKind::Validation,
                 "linear source contains a non-finite value",
@@ -238,7 +259,7 @@ impl LinearImage {
             base_width: width,
             base_height: height,
             planes,
-            fingerprint: fingerprint.into(),
+            fingerprint,
             view: View {
                 x: 0,
                 y: 0,
@@ -2042,6 +2063,27 @@ mod tests {
         assert_eq!(source.planes().as_ptr(), pointer);
         assert_eq!(view.planes().as_ptr(), pointer);
         assert_eq!(view.pixel(0, 0), Some([2.0, 6.0, 10.0]));
+    }
+
+    #[test]
+    fn validated_plane_adoption_keeps_layout_identity_and_shared_storage() {
+        let planes = vec![0.25, 0.5, 0.75, 1.0, -0.5, 2.0];
+        let pointer = planes.as_ptr();
+        let source =
+            LinearImage::from_validated_planes(2, 1, planes, "raw-fingerprint".into()).unwrap();
+        let view = source.with_view([0, 0, 2, 1], 2).unwrap();
+        assert_eq!(source.planes().as_ptr(), pointer);
+        assert_eq!(view.planes().as_ptr(), pointer);
+        assert_eq!(source.fingerprint(), "raw-fingerprint");
+        assert_eq!(view.development(), source.development());
+        assert_eq!(source.pixel(0, 0), Some([0.25, 0.75, -0.5]));
+        assert_eq!(view.pixel(0, 0), Some([0.5, 1.0, 2.0]));
+        assert_eq!(
+            LinearImage::from_validated_planes(2, 2, vec![0.0; 6], String::new())
+                .unwrap_err()
+                .kind,
+            ErrorKind::Validation
+        );
     }
 
     #[test]
