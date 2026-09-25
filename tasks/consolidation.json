@@ -1843,7 +1843,7 @@
     {
       "id": "TASK-032",
       "description": "Replace the preview, analysis and clipping-overlay queues with one persistent latest-job worker primitive that takes its own next job, so the next preview no longer waits for the desktop to poll, proxy planning leaves the desktop thread and an abandoned analysis is cancelled.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-026"
       ],
@@ -1851,8 +1851,7 @@
         "`PreviewQueue`, `AnalysisQueue` and the desktop's `OverlayQueue` each implement one active job plus one replaceable pending job with a generation, each spawning an OS thread per job; the pending job starts only when the consumer polls, which on the desktop is a runtime hop and is held while an upload is in flight.",
         "Because the worker cannot own the proxy cache, proxy planning and a compile run on the desktop thread per input.",
         "Analysis renders are not cancellable, so an abandoned 60 MP Presence analysis keeps the pool busy.",
-        "The capability lanes are first-in first-out, not latest-wins, and stay separate.",
-        "On hold: the agent stopped on a usage limit. Branch `consolidation-task-032` at `80355d9` holds one work-in-progress commit with the new latest-job primitive (`latest.rs`) and a partial move of its users. Rebase it on the current integration or main, finish, and verify before integrating; it was never integrated."
+        "The capability lanes are first-in first-out, not latest-wins, and stay separate."
       ],
       "context_links": [
         {
