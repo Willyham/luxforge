@@ -1916,7 +1916,7 @@
     {
       "id": "TASK-033",
       "description": "Trim the module capabilities further as decided: one versioned JSON document store for settings and grants, the proof endpoint out of the shipped core into the shared test-support crate, `host.rs` split by concern, and the mutation envelope on `task.*`.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-020",
         "TASK-015"
@@ -1951,8 +1951,8 @@
         {
           "kind": "file",
           "label": "Proof endpoint",
-          "target": "crates/lightwell-core/src/modules/capabilities_proof/endpoint.rs",
-          "relevance": "The test server in the core."
+          "target": "crates/lightwell-testkit/src/proof.rs",
+          "relevance": "The proof endpoint, now in the test-support crate."
         },
         {
           "kind": "file",

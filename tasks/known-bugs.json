@@ -663,7 +663,7 @@
     {
       "id": "TASK-016",
       "description": "Give `task.*` methods the mutation envelope so a retried task starts no second job.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "`task.*` methods take no `{request_id, actor}` envelope, so a client that retries a task after a lost answer queues a second job. The owner decided that every mutating method carries the envelope and is deduplicated ([decisions](../docs/decisions.md#architecture-review))."
