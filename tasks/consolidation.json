@@ -2865,7 +2865,7 @@
     {
       "id": "TASK-047",
       "description": "Clean up RAW preparation: sensor neutral sampling moves into `lightwell-raw`, redundant decode copies and finiteness scans go, a condvar replaces the 25 ms memory-gate poll, the DNG opcode allowlist lives in one place, and the camera catalog becomes static data.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-034"
       ],

@@ -701,7 +701,7 @@
     {
       "id": "TASK-017",
       "description": "Reconcile the Bayer demosaic's input clamp with the documented highlight latitude.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The adapter's normalization comment says no pre-demosaic clamp is applied and under-black and over-white latitude is retained, and the initial RAW design describes that headroom. The vendored RCD clamps its input to 0–1 (`LIM01(rawData / 65536)`), so on Bayer sources (Z6, Air 2S) the gained mosaic is clipped at sensor white before the demosaic. X-Trans (Markesteijn) is not affected in the same way.",
