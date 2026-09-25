@@ -259,7 +259,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
         };
         return Some(DraftBar {
             mask: true,
-            title: format!("{} · {}", draft.op.label(), draft.kind),
+            title: format!("{} · {}", draft.op.label(), draft.kind()),
             readout,
             can_apply: apply_reason.is_none(),
             conflicted: inputs.gesture_conflicted,

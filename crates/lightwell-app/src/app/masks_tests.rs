@@ -689,9 +689,8 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
             .editor
             .mask_shape()
             .expect("the gesture is open")
-            .linear()
-            .expect("a gradient")
-            .y1,
+            .value("y1")
+            .expect("a gradient"),
         0.5
     );
     masking.message(MaskMessage::Field {
@@ -703,9 +702,8 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
             .editor
             .mask_shape()
             .unwrap()
-            .linear()
-            .expect("a gradient")
-            .y1,
+            .value("y1")
+            .expect("a gradient"),
         0.5,
         "a value outside the declared range changes nothing"
     );

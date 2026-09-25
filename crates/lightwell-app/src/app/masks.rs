@@ -13,7 +13,7 @@ use crate::{
         message::{MaskMessage, Message, PaintTarget, RowEdit},
         tasks::{Refresh, mutation},
     },
-    mask_draft::{BRUSH, ContentMap, MaskDraft, MaskDraftOp, MaskShape},
+    mask_draft::{BRUSH, ContentMap, MaskDraft, MaskDraftOp},
 };
 use iced::Task;
 use iced_runtime::image as image_memory;
@@ -803,11 +803,17 @@ impl Editor {
         }
         let brush = self.painting_brush();
         let draft = match (op, mask) {
-            (MaskDraftOp::Create, _) => MaskDraft::creating(kind, brush),
-            (MaskDraftOp::Add(mode), Some(mask)) => MaskDraft::adding(mask, kind, mode, brush),
+            (MaskDraftOp::Create, _) => MaskDraft::creating(&kind, brush),
+            (MaskDraftOp::Add(mode), Some(mask)) => MaskDraft::adding(mask, &kind, mode, brush),
             _ => return Task::none(),
         };
-        self.open_shape(draft)
+        match draft {
+            Some(draft) => self.open_shape(draft),
+            None => {
+                self.status = format!("This build cannot draw a {kind} component");
+                Task::none()
+            }
+        }
     }
 
     /// Create or add one component of a **typed** kind, straight through the generated method.
@@ -878,22 +884,27 @@ impl Editor {
         // The shape starts at exactly the stored payload, so reopening a gesture shows what was
         // committed rather than a shape reconstructed from the drawn handles. A painted component
         // has no shape to reopen — its strokes are already drawn and are objects in their own right
-        // — so reopening it is the next stroke on it, which is one more entry and not a patch.
-        let shape = stored_shape(&found.kind, &found.payload);
-        if shape.is_none() && !crate::mask_draft::paintable(&found.kind) {
+        // — so reopening it is the next stroke on it, which is one more entry and not a patch. A
+        // kind this build draws no editor for, or a payload its editor cannot read, opens nothing.
+        let brush = self.painting_brush();
+        let Some(draft) = MaskDraft::editing(
+            mask,
+            component_id.clone(),
+            &found.kind,
+            &found.payload,
+            brush,
+        ) else {
             self.status = format!("{} has no handles in this build", found.name);
             return Task::none();
-        }
-        let kind = found.kind.clone();
-        let brush = self.painting_brush();
-        self.selected_component = Some(component_id.clone());
-        self.open_shape(MaskDraft::editing(mask, component_id, kind, shape, brush))
+        };
+        self.selected_component = Some(component_id);
+        self.open_shape(draft)
     }
 
     /// Start the gesture: read the geometry map once, then open the core draft the release commits.
     fn open_shape(&mut self, shape: MaskDraft) -> Task<Message> {
         let Some(method) = shape.method() else {
-            self.status = format!("This build cannot draw a {} component", shape.kind);
+            self.status = format!("This build cannot draw a {} component", shape.kind());
             return Task::none();
         };
         let Some(asset) = self.state.as_ref().map(|state| state.asset.id.clone()) else {
@@ -1090,7 +1101,7 @@ impl Editor {
                 .components
                 .iter()
                 .rev()
-                .find(|component| component.kind == BRUSH)
+                .find(|component| crate::mask_draft::paintable(&component.kind))
                 .map(|component| component.id.clone())
         });
         let Some(component) = component else {
@@ -1099,22 +1110,10 @@ impl Editor {
         let brush = self.painting_brush();
         self.selected_mask = Some(mask.clone());
         self.selected_component = Some(component.clone());
-        self.open_shape(MaskDraft::editing(mask, component, BRUSH, None, brush))
-    }
-}
-
-/// One stored component payload as the shape its kind's handle editor edits, or `None` for a kind
-/// this build draws no handles for — which is what the panel says rather than opening a gesture that
-/// would edit the wrong geometry.
-fn stored_shape(kind: &str, payload: &Value) -> Option<MaskShape> {
-    match kind {
-        crate::mask_draft::LINEAR => serde_json::from_value(payload.clone())
-            .ok()
-            .map(MaskShape::Linear),
-        crate::mask_draft::RADIAL => serde_json::from_value(payload.clone())
-            .ok()
-            .map(MaskShape::Radial),
-        _ => None,
+        match MaskDraft::editing(mask, component, BRUSH, &Value::Null, brush) {
+            Some(draft) => self.open_shape(draft),
+            None => Task::none(),
+        }
     }
 }
 

@@ -1029,7 +1029,10 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
     } else if !enabled {
         disabled_reason(inputs)
     } else if draft.method().is_none() {
-        Some(format!("This build cannot draw a {} component", draft.kind))
+        Some(format!(
+            "This build cannot draw a {} component",
+            draft.kind()
+        ))
     } else {
         None
     };
@@ -1041,7 +1044,7 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
     } else {
         lightwell_core::mask::commands::geometry(
             lightwell_core::mask::commands::GeometryOp::Set,
-            &draft.kind,
+            draft.kind(),
         )
     };
     let fields = draft
@@ -1073,7 +1076,7 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
         fields,
         title: draft.op.label().to_owned(),
         method: draft.method().unwrap_or_default().to_owned(),
-        kind: draft.kind.clone(),
+        kind: draft.kind().to_owned(),
         readout: draft
             .values()
             .into_iter()

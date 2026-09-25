@@ -14,7 +14,7 @@
 use crate::{
     app::message::{MaskMessage, MaskPointer, Message},
     canvas_view::{self, CanvasView},
-    mask_draft::{ContentMap, MaskDraft, MaskHandle, MaskShape},
+    mask_draft::{ContentMap, MaskDraft, MaskHandle, Pen},
 };
 use iced::{
     Point, Rectangle, Renderer, Theme,
@@ -26,10 +26,6 @@ use lightwell_ui::theme;
 /// The hit radius and the drawn size of one handle, in logical pixels.
 const HIT_RADIUS: f32 = 9.0;
 const HANDLE_RADIUS: f32 = 5.0;
-/// How far past the drawn frame the three perpendicular lines are extended, as a multiple of the
-/// output stage's diagonal. A gradient's lines are infinite; this is enough to leave the frame from
-/// any position and angle the legal range allows.
-const LINE_REACH: f64 = 2.0;
 /// Content-normalized to canvas-local, and back: the map and the view composed, which is the whole
 /// of what a pointer move costs.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,148 +82,6 @@ impl<'a> MaskCanvas<'a> {
         Action::publish(Message::Mask(MaskMessage::Handle(pointer))).and_capture()
     }
 
-    /// The linear gradient's figure: the design's three lines — one through `p0`, one through the
-    /// midpoint and one through `p1`, each perpendicular to the axis — and the axis itself, so the
-    /// direction of the gradient is visible rather than inferred. They are drawn in content space
-    /// and mapped, so a crop, a straighten or a quarter turn moves them with the picture.
-    fn draw_linear(&self, frame: &mut Frame, gradient: lightwell_core::mask::LinearGradient) {
-        let (dx, dy) = (gradient.x1 - gradient.x0, gradient.y1 - gradient.y0);
-        let length = dx.hypot(dy);
-        if length <= 0.0 {
-            return;
-        }
-        let (px, py) = (-dy / length * LINE_REACH, dx / length * LINE_REACH);
-        for (handle, alpha) in [
-            (MaskHandle::Start, 0.85),
-            (MaskHandle::Middle, 0.45),
-            (MaskHandle::End, 0.85),
-        ] {
-            let Some((x, y)) = handle.point(&MaskShape::Linear(gradient), self.draft.aspect())
-            else {
-                continue;
-            };
-            frame.stroke(
-                &Path::line(
-                    self.placement.canvas_point(x - px, y - py),
-                    self.placement.canvas_point(x + px, y + py),
-                ),
-                Stroke::default().with_color(tint(alpha)).with_width(1.0),
-            );
-        }
-        frame.stroke(
-            &Path::line(
-                self.placement.canvas_point(gradient.x0, gradient.y0),
-                self.placement.canvas_point(gradient.x1, gradient.y1),
-            ),
-            Stroke::default().with_color(tint(0.55)).with_width(1.0),
-        );
-    }
-
-    /// The radial's figure: the boundary ellipse, where coverage reaches zero, and the feather ring
-    /// at `1 - feather/100` of it, where the ramp starts. Both are drawn by mapping the ellipse's
-    /// own parametrization through mask space and the affine, so they follow a crop or a quarter
-    /// turn with the picture and stay a circle in pixels at any aspect ratio.
-    ///
-    /// At `feather = 0` the two coincide, which is the truth: the edge is hard.
-    fn draw_radial(&self, frame: &mut Frame, radial: lightwell_core::mask::RadialGradient) {
-        let ring = 1.0 - radial.feather / 100.0;
-        for (scale, alpha, dashes) in [(1.0, 0.85, false), (ring, 0.5, true)] {
-            if scale <= 0.0 {
-                continue;
-            }
-            let outline = self.ellipse_path(radial, scale, dashes);
-            frame.stroke(
-                &outline,
-                Stroke::default().with_color(tint(alpha)).with_width(1.0),
-            );
-        }
-        // The grip's tether, so the rotation handle reads as belonging to the ellipse rather than
-        // floating beside it.
-        if let (Some(axis), Some(grip)) = (
-            MaskHandle::RadiusPlusX.point(&MaskShape::Radial(radial), self.draft.aspect()),
-            MaskHandle::Rotation.point(&MaskShape::Radial(radial), self.draft.aspect()),
-        ) {
-            frame.stroke(
-                &Path::line(
-                    self.placement.canvas_point(axis.0, axis.1),
-                    self.placement.canvas_point(grip.0, grip.1),
-                ),
-                Stroke::default().with_color(tint(0.55)).with_width(1.0),
-            );
-        }
-    }
-
-    /// The brush's figure: the path this stroke has drawn so far, painted at the brush's own width,
-    /// and the cursor's two circles under the pointer.
-    ///
-    /// The path is drawn from what the pointer captured, not from what will be posted, and it is
-    /// drawn here rather than waiting for a render — so the line follows the hand at the display's
-    /// rate while the drafted picture follows one frame behind it.
-    fn draw_brush(
-        &self,
-        frame: &mut Frame,
-        stroke: &crate::mask_draft::BrushStroke,
-        cursor: Cursor,
-        bounds: Rectangle,
-    ) {
-        let brush = stroke.brush;
-        let path = stroke.captured();
-        if let Some(first) = path.first() {
-            let line = Path::new(|builder| {
-                builder.move_to(self.placement.canvas_point(first[0], first[1]));
-                for point in &path[1..] {
-                    builder.line_to(self.placement.canvas_point(point[0], point[1]));
-                }
-                // A one-position stroke is a single dab, and a zero-length line draws nothing, so
-                // its own end is repeated: the round cap is then the dab the host will evaluate.
-                if path.len() == 1 {
-                    builder.line_to(self.placement.canvas_point(first[0], first[1]));
-                }
-            });
-            frame.stroke(
-                &line,
-                Stroke::default()
-                    .with_color(tint(if brush.erase { 0.35 } else { 0.5 }))
-                    .with_width(2.0 * self.brush_radius(brush.size, (first[0], first[1])))
-                    .with_line_cap(canvas::LineCap::Round)
-                    .with_line_join(canvas::LineJoin::Round),
-            );
-        }
-        // The cursor: the size circle where coverage ends, and the feather ring where the ramp
-        // starts, both at the brush's own scale through the geometry tail — so they are the right
-        // size at Fit, at 100% and under a rotated crop, because the same affine draws them.
-        // Only when the pointer is actually over the canvas, and in the canvas's own coordinates: a
-        // window position drawn as if it were a canvas one puts the circles somewhere nobody is
-        // pointing, and a capture with no pointer at all must show no cursor rather than a stale one.
-        let Some(point) = cursor
-            .position_in(bounds)
-            .map(|point| self.placement.content_point(point))
-        else {
-            return;
-        };
-        for (scale, alpha, dashed) in [(1.0, 0.9, false), (1.0 - brush.feather / 100.0, 0.5, true)]
-        {
-            if scale <= 0.0 {
-                continue;
-            }
-            frame.stroke(
-                &self.brush_circle(point, brush.size * scale, dashed),
-                Stroke::default()
-                    .with_color(tint(if brush.erase { alpha * 0.6 } else { alpha }))
-                    .with_width(1.0),
-            );
-        }
-    }
-
-    /// One circle of `radius` **mask-space units** around a normalized content position.
-    ///
-    /// Mask space is defined in terms of the content stage's height on both axes, so the circle is
-    /// an ellipse in normalized coordinates and a circle again once the affine has been applied —
-    /// the same construction the radial's own ellipse takes, through the same helper.
-    fn brush_circle(&self, centre: (f64, f64), radius: f64, dashed: bool) -> Path {
-        self.mask_ellipse(centre, (radius, radius), 0.0, dashed)
-    }
-
     /// An ellipse of mask space — `radii` in mask-space units about a normalized content `centre`,
     /// turned by `angle` degrees — mapped through the affine and the view, so it follows a crop or a
     /// quarter turn with the picture and stays a circle in pixels at any aspect ratio.
@@ -258,20 +112,65 @@ impl<'a> MaskCanvas<'a> {
             .canvas_point((at.0 * aspect + radius) / aspect, at.1);
         (edge.x - centre.x).hypot(edge.y - centre.y).max(1.0)
     }
+}
 
-    /// One ellipse of the radial's family, at `scale` of its radii, as a closed canvas path.
-    fn ellipse_path(
-        &self,
-        radial: lightwell_core::mask::RadialGradient,
-        scale: f64,
+/// The pen a shape editor describes its figure through, for one frame: every point mapped through
+/// the affine and the view, in the mask overlay's own tint.
+struct FramePen<'c, 'f> {
+    canvas: &'c MaskCanvas<'c>,
+    frame: &'f mut Frame,
+}
+
+impl Pen for FramePen<'_, '_> {
+    fn line(&mut self, from: (f64, f64), to: (f64, f64), alpha: f32) {
+        let placement = self.canvas.placement;
+        self.frame.stroke(
+            &Path::line(
+                placement.canvas_point(from.0, from.1),
+                placement.canvas_point(to.0, to.1),
+            ),
+            Stroke::default().with_color(tint(alpha)).with_width(1.0),
+        );
+    }
+
+    fn ellipse(
+        &mut self,
+        centre: (f64, f64),
+        radii: (f64, f64),
+        angle: f64,
+        alpha: f32,
         dashed: bool,
-    ) -> Path {
-        self.mask_ellipse(
-            (radial.x, radial.y),
-            (scale * radial.radius_x, scale * radial.radius_y),
-            radial.angle,
-            dashed,
-        )
+    ) {
+        self.frame.stroke(
+            &self.canvas.mask_ellipse(centre, radii, angle, dashed),
+            Stroke::default().with_color(tint(alpha)).with_width(1.0),
+        );
+    }
+
+    fn path(&mut self, points: &[[f64; 2]], radius: f64, alpha: f32) {
+        let Some(first) = points.first() else {
+            return;
+        };
+        let placement = self.canvas.placement;
+        let line = Path::new(|builder| {
+            builder.move_to(placement.canvas_point(first[0], first[1]));
+            for point in &points[1..] {
+                builder.line_to(placement.canvas_point(point[0], point[1]));
+            }
+            // A one-position stroke is a single dab, and a zero-length line draws nothing, so its
+            // own end is repeated: the round cap is then the dab the host will evaluate.
+            if points.len() == 1 {
+                builder.line_to(placement.canvas_point(first[0], first[1]));
+            }
+        });
+        self.frame.stroke(
+            &line,
+            Stroke::default()
+                .with_color(tint(alpha))
+                .with_width(2.0 * self.canvas.brush_radius(radius, (first[0], first[1])))
+                .with_line_cap(canvas::LineCap::Round)
+                .with_line_join(canvas::LineJoin::Round),
+        );
     }
 }
 
@@ -296,13 +195,13 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
             // A painted gesture has no handles: every press on the photograph paints, and the path
             // is published position by position so the canvas can draw it as the pointer moves.
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if self.draft.brush().is_some() =>
+                if self.draft.paints() =>
             {
                 let point = cursor.position_in(bounds)?;
                 let (x, y) = self.placement.content_point(point);
                 Some(self.pointer(MaskPointer::PaintBegin { x, y }))
             }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) if self.draft.brush().is_some() => {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if self.draft.paints() => {
                 let point = local(cursor, bounds)?;
                 let (x, y) = self.placement.content_point(point);
                 if !self.draft.dragging() {
@@ -314,7 +213,7 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
                 Some(self.pointer(MaskPointer::PaintTo { x, y }))
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                if self.draft.brush().is_some() =>
+                if self.draft.paints() =>
             {
                 self.draft
                     .dragging()
@@ -368,15 +267,20 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
         cursor: Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        if let Some(gradient) = self.draft.linear() {
-            self.draw_linear(&mut frame, gradient);
-        }
-        if let Some(radial) = self.draft.radial() {
-            self.draw_radial(&mut frame, radial);
-        }
-        if let Some(stroke) = self.draft.brush() {
-            self.draw_brush(&mut frame, stroke, cursor, bounds);
-        }
+        // The figure is the shape editor's own, described through the pen. The pointer is handed
+        // over only while it is actually over the canvas, and in the canvas's own coordinates: a
+        // window position drawn as if it were a canvas one puts a cursor somewhere nobody is
+        // pointing, and a capture with no pointer at all must show no cursor rather than a stale one.
+        let pointer = cursor
+            .position_in(bounds)
+            .map(|point| self.placement.content_point(point));
+        self.draft.draw(
+            pointer,
+            &mut FramePen {
+                canvas: self,
+                frame: &mut frame,
+            },
+        );
         // One grip per drawn handle, whatever the figure under them is.
         for (handle, (x, y)) in self.draft.handles() {
             let centre = self.placement.canvas_point(x, y);
@@ -411,13 +315,13 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
         let Some(point) = cursor.position_in(bounds) else {
             return mouse::Interaction::None;
         };
-        // The brush draws its own cursor, so the pointer gets out of its way.
-        if self.draft.brush().is_some() {
+        // A painted gesture draws its own cursor, so the pointer gets out of its way.
+        if self.draft.paints() {
             return mouse::Interaction::None;
         }
         match self.handle_at(point) {
             // The handles that move the whole figure say so; the rest are grips.
-            Some(MaskHandle::Middle | MaskHandle::Centre) => mouse::Interaction::Move,
+            Some(handle) if handle.moves_figure() => mouse::Interaction::Move,
             Some(_) => mouse::Interaction::Grab,
             None => mouse::Interaction::Crosshair,
         }
@@ -466,7 +370,7 @@ mod tests {
     fn a_drawn_handle_is_where_a_press_on_it_is_answered() {
         let placement = placement((480, 320), Size::new(960.0, 640.0));
         for kind in [LINEAR, RADIAL] {
-            let mut draft = MaskDraft::creating(kind, NEUTRAL_BRUSH);
+            let mut draft = MaskDraft::creating(kind, NEUTRAL_BRUSH).expect("a drawn kind");
             draft.set_aspect(placement.map.aspect());
             let canvas = MaskCanvas::new(&draft, placement);
             for (handle, (x, y)) in draft.handles() {
@@ -490,14 +394,17 @@ mod tests {
     fn a_press_on_a_handle_drags_it_and_a_press_on_the_photograph_sweeps() {
         use canvas::Program;
         let placement = placement((480, 320), Size::new(480.0, 320.0));
-        let draft = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH);
+        let draft = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH).expect("a drawn kind");
         let program = MaskCanvas::new(&draft, placement);
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let mut state = Interaction::default();
 
         // A press on the start handle begins a drag of that handle.
-        let gradient = draft.linear().expect("a gradient");
-        let grip = placement.canvas_point(gradient.x0, gradient.y0);
+        let (x0, y0) = (
+            draft.value("x0").expect("a gradient"),
+            draft.value("y0").expect("a gradient"),
+        );
+        let grip = placement.canvas_point(x0, y0);
         let action = program.update(
             &mut state,
             &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
@@ -574,7 +481,7 @@ mod tests {
     fn a_painted_gesture_paints_wherever_it_is_pressed_and_never_grabs_a_handle() {
         use canvas::Program;
         let placement = placement((480, 320), Size::new(480.0, 320.0));
-        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH);
+        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH).expect("a drawn kind");
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let at = placement.canvas_point(0.5, 0.5);
 
@@ -630,7 +537,7 @@ mod tests {
     /// Fit, at 100% and under a rotated crop — and the painted line is drawn as wide as they say.
     #[test]
     fn the_brush_cursor_is_its_own_size_at_every_zoom_and_under_a_rotated_crop() {
-        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH);
+        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH).expect("a drawn kind");
         draft.set_aspect(480.0 / 320.0);
         let radius = NEUTRAL_BRUSH.size;
         // One mask-space unit is the content stage's **height**, so a radius of `r` is `r · H`
