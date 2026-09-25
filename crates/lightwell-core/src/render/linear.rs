@@ -6,7 +6,7 @@
 //! The byte JPEG evaluator in [`super::render`] remains unchanged.
 
 use super::{
-    Cancel, Compiled, Entry, Raster,
+    Cancel, Compiled, Entry, Raster, ScratchBudget, Segment,
     spatial::{
         self, PRODUCTION_TILE, PointTiles, SpatialPlan, build_reduction, fill_planes,
         resolve_globals, run_batches, run_tile,
@@ -15,7 +15,7 @@ use super::{
 use crate::{
     Error, ErrorKind, Recipe, SnapshotId,
     mask_field::MaskSampling,
-    modules::{Global, ModuleRegistry, SpatialOperation, Stage},
+    modules::{Global, ModuleRegistry, Processing, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
 use std::sync::{Arc, Weak};
@@ -26,6 +26,8 @@ const MAX_SOURCE_BYTES: u64 = lightwell_raw::MAX_RGB_BYTES as u64;
 const MAX_RGBA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RESAMPLES: usize = 1;
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
+/// Amortize row dispatch while keeping each callback short enough for cancellation and pool peers.
+const LINEAR_COLOR_ROWS_PER_CHUNK: usize = 8;
 
 fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
     if width == 0 || height == 0 {
@@ -1066,15 +1068,31 @@ impl<'a> LinearEvaluation<'a> {
     /// only on an already validated/compiled evaluation; even neutral or unavailable layers must
     /// have passed through the registry first. Source views still apply through the reader.
     fn source_rows(&self) -> Option<ViewReader<'a>> {
+        self.source_segment()
+            .filter(|segment| segment.operations.is_empty())
+            .map(|_| self.source.reader())
+    }
+
+    /// The narrowly eligible source-only colour pass. Keeping replacements, geometry, masks and
+    /// stage boundaries on the generic evaluator preserves their per-pixel resolution semantics.
+    fn source_color_segment(&self) -> Option<&Segment> {
+        let segment = self.source_segment()?;
+        (!segment.operations.is_empty()
+            && segment.operations.iter().all(
+                |operation| matches!(operation, Processing::Color(color) if color.mask().is_none()),
+            ))
+        .then_some(segment)
+    }
+
+    fn source_segment(&self) -> Option<&Segment> {
         let [segment] = self.compiled.segments.as_slice() else {
             return None;
         };
         (segment.entry.is_none()
-            && segment.operations.is_empty()
             && segment
                 .geometry
                 .is_identity(self.source.width(), self.source.height()))
-        .then(|| self.source.reader())
+        .then_some(segment)
     }
 
     pub(crate) fn pixel(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
@@ -1297,52 +1315,56 @@ fn render_linear_sampled(
             "linear output row is not addressable",
         )
     })?;
-    // Written in place and returned as it is, with no copy into the raster.
+    // Write into the Arc-backed frame that the raster returns, avoiding an output publication copy.
     let mut frame = super::zeroed_frame(output_len);
     let output = super::frame_mut(&mut frame);
-    let source_rows = evaluation.source_rows();
-    // One relaxed load per output row, ahead of that row's evaluations; the f64 evaluation and the
-    // terminal boundary are untouched.
-    let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
-        cancel.check()?;
-        if let Some(reader) = &source_rows {
-            let pixels = reader.row(row_index as u32).ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Render,
-                    "linear output coordinate was outside stage",
-                )
-            })?;
-            for (pixel, rgba) in pixels.zip(row.chunks_exact_mut(4)) {
-                // Immutable source planes were checked finite on construction. Widen at the
-                // same boundary as source_pixel, without an intermediate f32 exposure multiply.
-                let pixel = evaluation.adjust_source_pixel(pixel.map(f64::from))?;
-                rgba.copy_from_slice(&terminal_pixel(pixel)?);
-            }
-            return Ok(());
-        }
-        for x in 0..width {
-            let pixel = evaluation.pixel(x, row_index as u32)?.ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Render,
-                    "linear output coordinate was outside stage",
-                )
-            })?;
-            let rgba = terminal_pixel(pixel)?;
-            let offset = x as usize * 4;
-            row[offset..offset + 4].copy_from_slice(&rgba);
-        }
-        Ok(())
-    };
-    if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
-        output
-            .par_chunks_exact_mut(row_bytes)
-            .enumerate()
-            .try_for_each(|(row, pixels)| render_row(row, pixels))?;
+    if let Some(segment) = evaluation.source_color_segment() {
+        render_source_color_rows(&evaluation, segment, cancel, output, row_bytes)?;
     } else {
-        output
-            .chunks_exact_mut(row_bytes)
-            .enumerate()
-            .try_for_each(|(row, pixels)| render_row(row, pixels))?;
+        let source_rows = evaluation.source_rows();
+        // One relaxed load per output row, ahead of that row's evaluations; the f64 evaluation and
+        // the terminal boundary are untouched.
+        let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
+            cancel.check()?;
+            if let Some(reader) = &source_rows {
+                let pixels = reader.row(row_index as u32).ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Render,
+                        "linear output coordinate was outside stage",
+                    )
+                })?;
+                for (pixel, rgba) in pixels.zip(row.chunks_exact_mut(4)) {
+                    // Immutable source planes were checked finite on construction. Widen at the
+                    // same boundary as source_pixel, without an intermediate f32 exposure multiply.
+                    let pixel = evaluation.adjust_source_pixel(pixel.map(f64::from))?;
+                    rgba.copy_from_slice(&terminal_pixel(pixel)?);
+                }
+                return Ok(());
+            }
+            for x in 0..width {
+                let pixel = evaluation.pixel(x, row_index as u32)?.ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Render,
+                        "linear output coordinate was outside stage",
+                    )
+                })?;
+                let rgba = terminal_pixel(pixel)?;
+                let offset = x as usize * 4;
+                row[offset..offset + 4].copy_from_slice(&rgba);
+            }
+            Ok(())
+        };
+        if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
+            output
+                .par_chunks_exact_mut(row_bytes)
+                .enumerate()
+                .try_for_each(|(row, pixels)| render_row(row, pixels))?;
+        } else {
+            output
+                .chunks_exact_mut(row_bytes)
+                .enumerate()
+                .try_for_each(|(row, pixels)| render_row(row, pixels))?;
+        }
     }
     Ok(Raster {
         width,
@@ -1351,6 +1373,114 @@ fn render_linear_sampled(
         source_fingerprint: source.fingerprint.clone(),
         snapshot_id,
     })
+}
+
+/// Batch an eligible source-only colour segment by rows. Recipe resolution is still performed
+/// before this call; only its already-compiled unmasked pointwise operations are shared across
+/// each row's pixels.
+fn render_source_color_rows(
+    evaluation: &LinearEvaluation<'_>,
+    segment: &Segment,
+    cancel: &Cancel,
+    output: &mut [u8],
+    row_bytes: usize,
+) -> Result<(), Error> {
+    let mut runs = super::color_runs(segment);
+    let run = runs.next().ok_or_else(|| {
+        Error::new(
+            ErrorKind::Internal,
+            "eligible source colour segment has no colour run",
+        )
+    })?;
+    debug_assert!(runs.next().is_none());
+
+    let width = segment.width as usize;
+    let height = segment.height as usize;
+    let row_scratch_bytes = width
+        .checked_mul(std::mem::size_of::<[f32; 3]>())
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear colour row scratch is not addressable",
+            )
+        })?;
+    let chunk_bytes = row_bytes
+        .checked_mul(LINEAR_COLOR_ROWS_PER_CHUNK)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear colour row chunk is not addressable",
+            )
+        })?;
+    let reader = evaluation.source.reader();
+    let process_chunk = |chunk_index: usize,
+                         chunk: &mut [u8],
+                         pixels: &mut Vec<[f32; 3]>,
+                         scratch: &mut [[f32; 3]; 1]|
+     -> Result<(), Error> {
+        for (row_in_chunk, row) in chunk.chunks_exact_mut(row_bytes).enumerate() {
+            // Cancellation is observed once per row even though Rayon dispatch is amortized over
+            // eight rows. A superseded RAW preview therefore never holds the pool for a full frame.
+            cancel.check()?;
+            let y = chunk_index * LINEAR_COLOR_ROWS_PER_CHUNK + row_in_chunk;
+            if y >= height {
+                return Err(Error::new(
+                    ErrorKind::Render,
+                    "linear colour row was outside stage",
+                ));
+            }
+            let source_row = reader.row(y as u32).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Render,
+                    "linear colour source row was outside stage",
+                )
+            })?;
+            pixels.clear();
+            for source_pixel in source_row {
+                // Preserve the generic path's f64 WB/exposure step and its single f32 boundary
+                // before colour units.
+                let adjusted = evaluation.adjust_source_pixel(source_pixel.map(f64::from))?;
+                pixels.push(adjusted.map(|value| value as f32));
+            }
+            super::apply_units(&run, y as u32, 0, pixels, scratch)?;
+            for (rgba, pixel) in row.chunks_exact_mut(4).zip(pixels.iter()) {
+                rgba.copy_from_slice(&terminal_pixel(pixel.map(f64::from))?);
+            }
+        }
+        Ok(())
+    };
+
+    let pixel_count = u64::from(segment.width) * u64::from(segment.height);
+    let active_row_scratch = u64::try_from(row_scratch_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(rayon::current_num_threads() as u64);
+    let parallel = pixel_count >= PARALLEL_RENDER_PIXELS
+        && active_row_scratch <= ScratchBudget::default().target();
+    if parallel {
+        output
+            .par_chunks_mut(chunk_bytes)
+            .enumerate()
+            .try_for_each_init(
+                || {
+                    (
+                        ScratchBudget::default().reserve(row_scratch_bytes),
+                        Vec::with_capacity(width),
+                        [[0.0_f32; 3]; 1],
+                    )
+                },
+                |(_reservation, pixels, scratch), (chunk_index, chunk)| {
+                    process_chunk(chunk_index, chunk, pixels, scratch)
+                },
+            )?;
+    } else {
+        let _reservation = ScratchBudget::default().reserve(row_scratch_bytes);
+        let mut pixels = Vec::with_capacity(width);
+        let mut scratch = [[0.0_f32; 3]; 1];
+        for (chunk_index, chunk) in output.chunks_mut(chunk_bytes).enumerate() {
+            process_chunk(chunk_index, chunk, &mut pixels, &mut scratch)?;
+        }
+    }
+    Ok(())
 }
 
 /// Evaluate one terminal output pixel, equal to the byte [`render_linear`] writes there. Through a
@@ -1443,6 +1573,8 @@ mod tests {
         Layer, Recipe, SnapshotId,
         modules::{CropPayload, ModuleRegistry},
     };
+    use sha2::{Digest, Sha256};
+    use std::time::Instant;
 
     fn image(width: u32, height: u32, rgb: &[[f32; 3]]) -> LinearImage {
         assert_eq!(rgb.len(), (width * height) as usize);
@@ -1455,7 +1587,8 @@ mod tests {
     }
 
     /// The pre-existing generic pixel evaluator remains the reference for the bulk source path.
-    /// It resolves the segment and view for every pixel and never calls the row reader.
+    /// It resolves the segment and view for every pixel, retains the production row scheduling
+    /// threshold, and never calls the source row reader.
     fn generic_linear_reference(
         registry: &ModuleRegistry,
         source: &LinearImage,
@@ -1474,19 +1607,80 @@ mod tests {
         )
         .unwrap();
         let (width, height) = evaluation.stage();
-        let mut rgba = Vec::with_capacity(output_len(width, height).unwrap());
-        for y in 0..height {
-            for x in 0..width {
-                rgba.extend(terminal_pixel(evaluation.pixel(x, y).unwrap().unwrap()).unwrap());
+        let mut frame = super::super::zeroed_frame(output_len(width, height).unwrap());
+        let rgba = super::super::frame_mut(&mut frame);
+        let row_bytes = width as usize * 4;
+        let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
+            for (x, pixel_bytes) in row.chunks_exact_mut(4).enumerate() {
+                let pixel = evaluation
+                    .pixel(x as u32, row_index as u32)?
+                    .ok_or_else(|| {
+                        Error::new(ErrorKind::Render, "reference pixel outside stage")
+                    })?;
+                pixel_bytes.copy_from_slice(&terminal_pixel(pixel)?);
             }
+            Ok(())
+        };
+        if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
+            rgba.par_chunks_exact_mut(row_bytes)
+                .enumerate()
+                .try_for_each(|(row, pixels)| render_row(row, pixels))
+                .unwrap();
+        } else {
+            rgba.chunks_exact_mut(row_bytes)
+                .enumerate()
+                .try_for_each(|(row, pixels)| render_row(row, pixels))
+                .unwrap();
         }
         Raster {
             width,
             height,
-            rgba: rgba.into(),
+            rgba: frame,
             source_fingerprint: source.fingerprint.clone(),
             snapshot_id,
         }
+    }
+
+    fn colour_layer(effect_id: &str, payload: serde_json::Value) -> Layer {
+        Layer {
+            id: crate::LayerId::new(),
+            effect_id: effect_id.into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload,
+            mask: None,
+            artifacts: Vec::new(),
+        }
+    }
+
+    fn colour_recipe(layers: Vec<Layer>) -> Recipe {
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks: Vec::new(),
+            ..Recipe::default()
+        }
+    }
+
+    fn percentile(values: &[f64], percentile: f64) -> f64 {
+        let mut ordered = values.to_vec();
+        ordered.sort_by(f64::total_cmp);
+        ordered[((ordered.len() as f64 - 1.0) * percentile).ceil() as usize]
+    }
+
+    fn timed_render(
+        render: impl FnOnce() -> Raster,
+        sampler: &mut lightwell_process::Sampler,
+    ) -> (f64, Option<f64>) {
+        let cpu_before = sampler.read().cpu_time_ns.ok();
+        let start = Instant::now();
+        let raster = render();
+        std::hint::black_box(&raster);
+        drop(raster);
+        let wall_ms = start.elapsed().as_secs_f64() * 1e3;
+        let cpu_ms = cpu_before
+            .zip(sampler.read().cpu_time_ns.ok())
+            .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6);
+        (wall_ms, cpu_ms)
     }
 
     #[test]
@@ -1588,6 +1782,550 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn unmasked_basic_and_mixer_rows_match_the_generic_evaluator() {
+        let source = varied(37, 29).with_view([2, 3, 30, 16], 5).unwrap();
+        let registry = ModuleRegistry::builtin();
+        let basic = colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({
+                "exposure": 0.5,
+                "contrast": 20.0,
+                "highlights": -30.0,
+                "shadows": 25.0,
+                "whites": 40.0,
+                "blacks": -10.0,
+                "vibrance": 30.0,
+                "saturation": 15.0
+            }),
+        );
+        let mixer = colour_layer(
+            crate::MIXER_EFFECT,
+            serde_json::json!({"red-hue": 20.0, "aqua-saturation": -35.0, "blue-luminance": 15.0}),
+        );
+        let recipes = [
+            colour_recipe(vec![basic.clone()]),
+            colour_recipe(vec![mixer.clone()]),
+            colour_recipe(vec![basic, mixer]),
+        ];
+        let settings = LinearSettings {
+            exposure_ev: -0.37,
+            white_balance: Some(
+                WhiteBalanceApproximation::from_matrix([
+                    [1.21, -0.11, -0.02],
+                    [-0.06, 1.08, -0.02],
+                    [0.01, -0.13, 1.12],
+                ])
+                .unwrap(),
+            ),
+        };
+
+        for recipe in recipes {
+            let evaluation = LinearEvaluation::new(
+                &registry,
+                &source,
+                &recipe,
+                settings,
+                &Cancel::never(),
+                PRODUCTION_TILE,
+                SpatialMode::Frames,
+            )
+            .unwrap();
+            assert!(evaluation.source_color_segment().is_some());
+            let snapshot = SnapshotId::new();
+            let actual =
+                render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap();
+            let expected =
+                generic_linear_reference(&registry, &source, snapshot, &recipe, settings);
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn parallel_source_colour_rows_match_reference_in_final_partial_chunk() {
+        // Just above the production parallel threshold and not divisible by the eight-row chunk.
+        let source = varied(1003, 1001);
+        let registry = ModuleRegistry::builtin();
+        let recipe = colour_recipe(vec![colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({
+                "exposure": 0.5,
+                "contrast": 20.0,
+                "highlights": -30.0,
+                "shadows": 25.0,
+                "whites": 40.0,
+                "blacks": -10.0,
+                "vibrance": 30.0,
+                "saturation": 15.0
+            }),
+        )]);
+        let settings = LinearSettings {
+            exposure_ev: 0.37,
+            white_balance: None,
+        };
+        let snapshot = SnapshotId::new();
+        let actual =
+            render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap();
+        let expected = generic_linear_reference(&registry, &source, snapshot, &recipe, settings);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn source_colour_rows_leave_masked_and_geometric_recipes_on_generic_path() {
+        let source = varied(19, 13);
+        let registry = ModuleRegistry::builtin();
+        let settings = LinearSettings::default();
+        let basic = colour_layer(crate::BASIC_EFFECT, serde_json::json!({"exposure": 0.5}));
+        let mut mask = crate::Mask::new("Mask 1");
+        mask.components.push(crate::Component::new(
+            "Linear 1",
+            crate::ComponentMode::Add,
+            "linear",
+            serde_json::json!({"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}),
+        ));
+        let masked_recipe = Recipe {
+            layers: vec![Layer {
+                mask: Some(mask.id.clone()),
+                ..basic.clone()
+            }],
+            masks: vec![mask],
+            ..Recipe::default()
+        };
+        let geometric_recipe = colour_recipe(vec![
+            basic,
+            Layer::orientation(crate::Orientation {
+                mirror: false,
+                turns: 1,
+            }),
+        ]);
+
+        for recipe in [&masked_recipe, &geometric_recipe] {
+            let evaluation = LinearEvaluation::new(
+                &registry,
+                &source,
+                recipe,
+                settings,
+                &Cancel::never(),
+                PRODUCTION_TILE,
+                SpatialMode::Frames,
+            )
+            .unwrap();
+            assert!(evaluation.source_color_segment().is_none());
+            let snapshot = SnapshotId::new();
+            assert_eq!(
+                render_linear(&registry, &source, snapshot.clone(), recipe, settings).unwrap(),
+                generic_linear_reference(&registry, &source, snapshot, recipe, settings)
+            );
+        }
+    }
+
+    /// Re-run only on the owner Mac with a private fixture selected through
+    /// `LIGHTWELL_RAW_FIXTURE`; it compares the integrated production branch with the original
+    /// generic pixel evaluator and reports core-render timings, process CPU and memory snapshots.
+    /// Set `LIGHTWELL_RAW_DIAGNOSTIC=contention-production` or `contention-reference` to skip those
+    /// timed profiles and isolate the Fit proxy overlap run from load left by full-size rendering.
+    #[test]
+    #[ignore = "owner-Mac RAW renderer timing diagnostic"]
+    fn raw_colour_rows_production_diagnostic() {
+        use std::process::Command;
+
+        fn host_load_1m() -> String {
+            Command::new("uptime")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .and_then(|output| {
+                    let (_, values) = output
+                        .split_once("load averages:")
+                        .or_else(|| output.split_once("load average:"))?;
+                    values
+                        .split_whitespace()
+                        .next()
+                        .map(|value| value.trim_end_matches(',').to_owned())
+                })
+                .unwrap_or_else(|| "unavailable".into())
+        }
+
+        let fixture = std::path::PathBuf::from(
+            std::env::var("LIGHTWELL_RAW_FIXTURE")
+                .expect("set LIGHTWELL_RAW_FIXTURE to a qualified private RAW fixture"),
+        );
+        let bytes = std::fs::read(fixture).expect("read private RAW fixture");
+        let prepared = crate::source::RawPrepared::decode(
+            bytes,
+            "sha256:linear-row-diagnostic".into(),
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("decode private RAW fixture");
+        let source = prepared
+            .linear
+            .clone()
+            .expect("fixture retains linear RAW planes");
+        let registry = ModuleRegistry::builtin();
+        let mut sampler = lightwell_process::Sampler::new();
+        let memory_after_decode = sampler.read().memory;
+        let recipes = [
+            (
+                "full-basic",
+                colour_recipe(vec![colour_layer(
+                    crate::BASIC_EFFECT,
+                    serde_json::json!({
+                        "exposure": 0.5, "contrast": 25.0, "highlights": -30.0,
+                        "shadows": 30.0, "whites": -15.0, "blacks": 15.0,
+                        "temperature": 20.0, "tint": -10.0, "vibrance": 30.0,
+                        "saturation": 15.0
+                    }),
+                )]),
+            ),
+            (
+                "mixer",
+                colour_recipe(vec![colour_layer(
+                    crate::MIXER_EFFECT,
+                    serde_json::json!({
+                        "red-hue": 30.0, "orange-saturation": 20.0,
+                        "blue-luminance": -30.0
+                    }),
+                )]),
+            ),
+        ];
+        let settings = LinearSettings {
+            exposure_ev: 0.7,
+            white_balance: None,
+        };
+        println!(
+            "source=retained-raw dimensions={}x{} source_plane_bytes={} output_rgba_bytes={} rayon_threads={} memory_after_decode={:?} loadavg_before={}",
+            source.width(),
+            source.height(),
+            std::mem::size_of_val(source.planes()),
+            source.width() as usize * source.height() as usize * 4,
+            rayon::current_num_threads(),
+            memory_after_decode,
+            host_load_1m()
+        );
+
+        let diagnostic_mode = std::env::var("LIGHTWELL_RAW_DIAGNOSTIC").unwrap_or_default();
+        let contention_only = diagnostic_mode.starts_with("contention");
+        for (name, recipe) in recipes {
+            if contention_only {
+                break;
+            }
+            let snapshot = SnapshotId::new();
+            let reference =
+                generic_linear_reference(&registry, &source, snapshot.clone(), &recipe, settings);
+            let actual = render_linear(&registry, &source, snapshot.clone(), &recipe, settings)
+                .expect("production render");
+            let reference_hash = Sha256::digest(&reference.rgba);
+            let actual_hash = Sha256::digest(&actual.rgba);
+            assert_eq!(
+                reference.rgba.as_ref(),
+                actual.rgba.as_ref(),
+                "complete output bytes: {name}"
+            );
+            assert_eq!(reference_hash, actual_hash, "complete output hash: {name}");
+            assert_eq!(
+                (reference.width, reference.height),
+                (actual.width, actual.height)
+            );
+            for (x, y) in [
+                (0, 0),
+                (reference.width - 1, 0),
+                (0, reference.height - 1),
+                (reference.width - 1, reference.height - 1),
+                (reference.width / 2, reference.height / 2),
+            ] {
+                assert_eq!(
+                    reference.pixel(x, y),
+                    actual.pixel(x, y),
+                    "{name} at ({x}, {y})"
+                );
+                assert_eq!(
+                    sample_linear(&registry, &source, &recipe, settings, x, y)
+                        .unwrap()
+                        .rgba,
+                    actual.pixel(x, y),
+                    "sample {name} at ({x}, {y})"
+                );
+            }
+            drop(reference);
+            drop(actual);
+
+            let reference =
+                generic_linear_reference(&registry, &source, snapshot.clone(), &recipe, settings);
+            drop(reference);
+            let memory_after_reference = sampler.read().memory;
+            let production = render_linear(&registry, &source, snapshot.clone(), &recipe, settings)
+                .expect("production render");
+            drop(production);
+            let memory_after_production = sampler.read().memory;
+
+            let mut reference_wall = Vec::with_capacity(30);
+            let mut production_wall = Vec::with_capacity(30);
+            let mut reference_cpu = Vec::with_capacity(30);
+            let mut production_cpu = Vec::with_capacity(30);
+            for _ in 0..15 {
+                let (wall, cpu) = timed_render(
+                    || {
+                        generic_linear_reference(
+                            &registry,
+                            &source,
+                            snapshot.clone(),
+                            &recipe,
+                            settings,
+                        )
+                    },
+                    &mut sampler,
+                );
+                reference_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    reference_cpu.push(cpu);
+                }
+                let (wall, cpu) = timed_render(
+                    || {
+                        render_linear(&registry, &source, snapshot.clone(), &recipe, settings)
+                            .expect("production render")
+                    },
+                    &mut sampler,
+                );
+                production_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    production_cpu.push(cpu);
+                }
+                let (wall, cpu) = timed_render(
+                    || {
+                        render_linear(&registry, &source, snapshot.clone(), &recipe, settings)
+                            .expect("production render")
+                    },
+                    &mut sampler,
+                );
+                production_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    production_cpu.push(cpu);
+                }
+                let (wall, cpu) = timed_render(
+                    || {
+                        generic_linear_reference(
+                            &registry,
+                            &source,
+                            snapshot.clone(),
+                            &recipe,
+                            settings,
+                        )
+                    },
+                    &mut sampler,
+                );
+                reference_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    reference_cpu.push(cpu);
+                }
+            }
+            println!(
+                "{name}: reference_wall_p50_ms={:.3} reference_wall_p95_ms={:.3} production_wall_p50_ms={:.3} production_wall_p95_ms={:.3} reference_process_cpu_p50_ms={} reference_process_cpu_p95_ms={} production_process_cpu_p50_ms={} production_process_cpu_p95_ms={} row_scratch_bytes_per_folder={} row_scratch_max_at_pool_width={} memory_after_reference={:?} memory_after_production={:?} output_sha256={:x}",
+                percentile(&reference_wall, 0.50),
+                percentile(&reference_wall, 0.95),
+                percentile(&production_wall, 0.50),
+                percentile(&production_wall, 0.95),
+                if reference_cpu.is_empty() {
+                    "unavailable".into()
+                } else {
+                    format!("{:.3}", percentile(&reference_cpu, 0.50))
+                },
+                if reference_cpu.is_empty() {
+                    "unavailable".into()
+                } else {
+                    format!("{:.3}", percentile(&reference_cpu, 0.95))
+                },
+                if production_cpu.is_empty() {
+                    "unavailable".into()
+                } else {
+                    format!("{:.3}", percentile(&production_cpu, 0.50))
+                },
+                if production_cpu.is_empty() {
+                    "unavailable".into()
+                } else {
+                    format!("{:.3}", percentile(&production_cpu, 0.95))
+                },
+                source.width() as usize * std::mem::size_of::<[f32; 3]>(),
+                source.width() as usize
+                    * std::mem::size_of::<[f32; 3]>()
+                    * rayon::current_num_threads(),
+                memory_after_reference,
+                memory_after_production,
+                actual_hash
+            );
+        }
+
+        // A display-bounded nearest-sampled source derived from the retained RAW planes exercises
+        // the same pointwise colour work as a Fit proxy without putting decode or proxy creation in
+        // the timed region. One exact source render runs sequentially in a background caller while
+        // 30 proxy requests use the shared Rayon pool.
+        let preview_width = 1920_u32;
+        let preview_height = 1280_u32;
+        let mut red = Vec::with_capacity((preview_width * preview_height) as usize);
+        let mut green = Vec::with_capacity(red.capacity());
+        let mut blue = Vec::with_capacity(red.capacity());
+        let reader = source.reader();
+        for y in 0..preview_height {
+            let source_y =
+                (u64::from(y) * u64::from(source.height()) / u64::from(preview_height)) as u32;
+            let row = reader
+                .row(source_y)
+                .expect("preview row is inside the retained RAW source")
+                .collect::<Vec<_>>();
+            for x in 0..preview_width {
+                let source_x =
+                    (u64::from(x) * u64::from(source.width()) / u64::from(preview_width)) as usize;
+                let pixel = row[source_x];
+                red.push(pixel[0]);
+                green.push(pixel[1]);
+                blue.push(pixel[2]);
+            }
+        }
+        let mut preview_planes = red;
+        preview_planes.extend(green);
+        preview_planes.extend(blue);
+        let preview_source = LinearImage::with_fingerprint(
+            preview_width,
+            preview_height,
+            preview_planes,
+            "sha256:linear-row-preview-contention",
+        )
+        .unwrap();
+        let preview_recipe = colour_recipe(vec![colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({
+                "exposure": 0.5, "contrast": 25.0, "highlights": -30.0,
+                "shadows": 30.0, "whites": -15.0, "blacks": 15.0,
+                "temperature": 20.0, "tint": -10.0, "vibrance": 30.0,
+                "saturation": 15.0
+            }),
+        )]);
+        let preview_snapshot = SnapshotId::new();
+        let preview_reference = generic_linear_reference(
+            &registry,
+            &preview_source,
+            preview_snapshot.clone(),
+            &preview_recipe,
+            settings,
+        );
+        let preview_actual = render_linear_proxy_cancellable(
+            &registry,
+            &preview_source,
+            preview_snapshot.clone(),
+            &preview_recipe,
+            settings,
+            &Cancel::never(),
+        )
+        .unwrap();
+        assert_eq!(preview_reference, preview_actual, "proxy byte identity");
+        drop(preview_reference);
+        drop(preview_actual);
+        let render_preview = || {
+            render_linear_proxy_cancellable(
+                &registry,
+                &preview_source,
+                preview_snapshot.clone(),
+                &preview_recipe,
+                settings,
+                &Cancel::never(),
+            )
+            .expect("Fit proxy render")
+        };
+        drop(render_preview());
+
+        let mut preview_uncontended_wall = Vec::with_capacity(30);
+        let mut preview_uncontended_cpu = Vec::with_capacity(30);
+        for _ in 0..30 {
+            let (wall, cpu) = timed_render(render_preview, &mut sampler);
+            preview_uncontended_wall.push(wall);
+            if let Some(cpu) = cpu {
+                preview_uncontended_cpu.push(cpu);
+            }
+        }
+
+        let load_before_contention = host_load_1m();
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_running = running.clone();
+        let worker_started = started.clone();
+        let worker_barrier = barrier.clone();
+        let worker_source = source.clone();
+        let worker_recipe = preview_recipe.clone();
+        let worker_snapshot = SnapshotId::new();
+        let worker_reference = diagnostic_mode == "contention-reference";
+        let worker = std::thread::spawn(move || {
+            let worker_registry = ModuleRegistry::builtin();
+            let mut exact_renders = 0_u32;
+            worker_barrier.wait();
+            worker_started.store(true, std::sync::atomic::Ordering::Relaxed);
+            while worker_running.load(std::sync::atomic::Ordering::Relaxed) {
+                let raster = if worker_reference {
+                    generic_linear_reference(
+                        &worker_registry,
+                        &worker_source,
+                        worker_snapshot.clone(),
+                        &worker_recipe,
+                        settings,
+                    )
+                } else {
+                    render_linear(
+                        &worker_registry,
+                        &worker_source,
+                        worker_snapshot.clone(),
+                        &worker_recipe,
+                        settings,
+                    )
+                    .expect("background exact RAW render")
+                };
+                std::hint::black_box(&raster);
+                drop(raster);
+                exact_renders += 1;
+            }
+            exact_renders
+        });
+        let contention_cpu_before = sampler.read().cpu_time_ns.ok();
+        let contention_start = Instant::now();
+        barrier.wait();
+        while !started.load(std::sync::atomic::Ordering::Relaxed) {
+            std::hint::spin_loop();
+        }
+        let mut preview_contended_wall = Vec::with_capacity(30);
+        for _ in 0..30 {
+            preview_contended_wall.push(timed_render(render_preview, &mut sampler).0);
+        }
+        running.store(false, std::sync::atomic::Ordering::Relaxed);
+        let exact_renders = worker.join().expect("exact render worker");
+        let contention_wall_ms = contention_start.elapsed().as_secs_f64() * 1e3;
+        let contention_cpu_ms = contention_cpu_before
+            .zip(sampler.read().cpu_time_ns.ok())
+            .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6);
+        let memory_after_contention = sampler.read().memory;
+        println!(
+            "fit_proxy_contention: variant={} dimensions={}x{} samples=30 uncontended_p50_p95_ms={:.3}/{:.3} uncontended_process_cpu_p50_p95_ms={:.3}/{:.3} contended_p50_p95_ms={:.3}/{:.3} exact_renders_during_proxy_samples={} overlap_wall_ms={:.3} overlap_process_cpu_ms={} memory_after_contention={:?} loadavg_before={}",
+            if worker_reference {
+                "generic-reference"
+            } else {
+                "production-rows"
+            },
+            preview_width,
+            preview_height,
+            percentile(&preview_uncontended_wall, 0.50),
+            percentile(&preview_uncontended_wall, 0.95),
+            percentile(&preview_uncontended_cpu, 0.50),
+            percentile(&preview_uncontended_cpu, 0.95),
+            percentile(&preview_contended_wall, 0.50),
+            percentile(&preview_contended_wall, 0.95),
+            exact_renders,
+            contention_wall_ms,
+            contention_cpu_ms.map_or_else(|| "unavailable".into(), |value| format!("{value:.3}")),
+            memory_after_contention,
+            load_before_contention
+        );
+        println!("loadavg_after={}", host_load_1m());
     }
 
     #[test]

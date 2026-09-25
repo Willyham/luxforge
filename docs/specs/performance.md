@@ -1566,6 +1566,63 @@ including the source-caller job. Stack arrays, tables, allocator overhead and fu
 are additional. Callback cancellation, native faults, nested callers and teardown are tested;
 no partial output is adopted. Bayer RCD retains its existing serial cancellation limitation.
 
+### RAW colour row batching
+
+The production RAW renderer batches eight rows for one source-only colour segment with identity
+geometry and unmasked colour operations. Masks, replacements, spatial stages and other recipes keep
+the generic evaluator. The row path uses the shared Rayon pool above one megapixel, checks
+cancellation per row and accounts one width-sized RGB-float buffer per Rayon folder. It switches to
+serial rows if the estimated pool-wide scratch exceeds 64 MiB. Complete-buffer tests cover Basic,
+Mixer and their combined recipe, a viewed source, a partial final chunk, and geometry/mask fallback.
+
+Release core-render comparison on retained real RAW planes, 30 observations per variant and recipe
+in 15 ABBA pairs. The reference is the old per-pixel evaluator with the same parallel scheduling
+threshold. Timers include output allocation and drop, but exclude file read, decode/development,
+desktop scheduling, GPU upload and presentation. Process CPU is cumulative over the shared 14-core
+Rayon pool, sampled outside each render timer. No build or test ran with the timed profiles.
+
+| Camera / recipe | Reference wall p50 / p95 | Production wall p50 / p95 | Reference CPU p50 / p95 | Production CPU p50 / p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Z6 / Full Basic | 398.3 / 449.0 ms | 146.0 / 155.2 ms | 5217.9 / 5290.4 ms | 1888.0 / 1949.4 ms |
+| Z6 / Mixer | 297.0 / 308.9 ms | 167.9 / 175.8 ms | 3866.0 / 3912.6 ms | 2154.4 / 2190.5 ms |
+| X100VI / Full Basic | 646.4 / 893.3 ms | 220.2 / 290.1 ms | 7903.9 / 8149.5 ms | 2598.8 / 2738.2 ms |
+| X100VI / Mixer | 503.9 / 607.2 ms | 278.0 / 315.2 ms | 5793.8 / 5914.1 ms | 3127.7 / 3236.8 ms |
+
+The first X100VI pass was lower-tailed: Full Basic reference/production p50/p95 618.8/700.3 ms and
+201.2/252.7 ms; Mixer 496.8/557.0 ms and 277.1/315.2 ms. Leg-start load was 6.38 for Z6 and 5.39
+and 5.80 for the Fuji passes. The renderer drove the shared pool; one-minute load at the end rose to
+14.80, 24.37 and 23.82. The table gives the repeat Fuji distributions, including the wider tail.
+
+The production median reduction is 63% on Z6 and 66–68% on X100VI for Full Basic, and 43–44% for
+Mixer. These are separate recipe workloads; do not sum their savings into a combined-stack estimate.
+Source planes are 294 MB and 491 MB, outputs 97 MB and 159 MB. Row scratch is at most 676 KB and
+1.30 MB across 14 folders. Activity Monitor footprint after decode was 556 MB and 925–928 MB; the
+reference and production snapshots were about 752 MB and 1.244–1.247 GB, with no material
+production increase. Those snapshots are not allocator traces or GPU allocation measurements; the
+full-output equality check holds both RGBA outputs together once.
+
+The shared-pool Fit proxy check uses a 1920 × 1280 nearest-sampled proxy from actual Fuji retained
+RAW planes and the Full Basic recipe. Thirty proxy requests are measured while one external caller
+repeats exact full-source renders; proxy creation, RAW decode, build, desktop work, upload and
+presentation are excluded. The generic exact renderer completed 30 full renders and the production
+row path completed 29. The process memory footprint after overlap was 1.172 GB for the generic path
+and 1.166 GB for production (resident 1.180 GB and 1.175 GB respectively). Process CPU over each
+whole overlap window includes both the exact worker and proxy requests.
+
+| Exact render sharing the pool | Proxy alone p50 / p95 | Proxy with exact work p50 / p95 | Overlap wall / process CPU |
+| --- | ---: | ---: | ---: |
+| Generic per-pixel reference | 13.9 / 26.5 ms | 623.9 / 658.3 ms | 18.8 s / 240.7 CPU s |
+| Production row batching | 12.1 / 13.1 ms | 207.2 / 214.7 ms | 6.0 s / 79.9 CPU s |
+
+Production cuts the contended proxy p95 by about 67%, but 215 ms still misses the 32 ms acceptable
+input-to-presented-frame limit. A one-row callback experiment measured 213.5/226.2 ms p50/p95 and
+30 exact renders in 6.4 seconds, slightly behind the eight-row path's 207.2/214.7 ms and 29 renders
+in 6.0 seconds. This measures a continuously active core exact render and a core proxy, not a user's
+UI gesture or GPU presentation. The external load at the starts of the two variant legs was 7.86
+and 6.98; no build or test ran alongside either. The intentional shared-pool work raised the ending
+loads to 8.91 and 9.57. Full scope, scratch accounting and the repeatable diagnostic are
+in [further performance opportunities](../research/further-performance.md#raw-colour-row-implementation-and-measurement).
+
 ### Shared-pool contention and rendering controls
 
 One retained Fuji development competes with four full-Basic renders of a prepared 1920 × 1280
@@ -1627,10 +1684,11 @@ absolute-budget verdicts remain **unreliable**. The separate comparisons above r
 loads, scopes and sample counts. No sanitizer run, Windows/Linux numerical qualification or
 cross-platform native GPU qualification is claimed by this M4 evidence.
 
-The next candidates are ranked in [further performance opportunities](../research/further-performance.md).
-RCD Bayer development remains serial. RAW colour row batching, eliminating large RGBA publication
-copies, startup phase attribution, GPU execution and SIMD/assembly remain open; none is assigned an
-unmeasured speedup.
+The remaining candidates are ranked in [further performance opportunities](../research/further-performance.md).
+RCD Bayer development remains serial. RAW colour row batching is in production and measured on
+actual Z6 and X100VI working planes; the core shared-pool result is separate from presentation and
+does not replace end-to-end evidence. Startup attribution, RGBA ownership, GPU execution and
+SIMD/assembly remain open; no savings are assigned to them.
 
 ## Method
 

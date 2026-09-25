@@ -136,13 +136,13 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
     };
     let after = before.map(|before| {
         let measured = gpu.dispatch(16);
-        // The driver updates AppUsage as the command buffer retires, which waitUntilCompleted may
-        // beat by a moment. A small bookkeeping update can arrive first, so wait for the dispatch's
-        // existing lower bound rather than accepting any positive counter change.
+        // AppUsage is active GPU time while GPUStartTime..GPUEndTime is the command buffer's GPU
+        // window; the blit can occupy a fraction of that window on Apple silicon. Wait for a
+        // meaningful fraction rather than treating the command-buffer interval as equal GPU work.
         let deadline = Instant::now() + Duration::from_secs(2);
         let after = loop {
             let after = sampler.read().gpu.time_ns.expect("GPU time");
-            if after.saturating_sub(before) >= (measured / 4).max(1) || Instant::now() > deadline {
+            if after.saturating_sub(before) >= (measured / 8).max(1) || Instant::now() > deadline {
                 break after;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -154,7 +154,7 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
         let grown = after - before;
         println!("GPU time grew {grown} ns; Metal measured the command buffer at {measured} ns");
         assert!(
-            grown >= measured / 4 && grown <= measured.saturating_mul(4).max(1_000_000),
+            grown >= measured / 8 && grown <= measured.saturating_mul(4).max(1_000_000),
             "GPU time grew {grown} ns for a command buffer Metal measured at {measured} ns"
         );
         after
