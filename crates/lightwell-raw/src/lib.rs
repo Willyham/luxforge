@@ -1163,6 +1163,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[ignore = "opt-in owner Mac release profile; coordinate an idle build/test window first"]
     fn bayer_normalization_release_abba_profile() {

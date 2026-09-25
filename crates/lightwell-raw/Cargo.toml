@@ -23,6 +23,10 @@ cc = "=1.4.7"
 [dev-dependencies]
 sha2.workspace = true
 serde_json.workspace = true
+
+# Only the ignored release profiling test reads `getrusage`. It is a dev-dependency, so it never
+# links into the library, and the lockfile already resolves this version for `lightwell-process`.
+[target.'cfg(unix)'.dev-dependencies]
 libc = "=0.2.189"
 
 # This crate alone contains locally documented and tested FFI. The rest of the
