@@ -4,12 +4,9 @@
 //! worker task that sends the photo's sample grid to the profile's endpoint and publishes a tint
 //! artifact, which its colour-stage effect applies by multiplying linear channels. It is a test
 //! fixture: the desktop registers it only in developer mode with `--proof-endpoint`,
-//! `lightwell-json` with `--proof-endpoint`, and tests directly, always against a [`ProofEndpoint`]
-//! a harness started. See `docs/design/module-capabilities.md#proof-module`.
-mod endpoint;
-
-pub use endpoint::{ProofEndpoint, ProofRequest};
-
+//! `lightwell-json` with `--proof-endpoint`, and tests directly, always against the fake provider a
+//! harness started (`lightwell-testkit`'s `ProofEndpoint`, which ships in no binary). See
+//! `docs/design/module-capabilities.md#proof-module`.
 use super::{
     ActionInput, ActionPlan, ColorOperation, LayerUpdate, ModuleDescriptor, NewLayer,
     PointwiseColor, Processing, Stage, StageContext, ToolModule,

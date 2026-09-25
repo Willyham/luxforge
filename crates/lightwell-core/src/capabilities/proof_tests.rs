@@ -18,12 +18,13 @@ use crate::{
     ApiFailure, ApiRequest, ApiResponse, ArtifactId, AssetId, CapabilitiesProofModule,
     ClientAuthority, ClientId, EditorService, EntryId, Error, ErrorKind, Layer, LayerUpdate,
     ModuleDescriptor, ModuleRegistry, OwnerHandle, PROOF_PALETTE_GAINS, PROOF_TASK, Processing,
-    ProofEndpoint, Stage, StageContext, ToolModule,
+    Stage, StageContext, ToolModule,
     capabilities::context::ModuleContext,
     modules::{ActionInput, ActionPlan},
     redact_request,
     render::{quantize_pixel, srgb_to_linear_f64},
 };
+use lightwell_testkit::ProofEndpoint;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{

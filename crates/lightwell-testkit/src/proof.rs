@@ -1,30 +1,23 @@
-//! [`ProofEndpoint`], the capability proof's fake provider. It is a developer test fixture, never
-//! part of the editor: tests and the rendered smoke start one, point the proof module's resource and
-//! a profile at it, and read back what it received. One thread on `127.0.0.1` answers one
-//! connection at a time with bounded heads and bodies and stops when the value is dropped.
-use super::{PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, palette_bytes};
-use crate::{
-    Error, ErrorKind,
+//! [`ProofEndpoint`], the capability proof's fake provider: a developer test fixture, never part of
+//! the editor. Tests and the rendered smoke start one, point the proof module's resource and a
+//! profile at it, and read back what it received. It is a [`TestServer`] that keeps no copy of the
+//! requests, since they carry the key; the endpoint keeps its own record without the credential.
+use crate::server::{Options, Request, TestServer, respond};
+use lightwell_core::{
+    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
     capabilities::data::{SAMPLE_GRID_BYTES, SAMPLE_GRID_SAMPLES},
+    palette_bytes,
 };
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
-    io::{Read, Write},
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
+    io::{self, Write},
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
-    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
-/// A request head is at most this many bytes.
-const MAX_HEAD: usize = 16 * 1024;
-/// A request body is at most this many bytes.
-const MAX_BODY: usize = 64 * 1024;
 /// The requests the endpoint remembers, newest last.
 const MAX_RECORDED: usize = 64;
-/// How long one connection may stall a read or a write.
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One request the endpoint answered, without its credential.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,22 +75,13 @@ impl Shared {
 /// `192 + mean / 4` of that channel's samples. Knobs let a test delay answers, fail the next
 /// generation and serve a palette that does not match its pin.
 pub struct ProofEndpoint {
-    address: SocketAddr,
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
+    server: TestServer,
 }
 
 impl ProofEndpoint {
     /// Listen on a free loopback port and answer requests authorized with `api_key`.
-    pub fn start(api_key: &str) -> Result<Self, Error> {
-        let failed = |error: std::io::Error| {
-            Error::new(
-                ErrorKind::Startup,
-                format!("cannot start the proof endpoint: {}", error.kind()),
-            )
-        };
-        let listener = TcpListener::bind("127.0.0.1:0").map_err(failed)?;
-        let address = listener.local_addr().map_err(failed)?;
+    pub fn start(api_key: &str) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             api_key: api_key.to_owned(),
             state: Mutex::new(State {
@@ -110,35 +94,25 @@ impl ProofEndpoint {
             }),
             wake: Condvar::new(),
         });
-        let serving = shared.clone();
-        let thread = thread::Builder::new()
-            .name("lightwell-proof-endpoint".into())
-            .spawn(move || {
-                for stream in listener.incoming() {
-                    if serving.lock().stopped {
-                        break;
-                    }
-                    if let Ok(stream) = stream {
-                        answer(&serving, stream);
-                    }
-                }
-            })
-            .map_err(failed)?;
-        Ok(Self {
-            address,
-            shared,
-            thread: Some(thread),
-        })
+        let answering = shared.clone();
+        let server = TestServer::start(
+            Options {
+                unrecorded: true,
+                ..Options::default()
+            },
+            move |request, out| answer(&answering, request, out),
+        )?;
+        Ok(Self { shared, server })
     }
 
     /// `http://127.0.0.1:<port>`: the base the proof module's resource URL is built on.
     pub fn base_url(&self) -> String {
-        format!("http://{}", self.address)
+        self.server.origin()
     }
 
     /// The URL a profile's endpoint names.
     pub fn generate_url(&self) -> String {
-        format!("{}{PROOF_GENERATE_PATH}", self.base_url())
+        self.server.url(PROOF_GENERATE_PATH)
     }
 
     /// Hold every answer to `POST /generate` this long after the request arrives. Shortening it,
@@ -173,83 +147,19 @@ impl ProofEndpoint {
 }
 
 impl Drop for ProofEndpoint {
+    /// Release every held answer; dropping the server then stops it.
     fn drop(&mut self) {
         self.shared.lock().stopped = true;
         self.shared.wake.notify_all();
-        // The accept blocks; one connection wakes it to see the flag.
-        let _ = TcpStream::connect_timeout(&self.address, Duration::from_secs(1));
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
     }
 }
 
 impl std::fmt::Debug for ProofEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProofEndpoint")
-            .field("address", &self.address)
+            .field("server", &self.server)
             .finish_non_exhaustive()
     }
-}
-
-/// A parsed request.
-struct Request {
-    method: String,
-    path: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-}
-
-/// Read one request: a head of at most [`MAX_HEAD`] bytes and a body of its `Content-Length`, at
-/// most [`MAX_BODY`]. `Err` carries the status to refuse it with.
-fn read_request(stream: &mut TcpStream) -> Result<Request, u16> {
-    let mut buffer = Vec::with_capacity(1024);
-    let mut chunk = [0; 1024];
-    let end = loop {
-        if let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
-            break end;
-        }
-        if buffer.len() > MAX_HEAD {
-            return Err(431);
-        }
-        match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => return Err(400),
-            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
-        }
-    };
-    let head = std::str::from_utf8(&buffer[..end]).map_err(|_| 400u16)?;
-    let mut lines = head.split("\r\n");
-    let mut request_line = lines.next().unwrap_or_default().split(' ');
-    let method = request_line.next().unwrap_or_default().to_owned();
-    let path = request_line.next().unwrap_or_default().to_owned();
-    let mut headers = Vec::new();
-    for line in lines {
-        let (name, value) = line.split_once(':').ok_or(400u16)?;
-        headers.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
-    }
-    let length = headers
-        .iter()
-        .find(|(name, _)| name == "content-length")
-        .map(|(_, value)| value.parse::<usize>().map_err(|_| 400u16))
-        .transpose()?
-        .unwrap_or(0);
-    if length > MAX_BODY {
-        return Err(413);
-    }
-    let mut body = buffer[end + 4..].to_vec();
-    while body.len() < length {
-        match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => return Err(400),
-            Ok(read) => body.extend_from_slice(&chunk[..read]),
-        }
-    }
-    body.truncate(length);
-    Ok(Request {
-        method,
-        path,
-        headers,
-        body,
-    })
 }
 
 /// The 64 samples of a `sample-grid-8` body, when it is exactly one.
@@ -293,25 +203,23 @@ fn tint(samples: &[[u8; 3]]) -> [u8; 3] {
     rgb
 }
 
-/// Answer one connection.
-fn answer(shared: &Shared, mut stream: TcpStream) {
-    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
-    let request = match read_request(&mut stream) {
-        Ok(request) => request,
-        Err(status) => {
-            respond(
-                &mut stream,
-                status,
-                "application/json",
-                br#"{"error":"bad request"}"#,
-            );
-            return;
-        }
+/// The status line of an answer.
+fn status_line(status: u16) -> String {
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Error",
     };
-    let authorized = request.headers.iter().any(|(name, value)| {
-        name == "authorization" && *value == format!("Bearer {}", shared.api_key)
-    });
+    format!("{status} {reason}")
+}
+
+/// Answer one request.
+fn answer(shared: &Shared, request: &Request, out: &mut dyn Write) {
+    let authorized =
+        request.header("authorization") == Some(format!("Bearer {}", shared.api_key).as_str());
     let mut record = ProofRequest {
         method: request.method.clone(),
         path: request.path.clone(),
@@ -400,7 +308,12 @@ fn answer(shared: &Shared, mut stream: TcpStream) {
     if let Some(delay) = delay {
         pause(shared, delay);
     }
-    respond(&mut stream, status, content_type, &body);
+    respond(
+        out,
+        &status_line(status),
+        &format!("Content-Type: {content_type}\r\n"),
+        &body,
+    );
 }
 
 /// Wait out the delay `configured` reads, returning early when it is shortened or the endpoint
@@ -423,35 +336,15 @@ fn pause(shared: &Shared, configured: fn(&State) -> Duration) {
     }
 }
 
-fn respond(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        413 => "Payload Too Large",
-        431 => "Request Header Fields Too Large",
-        _ => "Error",
-    };
-    let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body);
-    let _ = stream.flush();
-    let _ = stream.shutdown(Shutdown::Write);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::data::sample_grid_body;
+    use lightwell_core::capabilities::data::sample_grid_body;
+    use std::{io::Read, net::TcpStream, thread};
 
     /// One raw exchange with the endpoint.
     fn exchange(endpoint: &ProofEndpoint, request: &[u8]) -> (u16, Vec<u8>) {
-        let mut stream = TcpStream::connect(endpoint.address).unwrap();
+        let mut stream = TcpStream::connect(endpoint.server.address()).unwrap();
         stream.write_all(request).unwrap();
         let mut response = Vec::new();
         stream.read_to_end(&mut response).unwrap();
@@ -533,13 +426,17 @@ mod tests {
         assert!(generated.authorized);
         assert!(!recorded[3].authorized);
         assert!(!format!("{recorded:?}").contains("secret-key"));
+        assert!(
+            endpoint.server.requests().is_empty(),
+            "the server under the endpoint keeps no request, so no copy of the key"
+        );
     }
 
     #[test]
     fn a_delayed_answer_is_released_early_and_dropping_the_endpoint_stops_it() {
         let endpoint = ProofEndpoint::start("key").unwrap();
         endpoint.set_delay(Duration::from_secs(30));
-        let address = endpoint.address;
+        let address = endpoint.server.address();
         let body = sample_grid_body(&[[10, 20, 30]; SAMPLE_GRID_SAMPLES]).unwrap();
         let waiting = thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
@@ -571,7 +468,7 @@ mod tests {
         let started = Instant::now();
         assert_eq!(exchange(&endpoint, &post("key", &body)).0, 200);
         assert!(started.elapsed() < Duration::from_secs(10));
-        let address = endpoint.address;
+        let address = endpoint.server.address();
         let waiting = thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
             stream

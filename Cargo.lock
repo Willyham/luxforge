@@ -1902,6 +1902,7 @@ dependencies = [
  "iced_runtime",
  "image",
  "lightwell-core",
+ "lightwell-testkit",
  "lightwell-ui",
  "rfd",
  "serde",
@@ -1916,6 +1917,7 @@ dependencies = [
  "image",
  "lightwell-process",
  "lightwell-raw",
+ "lightwell-testkit",
  "moxcms",
  "rayon",
  "roxmltree",
@@ -1953,6 +1955,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "lightwell-testkit"
+version = "0.0.0"
+dependencies = [
+ "lightwell-core",
+ "rustls",
+ "serde_json",
 ]
 
 [[package]]
@@ -4811,6 +4822,7 @@ dependencies = [
  "flate2",
  "image",
  "lightwell-core",
+ "lightwell-testkit",
  "percent-encoding",
  "regex",
  "serde",

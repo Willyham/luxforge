@@ -13,9 +13,8 @@ use crate::{
     smoke::Scenario,
     *,
 };
-use lightwell_core::{
-    AssetId, CapabilitiesProofModule, EditorService, EntryId, ModuleRegistry, ProofEndpoint,
-};
+use lightwell_core::{AssetId, CapabilitiesProofModule, EditorService, EntryId, ModuleRegistry};
+use lightwell_testkit::ProofEndpoint;
 use std::{sync::Arc, time::Duration};
 
 const MODULE: &str = "lightwell.capabilities";

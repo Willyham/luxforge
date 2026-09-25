@@ -1,7 +1,7 @@
 //! A module declaring every kind of capability, shared by the descriptor, settings and host tests;
-//! a module whose activation, deactivation and resource check the lifecycle tests steer; a
-//! loopback server that serves or refuses a resource; and a network that counts every lookup and
-//! connection, so a test can prove a path made none.
+//! a module whose activation, deactivation and resource check the lifecycle tests steer; and a
+//! network that counts every lookup and connection, so a test can prove a path made none. The
+//! loopback servers the tests answer downloads with are `lightwell-testkit`'s.
 use super::{
     context::ModuleContext,
     descriptor::{
@@ -19,8 +19,8 @@ use crate::{
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    io::{self, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
+    io::{self, Read},
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -438,66 +438,6 @@ impl ToolModule for LifecycleModule {
         }
         Ok(())
     }
-}
-
-/// A loopback HTTP server: each connection is answered on its own thread by `respond`, which
-/// receives the request path.
-pub(crate) struct Server {
-    pub address: SocketAddr,
-    hits: Arc<AtomicUsize>,
-}
-
-impl Server {
-    pub(crate) fn start(respond: impl Fn(&str, &mut TcpStream) + Send + Sync + 'static) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let hits = Arc::new(AtomicUsize::new(0));
-        let counted = hits.clone();
-        let respond = Arc::new(respond);
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { return };
-                let respond = respond.clone();
-                let counted = counted.clone();
-                thread::spawn(move || {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                    let mut head = Vec::new();
-                    let mut byte = [0; 1];
-                    while !head.ends_with(b"\r\n\r\n") && head.len() < 16 * 1024 {
-                        match stream.read(&mut byte) {
-                            Ok(1) => head.push(byte[0]),
-                            _ => return,
-                        }
-                    }
-                    counted.fetch_add(1, Ordering::SeqCst);
-                    let head = String::from_utf8_lossy(&head).into_owned();
-                    let path = head.split(' ').nth(1).unwrap_or("/").to_owned();
-                    respond(&path, &mut stream);
-                });
-            }
-        });
-        Self { address, hits }
-    }
-
-    pub(crate) fn url(&self, path: &str) -> String {
-        format!("http://{}{path}", self.address)
-    }
-
-    /// Requests answered so far.
-    pub(crate) fn hits(&self) -> usize {
-        self.hits.load(Ordering::SeqCst)
-    }
-}
-
-/// Write one complete response.
-pub(crate) fn reply(stream: &mut TcpStream, status: &str, headers: &str, body: &[u8]) {
-    let head = format!(
-        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body);
-    let _ = stream.flush();
 }
 
 /// A resolver and connector that count every lookup and connection and otherwise behave like the

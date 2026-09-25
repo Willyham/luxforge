@@ -399,7 +399,7 @@ impl ModuleContext {
 mod tests {
     use super::*;
     use crate::{
-        EditorService, ProofEndpoint,
+        EditorService,
         capabilities::{
             data::DisclosedData,
             descriptor::{AdapterCost, DataClass},
@@ -408,6 +408,7 @@ mod tests {
             transport::{EndpointClass, TlsTrust, TransportConfig, parse_endpoint},
         },
     };
+    use lightwell_testkit::ProofEndpoint;
     use std::fs;
 
     fn assert_send<T: Send>() {}

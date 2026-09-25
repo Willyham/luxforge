@@ -1,0 +1,17 @@
+[package]
+name = "lightwell-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Test fixtures the workspace's tests and xtask share. Only `[dev-dependencies]` and xtask name this
+# crate, so no build of a shipped binary compiles it.
+[dependencies]
+lightwell-core = { path = "../lightwell-core" }
+rustls.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

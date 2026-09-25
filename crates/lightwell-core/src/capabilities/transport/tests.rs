@@ -1,12 +1,13 @@
 //! End-to-end transport tests against loopback servers, a fake resolver and a connector that routes
 //! chosen public addresses to those servers. Nothing here leaves the machine.
-use super::{exchange::Stream, *};
+use super::*;
+use lightwell_testkit::{Options, Request, TestServer, send};
 use rustls::{
-    ServerConfig, ServerConnection, StreamOwned,
+    ServerConfig,
     pki_types::{PrivateKeyDer, pem::PemObject},
 };
 use std::{
-    io::{self, Read},
+    io,
     net::{IpAddr, SocketAddr, TcpListener},
     path::PathBuf,
     sync::{
@@ -45,100 +46,9 @@ fn server_tls() -> Arc<ServerConfig> {
     )
 }
 
-/// Read one request head and its `Content-Length` body, as text.
-fn read_request(stream: &mut dyn Read) -> Option<String> {
-    let mut data = Vec::new();
-    let mut buffer = [0; 4096];
-    let head_end = loop {
-        if let Some(at) = data.windows(4).position(|window| window == b"\r\n\r\n") {
-            break at + 4;
-        }
-        let read = stream.read(&mut buffer).ok().filter(|&read| read > 0)?;
-        data.extend_from_slice(&buffer[..read]);
-    };
-    let head = String::from_utf8_lossy(&data[..head_end]).to_ascii_lowercase();
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("content-length: "))
-        .map_or(0, |value| value.trim().parse().unwrap());
-    while data.len() < head_end + length {
-        let read = stream.read(&mut buffer).ok().filter(|&read| read > 0)?;
-        data.extend_from_slice(&buffer[..read]);
-    }
-    Some(String::from_utf8_lossy(&data).into_owned())
-}
-
-/// A loopback server that records every request and answers connection `n` with `respond`.
-struct Server {
-    address: SocketAddr,
-    scheme: &'static str,
-    requests: Arc<Mutex<Vec<String>>>,
-}
-
-impl Server {
-    fn start(
-        tls: Option<Arc<ServerConfig>>,
-        respond: impl Fn(usize, &mut dyn Write) + Send + 'static,
-    ) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&requests);
-        let scheme = if tls.is_some() { "https" } else { "http" };
-        thread::spawn(move || {
-            for (index, socket) in listener.incoming().enumerate() {
-                let Ok(socket) = socket else { return };
-                socket
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let handle = |stream: &mut dyn Stream| {
-                    if let Some(request) = read_request(stream) {
-                        recorded.lock().unwrap().push(request);
-                        respond(index, stream);
-                    }
-                };
-                match &tls {
-                    Some(config) => {
-                        let session = ServerConnection::new(Arc::clone(config)).unwrap();
-                        let mut stream = StreamOwned::new(session, socket);
-                        handle(&mut stream);
-                        stream.conn.send_close_notify();
-                        let _ = stream.flush();
-                    }
-                    None => handle(&mut { socket }),
-                }
-            }
-        });
-        Self {
-            address,
-            scheme,
-            requests,
-        }
-    }
-
-    /// A plain server that answers connection `n` with `responses[n]`, or the last one.
-    fn canned(responses: Vec<Vec<u8>>) -> Self {
-        Self::start(None, move |index, out| {
-            reply(out, &responses[index.min(responses.len() - 1)]);
-        })
-    }
-
-    fn origin(&self) -> String {
-        format!("{}://{}", self.scheme, self.address)
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("{}{path}", self.origin())
-    }
-
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
-    }
-}
-
-fn reply(out: &mut dyn Write, bytes: &[u8]) {
-    let _ = out.write_all(bytes);
-    let _ = out.flush();
+/// The requests a server read, each as it arrived.
+fn requests(server: &TestServer) -> Vec<String> {
+    server.requests().iter().map(Request::text).collect()
 }
 
 /// Answers from a list, one per call, repeating the last; counts calls.
@@ -373,13 +283,14 @@ fn a_resolution_with_any_non_public_address_is_refused_before_connecting() {
 
 #[test]
 fn a_remote_https_download_resolves_once_and_cannot_be_rebound() {
-    let server = Server::start(Some(server_tls()), |_, out| {
-        reply(out, b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\npalette");
-    });
+    let server = TestServer::https(server_tls(), |_, out| {
+        send(out, b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\npalette");
+    })
+    .unwrap();
     // The first lookup answers a public address; any later one would answer a private address.
     let resolver = FakeResolver::new(vec![vec![PUBLIC], vec!["10.0.0.1".parse().unwrap()]]);
     let public = SocketAddr::new(PUBLIC, 443);
-    let routes = Routes::to(public, server.address);
+    let routes = Routes::to(public, server.address());
     let transport = transport(test_roots(), resolver.clone(), routes.clone());
     let download = request(Method::Get, "https://downloads.example/models/palette.bin");
 
@@ -393,7 +304,7 @@ fn a_remote_https_download_resolves_once_and_cannot_be_rebound() {
     );
     assert_eq!(resolver.calls(), 1, "one lookup per connection");
     assert_eq!(routes.attempts(), vec![public], "only the checked address");
-    let seen = server.requests();
+    let seen = requests(&server);
     assert!(seen[0].starts_with("GET /models/palette.bin HTTP/1.1\r\nhost: downloads.example\r\n"));
 
     let again = fetch(&transport, &download, &Plan::default());
@@ -435,10 +346,10 @@ fn plain_http_is_refused_for_anything_but_loopback() {
 
 #[test]
 fn loopback_http_get_streams_a_content_length_body() {
-    let server = Server::canned(vec![
+    let server = TestServer::canned(vec![
         b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Extra:  padded \r\nContent-Length: 11\r\n\r\nhello world"
             .to_vec(),
-    ]);
+    ]).unwrap();
     let fetched = fetch(
         &loopback(),
         &request(Method::Get, &server.url("/v1/status?verbose=1")),
@@ -455,12 +366,12 @@ fn loopback_http_get_streams_a_content_length_body() {
         server.url("/v1/status?verbose=1")
     );
     assert_eq!(fetched.progress.last(), Some(&(11, Some(11))));
-    let seen = &server.requests()[0];
+    let seen = &requests(&server)[0];
     // Header names are case-insensitive; the client writes them lowercased.
     let expected = format!(
         "GET /v1/status?verbose=1 HTTP/1.1\r\nhost: {}\r\nuser-agent: Lightwell/{}\r\n\
          accept-encoding: identity\r\nconnection: close\r\n\r\n",
-        server.address,
+        server.address(),
         env!("CARGO_PKG_VERSION")
     );
     assert_eq!(seen, &expected);
@@ -468,11 +379,12 @@ fn loopback_http_get_streams_a_content_length_body() {
 
 #[test]
 fn loopback_http_post_sends_a_host_framed_body_and_decodes_a_chunked_reply() {
-    let server = Server::canned(vec![
+    let server = TestServer::canned(vec![
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
           4;name=value\r\n{\"ok\r\n6\r\n\":true\r\n1\r\n}\r\n0\r\nX-Trailer: done\r\n\r\n"
             .to_vec(),
-    ]);
+    ])
+    .unwrap();
     let mut post = request(Method::Post, &server.url("/v1/run"));
     post.headers = vec![
         ("Content-Type".into(), "application/json".into()),
@@ -489,7 +401,7 @@ fn loopback_http_post_sends_a_host_framed_body_and_decodes_a_chunked_reply() {
     assert_eq!(fetched.ok().status, 200);
     assert_eq!(fetched.body, br#"{"ok":true}"#);
     assert_eq!(fetched.progress.last(), Some(&(11, None)));
-    let seen = &server.requests()[0];
+    let seen = &requests(&server)[0];
     assert!(seen.starts_with("POST /v1/run HTTP/1.1\r\n"), "{seen}");
     assert!(seen.contains("\r\ncontent-length: 16\r\n"), "{seen}");
     assert!(seen.contains("\r\nauthorization: Bearer sentinel-token\r\n"));
@@ -498,11 +410,12 @@ fn loopback_http_post_sends_a_host_framed_body_and_decodes_a_chunked_reply() {
 
 #[test]
 fn non_success_statuses_are_returned_as_data() {
-    let server = Server::canned(vec![
+    let server = TestServer::canned(vec![
         b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\n\r\nbusy".to_vec(),
         b"HTTP/1.1 304 Not Modified\r\nContent-Length: 99\r\n\r\n".to_vec(),
         b"HTTP/1.0 200 OK\r\n\r\nread to close".to_vec(),
-    ]);
+    ])
+    .unwrap();
     let transport = loopback();
     let busy = fetch(
         &transport,
@@ -574,13 +487,14 @@ fn a_request_body_over_its_limit_is_refused_before_connecting() {
 
 #[test]
 fn a_declared_length_over_the_limit_is_refused_before_reading_the_body() {
-    let server = Server::canned(vec![
+    let server = TestServer::canned(vec![
         [
             b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n".as_slice(),
             &[b'x'; 4096],
         ]
         .concat(),
-    ]);
+    ])
+    .unwrap();
     let plan = Plan {
         max_response_bytes: 1000,
         ..Plan::default()
@@ -598,7 +512,7 @@ fn a_streamed_body_crossing_the_limit_is_cut_off_before_the_crossing_piece() {
         chunk.repeat(3)
     );
     let closed = format!("HTTP/1.1 200 OK\r\n\r\n{}", "y".repeat(1500));
-    let server = Server::canned(vec![chunked.into_bytes(), closed.into_bytes()]);
+    let server = TestServer::canned(vec![chunked.into_bytes(), closed.into_bytes()]).unwrap();
     let plan = Plan {
         max_response_bytes: 1000,
         ..Plan::default()
@@ -651,12 +565,13 @@ fn a_response_head_over_its_bounds_is_refused() {
         ("trailers", trailers),
         ("long trailer", long_trailer),
     ];
-    let server = Server::canned(
+    let server = TestServer::canned(
         cases
             .iter()
             .map(|(_, bytes)| bytes.clone().into_bytes())
             .collect(),
-    );
+    )
+    .unwrap();
     let transport = loopback();
     for (name, _) in cases {
         let fetched = fetch(
@@ -670,11 +585,12 @@ fn a_response_head_over_its_bounds_is_refused() {
 
 #[test]
 fn interim_responses_are_skipped_and_identical_lengths_accepted() {
-    let server = Server::canned(vec![
+    let server = TestServer::canned(vec![
         b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n\
           HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Length: 3\r\n\r\nabc"
             .to_vec(),
-    ]);
+    ])
+    .unwrap();
     let fetched = fetch(
         &loopback(),
         &request(Method::Get, &server.url("/")),
@@ -707,7 +623,8 @@ fn ambiguous_malformed_or_encoded_responses_are_read_errors() {
         ("switched", b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"),
         ("status range", b"HTTP/1.1 600 Beyond\r\nContent-Length: 0\r\n\r\n"),
     ];
-    let server = Server::canned(cases.iter().map(|(_, bytes)| bytes.to_vec()).collect());
+    let server =
+        TestServer::canned(cases.iter().map(|(_, bytes)| bytes.to_vec()).collect()).unwrap();
     let transport = loopback();
     for (name, _) in cases {
         let fetched = fetch(
@@ -731,7 +648,7 @@ fn ambiguous_malformed_or_encoded_responses_are_read_errors() {
 
 #[test]
 fn a_silent_server_hits_the_read_deadline() {
-    let server = Server::start(None, |_, _| thread::sleep(Duration::from_secs(3)));
+    let server = TestServer::http(|_, _| thread::sleep(Duration::from_secs(3))).unwrap();
     let plan = Plan {
         read_timeout: Duration::from_millis(300),
         ..Plan::default()
@@ -752,13 +669,14 @@ fn a_silent_server_hits_the_read_deadline() {
 
 #[test]
 fn a_trickling_server_hits_the_total_deadline() {
-    let server = Server::start(None, |_, out| {
-        reply(out, b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n");
+    let server = TestServer::http(|_, out| {
+        send(out, b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n");
         for _ in 0..100 {
-            reply(out, b"x");
+            send(out, b"x");
             thread::sleep(Duration::from_millis(50));
         }
-    });
+    })
+    .unwrap();
     let plan = Plan {
         read_timeout: Duration::from_secs(1),
         total_timeout: Duration::from_millis(500),
@@ -777,13 +695,14 @@ fn a_trickling_server_hits_the_total_deadline() {
 
 #[test]
 fn cancelling_a_stalled_body_returns_cancelled_promptly() {
-    let server = Server::start(None, |_, out| {
-        reply(
+    let server = TestServer::http(|_, out| {
+        send(
             out,
             b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789",
         );
         thread::sleep(Duration::from_secs(5));
-    });
+    })
+    .unwrap();
     let cancel_after = Duration::from_millis(300);
     let plan = Plan {
         cancel_after: Some(cancel_after),
@@ -859,24 +778,26 @@ fn connection_attempts_share_the_request_deadline() {
 
 #[test]
 fn localhost_is_resolved_by_the_system_resolver_to_loopback_addresses() {
-    let server = Server::canned(vec![
+    let server = TestServer::canned(vec![
         b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nlocal".to_vec(),
-    ]);
-    let url = format!("http://localhost:{}/", server.address.port());
+    ])
+    .unwrap();
+    let url = format!("http://localhost:{}/", server.address().port());
     let fetched = fetch(&loopback(), &request(Method::Get, &url), &Plan::default());
     assert_eq!(fetched.body, b"local");
-    assert!(server.requests()[0].contains(&format!(
+    assert!(requests(&server)[0].contains(&format!(
         "\r\nhost: localhost:{}\r\n",
-        server.address.port()
+        server.address().port()
     )));
 }
 
 #[test]
 fn redirects_are_refused_unless_the_policy_allows_them() {
-    let target = Server::canned(vec![
+    let target = TestServer::canned(vec![
         b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
-    ]);
-    let origin = Server::canned(vec![redirect_to(302, &target.url("/next"))]);
+    ])
+    .unwrap();
+    let origin = TestServer::canned(vec![redirect_to(302, &target.url("/next"))]).unwrap();
     let fetched = fetch(
         &loopback(),
         &request(Method::Get, &origin.url("/")),
@@ -888,15 +809,16 @@ fn redirects_are_refused_unless_the_policy_allows_them() {
     assert_eq!(fetched.code(), "validation");
     assert_eq!(fetched.error().detail, "redirect refused");
     assert!(fetched.body.is_empty());
-    assert!(target.requests().is_empty());
+    assert!(requests(&target).is_empty());
 }
 
 #[test]
 fn a_redirect_to_a_listed_origin_is_followed_with_get_and_without_authorization() {
-    let target = Server::canned(vec![
+    let target = TestServer::canned(vec![
         b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone".to_vec(),
-    ]);
-    let origin = Server::canned(vec![redirect_to(307, &target.url("/next"))]);
+    ])
+    .unwrap();
+    let origin = TestServer::canned(vec![redirect_to(307, &target.url("/next"))]).unwrap();
     let mut post = request(Method::Post, &origin.url("/start"));
     post.headers = vec![
         ("Authorization".into(), "Bearer sentinel-token".into()),
@@ -911,8 +833,8 @@ fn a_redirect_to_a_listed_origin_is_followed_with_get_and_without_authorization(
     let fetched = fetch(&loopback(), &post, &plan);
     assert_eq!(fetched.body, b"done");
     assert_eq!(fetched.ok().final_url.as_str(), target.url("/next"));
-    assert!(origin.requests()[0].contains("\r\nauthorization: Bearer sentinel-token\r\n"));
-    let followed = &target.requests()[0];
+    assert!(requests(&origin)[0].contains("\r\nauthorization: Bearer sentinel-token\r\n"));
+    let followed = &requests(&target)[0];
     assert!(followed.starts_with("GET /next HTTP/1.1\r\n"), "{followed}");
     assert!(followed.contains("\r\nx-request: kept\r\n"), "{followed}");
     assert!(
@@ -926,10 +848,11 @@ fn a_redirect_to_a_listed_origin_is_followed_with_get_and_without_authorization(
 
 #[test]
 fn a_same_origin_redirect_keeps_authorization() {
-    let server = Server::canned(vec![
+    let server = TestServer::canned(vec![
         redirect_to(301, "/moved?to=here#ignored"),
         b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
-    ]);
+    ])
+    .unwrap();
     let mut get = request(Method::Get, &server.url("/"));
     get.headers = vec![("Authorization".into(), "Bearer sentinel-token".into())];
     let plan = Plan {
@@ -939,7 +862,7 @@ fn a_same_origin_redirect_keeps_authorization() {
     };
     let fetched = fetch(&loopback(), &get, &plan);
     assert_eq!(fetched.body, b"ok");
-    let seen = server.requests();
+    let seen = requests(&server);
     assert!(
         seen[1].starts_with("GET /moved?to=here HTTP/1.1\r\n"),
         "{}",
@@ -950,15 +873,17 @@ fn a_same_origin_redirect_keeps_authorization() {
 
 #[test]
 fn redirects_to_unlisted_origins_other_classes_or_plain_http_are_refused() {
-    let target = Server::canned(vec![
+    let target = TestServer::canned(vec![
         b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
-    ]);
-    let unlisted = Server::canned(vec![redirect_to(302, &target.url("/"))]);
-    let remote = Server::canned(vec![redirect_to(302, "https://downloads.example/")]);
-    let secure = Server::start(Some(server_tls()), {
+    ])
+    .unwrap();
+    let unlisted = TestServer::canned(vec![redirect_to(302, &target.url("/"))]).unwrap();
+    let remote = TestServer::canned(vec![redirect_to(302, "https://downloads.example/")]).unwrap();
+    let secure = TestServer::https(server_tls(), {
         let location = target.url("/");
-        move |_, out| reply(out, &redirect_to(302, &location))
-    });
+        move |_, out| send(out, &redirect_to(302, &location))
+    })
+    .unwrap();
     let transport = loopback();
     for (origin, listed, reason) in [
         (&unlisted, vec![], "is not an allowed origin"),
@@ -982,12 +907,12 @@ fn redirects_to_unlisted_origins_other_classes_or_plain_http_are_refused() {
             fetched.error()
         );
     }
-    assert!(target.requests().is_empty());
+    assert!(requests(&target).is_empty());
 }
 
 #[test]
 fn the_redirect_count_is_capped() {
-    let server = Server::canned(vec![redirect_to(302, "/again")]);
+    let server = TestServer::canned(vec![redirect_to(302, "/again")]).unwrap();
     let plan = Plan {
         redirects: 2,
         origins: vec![server.origin()],
@@ -996,7 +921,7 @@ fn the_redirect_count_is_capped() {
     let fetched = fetch(&loopback(), &request(Method::Get, &server.url("/")), &plan);
     assert_eq!(fetched.code(), "validation");
     assert!(fetched.error().detail.contains("more than 2 redirects"));
-    assert_eq!(server.requests().len(), 3);
+    assert_eq!(requests(&server).len(), 3);
 
     let (transport, _, routes) = isolated();
     let plan = Plan {
@@ -1014,9 +939,10 @@ fn the_redirect_count_is_capped() {
 
 #[test]
 fn loopback_https_works_with_the_test_roots_and_fails_with_platform_trust() {
-    let server = Server::start(Some(server_tls()), |_, out| {
-        reply(out, b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecure");
-    });
+    let server = TestServer::https(server_tls(), |_, out| {
+        send(out, b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecure");
+    })
+    .unwrap();
     let get = request(Method::Get, &server.url("/"));
     let fetched = fetch(&loopback(), &get, &Plan::default());
     assert_eq!(fetched.body, b"secure");
@@ -1039,22 +965,18 @@ fn loopback_https_works_with_the_test_roots_and_fails_with_platform_trust() {
 fn a_tls_body_that_ends_without_the_close_signal_is_refused() {
     // Answers with a close-delimited body and then drops the connection without `close_notify`,
     // so the body's end cannot be told from a truncation.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let config = server_tls();
-    thread::spawn(move || {
-        for socket in listener.incoming() {
-            let Ok(socket) = socket else { return };
-            let session = ServerConnection::new(Arc::clone(&config)).unwrap();
-            let mut stream = StreamOwned::new(session, socket);
-            if read_request(&mut stream).is_some() {
-                reply(&mut stream, b"HTTP/1.1 200 OK\r\n\r\npartial");
-            }
-        }
-    });
+    let server = TestServer::start(
+        Options {
+            tls: Some(server_tls()),
+            truncate_tls: true,
+            ..Options::default()
+        },
+        |_, out| send(out, b"HTTP/1.1 200 OK\r\n\r\npartial"),
+    )
+    .unwrap();
     let fetched = fetch(
         &loopback(),
-        &request(Method::Get, &format!("https://{address}/")),
+        &request(Method::Get, &server.url("/")),
         &Plan::default(),
     );
     assert_eq!(fetched.code(), "read-error");
@@ -1067,11 +989,12 @@ fn a_tls_body_that_ends_without_the_close_signal_is_refused() {
 
 #[test]
 fn a_certificate_for_another_name_is_refused() {
-    let server = Server::start(Some(server_tls()), |_, out| {
-        reply(out, b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-    });
+    let server = TestServer::https(server_tls(), |_, out| {
+        send(out, b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    })
+    .unwrap();
     let resolver = FakeResolver::new(vec![vec![PUBLIC]]);
-    let routes = Routes::to(SocketAddr::new(PUBLIC, 443), server.address);
+    let routes = Routes::to(SocketAddr::new(PUBLIC, 443), server.address());
     let transport = transport(test_roots(), resolver, routes.clone());
     let fetched = fetch(
         &transport,

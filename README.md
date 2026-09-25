@@ -105,6 +105,7 @@ Lightwell is written in Rust with a deliberately small core. The core owns the c
 | `lightwell-raw` | RAW decoding and development |
 | `lightwell-ui` | The widget library (built on [iced](https://iced.rs)), with no dependency on the core |
 | `lightwell-app` | The desktop app and the headless `lightwell-json` binary |
+| `lightwell-testkit` | Fixtures shared by the tests and `xtask`, such as the loopback test server; never shipped |
 | `xtask` | Every build, check, evidence and packaging command |
 
 The editor tells you what it's doing. The Performance section shows memory, CPU and GPU use alongside whatever is running in the background, and the same numbers are available to any client through `resources.read` and `activity.list`.

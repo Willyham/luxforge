@@ -275,7 +275,7 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     );
-    let endpoint = lightwell_core::ProofEndpoint::start(&key).unwrap();
+    let endpoint = lightwell_testkit::ProofEndpoint::start(&key).unwrap();
     let data_root = std::env::temp_dir().join(format!(
         "lightwell-json-cli-proof-{}-{}",
         std::process::id(),

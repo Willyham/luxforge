@@ -21,9 +21,10 @@ use crate::{
     },
 };
 use lightwell_core::{
-    AssetId, HostConfig, ModuleDescriptor, OwnerHandle, ProofEndpoint,
+    AssetId, HostConfig, ModuleDescriptor, OwnerHandle,
     capabilities::{jobs::JobStatus, secrets::MemorySecretStore},
 };
+use lightwell_testkit::ProofEndpoint;
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,

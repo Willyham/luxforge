@@ -9,8 +9,8 @@ use super::{
     secrets::MemorySecretStore,
     settings::{CREATE_PROFILE, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET},
     testing::{
-        CountingNet, LifecycleModule, MODULE, PALETTE, Probe, SWATCH, Server, enveloped,
-        lane_descriptor, lifecycle_descriptor, reply, sha256_hex, temp,
+        CountingNet, LifecycleModule, MODULE, PALETTE, Probe, SWATCH, enveloped, lane_descriptor,
+        lifecycle_descriptor, sha256_hex, temp,
     },
     transport::{TlsTrust, TransportConfig},
 };
@@ -18,6 +18,7 @@ use crate::{
     ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, EditorService, LocalServer,
     ModuleDescriptor, ModuleRegistry, OwnerHandle,
 };
+use lightwell_testkit::{TestServer, respond};
 use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell},
@@ -49,7 +50,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(name: &str, server: &Server) -> Self {
+    fn new(name: &str, server: &TestServer) -> Self {
         let root = temp(name);
         fs::create_dir_all(&root).unwrap();
         Self {
@@ -330,34 +331,36 @@ fn download_scope(fixture: &Fixture, resource: &str) -> Value {
 }
 
 /// A server that answers `/palette` and `/swatch` with their pinned bytes.
-fn serving() -> Server {
-    Server::start(|path, stream| match path {
-        "/palette" => reply(stream, "200 OK", "", PALETTE),
-        "/swatch" => reply(stream, "200 OK", "", SWATCH),
-        _ => reply(stream, "404 Not Found", "", b""),
+fn serving() -> TestServer {
+    TestServer::http(|request, out| match request.path.as_str() {
+        "/palette" => respond(out, "200 OK", "", PALETTE),
+        "/swatch" => respond(out, "200 OK", "", SWATCH),
+        _ => respond(out, "404 Not Found", "", b""),
     })
+    .unwrap()
 }
 
 /// A server whose `/palette` sends its head and four bytes, then waits for `release` before the
 /// rest; `/swatch` answers at once.
-fn stalling(release: Arc<AtomicBool>) -> Server {
-    Server::start(move |path, stream| match path {
+fn stalling(release: Arc<AtomicBool>) -> TestServer {
+    TestServer::http(move |request, out| match request.path.as_str() {
         "/palette" => {
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 PALETTE.len()
             );
-            let _ = stream.write_all(head.as_bytes());
-            let _ = stream.write_all(&PALETTE[..4]);
-            let _ = stream.flush();
+            let _ = out.write_all(head.as_bytes());
+            let _ = out.write_all(&PALETTE[..4]);
+            let _ = out.flush();
             let deadline = Instant::now() + Duration::from_secs(20);
             while !release.load(Ordering::SeqCst) && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(5));
             }
-            let _ = stream.write_all(&PALETTE[4..]);
+            let _ = out.write_all(&PALETTE[4..]);
         }
-        _ => reply(stream, "200 OK", "", SWATCH),
+        _ => respond(out, "200 OK", "", SWATCH),
     })
+    .unwrap()
 }
 
 /// The latest release job in a module status. The status names it as the activation's job only
@@ -1234,22 +1237,23 @@ fn a_download_installs_the_pinned_bytes_with_their_record() {
 fn every_failed_install_leaves_nothing_installed_and_nothing_staged() {
     let mode = Arc::new(Mutex::new("hash"));
     let serving_mode = mode.clone();
-    let server = Server::start(move |_, stream| {
+    let server = TestServer::http(move |_, out| {
         let current = *serving_mode.lock().unwrap();
         match current {
-            "hash" => reply(stream, "200 OK", "", b"twelve BYTES"),
-            "short" => reply(stream, "200 OK", "", b"twelve"),
-            "oversized" => reply(stream, "200 OK", "", b"twelve bytes and more"),
-            "redirect" => reply(
-                stream,
+            "hash" => respond(out, "200 OK", "", b"twelve BYTES"),
+            "short" => respond(out, "200 OK", "", b"twelve"),
+            "oversized" => respond(out, "200 OK", "", b"twelve bytes and more"),
+            "redirect" => respond(
+                out,
                 "302 Found",
                 "Location: http://127.0.0.1:1/palette\r\n",
                 b"",
             ),
-            "error" => reply(stream, "500 Internal Server Error", "", b""),
-            _ => reply(stream, "200 OK", "", PALETTE),
+            "error" => respond(out, "500 Internal Server Error", "", b""),
+            _ => respond(out, "200 OK", "", PALETTE),
         }
-    });
+    })
+    .unwrap();
     let fixture = Fixture::new("failures", &server);
     let owner = fixture.start();
     let install = json!({"module_id": MODULE, "resource_id": "palette"});
