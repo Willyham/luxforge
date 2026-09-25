@@ -1369,6 +1369,11 @@ fn value_model(
                 declared.kind.name()
             ))
         }
+        // An identity names the object a request addresses; the panel's selection supplies it.
+        ParameterKind::Identity { .. } => ControlModel::Unsupported(format!(
+            "identity parameter {parameter} of action {action} is supplied by the selection, not \
+             a control"
+        )),
     }
 }
 

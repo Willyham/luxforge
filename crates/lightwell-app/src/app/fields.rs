@@ -216,6 +216,13 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
         // A setting's endpoint and secret never have a default: a destination is the person's
         // choice, and a secret is never shown.
         ParameterKind::Endpoint { .. } | ParameterKind::Secret { .. } => String::new(),
+        // An identity names an object the panel's own selection supplies; nothing types one.
+        ParameterKind::Identity { .. } => parameter
+            .default
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default(),
     }
 }
 
@@ -259,7 +266,8 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
         | ParameterKind::String { .. }
         | ParameterKind::Settings
         | ParameterKind::Endpoint { .. }
-        | ParameterKind::Secret { .. } => return 0,
+        | ParameterKind::Secret { .. }
+        | ParameterKind::Identity { .. } => return 0,
     };
     if let Some(precision) = parameter.precision {
         return usize::from(precision).min(lightwell_ui::geometry::MAX_DECIMALS);
@@ -376,7 +384,7 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
                     .map(|_| value)
             }),
         // Text is taken as typed, untrimmed: the parameter's own check decides what it accepts.
-        ParameterKind::String { .. } => {
+        ParameterKind::String { .. } | ParameterKind::Identity { .. } => {
             let value = Value::from(text);
             check_value(parameter, &value)
                 .map_err(|error| error.detail)
@@ -428,9 +436,9 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
         ParameterKind::Curve { .. } | ParameterKind::Points { .. } | ParameterKind::Settings => {
             value.to_string()
         }
-        ParameterKind::String { .. } | ParameterKind::Endpoint { .. } => {
-            value.as_str().unwrap().to_owned()
-        }
+        ParameterKind::String { .. }
+        | ParameterKind::Endpoint { .. }
+        | ParameterKind::Identity { .. } => value.as_str().unwrap().to_owned(),
         // No plain value of a secret passes the check above.
         ParameterKind::Secret { .. } => unreachable!("a secret has no plain value"),
     })

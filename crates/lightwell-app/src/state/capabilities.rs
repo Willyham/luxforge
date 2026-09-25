@@ -1033,7 +1033,8 @@ fn field_model(
         | ParameterKind::Points { .. }
         | ParameterKind::Artifact
         | ParameterKind::Curve { .. }
-        | ParameterKind::Settings => FieldKindModel::Text {
+        | ParameterKind::Settings
+        | ParameterKind::Identity { .. } => FieldKindModel::Text {
             display: value.map(Value::to_string).unwrap_or_default(),
             typing,
             class: None,

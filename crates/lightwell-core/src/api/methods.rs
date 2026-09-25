@@ -665,9 +665,10 @@ pub(super) fn mutates(method: &Method, result: Option<&Value>) -> bool {
 /// `optional` are the method's own top-level fields; a generated method also lists its `declared`
 /// parameters and, when it is an action or a mask command, whether it is a `patch`.
 ///
-/// A declared parameter is required exactly when the method is not a patch, the descriptor declares
-/// it required and it carries no default: a patch carries whichever fields the caller names, and a
-/// default is what a client seeds or resets the field to. Every other one is optional.
+/// A declared parameter is required exactly when the descriptor declares it required, it carries no
+/// default and the method is not a patch or the parameter is an identity: a patch carries whichever
+/// fields the caller names, but the identities it addresses say which state those fields merge over,
+/// and a default is what a client seeds or resets the field to. Every other one is optional.
 fn method_schema(
     method: &Method,
     mut required: Vec<Value>,
@@ -677,7 +678,10 @@ fn method_schema(
     patch: Option<bool>,
 ) -> Value {
     for parameter in declared.unwrap_or_default() {
-        if patch != Some(true) && parameter.required && parameter.default.is_none() {
+        if parameter.required
+            && parameter.default.is_none()
+            && (patch != Some(true) || parameter.kind.is_identity())
+        {
             required.push(json!(parameter.name));
         } else {
             optional.insert(parameter.name.clone(), json!(parameter.notes));

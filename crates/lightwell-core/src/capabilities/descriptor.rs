@@ -1106,6 +1106,25 @@ mod tests {
                 },
                 "parameter key of task generate-test-tint declares kind secret, which only a module setting declares",
             ),
+            // An identity names one of the host's own objects: neither a setting nor a module's
+            // action takes one.
+            (
+                |d| {
+                    field(d, "note").parameter.kind = ParameterKind::Identity {
+                        of: crate::IdentityKind::Mask,
+                    }
+                },
+                "setting note declares kind identity, which a setting does not take",
+            ),
+            (
+                |d| {
+                    d.actions[0].parameters.push(ParameterDescriptor::identity(
+                        "target",
+                        crate::IdentityKind::Mask,
+                    ))
+                },
+                "parameter target of action apply-test-tint declares kind identity, which only a host command declares",
+            ),
             (
                 |d| field(d, "note").label = " ".into(),
                 "setting note has no label",

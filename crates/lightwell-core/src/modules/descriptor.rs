@@ -214,6 +214,47 @@ pub enum ParameterKind {
     Secret {
         max_length: usize,
     },
+    /// The identity of one host object a request addresses — a mask, a component inside one, or a
+    /// stroke by its content address — as the opaque string the host minted for it. The generic
+    /// check validates its syntax; the command that resolves it refuses one the stack does not hold.
+    /// An identity addresses state rather than setting it, so a required one stays required on a
+    /// patch, which demands no other field.
+    Identity {
+        of: IdentityKind,
+    },
+}
+
+/// Which host object a [`ParameterKind::Identity`] parameter names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IdentityKind {
+    /// A mask of the recipe, `mask-…`.
+    Mask,
+    /// A component of one mask, `component-…`.
+    Component,
+    /// One stroke of a brush component, by its content address.
+    Stroke,
+}
+
+impl IdentityKind {
+    /// The object, as a refusal names it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mask => "mask",
+            Self::Component => "component",
+            Self::Stroke => "stroke",
+        }
+    }
+
+    /// Whether `text` is an identity of this kind, by the parser the identity type owns, so the
+    /// generic check and the command that resolves the identity cannot disagree about its shape.
+    pub fn accepts(self, text: &str) -> bool {
+        match self {
+            Self::Mask => crate::MaskId::parse(text).is_ok(),
+            Self::Component => crate::ComponentId::parse(text).is_ok(),
+            Self::Stroke => crate::path::StrokeId::parse(text).is_ok(),
+        }
+    }
 }
 
 /// The longest endpoint URL a value may be before it is parsed, in bytes.
@@ -237,6 +278,7 @@ impl ParameterKind {
             Self::Settings => "settings",
             Self::Endpoint { .. } => "endpoint",
             Self::Secret { .. } => "secret",
+            Self::Identity { .. } => "identity",
         }
     }
 
@@ -244,6 +286,18 @@ impl ParameterKind {
     /// [`Self::Secret`].
     pub fn setting_only(&self) -> bool {
         matches!(self, Self::Endpoint { .. } | Self::Secret { .. })
+    }
+
+    /// Whether only the host declares this kind, for its own objects' commands: see
+    /// [`Self::Identity`]. A module's action, query or task, and a module setting, refuse it.
+    pub fn host_only(&self) -> bool {
+        self.is_identity()
+    }
+
+    /// Whether this parameter names an object rather than setting a value, which is what keeps a
+    /// required one required on a patch.
+    pub fn is_identity(&self) -> bool {
+        matches!(self, Self::Identity { .. })
     }
 }
 
@@ -380,6 +434,11 @@ impl ParameterDescriptor {
 
     pub fn secret(name: impl Into<String>, max_length: usize) -> Self {
         Self::new(name, ParameterKind::Secret { max_length })
+    }
+
+    /// The identity of one host object of kind `of`.
+    pub fn identity(name: impl Into<String>, of: IdentityKind) -> Self {
+        Self::new(name, ParameterKind::Identity { of })
     }
 
     /// A pixel coordinate of a stage, `0..=MAX_COORDINATE` px, required: a descriptor cannot know
@@ -1634,6 +1693,15 @@ pub(crate) fn check_parameter_declarations(
                 parameter.kind.name()
             )));
         }
+        // An identity names one of the host's own objects, which only the host's commands address;
+        // a module edits through the host's `mask` target and never names a mask itself.
+        if parameter.kind.host_only() {
+            return Err(validation(format!(
+                "parameter {} of {kind} {id} declares kind {}, which only a host command declares",
+                parameter.name,
+                parameter.kind.name()
+            )));
+        }
         check_declaration(parameter)?;
     }
     Ok(())
@@ -2161,6 +2229,14 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 "parameter {name} is a secret, which is never a plain value"
             )));
         }
+        ParameterKind::Identity { of } => {
+            if !value.as_str().is_some_and(|text| of.accepts(text)) {
+                return Err(validation(format!(
+                    "parameter {name} must be a {} identity",
+                    of.as_str()
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -2211,7 +2287,9 @@ fn check_settings(name: &str, value: &Value) -> Result<(), Error> {
 ///
 /// A patch action is checked differently: the fields the caller sent are validated and returned as
 /// sent, no declared default is applied and no required parameter is demanded, so the module
-/// receives exactly the named fields and merges them over the state it already holds.
+/// receives exactly the named fields and merges them over the state it already holds. The one
+/// exception is a required [`ParameterKind::Identity`]: it says *which* state the patch is merged
+/// over, so a patch still demands it.
 pub fn check_parameters(
     action: &ActionDescriptor,
     input: &Value,
@@ -2259,6 +2337,16 @@ pub(crate) fn check_declared_values(
                 declared(name).expect("every key was matched to a declared parameter above");
             check_value(parameter, value)?;
             checked.insert(name.clone(), value.clone());
+        }
+        if let Some(missing) = parameters.iter().find(|parameter| {
+            parameter.required
+                && parameter.kind.is_identity()
+                && !object.contains_key(&parameter.name)
+        }) {
+            return Err(validation(format!(
+                "missing required parameter {} for {what} {id}",
+                missing.name
+            )));
         }
         return Ok(checked);
     }
@@ -3688,6 +3776,104 @@ mod tests {
             assert_eq!(error.kind, ErrorKind::Validation, "{case}");
             assert_eq!(error.detail, fragment, "{case}");
         }
+    }
+
+    /// An identity is validated by its own type's parser and nothing else, serializes flat with the
+    /// object it names, and stays required on a patch, which demands no other field.
+    #[test]
+    fn identity_parameters_accept_only_their_own_kind_and_stay_required_on_a_patch() {
+        let mask = ParameterDescriptor::identity("mask", IdentityKind::Mask).required(true);
+        let component =
+            ParameterDescriptor::identity("component", IdentityKind::Component).required(true);
+        let stroke = ParameterDescriptor::identity("stroke", IdentityKind::Stroke);
+        assert_eq!(
+            serde_json::to_value(&mask).unwrap(),
+            json!({
+                "name": "mask",
+                "kind": "identity",
+                "of": "mask",
+                "required": true,
+                "default": null,
+                "unit": null,
+                "step": null,
+                "precision": null,
+                "notes": "",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ParameterDescriptor>(serde_json::to_value(&stroke).unwrap())
+                .unwrap(),
+            stroke
+        );
+        let mask_id = crate::MaskId::new();
+        let component_id = crate::ComponentId::new();
+        let stroke_id = "0".repeat(32);
+        check_value(&mask, &json!(mask_id.as_str())).unwrap();
+        check_value(&component, &json!(component_id.as_str())).unwrap();
+        check_value(&stroke, &json!(stroke_id)).unwrap();
+        for (parameter, value, detail) in [
+            (
+                &mask,
+                json!(component_id.as_str()),
+                "parameter mask must be a mask identity",
+            ),
+            (&mask, json!(7), "parameter mask must be a mask identity"),
+            (
+                &component,
+                json!(mask_id.as_str()),
+                "parameter component must be a component identity",
+            ),
+            (
+                &stroke,
+                json!("not-hex"),
+                "parameter stroke must be a stroke identity",
+            ),
+        ] {
+            let error = check_value(parameter, &value).expect_err(detail);
+            assert_eq!(error.kind, ErrorKind::Validation);
+            assert_eq!(error.detail, detail);
+        }
+        // Only the host declares an identity, for its own objects: a module's action refuses one.
+        assert_eq!(
+            with_hints(None, None, mask.clone())
+                .validate()
+                .unwrap_err()
+                .detail,
+            "parameter mask of action set-thing declares kind identity, which only a host command declares"
+        );
+        // And, like every other non-numeric kind, it carries no numeric hints.
+        assert!(check_declaration(&mask.clone().step(1.0)).is_err());
+        // A patch demands its required identities and nothing else.
+        let patch = [
+            mask.clone(),
+            component.clone(),
+            ParameterDescriptor::number("x0", 0.0, 1.0).required(true),
+        ];
+        let checked = check_declared_values(
+            "action",
+            "patch",
+            &patch,
+            true,
+            &json!({"mask": mask_id.as_str(), "component": component_id.as_str()}),
+        )
+        .unwrap();
+        assert_eq!(
+            checked.len(),
+            2,
+            "no default and no other field is demanded"
+        );
+        assert_eq!(
+            check_declared_values(
+                "action",
+                "patch",
+                &patch,
+                true,
+                &json!({"mask": mask_id.as_str(), "x0": 0.5}),
+            )
+            .unwrap_err()
+            .detail,
+            "missing required parameter component for action patch"
+        );
     }
 
     /// The generic settings check validates the shape of a set and nothing else: the actions and
