@@ -106,6 +106,10 @@ pub(crate) struct Boot {
     pub(crate) join: JoinHandle<()>,
     pub(crate) live_server: Option<LocalServer>,
     pub(crate) config: Config,
+    /// Production registers before platform initialization so its first import can already run.
+    /// Unit fixtures leave this unset and register when constructing the editor.
+    pub(crate) client: Option<ClientId>,
+    pub(crate) initial_import: Option<tasks::StartupImport>,
     /// The window's logical size at launch, before any resize event. The clipping overlay's cell
     /// grid is sized against the photo surface, which this and the panel flags give.
     pub(crate) window: (f32, f32),
@@ -265,12 +269,22 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         let _ = std::fs::remove_file(&session_file);
     }
     let live_server = LocalServer::start(owner.clone(), &session_file).ok();
+    // Queue only the first command-line file. The source worker can read and decode it while
+    // Iced/AppKit initializes, without making the window thread read the image or changing the
+    // normal adoption, history and error path. Evidence mode opens later files in order as usual.
+    let client = owner.register_with(ClientAuthority::Permissions);
+    let initial_import = config
+        .files
+        .front()
+        .map(|path| tasks::start_import(&owner, client, path));
     let hidden = config.hidden;
     let boot = Mutex::new(Some(Boot {
         owner,
         join,
         live_server,
         config,
+        client: Some(client),
+        initial_import,
         window: size,
     }));
     let application = iced::application(
@@ -635,11 +649,13 @@ impl Editor {
             join,
             live_server,
             mut config,
+            client,
+            initial_import,
             window,
         } = boot;
         // The desktop's own client may grant module permissions: it does so only after the person
         // presses Allow in its consent notice.
-        let client = owner.register_with(ClientAuthority::Permissions);
+        let client = client.unwrap_or_else(|| owner.register_with(ClientAuthority::Permissions));
         let script = std::mem::take(&mut config.script);
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
@@ -833,14 +849,14 @@ impl Editor {
         let presets = presets_task(editor.owner.clone(), editor.client);
         let first = match &mut editor.evidence {
             Some(evidence) => match evidence.queue.pop_front() {
-                Some(path) => editor.open(path),
+                Some(path) => editor.open_queued(path, initial_import),
                 None => {
                     evidence.capture_pending = true;
                     Task::none()
                 }
             },
             None => initial
-                .map(|path| editor.open(path))
+                .map(|path| editor.open_queued(path, initial_import))
                 .unwrap_or_else(Task::none),
         };
         editor.rederive();
@@ -1275,7 +1291,18 @@ impl Editor {
     }
 
     fn open(&mut self, path: PathBuf) -> Task<Message> {
+        self.open_queued(path, None)
+    }
+
+    fn open_queued(
+        &mut self,
+        path: PathBuf,
+        queued: Option<tasks::StartupImport>,
+    ) -> Task<Message> {
         self.begin_request();
+        if let Some(queued) = &queued {
+            self.activity.request_started = queued.started;
+        }
         let generation = self.activity.requested;
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
@@ -1296,6 +1323,7 @@ impl Editor {
             generation,
             self.open_generation.clone(),
             proxy,
+            queued.map(|queued| queued.result),
         )
     }
 
@@ -8607,6 +8635,24 @@ mod tests {
     fn short_ids_are_safe_for_status_display() {
         assert_eq!(short("abc"), "abc");
         assert_eq!(short("123456789012345"), "123456789012");
+    }
+
+    #[test]
+    fn initial_open_keeps_its_prequeue_clock_and_normal_generation() {
+        let (mut editor, catalog) = boot();
+        let started = Instant::now() - std::time::Duration::from_millis(25);
+        let _ = editor.open_queued(
+            PathBuf::from("missing-startup-photo.jpg"),
+            Some(tasks::StartupImport {
+                started,
+                result: Err("read-error: missing source".into()),
+            }),
+        );
+        assert_eq!(editor.activity.request_started, started);
+        assert_eq!(editor.activity.requested, 1);
+        assert_eq!(editor.open_generation.load(Ordering::Acquire), 1);
+        assert!(editor.activity.pending && editor.busy);
+        finish(editor, catalog);
     }
 
     #[test]

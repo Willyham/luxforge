@@ -84,6 +84,8 @@ impl Masking {
             join,
             live_server: None,
             config: Config::default(),
+            client: None,
+            initial_import: None,
             window: (1440.0, 900.0),
         });
         let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));

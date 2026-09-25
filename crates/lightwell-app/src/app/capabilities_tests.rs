@@ -77,6 +77,8 @@ impl Proof {
                 developer: true,
                 ..Config::default()
             },
+            client: None,
+            initial_import: None,
             window: (1440.0, 900.0),
         });
         let (mut listed, _) = call(&owner, editor.client, "module.list", json!({})).unwrap();

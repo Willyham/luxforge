@@ -403,41 +403,90 @@ pub(crate) fn import_task(
     generation: u64,
     open_guard: Arc<AtomicU64>,
     proxy: Option<ProxyBounds>,
+    queued: Option<Result<QueuedImport, String>>,
 ) -> Task<Message> {
     Task::perform(
         async move {
-            let (result, sequence) = call(&owner, client, "catalog.import", json!({"path":path}))?;
-            let job_id = result["job_id"]
-                .as_str()
-                .ok_or("catalog.import did not return a source job")?;
-            let state = wait_source_job(
+            import_now(
                 &owner,
                 client,
-                job_id,
-                Some((&open_guard, generation)),
-                None,
-            )?;
-            if open_guard.load(Ordering::Acquire) != generation {
-                let _ = call(&owner, client, "job.cancel", json!({"job_id":job_id}));
-                return Err("superseded open".into());
-            }
-            let (_, adopted_sequence) =
-                call(&owner, client, "job.adopt", json!({"job_id":job_id}))?;
-            let refreshed = refresh(
-                &owner,
-                client,
-                state.asset.id,
-                true,
-                sequence.max(adopted_sequence),
+                &path,
+                generation,
+                &open_guard,
                 proxy,
-            )?;
-            if open_guard.load(Ordering::Acquire) != generation {
-                return Err("superseded open".into());
-            }
-            Ok(refreshed)
+                queued,
+            )
         },
         move |result| Message::ImportRefreshed(generation, result.map(Box::new)),
     )
+}
+
+fn import_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    path: &Path,
+    generation: u64,
+    open_guard: &AtomicU64,
+    proxy: Option<ProxyBounds>,
+    queued: Option<Result<QueuedImport, String>>,
+) -> Result<Refresh, String> {
+    let QueuedImport { job_id, sequence } = match queued {
+        Some(result) => result?,
+        None => queue_import(owner, client, path)?,
+    };
+    let state = wait_source_job(owner, client, &job_id, Some((open_guard, generation)), None)?;
+    if open_guard.load(Ordering::Acquire) != generation {
+        let _ = call(owner, client, "job.cancel", json!({"job_id":job_id}));
+        return Err("superseded open".into());
+    }
+    let (_, adopted_sequence) = call(owner, client, "job.adopt", json!({"job_id":job_id}))?;
+    let refreshed = refresh(
+        owner,
+        client,
+        state.asset.id,
+        true,
+        sequence.max(adopted_sequence),
+        proxy,
+    )?;
+    if open_guard.load(Ordering::Acquire) != generation {
+        return Err("superseded open".into());
+    }
+    Ok(refreshed)
+}
+
+/// A queued import is still owned by the desktop client's normal open request. Starting it
+/// before the platform event loop lets the same bounded source worker prepare the first file
+/// while the window starts; the UI still waits, adopts and refreshes through `import_task`.
+#[derive(Debug)]
+pub(crate) struct QueuedImport {
+    job_id: String,
+    sequence: u64,
+}
+
+/// The initial request's clock starts when its source job is queued, before the event loop.
+/// Keep the original failure beside it so the normal open still reports that failure.
+pub(crate) struct StartupImport {
+    pub(crate) started: Instant,
+    pub(crate) result: Result<QueuedImport, String>,
+}
+
+pub(crate) fn start_import(owner: &OwnerHandle, client: ClientId, path: &Path) -> StartupImport {
+    let started = Instant::now();
+    let result = queue_import(owner, client, path);
+    StartupImport { started, result }
+}
+
+pub(crate) fn queue_import(
+    owner: &OwnerHandle,
+    client: ClientId,
+    path: &Path,
+) -> Result<QueuedImport, String> {
+    let (result, sequence) = call(owner, client, "catalog.import", json!({"path":path}))?;
+    let job_id = result["job_id"]
+        .as_str()
+        .ok_or("catalog.import did not return a source job")?
+        .to_owned();
+    Ok(QueuedImport { job_id, sequence })
 }
 
 pub(crate) fn state_task(
@@ -1472,6 +1521,75 @@ pub(crate) fn merge_current_entry(history: &mut HistoryPage, entry: HistoryEntry
 mod tests {
     use super::*;
     use crate::app::testing::entry;
+
+    #[test]
+    fn queued_startup_import_adopts_once_and_preserves_the_open_error() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-startup-import-{}-{}.sqlite",
+            std::process::id(),
+            REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg");
+        let queued = queue_import(&owner, client, &source).unwrap();
+        let job_id = queued.job_id.clone();
+        // Let the worker finish before constructing the ordinary open completion. The job must
+        // remain adoptable by the same client after this delay, without another import request.
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let (status, _) = call(&owner, client, "job.status", json!({"job_id":job_id})).unwrap();
+            if status["state"] == "ready" {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "startup import did not finish: {status}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let guard = AtomicU64::new(1);
+        let opened = import_now(&owner, client, &source, 1, &guard, None, Some(Ok(queued)))
+            .expect("the queued job stays adoptable");
+        assert_eq!(opened.history.as_ref().unwrap().entries.len(), 1);
+        let repeated = import_now(&owner, client, &source, 1, &guard, None, None)
+            .expect("a repeat open keeps the asset");
+        assert_eq!(repeated.state.asset.id, opened.state.asset.id);
+        assert_eq!(repeated.history.as_ref().unwrap().entries.len(), 1);
+
+        let stale = queue_import(&owner, client, &source).unwrap();
+        let stale_id = stale.job_id.clone();
+        guard.store(2, Ordering::Release);
+        assert_eq!(
+            import_now(&owner, client, &source, 1, &guard, None, Some(Ok(stale))).unwrap_err(),
+            "superseded open"
+        );
+        assert!(
+            call(&owner, client, "job.status", json!({"job_id":stale_id})).is_err(),
+            "the obsolete job was detached from this client"
+        );
+
+        let missing = source.with_file_name("missing-startup-photo.jpg");
+        let error = queue_import(&owner, client, &missing).unwrap_err();
+        assert!(error.starts_with("read-error:"), "{error}");
+        assert_eq!(
+            import_now(
+                &owner,
+                client,
+                &missing,
+                1,
+                &guard,
+                None,
+                Some(Err(error.clone()))
+            )
+            .unwrap_err(),
+            error
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
 
     #[test]
     fn superseded_history_generation_stops_a_waiting_preview() {
