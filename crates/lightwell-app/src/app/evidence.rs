@@ -16,7 +16,8 @@ use crate::{
     crop_draft::{Corner, Handle},
     mask_draft::MaskDraft,
     state::{
-        fields::number_text,
+        control_tree::walk,
+        number::number_text,
         presets::{PresetRow, presettable_groups},
         tools::crop_frame,
     },
@@ -2646,21 +2647,11 @@ fn mask_kind_is_typed(kind: &str) -> bool {
 /// Where a control group with this label sits inside a module's controls, as the position the
 /// panel's own reset button names.
 fn group_path(controls: &[lightwell_core::Control], label: &str) -> Option<Vec<usize>> {
-    for (index, control) in controls.iter().enumerate() {
-        let lightwell_core::Control::Group {
-            label: declared,
-            controls: children,
-            ..
-        } = control
-        else {
-            continue;
-        };
-        if declared == label {
-            return Some(vec![index]);
-        }
-        if let Some(mut path) = group_path(children, label) {
-            path.insert(0, index);
-            return Some(path);
+    let mut controls = walk(controls);
+    while let Some(control) = controls.next() {
+        if matches!(control, lightwell_core::Control::Group { label: declared, .. } if declared == label)
+        {
+            return Some(controls.path());
         }
     }
     None
@@ -2671,15 +2662,8 @@ fn selected_curve_channel(
     action: &str,
     parameter: &str,
 ) -> Option<usize> {
-    fn find(
-        controls: &[crate::state::tools::ControlModel],
-        action: &str,
-        parameter: &str,
-    ) -> Option<usize> {
-        controls.iter().find_map(|control| match control {
-            crate::state::tools::ControlModel::Group(group) => {
-                find(&group.controls, action, parameter)
-            }
+    tools.all().find_map(|section| {
+        walk(&section.controls).find_map(|control| match control {
             crate::state::tools::ControlModel::Curve(curve)
                 if curve.action == action
                     && curve
@@ -2691,10 +2675,7 @@ fn selected_curve_channel(
             }
             _ => None,
         })
-    }
-    tools
-        .all()
-        .find_map(|section| find(&section.controls, action, parameter))
+    })
 }
 
 /// How an `api` step sends a method that is not an edit of the open asset.

@@ -3,9 +3,11 @@
 //! follows is testable without a window.
 pub(crate) mod canvas;
 pub(crate) mod capabilities;
+pub(crate) mod control_tree;
 pub(crate) mod fields;
 pub(crate) mod histogram;
 pub(crate) mod masks;
+pub(crate) mod number;
 pub(crate) mod palette;
 pub(crate) mod panel;
 pub(crate) mod performance;
@@ -959,18 +961,16 @@ mod tests {
         assert_eq!(slider.display, "nine");
         assert!(slider.invalid.is_some());
         assert_eq!(
-            slider.value, slider.min,
+            slider.value, slider.spec.min,
             "an unreadable field reads as its min"
         );
     }
 
     /// Every sub-group in the panel, with the state it reads and the fields it holds.
     fn sub_groups(workspace: &Workspace) -> Vec<(String, Option<tools::GroupState>, Vec<String>)> {
-        fn walk(
-            controls: &[ControlModel],
-            found: &mut Vec<(String, Option<tools::GroupState>, Vec<String>)>,
-        ) {
-            for control in controls {
+        let mut found = Vec::new();
+        for section in workspace.tools.all() {
+            for control in control_tree::walk(&section.controls) {
                 if let ControlModel::Group(group) = control {
                     let fields = group
                         .controls
@@ -981,13 +981,8 @@ mod tests {
                         })
                         .collect();
                     found.push((group.label.clone(), group.state, fields));
-                    walk(&group.controls, found);
                 }
             }
-        }
-        let mut found = Vec::new();
-        for section in workspace.tools.all() {
-            walk(&section.controls, &mut found);
         }
         found
     }
@@ -1070,32 +1065,19 @@ mod tests {
         action: &str,
         parameter: &str,
     ) -> &'a tools::SliderControl {
-        fn walk<'a>(
-            controls: &'a [ControlModel],
-            action: &str,
-            parameter: &str,
-        ) -> Option<&'a tools::SliderControl> {
-            for control in controls {
-                match control {
-                    ControlModel::Slider(slider)
-                        if slider.action == action && slider.parameter == parameter =>
-                    {
-                        return Some(slider);
-                    }
-                    ControlModel::Group(group) => {
-                        if let Some(found) = walk(&group.controls, action, parameter) {
-                            return Some(found);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            None
-        }
         workspace
             .tools
             .all()
-            .find_map(|section| walk(&section.controls, action, parameter))
+            .find_map(|section| {
+                control_tree::walk(&section.controls).find_map(|control| match control {
+                    ControlModel::Slider(slider)
+                        if slider.action == action && slider.parameter == parameter =>
+                    {
+                        Some(slider)
+                    }
+                    _ => None,
+                })
+            })
             .expect("a declared slider")
     }
 
@@ -1858,21 +1840,17 @@ mod tests {
             section.expanded,
             "the values stay visible while the preview is shown"
         );
-        fn all_refused(controls: &[ControlModel]) {
-            for control in controls {
-                match control {
-                    ControlModel::Action(action) => {
-                        assert!(!action.runnable, "{} stayed runnable", action.action)
-                    }
-                    ControlModel::Group(group) => all_refused(&group.controls),
-                    ControlModel::CropFrame(frame) => {
-                        assert!(!frame.enabled && !frame.can_swap && !frame.can_apply)
-                    }
-                    _ => {}
+        for control in control_tree::walk(&section.controls) {
+            match control {
+                ControlModel::Action(action) => {
+                    assert!(!action.runnable, "{} stayed runnable", action.action)
                 }
+                ControlModel::CropFrame(frame) => {
+                    assert!(!frame.enabled && !frame.can_swap && !frame.can_apply)
+                }
+                _ => {}
             }
         }
-        all_refused(&section.controls);
     }
 
     #[test]
@@ -1921,11 +1899,16 @@ mod tests {
             panic!("number")
         };
         assert_eq!(
-            (amount.min, amount.max, amount.soft_min, amount.soft_max),
+            (
+                amount.spec.min,
+                amount.spec.max,
+                amount.spec.soft_min,
+                amount.spec.soft_max
+            ),
             (-10.0, 10.0, -5.0, 5.0)
         );
         assert_eq!(
-            (amount.step, amount.fine_step, amount.zero),
+            (amount.spec.step, amount.spec.fine_step, amount.spec.zero),
             (0.1, 0.01, 0.0)
         );
         assert!(matches!(amount.rail, tools::RailStyle::Temperature));

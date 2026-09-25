@@ -16,6 +16,7 @@ use crate::{
     mask_draft::MaskDraft,
     state::{
         Inputs,
+        number::NumberSpec,
         tools::{ControlModel, ControlOwner, Rendered, classify, control_model},
     },
 };
@@ -901,16 +902,13 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
         .values()
         .into_iter()
         .map(|(name, value)| {
-            let parameter = declared.and_then(|command| command.action.parameter(name));
+            let spec = declared
+                .and_then(|command| command.action.parameter(name))
+                .and_then(NumberSpec::of);
             DraftField {
                 label: lightwell_core::mask::kind_title(name),
-                text: parameter
-                    .map(|declared| crate::state::fields::format_number(declared, value))
-                    .unwrap_or_else(|| format!("{value:.4}")),
-                step: parameter
-                    .and_then(|declared| declared.step)
-                    .filter(|step| step.is_finite() && *step > 0.0)
-                    .unwrap_or(0.01),
+                text: spec.map_or_else(|| format!("{value:.4}"), |spec| spec.format(value)),
+                step: spec.map_or(0.01, |spec| spec.step),
                 name: name.to_owned(),
                 value,
             }
@@ -1035,7 +1033,9 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
         .values()
         .into_iter()
         .map(|(name, value)| {
-            let declared = patch.and_then(|command| command.action.parameter(name));
+            let spec = patch
+                .and_then(|command| command.action.parameter(name))
+                .and_then(NumberSpec::of);
             DraftField {
                 name: name.to_owned(),
                 label: crate::state::tools::labelled_control(
@@ -1045,14 +1045,9 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
                 )
                 .map(str::to_owned)
                 .unwrap_or_else(|| lightwell_core::mask::kind_title(name)),
-                text: declared
-                    .map(|declared| crate::state::fields::format_number(declared, value))
-                    .unwrap_or_else(|| format!("{value:.4}")),
+                text: spec.map_or_else(|| format!("{value:.4}"), |spec| spec.format(value)),
                 value,
-                step: declared
-                    .and_then(|declared| declared.step)
-                    .filter(|step| step.is_finite() && *step > 0.0)
-                    .unwrap_or(0.01),
+                step: spec.map_or(0.01, |spec| spec.step),
             }
         })
         .collect();

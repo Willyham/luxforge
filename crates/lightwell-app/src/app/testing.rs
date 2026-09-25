@@ -619,13 +619,12 @@ pub(crate) fn opened_with_modules(
 pub(crate) fn flatten(
     control: &crate::state::tools::ControlModel,
 ) -> Vec<&crate::state::tools::SliderControl> {
-    match control {
-        crate::state::tools::ControlModel::Slider(slider) => vec![slider],
-        crate::state::tools::ControlModel::Group(group) => {
-            group.controls.iter().flat_map(flatten).collect()
-        }
-        _ => Vec::new(),
-    }
+    crate::state::control_tree::walk(std::slice::from_ref(control))
+        .filter_map(|control| match control {
+            crate::state::tools::ControlModel::Slider(slider) => Some(slider),
+            _ => None,
+        })
+        .collect()
 }
 
 // -- The histogram inspector, its clipping toggles and the pointer readout -------------------

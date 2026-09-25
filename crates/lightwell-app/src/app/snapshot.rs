@@ -14,11 +14,8 @@ impl Editor {
             samples: &std::collections::BTreeMap<(String, String), tools::CurveSamples>,
             entry: Option<&lightwell_core::EntryId>,
         ) {
-            for control in controls {
+            for control in state::control_tree::walk(controls) {
                 match control {
-                    tools::ControlModel::Group(group) => {
-                        summarize_controls(&group.controls, curves, pickers, samples, entry);
-                    }
                     tools::ControlModel::Curve(curve) => {
                         let parameter = &curve.channels[curve.selected_channel].parameter;
                         let sampled = samples.get(&(curve.action.clone(), parameter.clone()));

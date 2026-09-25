@@ -916,7 +916,8 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             "{parameter} drafts its own field alone"
         );
         let shown = fields::declared(&editor.modules, &action, parameter)
-            .map(|declared| fields::format_number(declared, *value))
+            .and_then(crate::state::number::NumberSpec::of)
+            .map(|spec| spec.format(*value))
             .expect("the declared parameter");
         assert_eq!(
             editor.fields.get(&action, parameter),

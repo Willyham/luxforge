@@ -6,7 +6,9 @@ use crate::app::{
     tasks::call,
 };
 use crate::state::{
-    fields::{self, number_text, submit_preset},
+    control_tree::{at_path, walk},
+    fields::{self, submit_preset},
+    number::{NumberSpec, number_text},
     tools,
 };
 use iced::{Task, widget::operation};
@@ -59,8 +61,8 @@ impl Editor {
                     return self.slider_moved(action, parameter, value);
                 }
                 let text = fields::declared(&self.modules, &action, &parameter)
-                    .map(|declared| fields::format_number(declared, value))
-                    .unwrap_or_else(|| number_text(value));
+                    .and_then(NumberSpec::of)
+                    .map_or_else(|| number_text(value), |spec| spec.format(value));
                 self.fields.set(&action, &parameter, text);
                 self.editing = None;
                 self.dragging = Some((action, parameter));
@@ -252,38 +254,7 @@ impl Editor {
         if self.curve_sample_in_flight || self.curve_sample_pending.is_some() {
             return Task::none();
         }
-        fn visit(
-            module_id: &str,
-            controls: &[Control],
-            path: &mut Vec<usize>,
-            ui: &tools::ControlsUi,
-            output: &mut Vec<(String, Vec<String>)>,
-        ) {
-            for (index, control) in controls.iter().enumerate() {
-                path.push(index);
-                match control {
-                    Control::Group {
-                        controls,
-                        collapsed,
-                        ..
-                    } => {
-                        let key = tools::group_key(module_id, path);
-                        if ui.group_expanded.get(&key).copied().unwrap_or(!collapsed) {
-                            visit(module_id, controls, path, ui, output);
-                        }
-                    }
-                    Control::Curve {
-                        action, channels, ..
-                    } => output.push((
-                        action.clone(),
-                        channels.iter().map(|c| c.parameter.clone()).collect(),
-                    )),
-                    _ => {}
-                }
-                path.pop();
-            }
-        }
-        let mut declared = Vec::new();
+        let mut declared: Vec<(String, Vec<String>)> = Vec::new();
         let Some(entry) = self.displayed_entry() else {
             return Task::none();
         };
@@ -293,17 +264,30 @@ impl Editor {
             }
             // A module's only group has no header and is always shown, whatever its declared or
             // recorded disclosure, so its curves are visible whenever the section is.
-            let (controls, mut path) = match tools::headerless_group(module) {
-                Some(children) => (children, vec![0]),
-                None => (&module.controls[..], Vec::new()),
+            let (controls, prefix) = match tools::headerless_group(module) {
+                Some(children) => (children, Some(0)),
+                None => (&module.controls[..], None),
             };
-            visit(
-                &module.id,
-                controls,
-                &mut path,
-                &self.controls_ui,
-                &mut declared,
-            );
+            let mut controls = walk(controls);
+            while let Some(control) = controls.next() {
+                match control {
+                    Control::Group { collapsed, .. } => {
+                        let path: Vec<usize> = prefix.into_iter().chain(controls.path()).collect();
+                        let key = tools::group_key(&module.id, &path);
+                        let expanded = self.controls_ui.group_expanded.get(&key).copied();
+                        if !expanded.unwrap_or(!collapsed) {
+                            controls.skip_children();
+                        }
+                    }
+                    Control::Curve {
+                        action, channels, ..
+                    } => declared.push((
+                        action.clone(),
+                        channels.iter().map(|c| c.parameter.clone()).collect(),
+                    )),
+                    _ => {}
+                }
+            }
         }
         for (action, channels) in declared {
             let Some(first) = channels.first() else {
@@ -383,53 +367,15 @@ impl Editor {
         parameter: String,
         fraction: f64,
     ) -> Task<Message> {
-        let Some(declared) = tools::declared_action(&self.modules, &action)
-            .and_then(|action| action.parameter(&parameter))
-        else {
+        let Some(spec) = self.number_spec(&action, &parameter) else {
             return Task::none();
         };
-        let fraction = fraction.clamp(0.0, 1.0);
-        let (min, max, integer) = match declared.kind {
-            ParameterKind::Number { .. } => (
-                declared
-                    .soft_min
-                    .unwrap_or_else(|| hard_min(&declared.kind)),
-                declared
-                    .soft_max
-                    .unwrap_or_else(|| hard_max(&declared.kind)),
-                false,
-            ),
-            ParameterKind::Integer { .. } => (
-                declared
-                    .soft_min
-                    .unwrap_or_else(|| hard_min(&declared.kind)),
-                declared
-                    .soft_max
-                    .unwrap_or_else(|| hard_max(&declared.kind)),
-                true,
-            ),
-            _ => return Task::none(),
-        };
-        let raw = min + fraction * (max - min);
-        let step = declared.step.unwrap_or(if integer {
-            1.0
-        } else {
-            tools::generic_step(min, max)
-        });
-        let fine_step = declared.fine_step.unwrap_or(step / 10.0);
-        let value = lightwell_ui::geometry::quantize(
-            raw,
-            hard_min(&declared.kind),
-            hard_max(&declared.kind),
-            fine_step,
-            crate::state::fields::fine_decimals_for(declared),
-        );
-        let value = if integer {
-            Value::from(value.round() as i64)
-        } else {
-            Value::from(value)
-        };
-        self.control_value(action, parameter, value, true)
+        self.control_value(action, parameter, spec.at_fraction(fraction), true)
+    }
+
+    /// The number spec of one declared number or integer parameter.
+    fn number_spec(&self, action: &str, parameter: &str) -> Option<NumberSpec> {
+        fields::declared(&self.modules, action, parameter).and_then(NumberSpec::of)
     }
 
     pub(crate) fn control_value(
@@ -476,31 +422,14 @@ impl Editor {
         {
             return Task::none();
         }
-        let Some(declared) = tools::declared_action(&self.modules, &action)
-            .and_then(|action| action.parameter(&parameter))
-        else {
+        let Some(spec) = self.number_spec(&action, &parameter) else {
             return Task::none();
-        };
-        let (min, max, integer) = match declared.kind {
-            ParameterKind::Number { .. } => {
-                (hard_min(&declared.kind), hard_max(&declared.kind), false)
-            }
-            ParameterKind::Integer { .. } => {
-                (hard_min(&declared.kind), hard_max(&declared.kind), true)
-            }
-            _ => return Task::none(),
         };
         let current = self
             .control_field_value(&action, &parameter)
             .and_then(|v| v.as_f64())
-            .unwrap_or(min);
-        let step = declared.step.unwrap_or(if integer { 1.0 } else { 0.01 });
-        let next = (current + f64::from(direction.signum()) * step).clamp(min, max);
-        let value = if integer {
-            Value::from(next.round() as i64)
-        } else {
-            Value::from(next)
-        };
+            .unwrap_or(spec.min);
+        let value = spec.value(spec.nudged(current, direction, false, false));
         let drafts = tools::drafts(&self.modules, &action, &parameter);
         let task = self.control_value(action, parameter, value, drafts);
         if drafts {
@@ -518,38 +447,14 @@ impl Editor {
         shift: bool,
         option: bool,
     ) -> Task<Message> {
-        let Some(declared) =
-            tools::declared_action(&self.modules, &action).and_then(|a| a.parameter(&parameter))
-        else {
+        let Some(spec) = self.number_spec(&action, &parameter) else {
             return Task::none();
-        };
-        let (min, max, integer) = match declared.kind {
-            ParameterKind::Number { .. } => {
-                (hard_min(&declared.kind), hard_max(&declared.kind), false)
-            }
-            ParameterKind::Integer { .. } => {
-                (hard_min(&declared.kind), hard_max(&declared.kind), true)
-            }
-            _ => return Task::none(),
-        };
-        let normal = declared.step.unwrap_or(if integer { 1.0 } else { 0.01 });
-        let step = if option {
-            declared.fine_step.unwrap_or(normal / 10.0)
-        } else if shift {
-            normal * 10.0
-        } else {
-            normal
         };
         let current = self
             .control_field_value(&action, &parameter)
             .and_then(|v| v.as_f64())
-            .unwrap_or(min);
-        let next = (current + f64::from(direction.signum()) * step).clamp(min, max);
-        let value = if integer {
-            Value::from(next.round() as i64)
-        } else {
-            Value::from(next)
-        };
+            .unwrap_or(spec.min);
+        let value = spec.value(spec.nudged(current, direction, shift, option));
         self.control_value(action, parameter, value, true)
     }
 
@@ -562,27 +467,8 @@ impl Editor {
         shift: bool,
         option: bool,
     ) -> Task<Message> {
-        let Some(declared) =
-            tools::declared_action(&self.modules, &action).and_then(|a| a.parameter(&parameter))
-        else {
+        let Some(spec) = self.number_spec(&action, &parameter) else {
             return Task::none();
-        };
-        let (min, max, integer) = match declared.kind {
-            ParameterKind::Number { .. } => {
-                (hard_min(&declared.kind), hard_max(&declared.kind), false)
-            }
-            ParameterKind::Integer { .. } => {
-                (hard_min(&declared.kind), hard_max(&declared.kind), true)
-            }
-            _ => return Task::none(),
-        };
-        let normal = declared.step.unwrap_or(if integer { 1.0 } else { 0.01 });
-        let step = if option {
-            declared.fine_step.unwrap_or(normal / 10.0)
-        } else if shift {
-            normal * 10.0
-        } else {
-            normal
         };
         let Some(current) = self
             .control_field_value(&action, &parameter)
@@ -591,11 +477,11 @@ impl Editor {
             self.status = "Correct the field before stepping it".into();
             return Task::none();
         };
-        let next = (current + f64::from(direction.signum()) * step).clamp(min, max);
-        let text = if integer {
+        let next = spec.nudged(current, direction, shift, option);
+        let text = if spec.integer {
             (next.round() as i64).to_string()
         } else {
-            crate::state::fields::number_text(next)
+            number_text(next)
         };
         self.fields.set(&action, &parameter, text);
         let id = crate::state::fields::field_id(&action, &parameter, None);
@@ -1086,25 +972,11 @@ impl Editor {
     }
 }
 
-fn hard_min(kind: &ParameterKind) -> f64 {
-    match kind {
-        ParameterKind::Number { min, .. } => *min,
-        ParameterKind::Integer { min, .. } => *min as f64,
-        _ => 0.0,
-    }
-}
 fn picker_fraction(fraction: f32) -> f64 {
     if fraction.is_finite() {
         f64::from(fraction.clamp(0.0, 1.0))
     } else {
         0.0
-    }
-}
-fn hard_max(kind: &ParameterKind) -> f64 {
-    match kind {
-        ParameterKind::Number { max, .. } => *max,
-        ParameterKind::Integer { max, .. } => *max as f64,
-        _ => 1.0,
     }
 }
 fn rgb_from_value(value: &Value) -> Option<[u8; 3]> {
@@ -1154,72 +1026,44 @@ fn curve_query(
     action: &str,
     parameter: &str,
 ) -> Option<(String, usize, String)> {
-    fn visit(
-        controls: &[Control],
-        action: &str,
-        parameter: &str,
-    ) -> Option<(String, usize, String)> {
-        for control in controls {
-            match control {
-                Control::Group { controls, .. } => {
-                    if let Some(found) = visit(controls, action, parameter) {
-                        return Some(found);
-                    }
-                }
-                Control::Curve {
-                    action: a,
-                    channels,
-                    sample_query,
-                    ..
-                } if a == action => {
-                    if let Some(index) = channels
-                        .iter()
-                        .position(|channel| channel.parameter == parameter)
-                    {
-                        return Some((
-                            sample_query.clone(),
-                            index,
-                            channels.first()?.parameter.clone(),
-                        ));
-                    }
-                }
-                _ => {}
+    modules.iter().find_map(|module| {
+        walk(&module.controls).find_map(|control| match control {
+            Control::Curve {
+                action: a,
+                channels,
+                sample_query,
+                ..
+            } if a == action => {
+                let index = channels
+                    .iter()
+                    .position(|channel| channel.parameter == parameter)?;
+                Some((
+                    sample_query.clone(),
+                    index,
+                    channels.first()?.parameter.clone(),
+                ))
             }
-        }
-        None
-    }
-    modules
-        .iter()
-        .find_map(|module| visit(&module.controls, action, parameter))
+            _ => None,
+        })
+    })
 }
 fn curve_channel_parameters(
     modules: &[lightwell_core::ModuleDescriptor],
     action: &str,
     parameter: &str,
 ) -> Option<Vec<String>> {
-    fn visit(controls: &[Control], action: &str, parameter: &str) -> Option<Vec<String>> {
-        for control in controls {
-            match control {
-                Control::Group { controls, .. } => {
-                    if let Some(found) = visit(controls, action, parameter) {
-                        return Some(found);
-                    }
-                }
-                Control::Curve {
-                    action: a,
-                    channels,
-                    ..
-                } if a == action && channels.iter().any(|c| c.parameter == parameter) => {
-                    return Some(channels.iter().map(|c| c.parameter.clone()).collect());
-                }
-                _ => {}
+    modules.iter().find_map(|module| {
+        walk(&module.controls).find_map(|control| match control {
+            Control::Curve {
+                action: a,
+                channels,
+                ..
+            } if a == action && channels.iter().any(|c| c.parameter == parameter) => {
+                Some(channels.iter().map(|c| c.parameter.clone()).collect())
             }
-        }
-        None
-    }
-    modules
-        .iter()
-        .find_map(|module| visit(&module.controls, action, parameter))
+            _ => None,
+        })
+    })
 }
 
 pub(crate) fn initial_group_expanded(
@@ -1228,39 +1072,18 @@ pub(crate) fn initial_group_expanded(
     path: &[usize],
 ) -> Option<bool> {
     let module = modules.iter().find(|module| module.id == module_id)?;
-    let mut controls = &module.controls[..];
-    for (depth, index) in path.iter().copied().enumerate() {
-        let Control::Group {
-            controls: children,
-            collapsed,
-            ..
-        } = controls.get(index)?
-        else {
-            return None;
-        };
-        if depth + 1 == path.len() {
-            return Some(!collapsed);
-        }
-        controls = children;
+    match at_path(&module.controls, path)? {
+        Control::Group { collapsed, .. } => Some(!collapsed),
+        _ => None,
     }
-    None
 }
 
 pub(super) fn group_reset(
     controls: &[lightwell_core::Control],
     path: &[usize],
 ) -> Option<lightwell_core::ResetAction> {
-    let (index, rest) = path.split_first()?;
-    match controls.get(*index)? {
-        lightwell_core::Control::Group {
-            controls, reset, ..
-        } => {
-            if rest.is_empty() {
-                reset.clone()
-            } else {
-                group_reset(controls, rest)
-            }
-        }
+    match at_path(controls, path)? {
+        Control::Group { reset, .. } => reset.clone(),
         _ => None,
     }
 }

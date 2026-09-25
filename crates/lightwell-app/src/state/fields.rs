@@ -1,6 +1,8 @@
 //! The text typed into every generated control, and the rules that read it back. Validation always
 //! runs against the declared parameter, never against a parsed copy, so an invalid field keeps what
 //! was typed and commits nothing.
+use crate::state::control_tree::walk;
+use crate::state::number::{NumberSpec, number_text};
 use crate::state::tools::{ControlOwner, Rendered, classify};
 use lightwell_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, check_value,
@@ -82,9 +84,8 @@ impl Fields {
 }
 
 fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fields) {
-    for control in controls {
+    for control in walk(controls) {
         match classify(control) {
-            Rendered::Group { controls, .. } => seed_controls(owner, controls, fields),
             Rendered::Number {
                 action, parameter, ..
             }
@@ -110,11 +111,12 @@ fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fie
                     }
                 }
             }
-            // None carries a field of its own: an action button submits the fields already
-            // seeded, a picker only enters its module's canvas mode, a preset row submits a library
-            // preset's own settings, name and identity, and a task sends the open asset and a
-            // profile.
-            Rendered::Action { .. }
+            // None carries a field of its own: a group's fields are its children's, an action
+            // button submits the fields already seeded, a picker only enters its module's canvas
+            // mode, a preset row submits a library preset's own settings, name and identity, and a
+            // task sends the open asset and a profile.
+            Rendered::Group { .. }
+            | Rendered::Action { .. }
             | Rendered::Picker { .. }
             | Rendered::Presets { .. }
             | Rendered::Task { .. }
@@ -141,8 +143,7 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .and_then(Value::as_i64)
             .unwrap_or(*min)
             .to_string(),
-        ParameterKind::Number { min, .. } => format_number(
-            parameter,
+        ParameterKind::Number { min, .. } => number_spec(parameter).format(
             parameter
                 .default
                 .as_ref()
@@ -226,6 +227,11 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
     }
 }
 
+/// The spec of a parameter this module has already matched as a number.
+fn number_spec(parameter: &ParameterDescriptor) -> NumberSpec {
+    NumberSpec::of(parameter).expect("a number parameter has a number spec")
+}
+
 fn range_message(name: &str, min: i64, max: i64) -> String {
     format!("{name} must be an integer within {min}..={max}")
 }
@@ -236,110 +242,6 @@ fn number_range_message(name: &str, min: f64, max: f64) -> String {
         number_text(min),
         number_text(max)
     )
-}
-
-/// A number as text, with no declared parameter to say how it should read: `0`, `-3.5`, no
-/// trailing zeros or exponent noise.
-///
-/// This is for numbers that are not a declared parameter's value — a range message's limits, the
-/// crop draft's own readout. Every number that **is** one goes through [`format_number`], which
-/// shows the decimals the parameter declares and never leaves `1.7000000000000002` on screen.
-pub(crate) fn number_text(value: f64) -> String {
-    format!("{value}")
-}
-
-/// How many decimals a declared parameter's value is shown with.
-///
-/// In order: the declared `precision`, else the decimals of the declared `step`, else the decimals
-/// of the generic step the panel derives from the range. An integer parameter is shown as an
-/// integer, whatever else it declares.
-pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
-    let (min, max) = match &parameter.kind {
-        ParameterKind::Integer { .. } => return 0,
-        ParameterKind::Number { min, max } => (*min, *max),
-        ParameterKind::Color
-        | ParameterKind::Enum { .. }
-        | ParameterKind::Boolean
-        | ParameterKind::Artifact
-        | ParameterKind::Curve { .. }
-        | ParameterKind::Points { .. }
-        | ParameterKind::String { .. }
-        | ParameterKind::Settings
-        | ParameterKind::Endpoint { .. }
-        | ParameterKind::Secret { .. }
-        | ParameterKind::Identity { .. } => return 0,
-    };
-    if let Some(precision) = parameter.precision {
-        return usize::from(precision).min(lightwell_ui::geometry::MAX_DECIMALS);
-    }
-    let step = parameter
-        .step
-        .filter(|step| step.is_finite() && *step > 0.0)
-        .unwrap_or_else(|| crate::state::tools::generic_step(min, max));
-    decimals_of(step)
-}
-
-/// The decimals one increment needs: `0.01` → 2, `0.5` → 1, `10` → 0. Capped at the largest
-/// precision a descriptor may declare, so an unrepresentable step cannot ask for endless digits.
-pub(crate) fn decimals_of(step: f64) -> usize {
-    if !step.is_finite() || step <= 0.0 {
-        return 0;
-    }
-    (0..=lightwell_ui::geometry::MAX_DECIMALS)
-        .find(|decimals| {
-            let scaled = step * 10f64.powi(*decimals as i32);
-            (scaled - scaled.round()).abs() <= 1e-9 * scaled.abs().max(1.0)
-        })
-        .unwrap_or(lightwell_ui::geometry::MAX_DECIMALS)
-}
-
-/// One declared parameter's value as its field shows it: a fixed number of decimals, so a control
-/// reads `1.70`, `0.00` or `-3.50` rather than whatever the last arithmetic left behind.
-///
-/// A value that rounds to zero is always `0` or `0.00`, never `-0.00`: the sign of a zero is an
-/// artefact of the arithmetic, not something the person did.
-pub(crate) fn format_number(parameter: &ParameterDescriptor, value: f64) -> String {
-    let ordinary = decimals_for(parameter);
-    let fine = fine_decimals_for(parameter);
-    let factor = 10f64.powi(ordinary as i32);
-    let ordinary_value = (value * factor).round() / factor;
-    // A saved sensor value may be fractionally off the visible grid. Only expose the fine digits
-    // when they distinguish a real fine nudge rather than a conversion or floating-point residue.
-    let fine_quantum = 10f64.powi(-(fine as i32));
-    let decimals = if value.is_finite()
-        && (value - ordinary_value).abs() > (fine_quantum * 0.49).max(1e-9 * value.abs().max(1.0))
-    {
-        fine
-    } else {
-        ordinary
-    };
-    format_decimals(value, decimals)
-}
-
-/// Precision needed for an Option nudge (or fine rail drag), including an implicit tenth-step.
-pub(crate) fn fine_decimals_for(parameter: &ParameterDescriptor) -> usize {
-    let ordinary = decimals_for(parameter);
-    if matches!(&parameter.kind, ParameterKind::Integer { .. }) {
-        return 0;
-    }
-    let step = parameter.step.unwrap_or_else(|| match &parameter.kind {
-        ParameterKind::Number { min, max } => crate::state::tools::generic_step(*min, *max),
-        _ => 1.0,
-    });
-    ordinary.max(decimals_of(parameter.fine_step.unwrap_or(step / 10.0)))
-}
-
-/// `value` with exactly `decimals` decimals, and no negative zero.
-fn format_decimals(value: f64, decimals: usize) -> String {
-    if !value.is_finite() {
-        return number_text(value);
-    }
-    let text = format!("{value:.decimals$}");
-    match text.strip_prefix('-') {
-        // "-0", "-0.00": the digits are all zeros, so the sign says nothing.
-        Some(rest) if rest.bytes().all(|byte| byte == b'0' || byte == b'.') => rest.to_owned(),
-        _ => text,
-    }
 }
 
 /// One field's text read as the value its parameter declares, or the message naming what it needs.
@@ -422,7 +324,7 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
     check_value(parameter, value).map_err(|error| error.detail)?;
     Ok(match &parameter.kind {
         ParameterKind::Integer { .. } => value.as_i64().unwrap().to_string(),
-        ParameterKind::Number { .. } => format_number(parameter, value.as_f64().unwrap()),
+        ParameterKind::Number { .. } => number_spec(parameter).format(value.as_f64().unwrap()),
         ParameterKind::Enum { .. } => value.as_str().unwrap().to_owned(),
         ParameterKind::Color => value
             .as_array()
@@ -604,8 +506,7 @@ pub(crate) fn field_reset(
 }
 
 fn control_preset<'a>(controls: &'a [Control], action: &str) -> Option<&'a Map<String, Value>> {
-    controls.iter().find_map(|control| match classify(control) {
-        Rendered::Group { controls, .. } => control_preset(controls, action),
+    walk(controls).find_map(|control| match classify(control) {
         Rendered::Action {
             action: declared,
             preset,
@@ -620,6 +521,14 @@ mod tests {
     use super::*;
     use crate::state::tools::{control_kind, declared_action, point_pick};
     use serde_json::json;
+
+    fn decimals_for(parameter: &ParameterDescriptor) -> usize {
+        number_spec(parameter).decimals
+    }
+
+    fn format_number(parameter: &ParameterDescriptor, value: f64) -> String {
+        number_spec(parameter).format(value)
+    }
 
     #[test]
     fn boolean_color_and_curve_fields_reflect_exact_authoritative_values() {
@@ -893,32 +802,27 @@ mod tests {
     #[test]
     fn every_generated_number_control_of_a_built_in_names_its_step_and_precision() {
         let modules = descriptors();
-        fn walk(module: &ModuleDescriptor, controls: &[Control], checked: &mut usize) {
-            for control in controls {
-                match classify(control) {
-                    Rendered::Group { controls, .. } => walk(module, controls, checked),
-                    Rendered::Number {
-                        action, parameter, ..
-                    } => {
-                        let declared = ControlOwner::Module(module)
-                            .parameter(action, parameter)
-                            .expect("a generated control names a declared parameter");
-                        if !matches!(declared.kind, ParameterKind::Number { .. }) {
-                            continue;
-                        }
-                        assert!(
-                            declared.step.is_some() && declared.precision.is_some(),
-                            "{action}.{parameter} declares no step or precision"
-                        );
-                        *checked += 1;
-                    }
-                    _ => {}
-                }
-            }
-        }
         let mut checked = 0;
         for module in &modules {
-            walk(module, &module.controls, &mut checked);
+            for control in walk(&module.controls) {
+                let Rendered::Number {
+                    action, parameter, ..
+                } = classify(control)
+                else {
+                    continue;
+                };
+                let declared = ControlOwner::Module(module)
+                    .parameter(action, parameter)
+                    .expect("a generated control names a declared parameter");
+                if !matches!(declared.kind, ParameterKind::Number { .. }) {
+                    continue;
+                }
+                assert!(
+                    declared.step.is_some() && declared.precision.is_some(),
+                    "{action}.{parameter} declares no step or precision"
+                );
+                checked += 1;
+            }
         }
         assert!(checked >= 10, "only {checked} generated number controls");
     }
@@ -1222,17 +1126,10 @@ mod tests {
 
     /// Every group reset a module's controls declare, in order.
     fn group_resets(controls: &[Control]) -> Vec<lightwell_core::ResetAction> {
-        controls
-            .iter()
-            .flat_map(|control| match classify(control) {
-                Rendered::Group {
-                    controls, reset, ..
-                } => reset
-                    .cloned()
-                    .into_iter()
-                    .chain(group_resets(controls))
-                    .collect::<Vec<_>>(),
-                _ => Vec::new(),
+        walk(controls)
+            .filter_map(|control| match classify(control) {
+                Rendered::Group { reset, .. } => reset.cloned(),
+                _ => None,
             })
             .collect()
     }
@@ -1290,12 +1187,9 @@ mod tests {
         ));
         // Every control the registered modules declare has a real rendering.
         for module in descriptors() {
-            let mut queue: Vec<&Control> = module.controls.iter().collect();
-            while let Some(control) = queue.pop() {
-                match classify(control) {
-                    Rendered::Group { controls, .. } => queue.extend(controls),
-                    Rendered::Unsupported(kind) => panic!("{} declares {kind}", module.id),
-                    _ => {}
+            for control in walk(&module.controls) {
+                if let Rendered::Unsupported(kind) = classify(control) {
+                    panic!("{} declares {kind}", module.id);
                 }
             }
         }

@@ -846,7 +846,7 @@ fn number_view<'a>(
     field: &'a SliderControl,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let step = field.step;
+    let spec = &field.spec;
     let edit = ui_edit(&field.edit, &field.display, &field.invalid);
     let (action, parameter) = (field.action.clone(), field.parameter.clone());
     let edit_start = Message::Control(ControlMessage::EditValue {
@@ -886,21 +886,21 @@ fn number_view<'a>(
                 &SliderModel {
                     id: Some(field.id.clone()),
                     label: field.label.clone(),
-                    min: field.min,
-                    max: field.max,
-                    soft_min: field.soft_min,
-                    soft_max: field.soft_max,
+                    min: spec.min,
+                    max: spec.max,
+                    soft_min: spec.soft_min,
+                    soft_max: spec.soft_max,
                     value: field.value,
-                    step,
-                    shift_step: step * 10.0,
-                    fine_step: field.fine_step,
-                    zero: (field.soft_min..=field.soft_max)
-                        .contains(&field.zero)
-                        .then_some(field.zero),
+                    step: spec.step,
+                    shift_step: spec.step * 10.0,
+                    fine_step: spec.fine_step,
+                    zero: (spec.soft_min..=spec.soft_max)
+                        .contains(&spec.zero)
+                        .then_some(spec.zero),
                     rail: rail_decoration(&field.rail),
                     over_range: lightwell_ui::geometry::over_range_side(
-                        field.soft_min,
-                        field.soft_max,
+                        spec.soft_min,
+                        spec.soft_max,
                         field.value,
                     ),
                     unit: field.unit.clone(),
@@ -930,8 +930,8 @@ fn number_view<'a>(
         NumberControlStyle::Stepper => stepper(
             &StepperModel {
                 field: field_model,
-                decrement_enabled: field.value > field.min,
-                increment_enabled: field.value < field.max,
+                decrement_enabled: field.value > spec.min,
+                increment_enabled: field.value < spec.max,
                 decrement_tooltip: "Decrease".into(),
                 increment_tooltip: "Increase".into(),
                 rail: None,

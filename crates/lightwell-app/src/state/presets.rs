@@ -9,6 +9,7 @@
 //! rule here is the create form's white-balance default.
 use crate::state::{
     Inputs,
+    control_tree::walk,
     palette::PaletteAction,
     tools::{Rendered, classify, is_patch},
 };
@@ -153,16 +154,7 @@ pub(crate) fn presettable_groups(
         .filter(|module| module.is_available())
         .filter(|module| developer || !module.developer)
     {
-        let mut entries = Vec::new();
-        let mut loose = None;
-        collect(
-            modules,
-            module,
-            &module.controls,
-            None,
-            &mut entries,
-            &mut loose,
-        );
+        let entries = collect(modules, module);
         groups.extend(
             entries
                 .into_iter()
@@ -179,28 +171,24 @@ pub(crate) fn presettable_groups(
     groups
 }
 
-/// Walk one control list. `current` is the index of the entry its value controls belong to: the
-/// enclosing group's, or `None` at the module's top level, where they share the module's own entry.
-fn collect(
-    modules: &[ModuleDescriptor],
-    module: &ModuleDescriptor,
-    controls: &[Control],
-    current: Option<usize>,
-    entries: &mut Vec<PresettableGroup>,
-    loose: &mut Option<usize>,
-) {
-    for control in controls {
+/// One module's entries, one per control group in declaration order. A value control belongs to
+/// the entry of its enclosing group, or, at the module's top level, to the module's own entry,
+/// which is added where the first such control is.
+fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<PresettableGroup> {
+    let mut entries = Vec::new();
+    let mut loose = None;
+    // Each group's path and its entry's index.
+    let mut groups: Vec<(Vec<usize>, usize)> = Vec::new();
+    let mut controls = walk(&module.controls);
+    while let Some(control) = controls.next() {
         let fields: Vec<(&str, &str)> = match classify(control) {
-            Rendered::Group {
-                label, controls, ..
-            } => {
+            Rendered::Group { label, .. } => {
                 entries.push(PresettableGroup {
                     label: format!("{} \u{00b7} {label}", module.title),
                     fields: Vec::new(),
                     default_checked: true,
                 });
-                let index = entries.len() - 1;
-                collect(modules, module, controls, Some(index), entries, loose);
+                groups.push((controls.path(), entries.len() - 1));
                 continue;
             }
             Rendered::Number {
@@ -223,6 +211,15 @@ fn collect(
                 .collect(),
             _ => Vec::new(),
         };
+        if fields.is_empty() {
+            continue;
+        }
+        let path = controls.path();
+        let parent = &path[..path.len() - 1];
+        let current = groups
+            .iter()
+            .find(|(group, _)| group == parent)
+            .map(|(_, index)| *index);
         for (action, parameter) in fields {
             let declared = module
                 .action(action)
@@ -244,6 +241,7 @@ fn collect(
             entries[index].add(action, parameter);
         }
     }
+    entries
 }
 
 /// The `fields` a `preset.capture` request names for the checked groups: each action's parameters
@@ -275,16 +273,12 @@ pub(crate) fn capture_fields(groups: &[PresettableGroup], form: &PresetForm) -> 
 
 /// The module that declares the `presets` control and the action that control submits.
 pub(crate) fn presets_control(modules: &[ModuleDescriptor]) -> Option<(&ModuleDescriptor, &str)> {
-    fn find(controls: &[Control]) -> Option<&str> {
-        controls.iter().find_map(|control| match control {
-            Control::Presets { action } => Some(action.as_str()),
-            Control::Group { controls, .. } => find(controls),
+    modules.iter().find_map(|module| {
+        walk(&module.controls).find_map(|control| match control {
+            Control::Presets { action } => Some((module, action.as_str())),
             _ => None,
         })
-    }
-    modules
-        .iter()
-        .find_map(|module| find(&module.controls).map(|action| (module, action)))
+    })
 }
 
 /// The fields a `presets` control's action carries for one library preset, under the names its

@@ -6,10 +6,12 @@ use crate::{
     state::{
         Inputs, MenuTarget,
         capabilities::{self, CapabilityModel, TaskControl},
+        control_tree::walk,
         fields::{
-            action_params, channel_text, decimals_for, field_id, format_number, labelled,
-            number_text, parse_field, undeclared_label, unsupported_label,
+            action_params, channel_text, field_id, labelled, parse_field, undeclared_label,
+            unsupported_label,
         },
+        number::{NumberSpec, number_text},
         palette::PaletteAction,
         presets::{PresetsModel, presets_model},
     },
@@ -186,31 +188,21 @@ pub(crate) struct SectionModel {
 impl SectionModel {
     /// The preset library this section renders, when its module declares the `presets` control.
     pub(crate) fn presets(&self) -> Option<&PresetsModel> {
-        fn walk(controls: &[ControlModel]) -> Option<&PresetsModel> {
-            controls.iter().find_map(|control| match control {
-                ControlModel::Presets(presets) => Some(presets.as_ref()),
-                ControlModel::Group(group) => walk(&group.controls),
-                _ => None,
-            })
-        }
-        walk(&self.controls)
+        walk(&self.controls).find_map(|control| match control {
+            ControlModel::Presets(presets) => Some(presets.as_ref()),
+            _ => None,
+        })
     }
 
     /// Every picker this section holds, at any depth. A module declares at most one, so this is
     /// nought or one entry; it walks the tree rather than assuming where the module put it.
     pub(crate) fn pickers(&self) -> Vec<&PickerControl> {
-        fn walk<'a>(controls: &'a [ControlModel], found: &mut Vec<&'a PickerControl>) {
-            for control in controls {
-                match control {
-                    ControlModel::Picker(picker) => found.push(picker),
-                    ControlModel::Group(group) => walk(&group.controls, found),
-                    _ => {}
-                }
-            }
-        }
-        let mut found = Vec::new();
-        walk(&self.controls, &mut found);
-        found
+        walk(&self.controls)
+            .filter_map(|control| match control {
+                ControlModel::Picker(picker) => Some(picker),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -240,25 +232,15 @@ pub(crate) struct SliderControl {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) unit: Option<String>,
-    pub(crate) min: f64,
-    pub(crate) max: f64,
-    pub(crate) soft_min: f64,
-    pub(crate) soft_max: f64,
-    /// The rail's increment: the parameter's declared step, else [`generic_step`] over the range.
-    pub(crate) step: f64,
-    pub(crate) fine_step: f64,
+    /// The range, rail, steps, decimals and zero the parameter declares, read once.
+    pub(crate) spec: NumberSpec,
     pub(crate) style: NumberControlStyle,
     pub(crate) rail: RailStyle,
-    /// How many decimals the value is shown with, and the precision a drag is quantized to.
-    pub(crate) decimals: usize,
-    /// Where a bipolar fill starts.
-    pub(crate) zero: f64,
     pub(crate) value: f64,
     /// The formatted value, or the text as typed when it cannot be read.
     pub(crate) display: String,
     pub(crate) edit: ValueEdit,
     pub(crate) dragging: bool,
-    pub(crate) integer: bool,
     /// The declared range, when the text does not satisfy it.
     pub(crate) invalid: Option<String>,
     /// The parameter's declared default, already formatted: what a reset sets the field to.
@@ -905,19 +887,11 @@ fn digest(
 }
 
 fn contains_presets(controls: &[Control]) -> bool {
-    controls.iter().any(|control| match control {
-        Control::Presets { .. } => true,
-        Control::Group { controls, .. } => contains_presets(controls),
-        _ => false,
-    })
+    walk(controls).any(|control| matches!(control, Control::Presets { .. }))
 }
 
 fn contains_curve(controls: &[Control]) -> bool {
-    controls.iter().any(|control| match control {
-        Control::Curve { .. } => true,
-        Control::Group { controls, .. } => contains_curve(controls),
-        _ => false,
-    })
+    walk(controls).any(|control| matches!(control, Control::Curve { .. }))
 }
 
 /// Everything the crop section shows, as one string. The draft is transient state, so a section
@@ -1167,52 +1141,26 @@ fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupSt
             != Some(crate::state::fields::seed_text(parameter_desc).as_str());
         true
     }
-    fn walk(
-        controls: &[ControlModel],
-        inputs: &Inputs<'_>,
-        values: &mut usize,
-        custom: &mut bool,
-    ) -> bool {
-        for control in controls {
-            match control {
-                ControlModel::Slider(slider) => {
-                    if !field(&slider.action, &slider.parameter, inputs, values, custom) {
-                        return false;
-                    }
-                }
-                ControlModel::Toggle(toggle) => {
-                    if !field(&toggle.action, &toggle.parameter, inputs, values, custom) {
-                        return false;
-                    }
-                }
-                ControlModel::Enum(choice) => {
-                    if !field(&choice.action, &choice.parameter, inputs, values, custom) {
-                        return false;
-                    }
-                }
-                ControlModel::Color(color) => {
-                    if !field(&color.action, &color.parameter, inputs, values, custom) {
-                        return false;
-                    }
-                }
-                ControlModel::Curve(curve) => {
-                    for channel in &curve.channels {
-                        if !field(&curve.action, &channel.parameter, inputs, values, custom) {
-                            return false;
-                        }
-                    }
-                }
-                ControlModel::Group(group) => {
-                    if !walk(&group.controls, inputs, values, custom) {
-                        return false;
-                    }
-                }
-                _ => {}
-            }
+    for control in walk(controls) {
+        let mut patch_field = |action: &str, parameter: &str| {
+            field(action, parameter, inputs, &mut values, &mut custom)
+        };
+        let all_patch_fields = match control {
+            ControlModel::Slider(slider) => patch_field(&slider.action, &slider.parameter),
+            ControlModel::Toggle(toggle) => patch_field(&toggle.action, &toggle.parameter),
+            ControlModel::Enum(choice) => patch_field(&choice.action, &choice.parameter),
+            ControlModel::Color(color) => patch_field(&color.action, &color.parameter),
+            ControlModel::Curve(curve) => curve
+                .channels
+                .iter()
+                .all(|channel| patch_field(&curve.action, &channel.parameter)),
+            _ => true,
+        };
+        if !all_patch_fields {
+            return None;
         }
-        true
     }
-    if !walk(controls, inputs, &mut values, &mut custom) || values == 0 {
+    if values == 0 {
         return None;
     }
     Some(if custom {
@@ -1240,22 +1188,12 @@ fn value_model(
         .editing
         .is_some_and(|(a, p)| a == action && p == parameter);
     match &declared.kind {
-        ParameterKind::Integer { min, max } => ControlModel::Slider(slider(
-            action,
-            parameter,
-            label,
-            declared,
-            text,
-            invalid,
-            typing,
-            inputs,
-            *min as f64,
-            *max as f64,
-            true,
-        )),
-        ParameterKind::Number { min, max } => ControlModel::Slider(slider(
-            action, parameter, label, declared, text, invalid, typing, inputs, *min, *max, false,
-        )),
+        ParameterKind::Integer { .. } | ParameterKind::Number { .. } => {
+            let spec = NumberSpec::of(declared).expect("a number parameter has a number spec");
+            ControlModel::Slider(slider(
+                action, parameter, label, declared, spec, text, invalid, typing, inputs,
+            ))
+        }
         ParameterKind::Color => {
             let rgb = parse_field(declared, text)
                 .ok()
@@ -1379,46 +1317,22 @@ fn value_model(
     }
 }
 
-/// The generic increment for a number parameter that declares no step: a fraction of its range,
-/// rounded to a power of ten. It is the model's decision, not the view's, because the same number
-/// decides the rail's step, the decimals the field shows and the precision a drag is quantized to,
-/// and those three must agree.
-pub(crate) fn generic_step(min: f64, max: f64) -> f64 {
-    let span = (max - min).abs();
-    if !span.is_finite() || span <= 0.0 {
-        return 0.01;
-    }
-    10f64.powf((span / 200.0).log10().round())
-}
-
 #[allow(clippy::too_many_arguments)]
 fn slider(
     action: &str,
     parameter: &str,
     label: &str,
     declared: &ParameterDescriptor,
+    spec: NumberSpec,
     text: &str,
     invalid: Option<String>,
     typing: bool,
     inputs: &Inputs<'_>,
-    min: f64,
-    max: f64,
-    integer: bool,
 ) -> SliderControl {
     let value = parse_field(declared, text)
         .ok()
         .and_then(|value| value.as_f64())
-        .unwrap_or(min);
-    // An integer parameter steps by one; every other one takes the step it declares, and falls
-    // back to the generic one over its range.
-    let step = if integer {
-        1.0
-    } else {
-        declared
-            .step
-            .filter(|step| step.is_finite() && *step > 0.0)
-            .unwrap_or_else(|| generic_step(min, max))
-    };
+        .unwrap_or(spec.min);
     SliderControl {
         action: action.to_owned(),
         parameter: parameter.to_owned(),
@@ -1426,21 +1340,14 @@ fn slider(
         // The value carries the unit, so the label does not repeat it.
         label: label.to_owned(),
         unit: declared.unit.clone(),
-        min,
-        max,
-        soft_min: declared.soft_min.unwrap_or(min),
-        soft_max: declared.soft_max.unwrap_or(max),
-        step,
-        fine_step: declared.fine_step.unwrap_or(step / 10.0),
+        spec,
         style: NumberControlStyle::Slider,
         rail: RailStyle::Plain,
-        decimals: decimals_for(declared),
-        zero: declared.zero.unwrap_or(0.0_f64.clamp(min, max)),
         value,
         display: if invalid.is_some() {
             text.to_owned()
         } else {
-            format_number(declared, value)
+            spec.format(value)
         },
         edit: if typing {
             ValueEdit::Typing(text.to_owned())
@@ -1450,7 +1357,6 @@ fn slider(
         dragging: inputs
             .dragging
             .is_some_and(|(a, p)| a == action && p == parameter),
-        integer,
         invalid,
         default: crate::state::fields::seed_text(declared),
     }
@@ -2076,25 +1982,19 @@ pub(crate) fn declared_field_reset<'a>(
     action: &str,
     parameter: &str,
 ) -> Option<&'a ResetAction> {
-    fn find<'a>(
-        controls: &'a [Control],
-        action: &str,
-        parameter: &str,
-    ) -> Option<Option<&'a ResetAction>> {
-        controls.iter().find_map(|control| match classify(control) {
-            Rendered::Group { controls, .. } => find(controls, action, parameter),
-            Rendered::Number {
-                action: declared,
-                parameter: named,
-                reset,
-                ..
-            } if declared == action && named == parameter => Some(reset),
-            _ => None,
-        })
-    }
     modules
         .iter()
-        .find_map(|module| find(&module.controls, action, parameter))
+        .find_map(|module| {
+            walk(&module.controls).find_map(|control| match classify(control) {
+                Rendered::Number {
+                    action: declared,
+                    parameter: named,
+                    reset,
+                    ..
+                } if declared == action && named == parameter => Some(reset),
+                _ => None,
+            })
+        })
         .flatten()
 }
 
@@ -2126,8 +2026,7 @@ pub(crate) fn labelled_control<'a>(
     action: &str,
     parameter: &str,
 ) -> Option<&'a str> {
-    controls.iter().find_map(|control| match classify(control) {
-        Rendered::Group { controls, .. } => labelled_control(controls, action, parameter),
+    walk(controls).find_map(|control| match classify(control) {
         Rendered::Number {
             action: declared,
             parameter: named,
@@ -2424,23 +2323,22 @@ fn collect_actions(
     controls: &[Control],
     entries: &mut Vec<(String, String, PaletteAction)>,
 ) {
-    for control in controls {
-        match classify(control) {
-            Rendered::Group { controls, .. } => collect_actions(module, controls, entries),
-            Rendered::Action {
-                action,
-                label,
-                preset,
-                ..
-            } => entries.push((
+    for control in walk(controls) {
+        if let Rendered::Action {
+            action,
+            label,
+            preset,
+            ..
+        } = classify(control)
+        {
+            entries.push((
                 format!("{} · {label}", module.title),
                 format!("edit.{action}"),
                 PaletteAction::Run {
                     action: action.to_owned(),
                     preset: preset.clone(),
                 },
-            )),
-            _ => {}
+            ));
         }
     }
 }

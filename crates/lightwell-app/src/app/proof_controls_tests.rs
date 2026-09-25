@@ -126,7 +126,7 @@ impl Proof {
         for model in models {
             match model {
                 ControlModel::Slider(number) if number.parameter == parameter => {
-                    return if number.integer {
+                    return if number.spec.integer {
                         json!(number.value as i64)
                     } else {
                         json!(number.value)
@@ -310,12 +310,7 @@ fn call(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> (
 }
 
 fn flatten<'a>(controls: &'a [ControlModel], output: &mut Vec<&'a ControlModel>) {
-    for control in controls {
-        output.push(control);
-        if let ControlModel::Group(group) = control {
-            flatten(&group.controls, output);
-        }
-    }
+    output.extend(crate::state::control_tree::walk(controls));
 }
 
 #[test]

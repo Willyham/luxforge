@@ -587,7 +587,7 @@ fn invalid_text_shows_the_declared_range_and_commits_nothing() {
         let lightwell_core::ParameterKind::Number { min, max } = parameter.kind else {
             continue;
         };
-        let outside = fields::number_text(max + 150.0);
+        let outside = crate::state::number::number_text(max + 150.0);
         editor.busy = false;
         let _ = editor.update(Message::Control(ControlMessage::EditValue {
             action: action.clone(),
@@ -608,8 +608,12 @@ fn invalid_text_shows_the_declared_range_and_commits_nothing() {
             parameter.name
         );
         assert!(
-            editor.status.contains(&fields::number_text(min))
-                && editor.status.contains(&fields::number_text(max)),
+            editor
+                .status
+                .contains(&crate::state::number::number_text(min))
+                && editor
+                    .status
+                    .contains(&crate::state::number::number_text(max)),
             "{} does not report its declared range: {}",
             parameter.name,
             editor.status

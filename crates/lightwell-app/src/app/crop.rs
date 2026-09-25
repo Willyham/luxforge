@@ -10,7 +10,7 @@ use crate::{
     },
     crop_draft::{ANGLE_RAIL_STEP, CropDraft, Modifiers as DraftModifiers},
     state::{
-        fields::{decimals_of, number_text},
+        number::{decimals_of, number_text},
         tools::crop_frame,
     },
 };
