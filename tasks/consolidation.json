@@ -2273,7 +2273,7 @@
     {
       "id": "TASK-038",
       "description": "Move capability methods behind their own trait off `ToolModule`, and split `registry.rs` into lookups, placement and compile.",
-      "status": "in_progress",
+      "status": "pending",
       "dependencies": [
         "TASK-035",
         "TASK-037"
