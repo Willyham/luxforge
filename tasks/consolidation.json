@@ -1749,7 +1749,7 @@
     {
       "id": "TASK-030",
       "description": "Give colour math one home, give parameter and control descriptors constructors, and emit every method schema through one function.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-019"
       ],
@@ -1757,7 +1757,7 @@
         "sRGB transfer, luminance weights, the Planckian locus and xy/uv conversion, 3×3 matrix products and inverse, and Oklab products are copied across Basic, RAW, the mixer, the vignette, Presence, masks, the renderers and the desktop's swatch; modules import `basic` as a colour library.",
         "About 60 twelve-field `ParameterDescriptor` literals and about 15 local builder helpers exist; four near-identical schema emitters serve actions, queries, tasks and mask commands.",
         "Moving an expression verbatim keeps bytes identical; any expression that changes arithmetic order is out of scope.",
-        "On hold: the agent stopped on a usage limit. Branch `consolidation-task-030` at `4e0196e` holds three commits (colour module, descriptor constructors, one schema emitter) finished but unverified, plus a work-in-progress commit. Rebase it on the current integration or main, finish, and verify before integrating; it was never integrated."
+        "The RAW white-balance approximation's Hadamard-checked inverse keeps its own spelling: merging it onto the shared adjugate would flip the sign of an exactly zero cofactor, an arithmetic change. `lightwell-raw` keeps its own determinants because it cannot depend on the core."
       ],
       "context_links": [
         {
@@ -2066,7 +2066,7 @@
     {
       "id": "TASK-035",
       "description": "Resolve and plan mask commands through the module action path, store each command's full result, give mask, component and stroke IDs a declared parameter kind, validate the mask table once when a recipe enters the service, and stop scanning every layer payload for strokes.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-030"
       ],
@@ -2218,7 +2218,7 @@
     {
       "id": "TASK-037",
       "description": "Describe capability settings with the module parameter vocabulary, so settings and parameters share one vocabulary and one schema emitter.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-030",
         "TASK-033"
@@ -2681,7 +2681,7 @@
     {
       "id": "TASK-044",
       "description": "Give rendering one entry point with options and a render context in place of process globals, compile once per preview job, split `preview.rs` with a phase-typed `PreviewResult`, and keep one proxy box downscale.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-032"
       ],
