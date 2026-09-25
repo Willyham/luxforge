@@ -159,6 +159,13 @@ impl MaskField {
         self.bounds
     }
 
+    /// Whether this field's coverage depends on the pixel it is handed, rather than on position
+    /// alone. A field that answers no ignores its `rgb` argument bit for bit, at both samplings, so
+    /// a caller can evaluate it before it has read any pixel. `O(components)`.
+    pub(crate) fn reads_pixels(&self) -> bool {
+        self.mask.reads_pixels()
+    }
+
     /// The stage the mask was compiled against — the stage this field answers about, never the
     /// doubled one the supersample reads.
     pub(crate) fn stage(&self) -> Stage {

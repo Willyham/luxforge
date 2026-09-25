@@ -231,24 +231,29 @@ fn scratch_values(operation: &SpatialOperation, regions: &[Region]) -> usize {
 
 const NON_FINITE_SPATIAL: &str = "spatial processing produced a non-finite value";
 
-/// Run one tile's unit chain. `fill` writes the input region's three planes; the result is the
-/// rectangle the values cover and those planar values, which always contains `tile`. `parallelism`
-/// is handed to every unit and decides whether this function's own finiteness check runs on the
-/// pool; it never changes a value.
+/// Run one tile's unit chain. `fill` writes a region's three planes; the result is the rectangle
+/// the values cover and those planar values, which always contains `tile`. `parallelism` is handed
+/// to every unit and decides whether this function's own finiteness check runs on the pool; it
+/// never changes a value.
 ///
 /// Every path uses this one function: the byte render, the RAW float frame and the point sample.
 /// That is what makes a sample equal to the rendered byte by construction rather than by
-/// agreement between two implementations — **including the mask**, because the blend below is
-/// inside this function and not in any caller.
+/// agreement between two implementations — **including the mask**, because the blend below, and
+/// the decision to copy a tile instead, are inside this function and not in any caller.
 ///
 /// An unmasked operation takes exactly the path it always did and returns the last unit's
 /// rectangle. A masked operation takes one of two paths, and neither of them touches the halo, the
 /// tile alignment, what a unit reads, the scratch or the cached global estimates:
 ///
-/// - **A tile the mask cannot reach is a copy.** Coverage is exactly zero outside
-///   [`MaskField::bounds`], so the blend there is the identity and no unit is evaluated at all.
-///   The tile is filled directly, which reads the tile and not the tile grown by the summed halo,
-///   and that is what keeps a small masked Presence layer affordable on a 60 MP frame.
+/// - **A tile whose coverage is zero at every pixel is a copy**, when that is proved for the tile
+///   ([`zero_coverage`]). No unit is evaluated: the input is the output, which is what the blend
+///   would have returned bit for bit ([`copies_exactly`] states the proof and its one condition on
+///   the input, and the tile falls back to the chain whenever that condition fails). Outside
+///   [`MaskField::bounds`] it is proved without evaluating the mask, and inside it by evaluating
+///   the mask at every pixel of the tile — before any pixel is read for a mask that reads none, so
+///   such a tile is filled directly, which reads the tile and not the tile grown by the summed
+///   halo. That is what keeps a small, inverted, diagonal or colour-selected masked Presence layer
+///   affordable on a 60 MP frame: the tiles it leaves alone cost a fill and a mask evaluation.
 /// - **Every other tile runs the whole chain unchanged** and the *write* is blended in place:
 ///   `out = (1 − M)·in + M·u` per channel, in linear float, against the same input the tile already
 ///   holds. **The blend covers `tile` and nothing else**, which is exactly what every caller reads
@@ -256,24 +261,42 @@ const NON_FINITE_SPATIAL: &str = "spatial processing produced a non-finite value
 ///   against an edge the shrink rule leaves it wider and the extra rows hold unblended filter
 ///   output that nobody takes. Blending in place rather than copying the tile out is what keeps a
 ///   masked tile to one extra allocation instead of two.
+///
+/// The halo's coverage plays no part in either path: the halo is read by the units, and the blend
+/// never writes it, so a tile's output is decided by the coverage at the tile's own pixels alone.
 pub(crate) fn run_tile(
     plan: &SpatialPlan,
     operation: &SpatialOperation,
     globals: &[Option<Global>],
     tile: Region,
     parallelism: Parallelism,
-    fill: impl FnOnce(Region, &mut [f32]) -> Result<(), Error>,
+    fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
 ) -> Result<(Region, Vec<f32>), Error> {
     let stage = plan.stage;
     let mask = operation.mask();
-    if let Some(mask) = mask
-        && !reaches(mask.bounds(), tile)
+    // What is known about the tile's coverage before a pixel is read: everything outside the
+    // bounds, where it is exactly zero; the whole field for a mask that reads no pixel; nothing for
+    // one that does.
+    let copy = tile_copy();
+    let before = match mask {
+        Some(mask) if copy != TileCopy::Never && !reaches(mask.bounds(), tile) => {
+            Some(Coverage::zero())
+        }
+        Some(mask) if copy == TileCopy::Proved && !mask.reads_pixels() => {
+            Some(zero_coverage(mask, tile, None))
+        }
+        _ => None,
+    };
+    if let Some(coverage) = before
+        && coverage.zero
     {
-        #[cfg(test)]
-        MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
         let mut values = vec![0.0_f32; (tile.pixels() * 3) as usize];
         fill(tile, &mut values)?;
-        return Ok((tile, values));
+        if copies_exactly(&values) {
+            #[cfg(test)]
+            MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
+            return Ok((tile, values));
+        }
     }
     let regions = plan.regions(tile);
     let mut values = vec![0.0_f32; (regions[0].pixels() * 3) as usize];
@@ -281,13 +304,27 @@ pub(crate) fn run_tile(
     // The snapshot of the tile's own input, taken before the chain runs because the chain consumes
     // the buffer it was read into. It is one tile and it is charged to the budget through
     // `worst_case_working_set`; nothing here scales with the frame.
-    let input = if mask.is_some() {
-        #[cfg(test)]
-        MASKED_TILES_EVALUATED.fetch_add(1, Ordering::Relaxed);
-        Some(cut_out(regions[0], &values, tile))
-    } else {
-        None
+    let input = mask.map(|_| cut_out(regions[0], &values, tile));
+    // A mask that reads pixels is answered on this snapshot, which is the pixel the blend hands it,
+    // so the proof and the blend evaluate the one field at the same arguments.
+    let coverage = match (mask, &input, before) {
+        (Some(mask), Some(input), None) if copy == TileCopy::Proved => {
+            Some(zero_coverage(mask, tile, Some(input)))
+        }
+        (_, _, before) => before,
     };
+    if let (Some(coverage), Some(input)) = (coverage, &input)
+        && coverage.zero
+        && copies_exactly(input)
+    {
+        #[cfg(test)]
+        MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
+        return Ok((tile, input.clone()));
+    }
+    #[cfg(test)]
+    if mask.is_some() {
+        MASKED_TILES_EVALUATED.fetch_add(1, Ordering::Relaxed);
+    }
     let mut scratch = vec![0.0_f32; scratch_values(operation, &regions)];
     for (index, unit) in operation.units().iter().enumerate() {
         let input = Planes::new(stage, regions[index], &values)?;
@@ -311,9 +348,92 @@ pub(crate) fn run_tile(
     }
     let region = *regions.last().expect("a chain always has an input region");
     if let (Some(mask), Some(input)) = (mask, &input) {
-        blend(mask, region, tile, input, &mut values);
+        let known = coverage.map_or(0, |coverage| coverage.leading);
+        blend(mask, region, tile, input, known, &mut values);
     }
     Ok((region, values))
+}
+
+/// What evaluating a mask over one tile proved, in the tile's row-major pixel order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Coverage {
+    /// Whether the coverage is zero, of either sign, at every pixel of the tile.
+    zero: bool,
+    /// How many leading pixels have coverage of exactly `+0.0`, which the blend then does not
+    /// evaluate a second time. It is never more than the pixels the proof evaluated.
+    leading: usize,
+}
+
+impl Coverage {
+    /// A tile outside the mask's bounds, where coverage is exactly zero everywhere. Nothing was
+    /// evaluated, so no pixel's sign is known: a tile that still has to run the chain evaluates
+    /// every pixel in its blend.
+    fn zero() -> Self {
+        Self {
+            zero: true,
+            leading: 0,
+        }
+    }
+}
+
+/// Evaluate the mask at the tile's pixels, in the order the blend visits them, until one is covered.
+///
+/// `input` is the tile-shaped snapshot of the operation's input, the pixel the blend hands the same
+/// field, or `None` for a field that reads no pixel — which ignores the value it is handed bit for
+/// bit ([`MaskField::reads_pixels`]), so the answer is the one the blend's own evaluation gives.
+/// A tile with any coverage stops at its first covered pixel, so the proof costs a covered tile
+/// only the evaluations before that pixel, and the blend skips the leading ones it proved `+0.0`.
+fn zero_coverage(mask: &MaskField, tile: Region, input: Option<&[f32]>) -> Coverage {
+    let target = tile.pixels() as usize;
+    let width = tile.width as usize;
+    let mut leading = None;
+    for (row, y) in (tile.y0..tile.y1()).enumerate() {
+        for (column, x) in (tile.x0..tile.x1()).enumerate() {
+            let index = row * width + column;
+            let pixel = input.map_or([0.0; 3], |input| {
+                [
+                    input[index],
+                    input[target + index],
+                    input[2 * target + index],
+                ]
+            });
+            let coverage = mask.evaluate(x, y, pixel);
+            if leading.is_none() && coverage.to_bits() != 0.0_f32.to_bits() {
+                leading = Some(index);
+            }
+            if coverage != 0.0 {
+                return Coverage {
+                    zero: false,
+                    leading: leading.unwrap_or(index),
+                };
+            }
+        }
+    }
+    Coverage {
+        zero: true,
+        leading: leading.unwrap_or(target),
+    }
+}
+
+/// Whether copying a tile's input is bit for bit what blending it at zero coverage produces.
+///
+/// At a pixel whose coverage `M` is `±0.0` the blend computes `(1 − M)·in + M·u`. `1 − M` is
+/// exactly `1.0`, and `1.0·in` is exactly `in`. `M·u` is a zero whenever `u` is finite, which it
+/// is on every tile the chain accepts, because the chain refuses a non-finite value anywhere in a
+/// unit's rectangle, and that rectangle contains the tile. Adding a zero to `in` returns `in`
+/// exactly — with one exception, `in = −0.0`, where `−0.0 + +0.0` is `+0.0` and which of the two
+/// zeros `M·u` is depends on the sign of the `u` the copy never computes. So the copy is exact
+/// when every input value is finite and none is `−0.0`, and the tile runs the chain otherwise.
+/// Nothing about the units, their halo, the mask's inversion or its amount enters: they all act
+/// through `u` or through `M`, and the proof holds for any finite `u` and any zero `M`.
+///
+/// The one difference a copy can make is the one its tile's output cannot show: a chain that
+/// would have produced a non-finite value there, discarded by the zero coverage, is never run,
+/// so it cannot refuse the render. That was already true of a tile outside the bounds.
+fn copies_exactly(input: &[f32]) -> bool {
+    input
+        .iter()
+        .all(|value| value.is_finite() && value.to_bits() != (-0.0_f32).to_bits())
 }
 
 /// Whether a mask with these bounds can reach any pixel of this tile. An empty rectangle reaches
@@ -358,8 +478,18 @@ fn cut_out(region: Region, values: &[f32], tile: Region) -> Vec<f32> {
 /// coordinates because a spatial operation opens its segment at the stage its layer received.
 ///
 /// `input` is the tile-shaped snapshot [`cut_out`] took before the chain ran; `output` is the whole
-/// of the last unit's rectangle, and only the `tile` part of it is touched.
-fn blend(mask: &MaskField, region: Region, tile: Region, input: &[f32], output: &mut [f32]) {
+/// of the last unit's rectangle, and only the `tile` part of it is touched. The first `known`
+/// pixels, in row-major order, were proved to have coverage of exactly `+0.0` by
+/// [`zero_coverage`], which evaluated the same field at the same arguments; they are blended at
+/// that coverage without evaluating it again.
+fn blend(
+    mask: &MaskField,
+    region: Region,
+    tile: Region,
+    input: &[f32],
+    known: usize,
+    output: &mut [f32],
+) {
     let source = region.pixels() as usize;
     let target = tile.pixels() as usize;
     let width = tile.width as usize;
@@ -377,7 +507,11 @@ fn blend(mask: &MaskField, region: Region, tile: Region, input: &[f32], output: 
                 input[target + from + column],
                 input[2 * target + from + column],
             ];
-            let coverage = mask.evaluate(x, y, pixel);
+            let coverage = if from + column < known {
+                0.0
+            } else {
+                mask.evaluate(x, y, pixel)
+            };
             for channel in 0..3 {
                 let value = &mut output[channel * source + to + column];
                 *value = (1.0 - coverage) * pixel[channel] + coverage * *value;
@@ -386,7 +520,48 @@ fn blend(mask: &MaskField, region: Region, tile: Region, input: &[f32], output: 
     }
 }
 
-/// How many tiles of a masked operation were copied because the mask could not reach them, and how
+/// Which masked tiles are copied rather than run. Production copies every tile proved to have zero
+/// coverage. A test chooses [`TileCopy::Never`] to render the same stack with every masked tile run
+/// through the chain and blended at every pixel, which is what a copy is compared against byte for
+/// byte, and a measurement chooses [`TileCopy::OutsideBounds`] for the rule before the proof
+/// existed. Choosing either changes no other test's output, only how much work that output costs —
+/// which is the claim the comparison proves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum TileCopy {
+    Never = 0,
+    OutsideBounds = 1,
+    Proved = 2,
+}
+
+#[cfg(not(test))]
+const fn tile_copy() -> TileCopy {
+    TileCopy::Proved
+}
+
+#[cfg(test)]
+fn tile_copy() -> TileCopy {
+    match TILE_COPY.load(Ordering::Relaxed) {
+        0 => TileCopy::Never,
+        1 => TileCopy::OutsideBounds,
+        _ => TileCopy::Proved,
+    }
+}
+
+#[cfg(test)]
+static TILE_COPY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+
+/// Set which masked tiles are copied, for a test; returns the previous rule.
+#[cfg(test)]
+pub(crate) fn set_tile_copy(copy: TileCopy) -> TileCopy {
+    match TILE_COPY.swap(copy as u8, Ordering::Relaxed) {
+        0 => TileCopy::Never,
+        1 => TileCopy::OutsideBounds,
+        _ => TileCopy::Proved,
+    }
+}
+
+/// How many tiles of a masked operation were copied because their coverage was proved zero, and how
 /// many ran the unit chain. A masked layer is affordable exactly when the first number dominates
 /// for a small mask, so the release measurements below print it beside their timings. An unmasked
 /// operation touches neither.
@@ -3444,6 +3619,324 @@ pub(crate) mod tests {
         }
     }
 
+    /// Masks whose `bounds()` reach tiles their coverage leaves at exactly zero, one per way that
+    /// can happen: a whole-mask inversion, a component inversion under a subtraction, a diagonal
+    /// half-plane whose rectangle is a triangle's bounding box, an intersection with a value-based
+    /// band, a value-based band alone (whose bounds are always the whole stage), and a partial
+    /// amount over all of it. A centre is a fraction of the width and height, a radius a fraction
+    /// of the height.
+    fn zero_coverage_masks() -> Vec<(&'static str, crate::Mask)> {
+        use crate::{Component, ComponentMode, Mask};
+        let radial = |x: f64, y: f64, radius: f64| {
+            json!({"x": x, "y": y, "radius_x": radius, "radius_y": radius, "angle": 0.0,
+                   "feather": 0.0})
+        };
+        let band = json!({"low": 60.0, "low_feather": 10.0, "high": 100.0, "high_feather": 0.0});
+        let whole = json!({"x0": -1.0, "y0": 0.5, "x1": -0.5, "y1": 0.5});
+        let mut inverted = Mask::new("Inverted radial");
+        inverted.components.push(Component::new(
+            "Radial 1",
+            ComponentMode::Add,
+            "radial",
+            radial(0.73, 0.5, 0.45),
+        ));
+        inverted.invert = true;
+        let mut subtracted = Mask::new("Subtracted radial");
+        subtracted.components.push(Component::new(
+            "Linear 1",
+            ComponentMode::Add,
+            "linear",
+            whole.clone(),
+        ));
+        let mut hole = Component::new(
+            "Radial 1",
+            ComponentMode::Subtract,
+            "radial",
+            radial(0.4, 0.5, 0.2),
+        );
+        // Inverted, the radial covers everything but its core; subtracting that leaves the core.
+        hole.invert = true;
+        subtracted.components.push(hole);
+        subtracted.amount = 60.0;
+        let mut diagonal = Mask::new("Diagonal");
+        diagonal.components.push(Component::new(
+            "Linear 1",
+            ComponentMode::Add,
+            "linear",
+            json!({"x0": 0.45, "y0": 0.45, "x1": 0.15, "y1": 0.15}),
+        ));
+        let mut intersected = Mask::new("Gradient and band");
+        intersected.components.push(Component::new(
+            "Linear 1",
+            ComponentMode::Add,
+            "linear",
+            whole,
+        ));
+        intersected.components.push(Component::new(
+            "Luminance range 1",
+            ComponentMode::Intersect,
+            "luminance-range",
+            band.clone(),
+        ));
+        let mut ranged = Mask::new("Band");
+        ranged.components.push(Component::new(
+            "Luminance range 1",
+            ComponentMode::Add,
+            "luminance-range",
+            band,
+        ));
+        ranged.amount = 75.0;
+        vec![
+            ("inverted radial", inverted),
+            ("inverted component subtracted", subtracted),
+            ("diagonal gradient", diagonal),
+            ("gradient intersected with a band", intersected),
+            ("band", ranged),
+        ]
+    }
+
+    /// A tile whose coverage is zero at every pixel is copied, and the copy is **bit for bit** the
+    /// tile the chain and the blend produce: `run_tile` is compared with itself, the copy turned on
+    /// and off, over every tile of a small stage, for every way a mask can leave a reachable tile
+    /// uncovered, and over inputs that include the one value the proof excludes (`−0.0`), negative
+    /// values and a non-finite one. Each such input must fall back to the chain, and the chain's
+    /// own verdict — including its refusal of a non-finite value — must come out unchanged.
+    #[test]
+    fn a_tile_whose_coverage_is_zero_is_copied_bit_for_bit() {
+        use crate::{mask_field::MaskSampling, path::StrokeTable};
+
+        let _guard = spatial_guard();
+        let stage = Stage {
+            width: 96,
+            height: 64,
+        };
+        let tile_size = 16;
+        // A dark left half and a bright right half, so a luminance band leaves whole tiles
+        // uncovered; the fill is a function of position alone, as every production fill is.
+        let clean = |channel: usize, x: u32, y: u32| -> f32 {
+            let base = if x < 48 { 0.02 } else { 0.85 };
+            base + ((x * 7 + y * 3 + channel as u32 * 5) % 11) as f32 * 0.004
+        };
+        // The same, with `−0.0`, a negative value and one NaN in tiles the masks leave uncovered.
+        let dirty = |channel: usize, x: u32, y: u32| -> f32 {
+            match (x, y) {
+                (1..=3, 1..=3) => -0.0,
+                (17, 49) => -0.25,
+                // Inside its own tile by more than the blur's radius, so no other tile's halo reads it.
+                (88, 56) if channel == 1 => f32::NAN,
+                _ => clean(channel, x, y),
+            }
+        };
+        type Fill<'a> = &'a dyn Fn(usize, u32, u32) -> f32;
+        let fills: [(&str, Fill<'_>); 2] = [("clean", &clean), ("dirty", &dirty)];
+        for (name, mask) in zero_coverage_masks() {
+            let field =
+                MaskField::compile(&mask, stage, &StrokeTable::default(), MaskSampling::Point)
+                    .unwrap();
+            let operation = SpatialOperation::new(vec![
+                Arc::new(BoxBlur { radius: 5 }) as Arc<dyn SpatialUnit>,
+                Arc::new(Counted),
+            ])
+            .unwrap()
+            .with_mask(field.clone());
+            let plan = SpatialPlan::new(&operation, stage, tile_size).unwrap();
+            let bounds = field.bounds();
+            let outside = plan
+                .tiles()
+                .into_iter()
+                .filter(|tile| !reaches(bounds, *tile))
+                .count();
+            for (input, value) in fills {
+                let fill = |region: Region, planes: &mut [f32]| -> Result<(), Error> {
+                    let pixels = region.pixels() as usize;
+                    for channel in 0..3 {
+                        for y in region.y0..region.y1() {
+                            for x in region.x0..region.x1() {
+                                let index = (y - region.y0) as usize * region.width as usize
+                                    + (x - region.x0) as usize;
+                                planes[channel * pixels + index] = value(channel, x, y);
+                            }
+                        }
+                    }
+                    Ok(())
+                };
+                // Every tile's bits and whether it ran the chain.
+                let run = |copy: bool| {
+                    set_tile_copy(if copy {
+                        TileCopy::Proved
+                    } else {
+                        TileCopy::Never
+                    });
+                    let tiles: Vec<_> = plan
+                        .tiles()
+                        .into_iter()
+                        .map(|tile| {
+                            // `Counted` runs once per tile whose chain completed; a chain that
+                            // refused a value stopped before it, and only a chain refuses here.
+                            let before = APPLIED.load(AtomicOrdering::SeqCst);
+                            let result =
+                                run_tile(&plan, &operation, &[], tile, Parallelism::Serial, fill)
+                                    .map(|(region, values)| {
+                                        cut_out(region, &values, tile)
+                                            .into_iter()
+                                            .map(f32::to_bits)
+                                            .collect::<Vec<_>>()
+                                    });
+                            let ran =
+                                APPLIED.load(AtomicOrdering::SeqCst) > before || result.is_err();
+                            (tile, result, ran)
+                        })
+                        .collect::<Vec<_>>();
+                    set_tile_copy(TileCopy::Proved);
+                    tiles
+                };
+                let copied = run(true);
+                let processed = run(false);
+                for ((tile, copy, ran), (_, chain, ran_without)) in copied.iter().zip(&processed) {
+                    assert!(
+                        *ran_without,
+                        "{name}, {input}: {tile:?} ran with the copy off"
+                    );
+                    match (copy, chain) {
+                        (Ok(copy), Ok(chain)) => assert!(
+                            copy == chain,
+                            "{name}, {input}: {tile:?} differs from the chain's bits (ran: {ran})"
+                        ),
+                        (Err(copy), Err(chain)) => assert_eq!(
+                            (copy.kind, &copy.detail),
+                            (chain.kind, &chain.detail),
+                            "{name}, {input}"
+                        ),
+                        _ => panic!("{name}, {input}: {tile:?} changed its verdict"),
+                    }
+                    // A tile holding a value the proof excludes never skips the chain.
+                    let excluded = (0..3).any(|channel| {
+                        (tile.y0..tile.y1()).any(|y| {
+                            (tile.x0..tile.x1()).any(|x| {
+                                let value = value(channel, x, y);
+                                !value.is_finite() || value.to_bits() == (-0.0_f32).to_bits()
+                            })
+                        })
+                    });
+                    assert!(
+                        !excluded || *ran,
+                        "{name}, {input}: {tile:?} holds -0.0 or a non-finite value and was copied"
+                    );
+                }
+                let skipped = copied.iter().filter(|(_, _, ran)| !ran).count();
+                assert!(
+                    skipped > outside,
+                    "{name}, {input}: {skipped} tiles copied, {outside} of them outside the \
+                     bounds; the proof must copy uncovered tiles inside the bounds too"
+                );
+            }
+        }
+    }
+
+    /// The same claim through the one render entry point, on the byte path and the RAW linear
+    /// path: a masked spatial layer renders the same bytes with the zero-coverage copy on and off,
+    /// while running fewer tiles, and a point sample equals the rendered byte on a grid that
+    /// crosses copied tiles, run tiles and the edges between them.
+    #[test]
+    fn a_render_that_copies_uncovered_tiles_is_byte_identical_and_samples_equal_it() {
+        let _guard = spatial_guard();
+        let registry = spatial_registry();
+        let (width, height, tile) = (240, 160, 32);
+        let source = gradient(width, height);
+        let linear = linear_source(width, height);
+        let settings = LinearSettings::default();
+        for (name, mask) in zero_coverage_masks() {
+            let stack = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers: vec![Layer {
+                    mask: Some(mask.id.clone()),
+                    ..spatial_layer(&["blur:3", "count"])
+                }],
+                masks: vec![mask],
+                ..Recipe::default()
+            };
+            for linear_path in [false, true] {
+                let path = if linear_path { "linear" } else { "byte" };
+                let frame = |copy: bool| {
+                    set_tile_copy(if copy {
+                        TileCopy::Proved
+                    } else {
+                        TileCopy::Never
+                    });
+                    APPLIED.store(0, AtomicOrdering::SeqCst);
+                    let raster = if linear_path {
+                        render_linear_tiled(
+                            &registry,
+                            &linear,
+                            SnapshotId::new(),
+                            &stack,
+                            settings,
+                            &Cancel::never(),
+                            tile,
+                        )
+                    } else {
+                        render_tiled(
+                            &registry,
+                            &source,
+                            SnapshotId::new(),
+                            &stack,
+                            &Cancel::never(),
+                            tile,
+                        )
+                    };
+                    set_tile_copy(TileCopy::Proved);
+                    (raster.unwrap(), APPLIED.load(AtomicOrdering::SeqCst))
+                };
+                let (copied, ran) = frame(true);
+                let (processed, ran_all) = frame(false);
+                assert_eq!(
+                    copied.rgba.as_ref(),
+                    processed.rgba.as_ref(),
+                    "{name}, {path} path: copying uncovered tiles changed the frame"
+                );
+                // The linear fixture varies too fast for a luminance band to leave a whole tile
+                // uncovered; every geometric mask leaves some on both paths.
+                assert!(
+                    ran < ran_all || (linear_path && name.contains("band")),
+                    "{name}, {path} path: {ran} of {ran_all} tiles ran, so nothing was copied"
+                );
+                let sampled = |x: u32, y: u32| {
+                    let options = crate::RenderOptions::default().with_tile(tile);
+                    let entered = if linear_path {
+                        crate::render(
+                            &registry,
+                            crate::RenderSource::Linear {
+                                image: &linear,
+                                settings,
+                            },
+                            &stack,
+                            options,
+                            context(),
+                        )
+                    } else {
+                        crate::render(
+                            &registry,
+                            crate::RenderSource::Byte(&source),
+                            &stack,
+                            options,
+                            context(),
+                        )
+                    };
+                    entered.and_then(|entered| entered.sample(x, y)).unwrap()
+                };
+                for y in (0..height).step_by(13).chain([31, 32, height - 1]) {
+                    for x in (0..width).step_by(11).chain([31, 32, width - 1]) {
+                        assert_eq!(
+                            sampled(x, y).rgba,
+                            copied.pixel(x, y),
+                            "{name}, {path} path: sample at ({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------------------------
     // Cancellation.
     // -----------------------------------------------------------------------------------------
@@ -3740,6 +4233,134 @@ pub(crate) mod tests {
                         );
                     }
                 }
+            }
+        }
+        reset_masked_tile_counts();
+    }
+
+    /// Release-only measurement, run explicitly:
+    ///
+    /// ```sh
+    /// cargo test --release --locked --package lightwell-core -- --ignored masked_spatial_zero_coverage_timing --nocapture
+    /// ```
+    ///
+    /// A masked Presence layer on an in-memory 24 MP frame whose mask reaches **most of the frame's
+    /// rectangle but covers little of it**: tiles inside `bounds()` whose coverage is zero at every
+    /// pixel. Three shapes, each one the rectangle cannot see through — a diagonal gradient whose
+    /// bounds are a triangle's bounding box, a whole-mask inversion of a radial (bounds are the
+    /// whole stage, coverage is zero inside the ellipse), and a luminance range (a value-based
+    /// component, whose bounds are always the whole stage). The copied-tile count says how many
+    /// tiles skipped the unit chain.
+    ///
+    /// Each shape is rendered under the rule before the per-tile proof existed — copy only outside
+    /// `bounds()` — and under the proof, alternating the two run by run and swapping which goes
+    /// first, so a host other sessions are loading skews both alike. Every pair of frames is
+    /// asserted byte-identical.
+    #[test]
+    #[ignore = "measurement, run explicitly in release"]
+    fn masked_spatial_zero_coverage_timing() {
+        use crate::{
+            Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, Mask, PRESENCE_EFFECT,
+        };
+
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        let (width, height) = (6000_u32, 4000_u32);
+        let source = gradient(width, height);
+        let one = |kind: &str, payload: serde_json::Value, invert: bool| -> Mask {
+            let mut mask = Mask::new("Mask 1");
+            let name = mask.next_component_name(kind);
+            mask.components
+                .push(Component::new(name, ComponentMode::Add, kind, payload));
+            mask.invert = invert;
+            mask
+        };
+        let shapes = [
+            (
+                "diagonal gradient toward the top-left corner",
+                one(
+                    "linear",
+                    json!({"x0": 0.55, "y0": 0.55, "x1": 0.35, "y1": 0.35}),
+                    false,
+                ),
+            ),
+            (
+                "inverted radial (a vignette)",
+                one(
+                    "radial",
+                    json!({"x": 0.75, "y": 0.5, "radius_x": 0.72, "radius_y": 0.55,
+                           "angle": 0.0, "feather": 20.0}),
+                    true,
+                ),
+            ),
+            (
+                "luminance range 70 to 100",
+                one(
+                    "luminance-range",
+                    json!({"low": 70.0, "low_feather": 10.0, "high": 100.0,
+                           "high_feather": 0.0}),
+                    false,
+                ),
+            ),
+        ];
+        for (shape, mask) in shapes {
+            let stack = crate::Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers: vec![Layer {
+                    id: LayerId::new(),
+                    effect_id: PRESENCE_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload: json!({"clarity": 100.0}),
+                    mask: Some(mask.id.clone()),
+                    artifacts: Vec::new(),
+                }],
+                masks: vec![mask],
+                ..Recipe::default()
+            };
+            // Warm the source and the estimate store, then measure.
+            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+            let rules = [
+                ("outside bounds", TileCopy::OutsideBounds),
+                ("proved", TileCopy::Proved),
+            ];
+            let mut samples = [Vec::new(), Vec::new()];
+            let mut counts = [(0, 0), (0, 0)];
+            let runs = 6;
+            for run in 0..runs {
+                let mut frames = Vec::new();
+                for step in 0..2 {
+                    let which = (run + step) % 2;
+                    set_tile_copy(rules[which].1);
+                    reset_masked_tile_counts();
+                    let started = std::time::Instant::now();
+                    let raster = crate::render::testing::render(
+                        &registry,
+                        &source,
+                        SnapshotId::new(),
+                        &stack,
+                    )
+                    .unwrap();
+                    samples[which].push(started.elapsed().as_secs_f64() * 1000.0);
+                    counts[which] = masked_tile_counts();
+                    frames.push(raster);
+                }
+                set_tile_copy(TileCopy::Proved);
+                assert_eq!(
+                    frames[0].rgba.as_ref(),
+                    frames[1].rgba.as_ref(),
+                    "{shape}: the two rules render the same bytes"
+                );
+            }
+            for (index, (rule, _)) in rules.iter().enumerate() {
+                let samples = &mut samples[index];
+                samples.sort_by(f64::total_cmp);
+                let p50 = samples[samples.len() / 2];
+                let max = samples[samples.len() - 1];
+                let (copied, evaluated) = counts[index];
+                println!(
+                    "{width}x{height} presence clarity +100, {shape}, copy {rule}: p50 {p50:.0} ms, \
+                     max {max:.0} ms over {runs} runs; tiles copied {copied}, evaluated {evaluated}",
+                );
             }
         }
         reset_masked_tile_counts();

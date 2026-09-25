@@ -235,6 +235,30 @@ On the **RAW linear path** each spatial operation materializes one `f32` frame, 
 replaces the one before it, so at most two exist at once whatever the number of masked spatial
 layers, as on the byte path.
 
+### The masked spatial primitive, tiles the mask leaves uncovered inside its bounds
+
+A masked Presence layer (Clarity +100) on an in-memory 6000 × 4000 frame whose mask reaches most of
+its bounds rectangle but covers little of it: a diagonal gradient, an inverted radial (bounds are the
+whole stage) and a luminance range (a value-based component, whose bounds are always the whole
+stage). Each is rendered under the rule before tiles were proved uncovered one by one — copy only
+outside `bounds()` — and under the proof, alternating run by run and swapping which goes first, with
+every pair of frames asserted byte-identical. `cargo test --release --locked --package lightwell-core
+--lib -- --ignored masked_spatial_zero_coverage_timing --nocapture`, M4 MacBook Pro, p50 and the
+slowest of 6 runs each.
+
+| Mask | Outside bounds only: p50 / slowest ms | Proved per tile: p50 / slowest ms | Tiles copied / evaluated, before → after |
+| --- | --- | --- | --- |
+| Diagonal gradient toward the top-left corner | 300 / 1466 | 268 / 1154 | 16 / 80 → 37 / 59 |
+| Inverted radial (a vignette) | 262 / 294 | 213 / 406 | 0 / 96 → 33 / 63 |
+| Luminance range 70 to 100 | 297 / 396 | 223 / 242 | 0 / 96 → 45 / 51 |
+
+**Provisional.** The one-minute load average was 9.9 before the run and 22.5 after it, well above
+the 8.0 a quotable figure needs, so the milliseconds are an upper bound and the slowest column is
+noise. The tile counts are exact counters (`masked_tile_counts`) and are the result: a third to a
+half of the tiles skip the unit chain, and the p50 falls by 11 to 25% in the same interleaved run.
+The saving in wall time is smaller than the share of tiles because a render also pays for the global
+estimate and the fill, and the tiles that remain still run in parallel.
+
 ### The masked spatial primitive, a mask of many components
 
 The other half of the same cost: one masked Presence layer whose mask holds 1, 4, 16 and 32
