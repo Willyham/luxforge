@@ -29,8 +29,9 @@ all Lightwell camera-specific policy, not a fork of the decompressor's internals
 Strict Rust types and semantic validation define the format: unknown fields,
 unknown versions/strategies, duplicate identities/mode identifiers, ambiguous mode
 selectors, invalid dimensions, and unsupported capability combinations fail the
-build. The same parser loads the embedded catalog once, on first use. No
-runtime file lookup, environment override, download or per-image JSON parsing is
+build. The build then emits the validated catalog as static Rust data, so the
+library parses no JSON at all, and a test proves that data equals the parsed
+file. No runtime file lookup, environment override, download or JSON parsing is
 introduced. Build-generated native allowlist entries and Rust mode identifiers
 come from the same validated catalog. Unknown cameras still fail before unpack.
 

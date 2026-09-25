@@ -456,7 +456,7 @@ impl DngCorrection {
         if required.len() != settings.required_opcodes.len()
             || required
                 .iter()
-                .zip(&settings.required_opcodes)
+                .zip(settings.required_opcodes.iter())
                 .any(|(op, expected)| {
                     op.id != expected.id
                         || op.list != expected.list
@@ -507,7 +507,7 @@ impl DngCorrection {
             stages,
             sensor_repair,
             metadata: DngCorrectionMetadata {
-                interpretation: settings.interpretation.clone(),
+                interpretation: settings.interpretation.to_string(),
                 applied: required.into_iter().map(provenance).collect(),
                 skipped_optional,
                 calibration,

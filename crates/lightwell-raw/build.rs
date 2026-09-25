@@ -39,6 +39,107 @@ fn add_cpp_tree(build: &mut cc::Build, root: &Path, extension: &str) {
     }
 }
 
+/// Borrowed static text: a `Debug`-escaped string is a valid Rust string literal.
+fn text(value: &str) -> String {
+    format!("Cow::Borrowed({value:?})")
+}
+
+fn mode(mode: &profiles::Mode) -> String {
+    let compression = mode.compression.map_or_else(
+        || "None".to_string(),
+        |compression| {
+            format!(
+                "Some(Compression {{ probe: CompressionProbe::{:?}, value: {} }})",
+                compression.probe, compression.value
+            )
+        },
+    );
+    format!(
+        "Mode {{ id: {}, bits: {}, raw_count: {}, decoder: {}, dng_version: {:?}, validation: ModeValidation::{:?}, compression: {compression} }}",
+        text(&mode.id),
+        mode.bits,
+        mode.raw_count,
+        text(&mode.decoder),
+        mode.dng_version,
+        mode.validation,
+    )
+}
+
+/// The validated catalog as static Rust data, so the library never parses JSON. Each camera's
+/// modes and opcodes are named statics its entry borrows. `Debug` prints every `f64` as its
+/// shortest round-tripping literal, so the coefficients are exact.
+fn static_catalog(catalog: &profiles::Catalog) -> String {
+    let mut out = String::from(
+        "// Generated from data/cameras.json; do not edit.\nuse crate::profiles::*;\nuse std::borrow::Cow;\n",
+    );
+    let mut cameras = Vec::new();
+    for (index, camera) in catalog.cameras.iter().enumerate() {
+        let modes: Vec<String> = camera.modes.iter().map(mode).collect();
+        out.push_str(&format!(
+            "static MODES_{index}: [Mode; {}] = [{}];\n",
+            modes.len(),
+            modes.join(", ")
+        ));
+        let dng = match &camera.dng {
+            None => "None".to_string(),
+            Some(dng) => {
+                let opcodes: Vec<String> = dng
+                    .required_opcodes
+                    .iter()
+                    .map(|op| {
+                        format!(
+                            "Opcode {{ id: {}, list: {}, version: {}, flags: {} }}",
+                            op.id, op.list, op.version, op.flags
+                        )
+                    })
+                    .collect();
+                out.push_str(&format!(
+                    "static OPCODES_{index}: [Opcode; {}] = [{}];\n",
+                    opcodes.len(),
+                    opcodes.join(", ")
+                ));
+                format!(
+                    "Some(Dng {{ container: DngContainer::{:?}, calibration: DngCalibration::{:?}, illuminants: {:?}, selected_matrix: {}, calibration_identity: {}, corrections: DngCorrections::{:?}, interpretation: {}, required_opcodes: Cow::Borrowed(&OPCODES_{index}), decoder_active_bottom_trim: {} }})",
+                    dng.container,
+                    dng.calibration,
+                    dng.illuminants,
+                    dng.selected_matrix,
+                    text(&dng.calibration_identity),
+                    dng.corrections,
+                    text(&dng.interpretation),
+                    dng.decoder_active_bottom_trim,
+                )
+            }
+        };
+        let calibration = camera.calibration.as_ref().map_or_else(
+            || "None".to_string(),
+            |calibration| {
+                format!(
+                    "Some(Calibration {{ xyz_to_camera: {:?}, source: {}, license: {} }})",
+                    calibration.xyz_to_camera,
+                    text(&calibration.source),
+                    text(&calibration.license),
+                )
+            },
+        );
+        cameras.push(format!(
+            "Camera {{ make: {}, model: {}, sensor_size: {:?}, cfa_size: {:?}, crop: Crop::{:?}, dng: {dng}, calibration: {calibration}, modes: Cow::Borrowed(&MODES_{index}) }}",
+            text(&camera.make),
+            text(&camera.model),
+            camera.sensor_size,
+            camera.cfa_size,
+            camera.crop,
+        ));
+    }
+    out.push_str(&format!(
+        "static CAMERAS: [Camera; {}] = [\n{}\n];\npub(crate) static CATALOG: Catalog = Catalog {{ version: {}, cameras: Cow::Borrowed(&CAMERAS) }};\n",
+        cameras.len(),
+        cameras.join(",\n"),
+        catalog.version
+    ));
+    out
+}
+
 fn main() {
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let libraw = manifest.join("vendor/libraw-0.22.2");
@@ -54,7 +155,7 @@ fn main() {
     );
     let mut names =
         String::from("impl RawMode { pub(crate) fn id(self) -> &'static str { match self {\n");
-    for camera in &catalog.cameras {
+    for camera in catalog.cameras.iter() {
         let (calibrated, matrix) = camera
             .calibration
             .as_ref()
@@ -80,7 +181,7 @@ fn main() {
             "{{\"{}\", \"{}\", {}, {{{}}}}},\n",
             camera.make, camera.model, calibrated, matrix
         ));
-        for mode in &camera.modes {
+        for mode in camera.modes.iter() {
             rust.push_str(&format!("{},\n", mode.id));
             names.push_str(&format!("Self::{} => \"{}\",\n", mode.id, mode.id));
         }
@@ -95,6 +196,8 @@ fn main() {
     ));
     fs::write(out.join("camera_allowlist.h"), native).expect("write native camera table");
     fs::write(out.join("raw_modes.rs"), rust).expect("write mode identifiers");
+    fs::write(out.join("camera_catalog.rs"), static_catalog(&catalog))
+        .expect("write static camera catalog");
     let mut build = cc::Build::new();
     build
         .cpp(true)

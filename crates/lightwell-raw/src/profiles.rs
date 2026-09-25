@@ -1,65 +1,73 @@
-//! The same strict catalog parser is compiled into the build script and library.
+//! The camera catalog's types and its strict parser. The build script parses and validates
+//! `data/cameras.json` with this parser, then emits the catalog as static Rust data, which the
+//! library holds: nothing parses JSON at run time. The tests parse the JSON too, to prove the
+//! static data equals it and to exercise the validation on mutated catalogs.
 //! Camera policy is data; these enums name implemented format/processing capabilities.
 use crate::opcodes;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
-#[derive(Debug, Deserialize)]
+/// Text the static catalog borrows and a parsed one owns.
+pub(crate) type Text = Cow<'static, str>;
+/// A list the static catalog borrows and a parsed one owns.
+pub(crate) type List<T> = Cow<'static, [T]>;
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Catalog {
     pub version: u32,
-    pub cameras: Vec<Camera>,
+    pub cameras: List<Camera>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Camera {
-    pub make: String,
-    pub model: String,
+    pub make: Text,
+    pub model: Text,
     pub sensor_size: [u32; 2],
     pub cfa_size: [u32; 2],
     pub crop: Crop,
     pub dng: Option<Dng>,
     pub calibration: Option<Calibration>,
-    pub modes: Vec<Mode>,
+    pub modes: List<Mode>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Calibration {
     pub xyz_to_camera: [[f64; 3]; 3],
-    pub source: String,
-    pub license: String,
+    pub source: Text,
+    pub license: Text,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Mode {
-    pub id: String,
+    pub id: Text,
     pub bits: u32,
     pub raw_count: u32,
-    pub decoder: String,
+    pub decoder: Text,
     pub dng_version: Option<u32>,
     pub validation: ModeValidation,
     pub compression: Option<Compression>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ModeValidation {
     ContainerCompression,
     DecoderMetadata,
 }
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Compression {
     pub probe: CompressionProbe,
     pub value: u32,
 }
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CompressionProbe {
     NefMakerNote,
     RafHeader,
 }
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Crop {
     LibrawInset,
@@ -67,38 +75,38 @@ pub(crate) enum Crop {
     ActiveArea,
     DngTags,
 }
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DngContainer {
     UncompressedU16SingleStrip,
     IntegerCfaSingleSegment,
 }
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DngCalibration {
     RootFixedMatrix,
 }
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DngCorrections {
     Stage3GainMapThenWarp,
     StageOrdered,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Dng {
     pub container: DngContainer,
     pub calibration: DngCalibration,
     pub illuminants: [u16; 2],
     pub selected_matrix: u8,
-    pub calibration_identity: String,
+    pub calibration_identity: Text,
     pub corrections: DngCorrections,
-    pub interpretation: String,
-    pub required_opcodes: Vec<Opcode>,
+    pub interpretation: Text,
+    pub required_opcodes: List<Opcode>,
     #[serde(default)]
     pub decoder_active_bottom_trim: u32,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Opcode {
     pub id: u32,
@@ -107,6 +115,9 @@ pub(crate) struct Opcode {
     pub flags: u32,
 }
 
+// The library holds the generated static catalog, so outside its tests only the build script
+// calls the parser.
+#[cfg_attr(not(test), allow(dead_code))]
 impl Catalog {
     pub fn parse(json: &str) -> Result<Self, String> {
         if json.len() > 1024 * 1024 {
@@ -123,7 +134,7 @@ impl Catalog {
         }
         let mut identities = HashSet::new();
         let mut ids = HashSet::new();
-        for camera in &self.cameras {
+        for camera in self.cameras.iter() {
             let fail = |message| Err(format!("{} {}: {message}", camera.make, camera.model));
             // Strings are also emitted as C++ literals; forbid truncation, controls,
             // quotes and escape characters instead of trusting code generation.
@@ -322,6 +333,21 @@ mod tests {
     }
     fn parse(value: &Value) -> Result<Catalog, String> {
         Catalog::parse(&value.to_string())
+    }
+
+    /// The static catalog the library holds is exactly the validated JSON, and the JSON is the
+    /// pinned file the build script generated it from.
+    #[test]
+    fn static_catalog_is_the_validated_json() {
+        let parsed = Catalog::parse(include_str!("../data/cameras.json")).unwrap();
+        assert_eq!(*crate::camera_catalog(), parsed);
+        assert!(matches!(crate::camera_catalog().cameras, Cow::Borrowed(_)));
+        assert!(
+            crate::camera_catalog()
+                .cameras
+                .iter()
+                .all(|camera| matches!(camera.modes, Cow::Borrowed(_)))
+        );
     }
 
     #[test]
@@ -663,8 +689,8 @@ mod tests {
 
     #[test]
     fn generated_modes_and_capabilities_share_the_catalog() {
-        for camera in &crate::camera_catalog().cameras {
-            for mode in &camera.modes {
+        for camera in crate::camera_catalog().cameras.iter() {
+            for mode in camera.modes.iter() {
                 let public: crate::RawMode = serde_json::from_value(json!(mode.id)).unwrap();
                 assert_eq!(public.id(), mode.id);
                 assert_eq!(public.requires_dng_corrections(), camera.dng.is_some());

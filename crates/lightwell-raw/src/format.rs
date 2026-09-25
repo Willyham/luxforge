@@ -783,7 +783,7 @@ pub(super) fn dng_color_calibration(
             illuminants: settings.illuminants,
             color_matrix1_sha256: hash1,
             color_matrix2_sha256: hash2,
-            selected: settings.calibration_identity.clone(),
+            selected: settings.calibration_identity.to_string(),
         },
     ))
 }
@@ -1209,7 +1209,7 @@ mod tests {
             calibration_identity: "test".into(),
             corrections: DngCorrections::Stage3GainMapThenWarp,
             interpretation: "test".into(),
-            required_opcodes: Vec::new(),
+            required_opcodes: Vec::new().into(),
             decoder_active_bottom_trim: 0,
         };
         assert!(

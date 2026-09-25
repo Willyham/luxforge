@@ -26,12 +26,14 @@ use format::{classify_mode, raf_default_crop};
 pub use limits::{MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES};
 use profiles::{Catalog, Crop};
 
+/// The camera catalog as static data, which the build script generated from `data/cameras.json`
+/// after validating it: nothing is parsed at run time.
+mod catalog {
+    include!(concat!(env!("OUT_DIR"), "/camera_catalog.rs"));
+}
+
 fn camera_catalog() -> &'static Catalog {
-    static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
-    CATALOG.get_or_init(|| {
-        Catalog::parse(include_str!("../data/cameras.json"))
-            .expect("camera catalog validated at build time")
-    })
+    &catalog::CATALOG
 }
 
 const PROVIDER: &str = "LibRaw 0.22.2 + librtprocess 9a858270";
@@ -682,7 +684,7 @@ impl RawSource {
         let decoder = c_text(&native.decoder);
         let (profile, recording) =
             classify_mode(camera_catalog(), native, &make, &model, &decoder, bytes)?;
-        let mode = serde_json::from_value(serde_json::Value::String(recording.id.clone()))
+        let mode = serde_json::from_value(serde_json::Value::String(recording.id.to_string()))
             .expect("mode identifiers generated from the validated catalog");
         reject_unhandled_required_opcodes(profile.dng.is_some(), opcodes)?;
         let rect = |x, y, width, height| RawRect {

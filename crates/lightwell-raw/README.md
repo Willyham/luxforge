@@ -34,8 +34,9 @@ identities, sensor dimensions, CFA dimensions, recording-mode selectors, crop
 source and DNG calibration/correction settings. The [format contract](../../docs/design/raw-camera-profiles.md)
 describes the fields and how to add a profile. The strict parser in
 [src/profiles.rs](src/profiles.rs) validates the catalog at build time; the build
-produces the native pre-unpack allowlist and public mode identifiers from it.
-The same JSON is embedded and parsed once on first use, without runtime file I/O.
+produces the native pre-unpack allowlist, the public mode identifiers and the
+catalog itself as static Rust data from it, so nothing parses JSON at run time.
+A test proves the static data equals the parsed JSON.
 Adding a camera that uses existing capabilities requires a data entry and authentic
 qualification, without a new camera-name branch. Unknown models/modes and invalid
 capability combinations fail explicitly.
