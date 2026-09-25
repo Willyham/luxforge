@@ -19,7 +19,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 
 - Originals are read-only. Import references existing files with a stable asset ID, a verified content fingerprint and a changeable locator. SQLite is the local catalog. Folder relinking, sidecars, portability, backups and sync need their own workflow decisions.
 - A "layer" is an ordered edit operation in a recipe. Each committed action stores a complete immutable recipe snapshot and one attributed history entry. Bitmap compositing, blend modes and arbitrary layer reordering are not selected.
-- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 9; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
+- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 10; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
 - Undo and redo navigate saved entries without appending rows. Preview is read-only. Restore appends an action and keeps all later entries. A new edit clears shortcut redo, but every entry stays available. Committed state survives restart; drafts do not.
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
@@ -91,7 +91,7 @@ Decided on 2026-09-23 under the owner's delegation for the [shared module capabi
 - Only the desktop (after Allow) or `lightwell-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint or path change revokes the old grants.
 - Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
 - No remote provider adapter ships with the framework; the first real adapters arrive with Corrections. `managed-storage` and `local-runtime` wait for their first consumer.
-- Derived artifacts live in a directory beside the catalog and move with it; catalog format 9 holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
+- Derived artifacts live in a directory beside the catalog and move with it; catalog format 10 holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
 
 Revised by the owner on 2026-09-24, after the [architecture review](#architecture-review):
 

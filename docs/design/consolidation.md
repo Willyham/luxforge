@@ -29,7 +29,7 @@ The owner's decisions for this work are in [decisions](../decisions.md#architect
 | Concept | Copies today | One replacement | Wave |
 | --- | --- | --- | --- |
 | Committing a change | Hand-built write transactions for import, commit, navigate, restore, versions and no-ops; Restore admits with fewer checks | `mutate(plan)` and one `admit(recipe)` | 1 (Restore), 2 |
-| Planning an action | `apply_action`, a RAW special case, `draft_recipe`, preset steps, mask commands | One plan path over a lazy `StageContext`, so a draft equals its commit by construction | 2, 3 |
+| Planning an action | `apply_action`, a RAW special case, `draft_recipe`, preset steps | One plan path over a lazy `StageContext`, so a draft equals its commit by construction; mask commands run through the one action path as `ActionRef::Host` | 2, 3 |
 | Method dispatch and parameters | The `METHODS` table, three string-match layers and the capability host's own match; parameters declared as strings, serde structs and a hand-copied schema test | One table with service and owner handlers; parameters declared once | 2 |
 | Jobs | Source, analysis and capability jobs with three ID schemes and three status vocabularies | One job status, then one job table | 2 |
 | Latest-job workers | Preview, analysis and clipping-overlay queues, each spawning a thread per job | One persistent worker primitive with supersede and abandon tokens | 5 |

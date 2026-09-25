@@ -86,7 +86,7 @@ The request carries the settings rather than an ID for three reasons. The entry,
 
 ## Library
 
-Presets live in the catalog, so they share its single owner, atomic writes and backup. The current catalog format (**8**) holds this table:
+Presets live in the catalog, so they share its single owner, atomic writes and backup. The current catalog format (**10**) holds this table:
 
 ```sql
 CREATE TABLE presets (
