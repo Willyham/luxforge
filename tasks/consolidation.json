@@ -2753,7 +2753,7 @@
     {
       "id": "TASK-045",
       "description": "Deliver mask coverage grids with the proxy phase, and copy the tiles a masked spatial layer cannot reach instead of processing them.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-035",
         "TASK-044"

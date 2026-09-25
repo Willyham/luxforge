@@ -52,7 +52,7 @@
     {
       "id": "TASK-002",
       "description": "Answer `render.sample` through a spatial layer off the catalog owner thread, so a pointer readout never delays another client's request.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "A point sample through a spatial layer now evaluates only the tile that contains its pixel on both paths, equal to the render by construction: about 20 ms with Clarity and 38 ms with Clarity and Dehaze on the Z6 and X100VI, 11 and 34 ms on a 24 MP JPEG. It still runs on the owner, so while another client samples in a loop every other owner call, the desktop's synchronous `draft.set` included, waits up to one sample: p50 19 to 20 ms against 0.3 ms idle, one to three frames at 120 Hz during a drag.",
@@ -743,6 +743,78 @@
           "The behaviour matches the documents."
         ]
       }
+    },
+    {
+      "id": "TASK-018",
+      "description": "Stop the `mask-range` scenario's stroke-latency check from failing when every drafted frame of its paced stroke is superseded on a heavily loaded host.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "On 2026-09-25, `mask-range` failed three times in about ten runs with \"The run painted no stroke whose drafted frame reached the screen\", always at a one-minute load average of about 27 to 48, and passed on rerun. In the failing runs no `preview_displayed` followed any `mask_draft_set` of the paced stroke: each drafted proxy was superseded before upload, so the pairing had no latency to record. The rest of the scenario's checks passed.",
+        "The latency figure is an observation, not an acceptance threshold; the failure is the harness requiring at least one paired frame."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Mask range scenario",
+          "target": "xtask/src/mask_range_smoke.rs",
+          "relevance": "The stroke-latency check."
+        },
+        {
+          "kind": "file",
+          "label": "Stroke latency pairing",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "`paced_stroke_latencies`."
+        }
+      ],
+      "acceptance_criteria": [
+        "Either the stroke is paced so a frame is presented between inputs regardless of load (the scenario waits for each drafted frame before the next input), or an unpaired stroke is recorded as unmeasured with its load rather than failing the scenario, with the choice stated in the scenario's docs.",
+        "A broken stroke that never reaches the screen at all still fails."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the scenario repeatedly beside a loaded host."
+        ],
+        "commands": [
+          "cargo xtask smoke --scenario mask-range --output NEW_DIR"
+        ],
+        "expected_results": [
+          "No load-only failures; a real regression still fails."
+        ]
+      }
+    },
+    {
+      "id": "TASK-019",
+      "description": "Make the process-counter GPU test robust to a loaded host.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`a_metal_dispatch_raises_gpu_time_and_allocations` in `lightwell-process` failed twice on 2026-09-25 inside `verify --tier quick` at a load average above 20, on unrelated changes, and passed alone and on rerun. It asserts that GPU time rises after one Metal dispatch, which a busy GPU or a coarse counter update can delay."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Process counters",
+          "target": "crates/lightwell-process/src/lib.rs",
+          "relevance": "The counters the test reads."
+        }
+      ],
+      "acceptance_criteria": [
+        "The test waits for the counter with a bounded deadline, or dispatches enough work that the rise is certain, and still fails when the counter never moves."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the test repeatedly beside a loaded host."
+        ],
+        "commands": [
+          "cargo test -p lightwell-process"
+        ],
+        "expected_results": [
+          "No load-only failures."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -765,7 +837,9 @@
         "TASK-014",
         "TASK-015",
         "TASK-016",
-        "TASK-017"
+        "TASK-017",
+        "TASK-018",
+        "TASK-019"
       ]
     }
   ]
