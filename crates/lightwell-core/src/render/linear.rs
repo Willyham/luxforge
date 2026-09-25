@@ -1537,14 +1537,7 @@ pub(crate) fn sample_linear_compiled(
     y: u32,
 ) -> Result<super::Sample, Error> {
     let evaluation = LinearEvaluation::from_compiled(source, compiled, settings, PRODUCTION_TILE)?;
-    let (width, height) = evaluation.stage();
-    let _ = output_len(width, height)?;
-    let rgba = evaluation.pixel(x, y)?.map(terminal_pixel).transpose()?;
-    Ok(super::Sample {
-        width,
-        height,
-        rgba,
-    })
+    point_sample(&evaluation, x, y)
 }
 
 /// [`sample_linear`] with the spatial tile size as a parameter, for the tests that prove a sample
@@ -1567,6 +1560,11 @@ pub(super) fn sample_linear_tiled(
         tile,
         SpatialMode::Point,
     )?;
+    point_sample(&evaluation, x, y)
+}
+
+/// The terminal pixel a point evaluation holds at `(x, y)`, with the stage it was sampled from.
+fn point_sample(evaluation: &LinearEvaluation<'_>, x: u32, y: u32) -> Result<super::Sample, Error> {
     let (width, height) = evaluation.stage();
     let _ = output_len(width, height)?;
     let rgba = evaluation.pixel(x, y)?.map(terminal_pixel).transpose()?;
