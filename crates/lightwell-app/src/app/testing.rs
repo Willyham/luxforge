@@ -10,18 +10,20 @@ use crate::{
         message::{DraftMessage, Message, SyncMessage},
         tasks::{REQUEST_NUMBER, Refresh, RoundTrip},
     },
+    state::histogram::Analysis,
 };
 use lightwell_core::{
     AssetId, AssetRecord, ClientSession, Draft, DraftId, EditorState, EntryId, HistoryEntry,
-    HistoryPage, HistoryRow, Lineage, LineageStep, PreviewJob, RecipeDescription, SourceImage,
+    HistoryPage, HistoryRow, Lineage, LineageStep, ModuleDescriptor, PreviewJob, RecipeDescription,
+    SourceImage,
 };
 use serde_json::{Value, json};
+use std::{collections::VecDeque, path::PathBuf, sync::Arc, sync::atomic::Ordering};
 
 pub(crate) use crate::state::testing::{
     CROP_ASPECTS, Z6_AS_SHOT, Z6_CAM_XYZ, controls_descriptor, crop_descriptor, crop_layer,
     described, descriptors, entry, listed, raw_entry, raw_source,
 };
-use std::{collections::VecDeque, path::PathBuf, sync::atomic::Ordering};
 
 pub(crate) fn boot() -> (Editor, PathBuf) {
     let catalog = std::env::temp_dir().join(format!(
@@ -541,4 +543,149 @@ pub(crate) fn accepted_set(
             planned: now,
         },
     ))
+}
+
+/// The first patch action any registered module declares, and its first field: the tests below
+/// drive that control, so no module or parameter is named here either.
+pub(crate) fn patch_control(editor: &Editor) -> (String, String) {
+    let action = editor
+        .modules
+        .iter()
+        .flat_map(|module| module.actions.iter())
+        .find(|action| action.patch)
+        .expect("a built-in declares a field patch");
+    (
+        action.id.clone(),
+        action
+            .parameters
+            .first()
+            .expect("the patch declares a field")
+            .name
+            .clone(),
+    )
+}
+
+/// An editor with every registered module discovered, one asset open and a diagnostics log
+/// attached, so the requests a gesture sends can be counted from the records the harness reads.
+pub(crate) fn drafting() -> (Editor, PathBuf, PathBuf, AssetId, String, String) {
+    let (mut editor, catalog) = boot();
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    let asset = AssetId::new();
+    let current = entry(&asset, 4, None);
+    let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
+    let log = attach_log(&mut editor);
+    let (action, parameter) = patch_control(&editor);
+    (editor, catalog, log, asset, action, parameter)
+}
+
+/// The `draft.begin` answer the core would send, so the state machine runs on real messages
+/// without a running task executor. The owner does not hold this photograph, so the editor's
+/// own `draft.set` is answered by the test's stand-in, which accepts it.
+pub(crate) fn begun(editor: &mut Editor, asset: &AssetId, action: &str, revision: u64) {
+    editor
+        .fake_sets
+        .get_or_insert_with(std::collections::VecDeque::new);
+    let draft = lightwell_core::Draft::new(action, asset.clone(), revision);
+    answer_begin(editor, draft);
+}
+
+/// Every `draft.*` request this run logged, by event name.
+pub(crate) fn draft_events<'a>(records: &'a [Value], event: &str) -> Vec<&'a Value> {
+    records
+        .iter()
+        .filter(|record| record["event"] == json!(event))
+        .map(|record| &record["detail"])
+        .collect()
+}
+
+/// Opens an asset with `modules` registered, so a slider or an action control has something
+/// real to submit against.
+pub(crate) fn opened_with_modules(
+    modules: Vec<ModuleDescriptor>,
+    revision: u64,
+) -> (Editor, PathBuf) {
+    let (mut editor, catalog) = boot();
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(modules))));
+    let asset = AssetId::new();
+    let current = entry(&asset, revision, None);
+    let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
+    assert!(editor.editable(), "{}", editor.status);
+    (editor, catalog)
+}
+
+/// Every sliders in one control tree, however deeply a module nests its groups.
+pub(crate) fn flatten(
+    control: &crate::state::tools::ControlModel,
+) -> Vec<&crate::state::tools::SliderControl> {
+    match control {
+        crate::state::tools::ControlModel::Slider(slider) => vec![slider],
+        crate::state::tools::ControlModel::Group(group) => {
+            group.controls.iter().flat_map(flatten).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+// -- The histogram inspector, its clipping toggles and the pointer readout -------------------
+/// One analysed frame as the preview worker would hand it over: a report reduced from exactly
+/// these pixels, the identity the owner stores it under, and the raster kept beside it.
+pub(crate) fn analysed(
+    editor: &Editor,
+    generation: u64,
+    pixels: &[[u8; 4]],
+    width: u32,
+    height: u32,
+) -> (Analysis, Arc<lightwell_core::Raster>) {
+    let rgba: Vec<u8> = pixels.iter().flatten().copied().collect();
+    let report = lightwell_core::analysis::reduce(&rgba, width, height).expect("a reduction");
+    let entry_id = editor.displayed_entry().expect("a displayed entry");
+    let state = editor.state.as_ref().expect("an open asset");
+    let identity = lightwell_core::analysis::AnalysisIdentity {
+        asset_id: state.asset.id.clone(),
+        source_fingerprint: state.asset.fingerprint.clone(),
+        entry_id,
+        snapshot_id: state.current_entry.snapshot.id.clone(),
+        recipe_hash: "hash".into(),
+        draft: None,
+        width,
+        height,
+        domain: lightwell_core::analysis::AnalysisDomain,
+    };
+    let raster = Arc::new(lightwell_core::Raster {
+        width,
+        height,
+        rgba: rgba.into(),
+        source_fingerprint: state.asset.fingerprint.clone(),
+        snapshot_id: state.current_entry.snapshot.id.clone(),
+    });
+    (
+        Analysis {
+            generation,
+            identity,
+            report,
+        },
+        raster,
+    )
+}
+
+/// The same frame as `analysed`, stamped with the draft it was planned from: exactly the
+/// identity the core computes for a drafted preview job and for `analysis.request
+/// {target: draft}`, so a report adopted here is a cache hit for that request.
+pub(crate) fn drafted(
+    editor: &Editor,
+    generation: u64,
+    draft_id: &lightwell_core::DraftId,
+    draft_revision: u64,
+    pixels: &[[u8; 4]],
+    width: u32,
+    height: u32,
+) -> (Analysis, Arc<lightwell_core::Raster>) {
+    let (mut analysis, raster) = analysed(editor, generation, pixels, width, height);
+    analysis.identity.draft = Some(lightwell_core::DraftStamp {
+        draft_id: draft_id.clone(),
+        draft_revision,
+    });
+    (analysis, raster)
 }

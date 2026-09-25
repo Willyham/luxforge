@@ -4,7 +4,7 @@
 use super::{
     Editor,
     message::{Message, SyncMessage},
-    short,
+    preview::short,
     tasks::{
         self, PreviewPayload, Refresh, import_task, merge_current_entry, presets_task, state_task,
         sync_task,

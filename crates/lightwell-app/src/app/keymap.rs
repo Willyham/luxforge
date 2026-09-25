@@ -251,6 +251,27 @@ fn character(key: &Key, letter: &str) -> bool {
     matches!(key, Key::Character(value) if value.eq_ignore_ascii_case(letter))
 }
 
+/// The events the keyboard table can act on. Everything else never wakes the update function, so a
+/// pointer move costs nothing here.
+pub(super) fn raw_event(
+    event: iced::Event,
+    status: iced::event::Status,
+    _: iced::window::Id,
+) -> Option<Message> {
+    match &event {
+        iced::Event::Keyboard(_) | iced::Event::Window(iced::window::Event::CloseRequested) => {
+            Some(Message::Key(event, status))
+        }
+        // A resize changes how large a fitted photograph is drawn, and so how fine a clipping
+        // overlay's cells may be. It rides the subscription that is already listening; nothing new
+        // polls for it, and a resize with no overlay on starts no work.
+        iced::Event::Window(iced::window::Event::Resized(size)) => {
+            Some(Message::View(ViewMessage::Resized(size.width, size.height)))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,6 +660,36 @@ mod tests {
                 &bare
             )
             .is_none()
+        );
+    }
+
+    /// Compare is a hold, so the keyboard subscription has to forward releases as well as presses;
+    /// a filter that admitted only presses would leave the original preview stuck on screen.
+    #[test]
+    fn the_event_filter_forwards_key_releases_as_well_as_presses() {
+        let window = iced::window::Id::unique();
+        let key = iced::keyboard::Key::Character("\\".into());
+        let release = iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers: iced::keyboard::Modifiers::empty(),
+        });
+        assert!(matches!(
+            raw_event(release, iced::event::Status::Ignored, window),
+            Some(Message::Key(..))
+        ));
+        assert!(
+            raw_event(
+                iced::Event::Mouse(iced::mouse::Event::CursorLeft),
+                iced::event::Status::Ignored,
+                window
+            )
+            .is_none(),
+            "a pointer event still never wakes the update function"
         );
     }
 }

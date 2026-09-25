@@ -7,7 +7,6 @@ use super::{
     evidence::Settle,
     gesture::Starting,
     message::{Message, PreviewMessage},
-    short,
     tasks::{self, Upload, recipe_task},
 };
 use crate::{draft_photo, state, state::histogram::Analysis, view};
@@ -1312,4 +1311,8 @@ impl Editor {
     pub(crate) fn drafting(&self) -> bool {
         self.crop().is_some() && self.draft_photo.is_some() && self.session.preview.can_edit()
     }
+}
+
+pub(crate) fn short(value: &str) -> &str {
+    value.get(..value.len().min(12)).unwrap_or(value)
 }
