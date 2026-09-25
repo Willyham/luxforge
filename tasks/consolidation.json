@@ -2937,7 +2937,7 @@
     {
       "id": "TASK-048",
       "description": "Share one serde-derived evidence script crate between the desktop and xtask.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The desktop parses evidence scripts by hand in `app/evidence.rs` and xtask writes them by hand; one crate of serde-derived types serves both."
@@ -2990,7 +2990,7 @@
     {
       "id": "TASK-049",
       "description": "Build test support on `lightwell-testkit` and an independent `lightwell-reference` crate that cannot depend on the core, with fewer test binaries, the per-module field-patch tests in the field-patch suite, the historical-parity tests deleted and xtask's acceptance JSON helpers on the conformance client.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-033"
       ],
