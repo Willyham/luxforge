@@ -2066,7 +2066,7 @@
     {
       "id": "TASK-035",
       "description": "Resolve and plan mask commands through the module action path, store each command's full result, give mask, component and stroke IDs a declared parameter kind, validate the mask table once when a recipe enters the service, and stop scanning every layer payload for strokes.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-030"
       ],
@@ -2145,7 +2145,7 @@
     {
       "id": "TASK-036",
       "description": "Let the mask component-kind table carry each kind's compile and validate, give the desktop a `ShapeEditor` per drawn kind, share the host's mask rules with the Masks panel, and share one canvas view and ellipse helper between crop and mask.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-035"
       ],
@@ -2273,7 +2273,7 @@
     {
       "id": "TASK-038",
       "description": "Move capability methods behind their own trait off `ToolModule`, and split `registry.rs` into lookups, placement and compile.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-035",
         "TASK-037"
