@@ -1,33 +1,24 @@
 //! The `mask.*` host command family: what each command declares, what it does to a recipe's mask
 //! table, and the history label it commits.
 //!
-//! Masks are host commands in their own namespace, as `history.*` and `version.*` are, and not a
-//! tool module (`docs/design/masking.md#host-commands`). The reason is structural: a module commits
-//! *layers* through [`crate::ActionPlan`] and must never rewrite the recipe, while every one of these
-//! commands rewrites the mask table beside the layers. What they share with a module is everything
-//! else, and deliberately the *same* code rather than a parallel copy of it:
+//! Masks are the host's own objects, not a tool module (`docs/design/masking.md#host-commands`): a
+//! module commits *layers* through [`crate::ActionPlan`] and must never rewrite the recipe, while
+//! every one of these commands rewrites the mask table beside the layers. Everything else about them
+//! is a module action's, and deliberately the *same* code rather than a parallel copy of it:
 //!
-//! - Each command declares an [`ActionDescriptor`] with [`ParameterDescriptor`]s of the same closed
-//!   [`crate::ParameterKind`] set a module may declare, so [`check_parameters`] is the one and only
-//!   path a value takes to be validated, whatever client sent it, and a refusal reads the same.
-//! - [`controls`] declares the panel widgets over those same parameters with the same [`Control`]
-//!   type, so there is one control-generation path and a client renders a mask's number fields,
-//!   toggles and mode selector with the widgets it already has.
-//! - `schema.list` lists every command from this table through the one schema emitter, so discovery
-//!   and dispatch cannot drift apart.
-//! - A command commits through the editor's one mutation path, `EditorService::mutate`, so the
-//!   mutation envelope, the input-hash deduplication, the revision check, the admission of the
-//!   recipe, the single history entry and the single immutable snapshot are the delivered ones and
-//!   not a second implementation.
-//! - A gesture drafts through the delivered `draft.begin` / `draft.set` / `draft.commit` lifecycle
-//!   with its existing conflict, Discard and Reapply behaviour; see [`MaskTarget`] for the one thing
-//!   a draft needed that a declared parameter cannot carry.
-//!
-//! What no declared parameter kind can express is an identity or a person's free text: the kinds are
-//! numbers, integers, enums, colours, booleans and curves. So the mask a command addresses, the
-//! component inside it and the name a rename sets travel in the request's envelope beside
-//! `asset_id` and `mutation`, as [`MaskTarget`], and only geometry, amounts, modes and flags are
-//! declared parameters. That is why the masking design needs no string parameter kind.
+//! - The family is published as one **host descriptor** ([`descriptor`], `lightwell.masks`) in the
+//!   same [`ModuleDescriptor`] shape a module's is, listed by `module.list` under `host`: its actions
+//!   are the commands, its queries `mask.list` and `mask.sample-input`, its controls the panel's
+//!   widgets. An agent discovers a mask command exactly as it discovers a module action.
+//! - A command is resolved as [`crate::ActionRef::Host`] by the registry's one action lookup,
+//!   checked by the same [`crate::check_parameters`] and planned and committed through the editor's
+//!   one action path (`EditorService::run_action`), so the envelope, the deduplication, the
+//!   revision, the admission, the single history entry and a draft's equality with its commit are
+//!   the delivered ones and not a second implementation.
+//! - The mask, component and stroke a command addresses are declared parameters of the identity
+//!   kind, and a rename's name one of the string kind, so every one is validated and deduplicated
+//!   like any other parameter. [`MaskTarget`] is those four fields as a client or a draft holds
+//!   them.
 //!
 //! **The geometry methods are generated per component kind**, as `edit.<action>` and `query.<id>`
 //! already are: `mask.create-linear`, `mask.add-radial`, `mask.set-linear` and so on, each declaring
@@ -46,8 +37,8 @@ use super::{
 };
 use crate::{
     ActionDescriptor, CanvasInteraction, ChoiceStyle, Component, ComponentId, ComponentMode,
-    Control, Error, ErrorKind, Layer, LayerId, Mask, MaskId, ModuleRegistry, NumberStyle,
-    ParameterDescriptor, Recipe,
+    Control, Error, ErrorKind, Layer, LayerId, Mask, MaskId, ModuleDescriptor, ModuleRegistry,
+    NumberStyle, ParameterDescriptor, Recipe,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
     path::{self, POINTS_PER_STROKE, SIZE_MAX, Stroke, StrokeId},
 };
@@ -169,15 +160,14 @@ fn unknown_kind(kind: &str) -> Error {
     )
 }
 
-/// The host-owned envelope of one mask command: the objects it addresses and the display name a
-/// rename sets.
+/// The request fields that name what one mask command addresses: the mask, the component inside it,
+/// the stroke by its content address, and the display name a rename sets.
 ///
-/// These are not declared parameters and cannot be. The closed parameter-kind set carries numbers,
-/// integers, enums, colours, booleans and curves — no identity and no free text — so a mask
-/// identity travels beside `asset_id` exactly as `asset_id` itself does, and a client that can read
-/// `mask.list` can address anything in it. It is also what a drafted gesture carries in
-/// [`crate::Draft::target`]: the handle drag edits *that* component, and which component it is
-/// cannot live in the drafted fields.
+/// Each is a declared parameter of the commands that take it — the three identities of the
+/// [`crate::IdentityKind`] kind and the name of the string kind — so the generic check validates
+/// them and the request identity hashes them like any other parameter. This is those fields as a
+/// client holds them when it builds a request, and as a draft holds the objects its gesture edits
+/// ([`crate::Draft::target`]): the handle drag edits *that* component, whichever fields it drafts.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MaskTarget {
@@ -187,47 +177,69 @@ pub struct MaskTarget {
     pub component: Option<ComponentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// The stroke `mask.delete-stroke` removes, by its content address. It is an identity like the
-    /// two above and travels for the same reason: no declared parameter kind carries one.
+    /// The stroke `mask.delete-stroke` removes, by its content address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stroke: Option<StrokeId>,
 }
 
-/// Whether one envelope field belongs to a command, and whether it must be there.
-///
-/// Every command but one wants a fixed envelope, so [`Need::Required`] and [`Need::None`] are what
-/// almost all of them declare. `mask.add-stroke` is the exception, and deliberately: no mask draws a
-/// new one, a mask without a component puts a new brush on it, and both together append a stroke to
-/// that brush. Those are three history entries with three labels and **one** command, because a
-/// person painting does not choose between three gestures — they put the brush down, and where it
-/// lands decides which of the three that stroke was.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Need {
-    /// The command refuses this field by name.
-    None,
-    /// The command reads it when it is there and does something else when it is not.
-    Optional,
-    /// The command refuses its absence by name.
-    Required,
+/// The parameter names a [`MaskTarget`] fills, in the order a command declares them.
+pub const TARGET_FIELDS: [&str; 4] = [MASK, COMPONENT, STROKE, NAME];
+const MASK: &str = "mask";
+const COMPONENT: &str = "component";
+const STROKE: &str = "stroke";
+const NAME: &str = "name";
+
+impl MaskTarget {
+    /// Write the fields this target holds into a request's parameters, as the declared parameters
+    /// they are. A field the target does not hold is left as the parameters have it.
+    pub fn insert_into(&self, parameters: &mut Map<String, Value>) {
+        if let Some(mask) = &self.mask {
+            parameters.insert(MASK.to_owned(), json!(mask.as_str()));
+        }
+        if let Some(component) = &self.component {
+            parameters.insert(COMPONENT.to_owned(), json!(component.as_str()));
+        }
+        if let Some(stroke) = &self.stroke {
+            parameters.insert(STROKE.to_owned(), json!(stroke.as_str()));
+        }
+        if let Some(name) = &self.name {
+            parameters.insert(NAME.to_owned(), json!(name));
+        }
+    }
+
+    /// A request's parameters with this target's fields added: what a client sends.
+    pub fn request(&self, parameters: Value) -> Value {
+        let mut parameters = match parameters {
+            Value::Object(object) => object,
+            _ => Map::new(),
+        };
+        self.insert_into(&mut parameters);
+        Value::Object(parameters)
+    }
+
+    /// Checked parameters split into the objects they address and the values they set. The generic
+    /// check has already validated each identity's syntax, so a parse here cannot refuse one it
+    /// accepted.
+    pub(crate) fn split(
+        parameters: &Map<String, Value>,
+    ) -> Result<(Self, Map<String, Value>), Error> {
+        let text = |name: &str| parameters.get(name).and_then(Value::as_str);
+        let target = Self {
+            mask: text(MASK).map(MaskId::parse).transpose()?,
+            component: text(COMPONENT).map(ComponentId::parse).transpose()?,
+            name: text(NAME).map(str::to_owned),
+            stroke: text(STROKE).map(StrokeId::parse).transpose()?,
+        };
+        let values = parameters
+            .iter()
+            .filter(|(name, _)| !TARGET_FIELDS.contains(&name.as_str()))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        Ok((target, values))
+    }
 }
 
-impl Need {
-    /// This command reads the field at all, which is what a client filling an envelope asks.
-    pub fn wanted(self) -> bool {
-        self != Self::None
-    }
-
-    fn required(self) -> bool {
-        self == Self::Required
-    }
-
-    /// The declaration a `(bool, bool, bool)` in the command table spells: required, or refused.
-    fn of(required: bool) -> Self {
-        if required { Self::Required } else { Self::None }
-    }
-}
-
-/// One declared `mask.*` method.
+/// One declared `mask.*` command: an action of the host descriptor.
 #[derive(Debug)]
 pub struct MaskCommand {
     /// The method name, which is also the durable action identity a history entry stores. It carries
@@ -235,93 +247,14 @@ pub struct MaskCommand {
     /// mask command cannot collide however either grows; [`crate::ModuleRegistry::register`] checks
     /// that rather than assuming it.
     pub method: &'static str,
-    pub mutates: bool,
-    pub needs_mask: Need,
-    pub needs_component: Need,
-    pub needs_name: Need,
-    pub needs_stroke: Need,
     /// Set on the generated geometry methods and on no other command: it is what says which kind's
     /// parameters this method declares and which kind's components it may touch.
     pub geometry: Option<GeometryMethod>,
     /// Set on the generated sample methods and on no other command.
     pub samples: Option<SampleMethod>,
+    /// The action as the host descriptor lists it: the identities it addresses first, then the
+    /// values it sets.
     pub action: ActionDescriptor,
-}
-
-impl MaskCommand {
-    /// The envelope fields this command requires and refuses, checked before anything is planned so
-    /// a malformed request never reaches a recipe. The wording matches the delivered envelope
-    /// refusal, because it is the same kind of missing field.
-    pub fn checked_target(&self, target: &MaskTarget) -> Result<(), Error> {
-        for (present, needed, field) in [
-            (target.mask.is_some(), self.needs_mask, "mask"),
-            (
-                target.component.is_some(),
-                self.needs_component,
-                "component",
-            ),
-            (target.name.is_some(), self.needs_name, "name"),
-            (target.stroke.is_some(), self.needs_stroke, "stroke"),
-        ] {
-            if needed.required() && !present {
-                return Err(validation(format!(
-                    "missing required field {field} for {}",
-                    self.method
-                )));
-            }
-            if present && !needed.wanted() {
-                return Err(validation(format!(
-                    "unknown field {field} for {}",
-                    self.method
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// The top-level fields this command's `schema.list` entry lists before its declared
-    /// parameters, required and optional: `asset_id`, then `mutation` for a mutating command or
-    /// `entry_id` for a read, then the mask, component, name and stroke it addresses.
-    pub(crate) fn envelope_fields(&self) -> (Vec<Value>, Map<String, Value>) {
-        let mut required = vec![json!("asset_id")];
-        let mut optional = Map::new();
-        if self.mutates {
-            required.push(json!("mutation"));
-        } else {
-            optional.insert(
-                "entry_id".to_owned(),
-                json!("entry to ask about; default the session's selection"),
-            );
-        }
-        for (needed, field, meaning) in [
-            (self.needs_mask, "mask", "the mask this command addresses"),
-            (
-                self.needs_component,
-                "component",
-                "the component inside that mask",
-            ),
-            (self.needs_name, "name", "the display name to set"),
-            (
-                self.needs_stroke,
-                "stroke",
-                "the stroke's content address, as its component's strokes field lists it",
-            ),
-        ] {
-            match needed {
-                Need::Required => {
-                    required.push(json!(field));
-                    optional.remove(field);
-                }
-                // An envelope field a command *may* carry is listed where a client looks for what it
-                // may send, beside the optional parameters, with what leaving it out means.
-                Need::Optional => {
-                    optional.insert(field.to_owned(), json!(meaning));
-                }
-                Need::None => {}
-            }
-        }
-        (required, optional)
-    }
 }
 
 /// Every declared command, in the order the design's method table lists them.
@@ -329,10 +262,110 @@ pub fn all() -> &'static [MaskCommand] {
     &COMMANDS
 }
 
-/// The command one method name declares, or none. The same lookup discovery, dispatch, drafting and
-/// the registry's collision check all use, so the four cannot drift.
+/// The command one method name declares, or none. The registry's one action lookup
+/// ([`crate::ModuleRegistry::resolve_action`]) answers a host action through it, so discovery,
+/// dispatch, drafting and the registry's collision check cannot drift.
 pub fn find(method: &str) -> Option<&'static MaskCommand> {
     COMMANDS.iter().find(|command| command.method == method)
+}
+
+/// The identity of the host descriptor the mask family is published as.
+pub const HOST_MODULE: &str = "lightwell.masks";
+
+/// The mask family as one host descriptor, in the shape a module's descriptor takes: its actions are
+/// the commands, its queries the two reads and its controls the panel's widgets. `module.list` lists
+/// it under `host`, so an agent discovers a mask command as it discovers a module action. The host
+/// owns everything else about it: it declares no effect, is always available and is never
+/// registered as a module.
+pub fn descriptor() -> &'static ModuleDescriptor {
+    &DESCRIPTOR
+}
+
+/// The read one method name declares — `mask.list` or `mask.sample-input` — or none.
+pub fn find_query(method: &str) -> Option<&'static ActionDescriptor> {
+    DESCRIPTOR.queries.iter().find(|query| query.id == method)
+}
+
+static DESCRIPTOR: LazyLock<ModuleDescriptor> = LazyLock::new(|| {
+    ModuleDescriptor {
+    id: HOST_MODULE.to_owned(),
+    title: "Masks".to_owned(),
+    hint: Some(
+        "Selections the adjustments of Basic, Presence and the colour mixer apply through".to_owned(),
+    ),
+    actions: COMMANDS.iter().map(|command| command.action.clone()).collect(),
+    queries: vec![
+        ActionDescriptor {
+            id: LIST.to_owned(),
+            title: "Masks".to_owned(),
+            notes: "every mask of one stack with its components, values, amount, invert and the \
+                    layers bound to it; read-only, writes no history and emits no event"
+                .to_owned(),
+            summary: None,
+            patch: false,
+            parameters: Vec::new(),
+        },
+        ActionDescriptor {
+            id: SAMPLE_INPUT.to_owned(),
+            title: "Sample input".to_owned(),
+            notes: "the pixel the operation this mask modulates receives, at one content position, \
+                    as linear-sRGB r, g and b. Read-only: it writes no history and emits no event. \
+                    It is where a canvas pick gets the colour a colour range's swatch is, because a \
+                    range selection is evaluated on the operation's input while the frame a client \
+                    can see holds that operation's output — so a colour read from the picture would \
+                    be a different colour. The position is a pixel of the stage that operation's \
+                    layer receives, and one outside it is refused rather than clamped"
+                .to_owned(),
+            summary: None,
+            patch: false,
+            parameters: vec![
+                mask_parameter(true),
+                ParameterDescriptor::pixel_coordinate("x")
+                    .notes("the content column to read, in the stage the masked layer receives"),
+                ParameterDescriptor::pixel_coordinate("y")
+                    .notes("the content row to read, in the same stage"),
+            ],
+        },
+    ],
+    controls: CONTROLS.clone(),
+    ..ModuleDescriptor::default()
+}
+});
+
+/// The mask a command addresses, as the identity parameter every command that takes one declares.
+fn mask_parameter(required: bool) -> ParameterDescriptor {
+    ParameterDescriptor::identity(MASK, crate::IdentityKind::Mask)
+        .required(required)
+        .notes(if required {
+            "the mask this command addresses"
+        } else {
+            "the mask this command addresses; without it the command draws a new one"
+        })
+}
+
+/// The component inside that mask.
+fn component_parameter(required: bool) -> ParameterDescriptor {
+    ParameterDescriptor::identity(COMPONENT, crate::IdentityKind::Component)
+        .required(required)
+        .notes(if required {
+            "the component inside that mask"
+        } else {
+            "the component inside that mask; without it the command puts a new one on the mask"
+        })
+}
+
+/// The objects a command addresses — whether it takes a mask and whether it takes a component, each
+/// required — followed by the values it sets.
+fn addressed(
+    mask: bool,
+    component: bool,
+    parameters: Vec<ParameterDescriptor>,
+) -> Vec<ParameterDescriptor> {
+    mask.then(|| mask_parameter(true))
+        .into_iter()
+        .chain(component.then(|| component_parameter(true)))
+        .chain(parameters)
+        .collect()
 }
 
 /// The generated sample command one operation on one sampling kind declares, or none when this
@@ -414,7 +447,7 @@ pub fn canvas_pick(mode: &str) -> Option<&'static CanvasInteraction> {
 /// widgets it already has, and no client invents an operation of its own. Layout — which row a
 /// control sits in — belongs to the Masks panel and not here.
 pub fn controls() -> &'static [Control] {
-    &CONTROLS
+    &DESCRIPTOR.controls
 }
 
 /// What one command does to a stack.
@@ -547,32 +580,6 @@ pub(crate) fn listing(
     MaskListing { entry_id, masks }
 }
 
-/// The parameters one command stores on its history entry, which are also its deduplication
-/// identity: its declared parameters plus the envelope fields that say *which* objects it addressed.
-///
-/// The envelope belongs in the identity: `mask.set-invert {invert: true}` on two different masks are
-/// two different requests, and a shared request id with different input must be a `conflict` rather
-/// than a silently reused result.
-pub(crate) fn stored_parameters(
-    checked: &Map<String, Value>,
-    target: &MaskTarget,
-) -> Map<String, Value> {
-    let mut stored = checked.clone();
-    if let Some(mask) = &target.mask {
-        stored.insert("mask".to_owned(), json!(mask.as_str()));
-    }
-    if let Some(component) = &target.component {
-        stored.insert("component".to_owned(), json!(component.as_str()));
-    }
-    if let Some(name) = &target.name {
-        stored.insert("name".to_owned(), json!(name));
-    }
-    if let Some(stroke) = &target.stroke {
-        stored.insert("stroke".to_owned(), json!(stroke.as_str()));
-    }
-    stored
-}
-
 /// What one command would do to this stack: the whole family's behaviour in one place.
 ///
 /// Pure — it reads the recipe it is handed and returns a new one — so the same function answers a
@@ -591,7 +598,6 @@ pub(crate) fn plan(
     registry: &ModuleRegistry,
     seed: Option<[u8; 3]>,
 ) -> Result<MaskOutcome, Error> {
-    command.checked_target(target)?;
     let mut next = recipe.clone();
     // Each arm produces the base label, whether that label already names the mask, and what the
     // command touched. The mask prefix is applied once, below, so there is one label rule.
@@ -979,7 +985,8 @@ fn plan_geometry(
     }
 }
 
-/// `mask.add-stroke`: one painted stroke, and whichever of the three edits its envelope says it is.
+/// `mask.add-stroke`: one painted stroke, and whichever of the three edits its identities say it
+/// is.
 ///
 /// The stroke is captured **before** anything is decided, so a malformed path refuses without having
 /// touched the mask table, and it is put in the recipe's own stroke table under its content address.
@@ -1608,22 +1615,18 @@ fn modes() -> Vec<String> {
         .collect()
 }
 
+/// One kind-independent command, declaring the objects it addresses — a mask, and a component inside
+/// it, each required when named — before the values it sets.
 fn command(
     method: &'static str,
     title: &str,
     notes: &str,
-    mutates: bool,
-    needs: (bool, bool, bool),
+    (mask, component): (bool, bool),
     patch: bool,
     parameters: Vec<ParameterDescriptor>,
 ) -> MaskCommand {
     MaskCommand {
         method,
-        mutates,
-        needs_mask: Need::of(needs.0),
-        needs_component: Need::of(needs.1),
-        needs_name: Need::of(needs.2),
-        needs_stroke: Need::None,
         geometry: None,
         samples: None,
         action: ActionDescriptor {
@@ -1635,7 +1638,7 @@ fn command(
             // entry stores it, exactly as a module's rendered `summary` is stored.
             summary: None,
             patch,
-            parameters,
+            parameters: addressed(mask, component, parameters),
         },
     }
 }
@@ -1662,7 +1665,7 @@ fn geometry_commands(kind: &'static str) -> Vec<MaskCommand> {
             parameters.extend(
                 component_parameters(kind, !patch).expect("a kind from the host's own table"),
             );
-            let (title, notes, needs) = match op {
+            let (title, notes, addresses) = match op {
                 GeometryOp::Create => (
                     format!("New {} mask", spoken(kind)),
                     format!(
@@ -1671,7 +1674,7 @@ fn geometry_commands(kind: &'static str) -> Vec<MaskCommand> {
                          add",
                         spoken(kind)
                     ),
-                    (false, false, false),
+                    (false, false),
                 ),
                 GeometryOp::Add => (
                     format!("Add {}", spoken(kind)),
@@ -1680,7 +1683,7 @@ fn geometry_commands(kind: &'static str) -> Vec<MaskCommand> {
                          rather than guessed from a modifier key",
                         spoken(kind)
                     ),
-                    (true, false, false),
+                    (true, false),
                 ),
                 GeometryOp::Set => (
                     format!("Update {}", spoken(kind)),
@@ -1690,26 +1693,12 @@ fn geometry_commands(kind: &'static str) -> Vec<MaskCommand> {
                          any other kind is refused by name rather than patched with a {0}'s fields",
                         spoken(kind)
                     ),
-                    (true, true, false),
+                    (true, true),
                 ),
             };
             MaskCommand {
-                method,
-                mutates: true,
-                needs_mask: Need::of(needs.0),
-                needs_component: Need::of(needs.1),
-                needs_name: Need::of(needs.2),
-                needs_stroke: Need::None,
                 geometry: Some(GeometryMethod { op, kind }),
-                samples: None,
-                action: ActionDescriptor {
-                    id: method.to_owned(),
-                    title,
-                    notes,
-                    summary: None,
-                    patch,
-                    parameters,
-                },
+                ..command(method, &title, &notes, addresses, patch, parameters)
             }
         })
         .collect()
@@ -1759,22 +1748,8 @@ fn sample_commands(kind: &'static str) -> Vec<MaskCommand> {
                 ),
             };
             MaskCommand {
-                method,
-                mutates: true,
-                needs_mask: Need::Required,
-                needs_component: Need::Required,
-                needs_name: Need::None,
-                needs_stroke: Need::None,
-                geometry: None,
                 samples: Some(SampleMethod { op, kind }),
-                action: ActionDescriptor {
-                    id: method.to_owned(),
-                    title,
-                    notes,
-                    summary: None,
-                    patch: false,
-                    parameters,
-                },
+                ..command(method, &title, &notes, (true, true), false, parameters)
             }
         })
         .collect()
@@ -1798,40 +1773,10 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
     };
     let mut commands = vec![
         command(
-            LIST,
-            "Masks",
-            "every mask of one stack with its components, values, amount, invert and the layers bound to it; read-only, writes no history and emits no event",
-            false,
-            (false, false, false),
-            false,
-            Vec::new(),
-        ),
-        command(
-            SAMPLE_INPUT,
-            "Sample input",
-            "the pixel the operation this mask modulates receives, at one content position, as \
-             linear-sRGB r, g and b. Read-only: it writes no history and emits no event. It is where \
-             a canvas pick gets the colour a colour range's swatch is, because a range selection is \
-             evaluated on the operation's input while the frame a client can see holds that \
-             operation's output — so a colour read from the picture would be a different colour. The \
-             position is a pixel of the stage that operation's layer receives, and one outside it is \
-             refused rather than clamped",
-            false,
-            (true, false, false),
-            false,
-            vec![
-                ParameterDescriptor::pixel_coordinate("x")
-                    .notes("the content column to read, in the stage the masked layer receives"),
-                ParameterDescriptor::pixel_coordinate("y")
-                    .notes("the content row to read, in the same stage"),
-            ],
-        ),
-        command(
             "mask.delete",
             "Delete mask",
             "delete a mask and the layers bound to it; destructive, so the history label and the result both name the layers it removed",
-            true,
-            (true, false, false),
+            (true, false),
             false,
             Vec::new(),
         ),
@@ -1839,17 +1784,19 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             "mask.rename",
             "Rename mask",
             "set a mask's display name; a name is a person's text and never an identity",
-            true,
-            (true, false, true),
+            (true, false),
             false,
-            Vec::new(),
+            vec![
+                ParameterDescriptor::string(NAME, crate::MAX_MASK_NAME)
+                    .required(true)
+                    .notes("the display name to set: printable, trimmed and not empty"),
+            ],
         ),
         command(
             "mask.duplicate",
             "Duplicate mask",
             "a copy of a mask, its components and the layers bound to it, with new identities, placed after it; a mask without its adjustments is not a useful copy",
-            true,
-            (true, false, false),
+            (true, false),
             false,
             Vec::new(),
         ),
@@ -1857,8 +1804,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             "mask.set-amount",
             "Amount",
             "the whole-mask amount multiplying the composed coverage",
-            true,
-            (true, false, false),
+            (true, false),
             false,
             vec![
                 ParameterDescriptor::number("amount", 0.0, Mask::FULL_AMOUNT)
@@ -1872,8 +1818,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             "mask.set-invert",
             "Invert mask",
             "invert the composed coverage of a whole mask, before its amount",
-            true,
-            (true, false, false),
+            (true, false),
             false,
             vec![invert("invert the composed coverage before the amount")],
         ),
@@ -1881,8 +1826,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             "mask.reorder",
             "Move mask",
             "move a mask in the masks list and, with it, the masked layers of every effect, in one transaction; nothing else moves",
-            true,
-            (true, false, false),
+            (true, false),
             false,
             vec![index(
                 MASKS_PER_RECIPE as i64,
@@ -1893,8 +1837,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             "mask.set-component-mode",
             "Component mode",
             "change a component's role in the composition after the fact; the first component of a mask is always add",
-            true,
-            (true, true, false),
+            (true, true),
             false,
             vec![mode(true)],
         ),
@@ -1902,8 +1845,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             "mask.set-component-invert",
             "Invert component",
             "invert one component's own coverage before it is combined",
-            true,
-            (true, true, false),
+            (true, true),
             false,
             vec![invert(
                 "invert this component's coverage before it is combined",
@@ -1913,8 +1855,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             "mask.delete-component",
             "Delete component",
             "remove one component from a mask; a mask is never empty, so its last component is not deletable",
-            true,
-            (true, true, false),
+            (true, true),
             false,
             Vec::new(),
         ),
@@ -1922,8 +1863,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             "mask.reorder-component",
             "Move component",
             "move a component inside its mask; the composition reads the list in order",
-            true,
-            (true, true, false),
+            (true, true),
             false,
             vec![index(
                 COMPONENTS_PER_MASK as i64,
@@ -1937,16 +1877,11 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
     //
     // `mask.add-stroke` is one command over three edits because painting is one gesture: where the
     // brush lands decides whether the stroke drew a mask, put a second brush on one, or added to the
-    // brush already there, and the envelope says which. The history label follows that — `Add brush`,
+    // brush already there, and the identities it names say which. The history label follows that — `Add brush`,
     // `Add subtract brush`, `Update Brush 1` — so undo walks back one stroke at a time while
     // rendering still sees one component whose strokes are already combined.
     commands.push(MaskCommand {
         method: ADD_STROKE,
-        mutates: true,
-        needs_mask: Need::Optional,
-        needs_component: Need::Optional,
-        needs_name: Need::None,
-        needs_stroke: Need::None,
         geometry: None,
         samples: None,
         action: ActionDescriptor {
@@ -1960,7 +1895,11 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                 .to_owned(),
             summary: None,
             patch: false,
+            // Where the stroke lands is the two optional identities: neither draws a new mask,
+            // a mask alone puts a further brush on it, and both append to that brush.
             parameters: vec![
+                mask_parameter(false),
+                component_parameter(false),
                 ParameterDescriptor::points("points", 1, POINTS_PER_STROKE)
                     .required(true)
                     .notes(
@@ -2038,11 +1977,6 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
     });
     commands.push(MaskCommand {
         method: DELETE_STROKE,
-        mutates: true,
-        needs_mask: Need::Required,
-        needs_component: Need::Required,
-        needs_name: Need::None,
-        needs_stroke: Need::Required,
         geometry: None,
         samples: None,
         action: ActionDescriptor {
@@ -2054,7 +1988,18 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                 .to_owned(),
             summary: None,
             patch: false,
-            parameters: Vec::new(),
+            parameters: addressed(
+                true,
+                true,
+                vec![
+                    ParameterDescriptor::identity(STROKE, crate::IdentityKind::Stroke)
+                        .required(true)
+                        .notes(
+                            "the stroke's content address, as its component's strokes field lists \
+                             it",
+                        ),
+                ],
+            ),
         },
     });
     // The geometry methods, generated from the host's kind table: registering a kind with declared
@@ -2219,8 +2164,6 @@ mod tests {
             methods,
             [
                 // The kind-independent commands, in the order the design's method table lists them.
-                "mask.list",
-                "mask.sample-input",
                 "mask.delete",
                 "mask.rename",
                 "mask.duplicate",
@@ -2269,13 +2212,27 @@ mod tests {
                 .all(|command| !crate::valid_name(command.method)),
             "a mask command identity can never be a module action identity"
         );
-        // `mask.list` and `mask.sample-input` read; every other command is an ordinary mutation.
-        let reading: Vec<&str> = all()
+        // `mask.list` and `mask.sample-input` read, so they are the host descriptor's queries and
+        // never one of its actions; every command is an ordinary mutation.
+        let reading: Vec<&str> = descriptor()
+            .queries
             .iter()
-            .filter(|command| !command.mutates)
-            .map(|command| command.method)
+            .map(|query| query.id.as_str())
             .collect();
         assert_eq!(reading, [LIST, SAMPLE_INPUT]);
+        assert!(find(LIST).is_none() && find(SAMPLE_INPUT).is_none());
+        // The host descriptor lists exactly the command table, in its order, and its controls.
+        assert_eq!(descriptor().id, HOST_MODULE);
+        assert_eq!(
+            descriptor()
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            methods
+        );
+        assert_eq!(descriptor().controls.as_slice(), controls());
+        assert!(descriptor().effects.is_empty(), "the host owns no layer");
     }
 
     /// Registering a kind is **sufficient** to make it creatable, addable and patchable: for every
@@ -2305,18 +2262,23 @@ mod tests {
             // number, and nothing else: the swatch is the whole of its input.
             let add = sample(SampleOp::Add, kind).expect("its add method is generated");
             assert_eq!(add.method, format!("mask.add-{kind}-sample"));
-            assert!(add.mutates);
             // A swatch is edited on one component of one mask, always both and never a name or a
-            // stroke: the envelope is fixed, as it is for every command but `mask.add-stroke`.
-            assert_eq!(add.needs_mask, Need::Required);
-            assert_eq!(add.needs_component, Need::Required);
-            assert_eq!(add.needs_name, Need::None);
-            assert_eq!(add.needs_stroke, Need::None);
+            // stroke: the two identities come first, required, as they do for every command but
+            // `mask.add-stroke`.
+            let identities: Vec<(&str, bool)> = add
+                .action
+                .parameters
+                .iter()
+                .filter(|parameter| parameter.kind.is_identity())
+                .map(|parameter| (parameter.name.as_str(), parameter.required))
+                .collect();
+            assert_eq!(identities, [("mask", true), ("component", true)]);
             assert!(!add.action.patch, "a swatch is appended, not patched");
             let declared: Vec<&str> = add
                 .action
                 .parameters
                 .iter()
+                .skip(2)
                 .map(|parameter| parameter.name.as_str())
                 .collect();
             assert_eq!(
@@ -2327,7 +2289,7 @@ mod tests {
                     .map(|parameter| parameter.name.as_str())
                     .collect::<Vec<_>>()
             );
-            for parameter in &add.action.parameters {
+            for parameter in add.action.parameters.iter().skip(2) {
                 let ParameterKind::Number { min, max } = parameter.kind else {
                     panic!("{} is not a number", parameter.name);
                 };
@@ -2389,9 +2351,17 @@ mod tests {
                 .map(|parameter| parameter.name)
                 .collect();
             for (op, method, extra) in [
-                (GeometryOp::Create, format!("mask.create-{kind}"), None),
-                (GeometryOp::Add, format!("mask.add-{kind}"), Some("mode")),
-                (GeometryOp::Set, format!("mask.set-{kind}"), None),
+                (GeometryOp::Create, format!("mask.create-{kind}"), vec![]),
+                (
+                    GeometryOp::Add,
+                    format!("mask.add-{kind}"),
+                    vec!["mask", "mode"],
+                ),
+                (
+                    GeometryOp::Set,
+                    format!("mask.set-{kind}"),
+                    vec!["mask", "component"],
+                ),
             ] {
                 let command =
                     find(&method).unwrap_or_else(|| panic!("{kind} declares no {method}"));
@@ -2407,7 +2377,9 @@ mod tests {
                     .iter()
                     .map(|parameter| parameter.name.as_str())
                     .collect();
-                let mut expected: Vec<&str> = extra.into_iter().collect();
+                // The objects the method addresses first, as identity parameters, then the values
+                // it sets.
+                let mut expected: Vec<&str> = extra;
                 expected.extend(declared.iter().map(String::as_str));
                 assert_eq!(names, expected, "{method} declares the wrong parameters");
                 assert_eq!(
@@ -2419,7 +2391,7 @@ mod tests {
                 // is a number over a finite range, with the display hints a number field needs and a
                 // soft range inside its hard one.
                 for parameter in &command.action.parameters {
-                    if parameter.name == "mode" {
+                    if parameter.name == "mode" || parameter.kind.is_identity() {
                         continue;
                     }
                     let where_ = format!("{method} {}", parameter.name);
@@ -3012,25 +2984,34 @@ mod tests {
             .detail,
             format!("mask Mask 1 has no component {absent}")
         );
-        // The envelope is checked before anything is planned.
+        // The identities are declared parameters, checked by the generic check before anything is
+        // planned: required where a command addresses one, unknown where it does not, and of their
+        // own kind.
+        let delete = &find("mask.delete").unwrap().action;
         assert_eq!(
-            find("mask.delete")
-                .unwrap()
-                .checked_target(&MaskTarget::default())
+            crate::check_parameters(delete, &json!({}))
                 .unwrap_err()
                 .detail,
-            "missing required field mask for mask.delete"
+            "missing required parameter mask for action mask.delete"
         );
         assert_eq!(
-            find("mask.create-linear")
-                .unwrap()
-                .checked_target(&MaskTarget {
+            crate::check_parameters(
+                &find("mask.create-linear").unwrap().action,
+                &MaskTarget {
                     mask: Some(recipe.masks[0].id.clone()),
                     ..MaskTarget::default()
-                })
+                }
+                .request(Value::Object(linear(0.0, 0.0, 0.0, 1.0)))
+            )
+            .unwrap_err()
+            .detail,
+            "unknown parameter mask for action mask.create-linear"
+        );
+        assert_eq!(
+            crate::check_parameters(delete, &json!({"mask": ComponentId::new().as_str()}))
                 .unwrap_err()
                 .detail,
-            "unknown field mask for mask.create-linear"
+            "parameter mask must be a mask identity"
         );
     }
 
@@ -3398,7 +3379,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_of_each_command_states_its_envelope_and_its_parameters() {
+    fn the_schema_of_each_command_states_its_identities_and_its_parameters() {
         let create = schema("mask.create-linear");
         assert_eq!(create["mutates"], json!(true));
         assert_eq!(
@@ -3506,15 +3487,19 @@ mod tests {
             .detail,
             "parameter angle must be a number within -180..=180"
         );
-        // A patch fills no defaults and demands nothing.
+        // A patch fills no defaults and demands nothing but the identities it addresses.
         let patch = &find("mask.set-linear").unwrap().action;
+        let (mask, component) = (MaskId::new(), ComponentId::new());
+        let addressed = json!({"mask": mask.as_str(), "component": component.as_str(), "y1": 0.5});
         assert_eq!(
-            crate::check_parameters(patch, &json!({"y1":0.5})).unwrap(),
-            {
-                let mut fields = Map::new();
-                fields.insert("y1".into(), json!(0.5));
-                fields
-            }
+            crate::check_parameters(patch, &addressed).unwrap(),
+            addressed.as_object().unwrap().clone()
+        );
+        assert_eq!(
+            crate::check_parameters(patch, &json!({"mask": mask.as_str(), "y1": 0.5}))
+                .unwrap_err()
+                .detail,
+            "missing required parameter component for action mask.set-linear"
         );
     }
 }

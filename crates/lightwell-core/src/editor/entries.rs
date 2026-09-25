@@ -260,13 +260,7 @@ mod tests {
     ) {
         let revision = service.revision(asset).unwrap();
         service
-            .apply_mask_command(
-                asset,
-                mutation(revision, request),
-                commands::find(commands::ADD_STROKE).unwrap(),
-                json!({"points": points, "size": 0.1, "feather": 50.0, "flow": 100.0, "erase": false}),
-                target,
-            )
+            .run_action(asset, mutation(revision, request), commands::ADD_STROKE, target.request(json!({"points": points, "size": 0.1, "feather": 50.0, "flow": 100.0, "erase": false})))
             .unwrap();
     }
 

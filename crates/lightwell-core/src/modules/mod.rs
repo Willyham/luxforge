@@ -59,7 +59,7 @@ pub(crate) use registry::tests::{
     HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate,
     STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
-pub use registry::{ModuleRegistry, builtin_modules, insertion_index_among};
+pub use registry::{ActionRef, ModuleRegistry, QueryRef, builtin_modules, insertion_index_among};
 pub use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
     MAX_MASKED_SPATIAL_LAYERS, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS,

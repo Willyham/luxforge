@@ -1254,11 +1254,7 @@ mod tests {
     /// no-op and a retry write no stack and validate none.
     #[test]
     fn a_commit_validates_its_stack_once() {
-        use crate::{
-            APPLY_PRESET,
-            editor::validations,
-            mask::commands::{self, MaskTarget},
-        };
+        use crate::{APPLY_PRESET, editor::validations, mask::commands};
         let catalog = temp("validated-once.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
         validations::take();
@@ -1279,13 +1275,12 @@ mod tests {
             .unwrap();
         assert_eq!(validations::take(), 1, "a preset composite");
         service
-            .apply_mask_command(
+            .run_action(
                 &asset,
                 mutation(2, "stroke"),
-                commands::find(commands::ADD_STROKE).unwrap(),
+                commands::ADD_STROKE,
                 json!({"points": [[0.2, 0.2], [0.4, 0.4]], "size": 0.1, "feather": 50.0,
                        "flow": 100.0, "erase": false}),
-                MaskTarget::default(),
             )
             .unwrap();
         assert_eq!(validations::take(), 1, "a mask command");

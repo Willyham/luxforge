@@ -23,11 +23,12 @@ pub struct Draft {
     /// settings it was evaluated against.
     pub draft_revision: u64,
     pub fields: Map<String, Value>,
-    /// The host-owned objects a drafted host action edits, and nothing for a module action's draft.
-    /// A `mask.*` gesture drags the handles of one component of one mask, and no declared parameter
-    /// kind can carry an identity, so the identity travels here beside the drafted fields exactly as
-    /// `asset_id` does. Everything else about the lifecycle — validation, conflict, Discard and
-    /// Reapply — is unchanged by it.
+    /// The objects the gesture edits, fixed when it begins: the mask and component a `mask.*`
+    /// gesture drags the handles of, or the mask a masked slider applies through. The commit sends
+    /// them as the request fields they are ([`Self::request`]) — a `mask.*` command's declared
+    /// identity parameters, a module action's host `mask` field — so the drafted fields are only
+    /// the values the gesture moves. Everything else about the lifecycle — validation, conflict,
+    /// Discard and Reapply — is unchanged by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<MaskTarget>,
     /// Derived: the asset moved under this draft. Recomputed wherever the draft is read, set,
@@ -69,6 +70,16 @@ impl Draft {
             check_value(declared, value)?;
         }
         Ok(())
+    }
+
+    /// The request this draft commits, and plans its preview from: the drafted fields with the
+    /// target's fields over them, so the objects a gesture edits are the ones it began on.
+    pub fn request(&self) -> Map<String, Value> {
+        let mut request = self.fields.clone();
+        if let Some(target) = &self.target {
+            target.insert_into(&mut request);
+        }
+        request
     }
 
     /// Merge accepted fields into the draft. Every caller validates first.

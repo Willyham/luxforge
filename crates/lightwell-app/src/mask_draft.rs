@@ -761,7 +761,8 @@ impl MaskDraft {
     ///
     /// A painted kind has no generated geometry method — there is no number a `mask.set-brush` could
     /// patch — so all three of its edits go through the one command that carries a path, and which
-    /// of the three it is, is what the envelope says. `None` for a kind this build cannot draw.
+    /// of the three it is, is what the identities it names say. `None` for a kind this build
+    /// cannot draw.
     pub(crate) fn method(&self) -> Option<&'static str> {
         match self.geometry {
             MaskGeometry::Brush(_) => {
@@ -774,8 +775,9 @@ impl MaskDraft {
         }
     }
 
-    /// The declared parameters the commit carries: the geometry's own fields, and the mode when the
-    /// method takes one. The identities travel in the envelope and are not parameters.
+    /// The drafted fields the commit carries: the geometry's own fields, and the mode when the
+    /// method takes one. The identities it addresses are the draft's target, which the commit sends
+    /// beside them as the command's identity parameters.
     ///
     /// A stroke's path is decimated here, where it is posted, rather than as it is captured: the
     /// contract is idempotent, so the desktop's decimated path and an agent's raw one reach the same
@@ -1376,7 +1378,7 @@ mod tests {
         assert_eq!(MaskDraft::creating("cloud", NEUTRAL_BRUSH).method(), None);
         // A painted kind has no *generated* method — there is no number a `mask.set-brush` could
         // patch — so all three of its edits go through the one command that carries a path, and the
-        // envelope says which of the three the stroke was.
+        // identities it names say which of the three the stroke was.
         for op in [
             MaskDraft::creating(BRUSH, NEUTRAL_BRUSH),
             MaskDraft::adding(MaskId::new(), BRUSH, ComponentMode::Subtract, NEUTRAL_BRUSH),
@@ -1412,7 +1414,7 @@ mod tests {
         for name in ["x", "y", "radius_x", "radius_y", "angle", "feather"] {
             assert!(radial.contains_key(name), "a radial declares {name}");
         }
-        // The identities are never parameters: they travel in the envelope.
+        // The identities are never drafted fields: they are the draft's fixed target.
         for fields in [create, add, radial] {
             assert!(fields.get("mask").is_none() && fields.get("component").is_none());
         }

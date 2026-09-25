@@ -8,7 +8,7 @@
 //! masks, their components, the layers bound to them and the history, with the identities it wrote.
 use lightwell_core::{
     AssetId, EditorService, EntryId, MaskId, Mutation, Raster, StageTransform, Transform,
-    mask::commands::{self, MaskTarget},
+    mask::commands,
 };
 use serde_json::{Value, json};
 use std::{
@@ -115,12 +115,11 @@ impl Fixture {
         let command = commands::find("mask.create-linear").expect("a declared command");
         let mutation = self.mutation("create");
         self.service
-            .apply_mask_command(
+            .run_action(
                 &self.asset,
                 mutation,
-                command,
+                command.method,
                 json!({"x0": 0.5, "y0": Y0, "x1": 0.5, "y1": Y1}),
-                MaskTarget::default(),
             )
             .expect("the gradient commits")
             .mask
@@ -315,12 +314,11 @@ fn a_reopened_catalog_gives_back_the_masks_their_components_and_the_layers_bound
             actor: "reopen".to_owned(),
         };
         let created = service
-            .apply_mask_command(
+            .run_action(
                 &asset,
                 mutation("create", 0),
-                commands::find("mask.create-linear").expect("a declared command"),
+                "mask.create-linear",
                 json!({"x0": 0.5, "y0": Y0, "x1": 0.5, "y1": Y1}),
-                MaskTarget::default(),
             )
             .expect("the gradient commits");
         let mask = created.mask.clone().expect("a created mask");

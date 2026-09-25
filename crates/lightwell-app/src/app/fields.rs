@@ -504,7 +504,8 @@ pub(crate) fn unsupported_label(kind: &str) -> String {
 ///
 /// Every other action keeps sending every parameter it declares: preset values merged over the
 /// parsed field text, preset wins, so crop and pixel requests are unchanged. A parameter with a
-/// declared default is left out so the host applies that default.
+/// declared default is left out so the host applies that default, and so is an identity: it names
+/// the object the request addresses, which the caller's selection adds as the request's target.
 pub(crate) fn action_params(
     action: &ActionDescriptor,
     preset: &Map<String, Value>,
@@ -515,6 +516,9 @@ pub(crate) fn action_params(
     }
     let mut params = Map::new();
     for parameter in &action.parameters {
+        if parameter.kind.is_identity() {
+            continue;
+        }
         if let Some(value) = preset.get(&parameter.name) {
             params.insert(parameter.name.clone(), value.clone());
         } else if let Some(text) = fields.get(&action.id, &parameter.name) {

@@ -73,7 +73,12 @@ impl Fixture {
         let mutation = self.mutation(request);
         let result = self
             .service
-            .apply_mask_command(&self.asset, mutation, command, parameters, target)
+            .run_action(
+                &self.asset,
+                mutation,
+                command.method,
+                target.request(parameters),
+            )
             .unwrap_or_else(|e| panic!("{method} failed: {e}"));
         result.mask.expect("a command that names a mask reports it")
     }

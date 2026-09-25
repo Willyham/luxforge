@@ -227,18 +227,18 @@ impl Driver for Direct {
         request: &str,
     ) -> Result<Value, Value> {
         let revision = self.revision();
-        let command = commands::find(method).expect("a declared command");
+        // The same one action path a module action takes, with the same request an independent
+        // client sends: the target's identities are declared parameters beside the values.
         self.service
-            .apply_mask_command(
+            .run_action(
                 &self.asset,
                 Mutation {
                     expected_revision: revision,
                     request_id: request.to_owned(),
                     actor: "contracts".to_owned(),
                 },
-                command,
-                parameters,
-                target.clone(),
+                method,
+                target.request(parameters),
             )
             .map(|result| serde_json::to_value(result).unwrap())
             .map_err(|error| json!({"code": error.kind.code(), "detail": error.detail}))
@@ -856,14 +856,34 @@ fn a_gradient_drag_is_one_entry_and_a_drag_that_returns_to_its_start_is_none() {
             .expect_err("an unmaskable action takes no target")["detail"],
         json!("action crop does not accept a mask target")
     );
+    // A gesture names every object its command addresses when it begins: a patch without its
+    // component, and a stroke deletion — whose stroke a draft cannot carry — are refused there.
     assert_eq!(
         client
             .send(
                 "draft.begin",
-                json!({"asset_id": asset, "action": "mask.rename", "mask": target.mask.as_ref().unwrap().as_str()}),
+                json!({"asset_id": asset, "action": "mask.set-linear", "mask": target.mask.as_ref().unwrap().as_str()}),
             )
-            .expect_err("a rename is not a gesture")["detail"],
-        json!("missing required field name for mask.rename")
+            .expect_err("a patch addresses a component")["detail"],
+        json!("missing required parameter component for action mask.set-linear")
+    );
+    assert_eq!(
+        client
+            .send(
+                "draft.begin",
+                json!({"asset_id": asset, "action": "mask.delete-stroke", "mask": target.mask.as_ref().unwrap().as_str(), "component": target.component.as_ref().unwrap().as_str()}),
+            )
+            .expect_err("a stroke deletion is not a gesture")["detail"],
+        json!("missing required parameter stroke for action mask.delete-stroke")
+    );
+    assert_eq!(
+        client
+            .send(
+                "draft.begin",
+                json!({"asset_id": asset, "action": "mask.create-linear", "mask": target.mask.as_ref().unwrap().as_str()}),
+            )
+            .expect_err("a create addresses no mask")["detail"],
+        json!("unknown parameter mask for action mask.create-linear")
     );
     drop(client);
     std::fs::remove_dir_all(dir).unwrap();
@@ -1329,6 +1349,119 @@ fn plant(catalog: &Path, entry: &HistoryEntry) {
             ],
         )
         .unwrap();
+}
+
+/// An independent client discovers the mask family exactly as it discovers a module's actions: from
+/// `module.list`, where the host publishes one descriptor in the module shape, whose actions and
+/// queries are the methods `schema.list` lists with the same parameters — the identities among them,
+/// of the identity kind — and whose identities are refused by the one generic check, from either
+/// side, with the same words.
+#[test]
+fn the_mask_family_is_discovered_as_a_host_descriptor_and_checked_like_any_action() {
+    let dir = temp("discovery");
+    let source = dir.join("orientation-1.jpg");
+    std::fs::copy(fixture(), &source).unwrap();
+    let mut client = Json::open(&dir.join("json.sqlite"), &source);
+    let listed = client
+        .send("module.list", json!({}))
+        .expect("module.list answers");
+    let host = listed["host"].as_array().expect("the host's descriptors");
+    assert_eq!(host.len(), 1);
+    let masks = &host[0];
+    assert_eq!(masks["id"], json!(commands::HOST_MODULE));
+    assert!(
+        listed["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|module| module["id"] != json!(commands::HOST_MODULE)),
+        "the host is listed beside the modules, not as one"
+    );
+    let schema = client
+        .send("schema.list", json!({}))
+        .expect("schema.list answers");
+    let methods = &schema["methods"];
+    let actions = masks["actions"].as_array().unwrap();
+    assert_eq!(actions.len(), commands::all().len());
+    for action in actions.iter().chain(masks["queries"].as_array().unwrap()) {
+        let method = action["id"].as_str().unwrap();
+        assert_eq!(
+            methods[method]["parameters"], action["parameters"],
+            "{method} is listed with the parameters its descriptor declares"
+        );
+    }
+    assert_eq!(schema["host"], listed["host"]);
+    // The identities are declared parameters of the identity kind, first and in a fixed order.
+    let patch = actions
+        .iter()
+        .find(|action| action["id"] == json!("mask.set-linear"))
+        .unwrap();
+    assert_eq!(
+        patch["parameters"][0],
+        json!({"name": "mask", "kind": "identity", "of": "mask", "required": true,
+               "default": null, "unit": null, "step": null, "precision": null,
+               "notes": "the mask this command addresses"})
+    );
+    assert_eq!(patch["parameters"][1]["of"], json!("component"));
+    // A maskable module action declares its host `mask` field as the same kind, as its target.
+    assert_eq!(
+        methods["edit.set-basic"]["target"]["kind"],
+        json!("identity")
+    );
+    assert_eq!(methods["edit.set-basic"]["target"]["of"], json!("mask"));
+
+    // One generic check refuses a malformed identity, from an independent client and from inside,
+    // on a mask command and on a masked module action alike.
+    let wrong = ComponentId::new();
+    let revision = client.revision();
+    let json_refusals = [
+        client
+            .send(
+                "mask.set-amount",
+                json!({"asset_id": client.asset, "mutation": mutation(revision, "a"),
+                       "mask": wrong.as_str(), "amount": 20}),
+            )
+            .expect_err("a component is not a mask"),
+        client
+            .send(
+                "edit.set-basic",
+                json!({"asset_id": client.asset, "mutation": mutation(revision, "b"),
+                       "mask": wrong.as_str(), "exposure": 0.5}),
+            )
+            .expect_err("a component is not a mask"),
+    ];
+    drop(client);
+    let mut direct = Direct::open(&dir.join("direct.sqlite"), &source);
+    let direct_refusals = ["mask.set-amount", "set-basic"].map(|action| {
+        let parameters = match action {
+            "mask.set-amount" => json!({"mask": wrong.as_str(), "amount": 20}),
+            _ => json!({"mask": wrong.as_str(), "exposure": 0.5}),
+        };
+        let error = direct
+            .service
+            .run_action(
+                &direct.asset,
+                Mutation {
+                    expected_revision: 1,
+                    request_id: action.to_owned(),
+                    actor: "contracts".to_owned(),
+                },
+                action,
+                parameters,
+            )
+            .expect_err("a component is not a mask");
+        json!({"code": error.kind.code(), "detail": error.detail})
+    });
+    for refusals in [&json_refusals, &direct_refusals] {
+        for refusal in refusals {
+            assert_eq!(
+                refusal,
+                &json!({"code": "validation", "detail": "parameter mask must be a mask identity"})
+            );
+        }
+    }
+    drop(direct);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

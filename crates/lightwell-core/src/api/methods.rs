@@ -14,12 +14,9 @@ use super::{
     params::{self, Envelope, HostParams, NoParams, ParamSchema, host_params, parse},
 };
 use crate::{
-    ActionDescriptor, ArtifactId, AssetId, ComponentId, DraftId, EditorService, EntryId, Error,
-    ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome,
-    ParameterDescriptor, PresetId, Zoom,
-    capabilities::host::TASK_PREFIX,
-    mask::commands::{self as mask_commands, MaskCommand, MaskTarget},
-    path,
+    ActionRef, ArtifactId, AssetId, ComponentId, DraftId, EditorService, EntryId, Error, ErrorKind,
+    HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome, ParameterDescriptor,
+    PresetId, Zoom, capabilities::host::TASK_PREFIX, mask::commands::MaskTarget, path,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -515,16 +512,18 @@ pub(super) const METHODS: &[MethodSpec] = &[
     ),
 ];
 
-/// A resolved method: a host method from the static table, or one generated from a registered
-/// module action, query or task. All of them come from the same lookup discovery uses.
+/// A resolved method: a host method from the static table, or one generated from an action, query
+/// or task a registered module or the host descriptor declares. All of them come from the same
+/// lookup discovery uses.
 pub(super) enum Method {
     Host(&'static MethodSpec),
+    /// An action by its identity: a module's (`edit.<id>`) or a host `mask.*` command, which the
+    /// registry resolves through its one action lookup ([`crate::ActionRef`]) and the editor runs
+    /// through its one action path.
     Action(String),
-    /// A module's read-only query. It writes nothing, so it never emits an event.
+    /// A read-only query by its identity: a module's (`query.<id>`) or one of the host's own reads
+    /// (`mask.list`, `mask.sample-input`). It writes nothing, so it never emits an event.
     Query(String),
-    /// A host command of the `mask.*` family, declared with the same descriptor types a module
-    /// action uses and dispatched through the same lookup.
-    Mask(&'static MaskCommand),
     /// A module's worker task. The request queues a capability job, so it carries the `request`
     /// envelope and a retry returns the first job; the catalog owner answers it and announces the
     /// task when it succeeds.
@@ -539,15 +538,14 @@ pub(super) enum Route {
 }
 
 impl Method {
-    /// The mutation envelope the method carries. A module action and a mutating mask command change
+    /// The mutation envelope the method carries. An action — a module's or a mask command — changes
     /// an asset, which has a revision; a task queues a job, which has none.
     pub(super) fn envelope(&self) -> Envelope {
         match self {
             Self::Host(spec) => spec.params.envelope,
             Self::Action(_) => Envelope::Revision,
-            Self::Mask(command) if command.mutates => Envelope::Revision,
             Self::Task => Envelope::Request,
-            Self::Mask(_) | Self::Query(_) => Envelope::None,
+            Self::Query(_) => Envelope::None,
         }
     }
 
@@ -562,7 +560,7 @@ impl Method {
                 ..
             }) => Route::Owner(*handler),
             Self::Task => Route::Owner(owner::capability::task),
-            Self::Host(_) | Self::Action(_) | Self::Query(_) | Self::Mask(_) => Route::Service,
+            Self::Host(_) | Self::Action(_) | Self::Query(_) => Route::Service,
         }
     }
 
@@ -581,7 +579,6 @@ impl Method {
             }) => handler(service, session, params),
             Self::Action(action_id) => edit_action(service, session, action_id, params),
             Self::Query(query_id) => module_query(service, session, query_id, params),
-            Self::Mask(command) => mask_command(service, session, command, params),
             Self::Host(MethodSpec {
                 name,
                 handler: Handler::Owner(_),
@@ -599,17 +596,6 @@ fn owner_answered(name: &str) -> Error {
     )
 }
 
-/// Action method names are generated: action `set-pixel` is `edit.set-pixel`.
-pub(super) fn action_method(action_id: &str) -> String {
-    format!("edit.{action_id}")
-}
-
-/// Query method names are generated the same way in their own namespace: query `neutral-sample` is
-/// `query.neutral-sample`.
-pub(super) fn query_method(query_id: &str) -> String {
-    format!("query.{query_id}")
-}
-
 /// Task method names are generated in a third namespace: task `generate-proof-tint` is
 /// `task.generate-proof-tint`.
 pub(super) fn task_method(task_id: &str) -> String {
@@ -620,23 +606,16 @@ pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
     if let Some(spec) = METHODS.iter().find(|spec| spec.name == name) {
         return Some(Method::Host(spec));
     }
-    if let Some(command) = mask_commands::find(name) {
-        return Some(Method::Mask(command));
-    }
-    if let Some(action_id) = name.strip_prefix("edit.") {
-        return service
-            .registry()
-            .action(action_id)
-            .map(|_| Method::Action(action_id.to_owned()));
-    }
+    let registry = service.registry();
     if let Some(task_id) = name.strip_prefix(TASK_PREFIX) {
-        return service.registry().task(task_id).map(|_| Method::Task);
+        return registry.task(task_id).map(|_| Method::Task);
     }
-    let query_id = name.strip_prefix("query.")?;
-    service
-        .registry()
-        .query(query_id)
-        .map(|_| Method::Query(query_id.to_owned()))
+    if let Some(action) = registry.action_for_method(name) {
+        return Some(Method::Action(action.descriptor().id.clone()));
+    }
+    registry
+        .query_for_method(name)
+        .map(|query| Method::Query(query.descriptor().id.clone()))
 }
 
 /// The envelope of a host method by name, for test clients that fill it in.
@@ -734,40 +713,28 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             (spec.name.to_owned(), schema)
         })
         .collect();
-    // The host's own `mask.*` family, declared from the same descriptor types, so a client
-    // discovers a mask command and a module action from one listing.
-    for command in mask_commands::all() {
-        let (required, optional) = command.envelope_fields();
-        let schema = method_schema(
-            &Method::Mask(command),
-            required,
-            optional,
-            &command.action.notes,
-            Some(&command.action.parameters),
-            Some(command.action.patch),
-        );
-        methods.insert(command.method.to_owned(), schema);
-    }
     let descriptors = registry.descriptors();
-    for descriptor in &descriptors {
+    let host = registry.host_descriptors();
+    // The modules' descriptors and the host's own — the `mask.*` family — through one loop, so a
+    // client discovers a mask command and a module action from one listing in one shape. Each
+    // method's name is the one its action or query is called through ([`crate::ActionRef::method`]).
+    for descriptor in descriptors.iter().copied().chain(host) {
         // One maskable effect makes this module's actions carry the target field; the registry
         // answers the same question the same way for dispatch. The `mask` field is the host's and
-        // no module parses it, so it is listed with the envelope rather than declared as a
-        // parameter: sending it to any other action is a validation error naming that action.
+        // no module parses it, so it is listed with the envelope rather than among the module's
+        // declared parameters, and declared on its own as `target`, an identity parameter checked
+        // like any other: sending it to any other action is a validation error naming that action.
         let maskable = descriptor.effects.iter().any(|effect| effect.maskable);
         for action in &descriptor.actions {
+            let Some(resolved) = registry.resolve_action(&action.id) else {
+                continue;
+            };
+            let target = crate::editor::mask_target_parameter();
             let mut optional = Map::new();
             if maskable {
-                optional.insert(
-                    "mask".to_owned(),
-                    json!(
-                        "the mask this edit applies through; omit it to edit the layer that \
-                         applies everywhere. The global layer and each mask are distinct targets, \
-                         so this action commits or updates one layer per target"
-                    ),
-                );
+                optional.insert(target.name.clone(), json!(target.notes));
             }
-            let schema = method_schema(
+            let mut schema = method_schema(
                 &Method::Action(action.id.clone()),
                 vec![json!("asset_id"), json!("mutation")],
                 optional,
@@ -775,10 +742,16 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 Some(&action.parameters),
                 Some(action.patch),
             );
-            methods.insert(action_method(&action.id), schema);
+            if maskable {
+                schema["target"] = json!(target);
+            }
+            methods.insert(resolved.method(), schema);
         }
         // A query reads the stack of `entry_id`, the session's selection by default.
         for query in &descriptor.queries {
+            let Some(resolved) = registry.resolve_query(&query.id) else {
+                continue;
+            };
             let mut optional = Map::new();
             optional.insert(
                 "entry_id".to_owned(),
@@ -792,7 +765,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 Some(&query.parameters),
                 None,
             );
-            methods.insert(query_method(&query.id), schema);
+            methods.insert(resolved.method(), schema);
         }
         // A task carries the `request` envelope, and `asset_id` and `profile_id` are its envelope
         // when it declares them. The request queues a task job and answers `{job_id, status}`; a
@@ -823,6 +796,9 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         "coordinate_space": "Each edit uses integer coordinates in its own input image stage after EXIF orientation. A pixel or colour edit addresses the content stage, the source after EXIF orientation, because the host places both before the quarter-turns, reflections and crop that carry them; a colour edit addresses every pixel of that stage and changes no dimension. A number parameter carries a finite JSON number within its declared range, such as an angle in degrees or a rectangle normalized to its stage; a JSON integer is accepted and passed through unchanged.",
         "methods": methods,
         "modules": descriptors,
+        // The host's own descriptors, in the module shape: the `mask.*` family's actions, queries
+        // and controls, which `module.list` lists under the same key.
+        "host": host,
         // The host's path primitives, described here because a `points` parameter is the one
         // parameter kind whose value a client has to construct rather than move a widget to: a
         // painting action is a canvas gesture, so nothing in the control vocabulary edits a path.
@@ -839,13 +815,10 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             "points_per_stroke": path::POINTS_PER_STROKE,
             "notes": "A posted path is snapped to a grid of stored_steps_per_unit steps per unit and decimated on that grid at decimation_tolerance, so a stored position is at most stored_deviation from the position that was posted and the same posted path always produces the same stored stroke. Decimation is idempotent: a desktop decimates before it posts, and a path posted undecimated arrives at the same stored bytes. A stroke is stored once under the hash of its contents and an entry's recipe references it by that hash, so a payload's strokes field holds addresses and never positions.",
         },
-        // The host's mask surface: the widgets of the `mask.*` commands, in the same `Control`
-        // vocabulary a module declares, so a client renders a mask's fields, toggles and mode
-        // selector with the widgets it already has and invents no operation of its own.
+        // The one path bound that is the mask's own rather than the host path primitive's, so the
+        // `paths` block above says nothing about masks and this one says what a mask adds. The mask
+        // commands' widgets are the host descriptor's `controls`.
         "masks": {
-            "controls": mask_commands::controls(),
-            // The one path bound that is the mask's own rather than the host path primitive's, so
-            // the `paths` block above says nothing about masks and this one says what a mask adds.
             "points_per_mask": crate::POINTS_PER_MASK,
         },
         // Every mutating method names its envelope in its own `mutation` field.
@@ -1115,7 +1088,9 @@ fn module_list(
         .into_iter()
         .filter(|module| p.asset_id.is_none() || module.id != "lightwell.raw" || raw)
         .collect::<Vec<_>>();
-    Ok(json!({"modules": modules}))
+    // The host's own descriptors beside them, in the same shape, so an agent discovers a `mask.*`
+    // command, its parameters and its controls exactly as it discovers a module action.
+    Ok(json!({"modules": modules, "host": service.registry().host_descriptors()}))
 }
 
 fn catalog_list(
@@ -1166,8 +1141,9 @@ fn history_lineage(
     value(service.lineage(&p.asset_id, p.entry_id.as_ref(), p.limit.unwrap_or(50))?)
 }
 
-/// Every generated action method: `asset_id` and `mutation` are the envelope, the remaining
-/// top-level fields are the action's declared parameters.
+/// Every generated action method, a module's `edit.<id>` and a host `mask.*` command alike:
+/// `asset_id` and `mutation` are the envelope, the remaining top-level fields are the action's
+/// declared parameters, and the editor's one action path answers.
 fn edit_action(
     service: &mut EditorService,
     session: &mut ClientSession,
@@ -1178,11 +1154,12 @@ fn edit_action(
     let mut parameters = params::generated(request)?;
     let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
     let mutation: Mutation = params::take(&mut parameters, "mutation")?;
-    value(service.apply_action(&asset_id, mutation, action_id, Value::Object(parameters))?)
+    value(service.run_action(&asset_id, mutation, action_id, Value::Object(parameters))?)
 }
 
-/// Every generated query method: `asset_id` is the envelope, `entry_id` names the stack to ask
-/// about and defaults to the session's selection exactly as `render.sample` does, and the remaining
+/// Every generated query method, a module's `query.<id>` and the host's `mask.list` and
+/// `mask.sample-input` alike: `asset_id` is the envelope, `entry_id` names the stack to ask about
+/// and defaults to the session's selection exactly as `render.sample` does, and the remaining
 /// top-level fields are the query's declared parameters.
 ///
 /// A query is read-only, so unlike an edit it does not require the session to be on current: a
@@ -1199,87 +1176,6 @@ fn module_query(
     let entry_id = params::take_optional(&mut parameters, "entry_id")?;
     let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
     service.run_query(&asset_id, &entry_id, query_id, Value::Object(parameters))
-}
-
-/// Every `mask.*` method: `asset_id` and `mutation` are the envelope a mutation always carries, and
-/// `mask`, `component` and `name` join it because no declared parameter kind can carry an identity or
-/// a person's free text. The remaining top-level fields are the command's own declared parameters and
-/// go through the same generic check a module action's do.
-fn mask_command(
-    service: &mut EditorService,
-    session: &mut ClientSession,
-    command: &'static MaskCommand,
-    request: &Value,
-) -> Result<Value, Error> {
-    let mut parameters = params::generated(request)?;
-    let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
-    // The one read-only command resolves its entry exactly as `render.sample` and `render.locate` do
-    // and touches nothing at all.
-    if command.method == mask_commands::LIST {
-        let entry_id: Option<EntryId> = params::take_optional(&mut parameters, "entry_id")?;
-        if let Some(name) = parameters.keys().next() {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("unknown field {name} for {}", command.method),
-            ));
-        }
-        let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
-        return value(service.mask_listing(&asset_id, &entry_id)?);
-    }
-    // The other read: the pixel the operation one mask modulates receives. It resolves its entry the
-    // way `mask.list` does, takes the mask in the envelope like every other command, and its two
-    // coordinates through the same generic check a mutation's parameters take.
-    if command.method == mask_commands::SAMPLE_INPUT {
-        let entry_id: Option<EntryId> = params::take_optional(&mut parameters, "entry_id")?;
-        let mask = params::take_optional(&mut parameters, "mask")?;
-        let target = MaskTarget {
-            mask,
-            ..MaskTarget::default()
-        };
-        command.checked_target(&target)?;
-        let checked = crate::check_parameters(&command.action, &Value::Object(parameters))?;
-        let coordinate = |name: &str| -> Result<u32, Error> {
-            u32::try_from(
-                checked
-                    .get(name)
-                    .and_then(Value::as_i64)
-                    .ok_or_else(|| missing_parameter(name, command.method))?,
-            )
-            .map_err(|_| missing_parameter(name, command.method))
-        };
-        let (x, y) = (coordinate("x")?, coordinate("y")?);
-        let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
-        let mask = target
-            .mask
-            .as_ref()
-            .expect("checked_target requires a mask");
-        return value(service.mask_input_sample(&asset_id, &entry_id, mask, x, y)?);
-    }
-    require_current(session)?;
-    let mutation: Mutation = params::take(&mut parameters, "mutation")?;
-    let target = MaskTarget {
-        mask: params::take_optional(&mut parameters, "mask")?,
-        component: params::take_optional(&mut parameters, "component")?,
-        name: params::take_optional(&mut parameters, "name")?,
-        // A stroke's content address is an identity like the other two and travels here for the
-        // same reason: no declared parameter kind carries one.
-        stroke: params::take_optional(&mut parameters, "stroke")?,
-    };
-    value(service.apply_mask_command(
-        &asset_id,
-        mutation,
-        command,
-        Value::Object(parameters),
-        target,
-    )?)
-}
-
-/// A declared parameter a request did not carry, in the spelling the generic check already uses.
-fn missing_parameter(name: &str, method: &str) -> Error {
-    Error::new(
-        ErrorKind::Validation,
-        format!("missing required parameter {name} for action {method}"),
-    )
 }
 
 fn history_undo(
@@ -1661,21 +1557,14 @@ fn session_value(service: &EditorService, session: &mut ClientSession) -> Result
 
 /// The action a draft will run, and the parameters its fields are validated against.
 ///
-/// A host command of the `mask.*` family resolves here as a module action does, so `draft.set`,
-/// `draft.read` and `draft.reapply` validate a drafted gesture's fields against the same declared
-/// parameters with the same generic check, and the conflict, Discard and Reapply rules below are the
-/// delivered ones rather than a second copy.
-fn draft_action<'a>(
-    service: &'a EditorService,
-    action_id: &str,
-) -> Result<&'a ActionDescriptor, Error> {
-    if let Some(command) = mask_commands::find(action_id) {
-        return Ok(&command.action);
-    }
+/// Resolved through the registry's one action lookup, so a host `mask.*` command resolves here as a
+/// module action does: `draft.set`, `draft.read` and `draft.reapply` validate a drafted gesture's
+/// fields against the same declared parameters with the same generic check, and the conflict,
+/// Discard and Reapply rules below are the delivered ones rather than a second copy.
+fn draft_action<'a>(service: &'a EditorService, action_id: &str) -> Result<ActionRef<'a>, Error> {
     service
         .registry()
-        .action(action_id)
-        .map(|(_, action)| action)
+        .resolve_action(action_id)
         .ok_or_else(|| Error::new(ErrorKind::Validation, format!("unknown action {action_id}")))
 }
 
@@ -1699,36 +1588,59 @@ fn draft_begin(
             "return to current before drafting an edit",
         ));
     }
-    let _ = draft_action(service, &p.action)?;
-    // A `mask.*` gesture says which mask and component it is editing, checked by the command itself.
-    // A module action's draft takes the host's one optional `mask` field — the same field the
-    // committed request carries — when its effect is maskable, so a masked slider previews what it
-    // is about to commit instead of committing blind. It never takes a component: a module edits a
-    // layer through the whole mask and knows nothing of the components that composed it. A rename is
-    // not a gesture: it needs a `name`, which `draft.begin` does not take, so the command's own
-    // envelope check refuses drafting it.
+    let action = draft_action(service, &p.action)?;
+    // A gesture's target is the objects it edits, fixed when it begins and sent with its commit as
+    // the request fields they are. A `mask.*` gesture names the mask and component it edits: each
+    // must be an identity its command declares, and every identity the command requires must be
+    // named, so a stroke deletion — whose stroke `draft.begin` does not take — is refused as
+    // undraftable here rather than at its commit. A module action's draft takes the host's one
+    // optional `mask` field — the same field the committed request carries — when its effect is
+    // maskable, so a masked slider previews what it is about to commit instead of committing blind.
+    // It never takes a component: a module edits a layer through the whole mask and knows nothing
+    // of the components that composed it.
     let target = MaskTarget {
         mask: p.mask,
         component: p.component,
         name: None,
-        // A stroke is deleted, never drafted: `mask.delete-stroke` requires one, so its own envelope
-        // check refuses drafting it, exactly as a rename's missing `name` does.
         stroke: None,
     };
-    let target = match mask_commands::find(&p.action) {
-        Some(command) => {
-            command.checked_target(&target)?;
+    let target = match action {
+        ActionRef::Host(command) => {
+            let mut named = Map::new();
+            target.insert_into(&mut named);
+            if let Some(field) = named
+                .keys()
+                .find(|field| command.action.parameter(field).is_none())
+            {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!("unknown parameter {field} for action {}", p.action),
+                ));
+            }
+            if let Some(missing) = command.action.parameters.iter().find(|parameter| {
+                parameter.required
+                    && parameter.kind.is_identity()
+                    && !named.contains_key(&parameter.name)
+            }) {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!(
+                        "missing required parameter {} for action {}",
+                        missing.name, p.action
+                    ),
+                ));
+            }
             Some(target)
         }
-        None if target == MaskTarget::default() => None,
-        None if target.component.is_some() => {
+        ActionRef::Module(..) if target == MaskTarget::default() => None,
+        ActionRef::Module(..) if target.component.is_some() => {
             return Err(Error::new(
                 ErrorKind::Validation,
                 format!("action {} takes no mask component", p.action),
             ));
         }
-        None if service.registry().action_accepts_mask(&p.action) => Some(target),
-        None => {
+        ActionRef::Module(..) if service.registry().action_accepts_mask(&p.action) => Some(target),
+        ActionRef::Module(..) => {
             return Err(Error::new(
                 ErrorKind::Validation,
                 format!("action {} does not accept a mask target", p.action),
@@ -1751,7 +1663,7 @@ fn draft_set(
     let draft = session.held_draft(&p.draft_id)?;
     // Validate every field before merging any, so a rejected request leaves the draft as it was.
     let action = draft_action(service, &draft.action)?;
-    draft.checked_fields(&action.parameters, &p.fields)?;
+    draft.checked_fields(&action.descriptor().parameters, &p.fields)?;
     let draft = session.draft.as_mut().expect("the draft was just found");
     draft.merge(p.fields);
     session.touch();
@@ -1802,29 +1714,14 @@ fn draft_commit(
     }
     let asset_id = draft.asset_id.clone();
     let action = draft.action.clone();
-    let target = draft.target.clone().unwrap_or_default();
-    let mut fields = draft.fields.clone();
-    // A failed commit keeps the draft, so the client can correct it and try again; a no-op ends it
-    // exactly like an applied one, because the gesture is over either way. A drafted host command
-    // commits through its own family; everything above this line — the conflict check, the revision
-    // check and what a failure leaves behind — is the same for both.
-    let result = match mask_commands::find(&action) {
-        Some(command) => value(service.apply_mask_command(
-            &asset_id,
-            p.mutation,
-            command,
-            Value::Object(fields),
-            target,
-        )?)?,
-        None => {
-            // A module action's target is the host's one request field, so a drafted masked gesture
-            // commits exactly the request an independent client would send for the same edit.
-            if let Some(mask) = &target.mask {
-                fields.insert(crate::MASK_FIELD.to_owned(), json!(mask));
-            }
-            value(service.apply_action(&asset_id, p.mutation, &action, Value::Object(fields))?)?
-        }
-    };
+    // The drafted fields with the target's over them: exactly the request an independent client
+    // would send for the same edit — a module action's host `mask` field, a mask command's declared
+    // identities — committed through the one action path the draft's preview planned through. A
+    // failed commit keeps the draft, so the client can correct it and try again; a no-op ends it
+    // exactly like an applied one, because the gesture is over either way.
+    let request = draft.request();
+    let result =
+        value(service.run_action(&asset_id, p.mutation, &action, Value::Object(request))?)?;
     session.draft = None;
     session.touch();
     Ok(result)
@@ -1839,7 +1736,7 @@ fn draft_reapply(
     // Only the fields this client set survive, revalidated against the action they belong to;
     // whatever another client changed meanwhile stays in the layer the commit merges over.
     let action = draft_action(service, &draft.action)?;
-    draft.checked_fields(&action.parameters, &draft.fields)?;
+    draft.checked_fields(&action.descriptor().parameters, &draft.fields)?;
     let revision = service.revision(&draft.asset_id)?;
     let draft = session.draft.as_mut().expect("the draft was just found");
     draft.base_revision = revision;
@@ -1998,7 +1895,13 @@ mod tests {
             .descriptors()
             .iter()
             .flat_map(|descriptor| descriptor.actions.iter())
-            .map(|action| action_method(&action.id))
+            .map(|action| {
+                service
+                    .registry()
+                    .resolve_action(&action.id)
+                    .unwrap()
+                    .method()
+            })
             .collect();
         assert_eq!(
             generated,
@@ -2033,22 +1936,51 @@ mod tests {
             .descriptors()
             .iter()
             .flat_map(|descriptor| descriptor.queries.iter())
-            .map(|query| query_method(&query.id))
+            .map(|query| {
+                service
+                    .registry()
+                    .resolve_query(&query.id)
+                    .unwrap()
+                    .method()
+            })
             .collect();
         assert_eq!(queries, ["query.neutral-sample"]);
-        // The host's own `mask.*` family, declared from the same descriptor types and listed from the
-        // same table dispatch resolves through.
-        let masks: Vec<&str> = mask_commands::all()
+        // The host's own `mask.*` family, published as the host descriptor in the module shape and
+        // resolved through the registry's one action lookup, whose method names are the commands'
+        // own identities.
+        let host = service.registry().host_descriptors();
+        assert_eq!(
+            host.map(|descriptor| descriptor.id.as_str()),
+            ["lightwell.masks"]
+        );
+        let masks: Vec<String> = host[0]
+            .actions
             .iter()
-            .map(|command| command.method)
+            .map(|action| {
+                service
+                    .registry()
+                    .resolve_action(&action.id)
+                    .unwrap()
+                    .method()
+            })
             .collect();
+        let reads: Vec<String> = host[0]
+            .queries
+            .iter()
+            .map(|query| {
+                service
+                    .registry()
+                    .resolve_query(&query.id)
+                    .unwrap()
+                    .method()
+            })
+            .collect();
+        assert_eq!(reads, ["mask.list", "mask.sample-input"]);
         assert_eq!(
             masks,
             [
                 // The kind-independent commands, then three geometry methods per registered
                 // component kind, generated from the host's own kind table.
-                "mask.list",
-                "mask.sample-input",
                 "mask.delete",
                 "mask.rename",
                 "mask.duplicate",
@@ -2083,15 +2015,26 @@ mod tests {
         let listed = schema["methods"].as_object().unwrap();
         assert_eq!(
             listed.len(),
-            METHODS.len() + generated.len() + queries.len() + masks.len()
+            METHODS.len() + generated.len() + queries.len() + masks.len() + reads.len()
         );
         for method in &masks {
-            assert!(listed.contains_key(*method), "{method} is not discoverable");
+            assert!(listed.contains_key(method), "{method} is not discoverable");
             assert!(
-                matches!(find(&service, method), Some(Method::Mask(_))),
-                "{method} does not dispatch as a host mask command"
+                matches!(find(&service, method), Some(Method::Action(id)) if &id == method),
+                "{method} does not dispatch as an action"
             );
         }
+        for method in &reads {
+            assert!(listed.contains_key(method), "{method} is not discoverable");
+            assert!(
+                matches!(find(&service, method), Some(Method::Query(id)) if &id == method),
+                "{method} does not dispatch as a query"
+            );
+        }
+        // A host action is not reachable through a module's namespace, nor a module's through the
+        // host's.
+        assert!(find(&service, "edit.mask.create-linear").is_none());
+        assert!(find(&service, "set-basic").is_none());
         assert_eq!(
             listed["mask.list"]["mutates"],
             json!(false),
@@ -2452,7 +2395,8 @@ mod tests {
         assert_eq!(
             listed.len(),
             METHODS.len()
-                + mask_commands::all().len()
+                + crate::mask::commands::descriptor().actions.len()
+                + crate::mask::commands::descriptor().queries.len()
                 + count(|descriptor| descriptor.actions.len())
                 + count(|descriptor| descriptor.queries.len())
                 + tasks.len()
@@ -2735,7 +2679,7 @@ mod tests {
                     artifacts: false,
                     single: false,
                 }],
-                actions: vec![ActionDescriptor {
+                actions: vec![crate::ActionDescriptor {
                     id: "test-angle".into(),
                     title: "Set angle".into(),
                     notes: "test".into(),
@@ -2826,7 +2770,7 @@ mod tests {
                     artifacts: false,
                     single: false,
                 }],
-                actions: vec![ActionDescriptor {
+                actions: vec![crate::ActionDescriptor {
                     id: MARK_ACTION.into(),
                     title: "Mark".into(),
                     notes: "test".into(),

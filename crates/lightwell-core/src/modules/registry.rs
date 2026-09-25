@@ -184,6 +184,64 @@ impl ToolModule for Unavailable {
     }
 }
 
+/// One resolved action: a registered module's, or one the host declares for its own objects.
+///
+/// Both are declared with the same [`ActionDescriptor`], checked by the same generic parameter
+/// check and committed, drafted and deduplicated through the editor's one action path; they differ
+/// only in who plans them. A module plans a layer change against a lazy stage context, and the host
+/// plans a `mask.*` command's change to the mask table ([`crate::mask::commands`]).
+#[derive(Clone, Copy)]
+pub enum ActionRef<'r> {
+    Module(&'r dyn ToolModule, &'r ActionDescriptor),
+    Host(&'static crate::mask::commands::MaskCommand),
+}
+
+impl<'r> ActionRef<'r> {
+    /// The action's declaration: its identity, parameters and whether it is a patch.
+    pub fn descriptor(&self) -> &'r ActionDescriptor {
+        match self {
+            Self::Module(_, action) => action,
+            Self::Host(command) => &command.action,
+        }
+    }
+
+    /// The API method this action is called through: `edit.<id>` for a module's, and a host
+    /// action's own identity, which already carries its family's namespace (`mask.create-linear`).
+    pub fn method(&self) -> String {
+        match self {
+            Self::Module(_, action) => format!("edit.{}", action.id),
+            Self::Host(command) => command.method.to_owned(),
+        }
+    }
+}
+
+/// One resolved read-only query: a registered module's, answered through the one plan path, or one
+/// the host answers about its own objects.
+#[derive(Clone, Copy)]
+pub enum QueryRef<'r> {
+    Module(&'r dyn ToolModule, &'r ActionDescriptor),
+    Host(&'static ActionDescriptor),
+}
+
+impl<'r> QueryRef<'r> {
+    /// The query's declaration.
+    pub fn descriptor(&self) -> &'r ActionDescriptor {
+        match self {
+            Self::Module(_, query) => query,
+            Self::Host(query) => query,
+        }
+    }
+
+    /// The API method this query is called through: `query.<id>` for a module's, and a host
+    /// query's own identity (`mask.list`).
+    pub fn method(&self) -> String {
+        match self {
+            Self::Module(_, query) => format!("query.{}", query.id),
+            Self::Host(query) => query.id.clone(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ModuleRegistry {
     modules: Vec<Arc<dyn ToolModule>>,
@@ -265,7 +323,9 @@ impl ModuleRegistry {
         // than assumed, before the shape check below, so the refusal names the real reason instead
         // of reporting a malformed identity.
         for declared in descriptor.actions.iter().chain(&descriptor.queries) {
-            if crate::mask::commands::find(&declared.id).is_some() {
+            if crate::mask::commands::find(&declared.id).is_some()
+                || crate::mask::commands::find_query(&declared.id).is_some()
+            {
                 return Err(validation(format!(
                     "{} declares {}, which is a host mask command",
                     descriptor.id, declared.id
@@ -357,6 +417,55 @@ impl ModuleRegistry {
         let (module, position) = self.actions.get(id)?;
         let module = self.modules[*module].as_ref();
         Some((module, &module.descriptor().actions[*position]))
+    }
+
+    /// The one action lookup every caller resolves an action through: a registered module's
+    /// action, or one of the host's own `mask.*` commands, which the host descriptor declares
+    /// ([`crate::mask::commands::descriptor`]). The two namespaces cannot collide — a host action
+    /// identity carries a dot, which a module action's may not, and [`Self::register`] refuses a
+    /// module that declares one anyway — so an identity names at most one of them.
+    pub fn resolve_action(&self, id: &str) -> Option<ActionRef<'_>> {
+        match self.action(id) {
+            Some((module, action)) => Some(ActionRef::Module(module, action)),
+            None => crate::mask::commands::find(id).map(ActionRef::Host),
+        }
+    }
+
+    /// The action an API method calls, the inverse of [`ActionRef::method`]: `edit.<id>` names a
+    /// module's action and a host action is named by its own identity.
+    pub fn action_for_method(&self, method: &str) -> Option<ActionRef<'_>> {
+        match method.strip_prefix("edit.") {
+            Some(id) => self
+                .action(id)
+                .map(|(module, action)| ActionRef::Module(module, action)),
+            None => crate::mask::commands::find(method).map(ActionRef::Host),
+        }
+    }
+
+    /// The query an API method calls, the inverse of [`QueryRef::method`].
+    pub fn query_for_method(&self, method: &str) -> Option<QueryRef<'_>> {
+        match method.strip_prefix("query.") {
+            Some(id) => self
+                .query(id)
+                .map(|(module, query)| QueryRef::Module(module, query)),
+            None => crate::mask::commands::find_query(method).map(QueryRef::Host),
+        }
+    }
+
+    /// The one query lookup, as [`Self::resolve_action`] is for actions: a registered module's
+    /// query, or one of the host's own reads (`mask.list`, `mask.sample-input`).
+    pub fn resolve_query(&self, id: &str) -> Option<QueryRef<'_>> {
+        match self.query(id) {
+            Some((module, query)) => Some(QueryRef::Module(module, query)),
+            None => crate::mask::commands::find_query(id).map(QueryRef::Host),
+        }
+    }
+
+    /// The descriptors the host publishes for its own objects beside the modules' — today the one
+    /// for masks — in the shape a module's descriptor takes, so a client discovers a host action
+    /// or query exactly as it discovers a module's.
+    pub fn host_descriptors(&self) -> [&'static ModuleDescriptor; 1] {
+        [crate::mask::commands::descriptor()]
     }
 
     /// The module that answers this read-only query, and the query's declared parameters. An

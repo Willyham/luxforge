@@ -482,7 +482,12 @@ impl Fixture {
             commands::find(method).unwrap_or_else(|| panic!("{method} is a declared command"));
         let mutation = self.mutation(request);
         self.service
-            .apply_mask_command(&self.asset, mutation, command, parameters, target)
+            .run_action(
+                &self.asset,
+                mutation,
+                command.method,
+                target.request(parameters),
+            )
             .unwrap_or_else(|e| panic!("{method} failed: {e}"))
     }
 

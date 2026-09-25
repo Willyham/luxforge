@@ -1359,9 +1359,13 @@ fn each_component_row_carries_its_own_mode_invert_order_and_delete() {
         "mask.set-invert",
         "mask.reorder",
     ] {
-        let command = lightwell_core::mask::commands::find(method)
+        // A declared command is an action of the host descriptor, never one of its reads.
+        lightwell_core::mask::commands::find(method)
             .unwrap_or_else(|| panic!("{method} is declared"));
-        assert!(command.mutates, "{method}");
+        assert!(
+            lightwell_core::mask::commands::find_query(method).is_none(),
+            "{method}"
+        );
     }
 }
 

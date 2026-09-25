@@ -1094,7 +1094,7 @@ fn the_generated_methods_create_patch_sample_and_unsample_a_range() {
                 actor: "mask-range".to_owned(),
             };
             service
-                .apply_mask_command(&asset, mutation, command, parameters, target)
+                .run_action(&asset, mutation, command.method, target.request(parameters))
                 .unwrap_or_else(|error| panic!("{method}: {error}"))
         };
     let listing = |service: &EditorService| {

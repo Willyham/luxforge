@@ -538,8 +538,12 @@ impl Fixture {
     ) -> Result<lightwell_core::ActionResult, lightwell_core::Error> {
         let command = commands::find(method).expect("a declared command");
         let mutation = self.mutation();
-        self.service
-            .apply_mask_command(&self.asset, mutation, command, parameters, target)
+        self.service.run_action(
+            &self.asset,
+            mutation,
+            command.method,
+            target.request(parameters),
+        )
     }
 
     fn edit(&mut self, action: &str, parameters: Value) {
@@ -833,11 +837,14 @@ fn the_hosts_canvas_pick_runs_a_host_query_into_a_host_command() {
         assert!(shortcut.is_none(), "a mask's pick is offered by its panel");
         assert!(title.starts_with("Pick"), "{title}");
         // The query declares the two coordinates the pick fills.
-        let sample_input = commands::find(query).expect("the query is a declared host command");
-        assert!(!sample_input.mutates, "a pick's query writes nothing");
+        // The query is one of the host descriptor's reads, never one of its actions.
+        assert!(
+            commands::find(query).is_none(),
+            "a pick's query writes nothing"
+        );
+        let sample_input = commands::find_query(query).expect("the query is a declared host read");
         for name in [x, y] {
             let declared = sample_input
-                .action
                 .parameter(name)
                 .unwrap_or_else(|| panic!("{query} declares {name}"));
             assert!(matches!(

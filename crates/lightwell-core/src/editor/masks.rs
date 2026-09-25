@@ -1,12 +1,10 @@
 use super::{
-    ActionResult, AssetRecord, EditorService, EditorState, PixelInput,
-    history::{Change, CommittedAction, Touched, request_input},
+    AssetRecord, EditorService, PixelInput,
     source::{Evaluated, validate_source_recipe},
 };
 use crate::{
-    AssetId, EntryId, Error, ErrorKind, MaskId, ModuleRegistry, Mutation, Recipe,
-    mask::commands::{MaskChange, MaskCommand, MaskListing, MaskOutcome, MaskTarget},
-    modules::{ActionInput, check_parameters},
+    AssetId, EntryId, Error, ErrorKind, MaskId, ModuleRegistry, Recipe,
+    mask::commands::{MaskCommand, MaskListing, MaskOutcome, MaskTarget},
 };
 use serde_json::{Map, Value};
 
@@ -22,85 +20,80 @@ fn linear_triple(rgba: [u8; 4]) -> [f64; 3] {
 }
 
 impl EditorService {
-    /// One `mask.*` host command.
+    /// What one checked `mask.*` command does to `recipe`, the stack of `asset` it is planned
+    /// against: the host's half of [`Self::plan_request`], the one planning step a commit and a
+    /// drafted gesture share, so a draft equals its commit by construction.
     ///
-    /// Masks are host commands in their own namespace and not a tool module, because a module commits
-    /// layers through [`ActionPlan`] and must never rewrite the recipe, while every one of these
-    /// rewrites the mask table beside the layers. Everything else is the delivered path and not a
-    /// second implementation of it: the parameters go through the same [`check_parameters`], the
-    /// request identity is built by the same [`request_input`], and the envelope, the
-    /// deduplication, the revision, the admission of the resulting recipe and its write are the one
-    /// [`Self::mutate`] every mutation takes — one history entry, one immutable snapshot, one
-    /// validated and compiled recipe, or a recorded no-op.
-    pub fn apply_mask_command(
-        &mut self,
-        asset_id: &AssetId,
-        mutation: Mutation,
-        command: &'static MaskCommand,
-        parameters: Value,
-        target: MaskTarget,
-    ) -> Result<ActionResult, Error> {
-        command.checked_target(&target)?;
-        let checked = check_parameters(&command.action, &parameters)?;
-        // The entry stores the declared parameters and the envelope fields naming what they addressed,
-        // which is also the deduplication identity: the same request id with a different mask is a
-        // different request and must conflict rather than return the first one's result.
-        let input = ActionInput {
-            action_id: command.method.to_owned(),
-            parameters: crate::mask::commands::stored_parameters(&checked, &target),
-        };
-        // No separate mask argument: a mask command's target is already one of the stored
-        // parameters above, so it is hashed with them. The field a module action passes here names
-        // the *layer* an edit addressed, which is a different question a mask command never asks.
-        let request = request_input(&input, &mutation, None)?;
-        // What the command touched is stored with its request, so a retry answers with it.
-        self.mutate(
-            asset_id,
-            &mutation,
-            &request,
-            |service, state| match service.plan_mask_command(state, command, &target, &checked)? {
-                MaskOutcome::NoOp => Ok(Change::NoOp),
-                MaskOutcome::Change(MaskChange {
-                    recipe,
-                    label,
-                    mask,
-                    component,
-                    removed_layers,
-                }) => Ok(Change::append(
-                    recipe,
-                    CommittedAction {
-                        input,
-                        label,
-                        touched: Some(Touched {
-                            mask,
-                            component,
-                            removed_layers,
-                        }),
-                    },
-                )),
-            },
-        )
-    }
-
-    /// What one checked `mask.*` command does to the asset's current stack: the one planning step a
-    /// commit and a drafted gesture share, so a draft equals its commit by construction.
-    ///
-    /// A stroke that asks to be limited to a colour is seeded here, by the host, from the pixel the
+    /// Unlike a module's plan it compiles nothing up front: it reads no pixel unless a stroke asks
+    /// to be limited to a colour, and that one is seeded here, by the host, from the pixel the
     /// operation this mask modulates receives at the position the stroke began. The request named
     /// the limit and never the colour, so nothing a client sends can put a colour in a stroke that
     /// the photograph does not have at that position, and the command family's planner stays pure —
     /// it is handed the pixel rather than reading one.
     pub(super) fn plan_mask_command(
         &self,
-        state: &EditorState,
+        asset: &AssetRecord,
+        recipe: &Recipe,
         command: &MaskCommand,
         target: &MaskTarget,
         parameters: &Map<String, Value>,
     ) -> Result<MaskOutcome, Error> {
-        let recipe = &state.current_entry.snapshot.recipe;
-        validate_source_recipe(&state.asset, recipe)?;
-        let seed = self.mask_colour_seed(state, command, recipe, target, parameters)?;
+        validate_source_recipe(asset, recipe)?;
+        let seed = self.mask_colour_seed(asset, command, recipe, target, parameters)?;
         crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, seed)
+    }
+
+    /// One of the host's own reads about its own objects, from one entry's stack, with its
+    /// parameters already checked against the host descriptor's query: `mask.list` or
+    /// `mask.sample-input`. It writes nothing, emits nothing and touches no session state.
+    pub(super) fn host_query(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+        query_id: &str,
+        parameters: &Map<String, Value>,
+    ) -> Result<Value, Error> {
+        fn encode(value: Result<impl serde::Serialize, Error>) -> Result<Value, Error> {
+            value.and_then(|value| {
+                serde_json::to_value(value)
+                    .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
+            })
+        }
+        match query_id {
+            crate::mask::commands::LIST => encode(self.mask_listing(asset_id, entry_id)),
+            crate::mask::commands::SAMPLE_INPUT => {
+                let (target, values) = MaskTarget::split(parameters)?;
+                let coordinate = |name: &str| {
+                    values
+                        .get(name)
+                        .and_then(Value::as_u64)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| {
+                            Error::new(
+                                ErrorKind::Validation,
+                                format!("missing required parameter {name} for {query_id}"),
+                            )
+                        })
+                };
+                let mask = target.mask.as_ref().ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Validation,
+                        format!("missing required parameter mask for {query_id}"),
+                    )
+                })?;
+                encode(self.mask_input_sample(
+                    asset_id,
+                    entry_id,
+                    mask,
+                    coordinate("x")?,
+                    coordinate("y")?,
+                ))
+            }
+            other => Err(Error::new(
+                ErrorKind::Validation,
+                format!("unknown query {other}"),
+            )),
+        }
     }
 
     /// The pixel a limited stroke is seeded on, as the three sRGB codes the host sampled, or `None`
@@ -113,7 +106,7 @@ impl EditorService {
     /// so no client can put anything else in a stroke.
     fn mask_colour_seed(
         &self,
-        state: &EditorState,
+        asset: &AssetRecord,
         command: &MaskCommand,
         recipe: &Recipe,
         target: &MaskTarget,
@@ -126,7 +119,7 @@ impl EditorService {
         };
         // Reading the pixel compiles the stack, so its artifacts are bound first.
         let recipe = self.bound(recipe)?;
-        self.with_stage_context(&state.asset, &recipe, None, |context| {
+        self.with_stage_context(asset, &recipe, None, |context| {
             let stage = context.stage_before(request.layer)?;
             // The stroke's positions are normalized against the stage its mask is compiled against,
             // which is the stage this layer receives, so the pixel is that stage's own. A stroke that
@@ -248,6 +241,17 @@ impl EditorService {
 /// The host's one optional top-level request field on every action of a maskable effect.
 pub const MASK_FIELD: &str = "mask";
 
+/// The host's `mask` field as the identity parameter it is: validated by the one generic check, and
+/// published by `schema.list` as the `target` of every action that accepts it. It is declared by the
+/// host rather than by the module, because no module parses, plans or compiles a mask.
+pub fn mask_target_parameter() -> crate::ParameterDescriptor {
+    crate::ParameterDescriptor::identity(MASK_FIELD, crate::IdentityKind::Mask).notes(
+        "the mask this edit applies through; omit it to edit the layer that applies everywhere. \
+         The global layer and each mask are distinct targets, so this action commits or updates \
+         one layer per target",
+    )
+}
+
 /// Take the `mask` target out of a request before the action's own parameters are checked, so no
 /// module's `parse`, `plan` or `compile` ever sees it (`docs/design/masking.md`, "How a mask reaches
 /// an effect").
@@ -271,13 +275,12 @@ pub(super) fn take_mask_target(
             format!("action {action_id} does not accept a mask target"),
         ));
     }
-    let id: MaskId = serde_json::from_value(field.clone()).map_err(|_| {
-        Error::new(
-            ErrorKind::Validation,
-            format!("mask target {field} is not a mask identity"),
-        )
-    })?;
-    Ok(Some(id))
+    // The generic check of the identity kind, the one every mask identity takes.
+    crate::check_value(&mask_target_parameter(), &field)?;
+    let text = field
+        .as_str()
+        .expect("an identity the check accepted is a string");
+    Ok(Some(MaskId::parse(text)?))
 }
 
 /// The mask a request named, resolved against the stack it will edit. A target the recipe does not
@@ -349,7 +352,7 @@ pub(super) fn recipe_for_target<'a>(
 mod tests {
     use super::*;
     use crate::editor::{
-        MutationOutcome, MutationResult,
+        ActionResult, EditorState, MutationOutcome, MutationResult,
         test_support::{fixture, mutation, stored_entry_json, temp},
     };
     use crate::{Component, ComponentMode, HistoryEntry, Mask, Snapshot, SnapshotId, Transform};
@@ -838,38 +841,36 @@ mod tests {
         let command = crate::mask::commands::find("mask.create-linear").unwrap();
         let geometry = json!({"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 1.0});
         let first = service
-            .apply_mask_command(
+            .run_action(
                 &asset,
                 mutation(0, "create"),
-                command,
-                geometry.clone(),
-                MaskTarget::default(),
+                command.method,
+                (MaskTarget::default()).request(geometry.clone()),
             )
             .unwrap();
         let mask = first.mask.clone().expect("a created mask");
         let component = first.component.clone().expect("its first component");
         // A later command moves the head and the history on; the retry still answers the first.
         service
-            .apply_mask_command(
+            .run_action(
                 &asset,
                 mutation(1, "rename"),
-                crate::mask::commands::find("mask.rename").unwrap(),
-                Value::Null,
-                MaskTarget {
+                "mask.rename",
+                (MaskTarget {
                     mask: Some(mask.clone()),
                     name: Some("Sky".into()),
                     ..MaskTarget::default()
-                },
+                })
+                .request(Value::Null),
             )
             .unwrap();
         let retry = |service: &mut EditorService| {
             service
-                .apply_mask_command(
+                .run_action(
                     &asset,
                     mutation(0, "create"),
-                    command,
-                    geometry.clone(),
-                    MaskTarget::default(),
+                    command.method,
+                    (MaskTarget::default()).request(geometry.clone()),
                 )
                 .unwrap()
         };

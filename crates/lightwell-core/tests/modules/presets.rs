@@ -12,7 +12,6 @@ use lightwell_core::{
     ActionDescriptor, ActionInput, ActionPlan, AssetId, Availability, Draft, EditorService, Error,
     ErrorKind, Layer, MaskId, ModuleDescriptor, ModuleRegistry, Mutation, MutationOutcome,
     ParameterDescriptor, ParameterKind, Processing, Recipe, Stage, StageContext, ToolModule,
-    mask::commands::{self, MaskTarget},
 };
 use lightwell_testkit::fixtures::{self, jpeg};
 use serde_json::{Map, Value, json};
@@ -696,12 +695,11 @@ fn masked_basic(service: &mut EditorService, asset: &AssetId, global: bool) -> M
     }
     let current = revision(service, asset);
     let mask = service
-        .apply_mask_command(
+        .run_action(
             asset,
             mutation(current, "mask"),
-            commands::find("mask.create-linear").expect("a declared command"),
+            "mask.create-linear",
             json!({"x0": 0.5, "y0": 0.2, "x1": 0.5, "y1": 0.8}),
-            MaskTarget::default(),
         )
         .expect("a mask")
         .mask

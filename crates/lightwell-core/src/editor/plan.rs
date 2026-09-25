@@ -1,16 +1,16 @@
 use super::{
-    AssetRecord, EditorService, EditorState, MutationResult,
-    history::{Change, CommittedAction, request_input},
+    ActionResult, AssetRecord, EditorService, EditorState, MutationResult,
+    history::{Change, CommittedAction, Touched, request_input},
     masks::{recipe_for_target, resolve_mask_target, take_mask_target},
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 use crate::{
     AssetId, Draft, EntryId, Error, ErrorKind, Layer, LayerId, LinearImage, LinearSettings, MaskId,
-    Mutation, Recipe, ToolModule, Transform,
-    mask::commands::MaskOutcome,
+    ModuleRegistry, Mutation, Recipe, ToolModule, Transform,
+    mask::commands::{MaskOutcome, MaskTarget},
     modules::{
-        ActionInput, ActionPlan, LayerEdit, MAX_COMPOSE_STEPS, Stage, StageContext, StageQuestions,
-        action_label, check_parameters,
+        ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
+        StageContext, StageQuestions, action_label, check_parameters,
     },
     render::{Compiled, Evaluation, linear::sample_linear_compiled},
     source::PreparedSource,
@@ -19,9 +19,84 @@ use serde_json::{Value, json};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 
+/// One action request resolved, checked and parsed once: what a commit stores and hashes, and what
+/// a commit and a draft plan through [`EditorService::plan_request`].
+pub(super) struct Prepared<'r> {
+    pub(super) action: ActionRef<'r>,
+    /// The durable action identity and the parameters the entry stores and the request hashes: a
+    /// module's parse of its checked fields, or a host command's checked parameters, the identities
+    /// it addresses included.
+    pub(super) input: ActionInput,
+    /// A module action's host-owned mask target, taken out of the request before the module sees it.
+    pub(super) mask: Option<MaskId>,
+    /// A module action's label, rendered from the action that was requested. A host command renders
+    /// its own when it is planned, because it names the objects the plan found.
+    label: String,
+}
+
+impl<'r> Prepared<'r> {
+    /// Resolve `action_id` through the registry's one lookup and check `parameters` against its
+    /// declaration with the one generic check.
+    ///
+    /// A module action is refused when its provider is unavailable — it keeps its descriptor so its
+    /// stored layers stay readable, but it changes nothing, and the one plan path refuses it again —
+    /// has the host's optional `mask` target taken out before its own parameters are checked, so the
+    /// module receives exactly its declared fields and never learns a mask was involved, and is
+    /// parsed by its module. A host command's parameters, identities included, are what it stores.
+    pub(super) fn new(
+        registry: &'r ModuleRegistry,
+        action_id: &str,
+        parameters: Value,
+    ) -> Result<Self, Error> {
+        let action = registry.resolve_action(action_id).ok_or_else(|| {
+            Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
+        })?;
+        match action {
+            ActionRef::Module(module, declared) => {
+                available(module)?;
+                let mut parameters = parameters;
+                let mask = take_mask_target(registry, action_id, &mut parameters)?;
+                let checked = check_parameters(declared, &parameters)?;
+                let input = module.parse(action_id, &checked)?;
+                // The module labels a request its template cannot describe, such as a field patch;
+                // the fallback comes from the action that was requested, which is not always the
+                // durable action identity the entry stores: `transform` renders the label,
+                // `rotate-left` is stored.
+                let label = module
+                    .label(&input)
+                    .unwrap_or_else(|| action_label(declared, &input.parameters));
+                Ok(Self {
+                    action,
+                    input,
+                    mask,
+                    label,
+                })
+            }
+            ActionRef::Host(command) => Ok(Self {
+                action,
+                input: ActionInput {
+                    action_id: command.method.to_owned(),
+                    parameters: check_parameters(&command.action, &parameters)?,
+                },
+                mask: None,
+                label: String::new(),
+            }),
+        }
+    }
+}
+
+/// What one planned action does: the stack it produces, the label its entry stores and, for a host
+/// command, what it touched.
+pub(super) struct Planned {
+    pub(super) recipe: Recipe,
+    pub(super) label: String,
+    pub(super) touched: Option<Touched>,
+}
+
 impl EditorService {
     /// One action request for every caller: the desktop, the JSON API and headless clients all
-    /// arrive here with an action identity and its declared parameters.
+    /// arrive here with an action identity and its declared parameters. The mutation result of
+    /// [`Self::run_action`].
     pub fn apply_action(
         &mut self,
         asset_id: &AssetId,
@@ -29,45 +104,83 @@ impl EditorService {
         action_id: &str,
         parameters: Value,
     ) -> Result<MutationResult, Error> {
+        self.run_action(asset_id, mutation, action_id, parameters)
+            .map(|result| result.mutation)
+    }
+
+    /// The one action path, for a module's action and a host `mask.*` command alike: resolved and
+    /// checked once ([`Prepared::new`]), deduplicated by the same request identity, planned against
+    /// the current stack through [`Self::plan_request`] — the function a draft's effective recipe
+    /// plans through — and committed through [`Self::mutate`], which admits the stack and stores
+    /// the whole answer with the request.
+    pub fn run_action(
+        &mut self,
+        asset_id: &AssetId,
+        mutation: Mutation,
+        action_id: &str,
+        parameters: Value,
+    ) -> Result<ActionResult, Error> {
         let registry = self.registry.clone();
-        let (module, action) = registry.action(action_id).ok_or_else(|| {
-            Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
-        })?;
-        // An unavailable provider keeps its descriptor so its stored layers stay readable, but it
-        // changes nothing; it is refused here, before anything else, and again by the one plan
-        // path every commit, draft and query takes.
-        available(module)?;
-        // The host's one optional target field, taken before the action's own parameters are checked
-        // so the module receives exactly its declared fields and never learns a mask was involved.
-        let mut parameters = parameters;
-        let mask = take_mask_target(&registry, action_id, &mut parameters)?;
-        let checked = check_parameters(action, &parameters)?;
-        let input = module.parse(action_id, &checked)?;
-        // The module labels a request its template cannot describe, such as a field patch; the
-        // fallback comes from the action that was requested, which is not always the durable action
-        // identity the entry stores: `transform` renders the label, `rotate-left` is stored.
-        let label = module
-            .label(&input)
-            .unwrap_or_else(|| action_label(action, &input.parameters));
-        let request = request_input(&input, &mutation, mask.as_ref())?;
+        let prepared = Prepared::new(&registry, action_id, parameters)?;
+        let request = request_input(&prepared.input, &mutation, prepared.mask.as_ref())?;
         self.mutate(asset_id, &mutation, &request, |service, state| {
             let current = &state.current_entry.snapshot.recipe;
-            let planned =
-                service.plan_action(&state.asset, current, module, &input, mask.as_ref())?;
-            let Some(recipe) = planned else {
+            let Some(planned) = service.plan_request(&state.asset, current, &prepared)? else {
                 return Ok(Change::NoOp);
             };
-            let label = masked_label(current, mask.as_ref(), label);
             Ok(Change::append(
-                recipe,
+                planned.recipe,
                 CommittedAction {
-                    input,
-                    label,
-                    touched: None,
+                    input: prepared.input,
+                    label: planned.label,
+                    touched: planned.touched,
                 },
             ))
         })
-        .map(|result| result.mutation)
+    }
+
+    /// What one prepared action does to `recipe`, the stack of `asset` it is planned against, or
+    /// `None` when it changes nothing: the one planning step a commit and a draft share, so a draft
+    /// equals its commit by construction for every action.
+    ///
+    /// A module plans a layer change through [`Self::plan_action`], and its label names the mask a
+    /// masked edit went through. A host command plans its change to the mask table through
+    /// [`Self::plan_mask_command`] and names what it touched.
+    pub(super) fn plan_request(
+        &self,
+        asset: &AssetRecord,
+        recipe: &Recipe,
+        prepared: &Prepared<'_>,
+    ) -> Result<Option<Planned>, Error> {
+        match prepared.action {
+            ActionRef::Module(module, _) => {
+                let mask = prepared.mask.as_ref();
+                Ok(self
+                    .plan_action(asset, recipe, module, &prepared.input, mask)?
+                    .map(|next| Planned {
+                        recipe: next,
+                        label: masked_label(recipe, mask, prepared.label.clone()),
+                        touched: None,
+                    }))
+            }
+            ActionRef::Host(command) => {
+                let (target, values) = MaskTarget::split(&prepared.input.parameters)?;
+                Ok(
+                    match self.plan_mask_command(asset, recipe, command, &target, &values)? {
+                        MaskOutcome::NoOp => None,
+                        MaskOutcome::Change(change) => Some(Planned {
+                            recipe: change.recipe,
+                            label: change.label,
+                            touched: Some(Touched {
+                                mask: change.mask,
+                                component: change.component,
+                                removed_layers: change.removed_layers,
+                            }),
+                        }),
+                    },
+                )
+            }
+        }
     }
 
     /// What one parsed action does to `recipe`, the stack of `asset` it is planned against, or
@@ -179,10 +292,14 @@ impl EditorService {
         parameters: Value,
     ) -> Result<Value, Error> {
         let registry = self.registry.clone();
-        let (module, query) = registry.query(query_id).ok_or_else(|| {
+        let query = registry.resolve_query(query_id).ok_or_else(|| {
             Error::new(ErrorKind::Validation, format!("unknown query {query_id}"))
         })?;
-        let checked = check_parameters(query, &parameters)?;
+        let checked = check_parameters(query.descriptor(), &parameters)?;
+        // The host answers its own reads about its own objects, from the same entry.
+        let QueryRef::Module(module, _) = query else {
+            return self.host_query(asset_id, entry_id, query_id, &checked);
+        };
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
         let recipe = &entry.snapshot.recipe;
@@ -203,9 +320,9 @@ impl EditorService {
     /// is committed. Nothing is rendered here; the caller decides what to do with the recipe, and
     /// binds it before evaluating it, since it may reference an artifact the current one does not.
     ///
-    /// A module action plans through [`Self::plan_action`] and a `mask.*` command through
-    /// [`Self::plan_mask_command`], the functions `draft.commit` commits through, with the fields
-    /// and the target the commit will carry, so a draft equals its commit by construction.
+    /// A draft is prepared and planned through the functions its commit takes — [`Prepared::new`]
+    /// and [`Self::plan_request`] — with the fields and the target `draft.commit` will send, so a
+    /// draft equals its commit by construction for every module action and host command.
     pub fn draft_recipe(
         &self,
         asset_id: &AssetId,
@@ -221,39 +338,19 @@ impl EditorService {
         let current = &state.current_entry.snapshot.recipe;
         // Planning evaluates the current stack, so a refusal names what that stack needs.
         let stack = Evaluated::exactly(&state.asset, &state.current_entry.id, current);
-        if let Some(command) = crate::mask::commands::find(&draft.action) {
-            let checked = check_parameters(&command.action, &Value::Object(draft.fields.clone()))?;
-            let target = draft.target.clone().unwrap_or_default();
-            let planned = self.plan_mask_command(&state, command, &target, &checked);
-            let recipe = match self.needing(stack, planned)? {
-                MaskOutcome::NoOp => current.clone(),
-                MaskOutcome::Change(change) => change.recipe,
-            };
-            // A drafted mask gesture's recipe enters the service here, with a mask table no commit
-            // has admitted, so the table is checked once now and every render of the draft trusts it.
+        let registry = self.registry.clone();
+        let prepared = Prepared::new(&registry, &draft.action, Value::Object(draft.request()))?;
+        let planned = self.plan_request(&state.asset, current, &prepared);
+        let recipe = match self.needing(stack, planned)? {
+            Some(planned) => planned.recipe,
+            None => current.clone(),
+        };
+        // A drafted host command's recipe enters the service here with a mask table no commit has
+        // admitted, so the table is checked once now and every render of the draft trusts it. A
+        // module's draft changes layers only, and its mask table is the admitted current one's.
+        if matches!(prepared.action, ActionRef::Host(_)) {
             recipe.validate_mask_table()?;
-            return Ok((recipe, state));
         }
-        let (module, action) = self.registry.action(&draft.action).ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!("unknown action {}", draft.action),
-            )
-        })?;
-        let checked = check_parameters(action, &Value::Object(draft.fields.clone()))?;
-        let input = module.parse(&draft.action, &checked)?;
-        // The draft's target is the one the commit will carry: none for a global gesture, and the
-        // mask a masked slider was opened on. The target view hides the layers of the drafted
-        // module's effect that belong to another target, which is what lets a global slider drag and
-        // a masked one each keep working on a stack that holds both.
-        let mask = draft
-            .target
-            .as_ref()
-            .and_then(|target| target.mask.as_ref());
-        let planned = self.plan_action(&state.asset, current, module, &input, mask);
-        let recipe = self
-            .needing(stack, planned)?
-            .unwrap_or_else(|| current.clone());
         Ok((recipe, state))
     }
 

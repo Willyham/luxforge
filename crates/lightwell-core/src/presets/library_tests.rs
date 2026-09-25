@@ -1047,12 +1047,11 @@ fn capture_reads_the_global_layer_of_a_masked_photo() {
         }
         let revision = service.state(&asset).expect("state").revision;
         let mask = service
-            .apply_mask_command(
+            .run_action(
                 &asset,
                 mutation(revision, "mask"),
-                crate::mask::commands::find("mask.create-linear").expect("a declared command"),
+                "mask.create-linear",
                 json!({"x0": 0.5, "y0": 0.2, "x1": 0.5, "y1": 0.8}),
-                crate::mask::commands::MaskTarget::default(),
             )
             .expect("a mask")
             .mask

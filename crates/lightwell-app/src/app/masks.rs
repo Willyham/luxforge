@@ -56,7 +56,7 @@ impl Editor {
     /// The host-owned target one generated control's gesture or request carries.
     ///
     /// A `mask.*` control addresses the mask and component the panel has open, as far as that
-    /// command's own envelope asks for them; a module action carries the bound mask when its module
+    /// command declares them; a module action carries the bound mask when its module
     /// declares a maskable effect, and nothing otherwise. One rule, used by the draft that previews
     /// the gesture and by the request that commits it, so the two cannot disagree.
     pub(crate) fn draft_target(&self, action: &str) -> MaskTarget {
@@ -288,8 +288,8 @@ impl Editor {
     /// The whole request one mask command sends: the mutation envelope, the host-owned identities
     /// and the command's own declared fields, in the one shape every client uses.
     ///
-    /// The identities are envelope fields beside `asset_id` rather than parameters, because the
-    /// closed parameter vocabulary has no way to carry one.
+    /// The identities are the command's declared identity parameters, sent as top-level fields
+    /// beside its values like every other parameter.
     pub(crate) fn mask_request(
         &self,
         target: &MaskTarget,
@@ -614,8 +614,8 @@ impl Editor {
                 .method;
                 of_component(component, method, one("index", json!(index)))
             }
-            // A stroke is addressed by its content address, which is an identity and therefore an
-            // envelope field, exactly as the mask and the component it lives in are.
+            // A stroke is addressed by its content address, an identity parameter exactly as the
+            // mask and the component it lives in are.
             RowEdit::DeleteStroke { component, stroke } => {
                 let (method, mut target, fields) = of_component(
                     component,
@@ -1128,13 +1128,11 @@ pub(crate) fn control_target(
     let Some(command) = lightwell_core::mask::commands::find(action) else {
         return MaskTarget::default();
     };
+    // The identities the command declares are the ones it takes.
+    let declares = |name: &str| command.action.parameter(name).is_some();
     MaskTarget {
-        mask: command.needs_mask.wanted().then(|| mask.cloned()).flatten(),
-        component: command
-            .needs_component
-            .wanted()
-            .then(|| component.cloned())
-            .flatten(),
+        mask: declares("mask").then(|| mask.cloned()).flatten(),
+        component: declares("component").then(|| component.cloned()).flatten(),
         ..MaskTarget::default()
     }
 }

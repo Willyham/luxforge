@@ -279,9 +279,8 @@ pub(crate) struct MasksModel {
     pub(crate) create_reason: Option<String>,
     /// Why a component cannot be added to the open mask, when it is full.
     pub(crate) add_reason: Option<String>,
-    /// The open mask's name as it is being typed. A rename needs free text, which no declared
-    /// parameter kind carries, so the name travels in the request's envelope and this is where the
-    /// panel keeps what has been typed for it.
+    /// The open mask's name as it is being typed: the text `mask.rename` takes as its declared
+    /// `name` parameter, kept here until it is sent.
     pub(crate) name: String,
 }
 
