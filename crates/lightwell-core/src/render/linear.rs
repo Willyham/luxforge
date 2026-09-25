@@ -19,7 +19,9 @@ use crate::{
     modules::{Global, ModuleRegistry, Processing, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Weak;
 
 const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
 const MAX_SIDE: u32 = 16_384;
@@ -189,6 +191,9 @@ pub struct LinearImage {
     /// source is a new number even when the allocator hands its planes the address the old ones
     /// had, which is why a cache keys on this and never on an address.
     development: u64,
+    /// The source worker's hold on these planes ([`crate::source::PlaneGate`]), shared by every
+    /// view and clone. Declared after `planes`, so the planes are freed before it is released.
+    held: crate::source::PlanesHeld,
 }
 
 /// The source of every [`LinearImage::development`] number.
@@ -267,6 +272,7 @@ impl LinearImage {
                 orientation: 1,
             },
             development: NEXT_DEVELOPMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            held: crate::source::PlanesHeld::default(),
         })
     }
 
@@ -310,6 +316,7 @@ impl LinearImage {
             fingerprint: self.fingerprint.clone(),
             view,
             development: self.development,
+            held: self.held.clone(),
         })
     }
 
@@ -338,8 +345,12 @@ impl LinearImage {
         self.development
     }
 
-    pub(crate) fn storage_weak(&self) -> Weak<Vec<f32>> {
-        Arc::downgrade(&self.planes)
+    /// Make the source worker's memory gate wait for these planes: every view and clone taken
+    /// from now on shares the hold, and the gate opens when the last of them drops. Called once,
+    /// before the development is shared.
+    pub(crate) fn hold(&mut self, lease: crate::source::PlaneLease) {
+        debug_assert_eq!(Arc::strong_count(&self.planes), 1, "hold before sharing");
+        self.held = crate::source::PlanesHeld::new(lease);
     }
 
     /// A bulk reader over this image's viewed pixels. The plane length and the view are resolved

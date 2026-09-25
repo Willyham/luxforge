@@ -18,7 +18,7 @@ use crate::{
         jobs::Origin,
     },
     editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
-    source::RawPrepared,
+    source::{PlaneGate, RawPrepared},
 };
 use requests::{RequestKey, RequestTable};
 use serde::Deserialize;
@@ -27,13 +27,14 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
     },
-    thread::{self, JoinHandle},
-    time::Duration,
+    thread::JoinHandle,
 };
+#[cfg(test)]
+use std::{thread, time::Duration};
 
 #[cfg(test)]
 mod artifact_tests;
@@ -245,6 +246,9 @@ struct SourceJobs {
     jobs: HashMap<JobId, SourceJob>,
     active: HashMap<SourceFlightKey, JobId>,
     completed: VecDeque<JobId>,
+    /// The worker's memory gate, woken whenever a job is stopped so a worker waiting on it for
+    /// that job sees the stop.
+    gate: Arc<PlaneGate>,
 }
 
 /// The identities a job reads, sorted, for its flight key.
@@ -255,6 +259,16 @@ fn flight_artifacts(reads: &[ArtifactRead]) -> Vec<ArtifactId> {
 }
 
 impl SourceJobs {
+    fn new(sender: SyncSender<SourceTask>, gate: Arc<PlaneGate>) -> Self {
+        Self {
+            sender,
+            jobs: HashMap::new(),
+            active: HashMap::new(),
+            completed: VecDeque::new(),
+            gate,
+        }
+    }
+
     fn enqueue(
         &mut self,
         client: ClientId,
@@ -500,6 +514,7 @@ impl SourceJobs {
         }
         if job.clients.is_empty() {
             job.cancelled.store(true, Ordering::Relaxed);
+            self.gate.wake();
             let key = job.key.clone();
             if self.active.get(&key).is_some_and(|active| active == id) {
                 self.active.remove(&key);
@@ -515,6 +530,9 @@ impl SourceJobs {
                 job.cancelled.store(true, Ordering::Relaxed);
                 detached.push((id.clone(), job.key.clone()));
             }
+        }
+        if !detached.is_empty() {
+            self.gate.wake();
         }
         for (id, key) in detached {
             if self.active.get(&key).is_some_and(|active| active == &id) {
@@ -651,7 +669,7 @@ fn read_artifacts(
 fn source_worker(
     receiver: Receiver<SourceTask>,
     owner: SyncSender<OwnerMessage>,
-    live_planes: Arc<Mutex<Vec<Weak<Vec<f32>>>>>,
+    gate: Arc<PlaneGate>,
     board: Arc<ActivityBoard>,
     hold: SourceHold,
 ) {
@@ -664,22 +682,13 @@ fn source_worker(
             continue;
         }
         // A previous RAW result/cache or active/pending preview may still pin its large float
-        // planes. Wait on the worker, never the catalog owner, before another source allocation.
-        // Artifact work allocates no planes and never waits.
-        let allocates_planes = matches!(
+        // planes. Wait on the worker, never the catalog owner, before another source allocation:
+        // the last release or a stop wakes it. Artifact work allocates no planes and never waits.
+        if matches!(
             task.kind,
             SourceTaskKind::File(_) | SourceTaskKind::Develop(_)
-        );
-        while allocates_planes && !task.cancelled.load(Ordering::Relaxed) {
-            let live = {
-                let mut planes = live_planes.lock().expect("source memory gate");
-                planes.retain(|plane| plane.strong_count() != 0);
-                !planes.is_empty()
-            };
-            if !live {
-                break;
-            }
-            thread::sleep(Duration::from_millis(25));
+        ) {
+            gate.wait_released(&task.cancelled);
         }
         if task.cancelled.load(Ordering::Relaxed) {
             let _ = owner.send(OwnerMessage::SourceComplete(
@@ -698,7 +707,7 @@ fn source_worker(
             break;
         }
         hold.wait();
-        let result = match task.kind {
+        let mut result = match task.kind {
             SourceTaskKind::File(target) => EditorService::prepare_file_cancel(
                 &task.key.path,
                 target.as_deref(),
@@ -741,20 +750,17 @@ fn source_worker(
                 artifacts::collect_files(&collection, &task.cancelled).map(SourceResult::Collected)
             }
         };
-        if let Ok(ref prepared) = result {
+        if let Ok(prepared) = &mut result {
             let raw = match prepared {
-                SourceResult::File(file, _) => match &file.source {
+                SourceResult::File(file, _) => match &mut file.source {
                     crate::source::PreparedSource::Raw(raw) => Some(raw),
                     _ => None,
                 },
                 SourceResult::Develop(_, raw, _) => Some(raw),
                 SourceResult::Artifacts(..) | SourceResult::Collected(_) => None,
             };
-            if let Some(raw) = raw.and_then(|raw| raw.linear.as_ref()) {
-                live_planes
-                    .lock()
-                    .expect("source memory gate")
-                    .push(raw.storage_weak());
+            if let Some(linear) = raw.and_then(|raw| raw.linear.as_mut()) {
+                linear.hold(gate.lease());
             }
         }
         // The activity ends before the owner learns the result, so a client that reads the job as
@@ -906,16 +912,11 @@ impl OwnerHandle {
         let (sender, receiver) = sync_channel(64);
         let (source_sender, source_receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
         let worker_sender = sender.clone();
-        let live_planes = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new(PlaneGate::default());
+        let jobs = SourceJobs::new(source_sender, gate.clone());
         let worker_activity = activity.clone();
         let worker = std::thread::spawn(move || {
-            source_worker(
-                source_receiver,
-                worker_sender,
-                live_planes,
-                worker_activity,
-                hold,
-            )
+            source_worker(source_receiver, worker_sender, gate, worker_activity, hold)
         });
         // The analysis worker posts its results back through this same channel, so the owner needs
         // one clone of its own sender. The loop ends on `Stop`, never on the senders dropping.
@@ -936,7 +937,7 @@ impl OwnerHandle {
                 host,
                 completions,
                 receiver,
-                source_sender,
+                jobs,
                 worker,
                 owner_activity,
             )
@@ -1040,7 +1041,7 @@ fn owner_loop(
     host: CapabilityHost,
     completions: SyncSender<OwnerMessage>,
     receiver: Receiver<OwnerMessage>,
-    source_sender: SyncSender<SourceTask>,
+    jobs: SourceJobs,
     worker: JoinHandle<()>,
     activity: Arc<ActivityBoard>,
 ) {
@@ -1054,12 +1055,7 @@ fn owner_loop(
     let mut owner = Owner {
         service,
         host,
-        jobs: SourceJobs {
-            sender: source_sender,
-            jobs: HashMap::new(),
-            active: HashMap::new(),
-            completed: VecDeque::new(),
-        },
+        jobs,
         sessions: HashMap::new(),
         analyses: AnalysisStore::default(),
         queue,
@@ -1114,6 +1110,7 @@ fn owner_loop(
     for job in owner.jobs.jobs.values() {
         job.cancelled.store(true, Ordering::Relaxed);
     }
+    owner.jobs.gate.wake();
     let Owner { jobs, mut host, .. } = owner;
     drop(jobs);
     // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
@@ -2045,12 +2042,7 @@ mod tests {
         let a = request(&first_path, first_sensor);
         let b = request(&second_path, second_sensor);
         let (sender, receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
-        let mut jobs = SourceJobs {
-            sender,
-            jobs: HashMap::new(),
-            active: HashMap::new(),
-            completed: VecDeque::new(),
-        };
+        let mut jobs = SourceJobs::new(sender, Arc::default());
         let first = jobs
             .enqueue_development(ClientId(1), a.clone(), Vec::new())
             .unwrap();
@@ -2075,12 +2067,7 @@ mod tests {
     #[test]
     fn pending_source_jobs_deduplicate_and_cancellation_keeps_other_waiters() {
         let (sender, _receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
-        let mut jobs = SourceJobs {
-            sender,
-            jobs: HashMap::new(),
-            active: HashMap::new(),
-            completed: VecDeque::new(),
-        };
+        let mut jobs = SourceJobs::new(sender, Arc::default());
         let first = ClientId(1);
         let second = ClientId(2);
         let id = jobs.enqueue(first, fixture(), None, Vec::new()).unwrap();
@@ -2101,12 +2088,7 @@ mod tests {
     #[test]
     fn changed_signature_starts_a_new_flight_instead_of_attaching_to_old_bytes() {
         let (sender, _receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
-        let mut jobs = SourceJobs {
-            sender,
-            jobs: HashMap::new(),
-            active: HashMap::new(),
-            completed: VecDeque::new(),
-        };
+        let mut jobs = SourceJobs::new(sender, Arc::default());
         let path = temp("source-flight-changed.jpg");
         std::fs::copy(fixture(), &path).unwrap();
         let first = jobs

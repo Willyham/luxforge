@@ -10,7 +10,7 @@ use std::{
     io::{Cursor, Read, Seek, SeekFrom},
     path::Path,
     sync::{
-        Arc,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -394,6 +394,85 @@ pub(crate) fn neutral_at(raw: &RawPrepared, x: u32, y: u32) -> Result<[f32; 3], 
     raw.sensor.neutral_gains_at(x, y).map_err(raw_error)
 }
 
+/// The source worker's memory gate: before it allocates another RAW development, the worker waits
+/// until every development it produced earlier has been released by the caches and previews that
+/// held it. Each adopted development carries a [`PlaneLease`], shared by every view and clone of
+/// its planes; the last one dropping wakes the worker. A cancelled job wakes it through
+/// [`Self::wake`]. Nothing polls.
+#[derive(Default)]
+pub(crate) struct PlaneGate {
+    live: Mutex<usize>,
+    released: Condvar,
+}
+
+impl PlaneGate {
+    fn live(&self) -> MutexGuard<'_, usize> {
+        self.live.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// A hold on the gate for one development's planes, released when it drops.
+    pub(crate) fn lease(self: &Arc<Self>) -> PlaneLease {
+        *self.live() += 1;
+        PlaneLease(Arc::clone(self))
+    }
+
+    /// Block until no leased planes remain, or until `stop` is set and [`Self::wake`] called.
+    /// Returns whether it stopped.
+    pub(crate) fn wait_released(&self, stop: &AtomicBool) -> bool {
+        let mut live = self.live();
+        while *live > 0 && !stop.load(Ordering::Relaxed) {
+            live = self
+                .released
+                .wait(live)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        stop.load(Ordering::Relaxed)
+    }
+
+    /// Wake a waiting worker to look at its job's stop flag again, after setting it. Taking the
+    /// lock first means a worker that has just read the flag is already waiting when this notifies.
+    pub(crate) fn wake(&self) {
+        let _live = self.live();
+        self.released.notify_all();
+    }
+}
+
+/// One development's hold on the [`PlaneGate`].
+pub(crate) struct PlaneLease(Arc<PlaneGate>);
+
+impl Drop for PlaneLease {
+    fn drop(&mut self) {
+        let mut live = self.0.live();
+        *live -= 1;
+        if *live == 0 {
+            self.0.released.notify_all();
+        }
+    }
+}
+
+/// Where a [`LinearImage`] keeps its development's [`PlaneLease`], shared by every view and clone.
+/// Bookkeeping, not content: it never makes two images unequal.
+#[derive(Clone, Default)]
+pub(crate) struct PlanesHeld(Option<Arc<PlaneLease>>);
+
+impl PlanesHeld {
+    pub(crate) fn new(lease: PlaneLease) -> Self {
+        Self(Some(Arc::new(lease)))
+    }
+}
+
+impl PartialEq for PlanesHeld {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for PlanesHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "held" } else { "unheld" })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +482,68 @@ mod tests {
     };
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
+
+    /// The gate opens when the last view of a held development drops, on whichever thread drops
+    /// it, and a stop wakes it while planes are still held. Waits are bounded by a watchdog so a
+    /// lost wake-up fails the test rather than hanging it.
+    #[test]
+    fn plane_gate_opens_on_the_last_release_and_on_a_stop() {
+        let gate = Arc::new(PlaneGate::default());
+        let never = AtomicBool::new(false);
+        assert!(!gate.wait_released(&never), "an idle gate is open");
+
+        let mut image = LinearImage::new(2, 1, vec![0.0; 6]).unwrap();
+        image.hold(gate.lease());
+        let view = image.with_view([1, 0, 1, 1], 6).unwrap();
+        let clone = image.clone();
+        assert_eq!(clone, image, "a hold is not image content");
+        drop(image);
+        drop(clone);
+        let (done, finished) = std::sync::mpsc::channel();
+        let waiter = {
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                let stopped = gate.wait_released(&AtomicBool::new(false));
+                done.send(stopped).unwrap();
+            })
+        };
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "the gate waits while a view is alive"
+        );
+        std::thread::spawn(move || drop(view)).join().unwrap();
+        let stopped = finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the last release wakes the worker");
+        assert!(!stopped);
+        waiter.join().unwrap();
+
+        let mut held = LinearImage::new(1, 1, vec![0.0; 3]).unwrap();
+        held.hold(gate.lease());
+        let stop = Arc::new(AtomicBool::new(false));
+        let (done, finished) = std::sync::mpsc::channel();
+        let waiter = {
+            let (gate, stop) = (gate.clone(), stop.clone());
+            std::thread::spawn(move || done.send(gate.wait_released(&stop)).unwrap())
+        };
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err()
+        );
+        stop.store(true, Ordering::Relaxed);
+        gate.wake();
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("a stop wakes the worker")
+        );
+        waiter.join().unwrap();
+        drop(held);
+        assert!(!gate.wait_released(&never));
+    }
 
     fn scalar_camera_reference(mut planes: Vec<f32>, n: usize, matrix: &[[f32; 4]; 3]) -> Vec<f32> {
         for i in 0..n {
