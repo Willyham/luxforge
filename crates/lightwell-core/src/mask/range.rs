@@ -170,42 +170,26 @@ pub(super) fn luminance_parameters(required: bool) -> Vec<ParameterDescriptor> {
 }
 
 fn level(name: &str, required: bool, default: f64, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        unit: Some("%".to_owned()),
-        step: Some(1.0),
-        precision: Some(1),
-        fine_step: Some(0.1),
-        default: Some(serde_json::json!(default)),
-        ..super::parameters::parameter(
-            name,
-            crate::ParameterKind::Number {
-                min: LEVEL_MIN,
-                max: LEVEL_MAX,
-            },
-            required,
-            notes,
-        )
-    }
+    ParameterDescriptor::number(name, LEVEL_MIN, LEVEL_MAX)
+        .required(required)
+        .notes(notes)
+        .unit("%")
+        .step(1.0)
+        .precision(1)
+        .fine_step(0.1)
+        .default(default)
 }
 
 fn feather(name: &str, required: bool, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        unit: Some("%".to_owned()),
-        step: Some(1.0),
-        precision: Some(1),
-        fine_step: Some(0.1),
-        zero: Some(0.0),
-        default: Some(serde_json::json!(FEATHER_DEFAULT)),
-        ..super::parameters::parameter(
-            name,
-            crate::ParameterKind::Number {
-                min: 0.0,
-                max: RANGE_FEATHER_MAX,
-            },
-            required,
-            notes,
-        )
-    }
+    ParameterDescriptor::number(name, 0.0, RANGE_FEATHER_MAX)
+        .required(required)
+        .notes(notes)
+        .unit("%")
+        .step(1.0)
+        .precision(1)
+        .fine_step(0.1)
+        .zero(0.0)
+        .default(FEATHER_DEFAULT)
 }
 
 /// Parse and range-check one stored `luminance-range` payload. Nothing here depends on a stage: the
@@ -391,25 +375,21 @@ pub struct ColourRange {
 /// sampled colours cannot be declared honestly as one field; it is edited by the two generated
 /// sample methods instead, one swatch at a time, which is also how a person edits it.
 pub(super) fn colour_parameters(required: bool) -> Vec<ParameterDescriptor> {
-    vec![ParameterDescriptor {
-        unit: Some("%".to_owned()),
-        step: Some(1.0),
-        precision: Some(1),
-        fine_step: Some(0.1),
-        zero: Some(REFINE_DEFAULT),
-        default: Some(serde_json::json!(REFINE_DEFAULT)),
-        ..super::parameters::parameter(
-            "refine",
-            crate::ParameterKind::Number {
-                min: REFINE_MIN,
-                max: REFINE_MAX,
-            },
-            required,
-            "how tight the selection around each sampled colour is; a higher refine is always a \
-             narrower selection, geometrically between a whole colour family at 0 and one flat \
-             patch at 100",
-        )
-    }]
+    vec![
+        ParameterDescriptor::number("refine", REFINE_MIN, REFINE_MAX)
+            .required(required)
+            .notes(
+                "how tight the selection around each sampled colour is; a higher refine is always \
+                 a narrower selection, geometrically between a whole colour family at 0 and one \
+                 flat patch at 100",
+            )
+            .unit("%")
+            .step(1.0)
+            .precision(1)
+            .fine_step(0.1)
+            .zero(REFINE_DEFAULT)
+            .default(REFINE_DEFAULT),
+    ]
 }
 
 /// The parameters one sampled colour declares: a linear-sRGB triple in the domain of the operation
@@ -417,24 +397,20 @@ pub(super) fn colour_parameters(required: bool) -> Vec<ParameterDescriptor> {
 pub(super) fn colour_sample_parameters() -> Vec<ParameterDescriptor> {
     ["r", "g", "b"]
         .into_iter()
-        .map(|name| ParameterDescriptor {
-            unit: Some("lin".to_owned()),
-            step: Some(0.01),
-            precision: Some(6),
-            soft_min: Some(0.0),
-            soft_max: Some(1.0),
-            fine_step: Some(0.001),
-            ..super::parameters::parameter(
-                name,
-                crate::ParameterKind::Number {
-                    min: SAMPLE_MIN,
-                    max: SAMPLE_MAX,
-                },
-                true,
-                "one channel of the sampled colour, in linear sRGB in the domain of the operation \
-                 this mask modulates — the value a pick on the canvas reads from the stage that \
-                 operation receives",
-            )
+        .map(|name| {
+            ParameterDescriptor::number(name, SAMPLE_MIN, SAMPLE_MAX)
+                .required(true)
+                .notes(
+                    "one channel of the sampled colour, in linear sRGB in the domain of the \
+                     operation this mask modulates — the value a pick on the canvas reads from \
+                     the stage that operation receives",
+                )
+                .unit("lin")
+                .step(0.01)
+                .precision(6)
+                .soft_min(0.0)
+                .soft_max(1.0)
+                .fine_step(0.001)
         })
         .collect()
 }

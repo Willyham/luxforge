@@ -494,19 +494,10 @@ struct Composer(ModuleDescriptor);
 
 impl Composer {
     fn shared() -> Arc<dyn ToolModule> {
-        let parameter = |name: &str, kind: ParameterKind| ParameterDescriptor {
-            name: name.into(),
-            kind,
-            required: true,
-            default: None,
-            unit: None,
-            step: None,
-            precision: None,
-            notes: "test".into(),
-            soft_min: None,
-            soft_max: None,
-            fine_step: None,
-            zero: None,
+        let parameter = |name: &str, kind: ParameterKind| {
+            ParameterDescriptor::new(name, kind)
+                .required(true)
+                .notes("test")
         };
         Arc::new(Self(ModuleDescriptor {
             id: "test.composer".into(),

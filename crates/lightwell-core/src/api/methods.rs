@@ -1928,8 +1928,8 @@ mod tests {
     use crate::api::ApiResponse;
     use crate::{
         ActionInput, ActionPlan, Availability, EFFECT_FORMAT, EffectDescriptor, EffectStage,
-        ExactGeometry, ModuleDescriptor, ParameterDescriptor, ParameterKind, Processing, Stage,
-        StageContext, ToolModule,
+        ExactGeometry, ModuleDescriptor, ParameterDescriptor, Processing, Stage, StageContext,
+        ToolModule,
         modules::{PATCH_ACTION, PATCH_MODULE, PatchModule},
     };
     use std::{
@@ -2731,23 +2731,12 @@ mod tests {
                     notes: "test".into(),
                     summary: Some("Angle {angle}".into()),
                     patch: false,
-                    parameters: vec![ParameterDescriptor {
-                        name: "angle".into(),
-                        kind: ParameterKind::Number {
-                            min: -45.0,
-                            max: 45.0,
-                        },
-                        required: true,
-                        default: None,
-                        unit: Some("deg".into()),
-                        step: None,
-                        precision: None,
-                        notes: "test".into(),
-                        soft_min: None,
-                        soft_max: None,
-                        fine_step: None,
-                        zero: None,
-                    }],
+                    parameters: vec![
+                        ParameterDescriptor::number("angle", -45.0, 45.0)
+                            .required(true)
+                            .unit("deg")
+                            .notes("test"),
+                    ],
                 }],
                 queries: Vec::new(),
                 controls: Vec::new(),
@@ -3216,23 +3205,9 @@ mod tests {
         );
 
         // And the kind itself serializes flat, as every other parameter kind does.
-        let declared = crate::ParameterDescriptor {
-            name: "path".into(),
-            kind: crate::ParameterKind::Points {
-                points_min: 1,
-                points_max: 512,
-            },
-            required: true,
-            default: None,
-            unit: None,
-            step: None,
-            precision: None,
-            soft_min: None,
-            soft_max: None,
-            fine_step: None,
-            zero: None,
-            notes: "the drawn path".into(),
-        };
+        let declared = ParameterDescriptor::points("path", 1, 512)
+            .required(true)
+            .notes("the drawn path");
         let listed_kind = serde_json::to_value(&declared).unwrap();
         assert_eq!(listed_kind["kind"], json!("points"));
         assert_eq!(listed_kind["points_min"], json!(1));

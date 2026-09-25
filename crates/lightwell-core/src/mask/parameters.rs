@@ -12,53 +12,22 @@
 //! when the legal range is wider than the range a person works in. A hint is a hint: the host
 //! validates it is finite and positive and stores it, and never rounds a request to it.
 use super::{DISTANCE_MAX, DISTANCE_MIN, POSITION_MAX, POSITION_MIN};
-use crate::{ParameterDescriptor, ParameterKind};
-
-/// The plain descriptor every shape below specializes: no default, no unit and no display hint.
-pub(super) fn parameter(
-    name: &str,
-    kind: ParameterKind,
-    required: bool,
-    notes: &str,
-) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.to_owned(),
-        kind,
-        required,
-        default: None,
-        unit: None,
-        step: None,
-        precision: None,
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-        notes: notes.to_owned(),
-    }
-}
+use crate::ParameterDescriptor;
 
 /// One normalized stored position: a fraction of the content stage, with one stage extent of
 /// overshoot legal on each side, because a gradient dragged from off the canvas and a radial centred
 /// outside the frame are ordinary edits. The soft range is the frame itself, so a slider spans what
 /// a person works in while a number field still reaches the overshoot.
 pub(super) fn position(name: &str, required: bool, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        unit: Some("frame".to_owned()),
-        step: Some(0.01),
-        precision: Some(4),
-        soft_min: Some(0.0),
-        soft_max: Some(1.0),
-        fine_step: Some(0.001),
-        ..parameter(
-            name,
-            ParameterKind::Number {
-                min: POSITION_MIN,
-                max: POSITION_MAX,
-            },
-            required,
-            notes,
-        )
-    }
+    ParameterDescriptor::number(name, POSITION_MIN, POSITION_MAX)
+        .required(required)
+        .notes(notes)
+        .unit("frame")
+        .step(0.01)
+        .precision(4)
+        .soft_min(0.0)
+        .soft_max(1.0)
+        .fine_step(0.001)
 }
 
 /// One stored distance in mask-space units, where one unit is the content stage's **height** on both
@@ -66,23 +35,15 @@ pub(super) fn position(name: &str, required: bool, notes: &str) -> ParameterDesc
 /// falloff takes and the ceiling covers the whole stage from any point; the soft range is the part
 /// of it a drawn shape occupies.
 pub(super) fn distance(name: &str, required: bool, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        unit: Some("h".to_owned()),
-        step: Some(0.01),
-        precision: Some(4),
-        soft_min: Some(0.01),
-        soft_max: Some(1.0),
-        fine_step: Some(0.001),
-        ..parameter(
-            name,
-            ParameterKind::Number {
-                min: DISTANCE_MIN,
-                max: DISTANCE_MAX,
-            },
-            required,
-            notes,
-        )
-    }
+    ParameterDescriptor::number(name, DISTANCE_MIN, DISTANCE_MAX)
+        .required(required)
+        .notes(notes)
+        .unit("h")
+        .step(0.01)
+        .precision(4)
+        .soft_min(0.01)
+        .soft_max(1.0)
+        .fine_step(0.001)
 }
 
 /// One stored angle in degrees over a single turn, so two payloads that draw the same shape compare
@@ -94,14 +55,14 @@ pub(super) fn angle(
     max: f64,
     notes: &str,
 ) -> ParameterDescriptor {
-    ParameterDescriptor {
-        unit: Some("deg".to_owned()),
-        step: Some(1.0),
-        precision: Some(2),
-        fine_step: Some(0.1),
-        zero: Some(0.0),
-        ..parameter(name, ParameterKind::Number { min, max }, required, notes)
-    }
+    ParameterDescriptor::number(name, min, max)
+        .required(required)
+        .notes(notes)
+        .unit("deg")
+        .step(1.0)
+        .precision(2)
+        .fine_step(0.1)
+        .zero(0.0)
 }
 
 /// One stored percentage, the spelling every 0..100 slider in the editor already takes.
@@ -113,12 +74,12 @@ pub(super) fn percentage(
     zero: f64,
     notes: &str,
 ) -> ParameterDescriptor {
-    ParameterDescriptor {
-        unit: Some("%".to_owned()),
-        step: Some(1.0),
-        precision: Some(1),
-        fine_step: Some(0.1),
-        zero: Some(zero),
-        ..parameter(name, ParameterKind::Number { min, max }, required, notes)
-    }
+    ParameterDescriptor::number(name, min, max)
+        .required(required)
+        .notes(notes)
+        .unit("%")
+        .step(1.0)
+        .precision(1)
+        .fine_step(0.1)
+        .zero(zero)
 }

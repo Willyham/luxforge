@@ -7,8 +7,8 @@ use super::{
 use crate::{
     ActionDescriptor, Availability, Component, ComponentMode, EFFECT_FORMAT, EffectDescriptor,
     EffectStage, EntryId, Error, ErrorKind, ExactGeometry, HistoryEntry, LayerId, Mask,
-    ModuleDescriptor, ModuleRegistry, Mutation, ParameterDescriptor, ParameterKind, Processing,
-    Recipe, Snapshot, SnapshotId, Stage, ToolModule,
+    ModuleDescriptor, ModuleRegistry, Mutation, ParameterDescriptor, Processing, Recipe, Snapshot,
+    SnapshotId, Stage, ToolModule,
     modules::{ActionInput, ActionPlan, LayerUpdate, NewLayer, StageContext},
 };
 use rusqlite::{Connection, params};
@@ -147,19 +147,11 @@ pub(super) struct ShrinkModule(ModuleDescriptor);
 
 impl ShrinkModule {
     fn new() -> Self {
-        let extent = |name: &str| ParameterDescriptor {
-            name: name.into(),
-            kind: ParameterKind::Integer { min: 1, max: 16383 },
-            required: true,
-            default: None,
-            unit: Some("px".into()),
-            step: None,
-            precision: None,
-            notes: "test".into(),
-            soft_min: None,
-            soft_max: None,
-            fine_step: None,
-            zero: None,
+        let extent = |name: &str| {
+            ParameterDescriptor::integer(name, 1, 16383)
+                .required(true)
+                .unit("px")
+                .notes("test")
         };
         let action = |id: &str| ActionDescriptor {
             id: id.into(),

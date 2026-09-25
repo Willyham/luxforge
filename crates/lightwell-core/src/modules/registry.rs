@@ -1337,22 +1337,13 @@ pub(crate) mod tests {
 
     impl PatchModule {
         pub(crate) fn shared() -> Arc<dyn ToolModule> {
-            let channel = |name: &str| crate::ParameterDescriptor {
-                name: name.into(),
-                kind: crate::ParameterKind::Number {
-                    min: 0.0,
-                    max: 255.0,
-                },
-                required: false,
-                default: Some(json!(0.0)),
-                unit: Some("code".into()),
-                step: Some(1.0),
-                precision: Some(0),
-                notes: format!("the {name} channel of the replaced pixel"),
-                soft_min: None,
-                soft_max: None,
-                fine_step: None,
-                zero: None,
+            let channel = |name: &str| {
+                crate::ParameterDescriptor::number(name, 0.0, 255.0)
+                    .default(json!(0.0))
+                    .unit("code")
+                    .step(1.0)
+                    .precision(0)
+                    .notes(format!("the {name} channel of the replaced pixel"))
             };
             Arc::new(Self(ModuleDescriptor {
                 id: PATCH_MODULE.into(),
@@ -1850,19 +1841,10 @@ pub(crate) mod tests {
 
     /// A module whose canvas claims one mode-strip letter.
     fn shortcut_module(id: &str, effect: &str, action: &str, letter: &str) -> Arc<dyn ToolModule> {
-        let coordinate = |name: &str| crate::ParameterDescriptor {
-            name: name.into(),
-            kind: crate::ParameterKind::Integer { min: 0, max: 100 },
-            required: true,
-            default: None,
-            unit: None,
-            step: None,
-            precision: None,
-            notes: "test".into(),
-            soft_min: None,
-            soft_max: None,
-            fine_step: None,
-            zero: None,
+        let coordinate = |name: &str| {
+            crate::ParameterDescriptor::integer(name, 0, 100)
+                .required(true)
+                .notes("test")
         };
         let mut descriptor = TestModule::new(id, effect, action, Availability::Available).0;
         descriptor.actions[0].parameters = vec![coordinate("x"), coordinate("y")];

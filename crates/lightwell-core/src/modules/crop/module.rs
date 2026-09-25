@@ -9,8 +9,7 @@ use crate::{
     modules::{
         ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction,
         EffectDescriptor, EffectStage, ExactGeometry, LayerUpdate, ModuleDescriptor, NewLayer,
-        ParameterDescriptor, ParameterKind, Processing, Resample, ResetAction, Stage, StageContext,
-        ToolModule,
+        ParameterDescriptor, Processing, Resample, ResetAction, Stage, StageContext, ToolModule,
     },
 };
 use serde_json::{Map, Value};
@@ -67,81 +66,29 @@ fn aspect_options() -> Vec<String> {
 }
 
 fn angle_parameter() -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: "angle".into(),
-        kind: ParameterKind::Number {
-            min: MIN_ANGLE,
-            max: MAX_ANGLE,
-        },
-        required: false,
-        default: Some(Value::from(0.0)),
-        unit: Some("deg".into()),
-        step: None,
-        precision: None,
-        notes: "straightening angle, positive turns the image clockwise on screen".into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
+    ParameterDescriptor::number("angle", MIN_ANGLE, MAX_ANGLE)
+        .default(0.0)
+        .unit("deg")
+        .notes("straightening angle, positive turns the image clockwise on screen")
 }
 
 fn rectangle_parameter(name: &str, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Number { min: 0.0, max: 1.0 },
-        required: true,
-        default: None,
-        unit: Some("box".into()),
-        step: None,
-        precision: None,
-        notes: notes.into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
+    ParameterDescriptor::number(name, 0.0, 1.0)
+        .required(true)
+        .unit("box")
+        .notes(notes)
 }
 
 fn aspect_side(name: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Number {
-            min: MIN_ASPECT_SIDE,
-            max: MAX_ASPECT_SIDE,
-        },
-        required: false,
-        default: None,
-        unit: None,
-        step: None,
-        precision: None,
-        notes: format!(
-            "the {name} of a custom ratio; required with aspect custom and rejected with any other aspect"
-        ),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
+    ParameterDescriptor::number(name, MIN_ASPECT_SIDE, MAX_ASPECT_SIDE).notes(format!(
+        "the {name} of a custom ratio; required with aspect custom and rejected with any other aspect"
+    ))
 }
 
 fn center_parameter(name: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Number { min: 0.0, max: 1.0 },
-        required: false,
-        default: None,
-        unit: Some("box".into()),
-        step: None,
-        precision: None,
-        notes: format!(
-            "{name} of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither"
-        ),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
+    ParameterDescriptor::number(name, 0.0, 1.0).unit("box").notes(format!(
+        "{name} of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither"
+    ))
 }
 
 #[derive(Debug)]
@@ -207,21 +154,12 @@ parameters: vec![
                         summary: Some("Crop {aspect}".into()),
                         patch: false,
 parameters: vec![
-                            ParameterDescriptor {
-                                name: "aspect".into(),
-                                kind: ParameterKind::Enum {
-                                    options: aspect_options(),
-                                },
-                                required: false,
-                                default: Some(Value::from(FREE)),
-                                unit: None,
-                                step: None, precision: None,
-notes: "free keeps the existing crop's ratio, or the input stage's without a crop; original is the input stage ratio".into(),
-                                soft_min: None,
-                                soft_max: None,
-                                fine_step: None,
-                                zero: None,
-                            },
+                            ParameterDescriptor::enumeration("aspect", aspect_options())
+                                .default(FREE)
+                                .notes(
+                                    "free keeps the existing crop's ratio, or the input stage's \
+                                     without a crop; original is the input stage ratio",
+                                ),
                             aspect_side("aspect-width"),
                             aspect_side("aspect-height"),
                             angle_parameter(),
@@ -672,7 +610,10 @@ impl ToolModule for CropModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, modules::check_parameters};
+    use crate::{
+        ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT,
+        modules::{ParameterKind, check_parameters},
+    };
     use serde_json::json;
 
     const INPUT: Stage = Stage {

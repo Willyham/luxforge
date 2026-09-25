@@ -2,7 +2,7 @@
 //! what it names when it refuses, that decimation is deterministic and bounded, that a stroke's
 //! address is its contents, and that a broken reference is never an empty stroke.
 use super::*;
-use crate::{ParameterDescriptor, ParameterKind, modules::check_value};
+use crate::{ParameterDescriptor, modules::check_value};
 use serde_json::json;
 
 /// A small, fixed linear congruential generator, so "randomized" here means a lot of different
@@ -26,23 +26,9 @@ impl Rng {
 }
 
 fn points_parameter(points_min: usize, points_max: usize) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: "path".into(),
-        kind: ParameterKind::Points {
-            points_min,
-            points_max,
-        },
-        required: true,
-        default: None,
-        unit: None,
-        step: None,
-        precision: None,
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-        notes: "the drawn path".into(),
-    }
+    ParameterDescriptor::points("path", points_min, points_max)
+        .required(true)
+        .notes("the drawn path")
 }
 
 /// A captured drag: a smooth arc with a little jitter on it, which is what a pointer produces and

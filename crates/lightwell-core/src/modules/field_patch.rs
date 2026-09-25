@@ -19,9 +19,8 @@
 
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
-    EffectDescriptor, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer, NumberStyle,
-    ParameterDescriptor, ParameterKind, Processing, RailDecoration, ResetAction, Stage,
-    StageContext, ToolModule,
+    EffectDescriptor, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer, ParameterDescriptor,
+    Processing, RailDecoration, ResetAction, Stage, StageContext, ToolModule,
 };
 use crate::{Error, ErrorKind};
 use serde_json::{Map, Number, Value};
@@ -88,21 +87,13 @@ impl Field {
 
     fn parameter(&self) -> ParameterDescriptor {
         ParameterDescriptor {
-            name: self.name.into(),
-            kind: ParameterKind::Number {
-                min: self.min,
-                max: self.max,
-            },
-            required: false,
-            default: Some(number(self.default)),
             unit: self.unit.map(Into::into),
-            step: Some(self.step),
-            precision: Some(self.precision),
-            notes: self.notes.clone(),
-            soft_min: None,
-            soft_max: None,
-            fine_step: None,
             zero: self.zero,
+            ..ParameterDescriptor::number(self.name, self.min, self.max)
+                .default(self.default)
+                .step(self.step)
+                .precision(self.precision)
+                .notes(self.notes.clone())
         }
     }
 
@@ -171,20 +162,28 @@ impl Spec {
     }
 
     fn descriptor(&self) -> ModuleDescriptor {
-        let slider = |field: &Field| Control::Number {
-            action: self.set.id.into(),
-            parameter: field.name.into(),
-            label: field.label.clone(),
-            style: NumberStyle::Slider,
-            rail: field.rail.clone(),
-            reset: None,
+        let slider = |field: &Field| {
+            let control = Control::number(self.set.id, field.name, field.label.clone());
+            match field.rail.clone() {
+                Some(rail) => control.rail(rail),
+                None => control,
+            }
         };
         let controls = self
             .groups
             .iter()
-            .map(|group| Control::Group {
-                label: group.label.into(),
-                reset: Some(ResetAction {
+            .map(|group| {
+                Control::group(
+                    group.label,
+                    group
+                        .fields
+                        .iter()
+                        .filter_map(|name| self.field(name))
+                        .map(slider)
+                        .chain(group.extra.iter().cloned())
+                        .collect(),
+                )
+                .field_reset(ResetAction {
                     action: self.set.id.into(),
                     preset: group
                         .fields
@@ -192,15 +191,8 @@ impl Spec {
                         .filter_map(|name| self.field(name))
                         .map(|field| (field.name.to_owned(), number(field.default)))
                         .collect(),
-                }),
-                controls: group
-                    .fields
-                    .iter()
-                    .filter_map(|name| self.field(name))
-                    .map(slider)
-                    .chain(group.extra.iter().cloned())
-                    .collect(),
-                collapsed: group.collapsed,
+                })
+                .collapsed(group.collapsed)
             })
             .collect();
         ModuleDescriptor {

@@ -26,7 +26,7 @@ mod white_balance;
 
 use super::{
     ActionDescriptor, CanvasInteraction, ColorOperation, Control, EffectDescriptor, EffectStage,
-    ParameterDescriptor, ParameterKind, PointwiseColor, Processing, Stage, StageContext,
+    ParameterDescriptor, PointwiseColor, Processing, Stage, StageContext,
     field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
 use crate::{EFFECT_FORMAT, Error, ErrorKind};
@@ -101,36 +101,6 @@ fn white_balance(name: &'static str, label: &str, notes: &str) -> Field {
         ..Field::slider(name, label, notes)
     }
 }
-
-/// The neutral picker's coordinates, in the content stage the Basic layer's input addresses. The
-/// declared bound is the host's own maximum side, because a query's descriptor cannot know the
-/// stage a particular asset produces; a point outside the actual stage is refused when it is asked.
-fn sample_coordinate(name: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Integer {
-            min: 0,
-            max: MAX_COORDINATE,
-        },
-        required: true,
-        default: None,
-        unit: Some("px".into()),
-        step: None,
-        precision: None,
-        notes: format!(
-            "the {name} coordinate, in pixels of the stage the Basic layer receives: the content \
-             stage, the source after EXIF orientation plus any pixel replacement before it. Map a \
-             rendered pixel to it with render.locate"
-        ),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
-}
-
-/// The largest coordinate a query accepts, matching the host's maximum image side.
-const MAX_COORDINATE: i64 = 16383;
 
 /// The Basic module's table, compilation and neutral picker.
 #[derive(Debug, Default)]
@@ -237,9 +207,7 @@ impl FieldPatch for Basic {
                     fields: vec![TEMPERATURE, TINT],
                     collapsed: false,
                     // The neutral picker, beside the two fields a pick sets.
-                    extra: vec![Control::Picker {
-                        label: NEUTRAL_PICKER_LABEL.into(),
-                    }],
+                    extra: vec![Control::picker(NEUTRAL_PICKER_LABEL)],
                 },
                 Group {
                     label: "Tone",
@@ -260,7 +228,17 @@ impl FieldPatch for Basic {
                 notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed".into(),
                 summary: None,
                 patch: false,
-                parameters: vec![sample_coordinate("x"), sample_coordinate("y")],
+                // The neutral picker's coordinates, in the content stage the Basic layer's input
+                // addresses; a point outside that stage is refused when it is asked.
+                parameters: ["x", "y"]
+                    .map(|name| {
+                        ParameterDescriptor::pixel_coordinate(name).notes(format!(
+                            "the {name} coordinate, in pixels of the stage the Basic layer receives: \
+                             the content stage, the source after EXIF orientation plus any pixel \
+                             replacement before it. Map a rendered pixel to it with render.locate"
+                        ))
+                    })
+                    .into(),
             }],
             // The neutral picker: a pick runs the query at the content pixel behind it and submits
             // the settings it returns to `set-basic` once. A refusal commits nothing.
@@ -403,7 +381,7 @@ impl FieldPatch for Basic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::{ActionInput, ActionPlan, ResetAction, ToolModule};
+    use crate::modules::{ActionInput, ActionPlan, ParameterKind, ResetAction, ToolModule};
     use crate::{Layer, LayerId};
     use crate::{ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, modules::check_parameters};
     use serde_json::json;

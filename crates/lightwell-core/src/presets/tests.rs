@@ -2,7 +2,7 @@
 //! fixture asserts the exact settings, the exact report, reasons included, and the origin.
 use super::*;
 use crate::modules::TestModule;
-use crate::{ActionDescriptor, Availability, ModuleDescriptor, ParameterDescriptor, ParameterKind};
+use crate::{ActionDescriptor, Availability, ModuleDescriptor, ParameterDescriptor};
 use serde_json::json;
 use std::time::Instant;
 
@@ -990,20 +990,7 @@ fn validate_settings_accepts_presettable_fields_and_refuses_everything_else() {
 
 #[test]
 fn validate_settings_refuses_an_unavailable_provider() {
-    let parameter = ParameterDescriptor {
-        name: "amount".into(),
-        kind: ParameterKind::Number { min: 0.0, max: 1.0 },
-        required: false,
-        default: None,
-        unit: None,
-        step: None,
-        precision: None,
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-        notes: "test".into(),
-    };
+    let parameter = ParameterDescriptor::number("amount", 0.0, 1.0).notes("test");
     let descriptor = ModuleDescriptor {
         id: "test.away".into(),
         title: "Away".into(),

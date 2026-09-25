@@ -36,10 +36,10 @@ pub use crop::{CROP_EFFECT, CropModule};
 pub(crate) use descriptor::title_case;
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
-    Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, MAX_SETTINGS_ACTIONS,
-    MAX_SETTINGS_FIELDS, ModuleDescriptor, ModuleLayout, NumberStyle, ParameterDescriptor,
-    ParameterKind, RailDecoration, ResetAction, action_label, check_parameters, check_value,
-    render_summary, valid_identity, valid_name,
+    Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, MAX_COORDINATE,
+    MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, ModuleDescriptor, ModuleLayout, NumberStyle,
+    ParameterDescriptor, ParameterKind, RailDecoration, ResetAction, action_label,
+    check_parameters, check_value, render_summary, valid_identity, valid_name,
 };
 pub(crate) use descriptor::{check_declared_values, check_parameter_declarations};
 pub use mixer::{MIXER_EFFECT, MixerModule};

@@ -3,7 +3,7 @@
 //! quarter-turns, reflections and crop after it carry the edit instead of moving it.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
-    EffectDescriptor, EffectStage, ModuleDescriptor, NewLayer, ParameterDescriptor, ParameterKind,
+    EffectDescriptor, EffectStage, MAX_COORDINATE, ModuleDescriptor, NewLayer, ParameterDescriptor,
     Processing, Stage, StageContext, ToolModule,
 };
 use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, PixelReplace};
@@ -23,34 +23,10 @@ fn pixel_payload(x: u32, y: u32, rgb: [u8; 3]) -> Value {
     json!({"x": x, "y": y, "rgb": rgb})
 }
 
-/// The decoder accepts at most 16384 pixels per side, so no stage addresses a larger coordinate.
-const MAX_COORDINATE: i64 = 16383;
 pub(super) const SET_PIXEL: &str = "set-pixel";
 
 fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
-}
-
-fn coordinate(name: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Integer {
-            min: 0,
-            max: MAX_COORDINATE,
-        },
-        required: true,
-        default: None,
-        unit: Some("px".into()),
-        step: None,
-        precision: None,
-        notes: format!(
-            "{name} in the content stage, the source after EXIF orientation, origin top left"
-        ),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
 }
 
 #[derive(Debug)]
@@ -87,64 +63,30 @@ impl PixelModule {
                     summary: Some("Pixel {x}, {y}".into()),
                     patch: false,
 parameters: vec![
-                        coordinate("x"),
-                        coordinate("y"),
-                        ParameterDescriptor {
-                            name: "rgb".into(),
-                            kind: ParameterKind::Color,
-                            required: true,
-                            default: None,
-                            unit: None,
-                            step: None, precision: None,
-notes: "three 8-bit sRGB channels".into(),
-                            soft_min: None,
-                            soft_max: None,
-                            fine_step: None,
-                            zero: None,
-                        },
+                        ParameterDescriptor::pixel_coordinate("x").notes(
+                            "x in the content stage, the source after EXIF orientation, origin top left",
+                        ),
+                        ParameterDescriptor::pixel_coordinate("y").notes(
+                            "y in the content stage, the source after EXIF orientation, origin top left",
+                        ),
+                        ParameterDescriptor::color("rgb")
+                            .required(true)
+                            .notes("three 8-bit sRGB channels"),
                     ],
                 }],
                 queries: Vec::new(),
-                controls: vec![Control::Group {
-                    label: "Pixel proof".into(),
-                    reset: None,
-                    controls: vec![
-                        Control::Number {
-                            action: SET_PIXEL.into(),
-                            parameter: "x".into(),
-                            label: "X".into(),
-                            style: crate::NumberStyle::Field,
-                            rail: None,
-                            reset: None,
-                        },
-                        Control::Number {
-                            action: SET_PIXEL.into(),
-                            parameter: "y".into(),
-                            label: "Y".into(),
-                            style: crate::NumberStyle::Field,
-                            rail: None,
-                            reset: None,
-                        },
-                        Control::Color {
-                            action: SET_PIXEL.into(),
-                            parameter: "rgb".into(),
-                            label: "RGB".into(),
-                            style: crate::ColorStyle::Fields,
-                        },
+                controls: vec![Control::group(
+                    "Pixel proof",
+                    vec![
+                        Control::number(SET_PIXEL, "x", "X").number_style(crate::NumberStyle::Field),
+                        Control::number(SET_PIXEL, "y", "Y").number_style(crate::NumberStyle::Field),
+                        Control::color_field(SET_PIXEL, "rgb", "RGB")
+                            .color_style(crate::ColorStyle::Fields),
                         // The proof's own pick mode, reached from its panel like every other.
-                        Control::Picker {
-                            label: "Pick pixel".into(),
-                        },
-                        Control::Action {
-                            action: SET_PIXEL.into(),
-                            label: "Apply pixel".into(),
-                            preset: Map::new(),
-                            style: crate::ActionStyle::Default,
-                            icon: None,
-                        },
+                        Control::picker("Pick pixel"),
+                        Control::action(SET_PIXEL, "Apply pixel"),
                     ],
-                    collapsed: false,
-                }],
+                )],
                 reset: None,
                 canvas: Some(CanvasInteraction::PointPick {
                     action: SET_PIXEL.into(),
@@ -303,7 +245,7 @@ impl ToolModule for PixelModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NumberStyle;
+    use crate::{NumberStyle, modules::ParameterKind};
 
     /// The Module panels design draws X and Y as labelled px fields: a coordinate has no useful
     /// rail. Both are integer pixels with the `px` unit, and the descriptor still validates.

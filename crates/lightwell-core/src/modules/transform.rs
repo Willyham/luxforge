@@ -7,8 +7,7 @@
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, EffectDescriptor,
     EffectStage, ExactGeometry, LayerEdit, LayerUpdate, ModuleDescriptor, NewLayer,
-    ParameterDescriptor, ParameterKind, Processing, Stage, StageContext, ToolModule,
-    crop::stored_payload,
+    ParameterDescriptor, Processing, Stage, StageContext, ToolModule, crop::stored_payload,
 };
 use crate::{CROP_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer, Orientation, Transform};
 use serde_json::{Map, Value};
@@ -166,13 +165,9 @@ fn icon_name(transform: Transform) -> &'static str {
 fn control(transform: Transform, label: &str) -> Control {
     let mut preset = Map::new();
     preset.insert("transform".into(), Value::from(transform.action_id()));
-    Control::Action {
-        action: TRANSFORM_ACTION.into(),
-        label: label.into(),
-        preset,
-        style: crate::ActionStyle::Default,
-        icon: Some(icon_name(transform).into()),
-    }
+    Control::action(TRANSFORM_ACTION, label)
+        .preset(preset)
+        .icon(icon_name(transform))
 }
 
 #[derive(Debug)]
@@ -208,39 +203,30 @@ impl TransformModule {
                     notes: "exact quarter turns and reflections; integer mappings with no interpolation".into(),
                     summary: Some("{transform}".into()),
                     patch: false,
-parameters: vec![ParameterDescriptor {
-                        name: "transform".into(),
-                        kind: ParameterKind::Enum {
-                            options: vec![
-                                Transform::RotateLeft.action_id().into(),
-                                Transform::RotateRight.action_id().into(),
-                                Transform::MirrorHorizontal.action_id().into(),
-                                Transform::FlipVertical.action_id().into(),
+parameters: vec![
+                        ParameterDescriptor::enumeration(
+                            "transform",
+                            [
+                                Transform::RotateLeft.action_id(),
+                                Transform::RotateRight.action_id(),
+                                Transform::MirrorHorizontal.action_id(),
+                                Transform::FlipVertical.action_id(),
                             ],
-                        },
-                        required: true,
-                        default: None,
-                        unit: None,
-                        step: None, precision: None,
-notes: "the exact transform to compose into the stack's orientation".into(),
-                        soft_min: None,
-                        soft_max: None,
-                        fine_step: None,
-                        zero: None,
-                    }],
+                        )
+                        .required(true)
+                        .notes("the exact transform to compose into the stack's orientation"),
+                    ],
                 }],
                 queries: Vec::new(),
-                controls: vec![Control::Group {
-                    label: "Exact transforms".into(),
-                    reset: None,
-                    controls: vec![
+                controls: vec![Control::group(
+                    "Exact transforms",
+                    vec![
                         control(Transform::RotateLeft, "Rotate left"),
                         control(Transform::RotateRight, "Rotate right"),
                         control(Transform::MirrorHorizontal, "Mirror horizontal"),
                         control(Transform::FlipVertical, "Flip vertical"),
                     ],
-                    collapsed: false,
-                }],
+                )],
                 reset: None,
                 canvas: None,
                 developer: false,
@@ -456,7 +442,7 @@ mod tests {
     use super::*;
     use crate::{
         CropPayload, LayerId, ModuleRegistry, PIXEL_EFFECT, VIGNETTE_EFFECT,
-        modules::{StageQuestions, check_parameters},
+        modules::{ParameterKind, StageQuestions, check_parameters},
     };
     use serde_json::json;
 

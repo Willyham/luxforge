@@ -13,8 +13,7 @@ use super::{
 };
 use crate::{
     ActionDescriptor, ActionInput, ActionPlan, Control, EffectDescriptor, EffectStage, Error,
-    ErrorKind, ModuleDescriptor, ParameterDescriptor, ParameterKind, Processing, Stage,
-    StageContext, ToolModule,
+    ErrorKind, ModuleDescriptor, ParameterDescriptor, Processing, Stage, StageContext, ToolModule,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -76,23 +75,6 @@ pub(crate) fn setting(id: &str, kind: SettingKind, default: Option<Value>) -> Se
     }
 }
 
-fn parameter(name: &str, kind: ParameterKind, required: bool) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind,
-        required,
-        default: None,
-        unit: None,
-        step: None,
-        precision: None,
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-        notes: "test".into(),
-    }
-}
-
 pub(crate) fn adapter() -> AdapterDescriptor {
     AdapterDescriptor {
         id: ADAPTER.into(),
@@ -135,7 +117,11 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 notes: "test".into(),
                 summary: None,
                 patch: false,
-                parameters: vec![parameter("tint", ParameterKind::Artifact, true)],
+                parameters: vec![
+                    ParameterDescriptor::artifact("tint")
+                        .required(true)
+                        .notes("test"),
+                ],
             },
             ActionDescriptor {
                 id: "reset-test-tint".into(),
@@ -262,11 +248,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
             profile: true,
             requires_active: true,
             uses: vec!["echo".into(), "palette".into()],
-            parameters: vec![parameter(
-                "gain",
-                ParameterKind::Number { min: 0.0, max: 2.0 },
-                false,
-            )],
+            parameters: vec![ParameterDescriptor::number("gain", 0.0, 2.0).notes("test")],
             apply: Some(TaskApply {
                 action: "apply-test-tint".into(),
                 parameter: "tint".into(),

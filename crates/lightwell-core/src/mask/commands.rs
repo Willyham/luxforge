@@ -47,7 +47,7 @@ use super::{
 use crate::{
     ActionDescriptor, CanvasInteraction, ChoiceStyle, Component, ComponentId, ComponentMode,
     Control, Error, ErrorKind, Layer, LayerId, Mask, MaskId, ModuleRegistry, MutationResult,
-    NumberStyle, ParameterDescriptor, ParameterKind, Recipe,
+    NumberStyle, ParameterDescriptor, Recipe,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
     path::{self, POINTS_PER_STROKE, SIZE_MAX, Stroke, StrokeId},
 };
@@ -1791,48 +1791,6 @@ fn modes() -> Vec<String> {
         .collect()
 }
 
-/// The largest content coordinate a pick can name: one below the per-side admission limit of
-/// `docs/design/architecture.md#rendering-and-limits`, exactly as the delivered neutral picker's
-/// coordinates are declared. A position inside the declared range but outside the stage the masked
-/// layer receives is refused by name when the pixel is read, because only the host knows that stage.
-const MAX_COORDINATE: i64 = 16383;
-
-/// One coordinate of a pick, declared as the delivered neutral picker declares its own.
-fn sample_coordinate(name: &str, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        unit: Some("px".to_owned()),
-        ..parameter(
-            name,
-            ParameterKind::Integer {
-                min: 0,
-                max: MAX_COORDINATE,
-            },
-            true,
-            notes,
-        )
-    }
-}
-
-/// The shared descriptor shape the kind-independent commands declare their own values with. A
-/// component kind's geometry is *not* declared here: it is declared once in that kind's own module,
-/// beside the parser that enforces the same ranges.
-fn parameter(name: &str, kind: ParameterKind, required: bool, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.to_owned(),
-        kind,
-        required,
-        default: None,
-        unit: None,
-        step: None,
-        precision: None,
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-        notes: notes.to_owned(),
-    }
-}
-
 fn command(
     method: &'static str,
     title: &str,
@@ -1872,12 +1830,9 @@ fn command(
 /// command hold the `&'static str` identity every other command holds and a history entry store it
 /// as a durable action id. There is one leak per kind per operation, at first use of the table.
 fn geometry_commands(kind: &'static str) -> Vec<MaskCommand> {
-    let mode = parameter(
-        "mode",
-        ParameterKind::Enum { options: modes() },
-        true,
-        "how this component joins the coverage the components before it composed",
-    );
+    let mode = ParameterDescriptor::enumeration("mode", modes())
+        .required(true)
+        .notes("how this component joins the coverage the components before it composed");
     GeometryOp::all()
         .into_iter()
         .map(|op| {
@@ -1977,15 +1932,13 @@ fn sample_commands(kind: &'static str) -> Vec<MaskCommand> {
                          clearing them all",
                         spoken(kind)
                     ),
-                    vec![parameter(
-                        "index",
-                        ParameterKind::Integer {
-                            min: 0,
-                            max: limit as i64 - 1,
-                        },
-                        true,
-                        "the sample's position in the component's list of sampled colours",
-                    )],
+                    vec![
+                        ParameterDescriptor::integer("index", 0, limit as i64 - 1)
+                            .required(true)
+                            .notes(
+                                "the sample's position in the component's list of sampled colours",
+                            ),
+                    ],
                 ),
             };
             MaskCommand {
@@ -2012,24 +1965,19 @@ fn sample_commands(kind: &'static str) -> Vec<MaskCommand> {
 
 static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
     let mode = |required| {
-        parameter(
-            "mode",
-            ParameterKind::Enum { options: modes() },
-            required,
-            "how this component joins the coverage the components before it composed",
-        )
+        ParameterDescriptor::enumeration("mode", modes())
+            .required(required)
+            .notes("how this component joins the coverage the components before it composed")
     };
-    let invert = |notes: &str| parameter("invert", ParameterKind::Boolean, true, notes);
+    let invert = |notes: &str| {
+        ParameterDescriptor::boolean("invert")
+            .required(true)
+            .notes(notes)
+    };
     let index = |limit: i64, notes: &str| {
-        parameter(
-            "index",
-            ParameterKind::Integer {
-                min: 0,
-                max: limit - 1,
-            },
-            true,
-            notes,
-        )
+        ParameterDescriptor::integer("index", 0, limit - 1)
+            .required(true)
+            .notes(notes)
     };
     let mut commands = vec![
         command(
@@ -2055,11 +2003,10 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             (true, false, false),
             false,
             vec![
-                sample_coordinate(
-                    "x",
-                    "the content column to read, in the stage the masked layer receives",
-                ),
-                sample_coordinate("y", "the content row to read, in the same stage"),
+                ParameterDescriptor::pixel_coordinate("x")
+                    .notes("the content column to read, in the stage the masked layer receives"),
+                ParameterDescriptor::pixel_coordinate("y")
+                    .notes("the content row to read, in the same stage"),
             ],
         ),
         command(
@@ -2096,19 +2043,13 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             true,
             (true, false, false),
             false,
-            vec![ParameterDescriptor {
-                step: Some(1.0),
-                precision: Some(0),
-                ..parameter(
-                    "amount",
-                    ParameterKind::Number {
-                        min: 0.0,
-                        max: Mask::FULL_AMOUNT,
-                    },
-                    true,
-                    "0..=100, multiplying the composed coverage",
-                )
-            }],
+            vec![
+                ParameterDescriptor::number("amount", 0.0, Mask::FULL_AMOUNT)
+                    .required(true)
+                    .notes("0..=100, multiplying the composed coverage")
+                    .step(1.0)
+                    .precision(0),
+            ],
         ),
         command(
             "mask.set-invert",
@@ -2203,104 +2144,74 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             summary: None,
             patch: false,
             parameters: vec![
-                parameter(
-                    "points",
-                    ParameterKind::Points {
-                        points_min: 1,
-                        points_max: POINTS_PER_STROKE,
-                    },
-                    true,
-                    "the stroke's path, in the content stage's normalized coordinates, in drawn \
-                     order; a one-position path is a single dab",
-                ),
-                ParameterDescriptor {
-                    step: Some(0.01),
-                    fine_step: Some(0.002),
-                    precision: Some(4),
-                    ..parameter(
-                        "size",
-                        ParameterKind::Number {
-                            // A stroke's radius is a stored distance and takes the study's own
-                            // floor; the ceiling is the path store's, which is the largest radius a
-                            // stored stroke can hold.
-                            min: DISTANCE_MIN,
-                            max: SIZE_MAX,
-                        },
-                        true,
-                        "the brush's radius in mask-space units, one unit being the content stage's \
-                         height on both axes, so a round brush is round at any aspect ratio",
+                ParameterDescriptor::points("points", 1, POINTS_PER_STROKE)
+                    .required(true)
+                    .notes(
+                        "the stroke's path, in the content stage's normalized coordinates, in \
+                         drawn order; a one-position path is a single dab",
+                    ),
+                // A stroke's radius is a stored distance and takes the study's own floor; the
+                // ceiling is the path store's, which is the largest radius a stored stroke can
+                // hold.
+                ParameterDescriptor::number("size", DISTANCE_MIN, SIZE_MAX)
+                    .required(true)
+                    .notes(
+                        "the brush's radius in mask-space units, one unit being the content \
+                         stage's height on both axes, so a round brush is round at any aspect ratio",
                     )
-                },
-                ParameterDescriptor {
-                    step: Some(5.0),
-                    precision: Some(0),
-                    ..parameter(
-                        "feather",
-                        ParameterKind::Number { min: 0.0, max: 100.0 },
-                        true,
+                    .step(0.01)
+                    .fine_step(0.002)
+                    .precision(4),
+                ParameterDescriptor::number("feather", 0.0, 100.0)
+                    .required(true)
+                    .notes(
                         "the ramp's width as a percentage of the radius; 0 is an explicit hard edge",
                     )
-                },
-                ParameterDescriptor {
-                    step: Some(5.0),
-                    precision: Some(0),
-                    ..parameter(
-                        "flow",
-                        ParameterKind::Number { min: 0.0, max: 100.0 },
-                        true,
-                        "the coverage one pass of this stroke reaches, 0..=100. There is no density: \
-                         its meaning depends on a build-up model along a single stroke, which would \
-                         make coverage depend on stamp spacing and therefore on resolution",
+                    .step(5.0)
+                    .precision(0),
+                ParameterDescriptor::number("flow", 0.0, 100.0)
+                    .required(true)
+                    .notes(
+                        "the coverage one pass of this stroke reaches, 0..=100. There is no \
+                         density: its meaning depends on a build-up model along a single stroke, \
+                         which would make coverage depend on stamp spacing and therefore on \
+                         resolution",
                     )
-                },
-                parameter(
-                    "erase",
-                    ParameterKind::Boolean,
-                    true,
+                    .step(5.0)
+                    .precision(0),
+                ParameterDescriptor::boolean("erase").required(true).notes(
                     "this stroke removes coverage rather than adding it, for the whole of its life",
                 ),
-                ParameterDescriptor {
-                    default: Some(json!(false)),
-                    ..parameter(
-                        "limit_to_colour",
-                        ParameterKind::Boolean,
-                        true,
+                ParameterDescriptor::boolean("limit_to_colour")
+                    .required(true)
+                    .notes(
                         "limit this stroke to the colour under the brush where it began: the host \
-                         reads the pixel the operation this mask modulates receives at the stroke's \
-                         first position, stores it with the stroke, and multiplies the stroke's \
-                         coverage by the similarity to it. No colour is sent — a request names the \
-                         limit, never the colour, so what is stored is always a colour the \
-                         photograph has at that position. It is a per-pixel colour test and not \
-                         Lightroom's Auto Mask: it knows nothing about edges or connectivity, so it \
-                         also paints a matching colour anywhere else the stroke passes over. A mask \
-                         no layer is bound to has no operation to read an input from and is refused \
-                         by name",
+                         reads the pixel the operation this mask modulates receives at the \
+                         stroke's first position, stores it with the stroke, and multiplies the \
+                         stroke's coverage by the similarity to it. No colour is sent — a request \
+                         names the limit, never the colour, so what is stored is always a colour \
+                         the photograph has at that position. It is a per-pixel colour test and \
+                         not Lightroom's Auto Mask: it knows nothing about edges or connectivity, \
+                         so it also paints a matching colour anywhere else the stroke passes over. \
+                         A mask no layer is bound to has no operation to read an input from and is \
+                         refused by name",
                     )
-                },
-                ParameterDescriptor {
-                    unit: Some("%".to_owned()),
-                    step: Some(1.0),
-                    precision: Some(1),
-                    fine_step: Some(0.1),
-                    zero: Some(REFINE_DEFAULT),
-                    default: Some(json!(REFINE_DEFAULT)),
-                    ..parameter(
-                        "colour_refine",
-                        ParameterKind::Number {
-                            min: REFINE_MIN,
-                            max: REFINE_MAX,
-                        },
-                        true,
+                    .default(false),
+                ParameterDescriptor::number("colour_refine", REFINE_MIN, REFINE_MAX)
+                    .required(true)
+                    .notes(
                         "how tight the colour limit is, on the colour range's own refine axis and \
                          with the same meaning: a higher refine is always a narrower hold, \
-                         geometrically between a whole colour family at 0 and one flat patch at 100. \
-                         Ignored, and stored nowhere, by a stroke that carries no limit",
+                         geometrically between a whole colour family at 0 and one flat patch at \
+                         100. Ignored, and stored nowhere, by a stroke that carries no limit",
                     )
-                },
-                parameter(
-                    "mode",
-                    ParameterKind::Enum { options: modes() },
-                    false,
+                    .unit("%")
+                    .step(1.0)
+                    .precision(1)
+                    .fine_step(0.1)
+                    .zero(REFINE_DEFAULT)
+                    .default(REFINE_DEFAULT),
+                ParameterDescriptor::enumeration("mode", modes()).notes(
                     "how the brush this stroke creates joins the components before it; only a \
                      stroke that makes a component on an existing mask may carry one, and a mask's \
                      first component is always add",
@@ -2358,30 +2269,11 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
 
 static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
     let mut controls = vec![
-        Control::Number {
-            action: "mask.set-amount".to_owned(),
-            parameter: "amount".to_owned(),
-            label: "Amount".to_owned(),
-            style: NumberStyle::Slider,
-            rail: None,
-            reset: None,
-        },
-        Control::Toggle {
-            action: "mask.set-invert".to_owned(),
-            parameter: "invert".to_owned(),
-            label: "Invert".to_owned(),
-        },
-        Control::Choice {
-            action: "mask.set-component-mode".to_owned(),
-            parameter: "mode".to_owned(),
-            label: "Mode".to_owned(),
-            style: ChoiceStyle::Segmented,
-        },
-        Control::Toggle {
-            action: "mask.set-component-invert".to_owned(),
-            parameter: "invert".to_owned(),
-            label: "Invert component".to_owned(),
-        },
+        Control::number("mask.set-amount", "amount", "Amount"),
+        Control::toggle("mask.set-invert", "invert", "Invert"),
+        Control::choice("mask.set-component-mode", "mode", "Mode")
+            .choice_style(ChoiceStyle::Segmented),
+        Control::toggle("mask.set-component-invert", "invert", "Invert component"),
     ];
     // Every handle has a number field, for every kind, generated from the same declarations the
     // patch method declares. The control's **action** names the kind it belongs to — a radius is a
@@ -2404,13 +2296,9 @@ static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
             component_parameters(kind, false)
                 .expect("a kind from the host's own table")
                 .into_iter()
-                .map(|parameter| Control::Number {
-                    action: action.to_owned(),
-                    label: control_label(&parameter.name),
-                    parameter: parameter.name,
-                    style: NumberStyle::Field,
-                    rail: None,
-                    reset: None,
+                .map(|parameter| {
+                    Control::number(action, &parameter.name, control_label(&parameter.name))
+                        .number_style(NumberStyle::Field)
                 }),
         );
     }
@@ -2440,6 +2328,7 @@ fn control_label(field: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ParameterKind;
 
     fn registry() -> ModuleRegistry {
         ModuleRegistry::builtin()

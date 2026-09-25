@@ -226,6 +226,171 @@ pub struct ParameterDescriptor {
     pub notes: String,
 }
 
+/// The largest pixel coordinate a parameter can address: the decoder accepts at most 16384 pixels
+/// per side, so no stage has a larger one.
+pub const MAX_COORDINATE: i64 = 16383;
+
+/// A descriptor is built from one kind constructor — [`Self::number`], [`Self::integer`] and the
+/// rest, each starting optional with every hint unset and empty notes — and chained hints:
+/// `ParameterDescriptor::number("exposure", -5.0, 5.0).required(true).unit("EV").step(0.1)`.
+impl ParameterDescriptor {
+    /// A parameter of `kind`: optional, every hint unset, empty notes.
+    pub fn new(name: impl Into<String>, kind: ParameterKind) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            required: false,
+            default: None,
+            unit: None,
+            step: None,
+            precision: None,
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
+            notes: String::new(),
+        }
+    }
+
+    pub fn number(name: impl Into<String>, min: f64, max: f64) -> Self {
+        Self::new(name, ParameterKind::Number { min, max })
+    }
+
+    pub fn integer(name: impl Into<String>, min: i64, max: i64) -> Self {
+        Self::new(name, ParameterKind::Integer { min, max })
+    }
+
+    pub fn enumeration<S: Into<String>>(
+        name: impl Into<String>,
+        options: impl IntoIterator<Item = S>,
+    ) -> Self {
+        Self::new(
+            name,
+            ParameterKind::Enum {
+                options: options.into_iter().map(Into::into).collect(),
+            },
+        )
+    }
+
+    pub fn color(name: impl Into<String>) -> Self {
+        Self::new(name, ParameterKind::Color)
+    }
+
+    pub fn boolean(name: impl Into<String>) -> Self {
+        Self::new(name, ParameterKind::Boolean)
+    }
+
+    pub fn points(name: impl Into<String>, points_min: usize, points_max: usize) -> Self {
+        Self::new(
+            name,
+            ParameterKind::Points {
+                points_min,
+                points_max,
+            },
+        )
+    }
+
+    pub fn artifact(name: impl Into<String>) -> Self {
+        Self::new(name, ParameterKind::Artifact)
+    }
+
+    /// A non-monotone curve with no fixed `x`s; chain [`Self::monotone`] and/or
+    /// [`Self::fixed_x`] to declare either.
+    pub fn curve(name: impl Into<String>, points_min: usize, points_max: usize) -> Self {
+        Self::new(
+            name,
+            ParameterKind::Curve {
+                points_min,
+                points_max,
+                monotone: false,
+                fixed_x: None,
+            },
+        )
+    }
+
+    pub fn string(name: impl Into<String>, max_length: usize) -> Self {
+        Self::new(name, ParameterKind::String { max_length })
+    }
+
+    pub fn settings(name: impl Into<String>) -> Self {
+        Self::new(name, ParameterKind::Settings)
+    }
+
+    /// A pixel coordinate of a stage, `0..=MAX_COORDINATE` px, required: a descriptor cannot know
+    /// the stage a particular asset produces, so a point outside it is refused when it is asked.
+    pub fn pixel_coordinate(name: impl Into<String>) -> Self {
+        Self::integer(name, 0, MAX_COORDINATE)
+            .required(true)
+            .unit("px")
+    }
+
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
+
+    pub fn default(mut self, value: impl Into<Value>) -> Self {
+        self.default = Some(value.into());
+        self
+    }
+
+    pub fn unit(mut self, unit: impl Into<String>) -> Self {
+        self.unit = Some(unit.into());
+        self
+    }
+
+    pub fn step(mut self, step: f64) -> Self {
+        self.step = Some(step);
+        self
+    }
+
+    pub fn precision(mut self, precision: u8) -> Self {
+        self.precision = Some(precision);
+        self
+    }
+
+    pub fn soft_min(mut self, soft_min: f64) -> Self {
+        self.soft_min = Some(soft_min);
+        self
+    }
+
+    pub fn soft_max(mut self, soft_max: f64) -> Self {
+        self.soft_max = Some(soft_max);
+        self
+    }
+
+    pub fn fine_step(mut self, fine_step: f64) -> Self {
+        self.fine_step = Some(fine_step);
+        self
+    }
+
+    pub fn zero(mut self, zero: f64) -> Self {
+        self.zero = Some(zero);
+        self
+    }
+
+    pub fn notes(mut self, notes: impl Into<String>) -> Self {
+        self.notes = notes.into();
+        self
+    }
+
+    /// Only meaningful on a [`ParameterKind::Curve`]; a no-op on any other kind.
+    pub fn monotone(mut self) -> Self {
+        if let ParameterKind::Curve { monotone, .. } = &mut self.kind {
+            *monotone = true;
+        }
+        self
+    }
+
+    /// Only meaningful on a [`ParameterKind::Curve`]; a no-op on any other kind.
+    pub fn fixed_x(mut self, xs: Vec<f64>) -> Self {
+        if let ParameterKind::Curve { fixed_x, .. } = &mut self.kind {
+            *fixed_x = Some(xs);
+        }
+        self
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NumberStyle {
@@ -408,6 +573,204 @@ pub enum Control {
     /// required `name` of kind `string`, optionally a `preset-id` of kind `string` and nothing
     /// else. A module declares at most one.
     Presets { action: String },
+}
+
+impl Control {
+    /// A `number` control styled as a slider, the style every field-patch module's fields use.
+    /// Chain [`Self::number_style`] for `field`/`stepper`, [`Self::rail`] and [`Self::field_reset`].
+    pub fn number(
+        action: impl Into<String>,
+        parameter: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self::Number {
+            action: action.into(),
+            parameter: parameter.into(),
+            label: label.into(),
+            style: NumberStyle::Slider,
+            rail: None,
+            reset: None,
+        }
+    }
+
+    /// Only meaningful on [`Self::Number`]; a no-op on any other variant.
+    pub fn number_style(mut self, style: NumberStyle) -> Self {
+        if let Self::Number { style: slot, .. } = &mut self {
+            *slot = style;
+        }
+        self
+    }
+
+    /// Only meaningful on [`Self::Number`]; a no-op on any other variant.
+    pub fn rail(mut self, rail: RailDecoration) -> Self {
+        if let Self::Number { rail: slot, .. } = &mut self {
+            *slot = Some(rail);
+        }
+        self
+    }
+
+    /// Only meaningful on [`Self::Number`] or [`Self::Group`]; a no-op on any other variant.
+    pub fn field_reset(mut self, reset: ResetAction) -> Self {
+        match &mut self {
+            Self::Number { reset: slot, .. } => *slot = Some(reset),
+            Self::Group { reset: slot, .. } => *slot = Some(reset),
+            _ => {}
+        }
+        self
+    }
+
+    pub fn toggle(
+        action: impl Into<String>,
+        parameter: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self::Toggle {
+            action: action.into(),
+            parameter: parameter.into(),
+            label: label.into(),
+        }
+    }
+
+    pub fn choice(
+        action: impl Into<String>,
+        parameter: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self::Choice {
+            action: action.into(),
+            parameter: parameter.into(),
+            label: label.into(),
+            style: ChoiceStyle::default(),
+        }
+    }
+
+    /// Only meaningful on [`Self::Choice`]; a no-op on any other variant.
+    pub fn choice_style(mut self, style: ChoiceStyle) -> Self {
+        if let Self::Choice { style: slot, .. } = &mut self {
+            *slot = style;
+        }
+        self
+    }
+
+    /// Only meaningful on [`Self::Color`]; a no-op on any other variant.
+    pub fn color_style(mut self, style: ColorStyle) -> Self {
+        if let Self::Color { style: slot, .. } = &mut self {
+            *slot = style;
+        }
+        self
+    }
+
+    pub fn color_field(
+        action: impl Into<String>,
+        parameter: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self::Color {
+            action: action.into(),
+            parameter: parameter.into(),
+            label: label.into(),
+            style: ColorStyle::default(),
+        }
+    }
+
+    pub fn curve(
+        action: impl Into<String>,
+        channels: Vec<CurveChannel>,
+        label: impl Into<String>,
+        sample_query: impl Into<String>,
+    ) -> Self {
+        Self::Curve {
+            action: action.into(),
+            channels,
+            label: label.into(),
+            sample_query: sample_query.into(),
+            background: CurveBackground::default(),
+        }
+    }
+
+    /// Only meaningful on [`Self::Curve`]; a no-op on any other variant.
+    pub fn background(mut self, background: CurveBackground) -> Self {
+        if let Self::Curve {
+            background: slot, ..
+        } = &mut self
+        {
+            *slot = background;
+        }
+        self
+    }
+
+    pub fn action(action: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::Action {
+            action: action.into(),
+            label: label.into(),
+            preset: Map::new(),
+            style: ActionStyle::default(),
+            icon: None,
+        }
+    }
+
+    /// Only meaningful on [`Self::Action`]; a no-op on any other variant.
+    pub fn preset(mut self, preset: Map<String, Value>) -> Self {
+        if let Self::Action { preset: slot, .. } = &mut self {
+            *slot = preset;
+        }
+        self
+    }
+
+    /// Only meaningful on [`Self::Action`]; a no-op on any other variant.
+    pub fn action_style(mut self, style: ActionStyle) -> Self {
+        if let Self::Action { style: slot, .. } = &mut self {
+            *slot = style;
+        }
+        self
+    }
+
+    /// Only meaningful on [`Self::Action`]; a no-op on any other variant.
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        if let Self::Action { icon: slot, .. } = &mut self {
+            *slot = Some(icon.into());
+        }
+        self
+    }
+
+    pub fn group(label: impl Into<String>, controls: Vec<Control>) -> Self {
+        Self::Group {
+            label: label.into(),
+            controls,
+            reset: None,
+            collapsed: false,
+        }
+    }
+
+    /// Only meaningful on [`Self::Group`]; a no-op on any other variant.
+    pub fn collapsed(mut self, collapsed: bool) -> Self {
+        if let Self::Group {
+            collapsed: slot, ..
+        } = &mut self
+        {
+            *slot = collapsed;
+        }
+        self
+    }
+
+    pub fn picker(label: impl Into<String>) -> Self {
+        Self::Picker {
+            label: label.into(),
+        }
+    }
+
+    pub fn task(task: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::Task {
+            task: task.into(),
+            label: label.into(),
+        }
+    }
+
+    pub fn presets(action: impl Into<String>) -> Self {
+        Self::Presets {
+            action: action.into(),
+        }
+    }
 }
 
 /// How a module lets the canvas drive its action. Neither kind commits by itself.
@@ -1782,37 +2145,16 @@ mod tests {
     use serde_json::json;
 
     fn integer(name: &str) -> ParameterDescriptor {
-        ParameterDescriptor {
-            name: name.into(),
-            kind: ParameterKind::Integer { min: 0, max: 10 },
-            required: true,
-            default: None,
-            unit: Some("px".into()),
-            step: None,
-            precision: None,
-            notes: "test".into(),
-            soft_min: None,
-            soft_max: None,
-            fine_step: None,
-            zero: None,
-        }
+        ParameterDescriptor::integer(name, 0, 10)
+            .required(true)
+            .unit("px")
+            .notes("test")
     }
 
     fn number(name: &str, min: f64, max: f64) -> ParameterDescriptor {
-        ParameterDescriptor {
-            name: name.into(),
-            kind: ParameterKind::Number { min, max },
-            required: true,
-            default: None,
-            unit: None,
-            step: None,
-            precision: None,
-            notes: "test".into(),
-            soft_min: None,
-            soft_max: None,
-            fine_step: None,
-            zero: None,
-        }
+        ParameterDescriptor::number(name, min, max)
+            .required(true)
+            .notes("test")
     }
 
     /// A descriptor whose one parameter carries these decimal hints and no controls, so only the
@@ -1839,22 +2181,9 @@ mod tests {
     }
 
     fn enumerated(name: &str) -> ParameterDescriptor {
-        ParameterDescriptor {
-            name: name.into(),
-            kind: ParameterKind::Enum {
-                options: vec!["free".into(), "1:1".into()],
-            },
-            required: true,
-            default: None,
-            unit: None,
-            step: None,
-            precision: None,
-            notes: "test".into(),
-            soft_min: None,
-            soft_max: None,
-            fine_step: None,
-            zero: None,
-        }
+        ParameterDescriptor::enumeration(name, vec!["free", "1:1"])
+            .required(true)
+            .notes("test")
     }
 
     fn frame_canvas(action: &str, fit_action: &str) -> CanvasInteraction {
@@ -1974,36 +2303,12 @@ mod tests {
             patch: false,
             parameters: vec![
                 integer("x"),
-                ParameterDescriptor {
-                    name: "rgb".into(),
-                    kind: ParameterKind::Color,
-                    required: true,
-                    default: None,
-                    unit: None,
-                    step: None,
-                    precision: None,
-                    notes: "test".into(),
-                    soft_min: None,
-                    soft_max: None,
-                    fine_step: None,
-                    zero: None,
-                },
-                ParameterDescriptor {
-                    name: "mode".into(),
-                    kind: ParameterKind::Enum {
-                        options: vec!["fast".into(), "exact".into()],
-                    },
-                    required: false,
-                    default: Some(json!("exact")),
-                    unit: None,
-                    step: None,
-                    precision: None,
-                    notes: "test".into(),
-                    soft_min: None,
-                    soft_max: None,
-                    fine_step: None,
-                    zero: None,
-                },
+                ParameterDescriptor::color("rgb")
+                    .required(true)
+                    .notes("test"),
+                ParameterDescriptor::enumeration("mode", vec!["fast", "exact"])
+                    .default(json!("exact"))
+                    .notes("test"),
             ],
         }
     }
@@ -2015,23 +2320,11 @@ mod tests {
         ModuleDescriptor {
             actions: vec![ActionDescriptor {
                 summary: None,
-                parameters: vec![ParameterDescriptor {
-                    name: "path".into(),
-                    kind: ParameterKind::Points {
-                        points_min,
-                        points_max,
-                    },
-                    required: true,
-                    default: None,
-                    unit: None,
-                    step: None,
-                    precision: None,
-                    notes: "the drawn path".into(),
-                    soft_min: None,
-                    soft_max: None,
-                    fine_step: None,
-                    zero: None,
-                }],
+                parameters: vec![
+                    ParameterDescriptor::points("path", points_min, points_max)
+                        .required(true)
+                        .notes("the drawn path"),
+                ],
                 ..action()
             }],
             controls: Vec::new(),
@@ -2344,22 +2637,11 @@ mod tests {
                 "empty enum",
                 ModuleDescriptor {
                     actions: vec![ActionDescriptor {
-                        parameters: vec![ParameterDescriptor {
-                            name: "mode".into(),
-                            kind: ParameterKind::Enum {
-                                options: Vec::new(),
-                            },
-                            required: true,
-                            default: None,
-                            unit: None,
-                            step: None,
-                            precision: None,
-                            notes: "test".into(),
-                            soft_min: None,
-                            soft_max: None,
-                            fine_step: None,
-                            zero: None,
-                        }],
+                        parameters: vec![
+                            ParameterDescriptor::enumeration("mode", Vec::<String>::new())
+                                .required(true)
+                                .notes("test"),
+                        ],
                         ..action()
                     }],
                     controls: Vec::new(),

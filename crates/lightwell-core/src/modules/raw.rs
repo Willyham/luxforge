@@ -4,7 +4,7 @@ pub mod white_balance;
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
     EffectDescriptor, EffectStage, ExactGeometry, LayerUpdate, ModuleDescriptor,
-    ParameterDescriptor, ParameterKind, Processing, ResetAction, Stage, StageContext, ToolModule,
+    ParameterDescriptor, Processing, ResetAction, Stage, StageContext, ToolModule,
 };
 use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId};
 use serde::{Deserialize, Serialize};
@@ -206,53 +206,6 @@ impl RawPayload {
     }
 }
 
-/// One declared number parameter, with the increment and the display precision a client should
-/// use for it. Both are hints: the host stores what it is sent and never rounds a request to them.
-fn number(
-    name: &str,
-    min: f64,
-    max: f64,
-    default: f64,
-    unit: Option<&str>,
-    step: f64,
-    precision: u8,
-) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Number { min, max },
-        required: true,
-        default: Some(Value::from(default)),
-        unit: unit.map(Into::into),
-        step: Some(step),
-        precision: Some(precision),
-        notes: "finite value".into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
-}
-
-fn coordinate(name: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Integer {
-            min: 0,
-            max: 16_383,
-        },
-        required: true,
-        default: None,
-        unit: Some("px".into()),
-        step: None,
-        precision: None,
-        notes: "upright RAW content coordinate".into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
-}
-
 /// The field reset of the custom temperature and tint: the camera's own white balance.
 fn as_shot_reset() -> ResetAction {
     ResetAction {
@@ -303,109 +256,113 @@ impl RawModule {
                     action(
                         SET_EXPOSURE,
                         "Exposure",
-                        vec![number(
-                            "ev",
-                            MIN_EXPOSURE_EV,
-                            MAX_EXPOSURE_EV,
-                            0.0,
-                            Some("EV"),
-                            0.01,
-                            2,
-                        )],
+                        vec![
+                            ParameterDescriptor::number("ev", MIN_EXPOSURE_EV, MAX_EXPOSURE_EV)
+                                .required(true)
+                                .default(0.0)
+                                .unit("EV")
+                                .step(0.01)
+                                .precision(2)
+                                .notes("finite value"),
+                        ],
                     ),
                     action(
                         SET_TEMPERATURE,
                         "Custom temperature",
-                        vec![number(
-                            "kelvin",
-                            white_balance::MIN_TEMPERATURE_K,
-                            white_balance::MAX_TEMPERATURE_K,
-                            CUSTOM_START_KELVIN,
-                            Some("K"),
-                            10.0,
-                            0,
-                        )],
+                        vec![
+                            ParameterDescriptor::number(
+                                "kelvin",
+                                white_balance::MIN_TEMPERATURE_K,
+                                white_balance::MAX_TEMPERATURE_K,
+                            )
+                            .required(true)
+                            .default(CUSTOM_START_KELVIN)
+                            .unit("K")
+                            .step(10.0)
+                            .precision(0)
+                            .notes("finite value"),
+                        ],
                     ),
                     action(
                         SET_TINT,
                         "Custom tint",
-                        vec![number(
-                            "tint",
-                            white_balance::MIN_TINT,
-                            white_balance::MAX_TINT,
-                            CUSTOM_START_TINT,
-                            None,
-                            1.0,
-                            0,
-                        )],
+                        vec![
+                            ParameterDescriptor::number(
+                                "tint",
+                                white_balance::MIN_TINT,
+                                white_balance::MAX_TINT,
+                            )
+                            .required(true)
+                            .default(CUSTOM_START_TINT)
+                            .step(1.0)
+                            .precision(0)
+                            .notes("finite value"),
+                        ],
                     ),
                     action(
                         SET_RED,
                         "Red gain",
-                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, Some("×"), 0.01, 2)],
+                        vec![
+                            ParameterDescriptor::number("gain", 0.01, MAX_RAW_GAIN)
+                                .required(true)
+                                .default(1.0)
+                                .unit("×")
+                                .step(0.01)
+                                .precision(2)
+                                .notes("finite value"),
+                        ],
                     ),
                     action(
                         SET_BLUE,
                         "Blue gain",
-                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, Some("×"), 0.01, 2)],
+                        vec![
+                            ParameterDescriptor::number("gain", 0.01, MAX_RAW_GAIN)
+                                .required(true)
+                                .default(1.0)
+                                .unit("×")
+                                .step(0.01)
+                                .precision(2)
+                                .notes("finite value"),
+                        ],
                     ),
                     action(
                         PICK_NEUTRAL,
                         "Pick neutral patch",
-                        vec![coordinate("x"), coordinate("y")],
+                        ["x", "y"]
+                            .map(|name| {
+                                ParameterDescriptor::pixel_coordinate(name)
+                                    .notes("upright RAW content coordinate")
+                            })
+                            .into(),
                     ),
                     action(AS_SHOT, "As shot white balance", vec![]),
                     action(RESET, "Reset RAW", vec![]),
                 ],
                 queries: Vec::new(),
-                controls: vec![Control::Group {
-                    label: "RAW development".into(),
-                    reset: Some(ResetAction {
+                controls: vec![
+                    Control::group(
+                        "RAW development",
+                        vec![
+                            Control::number(SET_EXPOSURE, "ev", "Exposure"),
+                            // Resetting either white-balance field returns the development to the
+                            // camera's own white balance, as Lightroom's Temp and Tint do, rather
+                            // than switching it to a custom 6504 K.
+                            Control::number(SET_TEMPERATURE, "kelvin", "Custom temperature")
+                                .rail(crate::RailDecoration::Temperature)
+                                .field_reset(as_shot_reset()),
+                            Control::number(SET_TINT, "tint", "Custom tint")
+                                .rail(crate::RailDecoration::Tint)
+                                .field_reset(as_shot_reset()),
+                            // The sensor neutral pick, beside the temperature and tint it sets.
+                            Control::picker("Neutral WB"),
+                            Control::action(AS_SHOT, "As shot").icon("target"),
+                        ],
+                    )
+                    .field_reset(ResetAction {
                         action: RESET.into(),
                         preset: Map::new(),
                     }),
-                    controls: vec![
-                        Control::Number {
-                            action: SET_EXPOSURE.into(),
-                            parameter: "ev".into(),
-                            label: "Exposure".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                        },
-                        // Resetting either white-balance field returns the development to the
-                        // camera's own white balance, as Lightroom's Temp and Tint do, rather than
-                        // switching it to a custom 6504 K.
-                        Control::Number {
-                            action: SET_TEMPERATURE.into(),
-                            parameter: "kelvin".into(),
-                            label: "Custom temperature".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: Some(crate::RailDecoration::Temperature),
-                            reset: Some(as_shot_reset()),
-                        },
-                        Control::Number {
-                            action: SET_TINT.into(),
-                            parameter: "tint".into(),
-                            label: "Custom tint".into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: Some(crate::RailDecoration::Tint),
-                            reset: Some(as_shot_reset()),
-                        },
-                        // The sensor neutral pick, beside the temperature and tint it sets.
-                        Control::Picker {
-                            label: "Neutral WB".into(),
-                        },
-                        Control::Action {
-                            action: AS_SHOT.into(),
-                            label: "As shot".into(),
-                            preset: Map::new(),
-                            style: crate::ActionStyle::Default,
-                            icon: Some("target".into()),
-                        },
-                    ],
-                    collapsed: false,
-                }],
+                ],
                 reset: Some(ResetAction {
                     action: RESET.into(),
                     preset: Map::new(),
@@ -611,6 +568,7 @@ impl ToolModule for RawModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::ParameterKind;
     use serde_json::json;
 
     fn planned(layer: &Layer, action: &str, params: Value) -> Result<RawPayload, Error> {

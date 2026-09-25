@@ -11,7 +11,7 @@
 //! no access to the catalog.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, ModuleDescriptor,
-    ModuleLayout, ParameterDescriptor, ParameterKind, Processing, Stage, StageContext, ToolModule,
+    ModuleLayout, ParameterDescriptor, Processing, Stage, StageContext, ToolModule,
     descriptor::{PRESET_ID, PRESET_NAME, PRESET_SETTINGS},
 };
 use crate::{Error, ErrorKind};
@@ -35,23 +35,6 @@ fn no_effects(effect_id: &str) -> Error {
     validation(format!(
         "the presets module declares no effects, so it has no {effect_id} layer"
     ))
-}
-
-fn parameter(name: &str, kind: ParameterKind, required: bool, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind,
-        required,
-        default: None,
-        unit: None,
-        step: None,
-        precision: None,
-        notes: notes.into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
 }
 
 #[derive(Debug)]
@@ -89,36 +72,23 @@ impl PresetsModule {
                     summary: None,
                     patch: false,
                     parameters: vec![
-                        parameter(
-                            PRESET_SETTINGS,
-                            ParameterKind::Settings,
-                            true,
-                            "the settings set to apply: field-patch action identities, each \
-                             with a non-empty object of that action's fields",
-                        ),
-                        parameter(
-                            PRESET_NAME,
-                            ParameterKind::String {
-                                max_length: MAX_PRESET_NAME,
-                            },
-                            true,
-                            "the preset's name, which labels the history entry; not empty",
-                        ),
-                        parameter(
-                            PRESET_ID,
-                            ParameterKind::String {
-                                max_length: MAX_PRESET_ID_LENGTH,
-                            },
-                            false,
+                        ParameterDescriptor::settings(PRESET_SETTINGS)
+                            .required(true)
+                            .notes(
+                                "the settings set to apply: field-patch action identities, each \
+                                 with a non-empty object of that action's fields",
+                            ),
+                        ParameterDescriptor::string(PRESET_NAME, MAX_PRESET_NAME)
+                            .required(true)
+                            .notes("the preset's name, which labels the history entry; not empty"),
+                        ParameterDescriptor::string(PRESET_ID, MAX_PRESET_ID_LENGTH).notes(
                             "the library preset the settings came from; provenance only, never \
                              looked up",
                         ),
                     ],
                 }],
                 queries: Vec::new(),
-                controls: vec![Control::Presets {
-                    action: APPLY_PRESET.into(),
-                }],
+                controls: vec![Control::presets(APPLY_PRESET)],
                 reset: None,
                 canvas: None,
                 developer: false,
