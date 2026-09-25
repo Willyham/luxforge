@@ -14,7 +14,7 @@ use crate::{
         Editor,
         evidence::{CapabilityAction, CapabilitySection, CapabilityStep, Settle},
         message::{ActionMessage, CapabilityMessage, Message},
-        tasks::{REQUEST_NUMBER, mutation, request},
+        tasks::{self, mutation, owner_task, request},
     },
     state::{
         capabilities::{
@@ -26,7 +26,7 @@ use crate::{
 };
 use iced::{Subscription, Task};
 use lightwell_core::{
-    ApiRequest, AssetId, ClientId, ModuleDescriptor, OwnerHandle, ParameterKind,
+    AssetId, ClientId, ModuleDescriptor, OwnerHandle, ParameterKind,
     capabilities::{
         descriptor::SettingDescriptor,
         host::Requirement,
@@ -36,10 +36,9 @@ use lightwell_core::{
     redact_params,
 };
 use serde_json::{Map, Value, json};
-use std::{
-    sync::atomic::Ordering,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
+
+pub(crate) use tasks::CallError;
 
 /// How often the tracked live jobs are read. The worker posts its completions into the owner's
 /// channel, but no client is pushed anything: a client that wants a job's progress reads it. So
@@ -51,22 +50,6 @@ pub(crate) const JOB_POLL: Duration = Duration::from_millis(100);
 
 /// How many times a task retries after its source or artifacts were prepared.
 const PREPARATION_RETRIES: usize = 4;
-
-/// An owner failure with its structured data kept, which a `consent-required` or `not-ready`
-/// answer needs and a plain message would lose.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CallError {
-    pub(crate) code: String,
-    pub(crate) message: String,
-    pub(crate) data: Option<Value>,
-    pub(crate) job_id: Option<String>,
-}
-
-impl std::fmt::Display for CallError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
-    }
-}
 
 /// What one round trip came to.
 #[derive(Clone, Debug)]
@@ -105,7 +88,7 @@ pub(crate) struct Answer {
     pub(crate) sent: Vec<Value>,
 }
 
-/// One request through the owner's method table, recorded redacted before it is sent.
+/// One request through the desktop's one call helper, recorded redacted before it is sent.
 fn call(
     owner: &OwnerHandle,
     client: ClientId,
@@ -114,27 +97,7 @@ fn call(
     sent: &mut Vec<Value>,
 ) -> Result<Value, CallError> {
     sent.push(json!({"method": method, "params": redact_params(method, &params)}));
-    let request = ApiRequest {
-        id: format!("ui-{}", REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)),
-        method: method.into(),
-        params,
-        token: None,
-    };
-    let response = owner.call(client, request).map_err(|error| CallError {
-        code: error.kind.code().into(),
-        message: error.detail,
-        data: None,
-        job_id: None,
-    })?;
-    match response.error {
-        Some(error) => Err(CallError {
-            code: error.code,
-            message: error.message,
-            data: error.data,
-            job_id: error.job_id,
-        }),
-        None => Ok(response.result.unwrap_or(Value::Null)),
-    }
+    tasks::call_detailed(owner, client, method, params)
 }
 
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
@@ -181,39 +144,6 @@ fn classify(error: CallError, retry: &Operation) -> Outcome {
             message: error.message,
         },
         _ => Outcome::Failed(error),
-    }
-}
-
-/// Wait for a source or artifact preparation job to leave the queue, as a preview does.
-fn wait_preparation(
-    owner: &OwnerHandle,
-    client: ClientId,
-    job_id: &str,
-    sent: &mut Vec<Value>,
-) -> Result<(), CallError> {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let status = call(owner, client, "job.status", json!({"job_id": job_id}), sent)?;
-        match status["status"].as_str() {
-            Some("queued" | "running") if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Some("failed") => {
-                return Err(CallError {
-                    code: status["error"]["code"]
-                        .as_str()
-                        .unwrap_or("internal")
-                        .into(),
-                    message: status["error"]["message"]
-                        .as_str()
-                        .unwrap_or("preparation failed")
-                        .into(),
-                    data: None,
-                    job_id: None,
-                });
-            }
-            _ => return Ok(()),
-        }
     }
 }
 
@@ -351,8 +281,8 @@ fn perform(
             let mut attempt = 0;
             loop {
                 match call(owner, client, &method, Value::Object(params.clone()), sent) {
-                    // The source or an artifact is not prepared yet: wait for that job and ask
-                    // again, exactly as a preview does.
+                    // The source or an artifact is not prepared yet: wait for that job through the
+                    // same wait a preview uses, and ask again.
                     Err(error)
                         if error.code == "preparation-required"
                             && attempt < PREPARATION_RETRIES =>
@@ -362,7 +292,8 @@ fn perform(
                             .job_id
                             .clone()
                             .unwrap_or_else(|| error.message.clone());
-                        if let Err(error) = wait_preparation(owner, client, &job, sent) {
+                        sent.push(json!({"method": "job.status", "params": {"job_id": job}}));
+                        if let Err(error) = tasks::wait_source_job(owner, client, &job) {
                             break Err(error);
                         }
                     }
@@ -510,9 +441,10 @@ impl Editor {
         let owner = self.owner.clone();
         let client = self.client;
         let module = module_id.to_owned();
-        Task::perform(async move { run(&owner, client, module, op) }, |answer| {
-            Message::Capability(CapabilityMessage::Answered(Box::new(answer)))
-        })
+        owner_task(
+            move || run(&owner, client, module, op),
+            |answer| Message::Capability(CapabilityMessage::Answered(Box::new(answer))),
+        )
     }
 
     /// Read settings and status for every expanded capability section that has never been read,
@@ -961,9 +893,10 @@ impl Editor {
                 self.capabilities.polling = true;
                 let owner = self.owner.clone();
                 let client = self.client;
-                return Task::perform(async move { poll(&owner, client, jobs) }, |polled| {
-                    Message::Capability(CapabilityMessage::Polled(polled))
-                });
+                return owner_task(
+                    move || poll(&owner, client, jobs),
+                    |polled| Message::Capability(CapabilityMessage::Polled(polled)),
+                );
             }
             CapabilityMessage::Polled(polled) => return self.capability_polled(polled),
         }

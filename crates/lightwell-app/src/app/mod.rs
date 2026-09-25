@@ -106,7 +106,7 @@ use presenter::Presenter;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
-    sync::{Arc, atomic::AtomicU64},
+    sync::Arc,
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -159,7 +159,7 @@ pub(crate) struct Editor {
     pub(crate) session: ClientSession,
     pub(crate) activity: Activity,
     /// Cancels older source waits and rejects their late desktop results.
-    pub(crate) open_generation: Arc<AtomicU64>,
+    pub(crate) open_generation: Arc<tasks::OpenGuard>,
     pub(crate) evidence: Option<Evidence>,
     pub(crate) diagnostics: Option<Diagnostics>,
     pub(crate) run_id: String,
@@ -460,7 +460,7 @@ impl Editor {
             live_server,
             client,
             session: ClientSession::default(),
-            open_generation: Arc::new(AtomicU64::new(0)),
+            open_generation: Arc::default(),
             activity: Activity {
                 requested: 0,
                 displayed: 0,

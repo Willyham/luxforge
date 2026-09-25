@@ -108,8 +108,22 @@ enum OwnerMessage {
     /// How many planned samples wait behind the one the point worker is evaluating.
     #[cfg(test)]
     PointsWaiting(SyncSender<usize>),
+    /// Answer once the named source job of this client is no longer queued or running, or, with no
+    /// job named, once any source job finishes; at once when there is nothing to wait for.
+    AwaitSource {
+        client: ClientId,
+        job: Option<JobId>,
+        reply: SyncSender<()>,
+    },
     Disconnect(ClientId),
     Stop,
+}
+
+/// One client blocked in [`OwnerHandle::wait_source`], answered by the completion it waits for.
+struct SourceWaiter {
+    client: ClientId,
+    job: Option<JobId>,
+    reply: SyncSender<()>,
 }
 
 /// What one preview job should render. The client identity travels with it because a draft belongs
@@ -1022,6 +1036,30 @@ impl OwnerHandle {
         answer.recv().expect("the owner answered")
     }
 
+    /// Block the calling thread until `job`, a source job of `client`'s, is no longer queued or
+    /// running — it finished, failed, or `client` left it through `job.cancel` — or, with no job
+    /// named, until any source job finishes, which is what makes room after a full source queue.
+    /// It answers at once when there is nothing to wait for and reports nothing about the job: the
+    /// caller reads `job.status` afterwards. A blocking receive on the caller's thread rather than
+    /// a poll, so a client waiting on a decode costs nothing until it ends. Never call it on the
+    /// owner thread or on an async executor's thread.
+    pub fn wait_source(&self, client: ClientId, job: Option<&JobId>) -> Result<(), Error> {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::AwaitSource {
+                client,
+                job: job.cloned(),
+                reply,
+            })
+            .map_err(|_| Error::new(ErrorKind::Protocol, "catalog owner is unavailable"))?;
+        answer.recv().map_err(|_| {
+            Error::new(
+                ErrorKind::Protocol,
+                "catalog owner stopped before the source job ended",
+            )
+        })
+    }
+
     /// Forget a client's session. Its committed edits and jobs are unaffected.
     pub fn disconnect(&self, client: ClientId) {
         let _ = self.sender.send(OwnerMessage::Disconnect(client));
@@ -1100,6 +1138,7 @@ fn owner_loop(
         requests: RequestTable::default(),
         announced: Vec::new(),
         points: PointWorker::new(POINT_QUEUE_CAPACITY),
+        source_waiters: Vec::new(),
     };
     while let Ok(message) = receiver.recv() {
         match message {
@@ -1126,6 +1165,9 @@ fn owner_loop(
             #[cfg(test)]
             OwnerMessage::CapabilityThreads(reply) => {
                 let _ = reply.send(owner.host.lanes_started());
+            }
+            OwnerMessage::AwaitSource { client, job, reply } => {
+                owner.await_source(client, job, reply);
             }
             OwnerMessage::Disconnect(client) => owner.disconnect(client),
             OwnerMessage::SourceStarted(id) => {
@@ -1229,6 +1271,8 @@ pub(super) struct Owner {
     pub(super) announced: Vec<Origin>,
     /// Evaluates the samples through a spatial layer this owner planned, off its thread.
     points: PointWorker,
+    /// Clients blocked until a source job ends ([`OwnerHandle::wait_source`]).
+    source_waiters: Vec<SourceWaiter>,
 }
 
 impl Owner {
@@ -1314,6 +1358,38 @@ impl Owner {
         }
     }
 
+    /// Answer a wait at once when nothing it names is queued or running, and hold it otherwise.
+    fn await_source(&mut self, client: ClientId, job: Option<JobId>, reply: SyncSender<()>) {
+        let live =
+            |state: &SourceState| matches!(state, SourceState::Queued | SourceState::Preparing);
+        let pending = match &job {
+            Some(id) => self
+                .jobs
+                .jobs
+                .get(id)
+                .is_some_and(|held| held.clients.contains(&client) && live(&held.state)),
+            None => self.jobs.jobs.values().any(|held| live(&held.state)),
+        };
+        if pending {
+            self.source_waiters
+                .push(SourceWaiter { client, job, reply });
+        } else {
+            let _ = reply.send(());
+        }
+    }
+
+    /// Answer every wait `ended` says is over.
+    fn release_waiters(&mut self, ended: impl Fn(&SourceWaiter) -> bool) {
+        self.source_waiters.retain(|waiter| {
+            if ended(waiter) {
+                let _ = waiter.reply.send(());
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     /// Record every change the message just handled announced, once each.
     fn record_announced(&mut self) {
         for origin in std::mem::take(&mut self.announced) {
@@ -1390,6 +1466,8 @@ impl Owner {
         self.latest_import.remove(&client);
         self.jobs.disconnect(client);
         self.points.disconnect(client);
+        // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
+        self.source_waiters.retain(|waiter| waiter.client != client);
     }
 
     /// A source job finished on the worker: commit what it prepared for the clients still waiting,
@@ -1445,6 +1523,8 @@ impl Owner {
         if !self.jobs.active.is_empty() {
             self.service.evict_development();
         }
+        // A wait for this job is over, and so is every wait for room on the source worker.
+        self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == id));
     }
 }
 
@@ -1532,7 +1612,13 @@ pub(super) fn job_cancel(
     if owner.latest_import.get(&call.client) == Some(&params.job_id) {
         owner.latest_import.remove(&call.client);
     }
-    owner.jobs.cancel(call.client, &params.job_id)
+    let cancelled = owner.jobs.cancel(call.client, &params.job_id)?;
+    // The client left the job, so a wait of its own for it is over, whatever becomes of the work.
+    let client = call.client;
+    owner.release_waiters(|waiter| {
+        waiter.client == client && waiter.job.as_ref() == Some(&params.job_id)
+    });
+    Ok(cancelled)
 }
 
 pub(super) fn source_prepare(
@@ -2193,6 +2279,83 @@ mod tests {
         join.join().unwrap();
         std::fs::remove_file(older).unwrap();
         std::fs::remove_file(newer).unwrap();
+    }
+
+    /// A wait for a source job blocks while the job is held on the worker and answers when the
+    /// client leaves it; a wait for room answers when any source job ends; and a wait with nothing
+    /// to wait for answers at once. Nothing polls: each answer is the owner handling the message
+    /// that ended the wait.
+    #[test]
+    fn a_source_wait_answers_when_its_job_ends_or_its_client_leaves_it() {
+        let catalog = temp("source-wait.sqlite");
+        let photo = temp("source-wait.jpg");
+        let _ = std::fs::remove_file(&catalog);
+        std::fs::copy(fixture(), &photo).unwrap();
+        let gate = crate::modules::RenderGate::open_gate();
+        let hold = gate.clone();
+        let (owner, join) = OwnerHandle::start_observed(
+            &catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            ActivityBoard::new(),
+            Some(Arc::new(move || hold.pass())),
+        )
+        .unwrap();
+        let client = owner.register();
+        owner
+            .wait_source(client, None)
+            .expect("nothing is queued, so a wait for room answers at once");
+        let unknown = JobId::new();
+        owner
+            .wait_source(client, Some(&unknown))
+            .expect("a job the client does not hold is nothing to wait for");
+
+        gate.shut();
+        let queued = ok(
+            &owner,
+            client,
+            "import",
+            "catalog.import",
+            import_params(&photo),
+        );
+        let job = JobId::parse(queued["job_id"].as_str().unwrap()).unwrap();
+        let wait = |job: Option<JobId>| {
+            let owner = owner.clone();
+            let (done, answered) = sync_channel(1);
+            thread::spawn(move || {
+                let _ = done.send(owner.wait_source(client, job.as_ref()));
+            });
+            answered
+        };
+        let for_job = wait(Some(job.clone()));
+        let for_room = wait(None);
+        assert!(
+            for_job.recv_timeout(Duration::from_millis(100)).is_err(),
+            "the job is held on the worker"
+        );
+        ok(
+            &owner,
+            client,
+            "cancel",
+            "job.cancel",
+            json!({"job_id": job}),
+        );
+        for_job
+            .recv_timeout(Duration::from_secs(10))
+            .expect("leaving the job ends the client's wait for it")
+            .unwrap();
+        assert!(
+            for_room.recv_timeout(Duration::from_millis(100)).is_err(),
+            "the cancelled job still holds the worker"
+        );
+        gate.open();
+        for_room
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the worker finishing the job makes room")
+            .unwrap();
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
     }
 
     #[test]

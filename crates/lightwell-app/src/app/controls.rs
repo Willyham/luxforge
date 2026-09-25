@@ -896,8 +896,8 @@ impl Editor {
         let client = self.client;
         let CurveSampleRequest { identity, query } = request;
         let sent = identity.clone();
-        Task::perform(
-            async move {
+        crate::app::tasks::owner_task(
+            move || {
                 let mut params = json!({"asset_id":sent.asset,"entry_id":sent.entry});
                 params
                     .as_object_mut()

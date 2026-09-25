@@ -69,6 +69,8 @@ Accepted or pending decisions. Do not "fix" them without the referenced scope.
 | Re-fetch state and the history page after every command, and re-render on zoom | Narrow command, preview and session tasks with entry merge |
 | Decode every entry's whole stack to list a history page; read versions, lineage and a one-row page for the Original after every commit; check a preview job's currency with two owner round trips before and after it | History rows read from columns; a refresh scoped to what the command changed, the Original read once per open; currency decided from the answer's session generation and asset revision |
 | Accept loop sleeping 10 ms in a non-blocking spin | Blocking `accept` woken by one loopback connection on shutdown |
+| Desktop tasks sleeping 50 ms between `job.status` reads while a source job prepares or the source queue is full, through four call helpers and a capability copy of them | One owner task and one call helper; `OwnerHandle::wait_source` blocks until the owner says a job ended |
+| Owner tasks moved to the async runtime's blocking pool (`spawn_blocking`) | Tried and reverted: each answer then reached the screen a displayed frame later (slider release to committed frame p50 about 28 against 20 ms on 24 MP) |
 | Debug build as the default development launch | Release-profile `develop`; explicit `--debug` for debugging only |
 | Tiny fixture as the only timing evidence | `editor-performance` on generated 24 MP and 60 MP inputs |
 | Desktop tasks carrying a session copy out and writing it back after the round trip | Owner-held sessions per client with a revision; the desktop adopts only newer responses |

@@ -1,6 +1,8 @@
-//! The owner tasks. Every desktop request goes through `call`, which is the same method table the
-//! JSON API dispatches; there is no desktop-only mutation path. Each task takes the narrowest
-//! completion path the performance rules allow.
+//! The owner tasks. Every desktop request goes through [`send`], which is the same method table the
+//! JSON API dispatches; there is no desktop-only mutation path. Every request made off the update
+//! loop runs inside one [`owner_task`], and a source preparation is waited for by blocking on the
+//! owner's answer ([`wait_source_job`]), never by sleeping and asking again. Each task takes the narrowest completion path the performance rules allow; the gesture's
+//! own `draft.set` and preview job stay synchronous calls on the update loop ([`draft_set_now`]).
 use crate::{
     app::{
         draft::GestureId,
@@ -16,7 +18,7 @@ use iced::Task;
 use lightwell_core::{
     ActionResult, ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId,
     EditorState, EntryId, ErrorKind, EventsResult, HistoryPage, HistoryRow, HistorySelection,
-    Lineage, MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest,
+    JobId, Lineage, MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest,
     OwnerHandle, PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription,
     StageTransform, Version,
     mask::commands::{MaskListing, MaskTarget},
@@ -26,7 +28,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Instant,
@@ -261,6 +263,57 @@ pub(crate) fn request() -> MutationRequest {
     }
 }
 
+/// Run `work` — owner requests, and the blocking waits between them — off the update loop, and
+/// hand what it returns back as one message. This is the one way the desktop starts owner work.
+///
+/// The work runs inside the task's own future on the runtime's executor: an owner request blocks
+/// that executor thread until the owner thread answers, and a source preparation is waited for by
+/// blocking on the owner's answer that the job ended, never by sleeping and asking again. Handing
+/// the work to the runtime's blocking pool instead was measured to cost a displayed frame on every
+/// answer — a slider release's committed frame arrived about 8 ms later at p50 on the M4 — so it
+/// does not. The answer itself costs one runtime hop, which is why the gesture's `draft.set` and
+/// preview job do not come through here at all ([`draft_set_now`]).
+pub(crate) fn owner_task<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    answer: impl FnOnce(T) -> Message + Send + 'static,
+) -> Task<Message> {
+    Task::perform(async move { work() }, answer)
+}
+
+/// [`owner_task`] before its answer becomes a message, for a task that goes on to do something
+/// of its own with the answer — a native dialog — before it has one.
+pub(crate) fn owner_work<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Task<T> {
+    Task::perform(async move { work() }, std::convert::identity)
+}
+
+/// An owner failure with its structured data kept: a `consent-required` or `not-ready` answer
+/// needs its `data`, and a `preparation-required` one the job it names, which a plain message
+/// would lose. It reads as `code: message`, which is how every other caller reports it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CallError {
+    pub(crate) code: String,
+    pub(crate) message: String,
+    pub(crate) data: Option<Value>,
+    pub(crate) job_id: Option<String>,
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl From<lightwell_core::Error> for CallError {
+    fn from(error: lightwell_core::Error) -> Self {
+        Self {
+            code: error.kind.code().into(),
+            message: error.detail,
+            data: None,
+            job_id: None,
+        }
+    }
+}
+
 /// One request through the owner's method table: its answer and the event log's sequence when it
 /// was answered. That sequence counts every client's events, including ones this desktop has not
 /// read, so it orders answers and is never where the event sync reads from.
@@ -270,7 +323,17 @@ pub(crate) fn call(
     method: &str,
     params: Value,
 ) -> Result<(Value, u64), String> {
-    send(owner, client, api_request_id(), method, params)
+    send(owner, client, api_request_id(), method, params).map_err(|error| error.to_string())
+}
+
+/// [`call`] with the failure's structured data kept, for a caller that acts on it.
+pub(crate) fn call_detailed(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<Value, CallError> {
+    send(owner, client, api_request_id(), method, params).map(|(answer, _)| answer)
 }
 
 /// One change of this desktop's own whose answer the caller reads back: its answer and the request
@@ -282,7 +345,8 @@ pub(crate) fn call_own(
     params: Value,
 ) -> Result<(Value, String), String> {
     let id = api_request_id();
-    let (answer, _) = send(owner, client, id.clone(), method, params)?;
+    let (answer, _) =
+        send(owner, client, id.clone(), method, params).map_err(|error| error.to_string())?;
     Ok((answer, id))
 }
 
@@ -296,13 +360,14 @@ fn api_request_id() -> String {
     )
 }
 
+/// The one owner request every desktop call makes, blocking this thread until the owner answers.
 fn send(
     owner: &OwnerHandle,
     client: ClientId,
     id: String,
     method: &str,
     params: Value,
-) -> Result<(Value, u64), String> {
+) -> Result<(Value, u64), CallError> {
     #[cfg(test)]
     owner_calls::record(method);
     let request = ApiRequest {
@@ -311,13 +376,15 @@ fn send(
         params,
         token: None,
     };
-    let response = owner
-        .call(client, request)
-        .map_err(|error| error.to_string())?;
-    if let Some(error) = response.error {
-        Err(format!("{}: {}", error.code, error.message))
-    } else {
-        Ok((response.result.unwrap_or(Value::Null), response.sequence))
+    let response = owner.call(client, request)?;
+    match response.error {
+        Some(error) => Err(CallError {
+            code: error.code,
+            message: error.message,
+            data: error.data,
+            job_id: error.job_id,
+        }),
+        None => Ok((response.result.unwrap_or(Value::Null), response.sequence)),
     }
 }
 
@@ -356,61 +423,136 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
-/// Poll only while this client's bounded source job is active. Every poll is a short owner
-/// request; decoding and hashing remain on the source worker.
-fn wait_source_job(
+/// Wait for one source job of this client's to finish and answer what it came to: its status when
+/// it is ready, and its error when it failed. Each turn reads `job.status` and, while the job is
+/// queued or running, blocks until the owner says it ended ([`OwnerHandle::wait_source`]), so the
+/// wait costs one owner request per state the job reaches and nothing in between. Decoding and
+/// hashing stay on the source worker. The caller's thread blocks: run it inside an [`owner_task`].
+pub(crate) fn wait_source_job(
     owner: &OwnerHandle,
     client: ClientId,
     job_id: &str,
-    open_guard: Option<(&AtomicU64, u64)>,
-) -> Result<EditorState, String> {
+) -> Result<Value, CallError> {
+    let job = JobId::parse(job_id)?;
     loop {
-        if open_guard.is_some_and(|(guard, generation)| guard.load(Ordering::Acquire) != generation)
-        {
-            let _ = call(owner, client, "job.cancel", json!({"job_id":job_id}));
-            return Err("superseded open".into());
-        }
-        let (status, _) = call(owner, client, "job.status", json!({"job_id":job_id}))?;
+        let (status, _) = send(
+            owner,
+            client,
+            api_request_id(),
+            "job.status",
+            json!({"job_id":job_id}),
+        )?;
         match status["status"].as_str() {
-            Some("ready") => return parse(status["asset"].clone()),
+            Some("ready") => return Ok(status),
             Some("failed") => {
-                return Err(format!(
-                    "{}: {}",
-                    status["error"]["code"].as_str().unwrap_or("internal"),
-                    status["error"]["message"]
+                return Err(CallError {
+                    code: status["error"]["code"]
+                        .as_str()
+                        .unwrap_or("internal")
+                        .into(),
+                    message: status["error"]["message"]
                         .as_str()
                         .unwrap_or("source preparation failed")
-                ));
+                        .into(),
+                    data: None,
+                    job_id: None,
+                });
             }
-            Some("queued" | "running") => std::thread::sleep(std::time::Duration::from_millis(50)),
-            _ => return Err("unexpected source job status".into()),
+            Some("queued" | "running") => owner.wait_source(client, Some(&job))?,
+            _ => {
+                return Err(CallError {
+                    code: ErrorKind::Internal.code().into(),
+                    message: format!("unexpected source job status: {status}"),
+                    data: None,
+                    job_id: None,
+                });
+            }
         }
     }
 }
 
-/// One preview job, waiting for the source preparation it needs first. Whether the job is still
-/// wanted is not asked here: the desktop decides that when the answer arrives, from the session
-/// generation and the asset revision the answer carries beside the job ([`super::Editor`]'s
-/// `superseded`), and the preview queue's own generation keeps an older frame from following a
-/// newer one on screen.
+/// Which open the import tasks are for, and the source job the newest of them is waiting on.
+///
+/// A newer open supersedes an older import still being prepared: the newer task cancels the older
+/// job, which ends the older task's wait at once and frees the source worker for the photograph
+/// that is now wanted. Nothing wakes to check the generation; the cancel is what the older task
+/// notices.
+#[derive(Debug, Default)]
+pub(crate) struct OpenGuard {
+    generation: AtomicU64,
+    /// The newest import's generation and source job, once it has one.
+    job: Mutex<Option<(u64, String)>>,
+}
+
+impl OpenGuard {
+    pub(crate) fn load(&self, order: Ordering) -> u64 {
+        self.generation.load(order)
+    }
+
+    pub(crate) fn store(&self, generation: u64, order: Ordering) {
+        self.generation.store(generation, order);
+    }
+
+    fn superseded(&self, generation: u64) -> bool {
+        self.load(Ordering::Acquire) != generation
+    }
+
+    /// Name this import's job as the newest, and return the job of an older import it replaces.
+    /// A job an older import shares with this one — the same file opened again — is kept.
+    fn claim(&self, generation: u64, job_id: &str) -> Option<String> {
+        let mut held = self
+            .job
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let older = match held.as_ref() {
+            Some((newer, _)) if *newer > generation => return None,
+            Some((_, older)) if older != job_id => Some(older.clone()),
+            _ => None,
+        };
+        *held = Some((generation, job_id.to_owned()));
+        older
+    }
+
+    /// Whether a newer import is waiting on this same job, which the superseded one must not
+    /// cancel from under it.
+    fn shared_with_newer(&self, generation: u64, job_id: &str) -> bool {
+        let held = self
+            .job
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        held.as_ref()
+            .is_some_and(|(newer, job)| *newer > generation && job == job_id)
+    }
+}
+
+/// One preview job, waiting for the source preparation it needs first, or for room on the source
+/// worker when its queue is full. Both waits block on the owner's answer ([`OwnerHandle::
+/// wait_source`]) and never on a timer. Whether the job is still wanted is not asked here: the
+/// desktop decides that when the answer arrives, from the session generation and the asset
+/// revision the answer carries beside the job ([`super::Editor`]'s `superseded`), and the preview
+/// queue's own generation keeps an older frame from following a newer one on screen.
 fn ready_preview_job(owner: &OwnerHandle, request: PreviewRequest) -> Result<PreviewJob, String> {
     let client = request.client;
     loop {
         match plan_preview(owner, request.clone()) {
             Ok(job) => return Ok(job),
-            Err(error) if error.kind == lightwell_core::ErrorKind::PreparationRequired => {
+            Err(error) if error.kind == ErrorKind::PreparationRequired => {
                 let job = error
                     .preparation_job()
                     .ok_or_else(|| error.to_string())?
                     .to_string();
-                let _ = wait_source_job(owner, client, &job, None)?;
+                wait_source_job(owner, client, &job).map_err(|error| error.to_string())?;
             }
+            // Room is made by a source job ending, and the owner answers the wait when one does:
+            // at once when none is queued or running, so this never spins.
             Err(error)
-                if error.kind == lightwell_core::ErrorKind::ResourceLimit
+                if error.kind == ErrorKind::ResourceLimit
                     && (error.detail.starts_with("RAW mosaic queue is full")
                         || error.detail.starts_with("source preparation queue is full")) =>
             {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                owner
+                    .wait_source(client, None)
+                    .map_err(|error| error.to_string())?;
             }
             Err(error) => return Err(error.to_string()),
         }
@@ -529,8 +671,8 @@ pub(crate) fn refresh(
 
 /// Discovery runs once: the controls on screen are whatever the registered modules declare.
 pub(crate) fn modules_task(owner: OwnerHandle, client: ClientId) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (mut listed, _) = call(&owner, client, "module.list", json!({}))?;
             parse::<Vec<ModuleDescriptor>>(listed["modules"].take())
         },
@@ -543,12 +685,12 @@ pub(crate) fn import_task(
     client: ClientId,
     path: PathBuf,
     generation: u64,
-    open_guard: Arc<AtomicU64>,
+    open_guard: Arc<OpenGuard>,
     proxy: Option<ProxyBounds>,
     queued: Option<Result<QueuedImport, String>>,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             import_now(
                 &owner,
                 client,
@@ -573,7 +715,7 @@ fn import_now(
     client: ClientId,
     path: &Path,
     generation: u64,
-    open_guard: &AtomicU64,
+    open_guard: &OpenGuard,
     proxy: Option<ProxyBounds>,
     queued: Option<Result<QueuedImport, String>>,
 ) -> Result<Refresh, String> {
@@ -581,14 +723,22 @@ fn import_now(
         Some(result) => result?,
         None => queue_import(owner, client, path)?,
     };
-    let state = wait_source_job(owner, client, &job_id, Some((open_guard, generation)))?;
-    if open_guard.load(Ordering::Acquire) != generation {
-        let _ = call(owner, client, "job.cancel", json!({"job_id":job_id}));
+    // An older import still preparing is no longer wanted: leaving its job ends its task's wait.
+    if let Some(older) = open_guard.claim(generation, &job_id) {
+        let _ = call(owner, client, "job.cancel", json!({"job_id":older}));
+    }
+    let prepared = wait_source_job(owner, client, &job_id);
+    if open_guard.superseded(generation) {
+        if !open_guard.shared_with_newer(generation, &job_id) {
+            let _ = call(owner, client, "job.cancel", json!({"job_id":job_id}));
+        }
         return Err("superseded open".into());
     }
+    let mut prepared = prepared.map_err(|error| error.to_string())?;
+    let state: EditorState = parse(prepared["asset"].take())?;
     call(owner, client, "job.adopt", json!({"job_id":job_id}))?;
     let mut refreshed = refresh(owner, client, state.asset.id, Scope::Open, proxy)?;
-    if open_guard.load(Ordering::Acquire) != generation {
+    if open_guard.superseded(generation) {
         return Err("superseded open".into());
     }
     // An import is announced under the `catalog.import` request that asked for it.
@@ -659,8 +809,8 @@ pub(crate) fn state_task(
     params: Value,
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
-    Task::perform(
-        async move { command_now(&owner, client, asset_id, &method, params, proxy) },
+    owner_task(
+        move || command_now(&owner, client, asset_id, &method, params, proxy),
         |result| Message::Sync(SyncMessage::Refreshed(result.map(Box::new))),
     )
 }
@@ -678,8 +828,8 @@ pub(crate) fn preview_task(
     proxy: Option<ProxyBounds>,
     answered: fn(Result<Box<PreviewPayload>, String>) -> Message,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (mut result, _) = call(&owner, client, method, params)?;
             let session: ClientSession = parse(result["session"].take())?;
             let job = ready_preview_job(
@@ -705,8 +855,8 @@ pub(crate) fn recipe_task(
     asset_id: AssetId,
     entry_id: Option<EntryId>,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (described, _) = call(
                 &owner,
                 client,
@@ -758,8 +908,8 @@ pub(crate) fn crop_preview_task(
     layer_count: usize,
     displaced: Option<DraftId>,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             if let Some(draft_id) = displaced {
                 let _ = call(&owner, client, "draft.cancel", json!({"draft_id":draft_id}));
             }
@@ -796,8 +946,8 @@ pub(crate) fn draft_begin_task(
     target: MaskTarget,
     displaced: Option<DraftId>,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             if let Some(draft_id) = displaced {
                 let _ = call(&owner, client, "draft.cancel", json!({"draft_id":draft_id}));
             }
@@ -962,8 +1112,8 @@ pub(crate) fn draft_commit_task(
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     let draft = draft_id.clone();
-    Task::perform(
-        async move { draft_commit_now(&owner, client, &draft_id, asset_id, mutation, proxy) },
+    owner_task(
+        move || draft_commit_now(&owner, client, &draft_id, asset_id, mutation, proxy),
         move |result| {
             Message::Draft(DraftMessage::Committed {
                 gesture,
@@ -1006,8 +1156,8 @@ pub(crate) fn draft_cancel_task(
     reseed: Option<Reseed>,
 ) -> Task<Message> {
     let draft = draft_id.clone();
-    Task::perform(
-        async move { draft_cancel_now(&owner, client, &draft_id, reseed) },
+    owner_task(
+        move || draft_cancel_now(&owner, client, &draft_id, reseed),
         move |(cancelled, reseed)| {
             Message::Draft(DraftMessage::Cancelled {
                 draft,
@@ -1035,8 +1185,8 @@ pub(crate) fn draft_reapply_task(
     draft_id: DraftId,
 ) -> Task<Message> {
     let draft = draft_id.clone();
-    Task::perform(
-        async move { draft_reapply_now(&owner, client, &draft_id) },
+    owner_task(
+        move || draft_reapply_now(&owner, client, &draft_id),
         move |result| {
             Message::Draft(DraftMessage::Reapplied {
                 gesture,
@@ -1058,8 +1208,8 @@ pub(crate) fn current_preview_task(
     entry_id: Option<EntryId>,
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
-    Task::perform(
-        async move { current_preview(&owner, client, asset_id, entry_id, proxy) },
+    owner_task(
+        move || current_preview(&owner, client, asset_id, entry_id, proxy),
         |result| Message::Preview(PreviewMessage::Loaded(result.map(Box::new))),
     )
 }
@@ -1099,8 +1249,8 @@ pub(crate) fn transform_task(
     asset_id: AssetId,
     entry_id: Option<EntryId>,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (transform, _) = call(
                 &owner,
                 client,
@@ -1119,8 +1269,8 @@ pub(crate) fn session_task(
     method: &'static str,
     params: Value,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (result, _) = call(&owner, client, method, params)?;
             parse::<ClientSession>(result)
         },
@@ -1131,8 +1281,8 @@ pub(crate) fn session_task(
 /// Panel collapse, canvas mode and the thirds overlay are per-client session state the owner holds;
 /// the desktop keeps no copy outside the session it adopts back.
 pub(crate) fn workspace_task(owner: OwnerHandle, client: ClientId, params: Value) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (result, _) = call(&owner, client, "workspace.set", params)?;
             parse::<ClientSession>(result)
         },
@@ -1155,8 +1305,8 @@ pub(crate) fn locate_task(
 ) -> Task<Message> {
     let picked = entry.clone();
     let picked_mode = mode.clone();
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (located, _) = call(
                 &owner,
                 client,
@@ -1198,8 +1348,8 @@ pub(crate) fn query_task(
     point: (u32, u32),
 ) -> Task<Message> {
     let answered = entry.clone();
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let mut params = json!({"asset_id":asset_id,"entry_id":entry});
             let object = params.as_object_mut().expect("the envelope is an object");
             for (name, value) in envelope {
@@ -1235,8 +1385,8 @@ pub(crate) fn sample_task(
     y: u32,
 ) -> Task<Message> {
     let sampled = entry.clone();
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let mut params = json!({"asset_id":asset_id,"x":x,"y":y});
             if let Some(draft_id) = draft_id
                 && let Some(object) = params.as_object_mut()
@@ -1259,8 +1409,8 @@ pub(crate) fn sample_task(
 }
 
 pub(crate) fn pan_task(owner: OwnerHandle, client: ClientId, x: f32, y: f32) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (result, _) = call(&owner, client, "view.set", json!({"pan_x":x,"pan_y":y}))?;
             parse::<ClientSession>(result)
         },
@@ -1275,8 +1425,8 @@ pub(crate) fn versions_task(
     method: &'static str,
     params: Value,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (_, request) = call_own(&owner, client, method, params)?;
             let (mut listed, _) =
                 call(&owner, client, "version.list", json!({"asset_id":asset_id}))?;
@@ -1294,8 +1444,8 @@ pub(crate) fn sync_task(
     own: Vec<String>,
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
-    Task::perform(
-        async move { sync_now(&owner, client, asset_id, after, &own, proxy) },
+    owner_task(
+        move || sync_now(&owner, client, asset_id, after, &own, proxy),
         |value| Message::Sync(SyncMessage::Synced(value)),
     )
 }
@@ -1316,8 +1466,8 @@ pub(crate) struct PerformanceRead {
 /// asked for it. Neither method mutates anything or emits an event, so a sampling section never
 /// makes this or any other client resynchronise.
 pub(crate) fn performance_task(owner: OwnerHandle, client: ClientId, epoch: u64) -> Task<Message> {
-    Task::perform(
-        async move { read_performance(&owner, client) },
+    owner_task(
+        move || read_performance(&owner, client),
         move |result| {
             Message::Performance(PerformanceMessage::Sampled {
                 epoch,
@@ -1422,9 +1572,10 @@ pub(crate) fn list_presets(
 
 /// Load the library, at startup and whenever this desktop needs the listing again.
 pub(crate) fn presets_task(owner: OwnerHandle, client: ClientId) -> Task<Message> {
-    Task::perform(async move { list_presets(&owner, client) }, |result| {
-        Message::Preset(PresetMessage::Listed(result))
-    })
+    owner_task(
+        move || list_presets(&owner, client),
+        |result| Message::Preset(PresetMessage::Listed(result)),
+    )
 }
 
 /// One library method and the listing after it.
@@ -1464,8 +1615,8 @@ pub(crate) fn preset_create_task(
     capture: Value,
     create: Value,
 ) -> Task<Message> {
-    Task::perform(
-        async move { preset_create_now(&owner, client, capture, create) },
+    owner_task(
+        move || preset_create_now(&owner, client, capture, create),
         |result| Message::Preset(PresetMessage::Created(result.map(Box::new))),
     )
 }
@@ -1534,8 +1685,8 @@ pub(crate) fn preset_import_task(
     client: ClientId,
     path: PathBuf,
 ) -> Task<Message> {
-    Task::perform(
-        async move { preset_import_now(&owner, client, &path) },
+    owner_task(
+        move || preset_import_now(&owner, client, &path),
         |result| Message::Preset(PresetMessage::Imported(result.map(Box::new))),
     )
 }
@@ -1558,8 +1709,8 @@ pub(crate) fn preset_delete_task(
     client: ClientId,
     id: String,
 ) -> Task<Message> {
-    Task::perform(
-        async move { preset_delete_now(&owner, client, &id) },
+    owner_task(
+        move || preset_delete_now(&owner, client, &id),
         |result| Message::Preset(PresetMessage::Deleted(result.map(Box::new))),
     )
 }
@@ -1570,8 +1721,8 @@ pub(crate) fn preset_report_task(
     client: ClientId,
     id: String,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (read, _) = call(&owner, client, "preset.read", json!({"preset_id": id}))?;
             serde_json::to_string_pretty(&read["preset"]["report"])
                 .map_err(|error| error.to_string())
@@ -1589,36 +1740,42 @@ pub(crate) fn preset_export_task(
     client: ClientId,
     id: String,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
-            let (exported, _) = call(&owner, client, "preset.export", json!({"preset_id": id}))?;
-            let file_name = exported["file_name"]
-                .as_str()
-                .ok_or("preset.export returned no file name")?
-                .to_owned();
-            let content = exported["content"]
-                .as_str()
-                .ok_or("preset.export returned no content")?
-                .to_owned();
-            let Some(file) = rfd::AsyncFileDialog::new()
-                .set_file_name(&file_name)
-                .add_filter("Lightwell preset", &["lwpreset"])
-                .save_file()
-                .await
-            else {
-                return Ok(None);
-            };
-            std::fs::write(file.path(), content).map_err(|error| {
-                format!(
-                    "{}: cannot write {}: {error}",
-                    ErrorKind::FileAccess.code(),
-                    file.file_name()
-                )
-            })?;
-            Ok(Some(file.file_name()))
-        },
-        |result| Message::Preset(PresetMessage::Exported(result)),
-    )
+    owner_work(move || {
+        let (exported, _) = call(&owner, client, "preset.export", json!({"preset_id": id}))?;
+        let file_name = exported["file_name"]
+            .as_str()
+            .ok_or("preset.export returned no file name")?
+            .to_owned();
+        let content = exported["content"]
+            .as_str()
+            .ok_or("preset.export returned no content")?
+            .to_owned();
+        Ok::<_, String>((file_name, content))
+    })
+    .then(|exported| {
+        Task::perform(
+            async move {
+                let (file_name, content) = exported?;
+                let Some(file) = rfd::AsyncFileDialog::new()
+                    .set_file_name(&file_name)
+                    .add_filter("Lightwell preset", &["lwpreset"])
+                    .save_file()
+                    .await
+                else {
+                    return Ok(None);
+                };
+                std::fs::write(file.path(), content).map_err(|error| {
+                    format!(
+                        "{}: cannot write {}: {error}",
+                        ErrorKind::FileAccess.code(),
+                        file.file_name()
+                    )
+                })?;
+                Ok(Some(file.file_name()))
+            },
+            |result| Message::Preset(PresetMessage::Exported(result)),
+        )
+    })
 }
 
 /// One host method as an evidence script names it, with the library listed after it when the
@@ -1629,8 +1786,8 @@ pub(crate) fn host_task(
     method: String,
     params: Value,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (result, sequence) = call(&owner, client, &method, params)?;
             let (presets, sequence) = if is_library_event(&method) {
                 let (presets, seen) = list_presets(&owner, client)?;
@@ -1655,8 +1812,8 @@ pub(crate) fn older_task(
     asset_id: AssetId,
     before_sequence: u64,
 ) -> Task<Message> {
-    Task::perform(
-        async move {
+    owner_task(
+        move || {
             let (page, _) = call(
                 &owner,
                 client,
@@ -1718,9 +1875,9 @@ mod tests {
             )
             .unwrap();
             let job = queued["job_id"].as_str().unwrap().to_owned();
-            let state = wait_source_job(&owner, client, &job, None).unwrap();
+            let ready = wait_source_job(&owner, client, &job).unwrap();
             call(&owner, client, "job.adopt", json!({"job_id": job})).unwrap();
-            let asset = state.asset.id;
+            let asset: AssetId = parse(ready["asset"]["asset"]["id"].clone()).unwrap();
             owner_calls::take();
             let refresh = refresh(&owner, client, asset.clone(), Scope::Open, None).unwrap();
             let calls = owner_calls::take();
@@ -1890,8 +2047,16 @@ mod tests {
         let agent = owner.register();
         let fixture =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg");
-        let opened = import_now(&owner, client, &fixture, 0, &AtomicU64::new(0), None, None)
-            .expect("the import opens");
+        let opened = import_now(
+            &owner,
+            client,
+            &fixture,
+            0,
+            &OpenGuard::default(),
+            None,
+            None,
+        )
+        .expect("the import opens");
         let asset = opened.state.asset.id.clone();
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(opened)))));
         assert_eq!(editor.api_sequence, 0, "an open reads no event");
@@ -1986,6 +2151,24 @@ mod tests {
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));
         assert_eq!(editor.api_sequence, caught_up + 3);
         testing::finish(editor, catalog);
+    }
+
+    /// Each import claims the guard with its job: a newer one is handed the older job to cancel,
+    /// which is what ends the older task's wait, while a job both share — the same file opened
+    /// again — is never cancelled from under the newer, and an older import displaces nothing.
+    #[test]
+    fn a_newer_open_names_the_older_import_job_to_cancel_and_keeps_a_shared_one() {
+        let guard = OpenGuard::default();
+        assert_eq!(guard.claim(1, "job-a"), None);
+        assert_eq!(guard.claim(2, "job-b").as_deref(), Some("job-a"));
+        assert_eq!(guard.claim(1, "job-c"), None, "an older import is late");
+        assert!(guard.shared_with_newer(1, "job-b") && !guard.shared_with_newer(1, "job-a"));
+        assert_eq!(guard.claim(3, "job-b"), None, "the same job is kept");
+        assert!(guard.shared_with_newer(2, "job-b"));
+        assert!(
+            !guard.shared_with_newer(3, "job-b"),
+            "nothing newer holds it"
+        );
     }
 
     #[test]
