@@ -540,7 +540,7 @@ Each step is an object with exactly one key.
 - `preset` clicks one row of the Presets section: `{"name": "Soft film", "group": "Synthetic"}`.
   The name matches exactly, case included, and `group` is needed only when two groups hold that
   name; no match, or more than one, fails the step. The click is the section action's own
-  `RunAction`, so the frame is captured on its pixels like an `api` step's.
+  `ActionMessage::Run`, so the frame is captured on its pixels like an `api` step's.
 - `preset_create` fills the create form through its own messages and presses Create:
   `{"name": "Tone only", "group": "User presets", "groups": ["Basic · Tone"]}`, where `groups`
   lists exactly the checkbox labels to leave checked and `group` defaults to the form's. With
