@@ -226,22 +226,9 @@ fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lightwell_testkit::fixtures::{jpeg as fixture, temp_path as temp};
     use serde_json::{Value, json};
-    use std::{
-        io::Cursor,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    fn temp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "lightwell-transport-{}-{}-{name}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-    fn fixture() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-    }
+    use std::io::Cursor;
     fn request(id: &str, method: &str, params: Value) -> String {
         format!("{}\n", json!({"id":id,"method":method,"params":params}))
     }

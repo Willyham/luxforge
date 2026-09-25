@@ -1903,6 +1903,7 @@ dependencies = [
  "image",
  "lightwell-core",
  "lightwell-evidence",
+ "lightwell-reference",
  "lightwell-testkit",
  "lightwell-ui",
  "rfd",
@@ -1982,8 +1983,10 @@ name = "lightwell-testkit"
 version = "0.0.0"
 dependencies = [
  "lightwell-core",
+ "lightwell-reference",
  "rustls",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -20,10 +20,10 @@ use sha2::{Digest, Sha256};
 use std::{
     io::{self, Read},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
@@ -53,15 +53,8 @@ pub(crate) fn enveloped(method: &str, params: Value, request_id: &str) -> Value 
     }
 }
 
-/// A fresh directory path under the system temporary directory; nothing is created.
-pub(crate) fn temp(name: &str) -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    std::env::temp_dir().join(format!(
-        "lightwell-capabilities-{}-{}-{name}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
-}
+/// A fresh path under the system temporary directory; nothing is created.
+pub(crate) use lightwell_testkit::fixtures::temp_path as temp;
 
 /// A setting of `parameter`, labelled with its name.
 pub(crate) fn setting(parameter: ParameterDescriptor) -> SettingDescriptor {

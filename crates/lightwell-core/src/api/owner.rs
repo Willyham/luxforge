@@ -1629,12 +1629,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::path::PathBuf;
 
-    fn temp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("lightwell-owner-{}-{name}", std::process::id()))
-    }
-    fn fixture() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-    }
+    use lightwell_testkit::fixtures::{jpeg as fixture, temp_path as temp};
 
     /// One JSON call against the owner, as an independent client would make it.
     fn send(

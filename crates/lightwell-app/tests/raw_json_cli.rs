@@ -5,141 +5,22 @@
 //! `LIGHTWELL_RAW_OWNER_DIR=/path/to/private/raw cargo test --release -p lightwell-app
 //! --test raw_json_cli -- --ignored --nocapture`.
 
+use lightwell_testkit::{JsonProcess, client::request_id, fixtures};
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
 const JOB_TIMEOUT: Duration = Duration::from_secs(180);
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
-const CHILD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-struct JsonClient {
-    child: Option<Child>,
-    input: Option<ChildStdin>,
-    output: mpsc::Receiver<std::io::Result<String>>,
-    next_id: u64,
-}
-
-fn response_reader(stdout: ChildStdout) -> mpsc::Receiver<std::io::Result<String>> {
-    let (sender, receiver) = mpsc::sync_channel(16);
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            if sender.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    receiver
-}
-
-fn stop_child(child: &mut Child) {
-    let deadline = Instant::now() + CHILD_SHUTDOWN_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return,
-            Ok(None) if Instant::now() < deadline => {
-                thread::sleep(Duration::from_millis(25));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return;
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return;
-            }
-        }
-    }
-}
-
-impl JsonClient {
-    fn start(catalog: &Path) -> Self {
-        let child = Command::new(env!("CARGO_BIN_EXE_lightwell-json"))
-            .args(["--catalog", catalog.to_str().expect("catalog is UTF-8")])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start lightwell-json");
-        let mut child = child;
-        let input = child.stdin.take().expect("JSON stdin");
-        let output = response_reader(child.stdout.take().expect("JSON stdout"));
-        Self {
-            child: Some(child),
-            input: Some(input),
-            output,
-            next_id: 1,
-        }
-    }
-
-    fn call_raw(&mut self, method: &str, params: Value) -> Value {
-        let id = format!("raw-cli-{}", self.next_id);
-        self.next_id += 1;
-        let input = self.input.as_mut().expect("JSON process is running");
-        writeln!(
-            input,
-            "{}",
-            json!({"id":id,"method":method,"params":params})
-        )
-        .expect("write JSON request");
-        input.flush().expect("flush JSON request");
-        let line = self
-            .output
-            .recv_timeout(RESPONSE_TIMEOUT)
-            .unwrap_or_else(|_| panic!("timed out waiting for {method} response"))
-            .expect("read JSON response");
-        let response: Value = serde_json::from_str(&line).expect("valid JSON response");
-        assert_eq!(response["id"], id, "response id for {method}");
-        response
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let response = self.call_raw(method, params);
-        assert!(response.get("error").is_none(), "{method}: {response}");
-        response["result"].clone()
-    }
-
-    fn finish(mut self) {
-        drop(self.input.take());
-        let mut child = self.child.take().expect("JSON process");
-        stop_child(&mut child);
-        assert!(
-            child
-                .try_wait()
-                .expect("wait for lightwell-json")
-                .expect("lightwell-json did not exit")
-                .success()
-        );
-    }
-}
-
-impl Drop for JsonClient {
-    fn drop(&mut self) {
-        self.input.take();
-        if let Some(mut child) = self.child.take() {
-            stop_child(&mut child);
-        }
-    }
-}
-
-fn catalog_path(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "lightwell-raw-json-{label}-{}-{}.sqlite",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
+/// One `lightwell-json` process over one catalog.
+fn start(catalog: &Path) -> JsonProcess {
+    JsonProcess::start(
+        env!("CARGO_BIN_EXE_lightwell-json"),
+        &["--catalog", catalog.to_str().expect("catalog is UTF-8")],
+        "raw-cli",
+    )
 }
 
 fn fixture(root: &Path, names: &[&str]) -> PathBuf {
@@ -185,32 +66,19 @@ fn mutation(state: &Value, request_id: &str) -> Value {
     })
 }
 
-fn wait_job(client: &mut JsonClient, job_id: &str) -> Value {
-    let started = Instant::now();
-    loop {
-        assert!(
-            started.elapsed() < JOB_TIMEOUT,
-            "RAW source job timed out: {job_id}"
-        );
-        let response = client.call_raw("job.status", json!({"job_id":job_id}));
-        assert!(response.get("error").is_none(), "job.status: {response}");
-        let result = &response["result"];
-        match result["status"].as_str() {
-            Some("queued" | "running") => thread::sleep(Duration::from_millis(50)),
-            Some("ready") => return result.clone(),
-            Some("failed") => panic!("RAW source job failed: {result}"),
-            state => panic!("unexpected RAW source job state {state:?}: {result}"),
-        }
-    }
+fn wait_job(client: &mut JsonProcess, job_id: &str) -> Value {
+    let status = client.settle("job.status", &json!(job_id), JOB_TIMEOUT);
+    assert_eq!(status["status"], "ready", "RAW source job: {status}");
+    status
 }
 
-fn import_and_adopt(client: &mut JsonClient, path: &Path) -> Value {
+fn import_and_adopt(client: &mut JsonProcess, path: &Path) -> Value {
     let imported = client.call(
         "catalog.import",
         json!({
             "path": path.to_str().expect("fixture is UTF-8"),
             "mutation": {
-                "request_id": format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+                "request_id": request_id("import"),
                 "actor": "raw-json-cli",
             },
         }),
@@ -226,7 +94,7 @@ fn import_and_adopt(client: &mut JsonClient, path: &Path) -> Value {
 }
 
 fn sample_after_preparation(
-    client: &mut JsonClient,
+    client: &mut JsonProcess,
     asset: &str,
     entry: &str,
     x: u32,
@@ -283,12 +151,12 @@ fn raw_action(schema: &Value, keyword: &str, parameter: &str) -> String {
     matches.into_iter().next().expect("RAW action")
 }
 
-fn state(client: &mut JsonClient, asset: &str) -> Value {
+fn state(client: &mut JsonProcess, asset: &str) -> Value {
     client.call("asset.state", json!({"asset_id":asset}))
 }
 
 fn apply_action(
-    client: &mut JsonClient,
+    client: &mut JsonProcess,
     method: &str,
     current: &Value,
     request: &str,
@@ -308,8 +176,8 @@ fn apply_action(
 
 fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
     let metadata_before = std::fs::metadata(path).expect("fixture metadata");
-    let catalog = catalog_path(label);
-    let mut client = JsonClient::start(&catalog);
+    let catalog = fixtures::temp_catalog(&format!("raw-json-{label}"));
+    let mut client = start(&catalog);
     let schema = client.call("schema.list", Value::Null);
     let temperature_action = raw_action(&schema, "raw-temperature", "kelvin");
     let tint_action = raw_action(&schema, "raw-tint", "tint");
@@ -530,7 +398,7 @@ fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
 
     // A fresh process has no source cache. Exercise the explicit PreparationRequired ->
     // source.prepare(entry_id) -> job.status -> retry path rather than a direct service call.
-    let mut reopened = JsonClient::start(&catalog);
+    let mut reopened = start(&catalog);
     let reopened_state = reopened.call("asset.state", json!({"asset_id":asset}));
     assert_eq!(asset_id(&reopened_state), asset);
     assert_eq!(current_entry_id(&reopened_state), restored_entry);

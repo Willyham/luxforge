@@ -13,26 +13,13 @@ use rusqlite::{Connection, params};
 use serde_json::{Map, Value, json};
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
 };
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
+use lightwell_testkit::fixtures::jpeg;
 
 fn catalog(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "lightwell-preset-library-{name}-{}-{}.sqlite",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&path);
-    path
-}
-
-fn jpeg() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
+    lightwell_testkit::fixtures::temp_catalog(&format!("preset-library-{name}"))
 }
 
 fn preset_file(name: &str) -> String {

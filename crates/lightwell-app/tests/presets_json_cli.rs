@@ -3,125 +3,51 @@
 //! `edit.set-*` actions and compare stacks and pixels, capture, create, export, re-import, delete
 //! and read the event log. Each test runs on a fresh temporary catalog.
 
+use lightwell_testkit::{JsonProcess, client::request_id, fixtures};
 use serde_json::{Map, Value, json};
-use std::{
-    io::{BufRead, BufReader, Write},
-    path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
-};
+use std::{path::Path, time::Duration};
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
 const JOB_TIMEOUT: Duration = Duration::from_secs(60);
 const ACTOR: &str = "presets-json-cli";
 
 /// A fresh `{request_id, actor}` envelope, so every call is a new request.
 fn request() -> Value {
-    json!({
-        "request_id": format!("request-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
-        "actor": ACTOR,
-    })
-}
-
-fn temp_catalog() -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "lightwell-presets-json-cli-{}-{}.sqlite",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&path);
-    path
-}
-
-fn repository(path: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(path)
-        .canonicalize()
-        .unwrap_or_else(|error| panic!("{path}: {error}"))
+    json!({"request_id": request_id("request"), "actor": ACTOR})
 }
 
 fn preset_file(name: &str) -> String {
-    std::fs::read_to_string(repository(&format!("fixtures/presets/{name}")))
+    std::fs::read_to_string(fixtures::fixture(&format!("presets/{name}")))
         .expect("a preset fixture")
 }
 
-/// One `lightwell-json` process over one catalog, answering one request per line.
-struct JsonClient {
-    child: Child,
-    input: Option<ChildStdin>,
-    output: BufReader<ChildStdout>,
-    next_id: u64,
+/// One `lightwell-json` process over one catalog.
+fn start(catalog: &Path) -> JsonProcess {
+    JsonProcess::start(
+        env!("CARGO_BIN_EXE_lightwell-json"),
+        &["--catalog", catalog.to_str().expect("catalog is UTF-8")],
+        "presets",
+    )
 }
 
-impl JsonClient {
-    fn start(catalog: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_lightwell-json"))
-            .args(["--catalog", catalog.to_str().expect("catalog is UTF-8")])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start lightwell-json");
-        let input = child.stdin.take().expect("JSON stdin");
-        let output = BufReader::new(child.stdout.take().expect("JSON stdout"));
-        Self {
-            child,
-            input: Some(input),
-            output,
-            next_id: 1,
-        }
-    }
-
-    /// The whole response line, error or not.
-    fn call_raw(&mut self, method: &str, params: Value) -> Value {
-        let id = format!("presets-{}", self.next_id);
-        self.next_id += 1;
-        let input = self.input.as_mut().expect("the process is running");
-        writeln!(
-            input,
-            "{}",
-            json!({"id": id, "method": method, "params": params})
-        )
-        .expect("write a request");
-        input.flush().expect("flush a request");
-        let mut line = String::new();
-        self.output.read_line(&mut line).expect("read a response");
-        let response: Value = serde_json::from_str(&line).expect("a JSON response");
-        assert_eq!(response["id"], json!(id), "response id for {method}");
-        response
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let response = self.call_raw(method, params);
-        assert!(response.get("error").is_none(), "{method}: {response}");
-        response["result"].clone()
-    }
-
-    fn error(&mut self, method: &str, params: Value) -> Value {
-        let response = self.call_raw(method, params);
-        assert!(response.get("result").is_none(), "{method}: {response}");
-        response["error"].clone()
-    }
-
+/// The requests these tests make beyond one call.
+trait Journey {
     /// Import a file and wait for its verified source; returns the asset record.
+    fn import(&mut self, path: &Path) -> Value;
+    fn state(&mut self, asset: &Value) -> Value;
+    fn mutation(&mut self, asset: &Value, request_id: &str) -> Value;
+    fn samples(&mut self, asset: &Value, points: &[(u64, u64)]) -> Vec<Value>;
+}
+
+impl Journey for JsonProcess {
     fn import(&mut self, path: &Path) -> Value {
         let job = self.call(
             "catalog.import",
             json!({"path": path, "mutation": request()}),
         )["job_id"]
             .clone();
-        let started = Instant::now();
-        loop {
-            assert!(started.elapsed() < JOB_TIMEOUT, "import timed out");
-            let status = self.call("job.status", json!({"job_id": job}));
-            match status["status"].as_str() {
-                Some("ready") => return status["asset"]["asset"].clone(),
-                Some("queued" | "running") => std::thread::sleep(Duration::from_millis(5)),
-                other => panic!("unexpected source job {other:?}: {status}"),
-            }
-        }
+        let status = self.settle("job.status", &job, JOB_TIMEOUT);
+        assert_eq!(status["status"], "ready", "{status}");
+        status["asset"]["asset"].clone()
     }
 
     fn state(&mut self, asset: &Value) -> Value {
@@ -142,20 +68,6 @@ impl JsonClient {
             })
             .collect()
     }
-
-    fn finish(mut self) {
-        drop(self.input.take());
-        assert!(self.child.wait().expect("lightwell-json exits").success());
-    }
-}
-
-impl Drop for JsonClient {
-    fn drop(&mut self) {
-        if self.input.take().is_some() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
 }
 
 /// A stack as its effects, formats and payloads in order: what two stacks built by different
@@ -169,7 +81,7 @@ fn contents(state: &Value) -> Vec<Value> {
         .collect()
 }
 
-fn history(client: &mut JsonClient, asset: &Value) -> Vec<Value> {
+fn history(client: &mut JsonProcess, asset: &Value) -> Vec<Value> {
     client.call("history.list", json!({"asset_id": asset, "limit": 100}))["entries"]
         .as_array()
         .expect("entries")
@@ -182,9 +94,9 @@ fn object(value: &Value) -> &Map<String, Value> {
 
 #[test]
 fn a_preset_imports_applies_like_its_individual_actions_and_round_trips_through_the_library() {
-    let catalog = temp_catalog();
-    let mut client = JsonClient::start(&catalog);
-    let asset_record = client.import(&repository("fixtures/s0/orientation-1.jpg"));
+    let catalog = fixtures::temp_catalog("presets-json-cli");
+    let mut client = start(&catalog);
+    let asset_record = client.import(&fixtures::jpeg().canonicalize().expect("the fixture"));
     let asset = asset_record["id"].clone();
     let (width, height) = (
         asset_record["width"].as_u64().expect("width"),
@@ -432,8 +344,8 @@ fn a_preset_imports_applies_like_its_individual_actions_and_round_trips_through_
 
 #[test]
 fn an_unsupported_or_unmappable_file_is_refused_and_nothing_is_stored() {
-    let catalog = temp_catalog();
-    let mut client = JsonClient::start(&catalog);
+    let catalog = fixtures::temp_catalog("presets-json-cli");
+    let mut client = start(&catalog);
     for (file, message) in [
         ("profile.xmp", "Lightroom profiles are not presets"),
         (

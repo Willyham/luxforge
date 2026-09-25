@@ -30,6 +30,7 @@ serde_json.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+lightwell-reference = { path = "../lightwell-reference" }
 lightwell-testkit = { path = "../lightwell-testkit" }
 
 [lints]

@@ -13,25 +13,12 @@ use crate::{
 };
 use rusqlite::{Connection, params};
 use serde_json::{Map, Value, json};
-use std::{
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{path::Path, sync::Arc};
 
-static NEXT: AtomicU64 = AtomicU64::new(1);
-pub(super) fn temp(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "lightwell-editor-{}-{}-{name}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-pub(super) fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
-}
+/// A scratch path no other test uses, and the JPEG fixture: the workspace's one pair, from
+/// `lightwell-testkit` (both are plain paths, the same type in these unit tests).
+pub(super) use lightwell_testkit::fixtures::{jpeg as fixture, temp_path as temp};
+
 pub(super) fn mutation(revision: u64, request: &str) -> Mutation {
     Mutation {
         expected_revision: revision,
