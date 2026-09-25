@@ -421,17 +421,8 @@ impl Mask {
         // Nothing precedes the first component, so it can only add to an empty coverage. A stored
         // mask that begins by subtracting or intersecting is refused as it stands, with the mode
         // named, rather than read as if its first component had been an add.
-        if let Some(first) = self.components.first()
-            && first.mode != ComponentMode::Add
-        {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "mask {} begins with a {} component; the first component of a mask is always add",
-                    self.name,
-                    first.mode.as_str()
-                ),
-            ));
+        if let Some(first) = self.components.first() {
+            crate::mask::rules::leading(&self.name, first.mode)?;
         }
         let mut ids = HashSet::with_capacity(self.components.len());
         let mut names = HashSet::with_capacity(self.components.len());

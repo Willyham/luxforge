@@ -913,9 +913,9 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
         .delete_reason
         .as_ref()
         .expect("the only component names why it cannot be deleted");
-    assert!(reason.contains("only component"), "{reason}");
-    assert!(reason.contains("delete the mask instead"), "{reason}");
-    // And the host agrees, which is why the panel does not offer it.
+    assert!(reason.contains("one component"), "{reason}");
+    assert!(reason.contains("delete the mask"), "{reason}");
+    // And the host agrees in the same words, because the panel's reason is the host's own rule.
     let revision = masking.editor.state.as_ref().unwrap().revision;
     let refused = call(
         &masking.owner(),
@@ -924,7 +924,10 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
         json!({"asset_id": masking.asset, "mutation": tasks::mutation(revision), "mask": mask.id, "component": only.id}),
     )
     .expect_err("the host refuses it too");
-    assert!(refused.contains("delete the mask"), "{refused}");
+    assert!(
+        refused.contains(reason.as_str()),
+        "{refused} against {reason}"
+    );
 
     // A mask's first component is always add, so its mode is not offered.
     assert!(

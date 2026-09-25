@@ -29,12 +29,12 @@
 //! better. Generating from [`super::COMPONENT_KINDS`] also means a kind becomes creatable, addable
 //! and patchable by being *registered*, rather than by someone remembering a second table: this
 //! module declares no geometry of its own and knows no kind by name.
-use super::SAMPLES_FIELD;
 use super::{
     BRUSH, DISTANCE_MIN, REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_geometry_is_drawn,
     component_parameters, component_sample_limit, component_sample_parameters,
     declared_geometry_kinds, knows_component_kind, sampling_kinds,
 };
+use super::{SAMPLES_FIELD, rules};
 use crate::{
     ActionDescriptor, CanvasInteraction, ChoiceStyle, Component, ComponentId, ComponentMode,
     Control, Error, ErrorKind, Layer, LayerId, Mask, MaskId, ModuleDescriptor, ModuleRegistry,
@@ -149,15 +149,9 @@ fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
 }
 
-/// A component kind this build cannot evaluate, in the spelling
-/// [`super::validate_component_kinds`] already uses, because it is the same fact: a payload the host
-/// retains and cannot read. `Incompatible` and not `Validation` — the stored stack is well formed and
-/// this build simply cannot draw part of it.
+/// A component kind this build cannot evaluate: the host's one spelling of that refusal.
 fn unknown_kind(kind: &str) -> Error {
-    Error::new(
-        ErrorKind::Incompatible,
-        format!("unknown mask component {kind}"),
-    )
+    rules::unknown_kind(kind)
 }
 
 /// The request fields that name what one mask command addresses: the mask, the component inside it,
@@ -605,236 +599,231 @@ pub(crate) fn plan(
     // A generated geometry method is dispatched by what it does and the kind it does it to, never by
     // its spelling: `mask.create-radial` reaches the same three arms `mask.create-linear` does, and a
     // kind registered later reaches them without this function learning its name.
-    let (base, names_mask, mask_id, component_id, removed) = match (
-        command.geometry,
-        command.samples,
-    ) {
-        (Some(geometry), _) => plan_geometry(geometry, &mut next, target, parameters)?,
-        (_, Some(samples)) => plan_sample(samples, &mut next, target, parameters)?,
-        _ => match command.method {
-            "mask.delete" => {
-                let index = mask_index(&next, required_mask(target)?)?;
-                let mask = next.masks.remove(index);
-                // Deleting a mask deletes the layers bound to it. It is destructive, so the label and
-                // the result both name what went with it.
-                let removed: Vec<RemovedLayer> = next
-                    .layers
-                    .iter()
-                    .filter(|layer| layer.mask.as_ref() == Some(&mask.id))
-                    .map(|layer| removed_layer(layer, registry))
-                    .collect();
-                next.layers
-                    .retain(|layer| layer.mask.as_ref() != Some(&mask.id));
-                let base = match spoken_titles(&removed) {
-                    Some(titles) => format!("Delete {} with {titles}", mask.name),
-                    None => format!("Delete {}", mask.name),
-                };
-                (base, true, Some(mask.id), None, removed)
-            }
-            "mask.rename" => {
-                let index = mask_index(&next, required_mask(target)?)?;
-                let name = target
-                    .name
-                    .clone()
-                    .ok_or_else(|| validation("missing required field name for mask.rename"))?;
-                let previous = std::mem::replace(&mut next.masks[index].name, name.clone());
-                next.masks[index].validate()?;
-                let id = next.masks[index].id.clone();
-                (
-                    format!("Rename {previous} to {name}"),
-                    true,
-                    Some(id),
-                    None,
-                    Vec::new(),
-                )
-            }
-            "mask.duplicate" => {
-                if next.masks.len() >= MASKS_PER_RECIPE {
-                    return Err(Error::new(
-                        ErrorKind::ResourceLimit,
-                        format!(
-                            "recipe already has {MASKS_PER_RECIPE} masks; the limit is {MASKS_PER_RECIPE} masks per recipe"
-                        ),
-                    ));
+    let (base, names_mask, mask_id, component_id, removed) =
+        match (command.geometry, command.samples) {
+            (Some(geometry), _) => plan_geometry(geometry, &mut next, target, parameters)?,
+            (_, Some(samples)) => plan_sample(samples, &mut next, target, parameters)?,
+            _ => match command.method {
+                "mask.delete" => {
+                    let index = mask_index(&next, required_mask(target)?)?;
+                    let mask = next.masks.remove(index);
+                    // Deleting a mask deletes the layers bound to it. It is destructive, so the label and
+                    // the result both name what went with it.
+                    let removed: Vec<RemovedLayer> = next
+                        .layers
+                        .iter()
+                        .filter(|layer| layer.mask.as_ref() == Some(&mask.id))
+                        .map(|layer| removed_layer(layer, registry))
+                        .collect();
+                    next.layers
+                        .retain(|layer| layer.mask.as_ref() != Some(&mask.id));
+                    let base = match spoken_titles(&removed) {
+                        Some(titles) => format!("Delete {} with {titles}", mask.name),
+                        None => format!("Delete {}", mask.name),
+                    };
+                    (base, true, Some(mask.id), None, removed)
                 }
-                let index = mask_index(&next, required_mask(target)?)?;
-                let source = next.masks[index].clone();
-                let mut copy = source.clone();
-                copy.id = MaskId::new();
-                copy.name = next_mask_name(&next);
-                // New identities, the same geometry and the same spent ordinals: the copy's next linear
-                // component is `Linear 2`, because `Linear 1` already names one of its components.
-                for component in &mut copy.components {
-                    component.id = ComponentId::new();
+                "mask.rename" => {
+                    let index = mask_index(&next, required_mask(target)?)?;
+                    let name = target
+                        .name
+                        .clone()
+                        .ok_or_else(|| validation("missing required field name for mask.rename"))?;
+                    let previous = std::mem::replace(&mut next.masks[index].name, name.clone());
+                    next.masks[index].validate()?;
+                    let id = next.masks[index].id.clone();
+                    (
+                        format!("Rename {previous} to {name}"),
+                        true,
+                        Some(id),
+                        None,
+                        Vec::new(),
+                    )
                 }
-                copy.validate()?;
-                let id = copy.id.clone();
-                next.masks.insert(index + 1, copy);
-                // A mask without its adjustments is not a useful copy, so the layers bound to the source
-                // are copied with it, each with a new identity and bound to the copy.
-                //
-                // The copies are legal because `single_layer` is per *target* and the global layer and
-                // each mask are distinct targets (`docs/design/masking.md`, "How a mask reaches an
-                // effect"): a second masked Basic layer bound to a different mask is a second target, not
-                // an ambiguous duplicate, and `ModuleRegistry::compile_layers` checks exactly that pair.
-                //
-                // They are placed by the ordering rule rather than sorted into it afterwards. The copy
-                // sits at `index + 1`, immediately after its source, so a copied layer placed immediately
-                // after the layer it was copied from is already after the global layer of its effect and
-                // already in mask order among the masked layers of that effect — the two clauses of the
-                // rule, satisfied by construction and inside the source layer's own stage region.
-                let copied = next
-                    .layers
-                    .iter()
-                    .filter(|layer| layer.mask.as_ref() == Some(&source.id))
-                    .count();
-                if copied > 0 {
-                    let mut layers = Vec::with_capacity(next.layers.len() + copied);
-                    for layer in &next.layers {
-                        layers.push(layer.clone());
-                        if layer.mask.as_ref() == Some(&source.id) {
-                            layers.push(Layer {
-                                id: LayerId::new(),
-                                mask: Some(id.clone()),
-                                ..layer.clone()
-                            });
-                        }
+                "mask.duplicate" => {
+                    rules::room_for_mask(next.masks.len())?;
+                    let index = mask_index(&next, required_mask(target)?)?;
+                    let source = next.masks[index].clone();
+                    let mut copy = source.clone();
+                    copy.id = MaskId::new();
+                    copy.name = next_mask_name(&next);
+                    // New identities, the same geometry and the same spent ordinals: the copy's next linear
+                    // component is `Linear 2`, because `Linear 1` already names one of its components.
+                    for component in &mut copy.components {
+                        component.id = ComponentId::new();
                     }
-                    next.layers = layers;
+                    copy.validate()?;
+                    let id = copy.id.clone();
+                    next.masks.insert(index + 1, copy);
+                    // A mask without its adjustments is not a useful copy, so the layers bound to the source
+                    // are copied with it, each with a new identity and bound to the copy.
+                    //
+                    // The copies are legal because `single_layer` is per *target* and the global layer and
+                    // each mask are distinct targets (`docs/design/masking.md`, "How a mask reaches an
+                    // effect"): a second masked Basic layer bound to a different mask is a second target, not
+                    // an ambiguous duplicate, and `ModuleRegistry::compile_layers` checks exactly that pair.
+                    //
+                    // They are placed by the ordering rule rather than sorted into it afterwards. The copy
+                    // sits at `index + 1`, immediately after its source, so a copied layer placed immediately
+                    // after the layer it was copied from is already after the global layer of its effect and
+                    // already in mask order among the masked layers of that effect — the two clauses of the
+                    // rule, satisfied by construction and inside the source layer's own stage region.
+                    let copied = next
+                        .layers
+                        .iter()
+                        .filter(|layer| layer.mask.as_ref() == Some(&source.id))
+                        .count();
+                    if copied > 0 {
+                        let mut layers = Vec::with_capacity(next.layers.len() + copied);
+                        for layer in &next.layers {
+                            layers.push(layer.clone());
+                            if layer.mask.as_ref() == Some(&source.id) {
+                                layers.push(Layer {
+                                    id: LayerId::new(),
+                                    mask: Some(id.clone()),
+                                    ..layer.clone()
+                                });
+                            }
+                        }
+                        next.layers = layers;
+                    }
+                    (
+                        format!("Duplicate {}", source.name),
+                        true,
+                        Some(id),
+                        None,
+                        Vec::new(),
+                    )
                 }
-                (
-                    format!("Duplicate {}", source.name),
-                    true,
-                    Some(id),
-                    None,
-                    Vec::new(),
-                )
-            }
-            "mask.set-amount" => {
-                let index = mask_index(&next, required_mask(target)?)?;
-                let amount = number(parameters, "amount")?;
-                next.masks[index].amount = amount;
-                next.masks[index].validate()?;
-                let id = next.masks[index].id.clone();
-                (
-                    format!("Amount {amount}"),
-                    false,
-                    Some(id),
-                    None,
-                    Vec::new(),
-                )
-            }
-            "mask.set-invert" => {
-                let index = mask_index(&next, required_mask(target)?)?;
-                let invert = boolean(parameters, "invert")?;
-                next.masks[index].invert = invert;
-                let id = next.masks[index].id.clone();
-                (
-                    inversion_label(invert).to_owned(),
-                    false,
-                    Some(id),
-                    None,
-                    Vec::new(),
-                )
-            }
-            "mask.reorder" => {
-                let index = mask_index(&next, required_mask(target)?)?;
-                let to = position(parameters, "index", next.masks.len(), "masks")?;
-                let mask = next.masks.remove(index);
-                let (id, name) = (mask.id.clone(), mask.name.clone());
-                next.masks.insert(to, mask);
-                // Masked layers of one effect are evaluated in their masks' order, so moving a mask
-                // moves them with it, in this one transaction, and nothing else moves.
-                //
-                // The rule lives beside the placement rule it is the other half of, in the registry, and
-                // this is its one call site. There is no second re-sort here: an earlier copy in this
-                // module predated the placement rule and permuted only the positions masked layers
-                // already held, which left a masked layer that should have followed a *global* layer of
-                // its effect where it was.
-                registry.sort_masked_layers(&mut next.layers, &next.masks);
-                (
-                    format!("Move {name} to {}", to + 1),
-                    true,
-                    Some(id),
-                    None,
-                    Vec::new(),
-                )
-            }
-            "mask.set-component-mode" => {
-                let (mask_index, index) = component_at(&next, target)?;
-                let mode = mode(parameters)?;
-                let mask = &mut next.masks[mask_index];
-                mask.components[index].mode = mode;
-                let base = format!("{} {}", mask.components[index].name, mode.as_str());
-                let component_id = mask.components[index].id.clone();
-                // The first component of a mask is always add, so promoting one to subtract or
-                // intersect is refused here with the model's own reason.
-                mask.validate()?;
-                let id = mask.id.clone();
-                (base, false, Some(id), Some(component_id), Vec::new())
-            }
-            "mask.set-component-invert" => {
-                let (mask_index, index) = component_at(&next, target)?;
-                let invert = boolean(parameters, "invert")?;
-                let mask = &mut next.masks[mask_index];
-                mask.components[index].invert = invert;
-                let base = format!(
-                    "{} {}",
-                    mask.components[index].name,
-                    inversion_label(invert).to_lowercase()
-                );
-                let component_id = mask.components[index].id.clone();
-                let id = mask.id.clone();
-                (base, false, Some(id), Some(component_id), Vec::new())
-            }
-            "mask.delete-component" => {
-                let (mask_index, index) = component_at(&next, target)?;
-                let mask = &mut next.masks[mask_index];
-                // A mask never exists empty from a command, so its last component is not deletable:
-                // deleting the mask is the command that removes it, and it says what it removed.
-                if mask.components.len() == 1 {
-                    return Err(validation(format!(
-                        "mask {} has one component; delete the mask rather than its last component",
-                        mask.name
-                    )));
+                "mask.set-amount" => {
+                    let index = mask_index(&next, required_mask(target)?)?;
+                    let amount = number(parameters, "amount")?;
+                    next.masks[index].amount = amount;
+                    next.masks[index].validate()?;
+                    let id = next.masks[index].id.clone();
+                    (
+                        format!("Amount {amount}"),
+                        false,
+                        Some(id),
+                        None,
+                        Vec::new(),
+                    )
                 }
-                let removed = mask.components.remove(index);
-                // Removing the leading add component of a mask whose next component subtracts leaves a
-                // mask that cannot be read; it is refused with the model's reason rather than promoted.
-                mask.validate()?;
-                let id = mask.id.clone();
-                (
-                    format!("Delete {}", removed.name),
-                    false,
-                    Some(id),
-                    Some(removed.id),
-                    Vec::new(),
-                )
-            }
-            ADD_STROKE => plan_add_stroke(&mut next, target, parameters, seed)?,
-            DELETE_STROKE => plan_delete_stroke(&mut next, target)?,
-            "mask.reorder-component" => {
-                let (mask_index, index) = component_at(&next, target)?;
-                let mask = &mut next.masks[mask_index];
-                let to = position(parameters, "index", mask.components.len(), "components")?;
-                let component = mask.components.remove(index);
-                let (component_id, name) = (component.id.clone(), component.name.clone());
-                mask.components.insert(to, component);
-                mask.validate()?;
-                let id = mask.id.clone();
-                (
-                    format!("Move {name}"),
-                    false,
-                    Some(id),
-                    Some(component_id),
-                    Vec::new(),
-                )
-            }
-            other => {
-                return Err(validation(format!("{other} changes no mask")));
-            }
-        },
-    };
+                "mask.set-invert" => {
+                    let index = mask_index(&next, required_mask(target)?)?;
+                    let invert = boolean(parameters, "invert")?;
+                    next.masks[index].invert = invert;
+                    let id = next.masks[index].id.clone();
+                    (
+                        inversion_label(invert).to_owned(),
+                        false,
+                        Some(id),
+                        None,
+                        Vec::new(),
+                    )
+                }
+                "mask.reorder" => {
+                    let index = mask_index(&next, required_mask(target)?)?;
+                    let to = position(parameters, "index", next.masks.len(), "masks")?;
+                    let mask = next.masks.remove(index);
+                    let (id, name) = (mask.id.clone(), mask.name.clone());
+                    next.masks.insert(to, mask);
+                    // Masked layers of one effect are evaluated in their masks' order, so moving a mask
+                    // moves them with it, in this one transaction, and nothing else moves.
+                    //
+                    // The rule lives beside the placement rule it is the other half of, in the registry, and
+                    // this is its one call site. There is no second re-sort here: an earlier copy in this
+                    // module predated the placement rule and permuted only the positions masked layers
+                    // already held, which left a masked layer that should have followed a *global* layer of
+                    // its effect where it was.
+                    registry.sort_masked_layers(&mut next.layers, &next.masks);
+                    (
+                        format!("Move {name} to {}", to + 1),
+                        true,
+                        Some(id),
+                        None,
+                        Vec::new(),
+                    )
+                }
+                "mask.set-component-mode" => {
+                    let (mask_index, index) = component_at(&next, target)?;
+                    let mode = mode(parameters)?;
+                    let mask = &mut next.masks[mask_index];
+                    mask.components[index].mode = mode;
+                    let base = format!("{} {}", mask.components[index].name, mode.as_str());
+                    let component_id = mask.components[index].id.clone();
+                    // The first component of a mask is always add, so promoting one to subtract or
+                    // intersect is refused here with the model's own reason.
+                    mask.validate()?;
+                    let id = mask.id.clone();
+                    (base, false, Some(id), Some(component_id), Vec::new())
+                }
+                "mask.set-component-invert" => {
+                    let (mask_index, index) = component_at(&next, target)?;
+                    let invert = boolean(parameters, "invert")?;
+                    let mask = &mut next.masks[mask_index];
+                    mask.components[index].invert = invert;
+                    let base = format!(
+                        "{} {}",
+                        mask.components[index].name,
+                        inversion_label(invert).to_lowercase()
+                    );
+                    let component_id = mask.components[index].id.clone();
+                    let id = mask.id.clone();
+                    (base, false, Some(id), Some(component_id), Vec::new())
+                }
+                "mask.delete-component" => {
+                    let (mask_index, index) = component_at(&next, target)?;
+                    let mask = &mut next.masks[mask_index];
+                    // A mask never exists empty from a command, so its last component is not deletable:
+                    // deleting the mask is the command that removes it, and it says what it removed.
+                    rules::delete_component(&mask.name, mask.components.len())?;
+                    let removed = mask.components.remove(index);
+                    // Removing the leading add component of a mask whose next component subtracts leaves a
+                    // mask that cannot be read; it is refused with the model's reason rather than promoted.
+                    mask.validate()?;
+                    let id = mask.id.clone();
+                    (
+                        format!("Delete {}", removed.name),
+                        false,
+                        Some(id),
+                        Some(removed.id),
+                        Vec::new(),
+                    )
+                }
+                ADD_STROKE => plan_add_stroke(&mut next, target, parameters, seed)?,
+                DELETE_STROKE => plan_delete_stroke(&mut next, target)?,
+                "mask.reorder-component" => {
+                    let (mask_index, index) = component_at(&next, target)?;
+                    let mask = &mut next.masks[mask_index];
+                    let to = requested_index(parameters, "index")?;
+                    let modes: Vec<ComponentMode> = mask
+                        .components
+                        .iter()
+                        .map(|component| component.mode)
+                        .collect();
+                    // The destination and the component the move would leave leading are the one rule
+                    // a panel states before offering the move.
+                    rules::reorder_component(&mask.name, &modes, index, to)?;
+                    let to = rules::position(to, modes.len(), "components")?;
+                    let component = mask.components.remove(index);
+                    let (component_id, name) = (component.id.clone(), component.name.clone());
+                    mask.components.insert(to, component);
+                    mask.validate()?;
+                    let id = mask.id.clone();
+                    (
+                        format!("Move {name}"),
+                        false,
+                        Some(id),
+                        Some(component_id),
+                        Vec::new(),
+                    )
+                }
+                other => {
+                    return Err(validation(format!("{other} changes no mask")));
+                }
+            },
+        };
     // Nothing changed: the value was already that, or a drag returned to where it began. No entry
     // and no event, exactly as a module's no-op.
     if next == *recipe {
@@ -875,14 +864,7 @@ fn plan_geometry(
     let kind = geometry.kind;
     match geometry.op {
         GeometryOp::Create => {
-            if next.masks.len() >= MASKS_PER_RECIPE {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "recipe already has {MASKS_PER_RECIPE} masks; the limit is {MASKS_PER_RECIPE} masks per recipe"
-                    ),
-                ));
-            }
+            rules::room_for_mask(next.masks.len())?;
             let mut mask = Mask::new(next_mask_name(next));
             // The ordinal comes from the mask and is spent there, so it is never reused.
             let name = mask.next_component_name(kind);
@@ -911,15 +893,7 @@ fn plan_geometry(
         GeometryOp::Add => {
             let index = mask_index(next, required_mask(target)?)?;
             let mask = &mut next.masks[index];
-            if mask.components.len() >= COMPONENTS_PER_MASK {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "mask {} has {COMPONENTS_PER_MASK} components; the limit is {COMPONENTS_PER_MASK} components per mask",
-                        mask.name
-                    ),
-                ));
-            }
+            rules::room_for_component(&mask.name, mask.components.len())?;
             let mode = mode(parameters)?;
             let name = mask.next_component_name(kind);
             let component = Component::new(name, mode, kind, geometry_payload(kind, parameters)?);
@@ -1036,14 +1010,7 @@ fn plan_add_stroke(
         // The first stroke of a session: a mask, a brush component and the stroke, as one entry.
         (None, _) => {
             declared_mode()?;
-            if next.masks.len() >= MASKS_PER_RECIPE {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "recipe already has {MASKS_PER_RECIPE} masks; the limit is {MASKS_PER_RECIPE} masks per recipe"
-                    ),
-                ));
-            }
+            rules::room_for_mask(next.masks.len())?;
             let mut mask = Mask::new(next_mask_name(next));
             let name = mask.next_component_name(BRUSH);
             // The first component of a mask is always add, exactly as `mask.create-<kind>` makes it.
@@ -1066,15 +1033,7 @@ fn plan_add_stroke(
             let index = mask_index(next, required_mask(target)?)?;
             let mode = optional_mode(parameters)?.unwrap_or(ComponentMode::Add);
             let mask = &mut next.masks[index];
-            if mask.components.len() >= COMPONENTS_PER_MASK {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "mask {} has {COMPONENTS_PER_MASK} components; the limit is {COMPONENTS_PER_MASK} components per mask",
-                        mask.name
-                    ),
-                ));
-            }
+            rules::room_for_component(&mask.name, mask.components.len())?;
             let name = mask.next_component_name(BRUSH);
             let component = Component::new(name, mode, BRUSH, strokes_payload(&[id]));
             let component_id = component.id.clone();
@@ -1146,12 +1105,7 @@ fn plan_delete_stroke(next: &mut Recipe, target: &MaskTarget) -> Result<Planned,
     // A component with no stroke covers nothing and is not a thing a person drew, so the last stroke
     // is removed by removing the component — the same rule, and the same wording, that keeps a mask
     // from existing empty.
-    if held.len() == 1 {
-        return Err(validation(format!(
-            "stroke {wanted} is the only stroke of {}; delete the component instead",
-            component.name
-        )));
-    }
+    rules::delete_stroke(wanted.as_str(), &component.name, held.len())?;
     held.remove(at);
     component.payload = strokes_payload(&held);
     let base = format!("Delete a stroke from {}", component.name);
@@ -1206,16 +1160,12 @@ pub(crate) fn input_layer_index(recipe: &Recipe, mask: &MaskId) -> Result<usize,
         .find(|held| &held.id == mask)
         .map(|held| held.name.clone())
         .unwrap_or_else(|| mask.as_str().to_owned());
-    recipe
+    let index = recipe
         .layers
         .iter()
-        .position(|layer| layer.mask.as_ref() == Some(mask))
-        .ok_or_else(|| {
-            validation(format!(
-                "no layer is bound to mask {name}, and reading the pixel an operation receives \
-                 needs an operation; apply an adjustment through {name} first"
-            ))
-        })
+        .position(|layer| layer.mask.as_ref() == Some(mask));
+    rules::bound_layer(&name, index.is_some())?;
+    Ok(index.unwrap_or_default())
 }
 
 /// What one `mask.add-stroke` needs read before it can be planned, when it asks for a colour limit:
@@ -1251,11 +1201,7 @@ pub(crate) fn colour_limit_request(
         return Ok(None);
     }
     let Some(mask) = target.mask.as_ref() else {
-        return Err(validation(
-            "a stroke that draws a new mask cannot be limited to a colour: the limit reads the pixel \
-             the operation the mask modulates receives, and a new mask is bound to no layer yet. \
-             Paint the mask, apply an adjustment through it, then limit the strokes after that",
-        ));
+        return Err(rules::limit_on_new_mask());
     };
     let layer = input_layer_index(recipe, mask)?;
     // The stored first position, which is what makes the seed a property of the stroke the store
@@ -1385,16 +1331,7 @@ fn plan_sample(
             // its samples by nearest and a duplicate changes no pixel's coverage. Storing it anyway
             // would spend one of the component's few swatches on nothing.
             if !stored.contains(&picked) {
-                if stored.len() >= limit {
-                    return Err(Error::new(
-                        ErrorKind::ResourceLimit,
-                        format!(
-                            "component {} already holds {limit} sampled colours; the limit is \
-                             {limit} per {kind} component",
-                            component.name
-                        ),
-                    ));
-                }
+                rules::room_for_sample(&component.name, kind, stored.len(), limit)?;
                 stored.push(picked);
             }
             format!("Sample {}", component.name)
@@ -1579,12 +1516,7 @@ fn boolean(parameters: &Map<String, Value>, name: &str) -> Result<bool, Error> {
 }
 
 fn mode(parameters: &Map<String, Value>) -> Result<ComponentMode, Error> {
-    match enumeration(parameters, "mode")? {
-        "add" => Ok(ComponentMode::Add),
-        "subtract" => Ok(ComponentMode::Subtract),
-        "intersect" => Ok(ComponentMode::Intersect),
-        other => Err(validation(format!("unknown component mode {other}"))),
-    }
+    rules::mode(enumeration(parameters, "mode")?)
 }
 
 /// A destination index inside a list that currently holds `len` items. The declared range bounds the
@@ -1595,23 +1527,21 @@ fn position(
     len: usize,
     what: &str,
 ) -> Result<usize, Error> {
-    let index = parameters
+    rules::position(requested_index(parameters, name)?, len, what)
+}
+
+/// A checked index parameter as the request sent it, before it is bounded by any list.
+fn requested_index(parameters: &Map<String, Value>, name: &str) -> Result<u64, Error> {
+    parameters
         .get(name)
         .and_then(Value::as_u64)
-        .ok_or_else(|| validation(format!("missing required parameter {name}")))?;
-    let index = usize::try_from(index).unwrap_or(usize::MAX);
-    if index >= len {
-        return Err(validation(format!(
-            "index {index} is outside the {len} {what} of this stack"
-        )));
-    }
-    Ok(index)
+        .ok_or_else(|| validation(format!("missing required parameter {name}")))
 }
 
 fn modes() -> Vec<String> {
-    ["add", "subtract", "intersect"]
+    rules::MODES
         .into_iter()
-        .map(str::to_owned)
+        .map(|mode| mode.as_str().to_owned())
         .collect()
 }
 

@@ -4,7 +4,10 @@
 //! Nothing is invented here. Every value comes from `mask.list`, every control is one the host
 //! declares in [`lightwell_core::mask::commands::controls`], and every button that would be refused
 //! by the command family carries that family's own reason instead of being offered — the design's
-//! rule that the panel surfaces a refusal rather than presenting a button the host will reject.
+//! rule that the panel surfaces a refusal rather than presenting a button the host will reject. The
+//! reasons are not re-derived here: each is the refusal [`lightwell_core::mask::rules`] returns for
+//! the facts the listing reports, which is the same function the command refuses through, so the
+//! limits, the leading-add rule and their wording live in the host alone.
 //!
 //! The adjustments that apply *through* a mask are not modelled here at all: they are the delivered
 //! generated sections of the maskable modules, derived by [`super::tools`] with this panel's
@@ -17,9 +20,11 @@ use crate::{
     },
 };
 use lightwell_core::{
-    COMPONENTS_PER_MASK, ComponentId, ComponentMode, MASKS_PER_RECIPE, MaskId, MaskOverlayColour,
-    MaskOverlayMode,
-    mask::commands::{ComponentReport, MaskReport},
+    ComponentId, ComponentMode, MaskId, MaskOverlayColour, MaskOverlayMode,
+    mask::{
+        commands::{self, ComponentReport, MaskReport, SampleOp},
+        rules,
+    },
 };
 
 /// One mask's row in the list.
@@ -412,17 +417,41 @@ impl MasksModel {
     }
 }
 
-/// The three modes a component can take, in the order the host's own enum declares them. One list,
-/// read by the model that offers them and by the controller that resolves a chosen index.
-pub(crate) const MODES: [ComponentMode; 3] = [
-    ComponentMode::Add,
-    ComponentMode::Subtract,
-    ComponentMode::Intersect,
-];
-
-/// One mode's position in that list.
+/// One mode's position in the host's own list of modes, which is the list the Add row offers and the
+/// controller resolves a chosen index against.
 pub(crate) fn mode_index(mode: ComponentMode) -> usize {
-    MODES.iter().position(|known| *known == mode).unwrap_or(0)
+    rules::MODES
+        .iter()
+        .position(|known| *known == mode)
+        .unwrap_or(0)
+}
+
+/// A host sentence as a line the panel shows on its own: its first letter capitalised, nothing else
+/// changed.
+fn sentence(text: &str) -> String {
+    let mut characters = text.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().chain(characters).collect(),
+        None => String::new(),
+    }
+}
+
+/// A refusal's own words, without the kind the API prefixes them with.
+fn reason(refused: Result<(), lightwell_core::Error>) -> Option<String> {
+    refused.err().map(|error| error.detail)
+}
+
+/// Why a new mask cannot start in `mode`: a mask's first component is always an add, so rather than
+/// creating an add while the Add row says subtract — which would be a silent coercion — New mask is
+/// refused and says why, in the host's words for the rule.
+pub(crate) fn create_mode_reason(mode: ComponentMode) -> Option<String> {
+    (!rules::may_lead(mode)).then(|| {
+        format!(
+            "{}; the next component is set to {}",
+            sentence(rules::FIRST_COMPONENT_IS_ADD),
+            mode.as_str()
+        )
+    })
 }
 
 /// The overlay control's options and the two selections it shows.
@@ -497,33 +526,23 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         .unwrap_or_default();
     MasksModel {
         caption: caption(inputs, listing.is_some(), reports.is_empty()),
-        create_reason: (reports.len() >= MASKS_PER_RECIPE)
-            .then(|| format!("This recipe holds {MASKS_PER_RECIPE} masks, which is the limit"))
-            // A new mask's first component is always an add, because nothing precedes it to
-            // subtract from. Rather than creating an add while the Add row says subtract — which
-            // would be a silent coercion — New mask is refused and says why.
-            .or_else(|| {
-                (inputs.mask_mode != ComponentMode::Add).then(|| {
-                    format!(
-                        "A mask's first component is always add; the next component is set to {}",
-                        inputs.mask_mode.as_str()
-                    )
-                })
-            }),
+        create_reason: reason(rules::room_for_mask(reports.len()))
+            .or_else(|| create_mode_reason(inputs.mask_mode)),
         add_reason: open.and_then(|report| {
-            (report.components.len() >= COMPONENTS_PER_MASK).then(|| {
-                format!(
-                    "{} holds {COMPONENTS_PER_MASK} components, which is the limit",
-                    report.name
-                )
-            })
+            reason(rules::room_for_component(
+                &report.name,
+                report.components.len(),
+            ))
         }),
         masks,
         selected,
         controls: mask_controls(inputs, enabled && open.is_some()),
         components,
         kinds: kinds(enabled),
-        modes: MODES.iter().map(|mode| mode.as_str().to_owned()).collect(),
+        modes: rules::MODES
+            .iter()
+            .map(|mode| mode.as_str().to_owned())
+            .collect(),
         add_mode: mode_index(inputs.mask_mode),
         disabled_reason,
         enabled,
@@ -564,7 +583,7 @@ fn unavailable(components: &[ComponentReport]) -> Option<String> {
     components
         .iter()
         .find(|component| !component.available)
-        .map(|component| format!("unknown mask component {}", component.kind))
+        .map(|component| rules::unknown_kind(&component.kind).detail)
 }
 
 /// Every kind the Add row and New mask can actually create, as they offer it. That is the kinds
@@ -637,8 +656,12 @@ fn control_action(control: &lightwell_core::Control) -> Option<&str> {
 /// The open mask's component list, with each row's refusals resolved from the command family's own
 /// rules rather than discovered by sending a request that will be rejected.
 fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Vec<ComponentRow> {
-    let only = report.components.len() == 1;
     let modes = declared_modes();
+    let component_modes: Vec<ComponentMode> = report
+        .components
+        .iter()
+        .map(|component| component.mode)
+        .collect();
     report
         .components
         .iter()
@@ -646,26 +669,20 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
             let first = component.index == 0;
             let selected = inputs.selected_component == Some(&component.id);
             // A mask's first component is always `add`: nothing precedes it to subtract from or
-            // intersect with, so the mode control is not offered rather than offered and refused.
-            let mode_reason = first.then(|| {
-                format!(
-                    "{} is the first component of {}, and a mask's first component is always add",
-                    component.name, report.name
-                )
-            });
+            // intersect with, so the mode control is not offered rather than offered and refused,
+            // and the rule is stated in the host's words.
+            let mode_reason = first.then(|| sentence(rules::FIRST_COMPONENT_IS_ADD));
             // A mask never exists empty, so its last component is removed by removing the mask.
-            let delete_reason = only.then(|| {
-                format!(
-                    "{} is the only component of {}; delete the mask instead",
-                    component.name, report.name
-                )
-            });
+            let delete_reason = reason(rules::delete_component(
+                &report.name,
+                report.components.len(),
+            ));
             ComponentRow {
                 // Moving a row into or out of the leading position is refused whenever it would
                 // leave a component that is not an add at the front, which is the same rule the
                 // host checks; the panel states it here instead of offering the move.
-                up_reason: move_reason(report, component.index, -1, enabled),
-                down_reason: move_reason(report, component.index, 1, enabled),
+                up_reason: move_reason(report, &component_modes, component.index, -1, enabled),
+                down_reason: move_reason(report, &component_modes, component.index, 1, enabled),
                 // The first component's mode is fixed by the composition, so its control is not
                 // offered; every other row carries its own, showing that component's mode.
                 mode_options: if first { Vec::new() } else { modes.clone() },
@@ -736,31 +753,24 @@ fn kind_limits(kind: &str) -> Vec<String> {
 /// The canvas mode one kind's pick lives in, which is that pick's own action, or none when the kind
 /// samples nothing. The panel reads the host's declaration and names no mode of its own.
 pub(crate) fn pick_mode(kind: &str) -> Option<String> {
-    lightwell_core::mask::commands::canvas()
-        .iter()
-        .find_map(|pick| match pick {
-            lightwell_core::CanvasInteraction::SampleApply { action, .. }
-                if action.ends_with(&format!("{kind}-sample")) =>
-            {
-                Some(action.clone())
-            }
-            _ => None,
-        })
+    kind_pick(kind).map(|(action, _)| action.to_owned())
 }
 
 /// What the pick button reads, from the host's own declared title.
 fn pick_label(kind: &str) -> String {
-    lightwell_core::mask::commands::canvas()
-        .iter()
-        .find_map(|pick| match pick {
-            lightwell_core::CanvasInteraction::SampleApply { action, title, .. }
-                if action.ends_with(&format!("{kind}-sample")) =>
-            {
-                Some(title.clone())
-            }
-            _ => None,
-        })
+    kind_pick(kind)
+        .map(|(_, title)| title.to_owned())
         .unwrap_or_else(|| "Pick".to_owned())
+}
+
+/// The host's own pick for one kind, found by the sample method the host generated for it: the pick's
+/// mode is that method's name, and its title is what the button reads.
+fn kind_pick(kind: &str) -> Option<(&'static str, &'static str)> {
+    let method = commands::sample(SampleOp::Add, kind)?.method;
+    match commands::canvas_pick(method)? {
+        lightwell_core::CanvasInteraction::SampleApply { title, .. } => Some((method, title)),
+        _ => None,
+    }
 }
 
 /// Why a colour cannot be picked into this component right now, in the words the command family
@@ -771,27 +781,23 @@ fn pick_reason(report: &MaskReport, component: &ComponentReport, enabled: bool) 
         return Some("Waiting for the last request".into());
     }
     if !component.available {
-        return Some(format!("unknown mask component {}", component.kind));
+        return Some(rules::unknown_kind(&component.kind).detail);
     }
     // A pick reads the pixel the operation this mask modulates receives, so there has to be an
     // operation: the host refuses a mask no layer is bound to, and the panel says so first.
-    if report.layers.is_empty() {
-        return Some(format!(
-            "{} is not bound to a layer yet, and a pick reads the pixel the masked operation \
-             receives; apply an adjustment through it first",
-            report.name
-        ));
+    if let Some(unbound) = reason(rules::bound_layer(&report.name, !report.layers.is_empty())) {
+        return Some(unbound);
     }
     let limit = lightwell_core::mask::component_sample_limit(&component.kind)?;
     let held = component.payload[lightwell_core::mask::SAMPLES_FIELD]
         .as_array()
         .map_or(0, Vec::len);
-    (held >= limit).then(|| {
-        format!(
-            "{} holds {limit} sampled colours, which is the limit; remove one to pick another",
-            component.name
-        )
-    })
+    reason(rules::room_for_sample(
+        &component.name,
+        &component.kind,
+        held,
+        limit,
+    ))
 }
 
 /// The colours one component's stored payload holds, read through the host's own reserved field so
@@ -836,7 +842,6 @@ fn code(linear: f64) -> u8 {
 /// gives no rows, and a malformed one gives none rather than a guess.
 fn stroke_rows(payload: &serde_json::Value, component: &str, enabled: bool) -> Vec<StrokeRow> {
     let held = lightwell_core::path::references(payload, component).unwrap_or_default();
-    let only = held.len() == 1;
     held.iter()
         .enumerate()
         .map(|(index, stroke)| StrokeRow {
@@ -846,9 +851,7 @@ fn stroke_rows(payload: &serde_json::Value, component: &str, enabled: bool) -> V
             delete_reason: if !enabled {
                 Some("Waiting for the last request".into())
             } else {
-                only.then(|| {
-                    format!("this is {component}'s only stroke; delete the component instead")
-                })
+                reason(rules::delete_stroke(stroke.as_str(), component, held.len()))
             },
         })
         .collect()
@@ -923,7 +926,7 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
         erase: brush.erase,
         erase_label: lightwell_core::mask::kind_title("erase"),
         limit: brush.limit_to_colour && limit_reason.is_none(),
-        limit_label: "Limit to colour".to_owned(),
+        limit_label: lightwell_core::mask::kind_title("limit_to_colour"),
         limit_reason,
         erase_held: inputs.brush_erase_held,
         locked: painting,
@@ -941,18 +944,10 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
 /// says and what the stroke carries cannot disagree.
 pub(crate) fn limit_reason(open: Option<&MaskReport>) -> Option<String> {
     let Some(report) = open else {
-        return Some(
-            "Limit to colour reads the pixel the masked operation receives, so open a mask first"
-                .into(),
-        );
+        // With no mask open the next stroke draws a new one, which no layer is bound to yet.
+        return Some(rules::limit_on_new_mask().detail);
     };
-    report.layers.is_empty().then(|| {
-        format!(
-            "{} is not bound to a layer yet, and Limit to colour reads the pixel the masked \
-             operation receives; apply an adjustment through it first",
-            report.name
-        )
-    })
+    reason(rules::bound_layer(&report.name, !report.layers.is_empty()))
 }
 
 /// The one host command every stroke commits through.
@@ -981,33 +976,22 @@ fn control_label(action: &str, parameter: &str) -> String {
     .to_owned()
 }
 
-/// Why one component cannot move by `step` places, or `None` when it can.
-fn move_reason(report: &MaskReport, index: usize, step: i64, enabled: bool) -> Option<String> {
+/// Why one component cannot move by `step` places, or `None` when it can: the host's own refusal of
+/// that reorder, for the modes the listing reports.
+fn move_reason(
+    report: &MaskReport,
+    modes: &[ComponentMode],
+    index: usize,
+    step: i64,
+    enabled: bool,
+) -> Option<String> {
     if !enabled {
         return Some("Waiting for the last request".into());
     }
-    let target = index as i64 + step;
-    if target < 0 || target >= report.components.len() as i64 {
-        return Some(format!("{} is already at the end of the list", report.name));
-    }
-    let target = target as usize;
-    // Only a move that touches the leading position can break the composition's one structural
-    // rule: whichever component ends up first must be an add.
-    let leading = if index == 0 {
-        report.components.get(1)
-    } else if target == 0 {
-        report.components.get(index)
-    } else {
-        return None;
+    let Ok(target) = u64::try_from(index as i64 + step) else {
+        return Some(format!("{} is already at the top of the list", report.name));
     };
-    leading
-        .filter(|component| component.mode != ComponentMode::Add)
-        .map(|component| {
-            format!(
-                "that would leave {} leading, and a mask's first component is always add",
-                component.name
-            )
-        })
+    reason(rules::reorder_component(&report.name, modes, index, target))
 }
 
 /// One kind's declared geometry fields, which are the host controls whose action is that kind's own

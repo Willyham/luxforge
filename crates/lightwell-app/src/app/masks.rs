@@ -397,7 +397,7 @@ impl Editor {
             // An index into the panel's declared list, resolved here against the host's own enum:
             // an index the list does not hold changes nothing rather than guessing a mode.
             MaskMessage::SetAddMode(index) => {
-                if let Some(mode) = crate::state::masks::MODES.get(index) {
+                if let Some(mode) = lightwell_core::mask::rules::MODES.get(index) {
                     self.mask_mode = *mode;
                 }
                 Task::none()
@@ -782,12 +782,12 @@ impl Editor {
             return Task::none();
         }
         // A new mask's first component is always an add. Creating one while the Add row says
-        // subtract would silently coerce the mode a person chose, so it is refused and says so.
-        if op == MaskDraftOp::Create && self.mask_mode != lightwell_core::ComponentMode::Add {
-            self.status = format!(
-                "A mask's first component is always add; the next component is set to {}",
-                self.mask_mode.as_str()
-            );
+        // subtract would silently coerce the mode a person chose, so it is refused and says so, in
+        // the words the panel shows on New mask.
+        if op == MaskDraftOp::Create
+            && let Some(reason) = crate::state::masks::create_mode_reason(self.mask_mode)
+        {
+            self.status = reason;
             return Task::none();
         }
         // A **typed** kind has nothing to drag: every field its geometry declares carries a
@@ -878,7 +878,7 @@ impl Editor {
             return Task::none();
         };
         if !found.available {
-            self.status = format!("unknown mask component {}", found.kind);
+            self.status = lightwell_core::mask::rules::unknown_kind(&found.kind).detail;
             return Task::none();
         }
         // The shape starts at exactly the stored payload, so reopening a gesture shows what was

@@ -690,7 +690,7 @@ impl Editor {
             // Choosing the next component's mode changes no pixel and asks for nothing: it is the
             // Add row's own state, and its captured frame is the panel showing that choice.
             MaskStep::Mode(mode) => {
-                let Some(index) = crate::state::masks::MODES
+                let Some(index) = lightwell_core::mask::rules::MODES
                     .iter()
                     .position(|known| known.as_str() == mode)
                 else {

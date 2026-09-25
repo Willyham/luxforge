@@ -55,6 +55,9 @@ mod linear;
 mod parameters;
 mod radial;
 mod range;
+/// The mask family's structural rules, shared by the commands that refuse and the clients that say
+/// why first.
+pub mod rules;
 
 pub use brush::{BrushStrokes, SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
@@ -637,12 +640,7 @@ fn kind_of(component: &Component) -> Result<&'static ComponentKind, Error> {
     COMPONENT_KINDS
         .iter()
         .find(|entry| entry.kind == component.kind)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Incompatible,
-                format!("unknown mask component {}", component.kind),
-            )
-        })
+        .ok_or_else(|| rules::unknown_kind(&component.kind))
 }
 
 /// Every component of one stored mask, checked by its kind's row without being bound to a stage.
