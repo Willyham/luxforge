@@ -1901,9 +1901,7 @@ impl Editor {
     /// gesture or a crop draft owns the preview, or while a refit is already on its way.
     fn refit_proxy(&mut self) -> Task<Message> {
         if self.state.is_none()
-            || self.slider_draft.is_some()
-            || self.crop.is_some()
-            || self.crop_pending.is_some()
+            || self.proxy_refit_deferred()
             || self.presented_generation == 0
             || !self.presented_proxy
             || self.refit_pending
@@ -1925,6 +1923,12 @@ impl Editor {
         self.request_current_preview()
     }
 
+    /// Drafts own the preview until they finish, so a layout change deliberately leaves their
+    /// displayed proxy at its previous bounds instead of starting a competing refit.
+    fn proxy_refit_deferred(&self) -> bool {
+        self.slider_draft.is_some() || self.crop.is_some() || self.crop_pending.is_some()
+    }
+
     /// A view change has just asked for the frame it needs. A scripted step whose frame is still
     /// to be captured — waiting on the session round trip, or already settled by it earlier in this
     /// same update — waits for that frame instead, so the capture never shows the picture the view
@@ -1939,15 +1943,19 @@ impl Editor {
         }
     }
 
-    /// Evidence of a displayed proxy must use the bounds of the current layout. The exact
-    /// phase of an open can finish while a display-scale refit is still rendering, so its
-    /// `outcome_ready` may arm a capture before the replacement proxy reaches the surface.
+    /// Evidence of a displayed proxy waits for the current layout when a refit is permitted.
+    /// The exact phase of an open can arm a capture while its display-scale refit is rendering.
+    /// Drafts deliberately defer such refits, and can supersede a queued one; their settled frame
+    /// can be captured as shown even if that abandoned request left `refit_pending` set.
     fn capture_proxy_ready(&self) -> bool {
-        if !self.presented_proxy || self.render_error.is_some() {
+        if !self.presented_proxy || self.render_error.is_some() || self.proxy_refit_deferred() {
             return true;
         }
+        if self.refit_pending {
+            return false;
+        }
         match self.proxy_bounds() {
-            Some(bounds) => !self.refit_pending && self.presented_bounds == Some(bounds),
+            Some(bounds) => self.presented_bounds == Some(bounds),
             // At 100% the exact frame is the target; the step's normal preview settlement
             // already waits for it, without requiring a proxy that cannot be requested.
             None => true,
@@ -8964,6 +8972,12 @@ mod tests {
 
         editor.presented_bounds = editor.proxy_bounds();
         assert!(!editor.capture_proxy_ready(), "the refit is still pending");
+        editor.render_error = Some((ErrorKind::ResourceLimit, "refit failed".into()));
+        assert!(
+            editor.capture_proxy_ready(),
+            "a failed refit is captured as an error"
+        );
+        editor.render_error = None;
         editor.refit_pending = false;
         assert!(editor.capture_proxy_ready(), "the 2× proxy is ready");
 
@@ -8976,6 +8990,72 @@ mod tests {
         assert!(
             editor.capture_proxy_ready(),
             "an exact frame needs no proxy refit"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A panel toggle changes Fit bounds, but a slider or crop draft owns the preview and
+    /// deliberately defers its refit. A queued refit can also be superseded by a crop input-stage
+    /// job, leaving the boolean set while no refit frame will arrive. Both settled drafts can be
+    /// captured at the pixels they actually show.
+    #[test]
+    fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
+        let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+        editor.window = (1440.0, 900.0);
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 2.0;
+        editor.presented_proxy = true;
+        editor.presented_generation = 7;
+        editor.session.workspace.tools_panel = true;
+        editor.presented_bounds = editor.proxy_bounds();
+        editor.session.workspace.tools_panel = false;
+        assert_ne!(editor.presented_bounds, editor.proxy_bounds());
+        assert!(
+            !editor.capture_proxy_ready(),
+            "outside a draft, refit is required"
+        );
+
+        editor.slider_draft = Some(SliderDraft {
+            action: "set-basic".into(),
+            parameter: "exposure".into(),
+            label: "Exposure".into(),
+            asset: editor.state.as_ref().expect("open state").asset.id.clone(),
+            draft_id: None,
+            base_revision: 4,
+            draft_revision: 1,
+            conflicted: false,
+            in_flight: false,
+            pending: None,
+            sent: None,
+            finish: None,
+            unpreviewed: false,
+        });
+        let _ = editor.refit_proxy();
+        assert!(!editor.refit_pending, "the slider defers refit");
+        assert!(
+            editor.capture_proxy_ready(),
+            "the slider's frame can be captured"
+        );
+        editor.slider_draft = None;
+
+        editor.crop = Some(crate::crop_draft::CropDraft::neutral(
+            CropStage {
+                width: 4000,
+                height: 3000,
+                angle: 0.0,
+            },
+            4,
+            0,
+        ));
+        editor.refit_pending = true; // The queued refit was superseded by crop input-stage work.
+        assert!(
+            editor.capture_proxy_ready(),
+            "the crop frame can be captured"
+        );
+        editor.crop = None;
+        assert!(
+            !editor.capture_proxy_ready(),
+            "a pending refit blocks ordinary captures"
         );
         finish(editor, catalog);
     }
