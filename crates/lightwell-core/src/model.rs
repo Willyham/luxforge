@@ -481,7 +481,7 @@ pub struct Recipe {
     pub layers: Vec<Layer>,
     /// The masks the layers of this recipe may reference, in the order the masks list shows.
     pub masks: Vec<Mask>,
-    /// The strokes this recipe's payloads reference, resolved from the content-addressed store
+    /// The strokes this recipe's mask table references, resolved from the content-addressed store
     /// ([`crate::path`]), and the references that could not be resolved.
     ///
     /// **Never serialized.** A stored recipe holds stroke *addresses* in its payloads and no
@@ -570,21 +570,17 @@ impl Recipe {
         Ok(())
     }
 
-    /// Every stroke address this recipe's payloads carry, in stored order: the layers first, then
-    /// the components of each mask, with the thing that carries each list named for a refusal.
+    /// Every stroke address this recipe's mask table carries, in stored order by mask and
+    /// component, with the component that carries each list named for a refusal.
     ///
-    /// The host reads exactly [`crate::path::STROKES_FIELD`] of each payload and parses nothing
-    /// else, because a payload belongs to the effect or component kind that provides it. Cost is
-    /// `O(layers + components)` and no store is touched: this answers what a recipe references, not
-    /// what it resolves to.
+    /// Strokes are found from the mask table only: masks are the one consumer of the stroke store,
+    /// so no layer payload is read (decided by the owner on 2026-09-24; a second consumer would
+    /// declare where its strokes live). The host reads exactly [`crate::path::STROKES_FIELD`] of
+    /// each component payload and parses nothing else, because a payload belongs to the component
+    /// kind that provides it. Cost is `O(components)` and no store is touched: this answers what a
+    /// recipe references, not what it resolves to.
     pub fn stroke_references(&self) -> Result<Vec<(String, crate::path::StrokeId)>, Error> {
         let mut found = Vec::new();
-        for layer in &self.layers {
-            let what = format!("layer {}", layer.id);
-            for id in crate::path::references(&layer.payload, &what)? {
-                found.push((what.clone(), id));
-            }
-        }
         for mask in &self.masks {
             for component in &mask.components {
                 let what = format!("component {} of mask {}", component.name, mask.name);
@@ -606,7 +602,7 @@ impl Recipe {
     /// stack forward keep working exactly as they do for an unavailable effect.
     ///
     /// A recipe that references no stroke — every recipe without a painted edit — costs one walk of
-    /// its payloads and touches nothing else.
+    /// its mask table and touches nothing else.
     pub fn resolve_strokes(&self) -> Result<(), Error> {
         let references = self.stroke_references()?;
         if references.is_empty() {
@@ -1098,6 +1094,49 @@ mod tests {
         assert_eq!(mask.next_component_name("brush"), "Brush 3");
         assert_eq!(mask.next_ordinal["brush"], 3);
         assert_eq!(mask.next_ordinal["radial"], 1);
+    }
+
+    /// Strokes are found from the mask table only: a layer payload is never scanned, so a layer
+    /// that happens to carry the reserved field references nothing and resolves nothing, while a
+    /// component carrying it is read in stored order and named for a refusal.
+    #[test]
+    fn strokes_are_found_from_the_mask_table_and_never_from_a_layer_payload() {
+        let held = "a".repeat(32);
+        let ignored = "b".repeat(32);
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("brush");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "brush",
+            json!({ crate::path::STROKES_FIELD: [held] }),
+        ));
+        let recipe = Recipe {
+            layers: vec![Layer {
+                payload: json!({ crate::path::STROKES_FIELD: [ignored], "x": 0 }),
+                ..Layer::pixel(0, 0, [1, 2, 3])
+            }],
+            masks: vec![mask],
+            ..Recipe::default()
+        };
+        let found = recipe.stroke_references().unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|(what, id)| (what.as_str(), id.as_str()))
+                .collect::<Vec<_>>(),
+            [("component Brush 1 of mask Mask 1", held.as_str())],
+            "the component's reference and nothing from the layer"
+        );
+        // A malformed field in a layer payload is not the host's to read either.
+        let unread = Recipe {
+            layers: vec![Layer {
+                payload: json!({ crate::path::STROKES_FIELD: 7 }),
+                ..Layer::pixel(0, 0, [1, 2, 3])
+            }],
+            ..Recipe::default()
+        };
+        assert!(unread.stroke_references().unwrap().is_empty());
     }
 
     #[test]
