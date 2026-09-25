@@ -126,12 +126,11 @@
     {
       "id": "TASK-003",
       "description": "Stop a crop draft from hanging silently when its input-stage preview is superseded or cancelled.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Opening a crop draft requests a truncated preview of the crop layer's input stage. If that job is superseded or cancelled before it answers, the pending draft is never opened and nothing tells the user; queued idle-section changes wait forever.",
-        "A render failure of the same job already ends the draft with a status; a cancellation does not.",
-        "A separate session is working on this."
+        "A render failure of the same job already ends the draft with a status; a cancellation does not."
       ],
       "context_links": [
         {
