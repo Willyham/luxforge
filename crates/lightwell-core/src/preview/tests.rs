@@ -580,15 +580,97 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
         let results = drain_all(&mut queue);
         assert_eq!(results.len(), phases, "{proxy:?}");
         let exact = results.last().expect("an exact phase");
-        assert!(
-            exact.raster().is_ok()
-                && exact
-                    .exact()
-                    .and_then(|exact| exact.mask_overlay.clone())
-                    .is_some(),
-            "{proxy:?}"
-        );
+        assert!(exact.raster().is_ok(), "{proxy:?}");
+        let first = results.first().expect("a first phase");
+        assert!(first.mask_overlay().grid.is_some(), "{proxy:?}");
         assert_eq!(context.compiles(), compiles, "{proxy:?}");
+    }
+}
+
+/// A job's coverage grid rides its first frame: the proxy phase when it has one, which then leaves
+/// the exact phase without one, and the one exact phase otherwise — including a job that offered
+/// bounds and had its proxy declined. Whichever phase carries it, it is byte for byte the grid a
+/// job without a proxy carries, because it reads no pixel of the exact frame: over a geometric mask
+/// and over a value-based one, through a straightening crop, and as the same refusal where a
+/// value-based mask sits behind a spatial layer.
+#[test]
+fn the_coverage_grid_arrives_with_the_first_frame_and_is_the_same_grid_on_either_phase() {
+    let presence = |mask: Option<&Mask>| Layer {
+        id: LayerId::new(),
+        effect_id: crate::PRESENCE_EFFECT.into(),
+        effect_format: EFFECT_FORMAT,
+        payload: json!({"texture": 40.0}),
+        mask: mask.map(|mask| mask.id.clone()),
+        artifacts: Vec::new(),
+    };
+    let gradient = gradient_mask(0.3);
+    let band = band_mask();
+    let mixed = mixed_mask();
+    // The eligible stack — an orientation, a Basic layer and a fitted straightening crop — with
+    // its Basic layer bound to the mask, so the grid composes a real geometry tail.
+    let mut cropped = eligible_layers(64, 48);
+    cropped[1].mask = Some(gradient.id.clone());
+    let stacks = [
+        ("gradient", gradient.clone(), masked_basic(&gradient)),
+        ("band", band.clone(), masked_basic(&band)),
+        ("gradient and band", mixed.clone(), masked_basic(&mixed)),
+        ("gradient under a crop", gradient.clone(), cropped),
+        (
+            "band behind a spatial layer",
+            band.clone(),
+            vec![presence(None), presence(Some(&band))],
+        ),
+    ];
+    for (name, mask, layers) in stacks {
+        let request = MaskOverlayRequest {
+            mask: mask.id.clone(),
+            component: None,
+            cells_w: 13,
+            cells_h: 9,
+        };
+        let run = |proxy: Option<ProxyBounds>| {
+            let job = stacked_with_masks(64, 48, layers.clone(), vec![mask.clone()], proxy)
+                .with_mask_overlay(request.clone())
+                .expect("the stack holds the mask");
+            let mut queue = PreviewQueue::default();
+            queue.request(job);
+            drain_all(&mut queue)
+        };
+        let alone = run(None);
+        assert_eq!(alone.len(), 1, "{name}");
+        let expected = alone[0].mask_overlay().clone();
+        let refused = name == "band behind a spatial layer";
+        assert_eq!(
+            (expected.grid.is_some(), expected.absent.is_some()),
+            (!refused, refused),
+            "{name}: the job's one phase answers the overlay it asked for"
+        );
+
+        let phases = run(Some(bounds(40, 40)));
+        assert_eq!(phases.len(), 2, "{name}: a proxy phase, then the exact one");
+        assert_eq!(phases[0].phase(), PreviewPhase::Proxy, "{name}");
+        assert_eq!(
+            phases[0].mask_overlay(),
+            &expected,
+            "{name}: the proxy carries the very grid the exact-only job does"
+        );
+        assert!(phases[1].raster().is_ok(), "{name}");
+        assert_eq!(
+            phases[1].mask_overlay(),
+            &MaskOverlayOutcome::default(),
+            "{name}: the exact phase behind a proxy carries no second grid"
+        );
+
+        // Bounds the stage already fits: the proxy is declined, and the one phase carries it.
+        let declined = run(Some(bounds(4000, 4000)));
+        assert_eq!(declined.len(), 1, "{name}");
+        assert!(
+            declined[0]
+                .exact()
+                .is_some_and(|exact| exact.proxy_declined.is_some()),
+            "{name}"
+        );
+        assert_eq!(declined[0].mask_overlay(), &expected, "{name}");
     }
 }
 
@@ -1715,7 +1797,10 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
             &job.context,
         )
         .expect("the stack compiles");
-        let (grid, reason) = mask_overlay_for(
+        let MaskOverlayOutcome {
+            grid,
+            absent: reason,
+        } = mask_overlay_for(
             &job.registry,
             &frame,
             &job.recipe,
@@ -1742,9 +1827,10 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
     }
 }
 
-/// What the coverage overlay costs the exact preview phase, on 24 MP and 60 MP, before and after
-/// a value-based component is in the mask — the measurement proposal P16 of
-/// `docs/design/range-study.md` was decided against.
+/// What the coverage overlay costs the preview phase that carries it, on 24 MP and 60 MP, before
+/// and after a value-based component is in the mask — the measurement proposal P16 of
+/// `docs/design/range-study.md` was decided against. At Fit that phase is the proxy, and at 100%
+/// the job's one exact phase; the figures are stated against the exact render either way.
 ///
 /// The "before" figure for a value-based mask is nothing at all, because such a mask was refused a
 /// grid; the geometric rows are the delivered cost of a grid and must not have moved. So the added
@@ -1810,7 +1896,7 @@ fn the_cost_of_a_coverage_grid() {
                 )
                 .expect("the stack compiles");
                 let started = Instant::now();
-                let (grid, absent) = mask_overlay_for(
+                let MaskOverlayOutcome { grid, absent } = mask_overlay_for(
                     &registry,
                     &frame,
                     &recipe,

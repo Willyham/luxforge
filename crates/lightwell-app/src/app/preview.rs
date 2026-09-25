@@ -354,7 +354,7 @@ impl Editor {
         let draft_revision = result.draft_revision;
         let approximate_white_balance = result.approximate_white_balance;
         let render_ms = result.render_ms;
-        let (proxy, frame, proxy_dimensions, proxy_built, proxy_approximation, exact) =
+        let (proxy, frame, proxy_dimensions, proxy_built, proxy_approximation, mask_overlay, exact) =
             match result.outcome {
                 PhaseOutcome::Proxy(outcome) => (
                     true,
@@ -362,6 +362,7 @@ impl Editor {
                     Some(outcome.dimensions),
                     outcome.built,
                     outcome.approximation,
+                    outcome.mask_overlay,
                     None,
                 ),
                 PhaseOutcome::Exact(outcome) => (
@@ -370,20 +371,21 @@ impl Editor {
                     None,
                     false,
                     lightwell_core::ProxyApproximation::default(),
-                    Some((
-                        outcome.report,
-                        outcome.mask_overlay,
-                        outcome.mask_overlay_absent,
-                        outcome.proxy_declined,
-                    )),
+                    outcome.mask_overlay,
+                    Some((outcome.report, outcome.proxy_declined)),
                 ),
             };
-        let (report, mask_overlay, mask_overlay_absent, proxy_declined) = exact.unwrap_or_default();
-        // The mask overlay's coverage grid rides the frame the worker already produced,
-        // so the overlay costs no second render. Only the exact phase fills it; the
-        // proxy phase leaves the previous grid on screen until it lands. The upload is
-        // handed to `update_inner`, which is the one place a task can be added to
-        // whatever this arm returns.
+        let (report, proxy_declined) = exact.unwrap_or_default();
+        // The mask overlay's coverage grid rides the first frame of its job — the proxy,
+        // when the job has one — so the overlay costs no second render and follows a drag
+        // at the proxy's pace. The exact phase behind a proxy carries none and leaves the
+        // proxy's grid on screen: both phases share one generation. The upload is handed
+        // to `update_inner`, which is the one place a task can be added to whatever this
+        // arm returns.
+        let lightwell_core::MaskOverlayOutcome {
+            grid: mask_overlay,
+            absent: mask_overlay_absent,
+        } = mask_overlay;
         if let Some(overlay) = mask_overlay {
             self.mask_overlay_pending = Some((generation, overlay));
         } else if let Some(reason) = mask_overlay_absent {

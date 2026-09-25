@@ -39,7 +39,7 @@ A **proxy source** is the prepared source downscaled once to the size the displa
 
 A preview job at Fit produces two results under one generation:
 
-1. **Proxy phase.** The worker takes the cached proxy source (or builds it), renders the recipe against it and sends the proxy raster. The desktop uploads it and presents it. This is the frame the input-to-presented figure measures.
+1. **Proxy phase.** The worker takes the cached proxy source (or builds it), renders the recipe against it and sends the proxy raster, with the mask overlay's coverage grid when the job asked for one: that grid reads no pixel of the exact frame, so it does not wait for it ([masking](masking.md#the-develop-workspace)). The desktop uploads the raster and presents it. This is the frame the input-to-presented figure measures.
 2. **Exact phase.** The same worker then renders the full-resolution frame and, when the job asked, reduces it into the exact report. The desktop adopts the report and retains the raster, exactly as it does today, but uploads nothing at Fit. The retained exact raster is what the clipping overlay is derived from, what the 100% view uploads, and what the histogram describes.
 
 A job at a percentage zoom whose displayed size does not fit the bounds — 100% and above on any photo-sized source — has no proxy phase: the single exact result is uploaded and analysed as today, so the 100% view stays the exact render of the exact recipe.

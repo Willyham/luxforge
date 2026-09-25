@@ -42,12 +42,14 @@ pub struct PreviewResult {
     /// nothing else.
     ///
     /// - [`PreviewPhase::Proxy`]: compiling the job's stack, planning the proxy from it, building
-    ///   its source when this job built it ([`ProxyOutcome::built`]), and compiling and rendering
-    ///   the recipe against it. A cache hit costs the compiles, the plan and the render.
+    ///   its source when this job built it ([`ProxyOutcome::built`]), compiling and rendering the
+    ///   recipe against it, and filling [`ProxyOutcome::mask_overlay`]'s coverage grid when the job
+    ///   asked for one. A cache hit costs the compiles, the plan, the render and the grid.
     /// - [`PreviewPhase::Exact`]: rendering the prepared source, plus reducing the frame into
-    ///   [`ExactOutcome::report`] and filling [`ExactOutcome::mask_overlay`]'s coverage grid when
-    ///   the job asked for them. The job compiles its stack once for both phases, and that compile
-    ///   is counted here only when no proxy frame came before. A proxy phase that was attempted and
+    ///   [`ExactOutcome::report`] when the job asked for it, and filling
+    ///   [`ExactOutcome::mask_overlay`]'s coverage grid when the job asked for one and no proxy
+    ///   frame carried it. The job compiles its stack once for both phases, and that compile is
+    ///   counted here only when no proxy frame came before. A proxy phase that was attempted and
     ///   declined is not counted here; it produced no frame.
     ///
     /// It excludes everything outside the worker's own work on this phase: the wait in the queue's
@@ -84,6 +86,35 @@ pub struct ProxyOutcome {
     /// spatial-stage layer whose neighbourhoods scale with the stage, a mask drawing a feature
     /// narrower than two proxy pixels, or both.
     pub approximation: ProxyApproximation,
+    /// The coverage grid the job asked for, delivered with the first frame the job presents. It
+    /// reads no pixel of the exact frame — only the geometry tail of the job's exact compilation,
+    /// and for a mask that reads pixels, the input of its first bound layer — so it does not wait
+    /// for the exact render, and it is the same grid, byte for byte, that phase would have carried.
+    /// The job's exact phase then carries none.
+    pub mask_overlay: MaskOverlayOutcome,
+}
+
+/// A job's coverage grid, or the reason it has none, on the phase that carries it: the proxy phase
+/// when the job has one, and otherwise its one exact phase. Empty on every other phase, and on a
+/// job that asked for no overlay.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MaskOverlayOutcome {
+    /// The coverage grid of the mask the job named, over the job's exact output stage, under the
+    /// generation of the frame it arrives with. `None` means the job did not ask, this phase does
+    /// not carry it, the render failed, or the mask had nothing to describe. It never means a mask
+    /// whose coverage happens to be zero everywhere: that is a grid of zeros, and this is its
+    /// absence.
+    pub grid: Option<MaskOverlay>,
+    /// Why the grid the job asked for is not in `grid`, in the host's own words.
+    ///
+    /// A client that asked for an overlay and waits for its texture has to be able to stop waiting:
+    /// the grid is refused for reasons that belong to the mask rather than to the frame — a mask
+    /// whose coverage depends on the pixel it reads has no grid at all
+    /// ([proposal P16](../../docs/design/range-study.md#proposals)) — and an absence with no reason
+    /// beside it is indistinguishable from a grid still on its way. `None` means the job asked for
+    /// no overlay, this phase does not carry it, the render itself failed, or a newer request is
+    /// coming with its own grid; in the last case the wait is correct and this must stay empty.
+    pub absent: Option<String>,
 }
 
 /// The full-resolution phase, the one every number comes from: every job that starts ends with
@@ -98,21 +129,10 @@ pub struct ExactOutcome {
     /// ([`PreviewResult::approximate_white_balance`]), which is never reduced. It never means an
     /// empty histogram.
     pub report: Option<Report>,
-    /// The coverage grid of the mask the job named, over the frame in `result` and under the same
-    /// generation. `None` means the job did not ask, the render failed, or the mask had nothing to
-    /// describe. It never means a mask whose coverage happens to be zero everywhere: that is a grid
-    /// of zeros, and this is its absence.
-    pub mask_overlay: Option<MaskOverlay>,
-    /// Why the grid the job asked for is not in `mask_overlay`, in the host's own words.
-    ///
-    /// A client that asked for an overlay and waits for its texture has to be able to stop waiting:
-    /// the grid is refused for reasons that belong to the mask rather than to the frame — a mask
-    /// whose coverage depends on the pixel it reads has no grid at all
-    /// ([proposal P16](../../docs/design/range-study.md#proposals)) — and an absence with no reason
-    /// beside it is indistinguishable from a grid still on its way. `None` means the job asked for
-    /// no overlay, the render itself failed, or a newer request is coming with its own grid; in the
-    /// last case the wait is correct and this must stay empty.
-    pub mask_overlay_absent: Option<String>,
+    /// The coverage grid the job asked for, when this is the job's one phase: a job whose proxy
+    /// frame was delivered carries it there ([`ProxyOutcome::mask_overlay`]) and leaves this empty.
+    /// On this phase it is filled only beside a rendered frame.
+    pub mask_overlay: MaskOverlayOutcome,
     /// Why a job that asked for a proxy phase has none: the ineligible layer, a scale of one, or
     /// the failure that building or rendering the proxy returned. `None` when the job asked for no
     /// proxy or got one.
@@ -157,6 +177,15 @@ impl PreviewResult {
         match &self.outcome {
             PhaseOutcome::Proxy(_) => None,
             PhaseOutcome::Exact(exact) => Some(exact.as_ref()),
+        }
+    }
+
+    /// The coverage grid this phase carries, or the reason it has none. Read from whichever phase
+    /// arrives: a job's grid is on exactly one of them, the first it delivers.
+    pub fn mask_overlay(&self) -> &MaskOverlayOutcome {
+        match &self.outcome {
+            PhaseOutcome::Proxy(proxy) => &proxy.mask_overlay,
+            PhaseOutcome::Exact(exact) => &exact.mask_overlay,
         }
     }
 

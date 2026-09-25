@@ -20,7 +20,9 @@ mod worker;
 
 pub use job::{MaskOverlayRequest, PreviewJob, PreviewSource};
 pub use queue::{PreviewQueue, Queued};
-pub use result::{ExactOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome};
+pub use result::{
+    ExactOutcome, MaskOverlayOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

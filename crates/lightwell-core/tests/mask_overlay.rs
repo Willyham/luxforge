@@ -294,7 +294,7 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
     let raster = result.raster().expect("a frame");
     let overlay = result
         .exact()
-        .and_then(|exact| exact.mask_overlay.as_ref())
+        .and_then(|exact| exact.mask_overlay.grid.as_ref())
         .expect("the job asked for a coverage grid");
 
     assert_eq!(overlay.mask, mask);
@@ -352,7 +352,7 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
     assert_eq!(
         again
             .exact()
-            .and_then(|exact| exact.mask_overlay.as_ref())
+            .and_then(|exact| exact.mask_overlay.grid.as_ref())
             .expect("a grid")
             .coverage
             .len(),
@@ -395,7 +395,7 @@ fn the_grid_follows_the_picture_through_the_geometry_tail() {
     let raster = result.raster().expect("a frame");
     let overlay = result
         .exact()
-        .and_then(|exact| exact.mask_overlay.as_ref())
+        .and_then(|exact| exact.mask_overlay.grid.as_ref())
         .expect("a grid");
     let (expected, transform) = expected_grid(&registry, &recipe, &held, source, cells_w, cells_h);
     assert_eq!(
@@ -450,7 +450,7 @@ fn one_components_grid_is_that_components_own_contribution() {
         let result = exact(job);
         let overlay = result
             .exact()
-            .and_then(|exact| exact.mask_overlay.clone())
+            .and_then(|exact| exact.mask_overlay.grid.clone())
             .expect("a grid");
         (overlay, registry, recipe, source)
     };
@@ -528,7 +528,7 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
     assert!(
         plain
             .exact()
-            .and_then(|exact| exact.mask_overlay.clone())
+            .and_then(|exact| exact.mask_overlay.grid.clone())
             .is_none()
     );
     assert!(
@@ -542,7 +542,7 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
     let drawn = exact(f.job(f.preview().mask_overlay(request(&mask))));
     let covered = drawn
         .exact()
-        .and_then(|exact| exact.mask_overlay.clone())
+        .and_then(|exact| exact.mask_overlay.grid.clone())
         .expect("a grid");
     assert!(
         covered
@@ -561,7 +561,7 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
     assert!(
         silent
             .exact()
-            .and_then(|exact| exact.mask_overlay.clone())
+            .and_then(|exact| exact.mask_overlay.grid.clone())
             .is_none(),
         "an amount of zero is no grid at all, not a grid of zeros"
     );
@@ -571,17 +571,17 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
     assert!(
         silent
             .exact()
-            .and_then(|exact| exact.mask_overlay_absent.clone())
+            .and_then(|exact| exact.mask_overlay.absent.clone())
             .is_none(),
         "{:?}",
         silent
             .exact()
-            .and_then(|exact| exact.mask_overlay_absent.clone())
+            .and_then(|exact| exact.mask_overlay.absent.clone())
     );
     assert!(
         plain
             .exact()
-            .and_then(|exact| exact.mask_overlay_absent.clone())
+            .and_then(|exact| exact.mask_overlay.absent.clone())
             .is_none()
     );
 }
@@ -615,13 +615,13 @@ fn a_value_based_mask_no_layer_is_bound_to_says_why_it_has_no_grid() {
     assert!(
         geometric
             .exact()
-            .and_then(|exact| exact.mask_overlay.clone())
+            .and_then(|exact| exact.mask_overlay.grid.clone())
             .is_some()
     );
     assert!(
         geometric
             .exact()
-            .and_then(|exact| exact.mask_overlay_absent.clone())
+            .and_then(|exact| exact.mask_overlay.absent.clone())
             .is_none()
     );
 
@@ -639,11 +639,11 @@ fn a_value_based_mask_no_layer_is_bound_to_says_why_it_has_no_grid() {
     assert!(
         reading
             .exact()
-            .is_some_and(|exact| exact.mask_overlay.is_none())
+            .is_some_and(|exact| exact.mask_overlay.grid.is_none())
     );
     let reason = reading
         .exact()
-        .and_then(|exact| exact.mask_overlay_absent.clone())
+        .and_then(|exact| exact.mask_overlay.absent.clone())
         .expect("the host's own reason travels with the frame");
     assert!(
         reason.contains("depends on the pixel it reads")
@@ -663,17 +663,17 @@ fn a_value_based_mask_no_layer_is_bound_to_says_why_it_has_no_grid() {
     assert!(
         bound
             .exact()
-            .and_then(|exact| exact.mask_overlay.clone())
+            .and_then(|exact| exact.mask_overlay.grid.clone())
             .is_some(),
         "a bound value-based mask has a grid: {:?}",
         bound
             .exact()
-            .and_then(|exact| exact.mask_overlay_absent.clone())
+            .and_then(|exact| exact.mask_overlay.absent.clone())
     );
     assert!(
         bound
             .exact()
-            .and_then(|exact| exact.mask_overlay_absent.clone())
+            .and_then(|exact| exact.mask_overlay.absent.clone())
             .is_none()
     );
 }
@@ -721,7 +721,7 @@ fn a_value_based_grid_is_read_on_the_pixel_mask_sample_input_answers() {
     let result = exact(job);
     let overlay = result
         .exact()
-        .and_then(|exact| exact.mask_overlay.as_ref())
+        .and_then(|exact| exact.mask_overlay.grid.as_ref())
         .expect("a bound value-based mask has a grid");
 
     let transform = stage_transform(&registry, width, height, &recipe).expect("a tail");
@@ -822,7 +822,7 @@ fn the_value_based_grid_is_the_coverage_the_render_applies() {
     let raster = result.raster().expect("a frame").clone();
     let overlay = result
         .exact()
-        .and_then(|exact| exact.mask_overlay.as_ref())
+        .and_then(|exact| exact.mask_overlay.grid.as_ref())
         .expect("a grid")
         .clone();
     assert_eq!((raster.width, raster.height), (source.width, source.height));
@@ -957,12 +957,12 @@ fn a_painted_mask_with_a_limited_stroke_has_a_grid() {
     let result = exact(job);
     let overlay = result
         .exact()
-        .and_then(|exact| exact.mask_overlay.as_ref())
+        .and_then(|exact| exact.mask_overlay.grid.as_ref())
         .expect("a painted mask a person can see");
     assert!(
         result
             .exact()
-            .and_then(|exact| exact.mask_overlay_absent.clone())
+            .and_then(|exact| exact.mask_overlay.absent.clone())
             .is_none()
     );
     assert!(
