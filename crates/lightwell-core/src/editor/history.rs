@@ -93,13 +93,14 @@ impl EditorService {
     /// than another and none validates it twice.
     ///
     /// The stack is validated against the registry (an unavailable provider, a refused payload or a
-    /// mask on a stage that cannot carry one is refused by name) and against the asset's source
-    /// kind. Every artifact it lists must be recorded with a present file, and is then bound into
-    /// the recipe, which carries the bytes until the write, whose transaction checks the references
-    /// again and records them. Last, the stack is compiled against the asset's dimensions, which
-    /// resolves every stroke it references, so a later layer addressing a stage that no longer
-    /// exists or a stroke the store has lost is refused with the compile error and nothing is
-    /// written. `O(layers)`; it rasterizes nothing.
+    /// mask on a stage that cannot carry one is refused by name), which checks its whole mask table
+    /// once — the limits, every stroke it references against the store and every component kind —
+    /// and against the asset's source kind. Every artifact it lists must be recorded with a present
+    /// file, and is then bound into the recipe, which carries the bytes until the write, whose
+    /// transaction checks the references again and records them. Last, the stack is compiled
+    /// against the asset's dimensions, trusting the mask table it was just checked for, so a later
+    /// layer addressing a stage that no longer exists is refused with the compile error and nothing
+    /// is written. `O(layers + components + strokes)`; it rasterizes nothing.
     pub(super) fn admit(&self, asset: &AssetRecord, recipe: &mut Recipe) -> Result<(), Error> {
         self.registry.validate_recipe(recipe)?;
         validate_source_recipe(asset, recipe)?;

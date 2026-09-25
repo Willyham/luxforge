@@ -715,10 +715,16 @@ impl ModuleRegistry {
         module.validate_payload(&layer.effect_id, layer.effect_format, &layer.payload)
     }
 
+    /// Everything a stack must satisfy to be written, checked once where it enters the service
+    /// ([`crate::EditorService`]'s admission): the layers' structure and mask references, the whole
+    /// mask table ([`Recipe::validate_mask_table`]), masks only on stages that can carry one, and
+    /// every layer's effect available, its artifacts declared and its payload accepted by its
+    /// provider. `O(layers + components + strokes)`; it reads no pixels.
     pub fn validate_recipe(&self, recipe: &Recipe) -> Result<(), Error> {
         #[cfg(test)]
         crate::editor::validations::validated();
         recipe.validate()?;
+        recipe.validate_mask_table()?;
         self.validate_masked_stages(recipe)?;
         for layer in &recipe.layers {
             let module = self
@@ -815,27 +821,6 @@ impl ModuleRegistry {
         Ok(Some(MaskField::compile(mask, stage, strokes, sampling)?))
     }
 
-    /// A component's `kind` is the host's business, not a module's: `crate::mask` owns the table of
-    /// kinds this build can evaluate, and a stored kind outside it is incompatible data rather than a
-    /// component to skip. Parsing every stored mask's components here — stage-free, so it costs
-    /// `O(components)` and reads no pixels — is what makes an unknown kind, a malformed payload or an
-    /// out-of-range position fail compiling, rendering, sampling and planning alike, with the stored
-    /// bytes left exactly as they were read. Every mask in the table is checked, not only the ones a
-    /// layer currently names, because a stack this build cannot draw whole is refused whole.
-    ///
-    /// It belongs to compiling and not to [`Self::validate_recipe`] on purpose. A kind this build
-    /// cannot evaluate is a fact about the build, not a defect in the stack: the stack is well
-    /// formed, so reading it, listing it, undoing through it and carrying its mask table forward
-    /// through an unrelated edit all keep working, and only the paths that would have to *draw* the
-    /// mask refuse. Refusing a write as well would make a newer build's catalog unopenable and lose
-    /// the bytes the retention rule exists to keep.
-    fn validate_mask_kinds(&self, recipe: &Recipe) -> Result<(), Error> {
-        for mask in &recipe.masks {
-            crate::mask::validate_component_kinds(mask)?;
-        }
-        Ok(())
-    }
-
     /// Only a layer of an effect that declares `artifacts` may reference any. The host owns the
     /// list, so this is the host's rule, checked before the module sees the payload.
     fn check_artifacts(&self, layer: &Layer) -> Result<(), Error> {
@@ -889,28 +874,22 @@ impl ModuleRegistry {
         recipe: &Recipe,
         sampling: MaskSampling,
     ) -> Result<Compiled, Error> {
-        // The whole-recipe checks every evaluation path shares: the format marker, and the mask
-        // table with the references into it and the kinds inside it. They cost
-        // `O(layers + components)` and read no pixels, so compiling here is what makes a stack that
-        // names a mask it does not carry, attaches one to the geometry tail, or holds a component of
-        // a kind this build cannot evaluate, fail rendering, sampling, proxy planning and module
-        // planning alike rather than only at the catalog boundary.
+        // The layer checks every evaluation path shares: the format marker, the layers' structure
+        // and each layer's mask reference, and a mask only where a stage can carry one. They cost
+        // `O(layers)` and read no pixels, so compiling here is what makes a stack that names a mask
+        // it does not carry, or attaches one to the geometry tail, fail rendering, sampling, proxy
+        // planning and module planning alike.
+        //
+        // The mask table itself is not checked again: it was checked once when the recipe entered
+        // the service (`Recipe::validate_mask_table`, from admission and from a drafted mask
+        // gesture), and a stored recipe was admitted when it was written. What a masked layer needs
+        // drawn is refused where it is drawn: compiling its mask parses every component through the
+        // kind table and resolves every stroke, so a mask this build cannot evaluate, or a stroke
+        // the store has lost, still refuses every path that would draw it by name, and nothing is
+        // rewritten or resolved to an empty stroke. A mask no layer draws changes no pixel, so
+        // rendering its stack draws exactly what the stack says.
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
-        // Every stroke this stack references, resolved against the store it was read from. A
-        // reference the store cannot answer is incompatible data exactly as an unknown component
-        // kind is: refusing here refuses rendering, sampling, export, proxy planning and module
-        // planning alike, and — because the host compiles a stack before it persists one — refuses
-        // to commit an edit onto such a stack as well. Nothing is rewritten and no reference is
-        // resolved to an empty stroke.
-        //
-        // Before the kind table, because these are two different facts and the store's is the more
-        // basic one: a kind this build does not know is a statement about the build, which
-        // registering a provider settles, while a reference the store cannot answer is the stored
-        // data disagreeing with itself, which no build can settle. A stack with both is reported by
-        // the one that will still be true tomorrow.
-        recipe.resolve_strokes()?;
-        self.validate_mask_kinds(recipe)?;
         self.compile_layers_sampled(
             source_width,
             source_height,
@@ -3016,11 +2995,63 @@ pub(crate) mod tests {
         assert_eq!(recipe.layers, vec![layer], "the refused stack is kept");
     }
 
-    /// A component of a kind this build cannot evaluate is refused by name wherever the mask would
-    /// have to be drawn, and nothing about the stored mask is rewritten: the host keeps every byte
-    /// and says what it could not draw, rather than rendering the layer unmasked or dropping the
-    /// component. Validation is deliberately not one of those paths — the stack is well formed, so it
-    /// still reads, still lists and can still be carried forward by an unrelated edit.
+    /// The mask table is checked once, where a recipe enters the service, and compiling trusts it:
+    /// a table past a per-recipe limit and a component this build cannot read are refused by the
+    /// admission check, while compiling the same stack — whose masks no layer draws — reads none of
+    /// the table and answers.
+    #[test]
+    fn the_mask_table_is_checked_on_admission_and_not_by_compile() {
+        let registry = ModuleRegistry::builtin();
+        let mut too_many = Recipe::default();
+        for index in 0..=crate::MASKS_PER_RECIPE {
+            too_many.masks.push(Mask::new(format!("Mask {index}")));
+        }
+        let mut unreadable = Mask::new("Mask 1");
+        let name = unreadable.next_component_name("future-kind");
+        unreadable.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "future-kind",
+            json!({}),
+        ));
+        let unknown = Recipe {
+            masks: vec![unreadable],
+            ..Recipe::default()
+        };
+        for (recipe, kind, detail) in [
+            (
+                &too_many,
+                ErrorKind::ResourceLimit,
+                format!(
+                    "recipe has {} masks; the limit is {} masks per recipe",
+                    crate::MASKS_PER_RECIPE + 1,
+                    crate::MASKS_PER_RECIPE
+                ),
+            ),
+            (
+                &unknown,
+                ErrorKind::Incompatible,
+                "unknown mask component future-kind".to_owned(),
+            ),
+        ] {
+            let refused = registry.validate_recipe(recipe).unwrap_err();
+            assert_eq!((refused.kind, &refused.detail), (kind, &detail));
+            assert_eq!(
+                recipe.validate_mask_table().unwrap_err().detail,
+                detail,
+                "admission's refusal is the table's own"
+            );
+            registry
+                .compile(4, 4, recipe)
+                .expect("compiling does not check the table again");
+        }
+    }
+
+    /// A component of a kind this build cannot evaluate is refused by name where a recipe enters the
+    /// service and wherever the mask would have to be drawn, and nothing about the stored mask is
+    /// rewritten: the host keeps every byte and says what it could not draw, rather than rendering
+    /// the layer unmasked or dropping the component. The model's structural check never asks what a
+    /// kind means, so the stack still reads and round-trips.
     #[test]
     fn a_component_kind_this_build_does_not_know_is_refused_by_every_compile() {
         let registry = ModuleRegistry::builtin();
@@ -3032,9 +3063,10 @@ pub(crate) mod tests {
             "future-kind",
             json!({"nested": {"points": [[0.25, 0.5], [0.75, 0.5]]}, "flag": true, "n": 3.5}),
         ));
+        // A layer that draws the mask: a non-neutral colour layer bound to it.
         let layer = Layer {
             mask: Some(mask.id.clone()),
-            ..Layer::pixel(0, 0, [1, 2, 3])
+            ..Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.5}))
         };
         let recipe = Recipe {
             format: RECIPE_FORMAT,
@@ -3042,6 +3074,10 @@ pub(crate) mod tests {
             masks: vec![mask.clone()],
             ..Recipe::default()
         };
+        // Admission refuses it once, with the kind table's own words.
+        let admitted = registry.validate_recipe(&recipe).unwrap_err();
+        assert_eq!(admitted.kind, ErrorKind::Incompatible);
+        assert_eq!(admitted.detail, "unknown mask component future-kind");
         for error in [
             registry
                 .compile(2, 1, &recipe)
@@ -3054,9 +3090,8 @@ pub(crate) mod tests {
             assert_eq!(error.kind, ErrorKind::Incompatible);
             assert_eq!(error.detail, "unknown mask component future-kind");
         }
-        // The structural model never asks what a kind means, so writing and reading the stack still
-        // work and the refused stack still reads back byte for byte through the persisted shape.
-        registry.validate_recipe(&recipe).unwrap();
+        // The structural model never asks what a kind means, so the refused stack still reads back
+        // byte for byte through the persisted shape.
         recipe.validate().unwrap();
         let reopened: Recipe =
             serde_json::from_slice(&serde_json::to_vec(&recipe).unwrap()).unwrap();

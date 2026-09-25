@@ -221,6 +221,9 @@ impl EditorService {
                 MaskOutcome::NoOp => current.clone(),
                 MaskOutcome::Change(change) => change.recipe,
             };
+            // A drafted mask gesture's recipe enters the service here, with a mask table no commit
+            // has admitted, so the table is checked once now and every render of the draft trusts it.
+            recipe.validate_mask_table()?;
             return Ok((recipe, state));
         }
         let (module, action) = self.registry.action(&draft.action).ok_or_else(|| {

@@ -483,7 +483,18 @@ impl Compiled {
         let mut support: Option<[f64; 4]> = None;
         let mut narrowest_band = f64::INFINITY;
         for id in &stored.strokes {
-            let stroke = strokes.resolve(id)?;
+            // The refusal reads exactly as admission's does for the same reference, because it is
+            // the same fact reached from the other side: admission refuses to write it, and
+            // compiling refuses to draw it.
+            let stroke = strokes.resolve(id).map_err(|error| {
+                Error::new(
+                    error.kind,
+                    format!(
+                        "{} referenced by component {component} of mask {mask}",
+                        error.detail
+                    ),
+                )
+            })?;
             let r = stroke.size();
             if !r.is_finite() || !(DISTANCE_MIN..=DISTANCE_MAX).contains(&r) {
                 return Err(Error::new(

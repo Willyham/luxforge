@@ -728,10 +728,11 @@ fn parse_component(component: &Component) -> Result<Geometry, Error> {
 
 /// Every component of one stored mask, parsed by the kind table without being bound to a stage.
 ///
-/// This is the stage-free half of [`CompiledMask::new`], for the recipe validation that runs before
-/// any stage is known: it is what makes an unknown kind or a malformed payload fail compiling,
-/// rendering, sampling and planning alike instead of only at the catalog boundary. Cost is
-/// `O(components)` and it reads no pixels.
+/// This is the stage-free half of [`CompiledMask::new`], for the mask-table check a recipe gets once
+/// when it enters the service ([`crate::Recipe::validate_mask_table`]), before any stage is known:
+/// it is what refuses to admit an unknown kind or a malformed payload in a mask no layer draws yet.
+/// A mask a layer draws is parsed again where it is compiled. Cost is `O(components)` and it reads
+/// no pixels.
 pub fn validate_component_kinds(mask: &Mask) -> Result<(), Error> {
     for component in &mask.components {
         parse_component(component)?;

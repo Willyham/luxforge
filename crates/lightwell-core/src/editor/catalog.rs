@@ -679,13 +679,16 @@ mod tests {
             let asset = service.import(&fixture()).unwrap().asset.id;
             let state = service.state(&asset).unwrap();
             let drawn = stroke(3);
-            let entry = next_entry(
-                &state,
-                brushed(
-                    &state.current_entry.snapshot.recipe,
-                    std::slice::from_ref(&drawn),
-                ),
+            let mut painted = brushed(
+                &state.current_entry.snapshot.recipe,
+                std::slice::from_ref(&drawn),
             );
+            // A layer that draws the mask, so every path below has to resolve its strokes.
+            painted.layers.push(crate::Layer {
+                mask: Some(painted.masks[0].id.clone()),
+                ..crate::Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.5}))
+            });
+            let entry = next_entry(&state, painted);
             drop(service);
             commit(&catalog, &entry);
 
@@ -737,8 +740,9 @@ mod tests {
 
             // And every path that would have to draw it refuses by name. `render` and `sample` are
             // the delivered evaluation paths and an image export is not implemented yet; all three
-            // compile the recipe through one function, which is where this refusal lives, so the
-            // refusal is asserted on the compile every one of them makes.
+            // compile the recipe through one function, which compiles the bound mask and resolves
+            // its strokes there, so the refusal is asserted on the compile every one of them makes.
+            // Admission refuses to write it with the same words.
             let registry = ModuleRegistry::builtin();
             let source = crate::SourceImage {
                 width: 8,
@@ -767,6 +771,7 @@ mod tests {
                     .compile(source.width, source.height, recipe)
                     .err()
                     .expect("compiling refuses a broken reference"),
+                registry.validate_recipe(recipe).unwrap_err(),
             ] {
                 assert_eq!(error.kind, ErrorKind::Incompatible);
                 assert_eq!(error.detail, expected);
@@ -1505,8 +1510,8 @@ mod tests {
         std::fs::remove_file(&catalog).unwrap();
     }
 
-    /// The declared points-per-mask limit is enforced where the strokes are in hand, and names
-    /// itself.
+    /// The declared points-per-mask limit is enforced where a recipe enters the service, with the
+    /// strokes in hand, and names itself.
     #[test]
     fn a_mask_over_the_points_per_mask_limit_names_the_limit() {
         let catalog = temp("points-per-mask.sqlite");
@@ -1528,11 +1533,11 @@ mod tests {
                 ..base.clone()
             }
         };
-        // Under the bound the recipe compiles: the brush kind is evaluable and the limit has not
+        // Under the bound the recipe is admitted: the brush kind is evaluable and the limit has not
         // been reached, so nothing refuses.
         assert!(
-            registry.compile(64, 48, &recipe(&at_bound)).is_ok(),
-            "a mask under the bound should compile"
+            registry.validate_recipe(&recipe(&at_bound)).is_ok(),
+            "a mask under the bound should be admitted"
         );
         assert!(points <= crate::POINTS_PER_MASK);
 
@@ -1547,9 +1552,8 @@ mod tests {
         }
         let total: usize = over.iter().map(crate::path::Stroke::point_count).sum();
         let error = registry
-            .compile(64, 48, &recipe(&over))
-            .err()
-            .expect("past the bound");
+            .validate_recipe(&recipe(&over))
+            .expect_err("past the bound");
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         assert_eq!(
             error.detail,

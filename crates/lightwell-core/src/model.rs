@@ -127,8 +127,8 @@ pub const MASK_BYTES_PER_RECIPE: usize = 256 * 1024;
 /// Stored path positions one mask's components may hold between them, summed over every stroke they
 /// reference. The per-stroke bound is [`crate::path::POINTS_PER_STROKE`] and belongs to the host's
 /// path primitives; this one is the mask's own and is refused with a `ResourceLimit` error naming
-/// it. It is checked wherever the referenced strokes are resolved, which is every path that draws
-/// the mask.
+/// it. It is checked with the rest of the mask table when a recipe enters the service
+/// ([`Recipe::validate_mask_table`]).
 pub const POINTS_PER_MASK: usize = 8192;
 /// Mask and component display names are a person's text, not an identity: printable, trimmed and
 /// bounded, exactly as a version name is.
@@ -530,11 +530,15 @@ impl Default for Recipe {
 }
 
 impl Recipe {
-    /// Structural validation of a whole stack: `O(layers + components)` identity checks plus one
-    /// serialization of the mask table when the recipe has masks at all. It reads no pixels and asks
-    /// no provider anything, so every evaluation path can afford it — [`crate::ModuleRegistry`]
-    /// compiles through it, which is how a stack that names a mask it does not carry fails
-    /// compiling, rendering, sampling and planning alike instead of quietly rendering unmasked.
+    /// Structural validation of the stack's layers: the format marker, unique layer identities, each
+    /// layer's own structure and every layer's mask reference, `O(layers · masks)` identity checks.
+    /// It reads no pixels, asks no provider anything and does not read the mask table itself, so a
+    /// layer edit and every evaluation path can afford it — [`crate::ModuleRegistry`] compiles
+    /// through it, which is how a stack that names a mask it does not carry fails compiling,
+    /// rendering, sampling and planning alike instead of quietly rendering unmasked.
+    ///
+    /// The mask table is [`Self::validate_mask_table`]'s, checked once when a recipe enters the
+    /// service.
     pub fn validate(&self) -> Result<(), Error> {
         if self.format != RECIPE_FORMAT {
             return Err(Error::new(
@@ -542,7 +546,6 @@ impl Recipe {
                 format!("unsupported recipe format {}", self.format),
             ));
         }
-        self.validate_masks()?;
         let mut ids = HashSet::with_capacity(self.layers.len());
         for layer in &self.layers {
             if !ids.insert(&layer.id) {
@@ -592,18 +595,35 @@ impl Recipe {
         Ok(found)
     }
 
-    /// Resolve every stroke this recipe references against the table it was hydrated with, and
-    /// enforce the per-mask point bound while the strokes are in hand.
+    /// The whole mask table, checked once, where a recipe enters the service: the admission every
+    /// new snapshot passes (a commit, a composite, a `mask.*` command, a Restore and an import's
+    /// Original) and a drafted `mask.*` gesture's effective recipe. Compiling trusts a recipe that
+    /// entered this way and does not check the table again.
     ///
-    /// This is what makes a missing or corrupt stroke refuse by name instead of drawing something
-    /// else: it runs where a recipe is compiled, so rendering, sampling, proxy planning, module
-    /// planning and the export that will compile the same way all pass through it, and it returns
-    /// the store's own refusal unchanged. It reads the recipe and rewrites nothing, so listing, undoing and carrying the
-    /// stack forward keep working exactly as they do for an unavailable effect.
+    /// In order: the per-recipe limits, unique identities, each mask's own structure and the
+    /// serialized-bytes bound; then every stroke the table references, resolved against the table
+    /// the recipe was hydrated with, and the per-mask point bound; then every component through the
+    /// host's kind table. The strokes come before the kinds because they are the more basic fact: a
+    /// kind this build does not know is a statement about the build, while a reference the store
+    /// cannot answer is the stored data disagreeing with itself. Each refusal is the store's or the
+    /// kind table's own, naming what it refused. It reads the recipe and rewrites nothing.
     ///
-    /// A recipe that references no stroke — every recipe without a painted edit — costs one walk of
-    /// its mask table and touches nothing else.
-    pub fn resolve_strokes(&self) -> Result<(), Error> {
+    /// Cost is `O(components + strokes)` plus one serialization of the mask table, and nothing at
+    /// all for a recipe without masks — every recipe without a local adjustment.
+    pub fn validate_mask_table(&self) -> Result<(), Error> {
+        self.validate_masks()?;
+        self.validate_strokes()?;
+        for mask in &self.masks {
+            crate::mask::validate_component_kinds(mask)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve every stroke the mask table references against the table the recipe was hydrated
+    /// with, and enforce the per-mask point bound while the strokes are in hand, so a missing or
+    /// corrupt stroke refuses by name instead of drawing something else. The store's own refusal is
+    /// returned, naming the component that referenced it.
+    fn validate_strokes(&self) -> Result<(), Error> {
         let references = self.stroke_references()?;
         if references.is_empty() {
             return Ok(());
@@ -638,7 +658,7 @@ impl Recipe {
         Ok(())
     }
 
-    /// The mask table on its own: the per-recipe limits, unique identities and each mask's own
+    /// The mask table's structure: the per-recipe limits, unique identities and each mask's own
     /// structure. The serialized-bytes bound is measured only when there are masks, so an unmasked
     /// recipe — every recipe without a local adjustment — pays nothing for it.
     fn validate_masks(&self) -> Result<(), Error> {
@@ -1151,9 +1171,9 @@ mod tests {
                 .collect(),
             ..Recipe::default()
         };
-        recipe.validate().unwrap();
+        recipe.validate_mask_table().unwrap();
         recipe.masks.push(Mask::new("One too many"));
-        let error = recipe.validate().unwrap_err();
+        let error = recipe.validate_mask_table().unwrap_err();
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         assert_eq!(
             error.detail,
@@ -1213,7 +1233,7 @@ mod tests {
             masks: vec![heavy],
             ..Recipe::default()
         }
-        .validate()
+        .validate_mask_table()
         .unwrap_err();
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         assert_eq!(
