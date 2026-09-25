@@ -5,21 +5,18 @@
 //! [`crate::app`]'s update, so the same gestures are reachable from the API without
 //! simulating a pointer.
 //!
-//! The rotation drawn here is the GPU's display filter, not the reference sampler: the committed
-//! render is the reference. The canvas never rasterizes a pixel itself.
+//! The input stage under the frame is drawn by the photo surface, turned and dimmed as
+//! [`stage_turn`] places it. That rotation is the GPU's display filter, not the reference sampler:
+//! the committed render is the reference. The canvas never rasterizes a pixel itself.
 use crate::{
     app::message::{CropMessage, CropPointer, Message},
     canvas_view::CanvasView,
     crop_draft::{Corner, CropDraft, Handle, edge_midpoint},
-    draft_photo::{self, DraftPhoto},
 };
 use iced::{
-    Color, Point, Radians, Rectangle, Renderer, Size, Theme,
+    Color, Point, Rectangle, Renderer, Size, Theme,
     mouse::{self, Cursor},
-    widget::{
-        canvas::{self, Action, Event, Frame, Geometry, Image, Path, Stroke},
-        image,
-    },
+    widget::canvas::{self, Action, Event, Frame, Geometry, Path, Stroke},
 };
 use lightwell_core::{BoxRect, Edge};
 
@@ -41,16 +38,6 @@ pub(crate) enum Mode {
     Guide,
 }
 
-/// Which half of the crop frame a canvas draws. Iced's renderer paints every image of one layer
-/// over every mesh of that layer, whatever order they were built in, so the frame, thirds, handles
-/// and guide have to live in a canvas of their own that the host stacks above the photo. The two
-/// parts share this program, this view transform and this draft; only the overlay handles pointers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Part {
-    Photo,
-    Overlay,
-}
-
 /// The canvas's own ephemeral pointer bookkeeping. It holds no editing state: only where a Space
 /// drag last was, so the next move can be expressed as a scroll delta.
 #[derive(Debug, Default)]
@@ -58,74 +45,47 @@ pub(crate) struct Interaction {
     pan_from: Option<Point>,
 }
 
+/// Where the photo surface draws the crop layer's input stage under this canvas: the unrotated
+/// stage at the display scale, centred on the box centre, turned by the draft angle about that
+/// centre, at full opacity inside the crop rectangle and dimmed outside it. The rotation is the
+/// geometry contract's own matrix, so a positive angle turns the stage clockwise on screen with no
+/// sign flip, and the turned stage's bounding box is the box this canvas draws the frame in.
+pub(crate) fn stage_turn(draft: &CropDraft, view: CanvasView) -> lightwell_ui::Turn {
+    let (box_width, box_height) = draft.stage.bounding_box();
+    let centre = view.canvas_point(box_width / 2.0, box_height / 2.0);
+    let size = Size::new(
+        f64::from(draft.stage.width) as f32 * view.scale,
+        f64::from(draft.stage.height) as f32 * view.scale,
+    );
+    let rect = &draft.rect;
+    lightwell_ui::Turn {
+        rect: Rectangle::new(
+            Point::new(centre.x - size.width / 2.0, centre.y - size.height / 2.0),
+            size,
+        ),
+        angle: draft.stage.angle.to_radians() as f32,
+        bright: view.canvas_rect(rect.x, rect.y, rect.width, rect.height),
+        dim: DIM_OPACITY,
+    }
+}
+
 /// The crop frame over one truncated preview. Borrowed from the app for the duration of `view`.
 pub(crate) struct CropCanvas<'a> {
     draft: &'a CropDraft,
-    /// The crop layer's input stage as the preview worker rendered it, in the tiles it was uploaded
-    /// as.
-    photo: DraftPhoto,
     /// The crop box as it is drawn in this canvas: the shared canvas view, over box pixels.
     view: CanvasView,
     mode: Mode,
     /// Option (Alt) is held, so a handle scales uniformly about the centre.
     option: bool,
-    part: Part,
 }
 
 impl<'a> CropCanvas<'a> {
-    pub(crate) fn new(
-        draft: &'a CropDraft,
-        photo: DraftPhoto,
-        view: CanvasView,
-        mode: Mode,
-        option: bool,
-        part: Part,
-    ) -> Self {
+    pub(crate) fn new(draft: &'a CropDraft, view: CanvasView, mode: Mode, option: bool) -> Self {
         Self {
             draft,
-            photo,
             view,
             mode,
             option,
-            part,
-        }
-    }
-
-    /// The unrotated image rectangle: the input stage at the display scale, centred on the box
-    /// centre. Iced rotates an image about its bounds centre with the same matrix the geometry
-    /// contract uses, so a positive angle turns the image clockwise on screen with no sign flip;
-    /// each tile is placed so that turning it about its own centre turns the stage about this
-    /// rectangle's ([`draft_photo::placed`]).
-    fn image_bounds(&self) -> Rectangle {
-        let (box_width, box_height) = self.draft.stage.bounding_box();
-        let centre = self.view.canvas_point(box_width / 2.0, box_height / 2.0);
-        let size = Size::new(
-            f64::from(self.draft.stage.width) as f32 * self.view.scale,
-            f64::from(self.draft.stage.height) as f32 * self.view.scale,
-        );
-        Rectangle::new(
-            Point::new(centre.x - size.width / 2.0, centre.y - size.height / 2.0),
-            size,
-        )
-    }
-
-    /// Every tile of the stage, rotated with it, at this opacity.
-    fn draw_photo(&self, frame: &mut Frame, opacity: f32) {
-        let bounds = self.image_bounds();
-        let angle = self.draft.stage.angle.to_radians() as f32;
-        let stage = (self.photo.width, self.photo.height);
-        for (rect, handle) in self.photo.tiles.iter() {
-            frame.draw_image(
-                draft_photo::placed(bounds, stage, *rect, angle),
-                Image {
-                    handle: handle.clone(),
-                    filter_method: image::FilterMethod::Linear,
-                    rotation: Radians(angle),
-                    border_radius: 0.0.into(),
-                    opacity,
-                    snap: false,
-                },
-            );
         }
     }
 
@@ -163,9 +123,6 @@ impl canvas::Program<Message> for CropCanvas<'_> {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> Option<Action<Message>> {
-        if self.part == Part::Photo {
-            return None;
-        }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let point = cursor.position_in(bounds)?;
@@ -226,13 +183,6 @@ impl canvas::Program<Message> for CropCanvas<'_> {
         let rect = self
             .view
             .canvas_rect(box_rect.x, box_rect.y, box_rect.width, box_rect.height);
-        if self.part == Part::Photo {
-            // The whole stage, dimmed, then the crop rectangle at full opacity over it.
-            self.draw_photo(&mut frame, DIM_OPACITY);
-            frame.with_clip(rect, |clipped| self.draw_photo(clipped, 1.0));
-            return vec![frame.into_geometry()];
-        }
-
         let border = Color::from_rgba(1.0, 1.0, 1.0, 0.9);
         let guides = Color::from_rgba(1.0, 1.0, 1.0, 0.35);
         frame.stroke_rectangle(
@@ -282,9 +232,6 @@ impl canvas::Program<Message> for CropCanvas<'_> {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> mouse::Interaction {
-        if self.part == Part::Photo {
-            return mouse::Interaction::None;
-        }
         if state.pan_from.is_some() {
             return mouse::Interaction::Grabbing;
         }
@@ -354,15 +301,16 @@ mod tests {
             assert_eq!(draft.stage.angle, angle);
             let (box_width, box_height) = draft.stage.bounding_box();
             let view = CanvasView::percent(100.0, 1.0).expect("a percent view");
-            let canvas = CropCanvas::new(
-                &draft,
-                DraftPhoto::unallocated(480, 320),
-                view,
-                Mode::Frame,
-                false,
-                Part::Photo,
+            let turn = stage_turn(&draft, view);
+            assert_eq!(turn.angle, angle.to_radians() as f32, "{angle}");
+            assert_eq!(turn.dim, DIM_OPACITY);
+            // Full opacity is exactly the crop rectangle, drawn where the frame is drawn.
+            let rect = &draft.rect;
+            assert_eq!(
+                turn.bright,
+                view.canvas_rect(rect.x, rect.y, rect.width, rect.height)
             );
-            let bounds = canvas.image_bounds();
+            let bounds = turn.rect;
             assert_eq!(bounds.width, 480.0, "{angle}");
             assert_eq!(bounds.height, 320.0, "{angle}");
             let centre = bounds.center();
@@ -402,34 +350,20 @@ mod tests {
     }
 
     #[test]
-    fn only_the_overlay_part_answers_pointers() {
+    fn the_frame_answers_pointers() {
         use canvas::Program;
         let draft = CropDraft::neutral(stage(480, 320, 0.0), 0, 0);
         let view = CanvasView::percent(100.0, 1.0).expect("a percent view");
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
         let cursor = Cursor::Available(Point::new(10.0, 10.0));
-        for (part, answers) in [(Part::Photo, false), (Part::Overlay, true)] {
-            let canvas = CropCanvas::new(
-                &draft,
-                DraftPhoto::unallocated(480, 320),
-                view,
-                Mode::Frame,
-                false,
-                part,
-            );
-            let mut state = Interaction::default();
-            assert_eq!(
-                canvas.update(&mut state, &press, bounds, cursor).is_some(),
-                answers,
-                "{part:?}"
-            );
-            assert_eq!(
-                canvas.mouse_interaction(&state, bounds, cursor) == mouse::Interaction::None,
-                !answers,
-                "{part:?}"
-            );
-        }
+        let canvas = CropCanvas::new(&draft, view, Mode::Frame, false);
+        let mut state = Interaction::default();
+        assert!(canvas.update(&mut state, &press, bounds, cursor).is_some());
+        assert_ne!(
+            canvas.mouse_interaction(&state, bounds, cursor),
+            mouse::Interaction::None
+        );
     }
 
     #[test]

@@ -11,7 +11,6 @@ use crate::{
     app::draft::GestureId,
     app::tasks::{
         HostAnswer, PerformanceRead, PresetChange, PreviewPayload, RecipeRead, Refresh, SyncResult,
-        Upload,
     },
     crop_draft::Handle,
     mask_draft::MaskHandle,
@@ -20,7 +19,6 @@ use crate::{
         histogram::Readout,
     },
 };
-use iced_runtime::image as image_memory;
 use lightwell_core::{
     ClientSession, ContentPoint, Draft, DraftId, EntryId, HistoryPage, ModuleDescriptor,
     PresetSummary, PreviewJob, StageTransform, Version, capabilities::jobs::JobRecord,
@@ -491,40 +489,16 @@ pub(crate) enum PreviewMessage {
     /// A preview job and the session that selects it, read by something that did not set `busy`:
     /// a comparison, or the displayed entry again once a gesture ended without committing.
     Loaded(Result<Box<PreviewPayload>, String>),
-    /// The crop layer's input stage, cut into tiles the toolkit's image atlas holds whole.
-    DraftCut(
-        Upload,
-        Vec<(crate::draft_photo::TileRect, iced::widget::image::Handle)>,
-    ),
-    /// One tile of the truncated preview of a crop layer's input stage reached the GPU.
-    DraftUploaded(
-        Upload,
-        usize,
-        Result<image_memory::Allocation, image_memory::Error>,
-    ),
 }
 
-/// The bounded overlays drawn over the photograph: the clipping overlay and a mask's coverage grid.
-/// Handled in `app/overlay.rs`.
+/// The clipping overlay drawn over the photograph. Handled in `app/overlay.rs`; a derived overlay
+/// and a mask's coverage grid reach the presenter in the update that takes them up, with no message
+/// of their own.
 #[derive(Clone, Debug)]
 pub(crate) enum OverlayMessage {
     /// Turn one clipping overlay on or off. `None` toggles both together, which is what the title
     /// bar's Clipping button and `J` do; `Some` toggles the one triangle that was clicked.
     ToggleClipping(Option<ClipEndpoint>),
-    /// One derived clipping overlay reached the GPU. The generation says which photograph it
-    /// belongs to, so an overlay for a replaced frame is dropped instead of drawn over the new one.
-    ClippingUploaded(
-        u64,
-        (u32, u32),
-        Result<image_memory::Allocation, image_memory::Error>,
-    ),
-    /// One painted mask coverage grid reached the GPU. The generation says which frame it belongs
-    /// to, so a grid for a replaced frame is dropped instead of drawn over the new one.
-    MaskUploaded(
-        u64,
-        (u32, u32),
-        Result<image_memory::Allocation, image_memory::Error>,
-    ),
 }
 
 /// History and versions: undo, redo, restore, a history selection, the Original held for

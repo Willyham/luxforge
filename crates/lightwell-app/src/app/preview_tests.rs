@@ -409,7 +409,7 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
         !editor.presented_proxy,
         "the exact raster is what is on screen"
     );
-    let exact = editor.photo_version;
+    let exact = editor.presenter.photo_version();
     assert!(exact > 0, "the exact raster was handed to the surface");
     assert_eq!(
         editor.activity.render,
@@ -430,7 +430,8 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
     editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };
     let _ = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
     assert_eq!(
-        editor.photo_version, exact,
+        editor.presenter.photo_version(),
+        exact,
         "a zoom within the exact view handed the raster over again"
     );
     assert_eq!(editor.preview_generation, 7, "and asked for no preview");
@@ -440,7 +441,7 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
     let _ = editor.zoom_changed(&Zoom::Percent { value: 200.0 });
     assert!(editor.presented_proxy, "the proxy is back on screen");
     assert_eq!(
-        editor.photo_version,
+        editor.presenter.photo_version(),
         exact + 1,
         "the retained proxy was handed to the surface"
     );
@@ -682,7 +683,11 @@ fn a_zoom_back_to_fit_with_no_retained_proxy_requests_one_preview() {
     // The returned task is the owner round trip that ends in one preview job. Nothing reaches
     // the surface, because there are no pixels of this frame at the size Fit now asks for.
     let _ = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
-    assert_eq!(editor.photo_version, 0, "there were no pixels to hand over");
+    assert_eq!(
+        editor.presenter.photo_version(),
+        0,
+        "there were no pixels to hand over"
+    );
     let records = crate::app::testing::logged(&mut editor, &path);
     assert!(
         records

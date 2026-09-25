@@ -1,7 +1,7 @@
 //! The state correlated with every logged event and captured frame: what the screen shows, read
 //! from the editor and the derived models, never including a source path.
 use super::{Editor, sync::module_summary};
-use crate::{draft_photo, state, state::tools, view};
+use crate::{state, state::tools, view};
 use serde_json::{Value, json};
 
 impl Editor {
@@ -199,11 +199,11 @@ impl Editor {
         json!({
             "view": serde_json::to_value(&self.session.preview.view).unwrap_or(Value::Null),
             "generation": self.presented_generation,
-            "raster": self.photo.as_ref().map(|photo| {
+            "raster": self.presenter.photo().map(|photo| {
                 let (width, height) = photo.size();
                 json!([width, height])
             }),
-            "version": self.photo.as_ref().map(lightwell_ui::PhotoRaster::version),
+            "version": self.presenter.photo().map(lightwell_ui::Frame::version),
             "texture_writes": lightwell_ui::photo_surface::texture_writes(),
             "views": self.loop_timing.get().views,
         })
@@ -321,19 +321,9 @@ impl Editor {
                     );
                     object.insert(
                         "input_stage_loaded".into(),
-                        Value::from(self.draft_photo.is_some()),
+                        Value::from(self.presenter.stage().is_some()),
                     );
                     object.insert("section".into(), self.crop_section_summary());
-                    // How many atlas-sized tiles hold the input stage on the GPU: one up to 2048
-                    // px a side, more for any photograph-sized stage.
-                    object.insert(
-                        "input_stage_tiles".into(),
-                        Value::from(
-                            self.draft_photo
-                                .as_ref()
-                                .map(draft_photo::DraftPhoto::allocated),
-                        ),
-                    );
                 }
                 summary
             }

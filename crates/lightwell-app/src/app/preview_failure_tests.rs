@@ -126,8 +126,11 @@ fn events<'a>(records: &'a [Value], name: &str) -> Vec<&'a Value> {
 fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenting_it() {
     let (mut editor, catalog, asset, original) = opened_and_shown();
     let log = attach_log(&mut editor);
-    let version = editor.photo_version;
-    assert!(editor.photo.is_some(), "the opened frame is on screen");
+    let version = editor.presenter.photo_version();
+    assert!(
+        editor.presenter.photo().is_some(),
+        "the opened frame is on screen"
+    );
 
     let crop = cropped(&asset, &original, 5);
     let refresh = committed(&asset, &crop, &[&original], over_the_frame_limit());
@@ -146,7 +149,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
         Some(ErrorKind::ResourceLimit)
     );
     assert!(
-        editor.photo.is_none(),
+        editor.presenter.photo().is_none(),
         "the uncropped picture is still on the surface under the crop's entry"
     );
     assert_eq!(editor.presented_entry, None);
@@ -188,8 +191,15 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     let _ = editor.zoom_changed(&Zoom::Fit);
     editor.session.preview.view.zoom = Zoom::Fit;
     let _ = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
-    assert!(editor.photo.is_none(), "a zoom put a stale picture back");
-    assert_eq!(editor.photo_version, version, "nothing was handed over");
+    assert!(
+        editor.presenter.photo().is_none(),
+        "a zoom put a stale picture back"
+    );
+    assert_eq!(
+        editor.presenter.photo_version(),
+        version,
+        "nothing was handed over"
+    );
     assert_eq!(
         editor.preview_generation, generation,
         "nothing was asked for"
@@ -202,7 +212,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     let refresh = committed(&asset, &next, &[&crop, &original], small());
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     poll_until(&mut editor, "the next frame", |editor| {
-        editor.photo.is_some()
+        editor.presenter.photo().is_some()
     });
     assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
     assert_eq!(editor.render_error, None);
@@ -238,7 +248,7 @@ fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
     editor.preview_failed(presented, false, &current.id, None, &error);
     editor.rederive();
     assert!(
-        editor.photo.is_some(),
+        editor.presenter.photo().is_some(),
         "the target's own proxy was withdrawn"
     );
     assert_eq!(editor.presented_entry.as_ref(), Some(&current.id));
@@ -254,7 +264,10 @@ fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
 
     // A drafted revision of the same entry is another picture: its failure withdraws the frame.
     editor.preview_failed(presented + 1, false, &current.id, Some(3), &error);
-    assert!(editor.photo.is_none(), "a frame of another revision stayed");
+    assert!(
+        editor.presenter.photo().is_none(),
+        "a frame of another revision stayed"
+    );
     finish(editor, catalog);
 }
 
@@ -345,7 +358,7 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         editor.render_error, None,
         "the photograph's own state did not fail"
     );
-    assert!(editor.photo.is_some());
+    assert!(editor.presenter.photo().is_some());
 
     let stage = CropStage {
         width: 480,
@@ -501,7 +514,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
         editor.crop_pending().is_none()
     });
     assert_eq!(editor.draft_generation, None);
-    assert!(editor.crop().is_none() && editor.draft_photo.is_none());
+    assert!(editor.crop().is_none() && editor.presenter.stage().is_none());
     assert_eq!(
         editor.mode_sync.as_deref(),
         Some(POINTER_MODE),
@@ -515,8 +528,11 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     dispatch_polls_until(&mut editor, "the new entry's frame", |editor| {
         editor.presented_generation == newer && !editor.preview_queue.is_busy()
     });
-    assert!(!editor.uploading, "nothing of the draft was uploaded");
-    assert!(editor.crop_pending().is_none() && editor.draft_photo.is_none());
+    assert!(
+        editor.presenter.stage().is_none(),
+        "nothing of the draft was shown"
+    );
+    assert!(editor.crop_pending().is_none() && editor.presenter.stage().is_none());
     assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
     assert_eq!(editor.render_error, None);
     let records = logged(&mut editor, &log);
@@ -583,7 +599,10 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
     poll_until(&mut editor, "the second commit's frame", |editor| {
         editor.presented_entry.as_ref() == Some(&next.id) && !editor.preview_queue.is_busy()
     });
-    assert!(!editor.uploading, "the replaced job delivered a stage");
+    assert!(
+        editor.presenter.stage().is_none(),
+        "the replaced job delivered a stage"
+    );
     assert!(editor.crop().expect("the draft is kept").conflicted);
     let records = logged(&mut editor, &log);
     assert_eq!(
@@ -631,5 +650,42 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
     let failed = events(&records, "crop_draft_failed");
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!(failed[0]["generation"], Value::Null);
+    finish(editor, catalog);
+}
+
+/// A draft's input stage opens the draft in the very update that takes it up: it becomes the
+/// presenter's stage from the render's own buffer, with no upload and no message to wait for, and
+/// the photograph stays held under it, its version untouched, for when the draft ends.
+#[test]
+fn a_draft_opens_on_its_input_stage_in_the_update_that_takes_it_up() {
+    let (mut editor, catalog, _, _) = opened(vec![basic()], 4);
+    poll_until(&mut editor, "the opened frame", |editor| {
+        editor.presented_generation > 0 && !editor.preview_queue.is_busy()
+    });
+    let photo = editor.presenter.photo_version();
+    let _ = editor.update(Message::Crop(CropMessage::Start));
+    let job = draft_job(&editor, small());
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    let draft = editor.draft_generation.expect("the draft's job");
+    while !editor.preview_queue.ready() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    let open = editor.crop().expect("the draft opened in the same update");
+    assert_eq!((open.stage.width, open.stage.height), (64, 48));
+    assert_eq!(
+        editor.presenter.stage().map(lightwell_ui::Frame::size),
+        Some((64, 48))
+    );
+    assert!(editor.drafting());
+    assert_eq!(
+        editor.presenter.photo_version(),
+        photo,
+        "the stage is not a photograph"
+    );
+    assert!(editor.presenter.photo().is_some());
+    assert_ne!(editor.presented_generation, draft);
+    let _ = editor.update(Message::Crop(CropMessage::Cancel));
+    assert!(editor.presenter.stage().is_none(), "the stage was kept");
     finish(editor, catalog);
 }

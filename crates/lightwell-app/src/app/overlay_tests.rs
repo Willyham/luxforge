@@ -62,6 +62,113 @@ fn the_clipping_overlay_follows_the_drafted_raster() {
     finish(editor, catalog);
 }
 
+/// A derived overlay reaches the presenter in the update that takes it up — no upload, no message
+/// to wait for — and the surface is handed exactly its cell grid, for the generation on screen. A
+/// result the view no longer asks for is dropped rather than drawn.
+#[test]
+fn a_derived_overlay_is_laid_over_the_photograph_in_the_update_that_takes_it_up() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    editor.session.workspace.clip_highlights = true;
+    editor.session.workspace.clip_shadows = true;
+    editor.session.preview.view.zoom = Zoom::Fit;
+    let (committed, raster) = analysed(&editor, 4, &[[255, 255, 255, 255]; 4], 2, 2);
+    editor.preview_generation = 4;
+    editor.presented_generation = 4;
+    editor.incoming = Some((committed, raster));
+    editor.adopt_analysis(4);
+    let _ = editor.update(Message::View(ViewMessage::Resized(1440.0, 900.0)));
+    let request = editor.overlay_request.clone().expect("an overlay");
+    let log = testing::attach_log(&mut editor);
+    let done = loop {
+        if let Some(done) = editor.overlay_queue.poll() {
+            break done;
+        }
+        std::thread::yield_now();
+    };
+    // The same result, as though the view had since asked for another grid: it is not drawn.
+    editor.overlay_request = Some(overlay::OverlayRequest {
+        cells_w: request.cells_w + 1,
+        ..request.clone()
+    });
+    let stale = overlay::OverlayResult {
+        request: done.request.clone(),
+        width: done.width,
+        height: done.height,
+        result: done.result.clone(),
+    };
+    editor.overlay_ready(stale);
+    assert!(
+        editor.presenter.clipping(4).is_none(),
+        "a stale grid was drawn"
+    );
+    editor.overlay_request = Some(request.clone());
+
+    editor.overlay_ready(done);
+    let drawn = editor
+        .overlay_surface()
+        .expect("the overlay is on the presenter");
+    assert_eq!(drawn.size(), (request.cells_w, request.cells_h));
+    let records = testing::logged(&mut editor, &log);
+    let shown: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["event"] == "clipping_overlay")
+        .map(|record| &record["detail"])
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            &json!({"generation": 4, "cells": [request.cells_w, request.cells_h], "approximate": false})
+        ]
+    );
+    // Another frame on screen: the overlay of generation 4 is not drawn over it.
+    editor.presented_generation = 5;
+    assert!(editor.overlay_surface().is_none());
+    finish(editor, catalog);
+}
+
+/// A mask's coverage grid is painted and laid over the photograph in the update that took it up,
+/// for its own generation only, whichever phase of the job delivered it; an overlay turned off
+/// leaves nothing drawn.
+#[test]
+fn a_coverage_grid_is_laid_over_its_own_frame_in_the_same_update() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    editor.session.workspace.mask_overlay = lightwell_core::MaskOverlayMode::Tint;
+    editor.presented_generation = 7;
+    let grid = |cells: (u32, u32)| lightwell_core::analysis::MaskOverlay {
+        mask: lightwell_core::MaskId::new(),
+        component: None,
+        cells_w: cells.0,
+        cells_h: cells.1,
+        coverage: vec![255; (cells.0 * cells.1) as usize],
+    };
+    let log = testing::attach_log(&mut editor);
+    editor.mask_overlay_pending = Some((7, grid((3, 2))));
+    editor.present_mask_overlay();
+    assert!(editor.mask_overlay_pending.is_none());
+    let drawn = editor
+        .mask_overlay_surface()
+        .expect("the coverage is drawn");
+    assert_eq!(drawn.size(), (3, 2));
+    let records = testing::logged(&mut editor, &log);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["event"] == "mask_overlay")
+            .count(),
+        1
+    );
+    // Another frame on screen: the grid of generation 7 is not drawn over it.
+    editor.presented_generation = 8;
+    assert!(editor.mask_overlay_surface().is_none());
+    // With the overlay off the grid paints nothing, and nothing is left drawn.
+    editor.presented_generation = 7;
+    editor.session.workspace.mask_overlay = lightwell_core::MaskOverlayMode::Off;
+    editor.mask_overlay_pending = Some((7, grid((3, 2))));
+    editor.present_mask_overlay();
+    assert!(editor.mask_overlay_surface().is_none());
+    finish(editor, catalog);
+}
+
 /// One triangle sends exactly its own flag; the pair moves together; neither is an edit.
 #[test]
 fn a_clipping_toggle_sets_one_view_flag_and_commits_nothing() {

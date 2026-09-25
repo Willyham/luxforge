@@ -138,7 +138,17 @@ fn evidence_retries_a_readback_superseded_by_new_pixels() {
     editor.scale_factor = 2.0;
     editor.presented_proxy = true;
     editor.presented_bounds = editor.proxy_bounds();
-    editor.photo_version = 2;
+    // Two photographs have reached the surface since the capture recorded the first.
+    for _ in 0..2 {
+        editor.presenter.show_photo(&lightwell_core::Raster {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255].into(),
+            source_fingerprint: "f".into(),
+            snapshot_id: lightwell_core::SnapshotId::new(),
+        });
+    }
+    assert_eq!(editor.presenter.photo_version(), 2);
     let path = crate::app::testing::attach_log(&mut editor);
     let evidence = editor.evidence.as_mut().expect("evidence run");
     evidence.sync.state = Some((json!({"old":"proxy"}), 1, 1));

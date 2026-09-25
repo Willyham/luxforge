@@ -61,9 +61,9 @@ pub(crate) struct Evidence {
     pub(crate) capture_pending: bool,
     /// This capture was armed by the mask overlay, so it must show one.
     ///
-    /// The grid is uploaded a message after the frame it describes, and the canvas draws it only
-    /// over that frame — so a newer frame presented between the upload and the redraw leaves the
-    /// surface without an overlay, and the capture would be evidence of a photograph where the step
+    /// The grid belongs to the frame it describes, and the canvas draws it only over that frame — so
+    /// a newer frame presented before the grid of its own arrives leaves the surface without an
+    /// overlay, and the capture would be evidence of a photograph where the step
     /// asked for evidence of a mask. A brush re-arming itself after every stroke makes exactly that
     /// sequence ordinary. The capture therefore waits for the grid of the frame on screen, however
     /// many frames it takes; a refusal clears this, because there is then no grid to wait for.
@@ -339,8 +339,8 @@ impl Editor {
                 {
                     return Task::none();
                 }
-                // And, for a step the overlay armed, the grid of the frame that is on screen: an
-                // upload belongs to one generation, and a newer frame presented after it leaves the
+                // And, for a step the overlay armed, the grid of the frame that is on screen: a
+                // grid belongs to one generation, and a newer frame presented after it leaves the
                 // canvas drawing the photograph alone. This subscription runs per window frame, so
                 // waiting costs nothing and the grid of that newer frame arrives a message later.
                 if overlay_wanted && self.mask_overlay_surface().is_none() {
@@ -353,7 +353,8 @@ impl Editor {
                 evidence.saving = true;
                 let recorded = (self.snapshot(), self.activity.requested);
                 if let Some(evidence) = &mut self.evidence {
-                    evidence.sync.state = Some((recorded.0, recorded.1, self.photo_version));
+                    evidence.sync.state =
+                        Some((recorded.0, recorded.1, self.presenter.photo_version()));
                 }
                 return iced::window::oldest()
                     .and_then(iced::window::screenshot)
@@ -366,11 +367,9 @@ impl Editor {
                 // the next drawn frame without publishing or saving that stale screenshot.
                 let stale = !self.capture_proxy_ready()
                     || self.evidence.as_ref().is_some_and(|evidence| {
-                        evidence
-                            .sync
-                            .state
-                            .as_ref()
-                            .is_some_and(|(_, _, version)| *version != self.photo_version)
+                        evidence.sync.state.as_ref().is_some_and(|(_, _, version)| {
+                            *version != self.presenter.photo_version()
+                        })
                     });
                 if stale {
                     if let Some(evidence) = &mut self.evidence {
@@ -394,7 +393,11 @@ impl Editor {
                     .as_mut()
                     .and_then(|evidence| evidence.sync.state.take())
                     .unwrap_or_else(|| {
-                        (self.snapshot(), self.activity.requested, self.photo_version)
+                        (
+                            self.snapshot(),
+                            self.activity.requested,
+                            self.presenter.photo_version(),
+                        )
                     });
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
@@ -2073,8 +2076,8 @@ impl Editor {
         {
             diff.insert("mode".into(), Value::from(mode.clone()));
         }
-        // Switching a clipping overlay on means a bounded derivation and an upload after the
-        // session round trip, so the step waits for the mask's own pixels rather than for the
+        // Switching a clipping overlay on means a bounded derivation after the session round
+        // trip, so the step waits for the mask's own pixels rather than for the
         // session, which would capture the photograph before the overlay reached it.
         let mut overlay = false;
         for (field, wanted, current) in [
@@ -2117,7 +2120,7 @@ impl Editor {
         // A grid only rides the next frame when the overlay will actually draw one: the mode it is
         // left in is not `off`, Mask mode is the canvas mode and a mask is open. Switching the
         // overlay off, or switching it on with nothing to draw, still asks for the frame — so the
-        // step settles on those pixels rather than on a texture that will never be uploaded.
+        // step settles on those pixels rather than on a grid that will never arrive.
         let leaving_on = step
             .mask_overlay
             .as_deref()
@@ -2233,7 +2236,7 @@ impl Editor {
 
     /// What a palette entry settles on, matched to the same round trip its own message produces:
     /// a mutation waits for its pixels like an `api` step, a mode or panel change waits for the
-    /// session, and returning to current waits for its own upload.
+    /// session, and returning to current waits for its own frame.
     fn arm_palette_settle(&mut self, action: &PaletteAction) {
         match action {
             PaletteAction::Run { .. }

@@ -281,9 +281,10 @@ size of the raster on the surface, its version (the count of rasters handed over
 `preview_displayed` is the one that put it there), how many rasters the surface has written into
 its texture, and how many times the view has been built. A redraw of an unchanged raster writes
 nothing, however often the view is rebuilt. It therefore carries no `upload_ms`, and neither does
-`render_ready`: there is no upload step to time. The clipping overlay and the crop draft's input
-stage keep the toolkit's image widget and still upload, which is what `clipping_overlay` and the
-draft's own settle report. `preview_exact_adopted` records the exact phase of such a job
+`render_ready`: there is no upload step to time. The clipping overlay, the mask coverage and the
+crop draft's input stage are drawn by the same surface from frames of their own, handed over in
+the update that has them: `clipping_overlay` and `mask_overlay` are emitted in that update and
+settle a waiting step there, and the draft opens in the update that takes up its input stage. `preview_exact_adopted` records the exact phase of such a job
 being taken up without an upload, with that phase's own `render_ms`, `preview_exact_cancelled` records one a newer request superseded, under its own generation and with `draft` when it was a crop draft's input stage, and
 `clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
 than from that exact raster. `preview_failed` records every failed preview of the displayed state,
@@ -292,8 +293,7 @@ and captures the failure. `preview_withdrawn` records a failed preview whose tar
 picture on screen: that picture, named with the target, is taken off the surface with everything
 derived from it, so `state.surface.raster` and `state.stack.displayed` are null until a frame of the
 target renders, and `crop_draft_failed` records a draft whose input stage could not be rendered or was superseded before it rendered (`error_code: cancelled`, with that job's `generation` when it had one). A
-crop draft's `state.crop.input_stage_tiles` counts the atlas-sized tiles its input stage was
-uploaded as. `state.json` carries `proxy: {eligible, declined, approximate, dimensions, bounds,
+crop draft's `state.crop.input_stage_loaded` says its input stage is on the surface. `state.json` carries `proxy: {eligible, declined, approximate, dimensions, bounds,
 presented}`, so a stack that took the exact path — an ineligible layer, a stage already inside the
 bounds, a failed build — says so rather than being silently identical, and `status_bar: {readout,
 render, render_ms, render_proxy}`, what the bar drew and the figure behind it. The `histogram`,

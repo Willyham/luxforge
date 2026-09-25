@@ -48,6 +48,7 @@ pub(crate) mod performance;
 mod pointer;
 #[cfg(test)]
 mod pointer_tests;
+pub(crate) mod presenter;
 pub(crate) mod presets;
 #[cfg(test)]
 mod presets_tests;
@@ -78,7 +79,6 @@ pub(crate) use preview::{HeldByProxy, ProxyFrame};
 
 use crate::{
     diagnostics::Diagnostics,
-    draft_photo,
     state::{
         self, Workspace,
         capabilities::CapabilityStore,
@@ -92,7 +92,6 @@ use crate::{
 use evidence::Evidence;
 use gesture::{Gesture, Starting};
 use iced::{Element, Subscription, Task};
-use iced_runtime::image as image_memory;
 use lightwell_core::{
     ClientAuthority, ClientId, ClientSession, EditorState, ErrorKind, HistoryPage,
     HistorySelection, LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE, PreviewQueue,
@@ -103,6 +102,7 @@ use message::{
     ViewMessage,
 };
 use overlay::{OverlayQueue, OverlayRequest};
+use presenter::Presenter;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -185,12 +185,10 @@ pub(crate) struct Editor {
     pub(crate) original_entry: Option<lightwell_core::EntryId>,
     /// What the selection was before Compare took it.
     pub(crate) compare_return: Option<HistorySelection>,
-    /// The photograph the surface draws: the raster itself, with the monotone version that tells
-    /// the primitive whether its texture already holds these bytes. It is not a GPU allocation —
-    /// the surface owns the one texture — so putting a frame on screen costs an `Arc` clone.
-    pub(crate) photo: Option<lightwell_ui::PhotoRaster>,
-    /// Incremented for every raster handed to the surface, and never otherwise.
-    pub(crate) photo_version: u64,
+    /// Every frame the photo surface draws: the photograph, the crop draft's input stage and the
+    /// overlays over the photograph. None of it is a GPU allocation — the surface owns the textures
+    /// — so putting a frame on screen costs an `Arc` clone.
+    pub(crate) presenter: Presenter,
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) preview_queue: PreviewQueue,
     pub(crate) preview_generation: u64,
@@ -251,9 +249,8 @@ pub(crate) struct Editor {
     pub(crate) held_by_proxy: Option<HeldByProxy>,
     /// One active and one replaceable pending overlay derivation, off the UI thread.
     pub(crate) overlay_queue: OverlayQueue,
-    /// The overlay currently on the GPU, with the request that produced it, so an unchanged view
-    /// re-derives nothing and a stale overlay is never drawn over a newer photograph.
-    pub(crate) overlay_photo: Option<image_memory::Allocation>,
+    /// The overlay request the clipping overlay on the presenter was derived for, so an unchanged
+    /// view re-derives nothing and a stale overlay is never drawn over a newer photograph.
     pub(crate) overlay_request: Option<OverlayRequest>,
     /// The pixel under the pointer, as `render.sample` last answered it.
     pub(crate) readout: Option<Readout>,
@@ -268,9 +265,6 @@ pub(crate) struct Editor {
     /// Why the last preview failed, cleared by the next presented frame. The canvas turns this
     /// into the notice that names the cause; nothing here decides what it means.
     pub(crate) render_error: Option<(ErrorKind, String)>,
-    /// The crop draft's input stage is being uploaded through the toolkit's image path. The
-    /// photograph takes no upload at all, so nothing else sets this.
-    pub(crate) uploading: bool,
     pub(crate) busy: bool,
     pub(crate) syncing: bool,
     pub(crate) pan_in_flight: bool,
@@ -346,11 +340,6 @@ pub(crate) struct Editor {
     pub(crate) version_name: String,
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
-    /// The crop layer's input stage on the GPU: one extra picture, bounded like the main preview,
-    /// held in tiles of at most one atlas layer and dropped as soon as the draft ends.
-    pub(crate) draft_photo: Option<draft_photo::DraftPhoto>,
-    /// The input stage's tiles while they are uploaded; the draft opens once all have arrived.
-    pub(crate) draft_assembly: Option<draft_photo::Assembly>,
     /// The preview generation that belongs to the draft rather than to the displayed state.
     pub(crate) draft_generation: Option<u64>,
     /// This desktop's own Apply is in flight, so the revision it produces is not a conflict.
@@ -398,10 +387,8 @@ pub(crate) struct Editor {
     /// without this the refusal arrives with no frame behind it and a driven run waits out its
     /// deadline on a step that has already been answered.
     pub(crate) mask_command_in_flight: bool,
-    /// A coverage grid the preview worker filled beside a frame, waiting to be uploaded.
+    /// A coverage grid the preview worker filled beside a frame, waiting for the presenter.
     pub(crate) mask_overlay_pending: Option<(u64, lightwell_core::analysis::MaskOverlay)>,
-    /// The mask overlay on the GPU, with the preview generation it belongs to.
-    pub(crate) mask_overlay_photo: Option<(u64, image_memory::Allocation)>,
     /// What the desktop knows about every capability-declaring module: its last settings and
     /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
     /// the authoritative state; this is what was last read back.
@@ -502,8 +489,7 @@ impl Editor {
             rendered_entry: None,
             original_entry: None,
             compare_return: None,
-            photo: None,
-            photo_version: 0,
+            presenter: Presenter::default(),
             dimensions: None,
             preview_queue: PreviewQueue::default(),
             preview_generation: 0,
@@ -522,14 +508,12 @@ impl Editor {
             proxy_declined: None,
             held_by_proxy: None,
             overlay_queue: OverlayQueue::default(),
-            overlay_photo: None,
             overlay_request: None,
             readout: None,
             sample_in_flight: false,
             pending_sample: None,
             window,
             render_error: None,
-            uploading: false,
             busy: false,
             syncing: false,
             pan_in_flight: false,
@@ -571,8 +555,6 @@ impl Editor {
             zoom: "100".into(),
             version_name: String::new(),
             version_form_open: false,
-            draft_photo: None,
-            draft_assembly: None,
             draft_generation: None,
             crop_applying: None,
             crop_angle: "0".into(),
@@ -593,7 +575,6 @@ impl Editor {
             last_mask_request: None,
             mask_command_in_flight: false,
             mask_overlay_pending: None,
-            mask_overlay_photo: None,
             capabilities: CapabilityStore::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
@@ -691,9 +672,9 @@ impl Editor {
         if self.follow_mask_selection() {
             self.seed_values();
         }
-        let mask_overlay = self.upload_mask_overlay();
+        self.present_mask_overlay();
         let rebase = self.rebase_armed_brush();
-        let task = self.sync_mode(Task::batch([task, sample, mask_overlay, rebase]));
+        let task = self.sync_mode(Task::batch([task, sample, rebase]));
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
@@ -783,9 +764,9 @@ impl Editor {
             version_name: &self.version_name,
             version_form_open: self.version_form_open,
             dimensions: self.dimensions,
-            photo: self.photo.is_some(),
+            photo: self.presenter.photo().is_some(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
-            rendering: self.preview_queue.is_busy() || self.uploading,
+            rendering: self.preview_queue.is_busy(),
             render: self.activity.render,
             render_error: self.render_error.as_ref(),
             pointer: self.pointer,
@@ -870,10 +851,10 @@ impl Editor {
             None => view::workspace(
                 &self.workspace,
                 view::Surfaces {
-                    photo: self.photo.as_ref(),
-                    draft_photo: self.draft_photo.as_ref(),
-                    overlay: self.overlay_surface(),
-                    mask_overlay: self.mask_overlay_surface(),
+                    photo: self.presenter.photo(),
+                    stage: self.presenter.stage(),
+                    clipping: self.overlay_surface(),
+                    coverage: self.mask_overlay_surface(),
                     mask_draft: self.mask_shape(),
                     mask_map: self.mask_gesture().and_then(|mask| mask.map),
                     draft: self.crop(),

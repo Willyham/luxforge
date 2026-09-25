@@ -1,5 +1,6 @@
-//! The photo surface: the plain preview, the crop frame over the draft's input stage, the floating
-//! chrome stacked over them, and the mapping from a pointer position to an image pixel.
+//! The photo surface: the plain preview with its overlays, the crop frame over the draft's input
+//! stage, the floating chrome stacked over them, and the mapping from a pointer position to an image
+//! pixel.
 //!
 //! The chrome floats so it stays next to the photograph when the panels are hidden: the mode strip
 //! at the bottom centre, the draft bar and the notices at the top centre. None of it reads state:
@@ -12,7 +13,7 @@ use crate::{
         message::{CapabilityMessage, CropMessage, DraftMessage, Message},
     },
     canvas_view::CanvasView,
-    crop_canvas::{CropCanvas, Mode, Part},
+    crop_canvas::{CropCanvas, Mode},
     mask_canvas::{MaskCanvas, Placement},
     state::canvas::{
         CanvasModel, DraftBar, Notice, NoticeAction, NoticeTone, PhotoView, SurfaceMode, ZoomView,
@@ -23,7 +24,7 @@ use iced::{
     Alignment, ContentFit, Element, Length, Point, Rectangle, Renderer, Size, Theme,
     alignment::{Horizontal, Vertical},
     mouse::Cursor,
-    widget::{Column, canvas, container, image, mouse_area, responsive, scrollable, stack, text},
+    widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
 use lightwell_ui::{
     ButtonSize, ButtonTone, ModeEntry, NoticeCardModel, ToggleEntry, Tone, floating_bar,
@@ -54,8 +55,8 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
 /// The photograph itself, padded by the design's surface margin at Fit. At a percentage the
 /// scrollable owns the space instead, so the padding would fight the pan.
 fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a, Message> {
-    let content = match (&model.photo, surfaces.draft, surfaces.draft_photo) {
-        (PhotoView::Draft, Some(draft), Some(photo)) => crop_surface(model, draft, photo),
+    let content = match (&model.photo, surfaces.draft, surfaces.stage) {
+        (PhotoView::Draft, Some(draft), Some(stage)) => crop_surface(model, draft, stage),
         (PhotoView::Plain, _, _) => match (surfaces.photo, model.dimensions) {
             (Some(raster), Some(dimensions)) => plain(model, raster, &surfaces, dimensions),
             _ => empty("Open a photograph"),
@@ -304,64 +305,49 @@ fn empty(message: &str) -> Element<'_, Message> {
     .into()
 }
 
-/// The photograph, with the clipping overlay stacked over it when there is one.
+/// The photograph, with the clipping overlay and the mask coverage over it when there are any.
 ///
-/// The photograph is drawn by the [photo surface](lightwell_ui::photo_surface) at every zoom: it
-/// owns its texture and writes the raster into it as it draws, so no allocation round trip stands
-/// between a rendered frame and the screen, and it hands the renderer only the part of a zoomed box
-/// that is on screen. The overlay keeps the toolkit's image path, as a second image stacked over
-/// the first and never a change to it.
-///
-/// Alignment comes from giving both the same sizing rule — `Contain` inside the same box at Fit,
-/// the same fixed extent at a percentage — and from the overlay's cell grid keeping the source's
-/// aspect ratio, so the two land in the same rectangle at every zoom and, inside the scrollable, at
-/// every pan. The surface's `Contain` is the toolkit's own `ContentFit::Contain`, centred and
-/// snapped to the pixel grid exactly as the image widget snaps it.
+/// All three are drawn by the [photo surface](lightwell_ui::photo_surface) at every zoom, in one
+/// primitive: it owns their textures and writes each frame into its own as it draws, so no
+/// allocation round trip stands between a rendered frame or a derived overlay and the screen, and it
+/// hands the renderer only the part of a zoomed box that is on screen. The overlays are stretched
+/// over exactly the rectangle the photograph is drawn into, so they land on it at every zoom and,
+/// inside the scrollable, at every pan. The surface's `Contain` is the toolkit's own
+/// `ContentFit::Contain`, centred and snapped to the pixel grid exactly as the image widget snaps
+/// it. Only the open mask gesture's handles are a canvas of their own, stacked above.
 fn plain<'a>(
     model: &'a CanvasModel,
-    raster: &'a lightwell_ui::PhotoRaster,
+    raster: &'a lightwell_ui::Frame,
     surfaces: &Surfaces<'a>,
     (width, height): (u32, u32),
 ) -> Element<'a, Message> {
     let picking = model.picking;
     let pointer = model.pointer;
-    // The clipping overlay and the mask overlay are two images over the photograph, in that order,
-    // and neither changes the photograph itself.
-    let overlays: Vec<iced::advanced::image::Handle> = [surfaces.overlay, surfaces.mask_overlay]
-        .into_iter()
-        .flatten()
-        .map(|allocation| allocation.handle().clone())
-        .collect();
+    let (clipping, coverage) = (surfaces.clipping, surfaces.coverage);
     let mask_draft = surfaces.mask_draft;
     let mask_map = surfaces.mask_map;
     match model.zoom {
         ZoomView::Fit => {
             // Fit needs the available size to know where the toolkit draws the contained image.
             responsive(move |available| {
-                let photo = lightwell_ui::photo_surface(
+                let photo: Element<'_, Message> = lightwell_ui::photo_surface(
                     raster,
                     lightwell_ui::Placement::Contain,
                     Length::Fill,
                     Length::Fill,
-                );
-                let mut layers: Vec<Element<'_, Message>> = vec![photo];
-                for handle in &overlays {
-                    layers.push(
-                        image(handle.clone())
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .content_fit(ContentFit::Contain)
-                            .filter_method(image::FilterMethod::Nearest)
-                            .into(),
-                    );
-                }
-                // The open gesture's handles sit above every overlay, mapped through the affine and
-                // the same contained rectangle the photograph is drawn into.
-                if let (Some(draft), Some(map)) = (mask_draft, mask_map)
-                    && let Some(rect) = fit_rect((width, height), available)
-                    && let Some(view) = CanvasView::fit(map.output(), rect.size())
-                {
-                    layers.push(
+                )
+                .overlays(clipping, coverage)
+                .into();
+                // The open gesture's handles sit above the photograph and its overlays, mapped
+                // through the affine and the same contained rectangle the photograph is drawn into.
+                let handles = mask_draft.zip(mask_map).and_then(|(draft, map)| {
+                    let rect = fit_rect((width, height), available)?;
+                    let view = CanvasView::fit(map.output(), rect.size())?;
+                    Some((draft, map, view, rect))
+                });
+                let layered: Element<'_, Message> = match handles {
+                    Some((draft, map, view, rect)) => stack([
+                        photo,
                         iced::widget::container(
                             canvas(MaskCanvas::new(draft, Placement { map, view }))
                                 .width(Length::Fill)
@@ -376,12 +362,9 @@ fn plain<'a>(
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .into(),
-                    );
-                }
-                let layered: Element<'_, Message> = if layers.len() == 1 {
-                    layers.pop().expect("the photograph")
-                } else {
-                    stack(layers).into()
+                    ])
+                    .into(),
+                    None => photo,
                 };
                 // The pointer readout needs every move over the photograph, not only the ones a
                 // module's pick would use; a move that maps to the same pixel is dropped in the
@@ -409,40 +392,29 @@ fn plain<'a>(
             );
             // `Fill` rather than a fit: the box is the exact stage's displayed size and the texture
             // may be the display proxy, which is smaller. Filling stretches it to exactly that box,
-            // so the photograph and the overlay — which fills the same box — stay in the same
-            // rectangle whichever texture is on screen. The box may be far larger than the window;
-            // the surface hands the renderer only its visible part.
-            let photo = lightwell_ui::photo_surface(
+            // and the overlays with it, whichever texture is on screen. The box may be far larger
+            // than the window; the surface hands the renderer only its visible part.
+            let photo: Element<'a, Message> = lightwell_ui::photo_surface(
                 raster,
                 lightwell_ui::Placement::Fill,
                 box_width,
                 box_height,
-            );
-            let mut layers: Vec<Element<'a, Message>> = vec![photo];
-            for handle in &overlays {
-                layers.push(
-                    image(handle.clone())
-                        .width(box_width)
-                        .height(box_height)
-                        .content_fit(ContentFit::Fill)
-                        .filter_method(image::FilterMethod::Nearest)
-                        .into(),
-                );
-            }
-            if let (Some(draft), Some(map)) = (mask_draft, mask_map)
-                && let Some(view) = CanvasView::percent(value, model.scale_factor)
-            {
-                layers.push(
+            )
+            .overlays(clipping, coverage)
+            .into();
+            let handles = mask_draft
+                .zip(mask_map)
+                .zip(CanvasView::percent(value, model.scale_factor));
+            let layered: Element<'a, Message> = match handles {
+                Some(((draft, map), view)) => stack([
+                    photo,
                     canvas(MaskCanvas::new(draft, Placement { map, view }))
                         .width(box_width)
                         .height(box_height)
                         .into(),
-                );
-            }
-            let layered: Element<'a, Message> = if layers.len() == 1 {
-                layers.pop().expect("the photograph")
-            } else {
-                stack(layers).into()
+                ])
+                .into(),
+                None => photo,
             };
             // Inside the scrollable the reported point is already content-space: the scrollable
             // translates the cursor by its offset before its content sees it.
@@ -462,14 +434,17 @@ fn plain<'a>(
     }
 }
 
-/// The crop frame over the layer's own input stage, at Fit or at a percentage zoom. The canvas
-/// draws nothing authoritative: it borrows the draft and publishes messages.
+/// The crop frame over the layer's own input stage, at Fit or at a percentage zoom. The stage is
+/// drawn by the photo surface, turned and dimmed where [`stage_turn`] puts it; the frame, thirds,
+/// handles and guide are a canvas stacked over it in the same box and view, so they are drawn above
+/// it. The canvas draws nothing authoritative: it borrows the draft and publishes messages.
+///
+/// [`stage_turn`]: crate::crop_canvas::stage_turn
 fn crop_surface<'a>(
     model: &'a CanvasModel,
     draft: &'a crate::crop_draft::CropDraft,
-    photo: &'a crate::draft_photo::DraftPhoto,
+    stage: &'a lightwell_ui::Frame,
 ) -> Element<'a, Message> {
-    let handle = photo.clone();
     let box_size = draft.stage.bounding_box();
     let mode = match model.surface_mode {
         SurfaceMode::Pan => Mode::Pan,
@@ -477,30 +452,25 @@ fn crop_surface<'a>(
         SurfaceMode::Frame => Mode::Frame,
     };
     let option = model.option;
-    // Two stacked canvases: the toolkit paints every image of one layer over every mesh of that
-    // layer, so the frame, thirds, handles and guide need the layer the stack gives its second child.
-    let parts = move |handle: crate::draft_photo::DraftPhoto,
-                      view: CanvasView,
-                      width: Length,
-                      height: Length| {
-        stack([Part::Photo, Part::Overlay].map(|part| {
-            canvas(CropCanvas::new(
-                draft,
-                handle.clone(),
-                view,
-                mode,
-                option,
-                part,
-            ))
-            .width(width)
-            .height(height)
-            .into()
-        }))
+    let parts = move |view: CanvasView, width: Length, height: Length| {
+        stack([
+            lightwell_ui::stage_surface(
+                stage,
+                crate::crop_canvas::stage_turn(draft, view),
+                width,
+                height,
+            )
+            .into(),
+            canvas(CropCanvas::new(draft, view, mode, option))
+                .width(width)
+                .height(height)
+                .into(),
+        ])
     };
     match model.zoom {
         ZoomView::Fit => responsive(
             move |available| match CanvasView::fit(box_size, available) {
-                Some(view) => parts(handle.clone(), view, Length::Fill, Length::Fill).into(),
+                Some(view) => parts(view, Length::Fill, Length::Fill).into(),
                 None => container(text("The surface is too small to draw the crop").size(12))
                     .center(Length::Fill)
                     .into(),
@@ -514,7 +484,6 @@ fn crop_surface<'a>(
                     .into();
             };
             let frame = parts(
-                handle,
                 view,
                 Length::Fixed(box_size.0 as f32 * view.scale),
                 Length::Fixed(box_size.1 as f32 * view.scale),

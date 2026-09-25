@@ -1,7 +1,7 @@
 //! Preview presentation: requesting preview jobs at the bounds the view calls for, taking up what
 //! the preview worker finishes, and presenting the displayed frame — the display-size proxy, the
 //! exact frame behind it, the histogram analysis and the crop draft's input stage — in the order
-//! their generations allow.
+//! their generations allow. Every frame goes to the one [`Presenter`](super::presenter::Presenter).
 use super::{
     Editor,
     evidence::Settle,
@@ -9,9 +9,8 @@ use super::{
     message::{Message, PreviewMessage},
     tasks::{self, Upload, recipe_task},
 };
-use crate::{draft_photo, state, state::histogram::Analysis, view};
+use crate::{state, state::histogram::Analysis, view};
 use iced::Task;
-use iced_runtime::image as image_memory;
 use lightwell_core::{CropStage, PhaseOutcome, PreviewPhase, ProxyBounds, Zoom};
 use serde_json::json;
 use std::{sync::Arc, time::Instant};
@@ -112,64 +111,11 @@ impl Editor {
                 // them is busy. Each worker starts its next job by itself, so nothing here keeps
                 // the work moving: this only takes up what has finished. `Poll` is idempotent, so
                 // a signal that arrives late costs nothing.
-                let mut tasks = Vec::new();
                 while let Some(done) = self.overlay_queue.poll() {
-                    tasks.push(self.overlay_ready(done));
+                    self.overlay_ready(done);
                 }
-                tasks.push(self.deliver_previews());
-                tasks.push(self.poll_again());
-                return Task::batch(tasks);
-            }
-            PreviewMessage::DraftCut(upload, tiles) => {
-                if Some(upload.generation) != self.draft_generation {
-                    self.uploading = false;
-                    return self.poll_again();
-                }
-                return self.upload_draft(upload, tiles);
-            }
-            PreviewMessage::DraftUploaded(upload, index, result) => {
-                let current = Some(upload.generation) == self.draft_generation
-                    && self
-                        .draft_assembly
-                        .as_ref()
-                        .is_some_and(|assembly| assembly.generation == upload.generation);
-                if !current {
-                    // A tile of a stage the draft no longer waits for: nothing is assembled, and
-                    // the upload gate opens.
-                    self.draft_assembly = None;
-                    self.uploading = false;
-                    return self.poll_again();
-                }
-                match result {
-                    Ok(allocation) => {
-                        let Some(photo) = self
-                            .draft_assembly
-                            .as_mut()
-                            .and_then(|assembly| assembly.arrived(index, allocation))
-                        else {
-                            // More tiles are still on their way.
-                            return Task::none();
-                        };
-                        self.draft_assembly = None;
-                        self.uploading = false;
-                        self.draft_photo = Some(photo);
-                        self.open_draft(CropStage {
-                            width: upload.width,
-                            height: upload.height,
-                            angle: 0.0,
-                        });
-                    }
-                    Err(_) => {
-                        self.draft_assembly = None;
-                        self.uploading = false;
-                        self.set_crop_pending(None);
-                        self.draft_generation = None;
-                        self.status = "Could not upload the crop's input stage".into();
-                        self.settle_step(Settle::Draft);
-                    }
-                }
-                // The upload held back delivery, so ask for whatever finished meanwhile.
-                return self.poll_again();
+                let delivered = self.deliver_previews();
+                return Task::batch([delivered, self.poll_again()]);
             }
         }
         Task::none()
@@ -274,18 +220,11 @@ impl Editor {
     /// Take up the finished preview results in order: every one that presents nothing — a stale
     /// or cancelled outcome, an exact phase adopted behind its proxy, a failure — and at most one
     /// that hands a frame to the display, after which the rest wait for the next `Poll`, so every
-    /// presented frame is drawn by the redraw its own update requests.
-    ///
-    /// The crop draft's input stage still uploads through the toolkit, one such upload at a time.
-    /// While it does, results wait in the queue — the worker goes on to its next job regardless,
-    /// holding at most two finished results — and `DraftUploaded` asks for them as soon as that
-    /// texture is on screen. The photograph itself never sets this flag: its raster becomes the
-    /// surface's source in this same update.
+    /// presented frame is drawn by the redraw its own update requests. The photograph and the crop
+    /// draft's input stage alike become the surface's source in the update that takes them up.
     pub(super) fn deliver_previews(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
-        while !self.uploading
-            && let Some(result) = self.poll_preview()
-        {
+        while let Some(result) = self.poll_preview() {
             let (task, presented) = self.preview_ready(result);
             tasks.push(task);
             if presented {
@@ -297,11 +236,9 @@ impl Editor {
 
     /// One more `Poll` while a worker still holds a finished result. The wake channel holds one
     /// signal and coalesces, so the signal of a result behind the one just presented may already
-    /// have been spent; a result that finishes after this check posts its own. Preview results
-    /// held back by the crop draft's upload are asked for by that upload's answer instead, never by
-    /// a `Poll` that would find them still held.
+    /// have been spent; a result that finishes after this check posts its own.
     pub(super) fn poll_again(&self) -> Task<Message> {
-        if self.overlay_queue.ready() || (!self.uploading && self.preview_queue.ready()) {
+        if self.overlay_queue.ready() || self.preview_queue.ready() {
             Task::done(Message::Preview(PreviewMessage::Poll))
         } else {
             Task::none()
@@ -309,8 +246,8 @@ impl Editor {
     }
 
     /// Take up one preview result that carries something to show. Returns what it asks the runtime
-    /// for, and whether it handed a frame to the display — the photograph's surface, or the crop
-    /// draft's upload.
+    /// for, and whether it handed a frame to the display — the photograph, or the crop draft's
+    /// input stage.
     pub(super) fn preview_ready(
         &mut self,
         result: lightwell_core::PreviewResult,
@@ -379,9 +316,8 @@ impl Editor {
         // The mask overlay's coverage grid rides the first frame of its job — the proxy,
         // when the job has one — so the overlay costs no second render and follows a drag
         // at the proxy's pace. The exact phase behind a proxy carries none and leaves the
-        // proxy's grid on screen: both phases share one generation. The upload is handed
-        // to `update_inner`, which is the one place a task can be added to whatever this
-        // arm returns.
+        // proxy's grid on screen: both phases share one generation. `update_inner` hands
+        // the pending grid to the presenter once this message is done.
         let lightwell_core::MaskOverlayOutcome {
             grid: mask_overlay,
             absent: mask_overlay_absent,
@@ -426,72 +362,77 @@ impl Editor {
                     return (Task::none(), false);
                 }
                 if for_draft {
-                    // The crop draft's input stage is the one photo path left that
-                    // takes the toolkit's image widget, so it still uploads, and holds
-                    // back delivery while it does.
-                    self.uploading = true;
-                    self.status = "Preparing pixels for display…".into();
+                    // The crop layer's input stage is shown in place of the photograph from
+                    // the render's own buffer, and the draft opens on it in this same update:
+                    // nothing is uploaded through the runtime, so nothing waits for it.
+                    if self.presenter.show_stage(&raster) {
+                        self.open_draft(CropStage {
+                            width: raster.width,
+                            height: raster.height,
+                            angle: 0.0,
+                        });
+                    } else {
+                        self.set_crop_pending(None);
+                        self.draft_generation = None;
+                        self.status = "Could not show the crop's input stage".into();
+                        self.settle_step(Settle::Draft);
+                    }
+                    return (Task::none(), true);
                 }
                 // The dimensions every pick, every percent-zoom box and every overlay
                 // cell maps through are the **exact stage's**, whatever size the
-                // texture is; the identity already carries them. A truncated crop job
-                // renders a layer prefix its identity does not describe, so that one
-                // keeps its own raster's size, as it always has.
-                let stage = if for_draft || !proxy {
+                // texture is; the identity already carries them.
+                let stage = if !proxy {
                     (raster.width, raster.height)
                 } else {
                     (identity.width, identity.height)
                 };
-                if self.activity.pending && !for_draft {
+                if self.activity.pending {
                     self.activity.preview_dimensions = Some(stage);
                     self.event(
                         "decoded",
                         json!({"open_to_raster_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":[stage.0,stage.1],"proxy":proxy}),
                     );
                 }
-                if !for_draft {
-                    // The report the worker reduced from exactly these pixels, and the
-                    // pixels themselves, are retained here and adopted below, in the
-                    // same update that hands the raster to the surface, so the plot,
-                    // the overlays and the photograph are adopted together.
-                    // Retaining the raster copies nothing: it shares the render's own
-                    // `Arc<[u8]>` with the buffer the surface draws from.
-                    let retained = Arc::new(raster.clone());
-                    if proxy {
-                        // A proxy raster is never reduced, so it replaces no report
-                        // and no exact raster. It is retained so a zoom back to Fit
-                        // hands it over again instead of rendering, and so the
-                        // clipping overlay can follow the drag before the exact phase
-                        // lands.
-                        self.proxy_frame = Some(ProxyFrame {
-                            generation,
-                            raster: retained,
-                            dimensions: proxy_dimensions.unwrap_or(stage),
-                            built: proxy_built,
-                            approximation: proxy_approximation,
-                            approximate_white_balance,
-                            render_ms,
-                        });
-                    } else {
-                        self.exact_render_ms = Some((generation, render_ms));
-                        match report {
-                            Some(report) => {
-                                self.incoming = Some((
-                                    Analysis {
-                                        generation,
-                                        identity,
-                                        report,
-                                    },
-                                    retained,
-                                ));
-                            }
-                            // A frame with no reduction still replaces the retained
-                            // raster now, so no overlay is derived from an older image.
-                            None => self.retain_unreduced(
-                                generation,
+                // The report the worker reduced from exactly these pixels, and the
+                // pixels themselves, are retained here and adopted below, in the
+                // same update that hands the raster to the surface, so the plot,
+                // the overlays and the photograph are adopted together.
+                // Retaining the raster copies nothing: it shares the render's own
+                // `Arc<[u8]>` with the buffer the surface draws from.
+                let retained = Arc::new(raster.clone());
+                if proxy {
+                    // A proxy raster is never reduced, so it replaces no report
+                    // and no exact raster. It is retained so a zoom back to Fit
+                    // hands it over again instead of rendering, and so the
+                    // clipping overlay can follow the drag before the exact phase
+                    // lands.
+                    self.proxy_frame = Some(ProxyFrame {
+                        generation,
+                        raster: retained,
+                        dimensions: proxy_dimensions.unwrap_or(stage),
+                        built: proxy_built,
+                        approximation: proxy_approximation,
+                        approximate_white_balance,
+                        render_ms,
+                    });
+                } else {
+                    self.exact_render_ms = Some((generation, render_ms));
+                    match report {
+                        Some(report) => {
+                            self.incoming = Some((
+                                Analysis {
+                                    generation,
+                                    identity,
+                                    report,
+                                },
                                 retained,
-                                approximate_white_balance,
-                            ),
+                            ));
+                        }
+                        // A frame with no reduction still replaces the retained
+                        // raster now, so no overlay is derived from an older image.
+                        None => {
+                            self.retain_unreduced(generation, retained, approximate_white_balance)
                         }
                     }
                 }
@@ -511,26 +452,6 @@ impl Editor {
                     reason: None,
                     render_ms: Some(render_ms),
                 };
-                if for_draft {
-                    // A stage within one atlas layer is uploaded as it is; a larger
-                    // one is cut into layer-sized tiles off this thread first, because
-                    // the toolkit draws its own fragments of a rotated image wrongly.
-                    if !draft_photo::needs_cutting(raster.width, raster.height) {
-                        return (
-                            self.upload_draft(upload, vec![draft_photo::whole(raster)]),
-                            true,
-                        );
-                    }
-                    return (
-                        Task::perform(
-                            async move { draft_photo::handles(draft_photo::cut(&raster)) },
-                            move |tiles| {
-                                Message::Preview(PreviewMessage::DraftCut(upload.clone(), tiles))
-                            },
-                        ),
-                        true,
-                    );
-                }
                 // The photograph reaches the screen from here: the raster becomes the
                 // surface's source now and is drawn by the redraw this update requests,
                 // with no allocation round trip in between.
@@ -675,7 +596,7 @@ impl Editor {
         );
         let shows_target = self.presented_entry.as_ref() == Some(entry)
             && self.displayed_draft_revision == draft_revision;
-        if !shows_target && self.photo.is_some() {
+        if !shows_target && self.presenter.photo().is_some() {
             self.withdraw_photo(generation, entry, error);
         }
         // A scripted step waiting for the newest preview's pixels ends on its failure instead: the
@@ -717,7 +638,7 @@ impl Editor {
                 "error_code": error.kind.code(),
             }),
         );
-        self.photo = None;
+        self.presenter.withdraw_photo();
         self.proxy_frame = None;
         self.raster = None;
         self.raster_approximate_white_balance = false;
@@ -732,27 +653,6 @@ impl Editor {
         self.readout = None;
         self.pending_sample = None;
         self.activity.render = None;
-    }
-
-    /// Upload the crop layer's input stage, tile by tile, and hold the queue until every tile is on
-    /// the GPU: the draft opens on the whole stage or not at all.
-    pub(super) fn upload_draft(
-        &mut self,
-        upload: Upload,
-        tiles: Vec<(draft_photo::TileRect, iced::widget::image::Handle)>,
-    ) -> Task<Message> {
-        self.draft_assembly = Some(draft_photo::Assembly {
-            generation: upload.generation,
-            width: upload.width,
-            height: upload.height,
-            tiles: tiles.iter().map(|(rect, _)| (*rect, None)).collect(),
-        });
-        Task::batch(tiles.into_iter().enumerate().map(|(index, (_, handle))| {
-            let upload = upload.clone();
-            image_memory::allocate(handle).map(move |result| {
-                Message::Preview(PreviewMessage::DraftUploaded(upload.clone(), index, result))
-            })
-        }))
     }
 
     /// The crop layer's input stage could not be rendered, so the draft it was for cannot open or
@@ -849,7 +749,7 @@ impl Editor {
         }
         // A failure withdrew the picture: nothing retained may be handed over in its place, and a
         // view change asks for no render. The next frame of the target puts a picture back.
-        if self.photo.is_none() && self.render_error.is_some() {
+        if self.presenter.photo().is_none() && self.render_error.is_some() {
             return Task::none();
         }
         if wants_proxy && self.presented_proxy_frame().is_none() {
@@ -1121,7 +1021,7 @@ impl Editor {
         Task::none()
     }
 
-    /// Make `raster` the photo surface's source and record that it is on screen.
+    /// Make `raster` the photograph on the presenter and record that it is on screen.
     ///
     /// This is what "presented" means from here on: the update in which the raster became the
     /// surface's source. The pixels are drawn by the redraw this update requests, which is the next
@@ -1131,15 +1031,9 @@ impl Editor {
     /// Retaining the raster copies nothing: the surface borrows the render's own `Arc<[u8]>`, which
     /// the desktop already holds as the proxy frame or the exact raster of this generation.
     pub(super) fn present(&mut self, upload: Upload, raster: &lightwell_core::Raster) {
-        // Monotone in the version, so the primitive writes a frame exactly once however often the
-        // same raster is drawn. Nothing but a new frame moves it.
-        self.photo_version += 1;
-        self.photo = lightwell_ui::PhotoRaster::new(
-            raster.rgba.clone(),
-            raster.width,
-            raster.height,
-            self.photo_version,
-        );
+        // A new version, so the primitive writes the frame exactly once however often the same
+        // raster is drawn. Nothing but a new frame moves it.
+        self.presenter.show_photo(raster);
         // The exact stage, whatever size the texture is: a proxy is drawn into this box, and every
         // pick, percent-zoom box and overlay cell keeps mapping to exact stage pixels.
         self.dimensions = Some((upload.width, upload.height));
@@ -1309,9 +1203,9 @@ impl Editor {
     }
 
     /// The crop draft is displayed instead of the plain preview only while its own input stage is on
-    /// the GPU and the session shows the current state.
+    /// the presenter and the session shows the current state.
     pub(crate) fn drafting(&self) -> bool {
-        self.crop().is_some() && self.draft_photo.is_some() && self.session.preview.can_edit()
+        self.crop().is_some() && self.presenter.stage().is_some() && self.session.preview.can_edit()
     }
 }
 

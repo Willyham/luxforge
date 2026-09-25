@@ -24,7 +24,6 @@ use iced::{
     Element, Length, Theme,
     widget::{Space, column, container, row, stack},
 };
-use iced_runtime::image as image_memory;
 use lightwell_ui::theme;
 
 /// The title bar's fixed height.
@@ -39,18 +38,20 @@ pub(crate) const STATUS_BAR_HEIGHT: f32 = 26.0;
 /// The pixels and the transient draft the canvas borrows for one frame. They are not view-model
 /// data: the model says what to draw, these are what it is drawn from.
 pub(crate) struct Surfaces<'a> {
-    /// The photograph's own raster. It is plain data rather than an allocation: the photo surface
-    /// owns its texture and writes this into it while it draws, so no round trip stands between a
-    /// rendered frame and the screen.
-    pub(crate) photo: Option<&'a lightwell_ui::PhotoRaster>,
-    /// The crop layer's input stage, in the tiles it was uploaded as.
-    pub(crate) draft_photo: Option<&'a crate::draft_photo::DraftPhoto>,
-    /// The clipping overlay's own bounded texture, present only when it belongs to the photograph
-    /// on screen. It is a second image laid over the first, never a change to the first.
-    pub(crate) overlay: Option<&'a image_memory::Allocation>,
-    /// The mask overlay's own bounded texture, present only when it belongs to the photograph on
-    /// screen. Like the clipping overlay it is a second image over the first.
-    pub(crate) mask_overlay: Option<&'a image_memory::Allocation>,
+    /// The frames below are plain data rather than allocations: the photo surface owns their
+    /// textures and writes each into its own while it draws, so no round trip stands between a
+    /// frame and the screen.
+    ///
+    /// The photograph.
+    pub(crate) photo: Option<&'a lightwell_ui::Frame>,
+    /// The crop layer's input stage, drawn in place of the photograph while its draft is open.
+    pub(crate) stage: Option<&'a lightwell_ui::Frame>,
+    /// The clipping overlay's bounded cell grid, present only when it belongs to the photograph on
+    /// screen. The surface lays it over the photograph, never changing the photograph itself.
+    pub(crate) clipping: Option<&'a lightwell_ui::Frame>,
+    /// The mask coverage's bounded cell grid, present only when it belongs to the photograph on
+    /// screen, laid over the clipping overlay.
+    pub(crate) coverage: Option<&'a lightwell_ui::Frame>,
     /// The open mask shape gesture and the affine its handles are drawn through.
     pub(crate) mask_draft: Option<&'a crate::mask_draft::MaskDraft>,
     pub(crate) mask_map: Option<crate::mask_draft::ContentMap>,

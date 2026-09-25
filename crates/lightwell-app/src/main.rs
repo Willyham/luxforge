@@ -9,7 +9,6 @@ mod canvas_view;
 mod crop_canvas;
 mod crop_draft;
 mod diagnostics;
-mod draft_photo;
 mod mask_canvas;
 mod mask_draft;
 mod paths;

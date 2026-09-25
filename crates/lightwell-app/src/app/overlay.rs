@@ -10,6 +10,10 @@
 //! persistent thread, one active job and one replaceable pending job, results tagged with a
 //! generation — so a fast sequence of zoom steps costs one worker at a time. Unlike a preview
 //! frame, an overlay that a newer request superseded is dropped rather than delivered.
+//!
+//! A derived overlay goes straight to the [`Presenter`](super::presenter::Presenter) in the update
+//! that takes it up, and the photo surface lays it over the photograph in the next redraw: there is
+//! no upload to wait for.
 use super::{
     Editor,
     evidence::Settle,
@@ -18,7 +22,6 @@ use super::{
 };
 use crate::{state, view};
 use iced::Task;
-use iced_runtime::image as image_memory;
 use lightwell_core::{
     Error, Raster,
     analysis::{OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay},
@@ -45,7 +48,7 @@ pub(crate) struct OverlayRequest {
     pub(crate) approximate: bool,
 }
 
-/// One derived overlay: an RGBA buffer of exactly `cells_w * cells_h` pixels, ready to upload.
+/// One derived overlay: an RGBA buffer of exactly `cells_w * cells_h` pixels, ready to show.
 #[derive(Debug)]
 pub(crate) struct OverlayResult {
     pub(crate) request: OverlayRequest,
@@ -183,72 +186,17 @@ impl OverlayQueue {
 }
 
 impl Editor {
-    /// One message about the clipping overlay or a mask coverage grid.
+    /// One message about the clipping overlay.
     pub(super) fn overlay_update(&mut self, message: OverlayMessage) -> Task<Message> {
         match message {
-            OverlayMessage::ClippingUploaded(generation, dimensions, result) => {
-                if self
-                    .overlay_request
-                    .as_ref()
-                    .map(|request| request.generation)
-                    != Some(generation)
-                {
-                    // The frame this overlay belongs to has been replaced; its pixels are dropped.
-                    return Task::none();
-                }
-                match result {
-                    Ok(allocation) => {
-                        let approximate = self
-                            .overlay_request
-                            .as_ref()
-                            .is_some_and(|request| request.approximate);
-                        self.overlay_photo = Some(allocation);
-                        self.event(
-                            "clipping_overlay",
-                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1],"approximate":approximate}),
-                        );
-                    }
-                    Err(_) => {
-                        self.overlay_photo = None;
-                        self.status = "Could not upload the clipping overlay".into();
-                    }
-                }
-                // A scripted step that switched an overlay on waits for exactly this, so its frame
-                // shows the mask rather than the photograph a moment before it.
-                self.settle_step(Settle::Overlay);
-            }
             OverlayMessage::ToggleClipping(endpoint) => {
                 // Per-client view state through the same `workspace.set` an API client calls. It
                 // is not an edit: no mutation envelope, no expected revision, no history entry, and
                 // the catalog is untouched.
                 let params = clip_params(&self.session.workspace, endpoint);
-                return workspace_task(self.owner.clone(), self.client, params);
-            }
-            OverlayMessage::MaskUploaded(generation, dimensions, result) => {
-                let uploaded = result.is_ok();
-                match result {
-                    Ok(allocation) => self.mask_overlay_photo = Some((generation, allocation)),
-                    Err(_) => {
-                        self.mask_overlay_photo = None;
-                        self.status =
-                            "Mask overlay unavailable: the grid could not be uploaded".into();
-                        self.event(
-                            "mask_overlay_failed",
-                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1]}),
-                        );
-                    }
-                }
-                // Released either way: a refused overlay is visible in the evidence rather than
-                // leaving the run waiting for a frame nothing will arm.
-                self.settle_step(Settle::MaskOverlay);
-                if !uploaded && let Some(evidence) = &mut self.evidence {
-                    // And with no texture to draw, the capture is the frame as it is: waiting for
-                    // the overlay of the frame on screen would wait for one that failed.
-                    evidence.capture_overlay = false;
-                }
+                workspace_task(self.owner.clone(), self.client, params)
             }
         }
-        Task::none()
     }
 
     /// Bring the clipping overlay into line with the current flags, zoom and photo surface.
@@ -268,51 +216,58 @@ impl Editor {
         let Some((request, raster)) = wanted.clone().zip(source) else {
             // Both overlays are off, or there is nothing to derive one from.
             self.overlay_queue.cancel();
-            self.overlay_photo = None;
+            self.presenter.clear_clipping();
             return;
         };
         // A mask derived from another image never stands in for this one while its replacement is
         // derived; the same image at another cell grid keeps its overlay until the new one lands.
         if previous.map(|request| request.generation) != Some(request.generation) {
-            self.overlay_photo = None;
+            self.presenter.clear_clipping();
         }
         self.overlay_request = wanted;
         self.overlay_queue.request(raster, request);
     }
 
-    /// One derived overlay: upload its bounded buffer, or report why there is none. A failed
-    /// derivation never leaves an empty overlay on screen, which would claim nothing is clipped.
-    pub(super) fn overlay_ready(&mut self, done: OverlayResult) -> Task<Message> {
+    /// One derived overlay: lay its bounded buffer over the photograph, or report why there is none.
+    /// A failed derivation never leaves an empty overlay on screen, which would claim nothing is
+    /// clipped.
+    pub(super) fn overlay_ready(&mut self, done: OverlayResult) {
         let generation = done.request.generation;
+        if self.overlay_request.as_ref() != Some(&done.request) {
+            // The view has asked for another overlay since, or none at all: this one describes a
+            // grid, a flag or a frame that is no longer on screen.
+            return;
+        }
         let (width, height) = (done.width, done.height);
+        let approximate = done.request.approximate;
         match done.result {
             Ok(rgba) => {
-                let handle = iced::widget::image::Handle::from_rgba(
-                    width,
-                    height,
-                    iced_runtime::core::Bytes::from_owner(rgba),
-                );
-                image_memory::allocate(handle).map(move |result| {
-                    Message::Overlay(OverlayMessage::ClippingUploaded(
-                        generation,
-                        (width, height),
-                        result,
-                    ))
-                })
+                if self
+                    .presenter
+                    .show_clipping(generation, rgba, (width, height))
+                {
+                    self.event(
+                        "clipping_overlay",
+                        json!({"generation":generation,"cells":[width,height],"approximate":approximate}),
+                    );
+                } else {
+                    self.status = "Could not show the clipping overlay".into();
+                }
             }
             Err(error) => {
-                self.overlay_photo = None;
+                self.presenter.clear_clipping();
                 self.status = format!("Clipping overlay unavailable: {error}");
                 self.event(
                     "clipping_overlay_failed",
-                    json!({"generation":generation,"error_code":error.kind.code(),"approximate":done.request.approximate}),
+                    json!({"generation":generation,"error_code":error.kind.code(),"approximate":approximate}),
                 );
-                // The step is released even so; a refused overlay is visible in the evidence
-                // rather than leaving the run waiting for a frame nothing will arm.
-                self.settle_step(Settle::Overlay);
-                Task::none()
             }
         }
+        // A scripted step that switched an overlay on waits for exactly this, so its frame shows
+        // the mask rather than the photograph a moment before it. A refused overlay releases it
+        // too, so the refusal is visible in the evidence rather than leaving the run waiting for a
+        // frame nothing will arm.
+        self.settle_step(Settle::Overlay);
     }
 
     /// The overlay the current session, zoom and surface ask for, or `None` when neither flag is on.
@@ -401,13 +356,13 @@ impl Editor {
             .map(|frame| (generation, &frame.raster, true))
     }
 
-    /// The overlay to draw over the photograph: the one on the GPU, when it belongs to the frame
-    /// that is on screen. An overlay derived from a superseded raster is held back rather than
-    /// drawn over another image.
-    pub(crate) fn overlay_surface(&self) -> Option<&image_memory::Allocation> {
+    /// The overlay to draw over the photograph: the one on the presenter, when it belongs to the
+    /// frame that is on screen. An overlay derived from a superseded raster is held back rather
+    /// than drawn over another image.
+    pub(crate) fn overlay_surface(&self) -> Option<&lightwell_ui::Frame> {
         let request = self.overlay_request.as_ref()?;
         (request.generation == self.presented_generation)
-            .then_some(self.overlay_photo.as_ref())
+            .then(|| self.presenter.clipping(request.generation))
             .flatten()
     }
 }

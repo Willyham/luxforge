@@ -778,7 +778,6 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
     let source: [u32; 2] =
         serde_json::from_value(launch.at(names::OPENED)?["state"]["source_dimensions"].clone())
             .map_err(|_| "The open frame records no source dimensions")?;
-    let tiles = source[0].div_ceil(2048) * source[1].div_ceil(2048);
 
     let started = launch.at(names::CROP_STARTED)?;
     expect_no_failure(launch, names::CROP_STARTED, "The draft's start")?;
@@ -786,9 +785,8 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
     ensure(
         draft["drafting"] == json!(true)
             && draft["input_stage"] == json!(source)
-            && draft["input_stage_tiles"] == json!(tiles)
-            && tiles > 1,
-        format!("The draft did not open on the {source:?} stage in {tiles} tiles: {draft}"),
+            && draft["input_stage_loaded"] == json!(true),
+        format!("The draft did not open on the {source:?} stage: {draft}"),
     )?;
     let straightened = launch.at(names::CROP_STRAIGHTENED)?;
     ensure(
@@ -843,7 +841,6 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
     Ok(json!({
         "crop": {
             "source": source,
-            "tiles": tiles,
             "straightened_draft": whole,
             "applied": {"output": output, "fit": placement},
             "readouts": readouts,

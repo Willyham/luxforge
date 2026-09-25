@@ -20,9 +20,6 @@ lightwell-core = { path = "../lightwell-core" }
 lightwell-evidence = { path = "../lightwell-evidence" }
 lightwell-ui = { path = "../lightwell-ui" }
 iced.workspace = true
-# Iced 0.14 gates its public allocation re-export on codec-enabled image support.
-# Use the already-resolved runtime directly to keep JPEG-only decoding.
-iced_runtime = "=0.14.0"
 image.workspace = true
 rfd.workspace = true
 serde.workspace = true

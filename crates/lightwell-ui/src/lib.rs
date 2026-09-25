@@ -18,7 +18,7 @@ pub mod photo_surface;
 pub mod theme;
 mod widgets;
 
-pub use photo_surface::{PhotoRaster, Placement, photo_surface};
+pub use photo_surface::{Frame, Placement, Turn, photo_surface, stage_surface};
 pub use widgets::*;
 
 mod gallery;

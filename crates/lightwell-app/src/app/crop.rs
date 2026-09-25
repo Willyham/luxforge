@@ -331,7 +331,7 @@ impl Editor {
                 // An unreadable payload is never silently replaced by a neutral crop: the stored
                 // layer stays exactly as it is and the draft does not open.
                 (Some(_), None) => {
-                    self.draft_photo = None;
+                    self.presenter.end_stage();
                     self.draft_generation = None;
                     self.status =
                         "The existing crop layer's payload cannot be read; no draft was opened"
@@ -510,7 +510,7 @@ impl Editor {
     pub(crate) fn end_draft(&mut self) {
         self.set_crop(None);
         self.set_crop_pending(None);
-        self.draft_photo = None;
+        self.presenter.end_stage();
         self.draft_generation = None;
         self.crop_applying = None;
         self.crop_guide = false;
@@ -816,7 +816,7 @@ mod tests {
 
         let _ = editor.update(Message::Crop(CropMessage::Cancel));
         assert!(editor.crop().is_none());
-        assert!(editor.draft_photo.is_none());
+        assert!(editor.presenter.stage().is_none());
         assert!(!editor.crop_guide, "cancelling leaves no guide mode on");
         let summary = editor.snapshot()["crop"].clone();
         assert_eq!(
@@ -1084,7 +1084,7 @@ mod tests {
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
         assert!(editor.crop().is_none());
-        assert!(editor.draft_photo.is_none());
+        assert!(editor.presenter.stage().is_none());
         assert!(editor.status.contains("Crop applied"), "{}", editor.status);
         finish(editor, catalog);
     }

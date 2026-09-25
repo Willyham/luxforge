@@ -5,11 +5,12 @@
 //! the update function without simulating a pointer, and every request the panel sends is the one an
 //! independent JSON client would send for the same edit. The shape gestures go through the delivered
 //! `draft.*` lifecycle — one drag is one history entry — and the list edits are ordinary mutations.
-use crate::app::message::{OverlayMessage, ViewMessage};
+use crate::app::message::ViewMessage;
 use crate::{
     app::{
         Editor,
         draft::{Event, GestureId},
+        evidence::Settle,
         gesture::{Kind, MaskGesture, Starting},
         message::{MaskMessage, Message, PaintTarget, RowEdit},
         tasks::{Refresh, mutation},
@@ -17,7 +18,6 @@ use crate::{
     mask_draft::{BRUSH, ContentMap, MaskDraft, MaskDraftOp},
 };
 use iced::Task;
-use iced_runtime::image as image_memory;
 use lightwell_core::{
     ComponentId, MASK_MODE, MaskId, MaskOverlayColour, MaskOverlayMode, StageTransform,
     mask::commands::{MaskReport, MaskTarget},
@@ -1208,39 +1208,48 @@ pub(crate) mod mask_overlay {
 }
 
 impl Editor {
-    /// Upload the coverage grid the preview worker filled beside the last frame, if there is one.
+    /// Lay the coverage grid the preview worker filled beside the last frame over the photograph,
+    /// if there is one.
     ///
-    /// It is a second image laid over the photograph, never a change to the photograph, and it is
-    /// held back until the frame it describes is the one on screen — an overlay drawn over another
-    /// image would claim a selection covers pixels it does not.
-    pub(crate) fn upload_mask_overlay(&mut self) -> Task<Message> {
+    /// It goes to the presenter in this update and the photo surface draws it over the photograph,
+    /// never changing the photograph, in the next redraw. It is kept with its generation and drawn
+    /// only while that frame is the one on screen — an overlay drawn over another image would claim
+    /// a selection covers pixels it does not. The grid is agnostic to which phase of the job
+    /// delivered it.
+    pub(crate) fn present_mask_overlay(&mut self) {
         let Some((generation, grid)) = self.mask_overlay_pending.take() else {
-            return Task::none();
+            return;
         };
         let workspace = &self.session.workspace;
         let Some(rgba) =
             mask_overlay::paint(&grid, workspace.mask_overlay, workspace.mask_overlay_colour)
         else {
-            self.mask_overlay_photo = None;
-            return Task::none();
+            self.presenter.clear_coverage();
+            return;
         };
         let (width, height) = (grid.cells_w, grid.cells_h);
         self.event(
             "mask_overlay",
             json!({"generation":generation,"mask":grid.mask.as_str(),"component":grid.component.as_ref().map(lightwell_core::ComponentId::as_str),"cells":[width,height],"mode":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
         );
-        let handle = iced::widget::image::Handle::from_rgba(
-            width,
-            height,
-            iced_runtime::core::Bytes::from_owner(rgba),
-        );
-        image_memory::allocate(handle).map(move |result| {
-            Message::Overlay(OverlayMessage::MaskUploaded(
-                generation,
-                (width, height),
-                result,
-            ))
-        })
+        let shown = self
+            .presenter
+            .show_coverage(generation, rgba, (width, height));
+        if !shown {
+            self.status = "Mask overlay unavailable: the grid could not be shown".into();
+            self.event(
+                "mask_overlay_failed",
+                json!({"generation":generation,"cells":[width,height]}),
+            );
+        }
+        // Released either way: a refused overlay is visible in the evidence rather than leaving the
+        // run waiting for a frame nothing will arm.
+        self.settle_step(Settle::MaskOverlay);
+        if !shown && let Some(evidence) = &mut self.evidence {
+            // And with nothing to draw, the capture is the frame as it is: waiting for the overlay
+            // of the frame on screen would wait for one that failed.
+            evidence.capture_overlay = false;
+        }
     }
 
     /// The frame asked for a coverage grid and arrived without one, for a reason the host named.
@@ -1257,7 +1266,7 @@ impl Editor {
     /// drawn.
     pub(crate) fn mask_overlay_unavailable(&mut self, generation: u64, reason: &str) {
         self.mask_overlay_pending = None;
-        self.mask_overlay_photo = None;
+        self.presenter.clear_coverage();
         self.event(
             "mask_overlay_absent",
             json!({"generation":generation,"detail":reason}),
@@ -1265,12 +1274,9 @@ impl Editor {
         self.mask_overlay_refused_step(reason);
     }
 
-    /// The mask overlay to draw over the photograph: the one on the GPU, when it belongs to the
-    /// frame that is on screen.
-    pub(crate) fn mask_overlay_surface(&self) -> Option<&image_memory::Allocation> {
-        self.mask_overlay_photo
-            .as_ref()
-            .filter(|(generation, _)| *generation == self.presented_generation)
-            .map(|(_, allocation)| allocation)
+    /// The mask overlay to draw over the photograph: the one on the presenter, when it belongs to
+    /// the frame that is on screen.
+    pub(crate) fn mask_overlay_surface(&self) -> Option<&lightwell_ui::Frame> {
+        self.presenter.coverage(self.presented_generation)
     }
 }
