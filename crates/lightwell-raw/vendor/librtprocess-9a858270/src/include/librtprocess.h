@@ -44,9 +44,10 @@
 #endif
 
 enum rpError {RP_NO_ERROR, RP_MEMORY_ERROR, RP_WRONG_CFA, RP_CACORRECT_ERROR, RP_CANCELLED, RP_WORKER_ERROR};
-// Lightwell's private synchronous row-group executor. It invokes each group
-// callback once in bounded joined batches. No worker/context pointer is
-// retained. Other librtprocess callers use the serial default.
+// Lightwell's private synchronous tile-job executor for RCD and one-pass
+// Markesteijn. It invokes each job callback once in bounded joined batches.
+// No worker/context pointer is retained. Other librtprocess callers use the
+// serial default.
 extern "C" {
 typedef void (*rpTileWorker)(void *, size_t) noexcept;
 typedef int (*rpTileExecutor)(void *, size_t, rpTileWorker, void *) noexcept;
@@ -59,7 +60,7 @@ RTPROCESS_API rpError amaze_demosaic(int raw_width, int raw_height, int winx, in
 RTPROCESS_API rpError bayerfast_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, double initGain);
 RTPROCESS_API rpError dcb_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, int iterations, bool dcb_enhance);
 RTPROCESS_API rpError hphd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel);
-RTPROCESS_API rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize = 2, bool measure = false, bool multiThread = true);
+RTPROCESS_API rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize = 2, bool measure = false, bool multiThread = true, rpTileExecutor executor = nullptr, void *executorContext = nullptr, rpShouldCancel shouldCancel = nullptr, void *cancelContext = nullptr, unsigned testFault = 0);
 RTPROCESS_API rpError markesteijn_demosaic(int width, int height, const float * const *rawdata, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize = 2, bool measure = false, rpTileExecutor executor = nullptr, void *executorContext = nullptr, rpShouldCancel shouldCancel = nullptr, void *cancelContext = nullptr, unsigned testFault = 0);
 RTPROCESS_API rpError xtransfast_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const std::function<bool(double)> &setProgCancel);
 RTPROCESS_API rpError vng4_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel);

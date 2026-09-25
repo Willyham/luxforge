@@ -66,7 +66,7 @@ The production path is **LibRaw 0.22.2 for metadata/unpacking**, followed by pin
 
 The independent Rawler 0.8.0 experiment agrees exactly on Fuji and DJI sensor samples. Its Nikon lookup-table dithering changes about three quarters of lossless codes by one; the selected LibRaw path preserves the direct curve values. RawSpeed was inspected as an unpacker, not integrated as a second production fallback. LibRaw's integer converter and Rawler's clipping float helper are not the retained developer. The implementation applies explicit normalization/WB, established float demosaic and camera calibration itself.
 
-These engineering choices provide one deterministic path. They do not establish controlled chart accuracy, camera-JPEG matching or accepted performance budgets. The current native cancellation limitation is explicit: RCD/Markesteijn ignore callback cancellation, so a running call is discarded when it returns rather than interrupted immediately. All manual license/native/asset audits remain deferred.
+These engineering choices provide one deterministic path. They do not establish controlled chart accuracy, camera-JPEG matching or accepted performance budgets. RCD and Markesteijn check cancellation before every tile, so a superseded development stops within one tile and discards its partial output ([native demosaic parallelism](native-demosaic-parallelism.md)). All manual license/native/asset audits remain deferred.
 
 ## Source, recipe and history contract
 

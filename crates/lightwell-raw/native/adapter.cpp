@@ -387,10 +387,12 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
     if (diagnostics && diagnostics->normalized_mosaic_capture)
       std::memcpy(diagnostics->normalized_mosaic_capture, mosaic.data(), count * sizeof(float));
     const Clock::time_point demosaic_start = diagnostics ? Clock::now() : Clock::time_point{};
-    auto no_cancel=[](double){return false;}; // librtprocess ignores this return.
+    // librtprocess ignores this progress return; both demosaics check
+    // cancel_state between tiles instead.
+    auto no_cancel=[](double){return false;};
     rpError code=RP_WRONG_CFA;
     if(meta->cfa_width==2)
-      code=rcd_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),bayer,no_cancel,2,false,false);
+      code=rcd_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),bayer,no_cancel,2,false,false,executor,executor_context,lw_tile_cancel,&cancel_state,test_fault);
     else{
       float cam[3][4]{};for(size_t i=0;i<12;++i)cam[i/4][i%4]=meta->rgb_cam[i];
       code=markesteijn_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),xtrans,cam,no_cancel,1,false,2,false,executor,executor_context,lw_tile_cancel,&cancel_state,test_fault);

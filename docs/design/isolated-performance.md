@@ -44,8 +44,7 @@ separate from the M4 evidence.
 
 ## Remaining opportunities
 
-Markesteijn now uses [bounded tile groups](native-demosaic-parallelism.md).
-Bayer RCD remains serial; extending the executor needs its own exactness and timing evidence.
+Markesteijn and Bayer RCD now use [bounded tile jobs](native-demosaic-parallelism.md).
 
 Larger spatial tiles, changed point-sample scheduling, approximation tolerances, a GPU colour
 backend and an additional native parallel runtime remain separate decisions. Larger tiles

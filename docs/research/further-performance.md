@@ -3,8 +3,8 @@
 Status: guarded RAW colour-row batching and Bayer normalization batching are implemented and
 measured on the owner's M4 Pro, 14 cores and 48 GiB. Mask-paint phase attribution is implemented;
 its worker and surface costs are small relative to queue and result-delivery tails, so no
-renderer-kernel change is justified yet. Bayer RCD tile batching remains blocked by exact output
-differences. Other items remain research opportunities. The
+renderer-kernel change is justified yet. Bayer RCD runs contiguous tile jobs that reproduce the
+serial raster exactly. Other items remain research opportunities. The
 [current measurements](../specs/performance.md#startup-and-raw-throughput) remain the source for
 accepted application baselines. Core renders, preview contention and whole-application measurements
 have different scopes; do not add their savings.
@@ -15,8 +15,8 @@ have different scopes; do not add their savings.
 | --- | --- | --- | --- | --- |
 | 1 | Batch RAW Basic/Mixer colour rows | The production path reduces Z6/X100VI Full Basic p50 by 63–66% and Mixer by 43–45%; whole-buffer checks pass. Under continuous exact work, the Fit-proxy p95 falls 67% versus the generic renderer. See results below. | Keep eligibility narrow and correlate core gains with a presented generation when the hidden runner works; track the remaining contended proxy tail. | Small contained core change. Masks, geometry, replacements and spatial recipes retain the generic path. The core contention probe does not measure UI or GPU presentation. |
 | 2 | Reduce mask-paint queue and delivery tails | On one bare masked layer, 30 positions at low host load yield input-to-presented p95 40.7 ms at 24 MP and 35.1 ms at 60 MP. Worker render p95 is 5.4/4.5 ms; queue wait is 18.2/17.4 ms and pre-result residual 20.3/22.4 ms. | Repeat with a phase sweep that separates active-job handoff from desktop event-loop delivery; preserve the one-active/one-pending bound and cancellation. | Diagnostic is complete. No compute-kernel rewrite is supported by the measured cost. |
-| 3 | Bayer mosaic normalization batching (implemented) | Exact owner Z6/Air 2S output; retained-development p50 falls 31.9/32.3 ms, with process CPU rising 7.9%. Same-pool Fit proxy p50 is flat and p95 rises 1.34 ms; no UI presentation measurement is available. | Keep the Bayer-only, >1 MP threshold and eight-callback cap. Recheck presented-frame latency and RAW completion under app-level contention when the hidden launch runner reaches a view. | Small native adapter change. No per-worker scratch; RCD stays serial. Gains exclude DNG correction warp, source read/decode, GPU and presentation. |
-| 4 | Parallelize Bayer RCD tiles | Whole native development is 268.6/270.7 ms p50/p95 for Z6 and 350.6/358.1 ms for DJI. The tile-batch prototype failed exact full-buffer comparisons, including with one executor worker. | Keep RCD serial until scratch/order dependencies across tile batches can be isolated and whole-buffer equality is restored. | High risk. No timing was taken; no speedup estimate. Preserve border/CFA behavior, cancellation and preview responsiveness. |
+| 3 | Bayer mosaic normalization batching (implemented) | Exact owner Z6/Air 2S output; retained-development p50 falls 31.9/32.3 ms, with process CPU rising 7.9%. Same-pool Fit proxy p50 is flat and p95 rises 1.34 ms; no UI presentation measurement is available. | Keep the Bayer-only, >1 MP threshold and eight-callback cap. Recheck presented-frame latency and RAW completion under app-level contention when the hidden launch runner reaches a view. | Small native adapter change. No per-worker scratch; measured with RCD serial. Gains exclude DNG correction warp, source read/decode, GPU and presentation. |
+| 4 | Parallelize Bayer RCD tiles (implemented) | Exact owner Z6/Air 2S output against pre-change digests and at every worker count. Preliminary loaded-host retained development p50 falls from 244–252 to 79–80 ms on Z6 and from 206 to 63–64 ms on Air 2S, for about 10% more process CPU. | Requalify on a quiet host; measure same-pool Fit proxies while a pooled RCD development runs. | Local patch to the vendored RCD; scratch under the shared eight-slot cap. Preview contention is unmeasured. |
 | 5 | Attribute source-open and startup time | Existing copied-bundle launches are 764–809 ms p95 across empty, 24 and 60 MP cases; those totals include bundle copying and event polling. A phase probe reaches `Editor::new` about 142 ms after process entry but has not reached first view. | Restore a working hidden launch on this host; then separate bundle launch, app boot, read/hash/decode, source adoption, proxy raster and surface assignment on a stable bundle. | Small instrumentation, no optimization justified yet. Do not use the failed current launches as latency samples. |
 | 6 | Measure GPU texture upload separately | The isolated `Vec<u8>` → `Arc<[u8]>` probe costs 1.49/1.79 ms p50/p95 at 24 MP and 3.72/3.82 ms at 60 MP, but production decode and render paths already allocate an `Arc<[u8]>` frame and write directly into it; `PhotoRaster` retains the same Arc. The remaining `queue.write_texture` is a distinct GPU transfer. | Keep the current CPU ownership path. Measure texture upload only if an end-to-end profile identifies it as material. | No publication API change is justified; broad ownership churn would not remove the separate GPU transfer. |
 
@@ -137,25 +137,20 @@ it with the older value.
 
 ## Bayer RCD and bounded scheduling
 
-The current RCD adapter disables native multithreading and checks cancellation only after the native
-call. Whole retained-mosaic development takes 268.6/270.7 ms p50/p95 on Z6 and 350.6/358.1 ms on the
-DJI DNG. Those figures include output allocation/drop and other adapter work: RCD itself has not
-been separately timed. They are upper bounds on the RCD opportunity, not predicted savings. CPU cost
-and concurrent-preview contention were not measured for the RCD-only phase. The existing unchanged-
-camera comparisons ran at leg-start load 3.2–6.5.
-
-An isolated batch prototype failed the exactness gate on a 1003 × 1003 RGGB image. Two- and
-eight-tile batches changed full RGB floats near the bottom edge (first mismatches at `(10, 993)` and
-`(365, 992)`); even an executor worker limit of one changed output. No timing was taken. Tile
-interiors cannot be assumed independent across callback boundaries while native scratch history is
-unresolved. Keep Bayer RCD serial until that history is isolated or refactored and whole-frame float
-equality passes on odd edges and authentic Nikon/DJI inputs. This is separate from Fuji's
-X-Trans Markesteijn path, whose bounded parallel implementation remains qualified.
+RCD's tiles run as jobs of the shared executor
+([native demosaic parallelism](../design/native-demosaic-parallelism.md)). An earlier batch prototype
+changed full RGB floats near the bottom edge of a 1003 × 1003 RGGB image, even with one executor
+worker. The cause is scratch history: a partial tile reads direction and colour-difference cells at
+its last computed row and column that only an earlier, larger tile wrote, while a full tile reads
+only cells it wrote or cells no tile writes. Jobs that are contiguous runs of the serial raster
+beginning at a full tile, with the partial bottom rows in the final job, reproduce the serial output
+bit for bit on odd edges and on the authentic Z6 and Air 2S. The preliminary before/after is in
+[performance](../specs/performance.md#bayer-rcd-tile-jobs).
 
 ## Bayer normalization batching
 
 The production path batches 16 rows through the existing shared executor for Bayer mosaics above
-one megapixel, before the unchanged serial RCD call. It adds no per-worker scratch and checks
+one megapixel, before the RCD call. It adds no per-worker scratch and checks
 cancellation per row. X-Trans normalization remains serial. Complete normalized mosaics and complete
 RGB planes match the serial path bit for bit on the authentic Nikon Z6 and Air 2S Bayer fixtures.
 The Z6 raw mosaic is 6064 × 4040 (24.5 MP); the Air 2S sensor mosaic is 5568 × 3648 (20.3 MP).
@@ -219,7 +214,7 @@ do not describe current application RSS. `queue.write_texture` remains a separat
 has no measurement here.
 
 The smaller encoded-RAW adoption copy is measured at 0.53/0.64 ms p50/p95 for Z6, 1.39/1.61 ms for
-X100VI and 0.64/0.67 ms for DJI. Keep it below the remaining startup and Bayer RCD work.
+X100VI and 0.64/0.67 ms for DJI. Keep it below the remaining startup work.
 
 Do not start with assembly. The colour-row path is integrated; profile remaining operations and
 inspect generated code before considering SIMD. Any vector path must preserve complete output bytes

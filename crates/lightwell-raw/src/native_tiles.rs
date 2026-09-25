@@ -1,4 +1,5 @@
-//! Synchronous admission to the existing Rayon pool for native X-Trans tiles.
+//! Synchronous admission to the existing Rayon pool for native demosaic tiles
+//! (Bayer RCD and X-Trans one-pass Markesteijn).
 
 use std::{
     ffi::{c_int, c_void},
@@ -10,13 +11,17 @@ use std::{
     time::Duration,
 };
 
-// One-pass Markesteijn allocates 988,208 scratch bytes per admitted slot.
-// Eight slots across *all* RawSource callers add at most 7,905,664 explicit
-// scratch bytes; there is no full-frame allocation per slot.
+// One-pass Markesteijn allocates 988,208 scratch bytes per admitted slot and
+// RCD 978,536. Eight slots across *all* RawSource callers add at most
+// 7,905,664 explicit scratch bytes; there is no full-frame allocation per slot.
 const MAX_SCRATCH_SLOTS: usize = 8;
 static SLOTS: OnceLock<(Mutex<usize>, Condvar)> = OnceLock::new();
 #[cfg(test)]
 static PEAK_SLOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Tests that assert exact slot counts hold this; the unit tests that
+/// admit native callbacks hold it too, so their permits never overlap.
+#[cfg(test)]
+pub(super) static TEST_BUDGET_LOCK: Mutex<()> = Mutex::new(());
 
 pub(super) struct ExecutorContext<'a> {
     pub cancel: &'a AtomicBool,
@@ -81,10 +86,11 @@ fn admit(desired: usize, cancel: &AtomicBool) -> Result<ScratchPermit, c_int> {
 /// C++ supplies a live immutable job context and a no-throw worker entry.
 /// Each callback evaluates one C++ tile job with its own scratch. At most
 /// `desired` callbacks run in a batch; every batch joins before the next is
-/// dispatched. The final two-row C++ job runs on the source caller, while
-/// shorter ordinary jobs enter Rayon. A scratch permit is held only while a
-/// native callback executes, never by a scope waiting for children. The final
-/// scope joins before borrowed context or image buffers drop.
+/// dispatched. The final C++ job, which carries the frame's last tile rows,
+/// runs on the source caller, while shorter ordinary jobs enter Rayon. A
+/// scratch permit is held only while a native callback executes, never by a
+/// scope waiting for children. The final scope joins before borrowed context
+/// or image buffers drop.
 /// This trampoline catches Rust panics so none crosses the C ABI.
 pub(super) extern "C" fn execute(
     context: *mut c_void,
@@ -94,7 +100,7 @@ pub(super) extern "C" fn execute(
 ) -> c_int {
     let result = catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: lw_raw_develop receives this stack context and calls the
-        // executor synchronously; Markesteijn stores neither pointer.
+        // executor synchronously; neither demosaic stores either pointer.
         let state = unsafe { &*context.cast::<ExecutorContext<'_>>() };
         let width = rayon::current_num_threads();
         let desired = job_count
@@ -128,7 +134,7 @@ pub(super) extern "C" fn execute(
             }
             return status.load(Ordering::Relaxed);
         }
-        // The last C++ job retains the final two rows' scratch history. Run
+        // The last C++ job retains the final rows' scratch history. Run
         // it on the source caller while the first ordinary jobs use the pool.
         // Its permit is dropped before this scope joins, including for nested
         // callers that are themselves Rayon workers.
@@ -164,7 +170,6 @@ pub(super) extern "C" fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    static TEST_BUDGET_LOCK: Mutex<()> = Mutex::new(());
 
     extern "C" fn count_worker(context: *mut c_void, _slot: usize) {
         // SAFETY: both execute calls join before this local counter drops.

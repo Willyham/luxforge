@@ -63,13 +63,13 @@ The 1.5 GiB value is not a process RSS budget.
 | Retained u16 sensor mosaic | One Rust allocation, `2 × pixels`, shared by `Arc<Vec<u16>>` |
 | Developed float output | One Rust `Vec<f32>` of `3 × pixels`, capped at 1.5 GiB per planar RGB buffer; `[R plane,G plane,B plane]` |
 | Demosaic input | One temporary float mosaic, `4 × pixels`, plus algorithm tile workspace and row-pointer tables; released before `develop` returns |
-| X-Trans Markesteijn tile scratch | One 988,208-byte native heap allocation per admitted callback, at most eight process-wide (7,905,664 bytes total), plus callback stack arrays outside that heap count. The shared Rayon pool runs bounded ordinary tile jobs; the final two-row job runs on the source caller. No private thread pool or full-frame scratch copy. |
+| Demosaic tile scratch | One native heap allocation per admitted callback, 988,208 bytes for X-Trans Markesteijn and 978,536 for Bayer RCD, at most eight process-wide (7,905,664 bytes total), plus callback stack arrays outside that heap count. The shared Rayon pool runs bounded ordinary tile jobs; the final job, which carries the frame's last tile rows, runs on the source caller. No private thread pool or full-frame scratch copy. |
 | DNG stage-three warp | One temporary active-area float plane, `4 × active pixels`, reused for three channels after native demosaic scratch is released |
 | Job concurrency | Owned by the editor worker; reserve for in-flight mosaic/output/old presentation before starting replacement |
 
 At full X100VI sensor size (7872×5196 = 40,902,912 pixels), retained u16 mosaic is about 78 MiB, the developed three-plane output about 468 MiB, and temporary float mosaic about 156 MiB, before native decoder scratch, worker overlap, color/geometry and GPU storage. The adapter's per-buffer checks do not by themselves enforce the editor's combined-process memory target. The caller must bound active/pending workers and account for old visible results during replacement.
 
-Cancellation is checked before decode, through LibRaw's synchronous progress callback during identify/unpack, every 128 input rows while preparing float data, between Markesteijn tiles, after librtprocess returns, and every 64 rows during each DNG gain/warp pass. RCD remains serial and ignores the progress callback return, so cancellation during its demosaic prevents publication only after that stage finishes. Markesteijn uses bounded tile-group workers with process-wide scratch admission; edge scratch dependencies are retained, and X-Trans dimensions below 120 px on either side fail explicitly. See [the execution and lifetime contract](../../docs/design/native-demosaic-parallelism.md). No C++ exception crosses the ABI. A Rust `AtomicBool` is accessed only by an `extern "C"` callback during a synchronous native call; it is never reinterpreted as a C++ atomic or retained beyond the call.
+Cancellation is checked before decode, through LibRaw's synchronous progress callback during identify/unpack, every 128 input rows while preparing float data (every row when Bayer rows run on the pool), before every RCD or Markesteijn tile, after librtprocess returns, and every 64 rows during each DNG gain/warp pass. Both demosaics run bounded tile jobs with process-wide scratch admission; each job is a contiguous run of the serial tile raster that begins at a full tile, so partial edge tiles keep the scratch history they read, and X-Trans dimensions below 120 px on either side fail explicitly. See [the execution and lifetime contract](../../docs/design/native-demosaic-parallelism.md). No C++ exception crosses the ABI. A Rust `AtomicBool` is accessed only by an `extern "C"` callback during a synchronous native call; it is never reinterpreted as a C++ atomic or retained beyond the call.
 
 ## Evidence and limits
 
@@ -86,6 +86,13 @@ The complete Markesteijn serial/pool oracle, including changed white balance, ed
 ```sh
 LIGHTWELL_RAW_OWNER_DIR=/path/to/owner/raw \
   cargo test --release -p lightwell-raw --locked --lib markesteijn_parallel_complete_float_oracle -- --ignored --nocapture
+```
+
+The Bayer oracle checks the serial RGB planes against an immutable pre-change M4 digest and compares complete normalized mosaics and RGB planes from the serial raster with pooled RCD at one, two, four and the default number of workers, and with changed white balance, one source per process (`nikon_z6.NEF` or `mavic_air_2s.DNG`):
+
+```sh
+LIGHTWELL_RAW_OWNER_DIR=/path/to/owner/raw LIGHTWELL_RAW_PROFILE_SOURCE=nikon_z6.NEF \
+  cargo test --release -p lightwell-raw --locked --lib bayer_owner_mosaic_and_rgb_oracle -- --ignored --nocapture
 ```
 
 The owner and public corpus checks are separate tests. If only owner originals are available, run the same command with `--skip authentic_public_modes` and report the public modes as untested.

@@ -883,6 +883,13 @@ impl RawSource {
 mod tests {
     use super::*;
 
+    /// Serializes executor use with the tests that count scratch slots.
+    fn slot_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        native_tiles::TEST_BUDGET_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn native_develop_for_test(
         samples: &[u16],
         meta: &NativeMetadata,
@@ -891,6 +898,7 @@ mod tests {
         parallel: bool,
         capture: &mut [f32],
     ) -> Vec<f32> {
+        let _slots = slot_test_lock();
         let n = samples.len();
         let mut output = vec![0.0_f32; n * 3];
         let (red, rest) = output.split_at_mut(n);
@@ -1011,6 +1019,7 @@ mod tests {
             c_int::from(state.calls.fetch_add(1, Ordering::Relaxed) + 1 >= state.limit)
         }
 
+        let _slots = slot_test_lock();
         let width = 1040_usize;
         let height = 1030_usize;
         let count = width * height;
@@ -1094,6 +1103,334 @@ mod tests {
         assert_eq!(code, 5, "{}", c_text(&error));
     }
 
+    /// A Bayer mosaic with edges, ramps and noise, so RCD's directional
+    /// estimates and colour ratios vary within and across its tiles.
+    fn synthetic_bayer(width: usize, height: usize, cfa: [u8; 4]) -> (Vec<u16>, NativeMetadata) {
+        let mut meta = RawSource::blank_native();
+        meta.width = width as u32;
+        meta.height = height as u32;
+        meta.cfa_width = 2;
+        meta.cfa_height = 2;
+        meta.cfa[..4].copy_from_slice(&cfa);
+        // LibRaw calibrates the second green site as channel 3.
+        let mut black_cfa = cfa;
+        let second_green = black_cfa.iter().rposition(|&channel| channel == 1).unwrap();
+        black_cfa[second_green] = 3;
+        meta.black_cfa[..4].copy_from_slice(&black_cfa);
+        meta.black_base = 64.0;
+        meta.black_channels = [1.0, 2.0, 3.0, 4.0];
+        meta.white = 4095.0;
+        let mut state = 0x9e37_79b9_u32 ^ (width * 31 + height) as u32;
+        let samples = (0..width * height)
+            .map(|index| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let (x, y) = (index % width, index / width);
+                let edge = if (x / 7 + y / 11) % 3 == 0 { 2600 } else { 300 };
+                let ramp = (x * 3 + y * 2) % 900;
+                ((edge + ramp + (state >> 22) as usize) % 4096) as u16
+            })
+            .collect();
+        (samples, meta)
+    }
+
+    /// Wraps the production executor to record, for its latest call, how
+    /// often each job ran, where, and how many ran at once.
+    struct TracedExecutor<'a> {
+        inner: native_tiles::ExecutorContext<'a>,
+        caller: std::thread::ThreadId,
+        last_jobs: std::sync::Mutex<Vec<usize>>,
+        active: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+        off_pool: AtomicBool,
+    }
+
+    struct TracedCall<'a> {
+        trace: &'a TracedExecutor<'a>,
+        worker: native_tiles::TileWorker,
+        worker_context: *mut c_void,
+        seen: Vec<std::sync::atomic::AtomicUsize>,
+    }
+
+    extern "C" fn traced_worker(context: *mut c_void, job: usize) {
+        // SAFETY: traced_execute passes its stack call, which outlives the
+        // synchronous executor that invokes this.
+        let call = unsafe { &*context.cast::<TracedCall<'_>>() };
+        call.seen[job].fetch_add(1, Ordering::Relaxed);
+        if std::thread::current().id() != call.trace.caller
+            && rayon::current_thread_index().is_none()
+        {
+            call.trace.off_pool.store(true, Ordering::Relaxed);
+        }
+        let active = call.trace.active.fetch_add(1, Ordering::Relaxed) + 1;
+        call.trace.peak.fetch_max(active, Ordering::Relaxed);
+        (call.worker)(call.worker_context, job);
+        call.trace.active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    extern "C" fn traced_execute(
+        context: *mut c_void,
+        job_count: usize,
+        worker: native_tiles::TileWorker,
+        worker_context: *mut c_void,
+    ) -> c_int {
+        // SAFETY: run_bayer passes a live TracedExecutor for the synchronous
+        // native call; the inner executor joins every callback.
+        let trace = unsafe { &*context.cast::<TracedExecutor<'_>>() };
+        let call = TracedCall {
+            trace,
+            worker,
+            worker_context,
+            seen: (0..job_count)
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect(),
+        };
+        let status = native_tiles::execute(
+            (&trace.inner as *const native_tiles::ExecutorContext<'_>)
+                .cast_mut()
+                .cast(),
+            job_count,
+            traced_worker,
+            (&call as *const TracedCall<'_>).cast_mut().cast(),
+        );
+        *trace.last_jobs.lock().unwrap() = call
+            .seen
+            .iter()
+            .map(|seen| seen.load(Ordering::Relaxed))
+            .collect();
+        status
+    }
+
+    fn traced(cancel: &AtomicBool, worker_limit: usize) -> TracedExecutor<'_> {
+        TracedExecutor {
+            inner: native_tiles::ExecutorContext {
+                cancel,
+                worker_limit,
+            },
+            caller: std::thread::current().id(),
+            last_jobs: std::sync::Mutex::new(Vec::new()),
+            active: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+            off_pool: AtomicBool::new(false),
+        }
+    }
+
+    /// One Bayer development into NaN-initialized planes. `trace` selects
+    /// the traced production executor; `None` is the no-executor raster.
+    fn run_bayer(
+        samples: &[u16],
+        meta: &NativeMetadata,
+        gains: [f32; 3],
+        trace: Option<&TracedExecutor<'_>>,
+        cancel: CancelCallback,
+        cancel_context: *mut c_void,
+        fault: u32,
+    ) -> (c_int, Vec<f32>) {
+        let _slots = slot_test_lock();
+        let n = samples.len();
+        let mut output = vec![f32::NAN; n * 3];
+        let (red, rest) = output.split_at_mut(n);
+        let (green, blue) = rest.split_at_mut(n);
+        let mut error = [0 as c_char; 256];
+        // SAFETY: inputs, planes, executor and callback state stay live and
+        // disjoint for the synchronous call, which joins all callbacks.
+        let code = unsafe {
+            lw_raw_develop(
+                samples.as_ptr(),
+                n,
+                meta,
+                std::ptr::null(),
+                0,
+                gains.as_ptr(),
+                red.as_mut_ptr(),
+                green.as_mut_ptr(),
+                blue.as_mut_ptr(),
+                fault,
+                trace.map(|_| traced_execute as native_tiles::TileExecutor),
+                trace.map_or(std::ptr::null_mut(), |trace| {
+                    (trace as *const TracedExecutor<'_>).cast_mut().cast()
+                }),
+                cancel,
+                cancel_context,
+                error.as_mut_ptr(),
+                error.len(),
+                std::ptr::null_mut(),
+            )
+        };
+        (code, output)
+    }
+
+    fn first_difference(left: &[f32], right: &[f32]) -> Option<usize> {
+        assert_eq!(left.len(), right.len());
+        left.iter()
+            .zip(right)
+            .position(|(a, b)| a.to_bits() != b.to_bits())
+    }
+
+    #[test]
+    fn rcd_tile_jobs_match_the_serial_raster_bits() {
+        let never = AtomicBool::new(false);
+        let never_context = (&never as *const AtomicBool).cast_mut().cast();
+        let cfas = [[0, 1, 1, 2], [1, 0, 2, 1], [2, 1, 1, 0], [1, 2, 0, 1]];
+        // RCD tiles are 194 px with a 176 px stride. The sizes cover frames
+        // below one tile, exactly one tile, a skipped 18 px final tile, a
+        // 5 px final tile after a partial predecessor (357 = 2 x 176 + 5),
+        // partial rows and columns, and rows of several chunks.
+        for (index, &(width, height)) in [
+            (10, 10),
+            (17, 23),
+            (18, 18),
+            (40, 30),
+            (193, 194),
+            (194, 194),
+            (195, 371),
+            (370, 370),
+            (357, 369),
+            (371, 546),
+            (547, 353),
+            (1411, 353),
+            (1057, 883),
+            (2000, 1500),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let (samples, meta) = synthetic_bayer(width, height, cfas[index % 4]);
+            for gains in [[1.7, 1.0, 1.3], [0.6, 1.0, 2.9]] {
+                let (code, serial) =
+                    run_bayer(&samples, &meta, gains, None, cancelled, never_context, 0);
+                assert_eq!(code, 0, "serial {width}x{height}");
+                for worker_limit in [1, 2, 4, 0] {
+                    let trace = traced(&never, worker_limit);
+                    let (code, pooled) = run_bayer(
+                        &samples,
+                        &meta,
+                        gains,
+                        Some(&trace),
+                        cancelled,
+                        never_context,
+                        0,
+                    );
+                    assert_eq!(code, 0, "pooled {width}x{height}");
+                    if let Some(at) = first_difference(&serial, &pooled) {
+                        panic!(
+                            "{width}x{height} at {worker_limit} workers differs at {at}: {:?} vs {:?}",
+                            serial[at], pooled[at]
+                        );
+                    }
+                    // RCD is the adapter's last executor call.
+                    let jobs = trace.last_jobs.lock().unwrap().clone();
+                    assert!(jobs.iter().all(|&runs| runs == 1), "{width}x{height}");
+                    if width < 194 || height < 194 {
+                        assert_eq!(jobs.len(), 1, "{width}x{height} has no full tile");
+                    }
+                    if (width, height) == (2000, 1500) {
+                        // Eight full-height tile rows of two chunks; the
+                        // final job also carries the partial bottom row.
+                        assert_eq!(jobs.len(), 16);
+                    }
+                    // The process-wide scratch cap is eight callbacks.
+                    assert!(trace.peak.load(Ordering::Relaxed) <= 8);
+                    assert!(!trace.off_pool.load(Ordering::Relaxed));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rcd_checks_cancellation_before_every_tile_and_stops_mid_frame() {
+        struct CancelAt {
+            calls: std::sync::atomic::AtomicUsize,
+            first_cancel_call: usize,
+        }
+        extern "C" fn cancel_at(context: *mut c_void) -> c_int {
+            // SAFETY: each native call is synchronous and receives this live state.
+            let state = unsafe { &*context.cast::<CancelAt>() };
+            c_int::from(state.calls.fetch_add(1, Ordering::Relaxed) >= state.first_cancel_call)
+        }
+        let (width, height) = (2400_usize, 1800_usize);
+        let n = width * height;
+        let tiles = width.div_ceil(176) * height.div_ceil(176);
+        let (samples, meta) = synthetic_bayer(width, height, [0, 1, 1, 2]);
+        let never = AtomicBool::new(false);
+        let executor = traced(&never, 0);
+        for pooled in [false, true] {
+            let trace = pooled.then_some(&executor);
+            // The adapter checks once before normalization, then on every row
+            // on the pool or every 128 rows serially. RCD checks before each
+            // tile and once after its jobs join; the adapter once after it.
+            let before_demosaic = 1 + if pooled { height } else { height.div_ceil(128) };
+            let full = CancelAt {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                first_cancel_call: usize::MAX,
+            };
+            let (code, _) = run_bayer(
+                &samples,
+                &meta,
+                [1.2, 1.0, 1.4],
+                trace,
+                cancel_at,
+                (&full as *const CancelAt).cast_mut().cast(),
+                0,
+            );
+            assert_eq!(code, 0);
+            assert_eq!(
+                full.calls.load(Ordering::Relaxed),
+                before_demosaic + tiles + 2
+            );
+
+            let state = CancelAt {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                first_cancel_call: before_demosaic + 12,
+            };
+            let (code, output) = run_bayer(
+                &samples,
+                &meta,
+                [1.2, 1.0, 1.4],
+                trace,
+                cancel_at,
+                (&state as *const CancelAt).cast_mut().cast(),
+                0,
+            );
+            assert_eq!(code, 2, "pooled {pooled}");
+            // Only demosaic tiles write the planes before the border pass,
+            // so samples no tile reached keep their NaN.
+            let written = output[..n].iter().filter(|value| !value.is_nan()).count();
+            assert!(written > 0, "cancelled before the demosaic started");
+            assert!(
+                written * 4 < n,
+                "cancelled demosaic still wrote {written} of {n} red samples"
+            );
+            assert!(state.calls.load(Ordering::Relaxed) < before_demosaic + tiles);
+        }
+    }
+
+    #[test]
+    fn rcd_job_faults_join_and_release_scratch() {
+        let never = AtomicBool::new(false);
+        let never_context = (&never as *const AtomicBool).cast_mut().cast();
+        let (samples, meta) = synthetic_bayer(1057, 883, [1, 2, 0, 1]);
+        let gains = [1.1, 1.0, 1.9];
+        let (code, serial) = run_bayer(&samples, &meta, gains, None, cancelled, never_context, 0);
+        assert_eq!(code, 0);
+        let executor = traced(&never, 4);
+        for pooled in [false, true] {
+            let trace = pooled.then_some(&executor);
+            let (code, _) = run_bayer(&samples, &meta, gains, trace, cancelled, never_context, 1);
+            assert!(matches!(
+                native_error(code, &[0; 1]),
+                RawError::ResourceLimit(_)
+            ));
+            let (code, _) = run_bayer(&samples, &meta, gains, trace, cancelled, never_context, 2);
+            assert!(matches!(native_error(code, &[0; 1]), RawError::Native(_)));
+            // A complete run after both faults proves every job joined and
+            // returned its scratch permit.
+            let (code, recovered) =
+                run_bayer(&samples, &meta, gains, trace, cancelled, never_context, 0);
+            assert_eq!(code, 0);
+            assert_eq!(first_difference(&serial, &recovered), None);
+        }
+    }
+
     #[test]
     #[ignore = "authentic owner mosaic qualification; run separately from timing for each source"]
     fn bayer_owner_mosaic_and_rgb_oracle() {
@@ -1160,6 +1497,51 @@ mod tests {
                 .zip(&parallel_output)
                 .all(|(a, b)| a.to_bits() == b.to_bits()),
             "complete RGB differs for {name}"
+        );
+        drop((serial_mosaic, parallel_mosaic, parallel_output));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let mut hash = Sha256::new();
+            for value in &serial_output {
+                hash.update(value.to_bits().to_le_bytes());
+            }
+            // Captured from the serial RCD before its tiles ran as executor
+            // jobs, on the owner's M4 Mac. Other architectures still run the
+            // complete serial/pooled comparisons without claiming bit parity.
+            let expected = if name == "nikon_z6.NEF" {
+                "4de12f86889bada90d30728c4eb3d4f7ed0b0b4a2b553c8a0116a82e800fb2de"
+            } else {
+                "b3f997233b48ec6763e4d3d34ba506c81a41db7dbb791f778961b6b187b09389"
+            };
+            assert_eq!(format!("{:x}", hash.finalize()), expected);
+        }
+        for workers in [1, 2, 0] {
+            let pooled = raw
+                .develop_uncorrected_with_workers(gains, &cancel, workers)
+                .unwrap();
+            if let Some(at) = first_difference(&serial_output, &pooled.data) {
+                panic!("{name} RGB differs at {workers} workers, index {at}");
+            }
+        }
+        drop(serial_output);
+        let adjusted = [gains[0] * 1.15, 1.0, gains[2] * 0.85];
+        let mut capture = vec![0.0_f32; raw.mosaic.len()];
+        let adjusted_serial = native_develop_for_test(
+            raw.mosaic(),
+            &raw.native,
+            raw.mosaic_corrections(),
+            adjusted,
+            false,
+            &mut capture,
+        );
+        drop(capture);
+        let pooled = raw
+            .develop_uncorrected_with_workers(adjusted, &cancel, 0)
+            .unwrap();
+        assert_eq!(
+            first_difference(&adjusted_serial, &pooled.data),
+            None,
+            "{name} changed-WB RGB differs"
         );
     }
 

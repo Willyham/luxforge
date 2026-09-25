@@ -16,8 +16,12 @@
  *  You should have received a copy of the GNU General Public License
  *  along with RawTherapee.  If not, see <http://www.gnu.org/licenses/>.
  */
+#include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <memory>
+#include <stdexcept>
 
 #include "bayerhelper.h"
 #include "librtprocess.h"
@@ -26,6 +30,27 @@
 #include "StopWatch.h"
 
 using namespace librtprocess;
+
+namespace {
+struct RcdWorkerCall {
+    std::function<void(size_t)> run;
+    std::atomic<rpError> *error;
+};
+
+extern "C" void run_rcd_worker(void *context, size_t job) noexcept
+{
+    auto *call = static_cast<RcdWorkerCall *>(context);
+    try {
+        call->run(job);
+    } catch (const std::bad_alloc &) {
+        rpError expected = RP_NO_ERROR;
+        call->error->compare_exchange_strong(expected, RP_MEMORY_ERROR);
+    } catch (...) {
+        rpError expected = RP_NO_ERROR;
+        call->error->compare_exchange_strong(expected, RP_WORKER_ERROR);
+    }
+}
+}
 
 /*
 * RATIO CORRECTED DEMOSAICING
@@ -42,7 +67,7 @@ using namespace librtprocess;
 // coefficients in an exact, shorter and more performant formula.
 // In cooperation with Hanno Schwalm (hanno@schwalm-bremen.de) and Luis Sanz Rodriguez this has been tuned for performance.
 
-rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread)
+rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext, unsigned testFault)
 {
     BENCHFUN
 
@@ -58,8 +83,7 @@ rpError rcd_demosaic(int width, int height, const float * const *rawData, float 
 
     rpError rc = RP_NO_ERROR;
 
-    double progress = 0.0;
-    setProgCancel(progress);
+    setProgCancel(0.0);
     
     constexpr int tileBorder = 9; // avoid tile-overlap errors
     constexpr int rcdBorder = 9;
@@ -73,36 +97,73 @@ rpError rcd_demosaic(int width, int height, const float * const *rawData, float 
     constexpr float epssq = 1e-10f;
     constexpr float scale = 65536.f;
 
-#ifdef _OPENMP
-#pragma omp parallel if(multiThread)
-#endif
-{
-    int progresscounter = 0;
-    float *const cfa = (float*) calloc(tileSize * tileSize, sizeof *cfa);
-    float (*const rgb)[tileSize * tileSize] = (float (*)[tileSize * tileSize])malloc(3 * sizeof *rgb);
-    float *const VH_Dir = (float*) calloc(tileSize * tileSize, sizeof *VH_Dir);
-    float *const PQ_Dir = (float*) calloc(tileSize * tileSize / 2, sizeof *PQ_Dir);
-    float *const lpf = PQ_Dir; // reuse buffer, they don't overlap in usage
-    float *const P_CDiff_Hpf = (float*) calloc(tileSize * tileSize / 2, sizeof *P_CDiff_Hpf);
-    float *const Q_CDiff_Hpf = (float*) calloc(tileSize * tileSize / 2, sizeof *Q_CDiff_Hpf);
-
-#ifdef _OPENMP
-    #pragma omp critical
-#endif
-    {
-        if (!cfa || !rgb || !VH_Dir || ! PQ_Dir || !P_CDiff_Hpf || !Q_CDiff_Hpf) {
-            rc = RP_MEMORY_ERROR;
-        }
+    // Lightwell: tiles run as jobs of a synchronous executor instead of an
+    // OpenMP region (multiThread is unused). A full tile reads only scratch
+    // cells it wrote or cells no tile writes, which stay zero. A partial tile
+    // also reads direction and colour-difference cells at its last computed
+    // row and column that only an earlier, larger tile wrote, so its result
+    // depends on the serial tiles before it. Every job is therefore a
+    // contiguous run of the serial raster that starts at a full tile: up to
+    // eight tiles of a full-height row, the row's partial right tiles staying
+    // with their full predecessor, and a final job from the last full-height
+    // row's last chunk to the end of the frame. Each job owns one fresh
+    // scratch set and checks cancellation and shared error state before every
+    // tile. Without an executor, or without a full tile, one job keeps the
+    // original raster over the whole frame.
+    const int fullRows = height >= tileSize ? (height - tileSize) / tileSizeN + 1 : 0;
+    const int fullCols = width >= tileSize ? (width - tileSize) / tileSizeN + 1 : 0;
+    constexpr int maxJobTiles = 8;
+    int chunks = (numTw + maxJobTiles - 1) / maxJobTiles;
+    if (chunks > 1 && (chunks - 1) * maxJobTiles > fullCols - 1) {
+        --chunks;
     }
-#ifdef _OPENMP
-    #pragma omp barrier
-#endif
-    if (!rc) {
-#ifdef _OPENMP
-        #pragma omp for schedule(dynamic, chunkSize) collapse(2) nowait
-#endif
-        for(int tr = 0; tr < numTh; ++tr) {
-            for(int tc = 0; tc < numTw; ++tc) {
+    const size_t tileCount = size_t(numTh) * size_t(numTw);
+    const size_t jobs = executor && fullRows > 0 && fullCols > 0 ? size_t(fullRows) * size_t(chunks) : 1;
+    std::atomic<rpError> tileError{RP_NO_ERROR};
+    RcdWorkerCall call{
+        [&](size_t job) {
+    if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) return;
+    // Private adapter tests inject these failures without provoking
+    // process-wide OOM or exposing a user-facing control.
+    if (testFault == 1 && job == 0) {
+        rpError expected = RP_NO_ERROR;
+        tileError.compare_exchange_strong(expected, RP_MEMORY_ERROR);
+        return;
+    }
+    if (testFault == 2 && job == 0) throw std::runtime_error("native tile test fault");
+    std::unique_ptr<float, decltype(&free)> cfaBuffer((float*) calloc(tileSize * tileSize, sizeof(float)), &free);
+    std::unique_ptr<float, decltype(&free)> rgbBuffer((float*) malloc(3 * tileSize * tileSize * sizeof(float)), &free);
+    std::unique_ptr<float, decltype(&free)> vhBuffer((float*) calloc(tileSize * tileSize, sizeof(float)), &free);
+    std::unique_ptr<float, decltype(&free)> pqBuffer((float*) calloc(tileSize * tileSize / 2, sizeof(float)), &free);
+    std::unique_ptr<float, decltype(&free)> pBuffer((float*) calloc(tileSize * tileSize / 2, sizeof(float)), &free);
+    std::unique_ptr<float, decltype(&free)> qBuffer((float*) calloc(tileSize * tileSize / 2, sizeof(float)), &free);
+    float *const cfa = cfaBuffer.get();
+    float (*const rgb)[tileSize * tileSize] = (float (*)[tileSize * tileSize]) rgbBuffer.get();
+    float *const VH_Dir = vhBuffer.get();
+    float *const PQ_Dir = pqBuffer.get();
+    float *const lpf = PQ_Dir; // reuse buffer, they don't overlap in usage
+    float *const P_CDiff_Hpf = pBuffer.get();
+    float *const Q_CDiff_Hpf = qBuffer.get();
+    if (!cfa || !rgb || !VH_Dir || !PQ_Dir || !P_CDiff_Hpf || !Q_CDiff_Hpf) {
+        rpError expected = RP_NO_ERROR;
+        tileError.compare_exchange_strong(expected, RP_MEMORY_ERROR);
+        return;
+    }
+    const size_t jobRow = job / size_t(chunks);
+    const size_t jobChunk = job % size_t(chunks);
+    const size_t firstTile = jobs == 1 ? 0 : jobRow * numTw + jobChunk * maxJobTiles;
+    const size_t endTile = jobs == 1 || job == jobs - 1 ? tileCount
+                           : jobChunk == size_t(chunks) - 1 ? (jobRow + 1) * numTw
+                           : jobRow * numTw + (jobChunk + 1) * maxJobTiles;
+        for (size_t tile = firstTile; tile < endTile; ++tile) {
+                if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) return;
+                if (shouldCancel && shouldCancel(cancelContext)) {
+                    rpError expected = RP_NO_ERROR;
+                    tileError.compare_exchange_strong(expected, RP_CANCELLED);
+                    return;
+                }
+                const int tr = int(tile / numTw);
+                const int tc = int(tile % numTw);
                 const int rowStart = tr * tileSizeN;
                 const int rowEnd = std::min(rowStart + tileSize, height);
                 if(rowStart + rcdBorder == rowEnd - rcdBorder) {
@@ -309,30 +370,21 @@ rpError rcd_demosaic(int width, int height, const float * const *rawData, float 
                     }
                 }
 
-                progresscounter++;
-                if(progresscounter % 32 == 0) {
-#ifdef _OPENMP
-                    #pragma omp critical (rcdprogress)
-#endif
-                    {
-                        progress += (double)32 * ((tileSizeN) * (tileSizeN)) / (height * width);
-                        progress = progress > 1.0 ? 1.0 : progress;
-                        setProgCancel(progress);
-                    }
-                }
-            }
         }
-    }
-    free(cfa);
-    free(rgb);
-    free(VH_Dir);
-    free(PQ_Dir);
-    free(P_CDiff_Hpf);
-    free(Q_CDiff_Hpf);
-}
-    if (!rc) {
-        rc = bayerborder_demosaic(width, height, rcdBorder, rawData, red, green, blue, cfarray);
-    }
+        },
+        &tileError
+    };
+    // The executor joins every job before returning. Serial callers run the
+    // same job function once over the whole raster.
+    const int result = executor
+                           ? executor(executorContext, jobs, run_rcd_worker, &call)
+                           : (run_rcd_worker(&call, 0), 0);
+    if (result == 2) return RP_CANCELLED;
+    if (result != 0) return RP_WORKER_ERROR;
+    rc = tileError.load(std::memory_order_relaxed);
+    if (rc != RP_NO_ERROR) return rc;
+    if (shouldCancel && shouldCancel(cancelContext)) return RP_CANCELLED;
+    rc = bayerborder_demosaic(width, height, rcdBorder, rawData, red, green, blue, cfarray);
 
     setProgCancel(1.0);
 

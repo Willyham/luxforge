@@ -1324,7 +1324,7 @@ performance review checklist are in [isolated rendering performance](../design/i
 The source worker develops a cold known RAW directly at the validated requested white balance.
 Bayer mosaic normalization batches 16 rows through the shared pool above one megapixel; X-Trans
 normalization remains serial. DNG optical corrections share the process pool across disjoint rows.
-Markesteijn now uses the bounded tile groups described in [startup and RAW throughput](#startup-and-raw-throughput); RCD remains serial.
+Markesteijn and RCD use the bounded tile jobs described in [startup and RAW throughput](#startup-and-raw-throughput).
 Texture and Clarity skip unused global reductions; Dehaze reuses its atmosphere across strength edits.
 Its cache distinguishes upstream masks and sampling, source development/view, exposure and approximate
 white balance. Terminal encoding indexes the exact code boundaries, retaining the RAW boundary guard;
@@ -1455,15 +1455,15 @@ frames. Original failures and focused reruns are retained in the local evidence,
 Final native Presence sample/render tests also pass on all three originals. DJI reopen, Presence and
 mask/range captures were visually inspected alongside state and event checks. The full run's standard
 timing components started above load 8.0 and their absolute target verdicts remain **unreliable**.
-GPU colour, larger tiles and Bayer demosaic parallelism remain separate work;
+GPU colour and larger tiles remain separate work;
 Windows/Linux numerical and native GPU qualification are not established by this M4 evidence.
 
 ## Startup and RAW throughput
 
 Initial-source preparation now overlaps platform startup. RAW camera conversion mutates the existing
 planes in exact bounded chunks, Bayer normalization uses bounded 16-row batches above one megapixel,
-and native Markesteijn uses bounded tile groups on the shared pool. X-Trans normalization and Bayer
-RCD remain serial.
+and native Markesteijn and Bayer RCD use bounded tile jobs on the shared pool. X-Trans normalization
+remains serial.
 See the [implementation contract](../design/performance-third-wave.md) and
 [native execution bounds](../design/native-demosaic-parallelism.md). No image equation or output
 quantization tolerance changes.
@@ -1549,20 +1549,21 @@ measurement, not just live demosaic scratch. The faster development uses about 1
 Explicit Markesteijn heap scratch is globally capped at eight × 988,208 bytes, or 7,905,664 bytes,
 including the source-caller job. Stack arrays, tables, allocator overhead and full image buffers
 are additional. Callback cancellation, native faults, nested callers and teardown are tested;
-no partial output is adopted. Bayer RCD retains its existing serial cancellation limitation.
+no partial output is adopted.
 
 ### Bayer mosaic normalization
 
 For Bayer sources above one megapixel, native normalization submits 16-row batches to the existing
-shared executor before the unchanged serial RCD call. At most eight callbacks are admitted under
+shared executor before the RCD call. At most eight callbacks are admitted under
 the shared cap. Normalization writes the existing mosaic allocation, adds no per-worker scratch,
 checks cancellation per row and retains the serial path for X-Trans. Whole normalized mosaics and
 RGB planes match bit for bit against the scalar serial oracle on authentic Nikon Z6 and DJI Air 2S
 Bayer inputs. Output guards, partial final batches, cancellation and worker-error behavior are
 covered by focused tests.
 
-Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, release with locked pins, 25 September 2026. Each
-camera uses 30 warm observations per arm in 15 ABBA pairs in one fresh process. The corrected
+Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, release with locked pins, 25 September 2026, with
+RCD still serial in both arms. Each camera uses 30 warm observations per arm in 15 ABBA pairs in one
+fresh process. The corrected
 baseline runs the original scalar normalization, not a serial call through the new row helper.
 Timing excludes source read/decode, the DJI correction warp, rendering, GPU work and presentation;
 the full serial RGB oracle is retained for comparisons outside each timed call. High-water RSS is
@@ -1598,6 +1599,43 @@ source, proxy, oracle and transient RGB output; that is not per-arm memory. Thes
 support the bounded implementation for standalone RAW speed, but do not establish app-level
 presented-frame latency or source-open savings. Do not add its core savings to the cold saved-WB
 results above. Keep the eight-callback cap and requalify full editor contention before changing it.
+This contention diagnostic predates RCD's tile jobs, which its parallel arm now also runs; it has not
+been repeated since.
+
+### Bayer RCD tile jobs
+
+RCD runs its 194 px tiles as jobs of the same executor as Markesteijn, checking cancellation before
+every tile ([native demosaic parallelism](../design/native-demosaic-parallelism.md)). Each job holds
+one 978,536-byte scratch set under the shared eight-slot cap. Complete RGB planes match the pre-change
+serial digest on the Z6 and Air 2S and the serial raster at every worker count.
+
+Preliminary figures only: native M4 Pro, 14 cores, release, 25 September 2026, on a host shared with
+parallel builds (one-minute load 12 to 23). Each run is the crate's
+`bayer_normalization_release_abba_profile`: 30 warm observations per arm in 15 ABBA pairs in one
+fresh process. The pre-change build and this build ran back to back and then reversed (before, after,
+after, before) per camera. The executor arm is the production path; the no-executor arm is the same
+serial code in both builds and serves as a control (Z6 277 to 286 ms, Air 2S 236 to 245 ms wall
+p50). The first Air 2S before-run was disturbed (its control rose to 434 ms) and is left out. Timing
+covers retained-mosaic development only, as in the table above.
+
+| Source | Build | Load at start | Wall p50 / p95 | Demosaic p50 / p95 | Process CPU p50 / p95 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Nikon Z6 | before | 23.1, 14.5 | 251.8 / 263.0, 244.0 / 250.2 ms | 215.7 / 225.3, 208.9 / 215.0 ms | 306.5 / 319.7, 297.3 / 306.1 ms |
+| Nikon Z6 | after | 18.8, 17.0 | 80.0 / 90.2, 79.0 / 85.0 ms | 43.7 / 50.9, 42.9 / 47.7 ms | 338.9 / 357.6, 333.4 / 351.6 ms |
+| DJI Air 2S | before | 16.2 | 206.0 / 455.2 ms | 175.4 / 294.5 ms | 257.1 / 360.8 ms |
+| DJI Air 2S | after | 20.8, 17.9 | 64.0 / 86.2, 62.6 / 142.9 ms | 31.7 / 47.2, 31.8 / 54.9 ms | 283.3 / 345.0, 281.7 / 347.0 ms |
+
+Development wall p50 falls by about 68% on both cameras and the demosaic by about 80%, for about 10%
+more process CPU. Requalify on a quiet host before quoting these as the cost, and measure concurrent
+Fit proxies against a pooled RCD development before relying on preview latency. To repeat, run each
+build's profile once per camera in the order before, after, after, before:
+
+```sh
+LIGHTWELL_RAW_OWNER_DIR=/path/to/owner/raw LIGHTWELL_RAW_PROFILE_SOURCE=nikon_z6.NEF \
+LIGHTWELL_RAW_TIMING_OUTPUT=/path/to/z6.csv \
+  cargo test --release -p lightwell-raw --locked --lib -- --ignored --exact \
+  tests::bayer_normalization_release_abba_profile
+```
 
 ### RAW colour row batching
 
@@ -1720,7 +1758,8 @@ cross-platform native GPU qualification is claimed by this M4 evidence.
 The remaining candidates are ranked in [further performance opportunities](../research/further-performance.md).
 Bayer normalization and RAW colour row batching are in production and measured on actual owner
 inputs; their core shared-pool results are separate from presentation and do not replace end-to-end
-evidence. RCD Bayer development remains serial. Startup attribution, GPU texture transfer, GPU
+evidence. RCD runs bounded tile jobs; its quiet-host timing and preview contention remain to be
+measured. Startup attribution, GPU texture transfer, GPU
 execution and SIMD/assembly remain open; CPU RGBA publication already writes directly into the
 frame owner, and no additional savings are assigned to it.
 
