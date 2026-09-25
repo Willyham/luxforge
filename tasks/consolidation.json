@@ -1749,14 +1749,15 @@
     {
       "id": "TASK-030",
       "description": "Give colour math one home, give parameter and control descriptors constructors, and emit every method schema through one function.",
-      "status": "in_progress",
+      "status": "pending",
       "dependencies": [
         "TASK-019"
       ],
       "extra_context": [
         "sRGB transfer, luminance weights, the Planckian locus and xy/uv conversion, 3×3 matrix products and inverse, and Oklab products are copied across Basic, RAW, the mixer, the vignette, Presence, masks, the renderers and the desktop's swatch; modules import `basic` as a colour library.",
         "About 60 twelve-field `ParameterDescriptor` literals and about 15 local builder helpers exist; four near-identical schema emitters serve actions, queries, tasks and mask commands.",
-        "Moving an expression verbatim keeps bytes identical; any expression that changes arithmetic order is out of scope."
+        "Moving an expression verbatim keeps bytes identical; any expression that changes arithmetic order is out of scope.",
+        "On hold: the agent stopped on a usage limit. Branch `consolidation-task-030` at `4e0196e` holds three commits (colour module, descriptor constructors, one schema emitter) finished but unverified, plus a work-in-progress commit. Rebase it on the current integration or main, finish, and verify before integrating; it was never integrated."
       ],
       "context_links": [
         {
@@ -1842,7 +1843,7 @@
     {
       "id": "TASK-032",
       "description": "Replace the preview, analysis and clipping-overlay queues with one persistent latest-job worker primitive that takes its own next job, so the next preview no longer waits for the desktop to poll, proxy planning leaves the desktop thread and an abandoned analysis is cancelled.",
-      "status": "in_progress",
+      "status": "pending",
       "dependencies": [
         "TASK-026"
       ],
@@ -1850,7 +1851,8 @@
         "`PreviewQueue`, `AnalysisQueue` and the desktop's `OverlayQueue` each implement one active job plus one replaceable pending job with a generation, each spawning an OS thread per job; the pending job starts only when the consumer polls, which on the desktop is a runtime hop and is held while an upload is in flight.",
         "Because the worker cannot own the proxy cache, proxy planning and a compile run on the desktop thread per input.",
         "Analysis renders are not cancellable, so an abandoned 60 MP Presence analysis keeps the pool busy.",
-        "The capability lanes are first-in first-out, not latest-wins, and stay separate."
+        "The capability lanes are first-in first-out, not latest-wins, and stay separate.",
+        "On hold: the agent stopped on a usage limit. Branch `consolidation-task-032` at `80355d9` holds one work-in-progress commit with the new latest-job primitive (`latest.rs`) and a partial move of its users. Rebase it on the current integration or main, finish, and verify before integrating; it was never integrated."
       ],
       "context_links": [
         {
@@ -1914,7 +1916,7 @@
     {
       "id": "TASK-033",
       "description": "Trim the module capabilities further as decided: one versioned JSON document store for settings and grants, the proof endpoint out of the shipped core, one structured owner call and one preparation wait on the desktop, and `host.rs` split by concern.",
-      "status": "in_progress",
+      "status": "pending",
       "dependencies": [
         "TASK-020",
         "TASK-015"
@@ -1923,7 +1925,8 @@
         "`SettingsStore` and `GrantsStore` each implement lock, bounded read, format check, parse and size-bounded atomic save; the artifact store re-implements the atomic temp-sync-rename.",
         "`ProofEndpoint`, a loopback HTTP test server, is public API of the shipped core crate though only tests, the JSON CLI tests and xtask start it; two more hand-written test HTTP servers exist.",
         "The desktop's capability `call` duplicates the task helper's and its preparation wait duplicates `wait_source_job`, including a blocking sleep loop inside an async task.",
-        "`capabilities/host.rs` holds settings dispatch, permissions, jobs, activation, status and resources."
+        "`capabilities/host.rs` holds settings dispatch, permissions, jobs, activation, status and resources.",
+        "On hold: the agent stopped on a usage limit. Branch `consolidation-task-033` at `c1c6837` holds two commits (one document store, `host.rs` split) finished but unverified, plus a work-in-progress commit moving the proof endpoint into a test-support crate. Rebase it on the current integration or main, finish, and verify before integrating; it was never integrated."
       ],
       "context_links": [
         {
@@ -1993,14 +1996,15 @@
     {
       "id": "TASK-034",
       "description": "Develop RAW sensor data in tile-aligned bands on the shared Rayon pool, with a cancellation check between bands and the float conversion, DNG stages and camera matrix fused into one parallel pass, so a RAW open and a white-balance release stop running serially.",
-      "status": "in_progress",
+      "status": "pending",
       "dependencies": [
         "TASK-004"
       ],
       "extra_context": [
         "Development is serial end to end: librtprocess is built without OpenMP, and the adapter's pre-pass, the float conversion, the DNG gain map and warp, the camera matrix and three finiteness scans each walk the frame on one thread; the demosaic has no cancellation point. The recorded white-balance release cost is about 0.54 s on the Z6 and 1.6 s on the X100VI.",
         "Banding must respect each demosaicer's tile grid and border so the output is byte-identical to whole-frame development; the shared Rayon pool is the only pool (performance rule 9).",
-        "This is performance work, so it measures as it goes with one targeted command and takes its claimed before/after at the end on the supplied RAW files."
+        "This is performance work, so it measures as it goes with one targeted command and takes its claimed before/after at the end on the supplied RAW files.",
+        "On hold: the agent stopped on a usage limit. Branch `consolidation-task-034` at `c7ae3f8` holds one work-in-progress commit with the banded development entry and `develop.rs`; the byte-identity, cancellation and real-file tests and the measurement are not done. Rebase it on the current integration or main, finish, and verify before integrating; it was never integrated."
       ],
       "context_links": [
         {
