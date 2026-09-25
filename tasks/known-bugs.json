@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "plan_id": "known-bugs",
   "title": "Known bugs",
-  "objective": "Fix the defects found while repairing zoom, the tools panel, contrast, the colour mixer and RAW editing, and while building the Performance section, on 2026-09-23.",
-  "context_summary": "Each task is an independent defect with its measured symptom. None blocks the delivered behaviour; each is recorded so it is fixed deliberately rather than rediscovered.",
+  "objective": "Fix the defects found in use and in review, each with its measured or observed symptom and acceptance.",
+  "context_summary": "Each task is an independent defect with its symptom, where it lives and its acceptance. None blocks the delivered behaviour; each is recorded so it is fixed deliberately rather than rediscovered.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -394,6 +394,309 @@
           "No failure across repeated loaded runs."
         ]
       }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Stop the desktop's event sync from skipping another client's events, and never move its event sequence backwards.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Every owner response carries the event log's current sequence, and the desktop's refresh takes `sequence.max(seen)` from any answer. When another client's events land between the desktop's last `events.since` and an ordinary response, the desktop's sequence jumps past them and it never reads them, so a change made elsewhere is missed until an unrelated refresh.",
+        "`PreviewLoaded` assigns `api_sequence` from its answer instead of taking the maximum, so an older preview answer can move the sequence backwards and replay events."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Desktop tasks",
+          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "relevance": "The refresh that takes the maximum of any response's sequence."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop editor",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "`PreviewLoaded` and the other answers that assign `api_sequence`."
+        },
+        {
+          "kind": "file",
+          "label": "Owner loop",
+          "target": "crates/lightwell-core/src/api/owner.rs",
+          "relevance": "The sequence each response carries."
+        }
+      ],
+      "acceptance_criteria": [
+        "The desktop's sequence advances only past events it has read, so another client's events between two desktop calls always reach it.",
+        "No answer moves the sequence backwards.",
+        "An app test interleaves another client's commit between two desktop calls and asserts the desktop reads the event and refreshes."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "App tests beside the sync code."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app --bin lightwell sequence"
+        ],
+        "expected_results": [
+          "The interleaved event is read; the sequence is monotonic."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Refuse a discrete control action and a `mask.*` submit while a gesture is open, as every other commit path does.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`RunAction` and `run_mask_action` in the desktop do not consult `gesture_refusal`, so a discrete control (a button, a toggle, a picker) or a Masks panel command can commit while a slider, brush, mask or crop gesture is open, and that commit then conflicts the open draft."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Desktop editor",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "`RunAction` and `run_mask_action`."
+        },
+        {
+          "kind": "file",
+          "label": "Gesture refusal",
+          "target": "crates/lightwell-app/src/app/gesture.rs",
+          "relevance": "`gesture_refusal` and the `Starting` kinds."
+        }
+      ],
+      "acceptance_criteria": [
+        "Both paths ask `gesture_refusal` first and, when refused, send nothing and show the reason in the status bar, as the slider and preset paths do.",
+        "App tests cover a discrete action and a mask command under an open gesture."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "App tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app --bin lightwell refus"
+        ],
+        "expected_results": [
+          "Nothing is sent under an open gesture."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Stop gesture commit and preview answers from clearing a busy flag they never set.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The gesture's commit and preview answers set `busy = false` although neither path set it, so an answer landing during an unrelated busy operation (an import, a restore) re-enables controls that operation disabled."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Gesture",
+          "target": "crates/lightwell-app/src/app/gesture.rs",
+          "relevance": "The commit answer."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop editor",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "The preview answers."
+        }
+      ],
+      "acceptance_criteria": [
+        "`busy` is cleared only by the answer of the operation that set it.",
+        "An app test lands a gesture commit answer during a busy operation and asserts `busy` stays set."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "App test."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app --bin lightwell busy"
+        ],
+        "expected_results": [
+          "Busy is owned by the operation that set it."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Send `workspace.set` for crop mode only when the crop draft actually starts.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`SetMode` sends `workspace.set` with the crop mode before starting the crop draft; when the start is then refused (an open gesture, a missing photo) the session reports crop mode that the desktop never entered."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Desktop editor",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "`SetMode`."
+        },
+        {
+          "kind": "file",
+          "label": "Crop driver",
+          "target": "crates/lightwell-app/src/app/crop.rs",
+          "relevance": "The crop start and its refusals."
+        }
+      ],
+      "acceptance_criteria": [
+        "A refused crop start sends no `workspace.set` and the session's mode stays as it was.",
+        "An app test covers the refused start."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "App test."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app --bin lightwell crop"
+        ],
+        "expected_results": [
+          "The session mode matches the desktop's."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Show an armed brush that becomes conflicted without the \"Changed elsewhere\" notice, since it has sent nothing.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "A brush that is armed but has not painted holds no draft change. When another client's commit makes it conflicted, the desktop shows \"Changed elsewhere: discard the brush or reapply it\", offering to reapply nothing."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Gesture",
+          "target": "crates/lightwell-app/src/app/gesture.rs",
+          "relevance": "The conflicted notice for an open gesture."
+        }
+      ],
+      "acceptance_criteria": [
+        "An armed brush with no stroke rebases silently onto the new state (or re-arms) and shows no conflict notice; a brush that has painted still shows it.",
+        "App tests cover both."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "App tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app --bin lightwell brush"
+        ],
+        "expected_results": [
+          "The notice appears only when there is something to reapply."
+        ]
+      }
+    },
+    {
+      "id": "TASK-014",
+      "description": "Read stored doubles back exactly by building `serde_json` with `float_roundtrip`.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Without `float_roundtrip`, `serde_json` parses some 17-digit doubles one unit in the last place off. A RAW tint stored in a recipe was seen reading back one ulp off, so a stored value can differ from the value that was committed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Workspace manifest",
+          "target": "Cargo.toml",
+          "relevance": "The workspace's `serde_json` dependency."
+        }
+      ],
+      "acceptance_criteria": [
+        "The workspace `serde_json` enables `float_roundtrip`.",
+        "A core test round-trips values that failed before, including the observed tint, through a recipe.",
+        "Renders stay byte-identical, proved by the rendered tier."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Round-trip test; rendered tier on the integrated branch."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core roundtrip"
+        ],
+        "expected_results": [
+          "Stored doubles read back bit-exact."
+        ]
+      }
+    },
+    {
+      "id": "TASK-015",
+      "description": "Compile a prefix evaluation once per prefix index in `HostStage::sample_before`, not once per point.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`HostStage::sample_before` compiles the prefix for every point it samples, so Basic's neutral picker, which averages a 5 × 5 patch, compiles the same prefix 25 times per query."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Plan stage context",
+          "target": "crates/lightwell-core/src/editor/plan.rs",
+          "relevance": "`HostStage::sample_before`."
+        }
+      ],
+      "acceptance_criteria": [
+        "One compile serves every point sampled from the same prefix in a stage context, on the JPEG and RAW paths.",
+        "The sampled values are unchanged, and a test counts one compile for a 25-point patch."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Core tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core sample_before"
+        ],
+        "expected_results": [
+          "One compile per prefix; identical samples."
+        ]
+      }
+    },
+    {
+      "id": "TASK-016",
+      "description": "Give `task.*` methods the mutation envelope so a retried task starts no second job.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`task.*` methods take no `{request_id, actor}` envelope, so a client that retries a task after a lost answer queues a second job. The owner decided that every mutating method carries the envelope and is deduplicated ([decisions](../docs/decisions.md#architecture-review))."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Capability tasks",
+          "target": "crates/lightwell-core/src/capabilities/host/tasks.rs",
+          "relevance": "The `task.*` methods."
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "The mutation-envelope rule."
+        }
+      ],
+      "acceptance_criteria": [
+        "`task.*` requires the envelope; a retry with the same request ID returns the first job and starts nothing.",
+        "The method schema declares it, and a test covers the retry."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Core tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core task"
+        ],
+        "expected_results": [
+          "A retried task returns the original job."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -407,7 +710,15 @@
         "TASK-005",
         "TASK-006",
         "TASK-007",
-        "TASK-008"
+        "TASK-008",
+        "TASK-009",
+        "TASK-010",
+        "TASK-011",
+        "TASK-012",
+        "TASK-013",
+        "TASK-014",
+        "TASK-015",
+        "TASK-016"
       ]
     }
   ]

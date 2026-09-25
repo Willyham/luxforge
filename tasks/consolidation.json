@@ -1915,7 +1915,7 @@
     },
     {
       "id": "TASK-033",
-      "description": "Trim the module capabilities further as decided: one versioned JSON document store for settings and grants, the proof endpoint out of the shipped core, one structured owner call and one preparation wait on the desktop, and `host.rs` split by concern.",
+      "description": "Trim the module capabilities further as decided: one versioned JSON document store for settings and grants, the proof endpoint out of the shipped core into the shared test-support crate, `host.rs` split by concern, and the mutation envelope on `task.*`.",
       "status": "pending",
       "dependencies": [
         "TASK-020",
@@ -1924,9 +1924,10 @@
       "extra_context": [
         "`SettingsStore` and `GrantsStore` each implement lock, bounded read, format check, parse and size-bounded atomic save; the artifact store re-implements the atomic temp-sync-rename.",
         "`ProofEndpoint`, a loopback HTTP test server, is public API of the shipped core crate though only tests, the JSON CLI tests and xtask start it; two more hand-written test HTTP servers exist.",
-        "The desktop's capability `call` duplicates the task helper's and its preparation wait duplicates `wait_source_job`, including a blocking sleep loop inside an async task.",
         "`capabilities/host.rs` holds settings dispatch, permissions, jobs, activation, status and resources.",
-        "On hold: the agent stopped on a usage limit. Branch `consolidation-task-033` at `c1c6837` holds two commits (one document store, `host.rs` split) finished but unverified, plus a work-in-progress commit moving the proof endpoint into a test-support crate. Rebase it on the current integration or main, finish, and verify before integrating; it was never integrated."
+        "The desktop's duplicated capability call and preparation wait move with the desktop's one owner-task helper, in the desktop consolidation, so this task stays in the core.",
+        "The test-support crate is `lightwell-testkit`, the one crate later harness work extends; there is no second test-support crate.",
+        "Branch `consolidation-task-033` at `c1c6837` holds two finished but unverified commits (document store, `host.rs` split) and a work-in-progress commit moving the proof endpoint. Main has since added `capabilities/host/tasks.rs`; rebase if clean, otherwise restart from main using the branch as reference."
       ],
       "context_links": [
         {
@@ -1974,9 +1975,9 @@
       ],
       "acceptance_criteria": [
         "One document store serves settings, grants and the installed-resource record, with the settings request log replaced by revision conflicts; the artifact store uses the shared atomic write.",
-        "The proof endpoint is not part of the release core library, and the test servers are one.",
-        "The desktop has one structured owner call and one preparation wait with no sleep loop on the executor.",
-        "`host.rs` is split into activation, permissions and resources; behaviour and the proof journey are unchanged."
+        "The proof endpoint is not part of the release core library, and the test HTTP servers are one, in `lightwell-testkit`.",
+        "`host.rs` is split into activation, permissions and resources; behaviour and the proof journey are unchanged.",
+        "`task.*` takes the mutation envelope and a retried task starts no second job."
       ],
       "test_strategy": {
         "approach": "unit",
@@ -1995,16 +1996,16 @@
     },
     {
       "id": "TASK-034",
-      "description": "Develop RAW sensor data in tile-aligned bands on the shared Rayon pool, with a cancellation check between bands and the float conversion, DNG stages and camera matrix fused into one parallel pass, so a RAW open and a white-balance release stop running serially.",
+      "description": "Check cancellation during the Bayer (RCD) demosaic, between tiles, as the X-Trans (Markesteijn) demosaic already does, so a superseded RAW open or white-balance release stops within a tile instead of finishing a serial whole-frame demosaic.",
       "status": "pending",
       "dependencies": [
         "TASK-004"
       ],
       "extra_context": [
-        "Development is serial end to end: librtprocess is built without OpenMP, and the adapter's pre-pass, the float conversion, the DNG gain map and warp, the camera matrix and three finiteness scans each walk the frame on one thread; the demosaic has no cancellation point. The recorded white-balance release cost is about 0.54 s on the Z6 and 1.6 s on the X100VI.",
-        "Banding must respect each demosaicer's tile grid and border so the output is byte-identical to whole-frame development; the shared Rayon pool is the only pool (performance rule 9).",
-        "This is performance work, so it measures as it goes with one targeted command and takes its claimed before/after at the end on the supplied RAW files.",
-        "On hold: the agent stopped on a usage limit. Branch `consolidation-task-034` at `c7ae3f8` holds one work-in-progress commit with the banded development entry and `develop.rs`; the byte-identity, cancellation and real-file tests and the measurement are not done. Rebase it on the current integration or main, finish, and verify before integrating; it was never integrated."
+        "Main already runs Markesteijn tile rows on the shared Rayon pool with a cancellation check per tile (`native_tiles.rs`, `lw_tile_cancel`), parallelizes DNG correction rows, converts camera planes in exact bounded chunks and has a gated Bayer normalization prototype. The original banded-development scope is superseded by that work.",
+        "What remains: `rcd_demosaic` is called with `multiThread = false` and a progress callback whose return librtprocess ignores, so the Bayer demosaic of the Z6 and the Air 2S has no cancellation point and runs on one thread. The adapter only checks cancellation before and after it.",
+        "Route RCD's tiles through the same tile executor as Markesteijn (the pinned librtprocess source is vendored and already patched for Markesteijn), so each tile is admitted with the cancellation check and runs on the shared pool. Output must be byte-identical to the serial whole-frame demosaic, including tile borders.",
+        "Branch `consolidation-task-034` at `c7ae3f8` is reference only: it predates main's parallel work and must not be rebased."
       ],
       "context_links": [
         {
@@ -2045,23 +2046,21 @@
         }
       ],
       "acceptance_criteria": [
-        "Banded development produces planes byte-identical to whole-frame development on the Z6, X100VI and Air 2S files and on synthetic Bayer and X-Trans mosaics.",
-        "Cancellation is checked between bands, including during the demosaic.",
-        "One fused parallel pass does the float conversion, DNG stages, camera matrix and one finiteness check.",
-        "A before/after on the supplied RAW files records the development time and peak memory, with the load average."
+        "RCD checks cancellation between tiles: a test cancels a Bayer development mid-demosaic and it returns cancelled without finishing the frame.",
+        "RCD output through the tile executor is byte-identical to the serial demosaic on synthetic Bayer mosaics (including sizes that are not tile multiples) and on the Z6 and Air 2S files.",
+        "A before/after of the Bayer development time on the Z6 and Air 2S is recorded with the load average, back to back and reversed."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Byte-identity tests banded against whole-frame; cancellation tests; one before/after measurement at the end."
+          "Byte-identity and cancellation tests in `lightwell-raw`; the ignored real-file tests on the supplied files; one before/after measurement at the end."
         ],
         "commands": [
           "cargo test -p lightwell-raw",
-          "cargo test -p lightwell-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
-          "Identical planes; faster development recorded."
+          "Identical planes; cancellation observed mid-demosaic."
         ]
       }
     }
