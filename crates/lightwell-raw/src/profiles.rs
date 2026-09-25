@@ -1,5 +1,6 @@
 //! The same strict catalog parser is compiled into the build script and library.
 //! Camera policy is data; these enums name implemented format/processing capabilities.
+use crate::opcodes;
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -212,17 +213,16 @@ impl Catalog {
                 }
                 // This strategy implements exactly this operation order/domain.
                 // These are algorithm capabilities, not camera-specific policy.
+                let implemented = |op: &Opcode| opcodes::Opcode::implemented(op.list, op.id);
                 if dng.required_opcodes.len() > 8
                     || dng
                         .required_opcodes
                         .iter()
-                        .filter(|op| op.list == 51008)
+                        .filter(|op| implemented(op).is_some_and(opcodes::Opcode::repairs_sensor))
                         .count()
                         > 1
                     || dng.required_opcodes.iter().any(|op| {
-                        !matches!((op.list, op.id), (51022, 1 | 3 | 9) | (51008, 4 | 5))
-                            || op.flags != 0
-                            || op.version != 0x0103_0000
+                        implemented(op).is_none() || op.flags != 0 || op.version != opcodes::VERSION
                     })
                     || dng
                         .required_opcodes
@@ -239,8 +239,8 @@ impl Catalog {
                         || dng
                             .required_opcodes
                             .iter()
-                            .zip([9, 1])
-                            .any(|(op, id)| op.list != 51022 || op.id != id))
+                            .zip([opcodes::Opcode::GainMap, opcodes::Opcode::WarpRectilinear])
+                            .any(|(op, expected)| implemented(op) != Some(expected)))
                 {
                     return fail("unsupported DNG opcode recipe");
                 }

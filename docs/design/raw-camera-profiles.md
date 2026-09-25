@@ -59,7 +59,7 @@ fields may be omitted; omitted calibration uses the backend matrix.
 | `illuminants`, `selected_matrix` | Expected two DNG illuminant IDs; select matrix `1` or `2` for fixed XYZ-to-camera calibration |
 | `calibration_identity` | Persisted description of the selected calibration; update when its interpretation changes |
 | `corrections` | `stage3_gain_map_then_warp` for the GainMap→Warp path, or `stage_ordered` for bounded ordered opcode processing |
-| `required_opcodes` | 0–8 ordered descriptors `{id, list, version, flags}`. Supported IDs include GainMap 9, WarpRectilinear 1, FixVignetteRadial 3, FixBadPixelsConstant 4, and FixBadPixelsList 5; list 51022 for stage-three operations and at most one list-51008 sensor repair, version 16973824 (`0x01030000`), flags 0 |
+| `required_opcodes` | 0–8 ordered descriptors `{id, list, version, flags}`. Supported IDs, from the one allowlist in `crates/lightwell-raw/src/opcodes.rs`, are GainMap 9, WarpRectilinear 1, FixVignetteRadial 3, FixBadPixelsConstant 4, and FixBadPixelsList 5; list 51022 for stage-three operations and at most one list-51008 sensor repair, version 16973824 (`0x01030000`), flags 0 |
 | `interpretation` | Persisted correction interpretation identity; update when processing semantics change |
 | `decoder_active_bottom_trim` | Optional integer 0–63. For a decoder whose reported active bottom is shorter than the authoritative DNG `ActiveArea`, requires the source bottom to equal decoder bottom plus this exact trim; all other edges must match. Omit when no decoder trim is needed. |
 

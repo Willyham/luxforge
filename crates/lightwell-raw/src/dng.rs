@@ -6,7 +6,7 @@
 //! dng_lens_correction.cpp. The SDK clips after both opcodes; Lightwell keeps
 //! signed/highlight camera values until its terminal display conversion.
 
-use crate::{PlanarRgb, RawError, RawRect, format::DngOpcode};
+use crate::{PlanarRgb, RawError, RawRect, format::DngOpcode, opcodes::Opcode};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -477,14 +477,18 @@ impl DngCorrection {
         let mut stages = Vec::new();
         let mut sensor_repair = None;
         for op in &required {
-            match (op.list, op.id) {
-                (51022, 9) => stages.push(Stage3::Gain(GainMap::parse(&op.data, active)?)),
-                (51022, 1) => stages.push(Stage3::Warp(Warp::parse(&op.data, active)?)),
-                (51022, 3) => stages.push(Stage3::Vignette(
+            match Opcode::implemented(op.list, op.id) {
+                Some(Opcode::GainMap) => {
+                    stages.push(Stage3::Gain(GainMap::parse(&op.data, active)?))
+                }
+                Some(Opcode::WarpRectilinear) => {
+                    stages.push(Stage3::Warp(Warp::parse(&op.data, active)?))
+                }
+                Some(Opcode::FixVignetteRadial) => stages.push(Stage3::Vignette(
                     super::dng_ops::parse_vignette_radial(&op.data).map_err(opcode_error)?,
                 )),
-                (51008, 4 | 5) if sensor_repair.is_none() => {
-                    sensor_repair = Some(if op.id == 4 {
+                Some(repair) if repair.repairs_sensor() && sensor_repair.is_none() => {
+                    sensor_repair = Some(if repair == Opcode::FixBadPixelsConstant {
                         let (constant, phase) = super::dng_ops::parse_bad_pixels_constant(&op.data)
                             .map_err(opcode_error)?;
                         SensorRepair::Constant(constant, phase)

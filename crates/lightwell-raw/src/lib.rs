@@ -18,6 +18,7 @@ mod format;
 mod limits;
 mod native_tiles;
 mod neutral;
+mod opcodes;
 mod profiles;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 pub use format::required_dng_opcodes;
@@ -392,8 +393,7 @@ impl RawSource {
             let mut unknown: Vec<_> = found
                 .iter()
                 .filter(|op| {
-                    op.flags & 1 == 0
-                        && !matches!((op.list, op.id), (51022, 1 | 3 | 9) | (51008, 4 | 5))
+                    op.flags & 1 == 0 && opcodes::Opcode::implemented(op.list, op.id).is_none()
                 })
                 .map(|op| op.id)
                 .collect();

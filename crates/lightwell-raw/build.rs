@@ -1,5 +1,10 @@
 #[path = "src/limits.rs"]
 mod limits;
+// The catalog is validated against the one opcode allowlist; the list tags it also names are for
+// the library's container parser.
+#[path = "src/opcodes.rs"]
+#[allow(dead_code)]
+mod opcodes;
 #[path = "src/profiles.rs"]
 mod profiles;
 
@@ -109,6 +114,7 @@ fn main() {
     build.compile("lightwell_raw_native");
     println!("cargo:rerun-if-changed=data/cameras.json");
     println!("cargo:rerun-if-changed=src/profiles.rs");
+    println!("cargo:rerun-if-changed=src/opcodes.rs");
     println!("cargo:rerun-if-changed=src/limits.rs");
     println!("cargo:rerun-if-changed=native/adapter.cpp");
     println!("cargo:rerun-if-changed=vendor/libraw-0.22.2");

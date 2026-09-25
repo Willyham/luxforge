@@ -1,5 +1,6 @@
 //! Narrow, bounded container inspection for the qualified modes. LibRaw still
 //! owns decompression; these reads validate recording-mode and crop semantics.
+use super::opcodes::{OPCODE_LIST1, OPCODE_LIST2, OPCODE_LIST3};
 use super::profiles::{Camera, Catalog, CompressionProbe, Dng, DngCalibration, DngContainer, Mode};
 use super::{DngCalibrationMetadata, NativeMetadata, RawError, RawRect};
 use sha2::{Digest, Sha256};
@@ -230,7 +231,7 @@ pub(super) fn dng_opcodes(bytes: &[u8]) -> Result<Vec<DngOpcode>, RawError> {
                     };
                     queue.push(v);
                 }
-            } else if matches!(entry.tag, 51008 | 51009 | 51022) {
+            } else if matches!(entry.tag, OPCODE_LIST1 | OPCODE_LIST2 | OPCODE_LIST3) {
                 if entry.kind != 7 {
                     return Err(RawError::InvalidInput("DNG opcode list type"));
                 }
