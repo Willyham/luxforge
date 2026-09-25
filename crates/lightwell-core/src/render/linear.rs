@@ -874,6 +874,31 @@ impl<'a> LinearEvaluation<'a> {
         Ok(evaluation)
     }
 
+    /// A point evaluation of a prefix `compiled` elsewhere, at `MaskSampling::Point`, for reuse
+    /// across several samples of the same prefix instead of recompiling it through [`Self::new`]
+    /// each time. `HostStage::sample_before`'s RAW path compiles a prefix once this way and calls
+    /// [`sample_linear_compiled`] for every point it samples from it. No spatial frame is
+    /// materialized here — a point query always pulls a spatial segment's pixels through
+    /// [`Self::point_pixel`] — so this never runs `build_spatial_frame`.
+    fn from_compiled(
+        source: &'a LinearImage,
+        compiled: Compiled,
+        settings: LinearSettings,
+        tile: u32,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            source,
+            compiled,
+            exposure_multiplier: settings.multiplier()?,
+            white_balance: settings.white_balance,
+            frame: None,
+            #[cfg(test)]
+            built: Vec::new(),
+            tiles: Some(PointTiles::new(tile)),
+            tile,
+        })
+    }
+
     /// Materialize one spatial operation's output over the whole stage, tile by tile, in the same
     /// batches and against the same budget the byte path uses. Each tile's input region is pulled
     /// through `pixel_in` of the previous segment, which already applies the source exposure,
@@ -1496,6 +1521,30 @@ pub fn sample_linear(
     y: u32,
 ) -> Result<super::Sample, Error> {
     sample_linear_tiled(registry, source, recipe, settings, x, y, PRODUCTION_TILE)
+}
+
+/// [`sample_linear`] of a prefix `compiled` elsewhere, at [`PRODUCTION_TILE`]: calling this for
+/// every point sampled from the same compiled prefix, as `HostStage::sample_before`'s RAW path does
+/// for Basic's neutral picker's 5 × 5 patch, serves them all from that one compile instead of
+/// recompiling per point ([performance rule
+/// 4](../../../docs/engineering/performance-rules.md#rules)). The sampled value is unchanged: this
+/// is [`sample_linear`] with its compile step hoisted out to the caller.
+pub(crate) fn sample_linear_compiled(
+    source: &LinearImage,
+    compiled: Compiled,
+    settings: LinearSettings,
+    x: u32,
+    y: u32,
+) -> Result<super::Sample, Error> {
+    let evaluation = LinearEvaluation::from_compiled(source, compiled, settings, PRODUCTION_TILE)?;
+    let (width, height) = evaluation.stage();
+    let _ = output_len(width, height)?;
+    let rgba = evaluation.pixel(x, y)?.map(terminal_pixel).transpose()?;
+    Ok(super::Sample {
+        width,
+        height,
+        rgba,
+    })
 }
 
 /// [`sample_linear`] with the spatial tile size as a parameter, for the tests that prove a sample
@@ -3848,6 +3897,72 @@ mod tests {
             built.iter().all(|frame| frame.strong_count() == 0),
             "nothing outlives its evaluation"
         );
+    }
+
+    /// `sample_linear_compiled` from one `Compiled` shared by several points equals `sample_linear`'s
+    /// own compile-per-call, at every point of a small stack with a colour layer: the split
+    /// `HostStage::sample_before`'s RAW path takes to compile a prefix once and reuse it across the
+    /// points it samples (TASK-015) reads the same values as compiling fresh for each point.
+    #[test]
+    fn sample_linear_compiled_from_a_shared_prefix_matches_sample_linear_per_point() {
+        let registry = ModuleRegistry::builtin();
+        let source = image(
+            3,
+            3,
+            &[
+                [0.1, 0.2, 0.3],
+                [0.4, 0.5, 0.6],
+                [0.7, 0.8, 0.9],
+                [0.05, 0.15, 0.25],
+                [0.35, 0.45, 0.55],
+                [0.65, 0.75, 0.85],
+                [0.02, 0.12, 0.22],
+                [0.32, 0.42, 0.52],
+                [0.62, 0.72, 0.82],
+            ],
+        );
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: serde_json::json!({"exposure": 0.4, "contrast": 8.0, "vibrance": -15.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            }],
+            masks: Vec::new(),
+            ..Recipe::default()
+        };
+        let settings = LinearSettings {
+            exposure_ev: 0.2,
+            white_balance: None,
+        };
+        // Compiled once, as `HostStage::compiled_prefix` compiles a prefix once and clones it for
+        // every point sampled from it, instead of every call in this loop compiling its own.
+        let compiled = registry
+            .compile_layers(
+                3,
+                3,
+                &recipe.layers,
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )
+            .unwrap();
+        for y in 0..3 {
+            for x in 0..3 {
+                let expected = sample_linear(&registry, &source, &recipe, settings, x, y).unwrap();
+                let actual =
+                    sample_linear_compiled(&source, compiled.clone(), settings, x, y).unwrap();
+                assert_eq!(actual.rgba, expected.rgba, "({x}, {y})");
+                assert_eq!(
+                    (actual.width, actual.height),
+                    (expected.width, expected.height),
+                    "({x}, {y})"
+                );
+            }
+        }
     }
 
     /// On a real RAW file, through Presence: a point sample equals the byte `render_linear` writes

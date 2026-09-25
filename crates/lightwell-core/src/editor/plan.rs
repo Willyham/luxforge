@@ -12,12 +12,12 @@ use crate::{
         ActionInput, ActionPlan, LayerEdit, MAX_COMPOSE_STEPS, Stage, StageContext, StageQuestions,
         action_label, check_parameters,
     },
-    render::Evaluation,
-    sample_linear,
+    render::{Compiled, Evaluation, linear::sample_linear_compiled},
     source::PreparedSource,
 };
 use serde_json::{Value, json};
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
 
 impl EditorService {
     /// One action request for every caller: the desktop, the JSON API and headless clients all
@@ -144,6 +144,7 @@ impl EditorService {
             recipe,
             source: OnceCell::new(),
             settings: OnceCell::new(),
+            sample_prefixes: RefCell::new(HashMap::new()),
         };
         answer(&StageContext {
             stage,
@@ -429,6 +430,14 @@ struct HostStage<'s> {
     recipe: &'s Recipe,
     source: OnceCell<PreparedSource>,
     settings: OnceCell<LinearSettings>,
+    /// The prefix `sample_before` has already compiled in this stage context, keyed by prefix
+    /// index: a query that samples several points from the same prefix — Basic's neutral picker
+    /// averages a 5 × 5 patch — compiles it once here and every later point for that index clones
+    /// it instead of paying `compile_layers` again ([performance rule
+    /// 4](../../../docs/engineering/performance-rules.md#rules)). Bounded by the distinct prefix
+    /// indices one planning call asks about, at most the stack's layer count, and dropped with this
+    /// context when the plan or query returns.
+    sample_prefixes: RefCell<HashMap<usize, Compiled>>,
 }
 
 impl HostStage<'_> {
@@ -464,6 +473,56 @@ impl HostStage<'_> {
         })?;
         Ok((linear, settings))
     }
+
+    /// The prefix before `index`, compiled once for this stage context and cloned from
+    /// `sample_prefixes` on every later call for the same index. Cloning a [`Compiled`] copies its
+    /// operation lists, not pixels, and is far cheaper than compiling it again, so this is what
+    /// makes [`StageQuestions::sample_before`] serve every point sampled from one prefix — Basic's
+    /// neutral picker samples 25 — from a single `compile_layers` call.
+    fn compiled_prefix(&self, index: usize) -> Result<Compiled, Error> {
+        if let Some(compiled) = self.sample_prefixes.borrow().get(&index) {
+            return Ok(compiled.clone());
+        }
+        let recipe = self.recipe;
+        let compiled = self.service.registry.compile_layers(
+            self.asset.width,
+            self.asset.height,
+            prefix(&recipe.layers, index)?,
+            &recipe.masks,
+            &recipe.strokes,
+            &recipe.artifacts,
+        )?;
+        #[cfg(test)]
+        count_sample_compile();
+        self.sample_prefixes
+            .borrow_mut()
+            .insert(index, compiled.clone());
+        Ok(compiled)
+    }
+}
+
+// The number of times `HostStage::compiled_prefix` has actually compiled a prefix (a cache miss)
+// on the calling thread, for the test that proves a multi-point patch compiles its prefix once.
+// Each `#[test]` function runs on its own thread, so this counts one test's compiles without a
+// global counter racing another test's.
+#[cfg(test)]
+thread_local! {
+    static SAMPLE_COMPILE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_sample_compile() {
+    SAMPLE_COMPILE_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn reset_sample_compile_count() {
+    SAMPLE_COMPILE_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn sample_compile_count() -> usize {
+    SAMPLE_COMPILE_COUNT.with(|count| count.get())
 }
 
 impl StageQuestions for HostStage<'_> {
@@ -485,37 +544,17 @@ impl StageQuestions for HostStage<'_> {
             .stage())
     }
 
-    /// One pixel of the stage a prefix produces. Compiling the prefix costs `O(layers)` and the
-    /// evaluation answers the point per segment, so nothing is rasterized.
+    /// One pixel of the stage a prefix produces. The prefix is compiled once per index and reused
+    /// for every point sampled from it in this context ([`Self::compiled_prefix`]), so a query that
+    /// samples several points — a masked seed, a coverage cell, the neutral picker's patch — pays
+    /// `O(layers)` once rather than once per point, and nothing is rasterized either way.
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
-        let recipe = self.recipe;
-        let registry = &self.service.registry;
-        let layers = prefix(&recipe.layers, index)?;
+        let compiled = self.compiled_prefix(index)?;
         match self.source()? {
-            PreparedSource::Jpeg(image) => Evaluation::over_layers(
-                registry,
-                image,
-                layers,
-                &recipe.masks,
-                &recipe.strokes,
-                &recipe.artifacts,
-            )?
-            .pixel(x, y),
+            PreparedSource::Jpeg(image) => Evaluation::from_compiled(image, compiled).pixel(x, y),
             PreparedSource::Raw(_) => {
                 let (linear, settings) = self.linear()?;
-                let prefix_recipe = Recipe {
-                    format: recipe.format,
-                    layers: layers.to_vec(),
-                    // A prefix keeps the whole mask table: the masks a prefix layer references are
-                    // the recipe's, not the prefix's, and dropping them would make a valid stack
-                    // look as if it named a mask that does not exist.
-                    masks: recipe.masks.clone(),
-                    // And the strokes those masks resolved to, and the artifacts the recipe was
-                    // bound with, for the same reason.
-                    strokes: recipe.strokes.clone(),
-                    artifacts: recipe.artifacts.clone(),
-                };
-                Ok(sample_linear(registry, linear, &prefix_recipe, settings, x, y)?.rgba)
+                Ok(sample_linear_compiled(linear, compiled, settings, x, y)?.rgba)
             }
         }
     }
@@ -2197,6 +2236,74 @@ mod tests {
                 "tint {value} must read back bit exact, read {read}"
             );
         }
+    }
+
+    /// TASK-015: `sample_before` compiles the prefix once per index in a stage context and serves
+    /// every point sampled from it from that one compile — Basic's neutral picker averages a 5 × 5
+    /// patch, so a query samples the same prefix 25 times — instead of compiling it once per point.
+    /// Every cached sample also equals a fresh, uncached compile of the same prefix read the same
+    /// way, so the cache changes no sampled value.
+    #[test]
+    fn sample_before_compiles_a_prefix_once_for_a_multi_point_patch() {
+        let catalog = temp("sample-before-compile-count.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let state = service.import(&fixture()).unwrap();
+        let asset = state.asset.id.clone();
+        // Two layers, so index 1 names a real prefix (the pixel layer) rather than the whole,
+        // still-empty stack.
+        service
+            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [10, 20, 30])
+            .unwrap();
+        let at = service.state(&asset).unwrap().revision;
+        service
+            .apply_transform(&asset, mutation(at, "turn"), Transform::RotateRight)
+            .unwrap();
+        let state = service.state(&asset).unwrap();
+        let recipe = state.current_entry.snapshot.recipe.clone();
+        assert_eq!(
+            recipe.layers.len(),
+            2,
+            "a pixel layer and the orientation tail"
+        );
+        let index = 1;
+        let image = match service.verified_prepared(&state.asset).unwrap() {
+            PreparedSource::Jpeg(image) => image,
+            PreparedSource::Raw(_) => panic!("the JPEG fixture prepares a JPEG source"),
+        };
+        reset_sample_compile_count();
+        let mut sampled = Vec::new();
+        service
+            .with_stage_context(&state.asset, &recipe, None, |context| {
+                for y in 0..5 {
+                    for x in 0..5 {
+                        sampled.push(context.sample_before(index, x, y)?);
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(sampled.len(), 25);
+        assert_eq!(
+            sample_compile_count(),
+            1,
+            "25 points sampled from one prefix must compile it once"
+        );
+        let fresh = Evaluation::over_layers(
+            &service.registry,
+            &image,
+            &recipe.layers[..index],
+            &recipe.masks,
+            &recipe.strokes,
+            &recipe.artifacts,
+        )
+        .unwrap();
+        for (point_index, cached) in sampled.iter().enumerate() {
+            let x = (point_index % 5) as u32;
+            let y = (point_index / 5) as u32;
+            assert_eq!(*cached, fresh.pixel(x, y).unwrap(), "({x}, {y})");
+        }
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
     }
 
     /// The frame a preview job renders, on this thread.

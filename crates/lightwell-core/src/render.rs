@@ -1076,6 +1076,7 @@ fn resample_frame(
 /// What produces one segment's input frame, and therefore what separates it from the segment
 /// before it. Both kinds are stage boundaries: the frame before them is finished, they read it and
 /// write the next one.
+#[derive(Clone)]
 pub(crate) enum Entry {
     /// An interpolating boundary that also changes the stage.
     Resample(Resample),
@@ -1174,6 +1175,7 @@ fn spatial_frame(
 /// the stage they produce. `entry` is what produces this segment's input frame, so consecutive
 /// segments are separated by exactly one resample or one spatial operation, and the first segment
 /// reads the source.
+#[derive(Clone)]
 pub(crate) struct Segment {
     pub(crate) entry: Option<Entry>,
     pub(crate) operations: Vec<Processing>,
@@ -1206,6 +1208,11 @@ impl Segment {
 
 /// One recipe compiled by the registry: the ordered rasterizing passes and the resamples between
 /// them. A recipe without a resample is one segment, which is the M1 and M2 behavior unchanged.
+///
+/// `Clone` holds no pixels, only the operation lists and geometry `O(layers)` compiling already
+/// allocated, so cloning a compiled prefix out of a cache to reuse it for several sampled points is
+/// far cheaper than recompiling it.
+#[derive(Clone)]
 pub(crate) struct Compiled {
     pub(crate) segments: Vec<Segment>,
 }
@@ -1567,6 +1574,19 @@ impl<'a> Evaluation<'a> {
             )?,
             tiles: PointTiles::new(PRODUCTION_TILE),
         })
+    }
+
+    /// An evaluation of a prefix `compiled` elsewhere, for reuse across several point queries
+    /// against the same prefix instead of paying [`Self::over_layers`]'s compile again for each one.
+    /// `HostStage::sample_before` compiles a prefix once this way and calls this for every point it
+    /// samples from that prefix, such as Basic's neutral picker's 5 × 5 patch. Allocates only the
+    /// per-query tile cache, and rasterizes nothing.
+    pub(crate) fn from_compiled(source: &'a SourceImage, compiled: Compiled) -> Self {
+        Self {
+            source,
+            compiled,
+            tiles: PointTiles::new(PRODUCTION_TILE),
+        }
     }
 
     pub(crate) fn stage(&self) -> Stage {
