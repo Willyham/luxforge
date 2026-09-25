@@ -177,8 +177,8 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
 }
 
 /// A cheap identity for the plot's geometry: it moves exactly when the bins or the dimming would,
-/// and holds steady across everything else a re-derive touches (a pointer move, a notice,
-/// the periodic desktop sync that redraws the panel every 500 ms while an asset is open). The
+/// and holds steady across everything else a re-derive touches (a pointer move, a notice, the
+/// Performance section's sample that redraws the window every second while it is open). The
 /// histogram widget hashes nothing itself — it takes this number and rebuilds its cached polygons
 /// only when it changes — so a redraw with nothing new to plot reuses the tessellated geometry
 /// instead of rebuilding three 256-point fills that look identical to the last frame.

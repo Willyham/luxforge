@@ -98,8 +98,7 @@ use lightwell_core::{
     ProxyBounds, RecipeDescription, Version,
 };
 use message::{
-    EvidenceMessage, MenuTarget, Message, PerformanceMessage, PreviewMessage, SyncMessage,
-    ViewMessage,
+    EvidenceMessage, MenuTarget, Message, PerformanceMessage, PreviewMessage, ViewMessage,
 };
 use overlay::{OverlayQueue, OverlayRequest};
 use presenter::Presenter;
@@ -266,7 +265,11 @@ pub(crate) struct Editor {
     /// into the notice that names the cause; nothing here decides what it means.
     pub(crate) render_error: Option<(ErrorKind, String)>,
     pub(crate) busy: bool,
+    /// The event sync's one poll is in flight.
     pub(crate) syncing: bool,
+    /// The owner said another client changed something, or an answer of this desktop's own left
+    /// it unknown whether its change landed: the event sync polls once nothing is in flight.
+    pub(crate) sync_wanted: bool,
     pub(crate) pan_in_flight: bool,
     pub(crate) pending_pan: Option<(f32, f32)>,
     pub(crate) picker_open: bool,
@@ -520,6 +523,7 @@ impl Editor {
             render_error: None,
             busy: false,
             syncing: false,
+            sync_wanted: false,
             pan_in_flight: false,
             pending_pan: None,
             picker_open: false,
@@ -593,6 +597,11 @@ impl Editor {
         // its signals comes and goes with the queues' business.
         editor.preview_queue.set_waker(waker::waker());
         editor.overlay_queue.set_waker(waker::waker());
+        // The owner wakes the event sync when another client changes something, so no timer asks
+        // it whether anything did.
+        editor
+            .owner
+            .watch_events(editor.client, waker::events_waker());
         // Preview jobs are listed on the owner's activity board beside its own work.
         editor.preview_queue.set_activity(editor.owner.activity());
         if editor.live_server.is_none() {
@@ -679,7 +688,9 @@ impl Editor {
         }
         self.present_mask_overlay();
         let rebase = self.rebase_armed_brush();
-        let task = self.sync_mode(Task::batch([task, sample, rebase]));
+        // A wake that arrived while a request was in flight is read once it has been answered.
+        let synced = self.sync_when_wanted();
+        let task = self.sync_mode(Task::batch([task, sample, rebase, synced]));
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
@@ -918,12 +929,13 @@ impl Editor {
             subscriptions.push(waker::subscription());
         }
         // The gesture needs no timer of its own: a slider move sends `draft.set` the moment
-        // nothing is in flight, and records only the newest value while one is.
+        // nothing is in flight, and records only the newest value while one is. The event sync
+        // needs none either: the owner posts a signal when another client's change reaches its
+        // log, and this carries it in as the `Changed` a 500 ms timer used to stand in for. An
+        // open photograph with nothing happening to it wakes nothing. A signal posted while no
+        // photograph is open is buffered, and read once one is.
         if self.state.is_some() && self.evidence.is_none() {
-            subscriptions.push(
-                iced::time::every(Duration::from_millis(500))
-                    .map(|_| Message::Sync(SyncMessage::Tick)),
-            );
+            subscriptions.push(waker::events_subscription());
         }
         // The Performance section's sampler, gated on the section being expanded with the state
         // panel on screen. Collapsed or hidden, there is no timer at all, in evidence runs too.

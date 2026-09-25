@@ -24,7 +24,7 @@ use lightwell_evidence::{self as script, ViewStep};
 pub const SCENARIO: &str = "zoom";
 
 /// How long each idle `wait` step lasts: four ticks of the evidence run's 250 ms timer, each of
-/// which rebuilds the view as the editor's own event sync does while a photograph is open.
+/// which rebuilds the view with nothing new to show.
 const WAIT_MS: u64 = 1000;
 /// How long the settling wait after the open lasts: long enough for the refit the display scale
 /// asks for once it is known, which is not idle behaviour and so is not what the idle check sees.

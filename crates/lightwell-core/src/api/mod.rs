@@ -8,7 +8,7 @@ mod owner;
 mod transport;
 
 pub use methods::schemas;
-pub use owner::{ClientId, OwnerHandle, PreviewRequest};
+pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
 
 pub use transport::{LocalServer, LocalSessionInfo, serve_json_lines, serve_json_lines_with};
 

@@ -1,7 +1,7 @@
 //! The slider gesture of a generated control, driven through the one core draft: what a drag, a
 //! release, a double-click reset and Escape send, and every race a draft closes.
 use super::{
-    message::{ControlMessage, CropMessage, HistoryMessage},
+    message::{ControlMessage, CropMessage, HistoryMessage, SyncMessage},
     tasks::mutation,
     testing::{
         Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, begun, boot, descriptors, draft_events, drafting,
@@ -490,7 +490,7 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
     assert!(editor.pending_reset.is_some());
     editor.session.preview.selection = lightwell_core::HistorySelection::Entry(current.id.clone());
     editor.busy = false;
-    let _ = editor.update(Message::Sync(SyncMessage::Tick));
+    let _ = editor.update(Message::Sync(SyncMessage::Changed));
     let records = logged(&mut editor, &log);
     let dropped = draft_events(&records, "field_reset_dropped");
     assert_eq!(dropped.len(), 1, "{records:?}");

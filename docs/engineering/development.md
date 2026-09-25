@@ -526,8 +526,8 @@ Each step is an object with exactly one key.
   reached the session through `view.set`, so `state.surface.view` carries the pan the frame was drawn
   at. At Fit there is no scrollable and the step fails.
 - `wait` (`{"ms": N}`, 1 to 10000) asks nothing of the editor for at least that long and then
-  captures. The evidence run's own 250 ms tick keeps rebuilding the view meanwhile, as the editor's
-  event sync does while a photograph is open, so the frame shows what idling did.
+  captures. The evidence run's own 250 ms tick keeps rebuilding the view meanwhile, so the frame
+  shows what repeated rebuilds with nothing new to show did.
 - `workspace` sets any of `state_panel`, `tools_panel`, `mode`, `thirds`, `clip_shadows` and
   `clip_highlights` through `workspace.set`, naming only the fields that actually differ from the
   session's own; captured on that round trip, or immediately when nothing differs. A step that

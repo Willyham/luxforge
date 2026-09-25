@@ -1014,6 +1014,8 @@ impl Editor {
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
+                // The commit may have landed before its read-back failed: read the log once.
+                self.resync();
                 let prefix = self
                     .core_gesture()
                     .map_or("draft", |open| open.kind.prefix());

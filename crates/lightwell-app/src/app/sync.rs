@@ -17,7 +17,9 @@ use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::Ordering, time::Instant};
 
 /// How many of this desktop's read-back requests the event sync remembers between polls. A poll
-/// every 500 ms forgets each one it reads, so this holds the requests of one interval.
+/// forgets each one it reads, and polls run only when another client changed something, so this
+/// holds the requests made since that last happened; one that falls out is read back like another
+/// client's change, which costs a refresh the other client's event needs anyway.
 pub(super) const OWN_REQUESTS: usize = 64;
 
 /// Module identity for correlated evidence; descriptors carry no source paths.
@@ -112,6 +114,9 @@ impl Editor {
                     }
                     Err(error) => {
                         self.status = error.clone();
+                        // The command may have landed before its read-back failed, and the owner
+                        // wakes no client for its own changes: read the log once to find out.
+                        self.resync();
                         // A refused `mask.*` command renders nothing, so the step that sent it has
                         // no pixels to settle on: the refusal itself is what ends it, recorded on
                         // the step with the frame that is on screen as its evidence. Without this
@@ -163,21 +168,8 @@ impl Editor {
                     self.status = format!("Recipe unavailable: {error}");
                 }
             },
-            SyncMessage::Tick => {
-                if self.syncing || self.busy || self.state.is_none() {
-                    return Task::none();
-                }
-                self.syncing = true;
-                let proxy = self.proxy_bounds();
-                return sync_task(
-                    self.owner.clone(),
-                    self.client,
-                    self.state.as_ref().unwrap().asset.id.clone(),
-                    self.api_sequence,
-                    self.own_requests.iter().cloned().collect(),
-                    proxy,
-                );
-            }
+            // The poll itself starts once nothing is in flight ([`Editor::sync_when_wanted`]).
+            SyncMessage::Changed => self.sync_wanted = true,
             SyncMessage::Synced(result) => {
                 self.syncing = false;
                 match result {
@@ -198,7 +190,11 @@ impl Editor {
                         if let Some(refresh) = sync.refresh.filter(|_| !superseded) {
                             self.accept(*refresh);
                         }
-                        if !superseded {
+                        if superseded {
+                            // Nothing wakes the sync on a timer, so it reads those events again
+                            // itself, once what overtook it has landed.
+                            self.sync_wanted = true;
+                        } else {
                             self.api_sequence = self.api_sequence.max(sync.sequence);
                             // Read past, so never asked about again.
                             self.own_requests
@@ -329,6 +325,39 @@ impl Editor {
                     .state
                     .as_ref()
                     .is_some_and(|held| held.current_entry.id != payload.job.entry.id))
+    }
+
+    /// Start the event sync's one poll when one is wanted and nothing stands in its way: none in
+    /// flight, no request of this desktop's in flight — its answer reads its own change back and
+    /// names the event the poll then skips — and a photograph open. Called after every message, so
+    /// a wake that arrived during a request is read as soon as the request is answered. With
+    /// nothing wanted it does nothing: the sync costs nothing until the owner wakes it. An evidence
+    /// run has no event sync, so what it records is what its script did.
+    pub(crate) fn sync_when_wanted(&mut self) -> Task<Message> {
+        if !self.sync_wanted || self.syncing || self.busy || self.evidence.is_some() {
+            return Task::none();
+        }
+        let Some(asset) = self.state.as_ref().map(|state| state.asset.id.clone()) else {
+            return Task::none();
+        };
+        self.sync_wanted = false;
+        self.syncing = true;
+        let proxy = self.proxy_bounds();
+        sync_task(
+            self.owner.clone(),
+            self.client,
+            asset,
+            self.api_sequence,
+            self.own_requests.iter().cloned().collect(),
+            proxy,
+        )
+    }
+
+    /// An answer to one of this desktop's own changes failed after the request was sent, so the
+    /// change may have landed without being read back. The owner wakes no client for its own
+    /// events, so the sync is asked for once: the poll reads that event like another client's.
+    pub(crate) fn resync(&mut self) {
+        self.sync_wanted = true;
     }
 
     /// This desktop's own request has read its change back onto the screen: the next poll reads

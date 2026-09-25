@@ -475,8 +475,9 @@ pub(crate) enum SyncMessage {
     RecipeDescribed(Result<Box<RecipeRead>, String>),
     /// Every tool control is generated from these; the desktop knows no tool by name.
     ModulesLoaded(Result<Vec<ModuleDescriptor>, String>),
-    /// Poll the owner for events while an asset is open.
-    Tick,
+    /// Another client's change reached the owner's event log, so the event sync reads it: the
+    /// owner's wake, carried in while an asset is open. Nothing produces it on a timer.
+    Changed,
     /// The result of one live-refresh poll.
     Synced(Result<SyncResult, String>),
 }

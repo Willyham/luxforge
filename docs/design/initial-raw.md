@@ -251,6 +251,6 @@ Neutral rendering, exact as-shot defaults, custom WB mapping and the retained wo
 | Point/no-op work | Parameter/geometry checks stay bounded; prepared point sampling uses shared math; cache misses return preparation state; the as-shot equivalent `recipe.describe` reports is a bounded solve over the locus, about 190 scanned temperatures and 13 µs, with no source access |
 | Owner-thread work | Only metadata/transactions/session completions; no RAW read/hash/unpack/develop/raster/encode |
 | Desktop refreshes | One state/entry merge and preview request per committed change; source readiness never refetches whole history |
-| Timers | Reuse existing gated work/event polling; progress only while work exists; no RAW idle timer |
+| Timers | Reuse the gated preview wake and the owner-woken event sync; progress only while work exists; no RAW idle timer |
 | Photo-sized evidence | M4 real Z6/X100VI stage distributions and RSS plus before/after 24/60 MP JPEG diagnostics |
 | Correctness/sharing | Independent integer/float/geometry references, unchanged JPEG goldens and allocation/cache-sharing assertions |

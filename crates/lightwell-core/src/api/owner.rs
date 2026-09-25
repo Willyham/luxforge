@@ -108,6 +108,11 @@ enum OwnerMessage {
     /// How many planned samples wait behind the one the point worker is evaluating.
     #[cfg(test)]
     PointsWaiting(SyncSender<usize>),
+    /// Wake this client whenever another client's change lands in the event log.
+    WatchEvents {
+        client: ClientId,
+        wake: EventWake,
+    },
     /// Answer once the named source job of this client is no longer queued or running, or, with no
     /// job named, once any source job finishes; at once when there is nothing to wait for.
     AwaitSource {
@@ -118,6 +123,10 @@ enum OwnerMessage {
     Disconnect(ClientId),
     Stop,
 }
+
+/// What the owner calls, on its own thread, when a change another client made reaches the event
+/// log. It must only post a signal: the owner waits for it.
+pub type EventWake = Arc<dyn Fn() + Send + Sync>;
 
 /// One client blocked in [`OwnerHandle::wait_source`], answered by the completion it waits for.
 struct SourceWaiter {
@@ -1036,6 +1045,17 @@ impl OwnerHandle {
         answer.recv().expect("the owner answered")
     }
 
+    /// Wake `client` whenever another client's change reaches the event log: a request of another
+    /// client's that recorded an event, or a change no request made — an import committed on the
+    /// source worker, a capability job's result. The client's own requests do not wake it, because
+    /// their answers already say what they changed. `wake` runs on the owner thread once per
+    /// message that recorded such an event and must only post a signal; the client then reads
+    /// `events.since` as it would have on a timer, so a client nothing happens to does no work at
+    /// all. A later call replaces the waker, and disconnecting the client drops it.
+    pub fn watch_events(&self, client: ClientId, wake: EventWake) {
+        let _ = self.sender.send(OwnerMessage::WatchEvents { client, wake });
+    }
+
     /// Block the calling thread until `job`, a source job of `client`'s, is no longer queued or
     /// running — it finished, failed, or `client` left it through `job.cancel` — or, with no job
     /// named, until any source job finishes, which is what makes room after a full source queue.
@@ -1138,9 +1158,16 @@ fn owner_loop(
         requests: RequestTable::default(),
         announced: Vec::new(),
         points: PointWorker::new(POINT_QUEUE_CAPACITY),
+        watchers: HashMap::new(),
+        notified: 0,
         source_waiters: Vec::new(),
     };
     while let Ok(message) = receiver.recv() {
+        // The client whose request this message is: the events it records do not wake that client.
+        let caller = match &message {
+            OwnerMessage::Call(call) => Some(call.client),
+            _ => None,
+        };
         match message {
             OwnerMessage::Stop => break,
             OwnerMessage::Call(call) => owner.call(call),
@@ -1166,6 +1193,9 @@ fn owner_loop(
             OwnerMessage::CapabilityThreads(reply) => {
                 let _ = reply.send(owner.host.lanes_started());
             }
+            OwnerMessage::WatchEvents { client, wake } => {
+                owner.watchers.insert(client, wake);
+            }
             OwnerMessage::AwaitSource { client, job, reply } => {
                 owner.await_source(client, job, reply);
             }
@@ -1187,6 +1217,7 @@ fn owner_loop(
                 owner.analyses.submit(*identity, *report);
             }
         }
+        owner.notify_watchers(caller);
     }
     // The sample being evaluated finishes; the ones waiting are dropped with every other call.
     owner.points.stop();
@@ -1271,6 +1302,10 @@ pub(super) struct Owner {
     pub(super) announced: Vec<Origin>,
     /// Evaluates the samples through a spatial layer this owner planned, off its thread.
     points: PointWorker,
+    /// The clients that asked to be woken by other clients' changes ([`OwnerHandle::watch_events`]).
+    watchers: HashMap<ClientId, EventWake>,
+    /// The newest event sequence the watchers have been woken for.
+    notified: u64,
     /// Clients blocked until a source job ends ([`OwnerHandle::wait_source`]).
     source_waiters: Vec<SourceWaiter>,
 }
@@ -1355,6 +1390,20 @@ impl Owner {
                 Ok(Planned::Value(value))
             }
             (result, _) => result,
+        }
+    }
+
+    /// Wake every watcher but `caller` when the message just handled recorded an event: once per
+    /// message however many it recorded, since a watcher reads them all in one `events.since`.
+    fn notify_watchers(&mut self, caller: Option<ClientId>) {
+        if self.log.sequence == self.notified {
+            return;
+        }
+        self.notified = self.log.sequence;
+        for (client, wake) in &self.watchers {
+            if Some(*client) != caller {
+                wake();
+            }
         }
     }
 
@@ -1466,6 +1515,7 @@ impl Owner {
         self.latest_import.remove(&client);
         self.jobs.disconnect(client);
         self.points.disconnect(client);
+        self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
     }
@@ -2279,6 +2329,77 @@ mod tests {
         join.join().unwrap();
         std::fs::remove_file(older).unwrap();
         std::fs::remove_file(newer).unwrap();
+    }
+
+    /// A watcher is woken once for each change another client makes — a request of theirs that
+    /// records an event, or an import committed on the source worker — and never by its own
+    /// requests, by a read, or once it has disconnected. Every wake follows the message that
+    /// recorded the event, so a call made after it is answered only once the wake has run.
+    #[test]
+    fn a_watcher_is_woken_by_other_clients_changes_and_never_by_its_own() {
+        let catalog = temp("event-watch.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let desktop = owner.register();
+        let agent = owner.register();
+        let wakes = Arc::new(AtomicU64::new(0));
+        let counted = wakes.clone();
+        owner.watch_events(
+            desktop,
+            Arc::new(move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+        // Every wake a message causes has run once a later call is answered.
+        let woken = || {
+            ok(&owner, agent, "fence", "events.since", json!({"after": 0}));
+            wakes.load(Ordering::Relaxed)
+        };
+        assert_eq!(woken(), 0, "nothing has changed");
+
+        // The agent's import commits on the source worker, under no request of the desktop's.
+        let queued = ok(
+            &owner,
+            agent,
+            "import",
+            "catalog.import",
+            import_params(fixture()),
+        );
+        let job = JobId::parse(queued["job_id"].as_str().unwrap()).unwrap();
+        owner.wait_source(agent, Some(&job)).unwrap();
+        assert_eq!(woken(), 1, "another client's import wakes the watcher");
+        let asset =
+            ok(&owner, agent, "adopt", "job.adopt", json!({"job_id": job}))["asset"]["asset"]["id"]
+                .clone();
+
+        let version = |client: ClientId, name: &str| {
+            ok(
+                &owner,
+                client,
+                name,
+                "version.create",
+                json!({"asset_id": asset, "name": name, "mutation": envelope()}),
+            );
+        };
+        version(desktop, "Mine");
+        assert_eq!(woken(), 1, "the desktop's own change does not wake it");
+        version(agent, "Theirs");
+        assert_eq!(woken(), 2, "another client's change does");
+        ok(
+            &owner,
+            agent,
+            "read",
+            "asset.state",
+            json!({"asset_id": asset}),
+        );
+        assert_eq!(woken(), 2, "a read changes nothing and wakes nobody");
+
+        owner.disconnect(desktop);
+        version(agent, "After");
+        assert_eq!(woken(), 2, "a disconnected client is not woken");
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
     }
 
     /// A wait for a source job blocks while the job is held on the worker and answers when the

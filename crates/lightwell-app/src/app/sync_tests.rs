@@ -1,6 +1,7 @@
 //! Owner answers: which the desktop adopts, what a commit reads back, and answers overtaken by a
 //! newer selection or revision dropped on arrival.
 use super::{
+    message::SyncMessage,
     testing::{boot, entry, finish, opened, refresh_for},
     *,
 };
@@ -292,5 +293,55 @@ fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
         },
     )))));
     assert_eq!(editor.display_entry, Some(current.id.clone()));
+    finish(editor, catalog);
+}
+
+/// A poll that read nothing, as the tests hand it back.
+fn nothing_new() -> tasks::SyncResult {
+    tasks::SyncResult {
+        sequence: 0,
+        refresh: None,
+        presets: None,
+        capabilities: false,
+        own: Vec::new(),
+    }
+}
+
+/// Nothing polls the event log on a timer. The owner's wake asks for one poll, which starts once
+/// nothing is in flight: a request of the desktop's own is answered first, so the poll can skip
+/// the event that request left, and a wake that lands during a poll is read right after it.
+#[test]
+fn the_event_sync_polls_only_when_woken_and_never_across_a_request_in_flight() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
+    assert!(!editor.syncing && !editor.sync_wanted);
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert!(!editor.syncing, "a message that is no wake starts no poll");
+
+    editor.busy = true;
+    let _ = editor.update(Message::Sync(SyncMessage::Changed));
+    assert!(
+        !editor.syncing && editor.sync_wanted,
+        "a wake waits for the request in flight"
+    );
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Err(
+        "conflict: stale revision".into(),
+    ))));
+    assert!(
+        editor.syncing && !editor.sync_wanted,
+        "the poll starts as the request is answered"
+    );
+
+    let _ = editor.update(Message::Sync(SyncMessage::Changed));
+    assert!(editor.syncing && editor.sync_wanted, "one poll at a time");
+    let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(nothing_new()))));
+    assert!(
+        editor.syncing && !editor.sync_wanted,
+        "the wake that landed during the poll is read right after it"
+    );
+    let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(nothing_new()))));
+    assert!(
+        !editor.syncing && !editor.sync_wanted,
+        "and then nothing runs"
+    );
     finish(editor, catalog);
 }

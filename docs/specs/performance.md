@@ -709,7 +709,8 @@ The likely dominant cost is not this widget: even a `SyncResult::Unchanged` repl
 still drives two `Editor::update` calls and two full `view()` rebuilds of every panel every half
 second (`crates/lightwell-app/src/app/mod.rs`, `app/tasks.rs`), and re-tessellating three small
 polygons twice a second could not plausibly account for the whole 0.3–0.5 point regression on its
-own. That path is outside this change's scope and is being addressed separately. This is a
+own. That path has since been removed: the event sync reads the log only when the owner wakes it
+for another client's change ([performance rule 8](../engineering/performance-rules.md#rules)). This is a
 measurement to attribute, not a resolved regression, and it is reported as a miss below.
 
 ### Instant previews: proxy phase, hop rule and the surface primitive
