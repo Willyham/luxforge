@@ -351,7 +351,11 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         json!({"module_id": module, "mutation": {"request_id": "cli-activate", "actor": "cli-test"}}),
     );
     assert_eq!(client.finished(&activating["job_id"])["status"], "ready");
-    let task = json!({"asset_id": asset, "profile_id": profile});
+    // A refused request changed nothing, so asking again after Allow keeps its request_id.
+    let task = json!({
+        "asset_id": asset, "profile_id": profile,
+        "mutation": {"request_id": "cli-generate", "actor": "cli-test"},
+    });
     let mut consents = 0;
     let queued = loop {
         let response = client.call("task.generate-proof-tint", task.clone());
@@ -365,6 +369,12 @@ fn a_proof_endpoint_client_installs_activates_runs_the_task_and_applies_its_tint
         }
     };
     assert_eq!(consents, 1, "this photo's send");
+    let retried = client.ok("task.generate-proof-tint", task);
+    assert_eq!(
+        retried["deduplicated"], true,
+        "a retry starts no second job"
+    );
+    assert_eq!(retried["job_id"], queued["job_id"]);
     let job = client.finished(&queued["job_id"]);
     assert_eq!(job["status"], "ready", "{job}");
     let artifact = job["result"]["artifacts"][0].clone();

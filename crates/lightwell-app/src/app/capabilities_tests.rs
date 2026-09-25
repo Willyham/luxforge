@@ -7,7 +7,7 @@ use super::{
     capabilities::{poll, run},
     evidence::{CapabilityAction, Step, parse_script},
     message::{CapabilityMessage, Message},
-    tasks::{REQUEST_NUMBER, Scope, call, refresh},
+    tasks::{ACTOR, REQUEST_NUMBER, Scope, call, refresh},
     testing::{attach_log, logged},
 };
 use crate::{
@@ -560,7 +560,17 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
             profile: Some(profile.clone()),
         }
     );
-    proof.answer();
+    let sent = proof.answer();
+    let task = sent
+        .iter()
+        .find(|request| request["method"] == format!("task.{TASK}"))
+        .expect("the task request");
+    // It carries the request envelope, so a retry of it starts no second job.
+    assert!(
+        task["params"]["mutation"]["request_id"].is_string(),
+        "{task}"
+    );
+    assert_eq!(task["params"]["mutation"]["actor"], ACTOR);
     assert_eq!(proof.task_control().state, TaskControlState::Consent);
     assert_eq!(
         proof.editor.workspace.canvas.notices[0].title,

@@ -1053,12 +1053,12 @@ mod tests {
                 assert!(methods.contains_key(method), "{method} is discoverable");
             }
             let task = &methods[&format!("task.{TASK}")];
+            assert_eq!(task["mutates"], json!(true), "the request queues a job");
+            assert_eq!(task["mutation"], json!("request"));
             assert_eq!(
-                task["mutates"],
-                json!(false),
-                "the request itself writes nothing"
+                task["required"],
+                json!(["mutation", "asset_id", "profile_id"])
             );
-            assert_eq!(task["required"], json!(["asset_id", "profile_id"]));
             assert_eq!(task["optional"], json!({"gain": "test"}));
             stop(owner, join);
         }

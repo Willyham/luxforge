@@ -35,15 +35,15 @@ pub(crate) const TASK: &str = "generate-test-tint";
 pub(crate) const ADAPTER: &str = "echo-adapter";
 
 /// A request's parameters with the `request` mutation envelope filled in as a client fills it: a
-/// host method that carries one and was sent none gets `{request_id, actor: "test"}` under the
-/// caller's fresh `request_id`, so each call is a new request. Anything else is sent as written, so
-/// a test that retries a request, or sends a malformed envelope, writes its own.
+/// host method that carries one, or a generated `task.*` method, that was sent none gets
+/// `{request_id, actor: "test"}` under the caller's fresh `request_id`, so each call is a new
+/// request. Anything else is sent as written, so a test that retries a request, or sends a
+/// malformed envelope, writes its own.
 pub(crate) fn enveloped(method: &str, params: Value, request_id: &str) -> Value {
+    let carries = crate::api::host_envelope(method) == crate::api::params::Envelope::Request
+        || method.starts_with(super::host::TASK_PREFIX);
     match params {
-        Value::Object(mut fields)
-            if crate::api::host_envelope(method) == crate::api::params::Envelope::Request
-                && !fields.contains_key("mutation") =>
-        {
+        Value::Object(mut fields) if carries && !fields.contains_key("mutation") => {
             fields.insert(
                 "mutation".into(),
                 json!({"request_id": request_id, "actor": "test"}),

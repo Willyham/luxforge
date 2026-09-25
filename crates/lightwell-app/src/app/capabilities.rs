@@ -345,6 +345,8 @@ fn perform(
             if let Some(profile) = profile {
                 params.insert("profile_id".into(), json!(profile));
             }
+            // One press is one request: asking again after a preparation keeps its request_id.
+            params.insert("mutation".into(), json!(request()));
             let method = format!("task.{task}");
             let mut attempt = 0;
             loop {
@@ -911,6 +913,7 @@ impl Editor {
                         if let Some(profile) = profile {
                             params.insert("profile_id".into(), json!(profile));
                         }
+                        params.insert("mutation".into(), json!(request()));
                         let method = format!("task.{task}");
                         let params = redact_params(&method, &Value::Object(params));
                         self.status = format!("Copied the {method} request");

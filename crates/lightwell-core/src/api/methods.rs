@@ -531,8 +531,9 @@ pub(super) enum Method {
     /// A host command of the `mask.*` family, declared with the same descriptor types a module
     /// action uses and dispatched through the same lookup.
     Mask(&'static MaskCommand),
-    /// A module's worker task. The request queues a capability job and changes nothing itself; the
-    /// catalog owner answers it and announces the task when it succeeds.
+    /// A module's worker task. The request queues a capability job, so it carries the `request`
+    /// envelope and a retry returns the first job; the catalog owner answers it and announces the
+    /// task when it succeeds.
     Task,
 }
 
@@ -545,13 +546,14 @@ pub(super) enum Route {
 
 impl Method {
     /// The mutation envelope the method carries. A module action and a mutating mask command change
-    /// an asset, which has a revision.
+    /// an asset, which has a revision; a task queues a job, which has none.
     pub(super) fn envelope(&self) -> Envelope {
         match self {
             Self::Host(spec) => spec.params.envelope,
             Self::Action(_) => Envelope::Revision,
             Self::Mask(command) if command.mutates => Envelope::Revision,
-            Self::Mask(_) | Self::Query(_) | Self::Task => Envelope::None,
+            Self::Task => Envelope::Request,
+            Self::Mask(_) | Self::Query(_) => Envelope::None,
         }
     }
 
@@ -749,11 +751,12 @@ fn query_schema(query: &ActionDescriptor) -> Value {
     })
 }
 
-/// One generated task description. `asset_id` and `profile_id` are the envelope when the task
-/// declares them, and the remaining top-level fields are its own declared parameters. The request
-/// itself changes nothing: it queues a task job and answers `{job_id, status}`.
+/// One generated task description. `mutation` is the `request` envelope, `asset_id` and
+/// `profile_id` are the envelope when the task declares them, and the remaining top-level fields are
+/// its own declared parameters. The request queues a task job and answers `{job_id, status}`; a
+/// retry answers the first job.
 fn task_schema(task: &TaskDescriptor) -> Value {
-    let mut required = Vec::new();
+    let mut required = vec![json!("mutation")];
     if task.asset {
         required.push(json!("asset_id"));
     }
@@ -769,11 +772,12 @@ fn task_schema(task: &TaskDescriptor) -> Value {
         }
     }
     json!({
-        "mutates": false,
+        "mutates": true,
+        "mutation": Envelope::Request.name(),
         "required": required,
         "optional": optional,
         "notes": format!(
-            "{} Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {{job_id, status}}; module.job.read reports {{result, artifacts}} when it succeeds",
+            "{} Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {{job_id, status, deduplicated}}, and a retry with the same request_id returns the first job and starts none; module.job.read reports {{result, artifacts}} when it succeeds",
             task.notes
         ),
         "parameters": task.parameters,
@@ -2453,10 +2457,11 @@ mod tests {
         }
         let method = find(&service, &tasks[0]).unwrap();
         assert!(matches!(method.route(), Route::Owner(_)));
-        assert!(
-            !method.mutates(),
-            "the request queues a job and writes nothing"
-        );
+        assert!(method.mutates(), "the request queues a job");
+        assert!(method.envelope() == Envelope::Request);
+        assert_eq!(listed[&tasks[0]]["mutates"], json!(true));
+        assert_eq!(listed[&tasks[0]]["mutation"], json!("request"));
+        assert_eq!(listed[&tasks[0]]["required"][0], json!("mutation"));
         // The service never answers it: the catalog owner holds the capability host.
         let refused = method
             .serve(&mut service, &mut session, &json!({}))

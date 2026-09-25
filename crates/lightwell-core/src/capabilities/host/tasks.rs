@@ -13,6 +13,7 @@ use super::{
 };
 use crate::{
     AssetId, Availability, EditorService, Error, ErrorKind, JobId, ModuleDescriptor,
+    MutationRequest,
     api::params,
     capabilities::{
         consent::{consent_required, remote_disclosure},
@@ -124,11 +125,13 @@ fn profile_secret_fields(descriptor: &ModuleDescriptor) -> Vec<String> {
 }
 
 impl CapabilityHost {
-    /// `task.<id>`: check, in order, that the module is available, the parameters, the asset, the
-    /// profile's readiness, every requirement (listed together as `not-ready`), and a live grant
-    /// for each capability the task uses (the first missing one is `consent-required`); then bind
-    /// the disclosed data, which is `preparation-required` for an unprepared source or artifact,
-    /// and queue the task on the module lane under its grants. Returns `{job_id, status}`.
+    /// `task.<id>`: check, in order, that the module is available, the `{request_id, actor}`
+    /// envelope, the parameters, the asset, the profile's readiness, every requirement (listed
+    /// together as `not-ready`), and a live grant for each capability the task uses (the first
+    /// missing one is `consent-required`); then bind the disclosed data, which is
+    /// `preparation-required` for an unprepared source or artifact, and queue the task on the module
+    /// lane under its grants. Returns `{job_id, status}`. A retry never gets here: the owner's
+    /// request table answers it with the first job, so a retried task starts nothing.
     pub(crate) fn task(
         &mut self,
         service: &EditorService,
@@ -149,6 +152,7 @@ impl CapabilityHost {
             ));
         }
         let mut parameters = params::generated(request)?;
+        params::take::<MutationRequest>(&mut parameters, "mutation")?.validate()?;
         let asset_id: Option<AssetId> = task
             .asset
             .then(|| params::take(&mut parameters, "asset_id"))

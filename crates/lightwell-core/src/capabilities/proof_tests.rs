@@ -345,12 +345,14 @@ impl Owner {
     /// Ask for the task, waiting through any preparation job its sampling asks for, as a client
     /// does. Returns the failure or the queued answer.
     fn task(&self, asset: &AssetId, profile: &str) -> Result<Value, ApiFailure> {
+        self.task_with(json!({"asset_id": asset, "profile_id": profile}))
+    }
+
+    /// [`Self::task`] with these exact parameters: a request that names its envelope asks again
+    /// under the same `request_id`, as a client that waits for a preparation does.
+    fn task_with(&self, params: Value) -> Result<Value, ApiFailure> {
         for _ in 0..4 {
-            let response = self.call(
-                self.edit,
-                TASK,
-                json!({"asset_id": asset, "profile_id": profile}),
-            );
+            let response = self.call(self.edit, TASK, params.clone());
             match response.error {
                 None => return Ok(response.result.expect("a result")),
                 Some(error) if error.code == "preparation-required" => {
@@ -530,10 +532,19 @@ fn the_proof_module_and_its_task_method_are_discovered_without_any_side_effect()
     );
     let schema = owner.ok("schema.list", json!({}));
     let task = &schema["methods"][TASK];
-    assert_eq!(task["mutates"], false);
-    assert_eq!(task["required"], json!(["asset_id", "profile_id"]));
+    assert_eq!(task["mutates"], true);
+    assert_eq!(task["mutation"], "request");
+    assert_eq!(
+        task["required"],
+        json!(["mutation", "asset_id", "profile_id"])
+    );
     assert_eq!(task["optional"], json!({}));
-    assert!(task["notes"].as_str().unwrap().contains("{job_id, status}"));
+    assert!(
+        task["notes"]
+            .as_str()
+            .unwrap()
+            .contains("{job_id, status, deduplicated}")
+    );
     assert_eq!(
         schema["methods"]["task.publish-then-answer"]["optional"]
             .as_object()
@@ -907,6 +918,64 @@ fn revoking_the_remote_grant_mid_task_cancels_it_and_keeps_the_accepted_tint() {
         owner.task(asset, &profile).unwrap_err().code,
         "consent-required"
     );
+    owner.stop();
+}
+
+/// A task carries the `request` envelope, so a client that retries it after a lost answer gets the
+/// first job back and the endpoint is sent the photo once.
+#[test]
+fn a_retried_task_returns_the_first_job_and_starts_no_second() {
+    let fixture = Fixture::new("proof-task-retry");
+    let assets = fixture.import();
+    let owner = fixture.start();
+    let Ready { assets, profile } = ready(&fixture, &owner, assets);
+    let generations = || {
+        fixture
+            .endpoint
+            .requests()
+            .iter()
+            .filter(|request| request.path == "/generate")
+            .count()
+    };
+    let request = |asset: &AssetId, request_id: &str| {
+        json!({
+            "asset_id": asset,
+            "profile_id": profile,
+            "mutation": {"request_id": request_id, "actor": "test"},
+        })
+    };
+    let first = owner
+        .task_with(request(&assets[0], "generate-once"))
+        .unwrap();
+    assert_eq!(first["deduplicated"], json!(false));
+    let retried = owner.ok(TASK, request(&assets[0], "generate-once"));
+    assert_eq!(retried["deduplicated"], json!(true));
+    assert_eq!(retried["job_id"], first["job_id"], "the first job");
+    assert_eq!(owner.finished(&first["job_id"])["status"], "ready");
+    assert_eq!(generations(), 1, "the photo was sent once");
+    let tasks = owner.events().iter().filter(|event| *event == TASK).count();
+    assert_eq!(tasks, 1, "one task, announced once");
+    // The same request_id with other input is a conflict, and starts nothing either.
+    let other = owner.fail(TASK, request(&assets[1], "generate-once"));
+    assert_eq!(
+        (other.code.as_str(), other.message.as_str()),
+        (
+            "conflict",
+            "request_id was already used with different input"
+        )
+    );
+    // A task without a well-formed envelope is refused by name before anything is checked.
+    let malformed = owner.fail(
+        TASK,
+        json!({"asset_id": assets[0], "profile_id": profile, "mutation": {"request_id": "x"}}),
+    );
+    assert_eq!(malformed.code, "validation");
+    assert!(
+        malformed.message.starts_with("mutation:"),
+        "{}",
+        malformed.message
+    );
+    assert_eq!(generations(), 1);
     owner.stop();
 }
 
