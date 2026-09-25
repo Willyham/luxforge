@@ -1939,6 +1939,21 @@ impl Editor {
         }
     }
 
+    /// Evidence of a displayed proxy must use the bounds of the current layout. The exact
+    /// phase of an open can finish while a display-scale refit is still rendering, so its
+    /// `outcome_ready` may arm a capture before the replacement proxy reaches the surface.
+    fn capture_proxy_ready(&self) -> bool {
+        if !self.presented_proxy || self.render_error.is_some() {
+            return true;
+        }
+        match self.proxy_bounds() {
+            Some(bounds) => !self.refit_pending && self.presented_bounds == Some(bounds),
+            // At 100% the exact frame is the target; the step's normal preview settlement
+            // already waits for it, without requiring a proxy that cannot be requested.
+            None => true,
+        }
+    }
+
     fn request_current_preview(&mut self) -> Task<Message> {
         let Some(state) = &self.state else {
             return Task::none();
@@ -2569,6 +2584,7 @@ impl Editor {
             Message::DoubleClickSecond => return self.double_click_second(),
             Message::Capture => {
                 let rows_shown = self.recipe_rows_shown();
+                let proxy_ready = self.capture_proxy_ready();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
@@ -2586,6 +2602,7 @@ impl Editor {
                     || self.curve_sample_in_flight
                     || self.curve_sample_pending.is_some()
                     || !rows_shown
+                    || !proxy_ready
                 {
                     return Task::none();
                 }
@@ -2600,28 +2617,52 @@ impl Editor {
                     return Task::none();
                 };
                 evidence.capture_pending = false;
-                evidence.capture_overlay = false;
                 evidence.saving = true;
                 let recorded = (self.snapshot(), self.activity.requested);
                 if let Some(evidence) = &mut self.evidence {
-                    evidence.sync.state = Some(recorded);
+                    evidence.sync.state = Some((recorded.0, recorded.1, self.photo_version));
                 }
                 return iced::window::oldest()
                     .and_then(iced::window::screenshot)
                     .map(Message::Captured);
             }
             Message::Captured(shot) => {
+                // The window readback is asynchronous. A newer proxy can reach the surface while
+                // it is in flight; its request-time snapshot then describes the old proxy even
+                // though the capture response arrives after the new one was displayed. Retry on
+                // the next drawn frame without publishing or saving that stale screenshot.
+                let stale = !self.capture_proxy_ready()
+                    || self.evidence.as_ref().is_some_and(|evidence| {
+                        evidence
+                            .sync
+                            .state
+                            .as_ref()
+                            .is_some_and(|(_, _, version)| *version != self.photo_version)
+                    });
+                if stale {
+                    if let Some(evidence) = &mut self.evidence {
+                        evidence.sync.state = None;
+                        evidence.saving = false;
+                        evidence.capture_pending = true;
+                    }
+                    return Task::none();
+                }
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.capture_overlay = false;
+                }
                 self.event(
                     "frame_captured",
                     json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
                 );
                 // The state as it stood when the screenshot was asked for, which is the state the
                 // frame it reads back was built from.
-                let (state, generation) = self
+                let (state, generation, _) = self
                     .evidence
                     .as_mut()
                     .and_then(|evidence| evidence.sync.state.take())
-                    .unwrap_or_else(|| (self.snapshot(), self.activity.requested));
+                    .unwrap_or_else(|| {
+                        (self.snapshot(), self.activity.requested, self.photo_version)
+                    });
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
                 // The photo surface spans the window minus padding, the sidebar and their spacing.
@@ -8899,6 +8940,83 @@ mod tests {
         let evidence = crate::app::testing::evidence(&editor);
         assert!(!evidence.capture_pending, "the old proxy is not captured");
         assert_eq!(evidence.awaiting, Some(Settle::Preview));
+        finish(editor, catalog);
+    }
+
+    /// An open can complete its exact analysis while the first proxy is still being refitted
+    /// for the display scale. Its outcome arms evidence, but the old proxy is not a settled frame.
+    #[test]
+    fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
+        let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+        editor.window = (1440.0, 900.0);
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 1.0;
+        editor.presented_proxy = true;
+        editor.presented_bounds = editor.proxy_bounds();
+        editor.scale_factor = 2.0;
+        editor.refit_pending = true;
+        editor.outcome_ready(false);
+        assert!(crate::app::testing::evidence(&editor).capture_pending);
+        assert!(
+            !editor.capture_proxy_ready(),
+            "the old 1× proxy is not ready"
+        );
+
+        editor.presented_bounds = editor.proxy_bounds();
+        assert!(!editor.capture_proxy_ready(), "the refit is still pending");
+        editor.refit_pending = false;
+        assert!(editor.capture_proxy_ready(), "the 2× proxy is ready");
+
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        assert!(
+            editor.capture_proxy_ready(),
+            "100% does not require a proxy"
+        );
+        editor.presented_proxy = false;
+        assert!(
+            editor.capture_proxy_ready(),
+            "an exact frame needs no proxy refit"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A screenshot requested against one proxy may return after the refit proxy is presented.
+    /// That readback is discarded before a frame event or file is published and retried on a
+    /// newly drawn frame. An overlay capture keeps its overlay requirement across the retry.
+    #[test]
+    fn evidence_retries_a_readback_superseded_by_new_pixels() {
+        let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+        editor.window = (1440.0, 900.0);
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 2.0;
+        editor.presented_proxy = true;
+        editor.presented_bounds = editor.proxy_bounds();
+        editor.photo_version = 2;
+        let path = crate::app::testing::attach_log(&mut editor);
+        let evidence = editor.evidence.as_mut().expect("evidence run");
+        evidence.sync.state = Some((json!({"old":"proxy"}), 1, 1));
+        evidence.capture_pending = false;
+        evidence.capture_overlay = true;
+        evidence.saving = true;
+        let shot =
+            iced::window::Screenshot::new([0, 0, 0, 255].to_vec(), iced::Size::new(1, 1), 1.0);
+        let _ = editor.dispatch(Message::Captured(shot));
+
+        let evidence = crate::app::testing::evidence(&editor);
+        assert!(evidence.capture_pending, "retry is armed");
+        assert!(!evidence.saving, "the stale save was cancelled");
+        assert!(evidence.sync.state.is_none(), "stale state was dropped");
+        assert!(
+            evidence.capture_overlay,
+            "overlay requirement survives retry"
+        );
+        assert!(evidence.frames.is_empty(), "no frame was published");
+        assert!(
+            !crate::app::testing::logged(&mut editor, &path)
+                .iter()
+                .any(|event| event["event"] == "frame_captured"),
+            "no capture event was published"
+        );
         finish(editor, catalog);
     }
 }
