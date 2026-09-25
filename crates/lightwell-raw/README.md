@@ -69,7 +69,7 @@ The 1.5 GiB value is not a process RSS budget.
 
 At full X100VI sensor size (7872×5196 = 40,902,912 pixels), retained u16 mosaic is about 78 MiB, the developed three-plane output about 468 MiB, and temporary float mosaic about 156 MiB, before native decoder scratch, worker overlap, color/geometry and GPU storage. The adapter's per-buffer checks do not by themselves enforce the editor's combined-process memory target. The caller must bound active/pending workers and account for old visible results during replacement.
 
-Cancellation is checked before decode, through LibRaw's synchronous progress callback during identify/unpack, every 128 input rows while preparing float data, within each Markesteijn tile job, during DNG gain/warp work, and after native demosaic returns. The Markesteijn executor joins all callbacks before returning; cancellation or an allocation/worker error discards the incomplete planar result. No C++ exception crosses the ABI. A Rust `AtomicBool` is accessed only by an `extern "C"` callback during a synchronous native call; it is never reinterpreted as a C++ atomic or retained beyond the call.
+Cancellation is checked before decode, through LibRaw's synchronous progress callback during identify/unpack, every 128 input rows while preparing float data, between Markesteijn tiles, after librtprocess returns, and every 64 rows during each DNG gain/warp pass. RCD remains serial and ignores the progress callback return, so cancellation during its demosaic prevents publication only after that stage finishes. Markesteijn uses bounded tile-group workers with process-wide scratch admission; edge scratch dependencies are retained, and X-Trans dimensions below 120 px on either side fail explicitly. See [the execution and lifetime contract](../../docs/design/native-demosaic-parallelism.md). No C++ exception crosses the ABI. A Rust `AtomicBool` is accessed only by an `extern "C"` callback during a synchronous native call; it is never reinterpreted as a C++ atomic or retained beyond the call.
 
 ## Evidence and limits
 
@@ -79,6 +79,13 @@ Cancellation is checked before decode, through LibRaw's synchronous progress cal
 LIGHTWELL_RAW_OWNER_DIR=/path/to/owner/raw \
 LIGHTWELL_RAW_PUBLIC_DIR=/path/to/cc0/raw \
   cargo test --release -p lightwell-raw --locked --test real_files -- --ignored --nocapture
+```
+
+The complete Markesteijn serial/pool oracle, including changed white balance, edge geometry, concurrent callers and native fault recovery, runs separately:
+
+```sh
+LIGHTWELL_RAW_OWNER_DIR=/path/to/owner/raw \
+  cargo test --release -p lightwell-raw --locked --lib markesteijn_parallel_complete_float_oracle -- --ignored --nocapture
 ```
 
 The owner and public corpus checks are separate tests. If only owner originals are available, run the same command with `--skip authentic_public_modes` and report the public modes as untested.

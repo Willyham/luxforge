@@ -911,8 +911,8 @@ screenshot-free live API runs peak at 1583–1647 MiB; the 24-edit run grows onl
 absence of leaks. GPU allocations are not measured separately.
 
 Initial development and warm exposure p95 meet their provisional investigation
-targets on these files; Fuji memory exceeds the 1536 MiB target. WB redevelopment
-is about 0.5 s for Nikon and 1.5–1.6 s for Fuji. The next resource work is to attribute
+targets on these files; Fuji memory exceeds the 1536 MiB target. Current WB redevelopment measurements are in
+[startup and RAW throughput](#startup-and-raw-throughput). The next resource work is to attribute
 the unexplained tail and native/GPU/readback lifetimes, then evaluate bounded
 Fit/detail rendering while preserving full-resolution 100% inspection. Budgets
 remain provisional; full idle-CPU, cancellation and per-stage measurements remain
@@ -1296,9 +1296,9 @@ linear exposure at both sizes, a full Basic layer over a 24 MP linear image, and
 at both JPEG sizes plus the full Basic proxy. Independent
 filter, tile, masked sample/render and quantization-boundary references supplement these
 photo-sized comparisons. The unchanged 512 px tile still incurs the halo amplification and
-point-sampling cost described above. Native demosaic remains serial; its separate
-[shared-pool proposal](../design/native-demosaic-parallelism.md) preserves tile equations and
-bounds per-worker scratch without adding another thread pool.
+point-sampling cost described above. The current [Markesteijn row executor](../design/native-demosaic-parallelism.md) preserves tile
+equations and bounds scratch without adding another thread pool; its measurements are
+separate in [startup and RAW throughput](#startup-and-raw-throughput).
 
 The combined source also passes release `editor-performance` against the retained baseline on
 both source sizes, again 15 samples per leg in ABBA order, 30 per variant. This official diagnostic
@@ -1332,7 +1332,7 @@ performance review checklist are in [isolated rendering performance](../design/i
 ## Source preparation and exact rendering
 
 The source worker develops a cold known RAW directly at the validated requested white balance.
-DNG optical corrections share the process pool across disjoint rows; native demosaic is still serial.
+DNG optical corrections share the process pool across disjoint rows. Markesteijn now uses the bounded tile groups described in [startup and RAW throughput](#startup-and-raw-throughput); RCD remains serial.
 Texture and Clarity skip unused global reductions; Dehaze reuses its atmosphere across strength edits.
 Its cache distinguishes upstream masks and sampling, source development/view, exposure and approximate
 white balance. Terminal encoding indexes the exact code boundaries, retaining the RAW boundary guard;
@@ -1463,8 +1463,165 @@ frames. Original failures and focused reruns are retained in the local evidence,
 Final native Presence sample/render tests also pass on all three originals. DJI reopen, Presence and
 mask/range captures were visually inspected alongside state and event checks. The full run's standard
 timing components started above load 8.0 and their absolute target verdicts remain **unreliable**.
-Empty-shell startup, GPU colour, larger tiles and native demosaic parallelism remain separate work;
+GPU colour, larger tiles and Bayer demosaic parallelism remain separate work;
 Windows/Linux numerical and native GPU qualification are not established by this M4 evidence.
+
+## Startup and RAW throughput
+
+Initial-source preparation now overlaps platform startup. RAW camera conversion mutates the existing
+planes in exact bounded chunks, and native Markesteijn uses bounded tile groups on the shared pool.
+See the [implementation contract](../design/performance-third-wave.md) and
+[native execution bounds](../design/native-demosaic-parallelism.md). No image equation or output
+quantization tolerance changes.
+
+Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins,
+25 September 2026. Baseline is main `5d121d7`; matrix/startup observations use `84370ec`,
+whose timed matrix and first-proxy implementations are unchanged by the final native scheduler
+and evidence-capture fixes. Final native observations and desktop qualification use `2dd1b72`.
+The JPEG rendering control uses `59cf51d`; that timed implementation is unchanged. Each comparison
+combines 15 observations per leg in before/after/after/before order:
+30 per variant, with tails retained. Builds and tests stop during timing. Commands, hashes, load,
+raw samples and captures are retained locally in `artifacts/performance-third-wave/`.
+Scopes below overlap and their savings must not be added.
+
+### Exact camera conversion
+
+The timer covers camera-to-working-space conversion and adoption validation over actual developed
+camera planes. Allocation/clone, file read/decode, native development, hashing and drop are outside
+it. The baseline uses the previous scalar expression and public validating constructor; the new
+measurement invokes the actual private producer and adoption boundary. Complete float hashes match.
+
+| Camera | Before p50 / p95 | After p50 / p95 | Median time saved |
+| --- | --- | --- | --- |
+| Nikon Z6 | 50.73 / 51.66 ms | 3.74 / 4.63 ms | 92.6% |
+| Fujifilm X100VI | 84.88 / 86.26 ms | 6.04 / 7.62 ms | 92.9% |
+| DJI Air 2S | 42.02 / 42.87 ms | 2.98 / 3.91 ms | 92.9% |
+
+The conversion writes disjoint 65,536-pixel chunks in place, using the shared pool above one
+megapixel and serial chunks below. Each output is checked finite at production; private adoption
+retains shape/capacity checks without another full scan. Public constructors still scan and reject
+invalid input. There is no additional full-frame scratch. Leg-start load was 3.0–5.5.
+
+### First image during startup
+
+These are app-cold, filesystem-warm launches of temporary copied background bundles with a hidden
+Metal window. An independent 10 ms event-file observer measures from argument parsing to the first
+observed proxy event. This includes event observation delay; it is not scanout, foreground activation
+or a stable installed-bundle launch. Ordinary first-preview behavior is unchanged by the later
+capture-readiness fix.
+
+| Source | Before p50 / p95 | After p50 / p95 | Median time saved |
+| --- | --- | --- | --- |
+| Generated 24 MP JPEG | 806.0 / 828.1 ms | 764.0 / 778.6 ms | 42.0 ms, 5.2% |
+| Generated 60 MP JPEG | 876.8 / 912.2 ms | 778.6 / 806.3 ms | 98.2 ms, 11.2% |
+
+The existing authorized import starts before platform initialization and is adopted through the
+ordinary open lifecycle; no second source job is created. Empty args-to-observed-capture remains
+786.7 / 800.6 ms before and 787.5 / 809.2 ms after. Args-to-editor-startup remains about
+578–582 ms. Leg-start load was 4.2–5.9. The initial-open request clock now starts before prequeueing;
+old and new `open_to_raster` values therefore have different origins and are not compared.
+
+### Native development and saved-white-balance preparation
+
+Retained-mosaic development includes native output allocation/drop and excludes file read/unpack,
+core matrix conversion and rendering. Fuji uses the final tile scheduler; Nikon and DJI native
+implementations are unchanged. Complete native reference and before/after warm-output hashes agree.
+
+| Native source | Before p50 / p95 | After p50 / p95 | Median time saved |
+| --- | --- | --- | --- |
+| Nikon Z6 | 268.8 / 272.2 ms | 268.6 / 270.7 ms | Essentially unchanged |
+| Fujifilm X100VI | 1277.2 / 1282.5 ms | 355.8 / 363.6 ms | 72.1% |
+| DJI Air 2S | 351.9 / 368.0 ms | 350.6 / 358.1 ms | Essentially unchanged |
+
+Cold saved-WB preparation restarts the owner and source cache per observation, with the filesystem
+warm and the catalog's saved red gain at 1.1 × as-shot. Time runs from `catalog.import` until a
+strict exact-source `PreviewJob` is available: read/hash/unpack/develop/matrix/validation and
+waiting/adoption are included. Owner startup/catalog open, final float hashing, rendering and
+presentation are excluded. Every observation's complete float planes and source identity match;
+there is exactly one source job in every before/after sample.
+
+| Source | Before p50 / p95 | After p50 / p95 | Median time saved |
+| --- | --- | --- | --- |
+| Nikon Z6 | 596.3 / 625.2 ms | 546.5 / 584.6 ms | 8.3% |
+| Fujifilm X100VI | 1542.1 / 1574.4 ms | 535.9 / 572.8 ms | 65.3% |
+| DJI Air 2S | 486.7 / 505.8 ms | 443.0 / 466.2 ms | 9.0% |
+
+The unchanged-camera comparisons ran at load 3.2–6.5; final Fuji comparisons ran at load
+2.3–4.3. Fuji development's process CPU median per 15-sample leg increases from
+1276–1278 ms to 1512–1517 ms while wall time falls. Peak process RSS from those whole diagnostic
+processes increases from 917.3 MB to 933.2–933.4 MB (decimal bytes); this includes preparation and
+measurement, not just live demosaic scratch. The faster development uses about 19% more process CPU.
+
+Explicit Markesteijn heap scratch is globally capped at eight × 988,208 bytes, or 7,905,664 bytes,
+including the source-caller job. Stack arrays, tables, allocator overhead and full image buffers
+are additional. Callback cancellation, native faults, nested callers and teardown are tested;
+no partial output is adopted. Bayer RCD retains its existing serial cancellation limitation.
+
+### Shared-pool contention and rendering controls
+
+One retained Fuji development competes with four full-Basic renders of a prepared 1920 × 1280
+JPEG proxy. External callers start at a barrier and share Rayon. Each operation clock excludes
+preparation, thread creation, hashing and frame drop; the proxy is hashed between requests while
+RAW work continues. This is a CPU scheduling diagnostic, not desktop/GPU/presentation latency.
+There are 30 development and 120 proxy observations per variant, in the same ABBA order; complete
+proxy hashes match. Leg-start load was 2.1–5.2.
+
+| Concurrent operation | Before p50 / p95 | After p50 / p95 |
+| --- | --- | --- |
+| Fuji retained-mosaic development | 1292.6 / 1303.8 ms | 367.8 / 379.7 ms |
+| Full-Basic JPEG proxy render | 11.69 / 13.28 ms | 11.66 / 14.01 ms |
+
+The throughput gain does not materially move the proxy median; its p95 increases by 0.74 ms.
+Earlier schedules were rejected because a preview waiter could steal long native work: draining
+row groups gave 216 ms proxy p95, one row per callback still about 64 ms, and a four-worker cap
+still about 60 ms. Ordinary pool callbacks now contain at most eight tiles. The dependent final
+two rows run on the existing external source caller, with the same global scratch admission and
+without holding a permit across a join.
+
+A separate phase sweep starts preview work 0/75/125/175/225/275/325 ms after the RAW barrier,
+five trials at each offset and four renders per trial. The seven 20-observation proxy p95 values
+range from 12.3 to 17.6 ms; the maximum of all 140 renders is 27.0 ms. This diagnostic checks
+later overlap as well as the ordinary early-start case; it is not a 30-sample distribution per
+phase or a hard latency guarantee. Load was 2.8–3.4. Nested Rayon callers retain correctness and
+liveness coverage, but the latency result applies to the production external source caller.
+
+The official JPEG `editor-performance` diagnostic is a control: this batch changes no JPEG colour
+kernel. Its composed geometry/crop and full Basic recipe produces the following 30-observation
+results. Source-preservation checks pass. Leg-start load was 3.9–14.2; small shifts in unchanged
+code are not attributed to an optimization or used as absolute latency-budget evidence.
+
+| Workload | Before p50 / p95 | After p50 / p95 |
+| --- | --- | --- |
+| 24 MP full Basic + geometry | 78.7 / 88.0 ms | 78.2 / 81.2 ms |
+| 60 MP full Basic + geometry | 183.0 / 191.1 ms | 182.5 / 188.9 ms |
+| 24 MP source, full Basic proxy + geometry | 47.5 / 52.3 ms | 47.2 / 50.0 ms |
+| 60 MP source, full Basic proxy + geometry | 50.0 / 52.0 ms | 49.3 / 53.1 ms |
+
+### Qualification and remaining opportunities
+
+The final full tier passes all 38 functional components: workspace/API checks, 30 background
+rendered scenarios, RAW numerical references, nine actual RAW open/edit/reopen journeys and timing
+journeys. Independent review covered tile scratch, disjoint writes, FFI lifetime, nested admission,
+private validated adoption and capture settlement. Complete native float references, original
+hashes and sample/render/history checks pass. Final Fuji and DJI reopened captures were visually
+inspected alongside their correlated state and events.
+
+An earlier run exposed an evidence race: a screenshot requested from the temporary 1× proxy could
+return after the 2× refit was displayed, making identical recipes appear different on reopen.
+Capture readiness now waits for permitted current-bounds refits, preserves intentional draft deferral
+and render-error evidence, and retries readbacks superseded by newer photo pixels before publishing
+or saving them. Ordinary first-preview presentation is unchanged. Focused draft/refit tests and the
+final native journeys pass; the original failure and diagnosis remain in the local evidence.
+
+The final full tier's `editor-latency` and `measure` components started above load 8.0, so their
+absolute-budget verdicts remain **unreliable**. The separate comparisons above retain their own
+loads, scopes and sample counts. No sanitizer run, Windows/Linux numerical qualification or
+cross-platform native GPU qualification is claimed by this M4 evidence.
+
+The next candidates are ranked in [further performance opportunities](../research/further-performance.md).
+RCD Bayer development remains serial. RAW colour row batching, eliminating large RGBA publication
+copies, startup phase attribution, GPU execution and SIMD/assembly remain open; none is assigned an
+unmeasured speedup.
 
 ## Method
 

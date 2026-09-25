@@ -40,7 +40,7 @@ The last block of the state panel, pinned under History and Recipe, is **Perform
 
 The section reads the same `resources.read` and `activity.list` methods any client can call, once a second, and only while it is open and the state panel is shown; closed, it costs nothing. It opens again with every launch. Show performance and Hide performance in the command palette do the same as the heading.
 
-The [measured rendering costs](specs/performance.md#isolated-rendering-kernels) distinguish rendering an already-prepared image from developing a RAW sensor image and from presenting a preview. Faster rendering can shorten the wait for an exact photograph and histogram; changing RAW white balance still needs redevelopment.
+The [measured rendering costs](specs/performance.md#isolated-rendering-kernels) distinguish rendering an already-prepared image from developing a RAW sensor image and from presenting a preview. Faster rendering can shorten the wait for an exact photograph and histogram; changing RAW white balance still needs redevelopment. A photograph passed at launch starts preparing while the desktop initializes. [Startup and RAW measurements](specs/performance.md#startup-and-raw-throughput) distinguish preparation from the time until the photograph is displayed.
 
 ## Edit and inspect
 

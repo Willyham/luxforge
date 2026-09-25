@@ -44,9 +44,8 @@ separate from the M4 evidence.
 
 ## Remaining opportunities
 
-Native demosaic is still serial. The [bounded shared-pool proposal](native-demosaic-parallelism.md)
-identifies the tile executor, scratch accounting, FFI lifetimes, cancellation and exactness
-checks needed to change that without introducing a second scheduler.
+Markesteijn now uses [bounded tile groups](native-demosaic-parallelism.md).
+Bayer RCD remains serial; extending the executor needs its own exactness and timing evidence.
 
 Larger spatial tiles, changed point-sample scheduling, approximation tolerances, a GPU colour
 backend and an additional native parallel runtime remain separate decisions. Larger tiles
