@@ -596,7 +596,7 @@
     {
       "id": "TASK-014",
       "description": "Read stored doubles back exactly by building `serde_json` with `float_roundtrip`.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Without `float_roundtrip`, `serde_json` parses some 17-digit doubles one unit in the last place off. A RAW tint stored in a recipe was seen reading back one ulp off, so a stored value can differ from the value that was committed."
@@ -630,7 +630,7 @@
     {
       "id": "TASK-015",
       "description": "Compile a prefix evaluation once per prefix index in `HostStage::sample_before`, not once per point.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "`HostStage::sample_before` compiles the prefix for every point it samples, so Basic's neutral picker, which averages a 5 × 5 patch, compiles the same prefix 25 times per query."
@@ -702,7 +702,7 @@
     {
       "id": "TASK-017",
       "description": "Reconcile the Bayer demosaic's input clamp with the documented highlight latitude.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "The adapter's normalization comment says no pre-demosaic clamp is applied and under-black and over-white latitude is retained, and the initial RAW design describes that headroom. The vendored RCD clamps its input to 0–1 (`LIM01(rawData / 65536)`), so on Bayer sources (Z6, Air 2S) the gained mosaic is clipped at sensor white before the demosaic. X-Trans (Markesteijn) is not affected in the same way.",

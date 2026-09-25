@@ -1997,7 +1997,7 @@
     {
       "id": "TASK-034",
       "description": "Check cancellation during the Bayer (RCD) demosaic, between tiles, as the X-Trans (Markesteijn) demosaic already does, so a superseded RAW open or white-balance release stops within a tile instead of finishing a serial whole-frame demosaic.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -2866,7 +2866,7 @@
     {
       "id": "TASK-047",
       "description": "Clean up RAW preparation: sensor neutral sampling moves into `lightwell-raw`, redundant decode copies and finiteness scans go, a condvar replaces the 25 ms memory-gate poll, the DNG opcode allowlist lives in one place, and the camera catalog becomes static data.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-034"
       ],
