@@ -1172,7 +1172,25 @@ Native Apple M4 Pro (14 cores, 48 GiB), release `--locked`, 23 September 2026, o
 | `render.sample`, Clarity +60 Dehaze +30 | 623 / 1194 · 1495 / 3152 (p50 623–1130 · 1353–1966) | 36.0 / 38.9 · 37.9 / 38.7 |
 | Another client's `draft.set` while one samples in a loop, p50 (max); idle 0.3 | 402–578 (762) · 504–647 (1236) | 19.9 (22.3) · 19.2 (22.7) |
 
-A contended owner call now waits at most one sample, as it already did on the byte path, where the same sample on the generated 24 MP JPEG costs 11.5 ms with Clarity +60 and 34.0 ms with Dehaze +30 added (p50 of 15). Answering samples off the owner is the open follow-up.
+On the byte path the same sample on the generated 24 MP JPEG costs 11.5 ms with Clarity +60 and 34.0 ms with Dehaze +30 added (p50 of 15).
+
+#### Off the catalog owner
+
+The catalog owner now only plans a sample through a spatial layer, in `O(layers)`, and its point worker evaluates it and answers the caller, so another client's call no longer waits behind it. Native Apple M4 Pro, release `--locked`, 25 September 2026: two loopback clients against a background-only, hidden-window editor with an isolated catalog and no photograph in its window, one sampling random stage points in a loop, the other timing 60 `draft.set` calls on an open Basic draft and 60 `asset.state` calls, 30 to 70 ms apart. "Before" is `a82c36e`, "after" this change; each camera ran before, after, then after, before, back to back, and the two orders were run as two passes. **Provisional:** the one-minute load was 18 to 28 during these runs, far above the 8 at which a figure is compared against anything, because other sessions were building on the host; the p50s are consistent across passes, the maxima are not claims.
+
+| Z6 · X100VI, ms, p50 (max) of 60; runs 1 · 2 | Before | After | Idle |
+| --- | --- | --- | --- |
+| Another client's `draft.set`, Clarity +60 | 18.4 (143) · 14.2 (107) · 11.0 (36) · 14.5 (189) | 0.31 (13) · 0.31 (11) · 0.22 (0.3) · 0.31 (6) | 0.17–0.34 |
+| Another client's `draft.set`, Clarity +60 Dehaze +30 | 68.7 (290) · 23.6 (147) · 26.6 (193) · 16.1 (37) | 0.23 (0.7) · 0.32 (4) · 0.24 (0.3) · 0.24 (0.9) | |
+| Another client's `asset.state`, Clarity +60 | 26.5 (130) · 19.2 (170) · 0.65 (28) · 9.5 (170) | 0.90 (11) · 0.91 (17) · 0.65 (0.7) · 1.09 (11) | 0.54–1.09 |
+| Another client's `asset.state`, Clarity +60 Dehaze +30 | 39.2 (300) · 5.5 (127) · 7.6 (119) · 0.66 (39) | 0.56 (1.1) · 0.90 (4) · 0.66 (0.8) · 0.66 (1.5) | |
+| The sampling client's `render.sample` while it runs, Clarity +60 · with Dehaze +30, p50 | 20–33 · 35–118 | 20–38 · 35–53 | |
+
+Samples in the contended window: 101 to 238 per run before, 63 to 189 after (fewer, because the other client's calls no longer lengthen the window). The sample itself costs what it cost on the owner: timed alone, 30 samples in the steadiest runs, 19.7 before against 19.9 ms after on the X100VI with Clarity and 34.7 against 34.8 ms with Dehaze added; the wider ranges above are the host's load, which moved between runs. An `asset.state` before occasionally answered in under a millisecond because it arrived between two samples. An earlier pass with a shorter window (5 to 17 ms apart, load 11 to 16) gave the same picture: `draft.set` p50 10.6 to 31.1 ms before against 0.23 to 0.33 after.
+
+Exactness through the owner is the ignored owner test, run in release with `LIGHTWELL_RAW_FIXTURE` set to each private source (`cargo test --release --locked -p lightwell-core --lib a_raw_sample_through_presence_off_the_owner -- --ignored --nocapture`): on the Z6, X100VI and Air 2S, 21 samples per stack including the far corner, answered by the point worker, each equal to the pixel an exact render of the current entry writes there. A background evidence run over the Z6 with the after build (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner) showed every readout in the status bar with no render error, each hover step captured 46 to 69 ms after it was sent.
+
+To repeat on a quiet host, build each commit's release app and copy `target/release/lightwell` aside, then run each copy from a background-only bundle (the plist `develop --background` writes) with `--hidden-window --catalog NEW.sqlite`, and drive it with two loopback clients read from `NEW.live-session.json`: import the RAW with `catalog.import` and `job.adopt`, commit `edit.set-presence` with `{"clarity": 60}` and then `{"clarity": 60, "dehaze": 30}`, and for each stack open a `set-basic` draft, warm three samples, time 30 samples alone, time 60 `draft.set` and 60 `asset.state` idle, then again while the other client samples random points in a loop. Run the builds before, after, after, before for each camera and record `uptime` around every run.
 
 Exactness on the real files is the ignored core test, run in release with `LIGHTWELL_RAW_FIXTURE` set to each private source (`cargo test --release -p lightwell-core --lib a_raw_point_sample_through_presence -- --ignored --nocapture`): 41 samples per stack, spread over the stage and including the far corner, each equal to the byte the linear render writes there. It also times both sides, p50 ms:
 
@@ -1401,7 +1419,7 @@ remain serial. This small diagnostic is threshold feedback, not a p95 distributi
 A spatial row is one public point sample, including its bounded tile, immediately after changing only
 the named strength from 60 to 61 on an already-sampled recipe. Linear inputs are prepared from JPEGs.
 Texture/Clarity need no reduction even on the first sample; Dehaze still builds an atmosphere on a cold
-cache or changed input. These savings do not remove the tile or move its work off the owner.
+cache or changed input. These savings do not remove the tile, which the owner's point worker evaluates.
 
 | Workload | Before p50 / p95 | After p50 / p95 | Median time saved |
 | --- | --- | --- | --- |
