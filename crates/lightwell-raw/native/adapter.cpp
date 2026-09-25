@@ -412,12 +412,10 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
       return code==RP_MEMORY_ERROR?6:code==RP_CANCELLED?2:code==RP_WORKER_ERROR?3:5;
     }
     if(cancel&&cancel(cancel_context)){error(err,err_len,"cancelled after demosaic");return 2;}
-    for(size_t i=0;i<count;++i){
-      red[i]/=65535.f;green[i]/=65535.f;blue[i]/=65535.f;
-      if(!std::isfinite(red[i])||!std::isfinite(green[i])||!std::isfinite(blue[i])){
-        error(err,err_len,"non-finite demosaic result");return 5;
-      }
-    }
+    // No finiteness scan here: the caller checks every value once, where it
+    // adopts the planes after the camera conversion, and a non-finite camera
+    // value makes each converted channel of its pixel non-finite.
+    for(size_t i=0;i<count;++i){red[i]/=65535.f;green[i]/=65535.f;blue[i]/=65535.f;}
     return 0;
   }catch(const std::bad_alloc&){error(err,err_len,"native allocation failed");return 6;}
    catch(const std::exception&e){error(err,err_len,e.what());return 3;}

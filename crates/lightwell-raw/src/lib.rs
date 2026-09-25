@@ -372,9 +372,12 @@ impl RawSource {
         Arc::clone(&self.mosaic)
     }
 
-    /// Decode once on a bounded worker. The original byte buffer is dropped
-    /// after an owned u16 sensor mosaic is copied and the native handle closes.
-    pub fn decode(bytes: Arc<[u8]>, cancel: &AtomicBool) -> Result<Self, RawError> {
+    /// Decode once on a bounded worker. The encoded bytes are read in place,
+    /// never copied: the caller's buffer, a `Vec` read from the file or any
+    /// other owner, is dropped as soon as an owned u16 sensor mosaic is copied
+    /// out and the native handle closes.
+    pub fn decode<B: AsRef<[u8]>>(encoded: B, cancel: &AtomicBool) -> Result<Self, RawError> {
+        let bytes = encoded.as_ref();
         if bytes.is_empty() {
             return Err(RawError::InvalidInput("empty source"));
         }
@@ -385,7 +388,7 @@ impl RawSource {
             return Err(RawError::Cancelled);
         }
         let opcodes = if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
-            let found = format::dng_opcodes(&bytes)?;
+            let found = format::dng_opcodes(bytes)?;
             let mut unknown: Vec<_> = found
                 .iter()
                 .filter(|op| {
@@ -406,8 +409,9 @@ impl RawSource {
         let mut native = Box::new(Self::blank_native());
         let mut handle = std::ptr::null_mut();
         let mut error = [0 as c_char; 256];
-        // SAFETY: Arc pins bytes for this synchronous call and until handle is
-        // closed. Metadata and error are writable, and token lives for call.
+        // SAFETY: this function owns `encoded`, so bytes stay alive and unmoved
+        // until the handle is closed below. Metadata and error are writable,
+        // and the token lives for the call.
         let code = unsafe {
             lw_raw_open(
                 bytes.as_ptr(),
@@ -425,7 +429,7 @@ impl RawSource {
         }
         let guard = NativeHandle(handle);
         let n = Self::checked_len(&native)?;
-        let (mut metadata, dng_correction) = Self::interpret(&native, &bytes, &opcodes)?;
+        let (mut metadata, dng_correction) = Self::interpret(&native, bytes, &opcodes)?;
         let mut samples = Vec::new();
         samples
             .try_reserve_exact(n)
@@ -446,7 +450,7 @@ impl RawSource {
             return Err(native_error(code, &error));
         }
         drop(guard);
-        drop(bytes);
+        drop(encoded);
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
@@ -478,6 +482,10 @@ impl RawSource {
     /// Demosaic with green-normalized camera-channel gains. These gains are
     /// applied to black-subtracted, sensor-white-normalized samples *before*
     /// the pinned demosaicer; changing WB reruns this stage from the mosaic.
+    ///
+    /// The planes are not scanned for finiteness, here or in the DNG
+    /// corrections: a caller that needs finite values checks them once after
+    /// its last arithmetic, as the core's camera conversion does.
     pub fn develop(&self, gains: [f32; 3], cancel: &AtomicBool) -> Result<PlanarRgb, RawError> {
         let mut image = self.develop_uncorrected(gains, cancel)?;
         if let Some(correction) = &self.dng_correction {

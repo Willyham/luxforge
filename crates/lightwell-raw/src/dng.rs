@@ -599,6 +599,10 @@ impl DngCorrection {
         Ok(gain)
     }
 
+    /// Apply the stage-3 corrections to developed camera planes in place.
+    /// A value that overflows `f32` becomes infinite rather than an error
+    /// here: like the development before it, this checks no finiteness, and
+    /// the one check is the caller's, where it adopts the converted planes.
     pub(crate) fn apply(&self, rgb: &mut PlanarRgb, cancel: &AtomicBool) -> Result<(), RawError> {
         let parallel = u64::from(self.active.width) * u64::from(self.active.height)
             >= PARALLEL_CORRECTION_PIXELS;
@@ -643,11 +647,7 @@ impl DngCorrection {
                                         .map_err(opcode_error)?,
                                     Stage3::Warp(_) => unreachable!(),
                                 };
-                                let value = *pixel as f64 * gain;
-                                if !value.is_finite() || value.abs() > f32::MAX as f64 {
-                                    return Err(RawError::InvalidInput("DNG gain output overflow"));
-                                }
-                                *pixel = value as f32;
+                                *pixel = (*pixel as f64 * gain) as f32;
                             }
                             Ok(())
                         })?;
@@ -671,11 +671,7 @@ impl DngCorrection {
                                 let y = self.active.y + yy as u32;
                                 let (sx, sy) =
                                     warp.source(x as f64, y as f64, channel, self.active)?;
-                                let value = bicubic(plane, width, self.active, sx, sy);
-                                if !value.is_finite() || value.abs() > f32::MAX as f64 {
-                                    return Err(RawError::InvalidInput("DNG warp output overflow"));
-                                }
-                                *pixel = value as f32;
+                                *pixel = bicubic(plane, width, self.active, sx, sy) as f32;
                             }
                             Ok(())
                         })?;
@@ -927,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn correction_rows_report_cancellation_and_overflow() {
+    fn correction_rows_report_cancellation_and_leave_overflow_to_adoption() {
         for parallel in [false, true] {
             let cancel = AtomicBool::new(true);
             let (correction, mut pixels) = row_fixture(33, 19);
@@ -949,12 +945,14 @@ mod tests {
             });
             assert_eq!(result, Err(RawError::Cancelled));
 
+            // An overflow is left in the planes, where the adopting camera
+            // conversion rejects it; nothing here hides it as a finite value.
             cancel.store(false, Ordering::Relaxed);
             pixels.data.fill(f32::MAX);
-            assert_eq!(
-                correction.apply_rows(&mut pixels, &cancel, parallel),
-                Err(RawError::InvalidInput("DNG gain output overflow"))
-            );
+            correction
+                .apply_rows(&mut pixels, &cancel, parallel)
+                .unwrap();
+            assert!(pixels.data.iter().any(|value| !value.is_finite()));
         }
     }
 

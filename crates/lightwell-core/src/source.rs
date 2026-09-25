@@ -211,6 +211,11 @@ const CAMERA_CHUNK_PIXELS: usize = 65_536;
 /// locals before any output channel is written, preserving the scalar operation order. Each
 /// successfully finished chunk has proved all three resulting values finite, which permits the
 /// private linear-image adoption path to skip a second full-frame scan.
+///
+/// This is the one finiteness check between decode and adoption, guarding the finite-planes
+/// contract of [`LinearImage`]. The RAW crate's development and DNG corrections check nothing: an
+/// overflow or non-finite value they produce reaches this loop, and a non-finite camera value makes
+/// every converted channel of its pixel non-finite whatever the matrix (`0 × ∞` is NaN).
 fn convert_camera_planes(
     planes: &mut [f32],
     n: usize,
@@ -345,7 +350,8 @@ impl RawPrepared {
         target: Option<&RawPreparation>,
         cancel: &AtomicBool,
     ) -> Result<Self, Error> {
-        let sensor = Arc::new(RawSource::decode(Arc::from(bytes), cancel).map_err(raw_error)?);
+        // The file's bytes go to the decoder as read: no copy into another buffer.
+        let sensor = Arc::new(RawSource::decode(bytes, cancel).map_err(raw_error)?);
         let gains = match target {
             Some(target) => {
                 target.validate(sensor.metadata())?;
@@ -452,6 +458,24 @@ mod tests {
             error.detail,
             "RAW color conversion produced a non-finite value"
         );
+
+        // A non-finite value arriving from development or the DNG corrections is caught here,
+        // even where its matrix coefficient is zero.
+        for bad in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+            for channel in 0..3 {
+                let mut planes = vec![0.5; 3];
+                planes[channel] = bad;
+                let identity = [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ];
+                let error =
+                    convert_camera_planes(&mut planes, 1, &identity, &AtomicBool::new(false))
+                        .unwrap_err();
+                assert_eq!(error.kind, ErrorKind::UnsupportedColor);
+            }
+        }
 
         let cancel = AtomicBool::new(true);
         let mut unchanged = vec![1.0; 3 * n];
