@@ -44,9 +44,9 @@
 #endif
 
 enum rpError {RP_NO_ERROR, RP_MEMORY_ERROR, RP_WRONG_CFA, RP_CACORRECT_ERROR, RP_CANCELLED, RP_WORKER_ERROR};
-// Lightwell's private synchronous tile executor. It invokes each worker slot
-// once and joins every invocation before returning. No worker/context pointer
-// is retained. Other librtprocess callers use the serial default.
+// Lightwell's private synchronous row-group executor. It invokes each group
+// callback once in bounded joined batches. No worker/context pointer is
+// retained. Other librtprocess callers use the serial default.
 extern "C" {
 typedef void (*rpTileWorker)(void *, size_t) noexcept;
 typedef int (*rpTileExecutor)(void *, size_t, rpTileWorker, void *) noexcept;

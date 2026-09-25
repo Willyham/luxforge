@@ -79,14 +79,15 @@ fn admit(desired: usize, cancel: &AtomicBool) -> Result<ScratchPermit, c_int> {
 /// # Safety contract
 ///
 /// C++ supplies a live immutable job context and a no-throw worker entry.
-/// Each slot calls that entry once, owns its own scratch, and fetches disjoint
-/// tile indices from the job's atomic counter. A scratch permit is held only
-/// while a native worker executes, never by a Rayon scope waiting for children.
-/// Rayon scope joins every entry before borrowed context or image buffers drop.
+/// Each callback evaluates one C++ row group with its own scratch. At most
+/// `desired` callbacks are queued in a batch; every batch joins before the
+/// next is dispatched. A scratch permit is held only while a native callback
+/// executes, never by a Rayon scope waiting for children. The final scope
+/// joins before borrowed context or image buffers drop.
 /// This trampoline catches Rust panics so none crosses the C ABI.
 pub(super) extern "C" fn execute(
     context: *mut c_void,
-    tile_count: usize,
+    job_count: usize,
     worker: TileWorker,
     worker_context: *mut c_void,
 ) -> c_int {
@@ -95,7 +96,7 @@ pub(super) extern "C" fn execute(
         // executor synchronously; Markesteijn stores neither pointer.
         let state = unsafe { &*context.cast::<ExecutorContext<'_>>() };
         let width = rayon::current_num_threads();
-        let desired = tile_count
+        let desired = job_count
             .min(width)
             .min(if state.worker_limit == 0 {
                 width
@@ -108,22 +109,28 @@ pub(super) extern "C" fn execute(
         // before the stack-backed job and buffers can be released.
         let worker_context = worker_context as usize;
         let status = std::sync::atomic::AtomicI32::new(0);
-        let run_slot = |slot| {
+        let run_job = |job| {
             if status.load(Ordering::Relaxed) != 0 {
                 return;
             }
             match admit(1, state.cancel) {
-                Ok(_permit) => worker(worker_context as *mut c_void, slot),
+                Ok(_permit) => worker(worker_context as *mut c_void, job),
                 Err(code) => status.store(code, Ordering::Relaxed),
             }
         };
-        rayon::scope(|scope| {
-            for slot in 1..desired {
-                let run_slot = &run_slot;
-                scope.spawn(move |_| run_slot(slot));
+        for first in (0..job_count).step_by(desired) {
+            if status.load(Ordering::Relaxed) != 0 {
+                break;
             }
-            run_slot(0);
-        });
+            let end = (first + desired).min(job_count);
+            rayon::scope(|scope| {
+                for job in first + 1..end {
+                    let run_job = &run_job;
+                    scope.spawn(move |_| run_job(job));
+                }
+                run_job(first);
+            });
+        }
         status.load(Ordering::Relaxed)
     }));
     result.unwrap_or(3)
@@ -139,6 +146,22 @@ mod tests {
         let count = unsafe { &*context.cast::<std::sync::atomic::AtomicUsize>() };
         count.fetch_add(1, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(2));
+    }
+
+    struct JobTracker {
+        seen: Vec<std::sync::atomic::AtomicUsize>,
+        active: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+    }
+
+    extern "C" fn track_one_group(context: *mut c_void, group: usize) {
+        // SAFETY: execute joins every callback before this tracker drops.
+        let tracker = unsafe { &*context.cast::<JobTracker>() };
+        tracker.seen[group].fetch_add(1, Ordering::Relaxed);
+        let active = tracker.active.fetch_add(1, Ordering::Relaxed) + 1;
+        tracker.peak.fetch_max(active, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(1));
+        tracker.active.fetch_sub(1, Ordering::Relaxed);
     }
 
     #[test]
@@ -206,5 +229,39 @@ mod tests {
         drop(held);
         assert!(count.load(Ordering::Relaxed) >= 2);
         assert!(PEAK_SLOTS.load(Ordering::Relaxed) <= MAX_SCRATCH_SLOTS);
+    }
+
+    #[test]
+    fn one_callback_per_row_group_with_bounded_batches() {
+        let _test_guard = TEST_BUDGET_LOCK.lock().unwrap();
+        let cancel = AtomicBool::new(false);
+        let context = ExecutorContext {
+            cancel: &cancel,
+            worker_limit: 3,
+        };
+        let tracker = JobTracker {
+            seen: (0..11)
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect(),
+            active: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+        };
+        assert_eq!(
+            execute(
+                (&context as *const ExecutorContext<'_>).cast_mut().cast(),
+                tracker.seen.len(),
+                track_one_group,
+                (&tracker as *const JobTracker).cast_mut().cast(),
+            ),
+            0
+        );
+        assert!(
+            tracker
+                .seen
+                .iter()
+                .all(|seen| seen.load(Ordering::Relaxed) == 1)
+        );
+        assert!(tracker.peak.load(Ordering::Relaxed) <= 3);
+        assert_eq!(tracker.active.load(Ordering::Relaxed), 0);
     }
 }

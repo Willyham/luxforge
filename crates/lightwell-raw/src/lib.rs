@@ -1088,6 +1088,37 @@ mod tests {
     #[ignore = "requires explicit local authentic Fuji RAW fixture"]
     fn markesteijn_parallel_complete_float_oracle() {
         use sha2::{Digest, Sha256};
+        fn without_executor(raw: &RawSource, gains: [f32; 3], cancel: &AtomicBool) -> Vec<f32> {
+            let n = raw.mosaic.len();
+            let mut data = vec![0.0_f32; n * 3];
+            let (red, rest) = data.split_at_mut(n);
+            let (green, blue) = rest.split_at_mut(n);
+            let mut error = [0 as c_char; 256];
+            // SAFETY: buffers and callback token remain live for the native
+            // synchronous call; this exercises its default serial executor.
+            let code = unsafe {
+                lw_raw_develop(
+                    raw.mosaic.as_ptr(),
+                    n,
+                    &*raw.native,
+                    raw.mosaic_corrections.as_ptr(),
+                    raw.mosaic_corrections.len(),
+                    gains.as_ptr(),
+                    red.as_mut_ptr(),
+                    green.as_mut_ptr(),
+                    blue.as_mut_ptr(),
+                    0,
+                    None,
+                    std::ptr::null_mut(),
+                    cancelled,
+                    (cancel as *const AtomicBool).cast_mut().cast(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            assert_eq!(code, 0, "{}", c_text(&error));
+            data
+        }
         let owner = std::env::var("LIGHTWELL_RAW_OWNER_DIR").expect("RAW fixture directory");
         let path = format!("{owner}/fujifilm_x100vi.RAF");
         let bytes = std::fs::read(&path).unwrap();
@@ -1101,6 +1132,14 @@ mod tests {
         let serial = raw
             .develop_uncorrected_with_workers(gains, &cancel, 1)
             .unwrap();
+        let default_serial = without_executor(&raw, gains, &cancel);
+        assert!(
+            default_serial
+                .iter()
+                .zip(&serial.data)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        drop(default_serial);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut hash = Sha256::new();
@@ -1174,6 +1213,13 @@ mod tests {
         let reference = odd
             .develop_uncorrected_with_workers(adjusted, &cancel, 1)
             .unwrap();
+        let odd_default_serial = without_executor(&odd, adjusted, &cancel);
+        assert!(
+            odd_default_serial
+                .iter()
+                .zip(&reference.data)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
         for workers in [2, 4, 0] {
             let other = odd
                 .develop_uncorrected_with_workers(adjusted, &cancel, workers)
@@ -1265,7 +1311,7 @@ mod tests {
             let state = unsafe { &*context.cast::<CancelAfter>() };
             c_int::from(state.calls.fetch_add(1, Ordering::Relaxed) >= state.first_cancel_call)
         }
-        let run_private_fault = |fault: u32, first_cancel_call: usize| {
+        let run_private_fault = |fault: u32, first_cancel_call: usize, worker_limit: usize| {
             let n = odd.mosaic.len();
             let mut data = vec![f32::NAN; n * 3];
             let (red, rest) = data.split_at_mut(n);
@@ -1276,7 +1322,7 @@ mod tests {
             };
             let mut executor_context = native_tiles::ExecutorContext {
                 cancel: &cancel,
-                worker_limit: 4,
+                worker_limit,
             };
             let mut error = [0 as c_char; 256];
             // SAFETY: all input/output/callback state is live and disjoint;
@@ -1309,14 +1355,14 @@ mod tests {
         };
         // The adapter checks once before normalization and at rows 0, 128,
         // and 256. Native tile checks then allow work before cancellation.
-        let (code, error, calls) = run_private_fault(0, 6);
+        let (code, error, calls) = run_private_fault(0, 6, 1);
         assert_eq!(code, 2);
         assert!(matches!(error, RawError::Cancelled));
         assert!(calls >= 7);
-        let (code, error, _) = run_private_fault(1, usize::MAX);
+        let (code, error, _) = run_private_fault(1, usize::MAX, 4);
         assert_eq!(code, 6);
         assert!(matches!(error, RawError::ResourceLimit(_)));
-        let (code, error, _) = run_private_fault(2, usize::MAX);
+        let (code, error, _) = run_private_fault(2, usize::MAX, 4);
         assert_eq!(code, 3);
         assert!(matches!(error, RawError::Native(_)));
         // A successful call after both failures proves all workers joined

@@ -261,19 +261,21 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
     const size_t tileCols = width > 22 ? size_t((width - 23) / (ts - 16) + 1) : 0;
     const size_t tileCount = tileRows * tileCols;
     const size_t rowGroups = tileRows > 1 ? tileRows - 1 : tileRows;
-    std::atomic<size_t> nextRow{0};
+    const size_t jobs = executor && width >= 120 && tileRows > 1 && tileCount > 4 &&
+                        passes == 1 && !useCieLab ? rowGroups : 1;
     std::atomic<rpError> tileError{RP_NO_ERROR};
     MarkWorkerCall call{
-        [&](size_t slot) {
+        [&](size_t job) {
+            if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) return;
             float dcolor[3][6];
             // Private adapter tests inject these failures without provoking
             // process-wide OOM or exposing a user-facing control.
-            if (testFault == 1 && slot == 0) {
+            if (testFault == 1 && job == 0) {
                 rpError expected = RP_NO_ERROR;
                 tileError.compare_exchange_strong(expected, RP_MEMORY_ERROR);
                 return;
             }
-            if (testFault == 2 && slot == 0) throw std::runtime_error("native tile test fault");
+            if (testFault == 2 && job == 0) throw std::runtime_error("native tile test fault");
             std::unique_ptr<float, decltype(&free)> scratch(
                 (float *)malloc((ts * ts * (ndir * 4 + 3) + 128) * sizeof(float)), &free);
             float *buffer = scratch.get();
@@ -290,15 +292,17 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
             uint8_t (*homosum)[ts][ts] = (uint8_t (*)[ts][ts]) (drv); // we can reuse the drv-buffer because they are not used together
             uint8_t (*homosummax)[ts] = (uint8_t (*)[ts]) homo[ndir - 1]; // we can reuse the homo-buffer because they are not used together
 
-            for (;;) {
+            // A production callback owns exactly one row group. The serial
+            // fallback owns all groups in original raster order.
+            const size_t firstGroup = jobs == 1 ? 0 : job;
+            const size_t lastGroup = jobs == 1 ? rowGroups : job + 1;
+            for (size_t group = firstGroup; group < lastGroup; ++group) {
                 if (tileError.load(std::memory_order_relaxed) != RP_NO_ERROR) break;
                 if (shouldCancel && shouldCancel(cancelContext)) {
                     rpError expected = RP_NO_ERROR;
                     tileError.compare_exchange_strong(expected, RP_CANCELLED);
                     break;
                 }
-                const size_t group = nextRow.fetch_add(1, std::memory_order_relaxed);
-                if (group >= rowGroups) break;
                 const size_t groupEnd = group == rowGroups - 1 ? tileRows : group + 1;
                 for (size_t tileRow = group; tileRow < groupEnd; ++tileRow) {
                 for (size_t tileCol = 0; tileCol < tileCols; ++tileCol) {
@@ -958,8 +962,6 @@ rpError markesteijn_demosaic (int width, int height, const float * const *rawDat
     if (tileCount) {
         // The executor joins all callbacks before returning. The serial call
         // follows the same tile function and supplies the exact oracle.
-        const size_t jobs = width >= 120 && tileRows > 1 && tileCount > 4 &&
-                            passes == 1 && !useCieLab ? rowGroups : 1;
         const int result = executor
                                ? executor(executorContext, jobs, run_mark_worker, &call)
                                : (run_mark_worker(&call, 0), 0);
