@@ -2391,31 +2391,48 @@ mod tests {
             (wall_ms, process_cpu_ms)
         }
 
-        fn measure_leg(
+        struct LegInput<'a> {
             parallel_normalization: bool,
             raw: Arc<lightwell_raw::RawSource>,
             gains: [f32; 3],
-            preview: &LinearImage,
-            preview_snapshot: &SnapshotId,
-            recipe: &Recipe,
+            preview: &'a LinearImage,
+            preview_snapshot: &'a SnapshotId,
+            recipe: &'a Recipe,
             settings: LinearSettings,
-            oracle: &Raster,
-            registry: &ModuleRegistry,
+            oracle: &'a Raster,
+            registry: &'a ModuleRegistry,
+        }
+
+        struct LegMeasurement {
+            proxy_wall: Vec<f64>,
+            proxy_process_cpu: Vec<f64>,
+            exact_started_overlap: u32,
+            exact_completed_overlap: u32,
+            exact_started_drain: u32,
+            exact_completed_drain: u32,
+            overlap_wall_ms: f64,
+            overlap_process_cpu_ms: f64,
+            drain_wall_ms: f64,
+            drain_process_cpu_ms: f64,
+            load_start: String,
+            load_end: String,
+        }
+
+        fn measure_leg(
+            input: LegInput<'_>,
             sampler: &mut lightwell_process::Sampler,
-        ) -> (
-            Vec<f64>,
-            Vec<f64>,
-            u32,
-            u32,
-            u32,
-            u32,
-            f64,
-            f64,
-            f64,
-            f64,
-            String,
-            String,
-        ) {
+        ) -> LegMeasurement {
+            let LegInput {
+                parallel_normalization,
+                raw,
+                gains,
+                preview,
+                preview_snapshot,
+                recipe,
+                settings,
+                oracle,
+                registry,
+            } = input;
             let running = Arc::new(AtomicBool::new(true));
             let started = Arc::new(AtomicBool::new(false));
             let exact_started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2492,20 +2509,20 @@ mod tests {
             let load_end = host_load_1m();
             let total_started = exact_started.load(Ordering::Acquire) as u32;
             let total_completed = exact_completed.load(Ordering::Acquire) as u32;
-            (
+            LegMeasurement {
                 proxy_wall,
                 proxy_process_cpu,
-                overlap_started,
-                overlap_completed,
-                total_started.saturating_sub(overlap_started),
-                total_completed.saturating_sub(overlap_completed),
+                exact_started_overlap: overlap_started,
+                exact_completed_overlap: overlap_completed,
+                exact_started_drain: total_started.saturating_sub(overlap_started),
+                exact_completed_drain: total_completed.saturating_sub(overlap_completed),
                 overlap_wall_ms,
                 overlap_process_cpu_ms,
                 drain_wall_ms,
                 drain_process_cpu_ms,
                 load_start,
                 load_end,
-            )
+            }
         }
 
         let owner = std::env::var("LIGHTWELL_RAW_OWNER_DIR").expect("owner RAW fixture directory");
@@ -2639,51 +2656,40 @@ mod tests {
         let mut leg_loads = Vec::new();
         // Each leg contributes 15 preview samples; A-B-B-A therefore gives 30 per arm.
         for parallel in [false, true, true, false] {
-            let (
-                wall,
-                cpu,
-                started,
-                completed,
-                drain_started,
-                drain_completed,
-                overlap_wall,
-                overlap_cpu,
-                drain_wall,
-                drain_cpu,
-                load_start,
-                load_end,
-            ) = measure_leg(
-                parallel,
-                raw.clone(),
-                gains,
-                &preview,
-                &snapshot,
-                &recipe,
-                settings,
-                &reference,
-                &registry,
+            let measurement = measure_leg(
+                LegInput {
+                    parallel_normalization: parallel,
+                    raw: raw.clone(),
+                    gains,
+                    preview: &preview,
+                    preview_snapshot: &snapshot,
+                    recipe: &recipe,
+                    settings,
+                    oracle: &reference,
+                    registry: &registry,
+                },
                 &mut sampler,
             );
             let arm = usize::from(parallel);
             if parallel {
-                parallel_wall.extend(wall);
-                parallel_cpu.extend(cpu);
+                parallel_wall.extend(measurement.proxy_wall);
+                parallel_cpu.extend(measurement.proxy_process_cpu);
             } else {
-                serial_wall.extend(wall);
-                serial_cpu.extend(cpu);
+                serial_wall.extend(measurement.proxy_wall);
+                serial_cpu.extend(measurement.proxy_process_cpu);
             }
-            exact_started_overlap[arm] += started;
-            exact_completed_overlap[arm] += completed;
-            exact_started_drain[arm] += drain_started;
-            exact_completed_drain[arm] += drain_completed;
-            overlap_wall_ms[arm] += overlap_wall;
-            overlap_process_cpu_ms[arm] += overlap_cpu;
-            drain_wall_ms[arm] += drain_wall;
-            drain_process_cpu_ms[arm] += drain_cpu;
+            exact_started_overlap[arm] += measurement.exact_started_overlap;
+            exact_completed_overlap[arm] += measurement.exact_completed_overlap;
+            exact_started_drain[arm] += measurement.exact_started_drain;
+            exact_completed_drain[arm] += measurement.exact_completed_drain;
+            overlap_wall_ms[arm] += measurement.overlap_wall_ms;
+            overlap_process_cpu_ms[arm] += measurement.overlap_process_cpu_ms;
+            drain_wall_ms[arm] += measurement.drain_wall_ms;
+            drain_process_cpu_ms[arm] += measurement.drain_process_cpu_ms;
             leg_loads.push((
                 if parallel { "parallel" } else { "serial" },
-                load_start,
-                load_end,
+                measurement.load_start,
+                measurement.load_end,
             ));
         }
         let memory = sampler.read().memory;

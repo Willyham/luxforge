@@ -1322,7 +1322,9 @@ performance review checklist are in [isolated rendering performance](../design/i
 ## Source preparation and exact rendering
 
 The source worker develops a cold known RAW directly at the validated requested white balance.
-DNG optical corrections share the process pool across disjoint rows. Markesteijn now uses the bounded tile groups described in [startup and RAW throughput](#startup-and-raw-throughput); RCD remains serial.
+Bayer mosaic normalization batches 16 rows through the shared pool above one megapixel; X-Trans
+normalization remains serial. DNG optical corrections share the process pool across disjoint rows.
+Markesteijn now uses the bounded tile groups described in [startup and RAW throughput](#startup-and-raw-throughput); RCD remains serial.
 Texture and Clarity skip unused global reductions; Dehaze reuses its atmosphere across strength edits.
 Its cache distinguishes upstream masks and sampling, source development/view, exposure and approximate
 white balance. Terminal encoding indexes the exact code boundaries, retaining the RAW boundary guard;
@@ -1459,7 +1461,9 @@ Windows/Linux numerical and native GPU qualification are not established by this
 ## Startup and RAW throughput
 
 Initial-source preparation now overlaps platform startup. RAW camera conversion mutates the existing
-planes in exact bounded chunks, and native Markesteijn uses bounded tile groups on the shared pool.
+planes in exact bounded chunks, Bayer normalization uses bounded 16-row batches above one megapixel,
+and native Markesteijn uses bounded tile groups on the shared pool. X-Trans normalization and Bayer
+RCD remain serial.
 See the [implementation contract](../design/performance-third-wave.md) and
 [native execution bounds](../design/native-demosaic-parallelism.md). No image equation or output
 quantization tolerance changes.
@@ -1546,6 +1550,54 @@ Explicit Markesteijn heap scratch is globally capped at eight × 988,208 bytes, 
 including the source-caller job. Stack arrays, tables, allocator overhead and full image buffers
 are additional. Callback cancellation, native faults, nested callers and teardown are tested;
 no partial output is adopted. Bayer RCD retains its existing serial cancellation limitation.
+
+### Bayer mosaic normalization
+
+For Bayer sources above one megapixel, native normalization submits 16-row batches to the existing
+shared executor before the unchanged serial RCD call. At most eight callbacks are admitted under
+the shared cap. Normalization writes the existing mosaic allocation, adds no per-worker scratch,
+checks cancellation per row and retains the serial path for X-Trans. Whole normalized mosaics and
+RGB planes match bit for bit against the scalar serial oracle on authentic Nikon Z6 and DJI Air 2S
+Bayer inputs. Output guards, partial final batches, cancellation and worker-error behavior are
+covered by focused tests.
+
+Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, release with locked pins, 25 September 2026. Each
+camera uses 30 warm observations per arm in 15 ABBA pairs in one fresh process. The corrected
+baseline runs the original scalar normalization, not a serial call through the new row helper.
+Timing excludes source read/decode, the DJI correction warp, rendering, GPU work and presentation;
+the full serial RGB oracle is retained for comparisons outside each timed call. High-water RSS is
+measured for the entire diagnostic process with that oracle alive, and so is not an arm comparison
+or normal-editor working set.
+
+| Source | Serial wall p50 / p95 | Batched wall p50 / p95 | Serial normalization p50 / p95 | Batched normalization p50 / p95 | Serial process CPU p50 / p95 | Batched process CPU p50 / p95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Nikon Z6, 6064 × 4040 | 268.890 / 279.380 ms | 236.979 / 239.121 ms | 39.539 / 40.743 ms | 7.642 / 7.919 ms | 268.841 / 277.505 ms | 289.976 / 292.705 ms |
+| DJI Air 2S, 5568 × 3648 | 230.419 / 231.727 ms | 198.162 / 200.328 ms | 39.921 / 40.543 ms | 7.464 / 7.982 ms | 230.411 / 231.661 ms | 248.674 / 252.729 ms |
+
+Standalone retained-development wall p50 falls by 31.91 ms (11.9%) on Z6 and 32.26 ms (14.0%) on
+Air 2S; p95 falls by 40.26 and 31.40 ms. Process CPU p50 rises 7.9% on both. Whole-process
+high-water RSS is 851.95 MB on Z6 and 698.12 MB on Air 2S with the full serial RGB oracle held;
+normalization itself adds zero scratch. One-minute load averages start/end at 7.69/6.79 for Z6 and
+6.33/5.29 for Air 2S (the accompanying 5/15 minute values are 4.53/4.49 to 4.49/4.47, and
+4.43/4.45 to 4.29/4.40).
+
+A separate same-pool Fit proxy diagnostic uses a 1920 × 1280 proxy and 30 exact-byte-checked
+samples per arm while one full Z6 Bayer development runs. Serial/parallel/parallel/serial legs
+measure core rendering only; they exclude the app event loop, texture upload and scanout.
+
+| Normalization arm | Fit proxy wall p50 / p95 | Process CPU per 15-proxy window p50 / p95 |
+| --- | ---: | ---: |
+| Serial | 13.857 / 14.811 ms | 184.232 / 188.143 ms |
+| Parallel | 13.881 / 16.155 ms | 179.741 / 191.291 ms |
+
+Median proxy time is flat and p95 rises 1.344 ms. Window CPU includes the exact RAW worker. No exact
+development completes during a proxy window; summed post-window join/drain across each arm's two
+legs is 186.4 ms wall / 196.1 ms process CPU for serial and 208.6 / 209.2 ms for parallel
+normalization. The diagnostic process peaks at 891.5 MB across both arms, including the retained
+source, proxy, oracle and transient RGB output; that is not per-arm memory. These measurements
+support the bounded implementation for standalone RAW speed, but do not establish app-level
+presented-frame latency or source-open savings. Do not add its core savings to the cold saved-WB
+results above. Keep the eight-callback cap and requalify full editor contention before changing it.
 
 ### RAW colour row batching
 
@@ -1666,11 +1718,11 @@ loads, scopes and sample counts. No sanitizer run, Windows/Linux numerical quali
 cross-platform native GPU qualification is claimed by this M4 evidence.
 
 The remaining candidates are ranked in [further performance opportunities](../research/further-performance.md).
-RCD Bayer development remains serial. RAW colour row batching is in production and measured on
-actual Z6 and X100VI working planes; the core shared-pool result is separate from presentation and
-does not replace end-to-end evidence. Startup attribution, GPU texture transfer, GPU execution and
-SIMD/assembly remain open; CPU RGBA publication already writes directly into the frame owner, and
-no additional savings are assigned to it.
+Bayer normalization and RAW colour row batching are in production and measured on actual owner
+inputs; their core shared-pool results are separate from presentation and do not replace end-to-end
+evidence. RCD Bayer development remains serial. Startup attribution, GPU texture transfer, GPU
+execution and SIMD/assembly remain open; CPU RGBA publication already writes directly into the
+frame owner, and no additional savings are assigned to it.
 
 ## Method
 
