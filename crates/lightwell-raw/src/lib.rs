@@ -216,6 +216,13 @@ struct NativeMetadata {
     cam_xyz: [f32; 12],
 }
 
+#[repr(C)]
+struct DevelopDiagnostics {
+    normalization_ns: u64,
+    demosaic_ns: u64,
+    normalized_mosaic_capture: *mut f32,
+}
+
 type CancelCallback = extern "C" fn(*mut c_void) -> c_int;
 unsafe extern "C" {
     fn lw_raw_open(
@@ -253,6 +260,7 @@ unsafe extern "C" {
         cancel_context: *mut c_void,
         err: *mut c_char,
         err_len: usize,
+        diagnostics: *mut DevelopDiagnostics,
     ) -> c_int;
 }
 
@@ -469,6 +477,25 @@ impl RawSource {
         Ok(image)
     }
 
+    /// Expose the native mosaic stage to a cross-crate, ignored contention diagnostic.
+    /// This method is only compiled with the `performance-diagnostics` feature.
+    #[cfg(feature = "performance-diagnostics")]
+    #[doc(hidden)]
+    pub fn develop_for_performance_diagnostic(
+        &self,
+        gains: [f32; 3],
+        cancel: &AtomicBool,
+        parallel_normalization: bool,
+    ) -> Result<PlanarRgb, RawError> {
+        self.develop_uncorrected_diagnostic(
+            gains,
+            cancel,
+            0,
+            parallel_normalization,
+            std::ptr::null_mut(),
+        )
+    }
+
     fn develop_uncorrected(
         &self,
         gains: [f32; 3],
@@ -482,6 +509,17 @@ impl RawSource {
         gains: [f32; 3],
         cancel: &AtomicBool,
         worker_limit: usize,
+    ) -> Result<PlanarRgb, RawError> {
+        self.develop_uncorrected_diagnostic(gains, cancel, worker_limit, true, std::ptr::null_mut())
+    }
+
+    fn develop_uncorrected_diagnostic(
+        &self,
+        gains: [f32; 3],
+        cancel: &AtomicBool,
+        worker_limit: usize,
+        use_executor: bool,
+        diagnostics: *mut DevelopDiagnostics,
     ) -> Result<PlanarRgb, RawError> {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
@@ -529,12 +567,17 @@ impl RawSource {
                 green.as_mut_ptr(),
                 blue.as_mut_ptr(),
                 0,
-                Some(native_tiles::execute),
-                (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast(),
+                use_executor.then_some(native_tiles::execute),
+                if use_executor {
+                    (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast()
+                } else {
+                    std::ptr::null_mut()
+                },
                 cancelled,
                 (cancel as *const AtomicBool).cast_mut().cast(),
                 error.as_mut_ptr(),
                 error.len(),
+                diagnostics,
             )
         };
         if code != 0 {
@@ -840,6 +883,485 @@ impl RawSource {
 mod tests {
     use super::*;
 
+    fn native_develop_for_test(
+        samples: &[u16],
+        meta: &NativeMetadata,
+        patches: &[MosaicCorrection],
+        gains: [f32; 3],
+        parallel: bool,
+        capture: &mut [f32],
+    ) -> Vec<f32> {
+        let n = samples.len();
+        let mut output = vec![0.0_f32; n * 3];
+        let (red, rest) = output.split_at_mut(n);
+        let (green, blue) = rest.split_at_mut(n);
+        let cancel = AtomicBool::new(false);
+        let mut executor_context = native_tiles::ExecutorContext {
+            cancel: &cancel,
+            worker_limit: 4,
+        };
+        let mut diagnostics = DevelopDiagnostics {
+            normalization_ns: 0,
+            demosaic_ns: 0,
+            normalized_mosaic_capture: capture.as_mut_ptr(),
+        };
+        let mut error = [0 as c_char; 256];
+        let code = unsafe {
+            lw_raw_develop(
+                samples.as_ptr(),
+                n,
+                meta,
+                if patches.is_empty() {
+                    std::ptr::null()
+                } else {
+                    patches.as_ptr()
+                },
+                patches.len(),
+                gains.as_ptr(),
+                red.as_mut_ptr(),
+                green.as_mut_ptr(),
+                blue.as_mut_ptr(),
+                0,
+                parallel.then_some(native_tiles::execute),
+                if parallel {
+                    (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast()
+                } else {
+                    std::ptr::null_mut()
+                },
+                cancelled,
+                (&cancel as *const AtomicBool).cast_mut().cast(),
+                error.as_mut_ptr(),
+                error.len(),
+                &mut diagnostics,
+            )
+        };
+        assert_eq!(code, 0, "{}", c_text(&error));
+        output
+    }
+
+    #[test]
+    fn bayer_row_batches_match_serial_mosaic_and_rgb_bits() {
+        for (width, height) in [(1040_usize, 1030_usize), (317, 221)] {
+            let count = width * height;
+            let mut meta = RawSource::blank_native();
+            meta.width = width as u32;
+            meta.height = height as u32;
+            meta.cfa_width = 2;
+            meta.cfa_height = 2;
+            meta.cfa[..4].copy_from_slice(&[0, 1, 1, 2]);
+            meta.black_cfa[..4].copy_from_slice(&[0, 1, 3, 2]);
+            meta.black_base = 17.0;
+            meta.black_channels = [2.0, 4.0, 6.0, 8.0];
+            meta.black_repeat_width = 3;
+            meta.black_repeat_height = 2;
+            meta.black_repeat[..6].copy_from_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+            meta.white = 4095.0;
+            let samples: Vec<u16> = (0..count)
+                .map(|i| ((i * 7919 + i / width * 113) % 4096) as u16)
+                .collect();
+            let patches: Vec<MosaicCorrection> = (1000..count)
+                .step_by(7777)
+                .map(|index| MosaicCorrection {
+                    index: index as u32,
+                    value: (4095 - samples[index]),
+                })
+                .collect();
+            let mut serial_mosaic = vec![0.0; count];
+            let mut parallel_mosaic = vec![0.0; count];
+            let serial = native_develop_for_test(
+                &samples,
+                &meta,
+                &patches,
+                [1.2, 1.0, 1.4],
+                false,
+                &mut serial_mosaic,
+            );
+            let parallel = native_develop_for_test(
+                &samples,
+                &meta,
+                &patches,
+                [1.2, 1.0, 1.4],
+                true,
+                &mut parallel_mosaic,
+            );
+            assert!(
+                serial_mosaic
+                    .iter()
+                    .zip(&parallel_mosaic)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+            assert!(
+                serial
+                    .iter()
+                    .zip(&parallel)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+        }
+    }
+
+    #[test]
+    fn bayer_row_batches_propagate_cancellation_and_worker_errors() {
+        struct CancelAfter {
+            calls: std::sync::atomic::AtomicUsize,
+            limit: usize,
+        }
+        extern "C" fn cancel_after(context: *mut c_void) -> c_int {
+            // SAFETY: each native call is synchronous and receives this live stack state.
+            let state = unsafe { &*context.cast::<CancelAfter>() };
+            c_int::from(state.calls.fetch_add(1, Ordering::Relaxed) + 1 >= state.limit)
+        }
+
+        let width = 1040_usize;
+        let height = 1030_usize;
+        let count = width * height;
+        let samples = vec![2048_u16; count];
+        let mut meta = RawSource::blank_native();
+        meta.width = width as u32;
+        meta.height = height as u32;
+        meta.cfa_width = 2;
+        meta.cfa_height = 2;
+        meta.cfa[..4].copy_from_slice(&[0, 1, 1, 2]);
+        meta.black_cfa[..4].copy_from_slice(&[0, 1, 3, 2]);
+        meta.white = 4095.0;
+        let gains = [1.0_f32; 3];
+        let cancel = AtomicBool::new(false);
+        let mut executor_context = native_tiles::ExecutorContext {
+            cancel: &cancel,
+            worker_limit: 4,
+        };
+        let state = CancelAfter {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            limit: 8,
+        };
+        let mut output = vec![0.0_f32; count * 3];
+        let mut error = [0 as c_char; 256];
+        let (red, rest) = output.split_at_mut(count);
+        let (green, blue) = rest.split_at_mut(count);
+        let code = unsafe {
+            lw_raw_develop(
+                samples.as_ptr(),
+                count,
+                &meta,
+                std::ptr::null(),
+                0,
+                gains.as_ptr(),
+                red.as_mut_ptr(),
+                green.as_mut_ptr(),
+                blue.as_mut_ptr(),
+                0,
+                Some(native_tiles::execute),
+                (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast(),
+                cancel_after,
+                (&state as *const CancelAfter).cast_mut().cast(),
+                error.as_mut_ptr(),
+                error.len(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(code, 2, "{}", c_text(&error));
+        assert!(state.calls.load(Ordering::Relaxed) >= state.limit);
+
+        // A bad per-site calibration must stop a row worker and surface as a
+        // native error instead of invoking demosaic with a partial mosaic.
+        let mut invalid = meta.clone();
+        invalid.white = 0.0;
+        let never_cancel = AtomicBool::new(false);
+        let mut executor_context = native_tiles::ExecutorContext {
+            cancel: &never_cancel,
+            worker_limit: 4,
+        };
+        let code = unsafe {
+            lw_raw_develop(
+                samples.as_ptr(),
+                count,
+                &invalid,
+                std::ptr::null(),
+                0,
+                gains.as_ptr(),
+                red.as_mut_ptr(),
+                green.as_mut_ptr(),
+                blue.as_mut_ptr(),
+                0,
+                Some(native_tiles::execute),
+                (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast(),
+                cancelled,
+                (&never_cancel as *const AtomicBool).cast_mut().cast(),
+                error.as_mut_ptr(),
+                error.len(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(code, 5, "{}", c_text(&error));
+    }
+
+    #[test]
+    #[ignore = "authentic owner mosaic qualification; run separately from timing for each source"]
+    fn bayer_owner_mosaic_and_rgb_oracle() {
+        use sha2::{Digest, Sha256};
+        let owner = std::env::var("LIGHTWELL_RAW_OWNER_DIR").expect("owner RAW fixture directory");
+        let name =
+            std::env::var("LIGHTWELL_RAW_PROFILE_SOURCE").expect("one source name per process");
+        let (expected_hash, expected_mode, expected_dimensions) = match name.as_str() {
+            "nikon_z6.NEF" => (
+                "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb",
+                RawMode::NikonZ6Lossless14,
+                (6064, 4040),
+            ),
+            "mavic_air_2s.DNG" => (
+                "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d",
+                RawMode::DjiAir2sDng16,
+                (5568, 3648),
+            ),
+            _ => panic!("unsupported owner Bayer source: {name}"),
+        };
+        let bytes = std::fs::read(format!("{owner}/{name}")).expect("read authentic owner source");
+        let source_hash = format!("{:x}", Sha256::digest(&bytes));
+        assert_eq!(
+            source_hash, expected_hash,
+            "owner fixture manifest hash changed"
+        );
+        let cancel = AtomicBool::new(false);
+        let raw = RawSource::decode(Arc::from(bytes), &cancel).expect("decode owner Bayer source");
+        assert_eq!(raw.metadata.mode, expected_mode);
+        assert_eq!(
+            (raw.metadata.sensor_width, raw.metadata.sensor_height),
+            expected_dimensions
+        );
+        assert_eq!(raw.metadata.cfa_width, 2);
+        let gains = raw.metadata.as_shot_gains;
+        let mut serial_mosaic = vec![0.0_f32; raw.mosaic.len()];
+        let serial_output = native_develop_for_test(
+            raw.mosaic(),
+            &raw.native,
+            raw.mosaic_corrections(),
+            gains,
+            false,
+            &mut serial_mosaic,
+        );
+        let mut parallel_mosaic = vec![0.0_f32; raw.mosaic.len()];
+        let parallel_output = native_develop_for_test(
+            raw.mosaic(),
+            &raw.native,
+            raw.mosaic_corrections(),
+            gains,
+            true,
+            &mut parallel_mosaic,
+        );
+        assert!(
+            serial_mosaic
+                .iter()
+                .zip(&parallel_mosaic)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "complete normalized mosaic differs for {name}"
+        );
+        assert!(
+            serial_output
+                .iter()
+                .zip(&parallel_output)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "complete RGB differs for {name}"
+        );
+    }
+
+    #[test]
+    #[ignore = "opt-in owner Mac release profile; coordinate an idle build/test window first"]
+    fn bayer_normalization_release_abba_profile() {
+        use sha2::{Digest, Sha256};
+        use std::{fs, io::Write, process::Command, time::Instant};
+
+        #[derive(Clone, Copy)]
+        struct Observation {
+            wall_ns: u128,
+            cpu_ns: u128,
+            normalization_ns: u64,
+            demosaic_ns: u64,
+        }
+
+        fn usage() -> libc::rusage {
+            let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+            // SAFETY: getrusage initializes the rusage record on success.
+            assert_eq!(
+                unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) },
+                0
+            );
+            unsafe { usage.assume_init() }
+        }
+
+        fn cpu_ns(usage: &libc::rusage) -> u128 {
+            let user = usage.ru_utime.tv_sec as u128 * 1_000_000_000
+                + usage.ru_utime.tv_usec as u128 * 1_000;
+            let system = usage.ru_stime.tv_sec as u128 * 1_000_000_000
+                + usage.ru_stime.tv_usec as u128 * 1_000;
+            user + system
+        }
+
+        fn peak_rss_bytes(usage: &libc::rusage) -> u64 {
+            let rss = usage.ru_maxrss.max(0) as u64;
+            if cfg!(target_os = "macos") {
+                rss
+            } else {
+                rss * 1024
+            }
+        }
+
+        fn p50_p95(values: impl Iterator<Item = u128>) -> (u128, u128) {
+            let mut values: Vec<u128> = values.collect();
+            values.sort_unstable();
+            let p50 = values[(values.len() - 1) / 2];
+            let p95 = values[(values.len() * 95).div_ceil(100) - 1];
+            (p50, p95)
+        }
+
+        fn host_output(command: &str, args: &[&str]) -> String {
+            Command::new(command)
+                .args(args)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| {
+                    String::from_utf8_lossy(&output.stdout)
+                        .trim()
+                        .replace(',', ";")
+                })
+                .unwrap_or_else(|| "unavailable".into())
+        }
+
+        fn run_once(
+            raw: &RawSource,
+            gains: [f32; 3],
+            cancel: &AtomicBool,
+            use_executor: bool,
+            oracle: &[f32],
+        ) -> Observation {
+            let mut diagnostics = DevelopDiagnostics {
+                normalization_ns: 0,
+                demosaic_ns: 0,
+                normalized_mosaic_capture: std::ptr::null_mut(),
+            };
+            let before_cpu = usage();
+            let start = Instant::now();
+            let image = raw
+                .develop_uncorrected_diagnostic(gains, cancel, 0, use_executor, &mut diagnostics)
+                .unwrap();
+            let wall_ns = start.elapsed().as_nanos();
+            let after_cpu = usage();
+            let observed_cpu = cpu_ns(&after_cpu).saturating_sub(cpu_ns(&before_cpu));
+            assert_eq!(image.data.len(), oracle.len());
+            if let Some(index) = image
+                .data
+                .iter()
+                .zip(oracle)
+                .position(|(actual, expected)| actual.to_bits() != expected.to_bits())
+            {
+                panic!(
+                    "full RGB differs at {index}: {:?} vs {:?}",
+                    image.data[index].to_bits(),
+                    oracle[index].to_bits()
+                );
+            }
+            Observation {
+                wall_ns,
+                cpu_ns: observed_cpu,
+                normalization_ns: diagnostics.normalization_ns,
+                demosaic_ns: diagnostics.demosaic_ns,
+            }
+        }
+
+        let owner = std::env::var("LIGHTWELL_RAW_OWNER_DIR").expect("owner RAW fixture directory");
+        let output_path =
+            std::env::var("LIGHTWELL_RAW_TIMING_OUTPUT").expect("explicit profile CSV path");
+        let name = std::env::var("LIGHTWELL_RAW_PROFILE_SOURCE")
+            .expect("run one owner source per fresh profile process");
+        let expected = match name.as_str() {
+            "nikon_z6.NEF" => "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb",
+            "mavic_air_2s.DNG" => {
+                "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d"
+            }
+            _ => panic!("unsupported owner Bayer source: {name}"),
+        };
+        let mut file = fs::File::create(output_path).expect("create profile CSV");
+        writeln!(file, "source,variant,iteration,wall_ns,process_cpu_ns,normalization_ns,demosaic_ns,max_admitted_callbacks,worker_limit,normalizer_extra_scratch_bytes,shared_admission_slot_limit,load_start,arch").unwrap();
+        let max_admitted_callbacks = rayon::current_num_threads().min(8);
+        let cpu_model = host_output("uname", &["-m"]);
+        for (name, expected_hash) in [(name.as_str(), expected)] {
+            let path = format!("{owner}/{name}");
+            let bytes = fs::read(&path).expect("read authentic RAW original");
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&bytes)),
+                expected_hash,
+                "fixture changed"
+            );
+            let cancel = AtomicBool::new(false);
+            let raw =
+                RawSource::decode(Arc::from(bytes), &cancel).expect("decode authentic Bayer RAW");
+            let gains = raw.metadata.as_shot_gains;
+            assert_eq!(raw.metadata.cfa_width, 2, "profile input must be Bayer");
+            assert_eq!(
+                raw.metadata.mode,
+                if name == "nikon_z6.NEF" {
+                    RawMode::NikonZ6Lossless14
+                } else {
+                    RawMode::DjiAir2sDng16
+                }
+            );
+            assert_eq!(
+                (raw.metadata.sensor_width, raw.metadata.sensor_height),
+                if name == "nikon_z6.NEF" {
+                    (6064, 4040)
+                } else {
+                    (5568, 3648)
+                }
+            );
+            let rows = raw.mosaic.len() / raw.metadata.sensor_width as usize;
+            let callback_cap = max_admitted_callbacks.min(rows.div_ceil(16));
+            let oracle = raw
+                .develop_uncorrected_diagnostic(gains, &cancel, 1, false, std::ptr::null_mut())
+                .expect("serial RGB oracle")
+                .data;
+            // Warm both paths before starting the ABBA observations.
+            let _ = run_once(&raw, gains, &cancel, false, &oracle);
+            let _ = run_once(&raw, gains, &cancel, true, &oracle);
+            let load_start = host_output("uptime", &[]);
+            let mut serial = Vec::with_capacity(30);
+            let mut parallel = Vec::with_capacity(30);
+            for pair in 0..15 {
+                for (order, use_executor) in [false, true, true, false].into_iter().enumerate() {
+                    let observation = run_once(&raw, gains, &cancel, use_executor, &oracle);
+                    if use_executor {
+                        parallel.push(observation);
+                    } else {
+                        serial.push(observation);
+                    }
+                    writeln!(
+                        file,
+                        "{name},{},{},{},{},{},{},{callback_cap},0,0,8,\"{load_start}\",\"{cpu_model}\"",
+                        if use_executor { "parallel" } else { "serial" },
+                        pair * 4 + order,
+                        observation.wall_ns,
+                        observation.cpu_ns,
+                        observation.normalization_ns,
+                        observation.demosaic_ns,
+                    )
+                    .unwrap();
+                }
+                file.flush().unwrap();
+            }
+            let load_end = host_output("uptime", &[]);
+            for (variant, observations) in [("serial", &serial), ("parallel", &parallel)] {
+                let (wall_p50, wall_p95) = p50_p95(observations.iter().map(|v| v.wall_ns));
+                let (cpu_p50, cpu_p95) = p50_p95(observations.iter().map(|v| v.cpu_ns));
+                let (norm_p50, norm_p95) =
+                    p50_p95(observations.iter().map(|v| v.normalization_ns as u128));
+                let (demosaic_p50, demosaic_p95) =
+                    p50_p95(observations.iter().map(|v| v.demosaic_ns as u128));
+                writeln!(file, "# summary source={name}; variant={variant}; n=30; wall_p50_p95_ns={wall_p50}/{wall_p95}; process_cpu_p50_p95_ns={cpu_p50}/{cpu_p95}; normalization_p50_p95_ns={norm_p50}/{norm_p95}; demosaic_p50_p95_ns={demosaic_p50}/{demosaic_p95}").unwrap();
+            }
+            let final_usage = usage();
+            writeln!(file, "# scope source={name}; mode={:?}; dimensions={}x{}; source_sha256={expected_hash}; host_cpu=Apple M4 Pro 14-core (owner host); arch={cpu_model}; load_start={load_start}; load_end={load_end}; max_admitted_callbacks={callback_cap}; shared_admission_slot_limit=8; normalizer_extra_scratch_bytes=0; process_high_water_rss_bytes_with_serial_oracle_held={}; retained mosaic development includes normalization, demosaic, output plane allocation and final divide; excludes file read/decode, correction warp, GPU and presentation; exact RGB bit comparison is outside each call timer; no build/test is scheduled alongside the profile; other process CPU is not separately sampled", raw.metadata.mode, raw.metadata.sensor_width, raw.metadata.sensor_height, peak_rss_bytes(&final_usage)).unwrap();
+            file.flush().unwrap();
+        }
+    }
+
     #[test]
     fn absent_or_singular_camera_response_is_not_render_support() {
         assert!(matches!(
@@ -961,6 +1483,7 @@ mod tests {
                 (&cancel as *const AtomicBool).cast_mut().cast(),
                 error.as_mut_ptr(),
                 error.len(),
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(code, 0);
@@ -1004,6 +1527,7 @@ mod tests {
                 (&cancel as *const AtomicBool).cast_mut().cast(),
                 error.as_mut_ptr(),
                 error.len(),
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(code, 0);
@@ -1030,6 +1554,7 @@ mod tests {
                 (&cancel as *const AtomicBool).cast_mut().cast(),
                 error.as_mut_ptr(),
                 error.len(),
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(code, 0);
@@ -1114,6 +1639,7 @@ mod tests {
                     (cancel as *const AtomicBool).cast_mut().cast(),
                     error.as_mut_ptr(),
                     error.len(),
+                    std::ptr::null_mut(),
                 )
             };
             assert_eq!(code, 0, "{}", c_text(&error));
@@ -1357,6 +1883,7 @@ mod tests {
                     (&state as *const CancelAfter).cast_mut().cast(),
                     error.as_mut_ptr(),
                     error.len(),
+                    std::ptr::null_mut(),
                 )
             };
             (

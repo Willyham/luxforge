@@ -2328,6 +2328,400 @@ mod tests {
         println!("loadavg_after={}", host_load_1m());
     }
 
+    /// Measures a Fit-size RAW proxy while one exact retained-mosaic development repeats on a
+    /// background caller. The serial and parallel normalizer arms run in ABBA block order; each
+    /// proxy byte buffer is checked against an untimed exact reference after its render timer.
+    #[test]
+    #[ignore = "owner-Mac RAW normalization contention diagnostic"]
+    fn bayer_normalization_fit_proxy_contention_diagnostic() {
+        use std::{
+            process::Command,
+            sync::{
+                Barrier,
+                atomic::{AtomicBool, Ordering},
+            },
+        };
+
+        fn host_load_1m() -> String {
+            Command::new("uptime")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .and_then(|output| {
+                    let (_, values) = output
+                        .split_once("load averages:")
+                        .or_else(|| output.split_once("load average:"))?;
+                    values
+                        .split_whitespace()
+                        .next()
+                        .map(|value| value.trim_end_matches(',').to_owned())
+                })
+                .unwrap_or_else(|| "unavailable".into())
+        }
+
+        fn render_checked(
+            registry: &ModuleRegistry,
+            source: &LinearImage,
+            snapshot: &SnapshotId,
+            recipe: &Recipe,
+            settings: LinearSettings,
+            oracle: &Raster,
+            sampler: &mut lightwell_process::Sampler,
+        ) -> (f64, Option<f64>) {
+            let cpu_before = sampler.read().cpu_time_ns.ok();
+            let start = Instant::now();
+            let raster = render_linear_proxy_cancellable(
+                registry,
+                source,
+                snapshot.clone(),
+                recipe,
+                settings,
+                &Cancel::never(),
+            )
+            .expect("Fit proxy render");
+            let wall_ms = start.elapsed().as_secs_f64() * 1e3;
+            let cpu_after = sampler.read().cpu_time_ns.ok();
+            assert_eq!(raster, *oracle, "complete Fit proxy bytes");
+            std::hint::black_box(&raster);
+            drop(raster);
+            let process_cpu_ms = cpu_before
+                .zip(cpu_after)
+                .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6);
+            (wall_ms, process_cpu_ms)
+        }
+
+        fn measure_leg(
+            parallel_normalization: bool,
+            raw: Arc<lightwell_raw::RawSource>,
+            gains: [f32; 3],
+            preview: &LinearImage,
+            preview_snapshot: &SnapshotId,
+            recipe: &Recipe,
+            settings: LinearSettings,
+            oracle: &Raster,
+            registry: &ModuleRegistry,
+            sampler: &mut lightwell_process::Sampler,
+        ) -> (
+            Vec<f64>,
+            Vec<f64>,
+            u32,
+            u32,
+            u32,
+            u32,
+            f64,
+            f64,
+            f64,
+            f64,
+            String,
+            String,
+        ) {
+            let running = Arc::new(AtomicBool::new(true));
+            let started = Arc::new(AtomicBool::new(false));
+            let exact_started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let exact_completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let barrier = Arc::new(Barrier::new(2));
+            let worker_running = running.clone();
+            let worker_started = started.clone();
+            let worker_exact_started = exact_started.clone();
+            let worker_exact_completed = exact_completed.clone();
+            let worker_barrier = barrier.clone();
+            let worker_raw = raw.clone();
+            let worker = std::thread::spawn(move || {
+                let worker_cancel = AtomicBool::new(false);
+                worker_barrier.wait();
+                worker_started.store(true, Ordering::Release);
+                while worker_running.load(Ordering::Acquire) {
+                    worker_exact_started.fetch_add(1, Ordering::AcqRel);
+                    let developed = worker_raw
+                        .develop_for_performance_diagnostic(
+                            gains,
+                            &worker_cancel,
+                            parallel_normalization,
+                        )
+                        .expect("concurrent exact Bayer development");
+                    std::hint::black_box(&developed.data);
+                    drop(developed);
+                    worker_exact_completed.fetch_add(1, Ordering::AcqRel);
+                }
+            });
+
+            let load_start = host_load_1m();
+            let cpu_before = sampler.read().cpu_time_ns.ok();
+            let overlap_start = Instant::now();
+            barrier.wait();
+            while !started.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+            let mut proxy_wall = Vec::with_capacity(15);
+            let mut proxy_process_cpu = Vec::with_capacity(15);
+            for _ in 0..15 {
+                let (wall, cpu) = render_checked(
+                    registry,
+                    preview,
+                    preview_snapshot,
+                    recipe,
+                    settings,
+                    oracle,
+                    sampler,
+                );
+                proxy_wall.push(wall);
+                if let Some(cpu) = cpu {
+                    proxy_process_cpu.push(cpu);
+                }
+            }
+            // The measured overlap ends with the fifteenth preview. Snapshot counters
+            // and process CPU before asking the worker to stop; RCD may finish later.
+            let overlap_wall_ms = overlap_start.elapsed().as_secs_f64() * 1e3;
+            let overlap_cpu_snapshot = sampler.read().cpu_time_ns.ok();
+            let overlap_started = exact_started.load(Ordering::Acquire) as u32;
+            let overlap_completed = exact_completed.load(Ordering::Acquire) as u32;
+            running.store(false, Ordering::Release);
+            let drain_start = Instant::now();
+            worker.join().expect("exact RAW worker");
+            let drain_wall_ms = drain_start.elapsed().as_secs_f64() * 1e3;
+            let after_drain_cpu = sampler.read().cpu_time_ns.ok();
+            let drain_process_cpu_ms = overlap_cpu_snapshot
+                .zip(after_drain_cpu)
+                .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6)
+                .unwrap_or(f64::NAN);
+            let overlap_process_cpu_ms = cpu_before
+                .zip(overlap_cpu_snapshot)
+                .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6)
+                .unwrap_or(f64::NAN);
+            let load_end = host_load_1m();
+            let total_started = exact_started.load(Ordering::Acquire) as u32;
+            let total_completed = exact_completed.load(Ordering::Acquire) as u32;
+            (
+                proxy_wall,
+                proxy_process_cpu,
+                overlap_started,
+                overlap_completed,
+                total_started.saturating_sub(overlap_started),
+                total_completed.saturating_sub(overlap_completed),
+                overlap_wall_ms,
+                overlap_process_cpu_ms,
+                drain_wall_ms,
+                drain_process_cpu_ms,
+                load_start,
+                load_end,
+            )
+        }
+
+        let owner = std::env::var("LIGHTWELL_RAW_OWNER_DIR").expect("owner RAW fixture directory");
+        let path = std::path::Path::new(&owner).join("nikon_z6.NEF");
+        let bytes = std::fs::read(&path).expect("read owner Nikon Z6 source");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb",
+            "owner RAW manifest hash"
+        );
+        let prepared = crate::source::RawPrepared::decode(
+            bytes,
+            "sha256:bayer-normalization-fit-contention".into(),
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("decode and prepare owner Nikon Z6");
+        let raw = prepared.sensor.clone();
+        let gains = prepared.gains;
+        assert_eq!(
+            raw.metadata().mode,
+            lightwell_raw::RawMode::NikonZ6Lossless14
+        );
+        assert_eq!(
+            (raw.metadata().sensor_width, raw.metadata().sensor_height),
+            (6064, 4040)
+        );
+        let source = prepared
+            .linear
+            .clone()
+            .expect("retained Nikon linear planes");
+        let mut sampler = lightwell_process::Sampler::new();
+        let memory_after_decode = sampler.read().memory;
+
+        let preview_width = 1920_u32;
+        let preview_height = 1280_u32;
+        let mut red = Vec::with_capacity((preview_width * preview_height) as usize);
+        let mut green = Vec::with_capacity(red.capacity());
+        let mut blue = Vec::with_capacity(red.capacity());
+        let reader = source.reader();
+        for y in 0..preview_height {
+            let source_y =
+                (u64::from(y) * u64::from(source.height()) / u64::from(preview_height)) as u32;
+            let row = reader
+                .row(source_y)
+                .expect("Fit proxy row")
+                .collect::<Vec<_>>();
+            for x in 0..preview_width {
+                let source_x =
+                    (u64::from(x) * u64::from(source.width()) / u64::from(preview_width)) as usize;
+                let pixel = row[source_x];
+                red.push(pixel[0]);
+                green.push(pixel[1]);
+                blue.push(pixel[2]);
+            }
+        }
+        let mut preview_planes = red;
+        preview_planes.extend(green);
+        preview_planes.extend(blue);
+        let preview = LinearImage::with_fingerprint(
+            preview_width,
+            preview_height,
+            preview_planes,
+            "sha256:bayer-normalization-fit-contention-proxy",
+        )
+        .unwrap();
+        let registry = ModuleRegistry::builtin();
+        let settings = LinearSettings {
+            exposure_ev: 0.7,
+            white_balance: None,
+        };
+        let recipe = colour_recipe(vec![colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({
+                "exposure": 0.5, "contrast": 25.0, "highlights": -30.0,
+                "shadows": 30.0, "whites": -15.0, "blacks": 15.0,
+                "temperature": 20.0, "tint": -10.0, "vibrance": 30.0,
+                "saturation": 15.0
+            }),
+        )]);
+        let snapshot = SnapshotId::new();
+        let reference =
+            generic_linear_reference(&registry, &preview, snapshot.clone(), &recipe, settings);
+        assert_eq!(
+            reference,
+            render_linear_proxy_cancellable(
+                &registry,
+                &preview,
+                snapshot.clone(),
+                &recipe,
+                settings,
+                &Cancel::never(),
+            )
+            .unwrap(),
+            "Fit proxy equals generic complete-byte reference"
+        );
+        // Warm native exact and proxy paths in both normalizer modes before sampling.
+        for parallel in [false, true] {
+            let developed = raw
+                .develop_for_performance_diagnostic(
+                    gains,
+                    &std::sync::atomic::AtomicBool::new(false),
+                    parallel,
+                )
+                .expect("warm exact native development");
+            std::hint::black_box(&developed.data);
+            drop(developed);
+            let _ = render_checked(
+                &registry,
+                &preview,
+                &snapshot,
+                &recipe,
+                settings,
+                &reference,
+                &mut sampler,
+            );
+        }
+
+        let mut serial_wall = Vec::with_capacity(30);
+        let mut serial_cpu = Vec::with_capacity(30);
+        let mut parallel_wall = Vec::with_capacity(30);
+        let mut parallel_cpu = Vec::with_capacity(30);
+        let mut exact_started_overlap = [0_u32; 2];
+        let mut exact_completed_overlap = [0_u32; 2];
+        let mut exact_started_drain = [0_u32; 2];
+        let mut exact_completed_drain = [0_u32; 2];
+        let mut overlap_wall_ms = [0.0_f64; 2];
+        let mut overlap_process_cpu_ms = [0.0_f64; 2];
+        let mut drain_wall_ms = [0.0_f64; 2];
+        let mut drain_process_cpu_ms = [0.0_f64; 2];
+        let mut leg_loads = Vec::new();
+        // Each leg contributes 15 preview samples; A-B-B-A therefore gives 30 per arm.
+        for parallel in [false, true, true, false] {
+            let (
+                wall,
+                cpu,
+                started,
+                completed,
+                drain_started,
+                drain_completed,
+                overlap_wall,
+                overlap_cpu,
+                drain_wall,
+                drain_cpu,
+                load_start,
+                load_end,
+            ) = measure_leg(
+                parallel,
+                raw.clone(),
+                gains,
+                &preview,
+                &snapshot,
+                &recipe,
+                settings,
+                &reference,
+                &registry,
+                &mut sampler,
+            );
+            let arm = usize::from(parallel);
+            if parallel {
+                parallel_wall.extend(wall);
+                parallel_cpu.extend(cpu);
+            } else {
+                serial_wall.extend(wall);
+                serial_cpu.extend(cpu);
+            }
+            exact_started_overlap[arm] += started;
+            exact_completed_overlap[arm] += completed;
+            exact_started_drain[arm] += drain_started;
+            exact_completed_drain[arm] += drain_completed;
+            overlap_wall_ms[arm] += overlap_wall;
+            overlap_process_cpu_ms[arm] += overlap_cpu;
+            drain_wall_ms[arm] += drain_wall;
+            drain_process_cpu_ms[arm] += drain_cpu;
+            leg_loads.push((
+                if parallel { "parallel" } else { "serial" },
+                load_start,
+                load_end,
+            ));
+        }
+        let memory = sampler.read().memory;
+        println!(
+            "bayer_fit_proxy_contention: source=nikon_z6.NEF dimensions=6064x4040 preview={}x{} samples_per_arm=30 order=serial-parallel-parallel-serial rayon_threads={} max_admitted_normalization_callbacks=8 normalizer_extra_scratch_bytes=0 shared_admission_slot_limit=8 preview_serial_wall_p50_p95_ms={:.3}/{:.3} preview_serial_process_cpu_per_preview_window_p50_p95_ms={:.3}/{:.3} preview_parallel_wall_p50_p95_ms={:.3}/{:.3} preview_parallel_process_cpu_per_preview_window_p50_p95_ms={:.3}/{:.3} exact_serial_started_during_overlap={} exact_serial_completed_during_overlap={} exact_serial_started_in_drain={} exact_serial_completed_in_drain={} exact_parallel_started_during_overlap={} exact_parallel_completed_during_overlap={} exact_parallel_started_in_drain={} exact_parallel_completed_in_drain={} serial_overlap_wall_ms={:.1} serial_overlap_process_cpu_ms={:.1} serial_drain_wall_ms={:.1} serial_drain_process_cpu_ms={:.1} parallel_overlap_wall_ms={:.1} parallel_overlap_process_cpu_ms={:.1} parallel_drain_wall_ms={:.1} parallel_drain_process_cpu_ms={:.1} memory_after_prepare={memory_after_decode:?} process_memory_after_overlap={memory:?} process_memory_peak_scope=whole diagnostic process across both arms including retained mosaic, retained linear planes, preview oracle and transient exact RGB output; not per arm; cancellation=measurement does not cancel exact development; per-row normalization checks and joins; Bayer RCD is noncancellable until its native call returns; includes core preview render, excludes app upload and scanout",
+            preview_width,
+            preview_height,
+            rayon::current_num_threads(),
+            percentile(&serial_wall, 0.50),
+            percentile(&serial_wall, 0.95),
+            percentile(&serial_cpu, 0.50),
+            percentile(&serial_cpu, 0.95),
+            percentile(&parallel_wall, 0.50),
+            percentile(&parallel_wall, 0.95),
+            percentile(&parallel_cpu, 0.50),
+            percentile(&parallel_cpu, 0.95),
+            exact_started_overlap[0],
+            exact_completed_overlap[0],
+            exact_started_drain[0],
+            exact_completed_drain[0],
+            exact_started_overlap[1],
+            exact_completed_overlap[1],
+            exact_started_drain[1],
+            exact_completed_drain[1],
+            overlap_wall_ms[0],
+            overlap_process_cpu_ms[0],
+            drain_wall_ms[0],
+            drain_process_cpu_ms[0],
+            overlap_wall_ms[1],
+            overlap_process_cpu_ms[1],
+            drain_wall_ms[1],
+            drain_process_cpu_ms[1],
+        );
+        for (arm, start, end) in leg_loads {
+            println!("contention_leg_load: arm={arm} load_start={start} load_end={end}");
+        }
+    }
+
     #[test]
     fn source_rows_keep_validation_fallback_cancellation_and_finite_errors() {
         let source = varied(9, 7);

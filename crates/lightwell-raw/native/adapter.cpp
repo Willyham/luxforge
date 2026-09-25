@@ -4,6 +4,8 @@
 #include "librtprocess.h"
 #include "camera_allowlist.h"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -17,6 +19,11 @@ typedef int (*LwCancel)(void *);
 struct LwCancelState { LwCancel callback; void *context; };
 
 struct LwMosaicCorrection { uint32_t index; uint16_t value; };
+struct LwDevelopDiagnostics {
+  uint64_t normalization_ns;
+  uint64_t demosaic_ns;
+  float *normalized_mosaic_capture;
+};
 
 struct LwMetadata {
   char make[64], model[64], decoder[80];
@@ -70,6 +77,91 @@ struct CancelData { LwCancel callback; void *context; };
 int progress(void *data, enum LibRaw_progress, int, int) noexcept {
   auto *cancel = static_cast<CancelData *>(data);
   return cancel->callback && cancel->callback(cancel->context) ? 1 : 0;
+}
+struct NormalizeRows {
+  const uint16_t *samples;
+  const LwMetadata *meta;
+  const LwMosaicCorrection *patches;
+  size_t patch_count;
+  const float *gains;
+  float *mosaic;
+  float *red;
+  float *green;
+  float *blue;
+  const unsigned (*bayer)[2];
+  const unsigned (*xtrans)[6];
+  const LwCancelState *cancel;
+  size_t width;
+  size_t height;
+  std::vector<const float *> *input_rows;
+  std::vector<float *> *red_rows;
+  std::vector<float *> *green_rows;
+  std::vector<float *> *blue_rows;
+  std::atomic<int> status{0};
+};
+constexpr size_t kNormalizeRowBatch = 16;
+constexpr size_t kNormalizeParallelPixelThreshold = 1024 * 1024;
+
+void normalize_rows(void *opaque, size_t batch) noexcept {
+  auto *state = static_cast<NormalizeRows *>(opaque);
+  const size_t first_row = batch * kNormalizeRowBatch;
+  const size_t end_row = std::min(first_row + kNormalizeRowBatch, state->height);
+  const auto &meta = *state->meta;
+  for (size_t y = first_row; y < end_row; ++y) {
+    if (state->status.load(std::memory_order_relaxed) != 0) return;
+    if (state->cancel->callback && state->cancel->callback(state->cancel->context)) {
+      int expected = 0;
+      state->status.compare_exchange_strong(expected, 2, std::memory_order_relaxed);
+      return;
+    }
+    (*state->input_rows)[y] = state->mosaic + y * state->width;
+    (*state->red_rows)[y] = state->red + y * state->width;
+    (*state->green_rows)[y] = state->green + y * state->width;
+    (*state->blue_rows)[y] = state->blue + y * state->width;
+    const size_t row_start = y * state->width;
+    const LwMosaicCorrection *patch = nullptr;
+    const LwMosaicCorrection *patch_end = nullptr;
+    if (state->patch_count) {
+      patch = std::lower_bound(
+          state->patches, state->patches + state->patch_count, row_start,
+          [](const LwMosaicCorrection &correction, size_t index) { return correction.index < index; });
+      patch_end = state->patches + state->patch_count;
+    }
+    const size_t row_end = row_start + state->width;
+    for (size_t x = 0; x < state->width; ++x) {
+      const size_t index = row_start + x;
+      const unsigned channel = meta.cfa_width == 2
+          ? state->bayer[y % 2][x % 2]
+          : state->xtrans[y % 6][x % 6];
+      const unsigned black_channel = meta.cfa_width == 2
+          ? meta.black_cfa[(y % 2) * 2 + (x % 2)]
+          : meta.black_cfa[(y % 6) * 6 + (x % 6)];
+      if (channel > 2 || black_channel > 3) {
+        int expected = 0;
+        state->status.compare_exchange_strong(expected, 5, std::memory_order_relaxed);
+        return;
+      }
+      float black = meta.black_base + meta.black_channels[black_channel];
+      if (meta.black_repeat_width && meta.black_repeat_height) {
+        const size_t ix = (y % meta.black_repeat_height) * meta.black_repeat_width +
+                          (x % meta.black_repeat_width);
+        black += meta.black_repeat[ix];
+      }
+      const float denominator = meta.white - black;
+      if (!std::isfinite(denominator) || denominator <= 0.f) {
+        int expected = 0;
+        state->status.compare_exchange_strong(expected, 5, std::memory_order_relaxed);
+        return;
+      }
+      uint16_t sample = state->samples[index];
+      if (patch && patch != patch_end && patch->index == index && patch->index < row_end) {
+        sample = patch->value;
+        ++patch;
+      }
+      const float normalized = (float(sample) - black) * (65535.f / denominator) * state->gains[channel];
+      state->mosaic[index] = normalized;
+    }
+  }
 }
 // LibRaw's callback context is needed only for the synchronous open/unpack.
 // It points to a stack value in lw_raw_open and is cleared before return.
@@ -194,7 +286,13 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
                                unsigned test_fault,
                                rpTileExecutor executor,void *executor_context,
                                LwCancel cancel,void *cancel_context,
-                               char *err,size_t err_len) noexcept {
+                               char *err,size_t err_len,
+                               LwDevelopDiagnostics *diagnostics) noexcept {
+  using Clock = std::chrono::steady_clock;
+  if (diagnostics) {
+    diagnostics->normalization_ns = 0;
+    diagnostics->demosaic_ns = 0;
+  }
   if(!samples||!meta||!gains||!red||!green||!blue||!meta->width||!meta->height||
      count!=uint64_t(meta->width)*meta->height||count>LW_MAX_PIXELS||
      count>LW_MAX_RGB_BYTES/(3*sizeof(float))) {
@@ -225,37 +323,43 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
     }else if(meta->cfa_width==6&&meta->cfa_height==6){
       for(size_t y=0;y<6;++y)for(size_t x=0;x<6;++x)xtrans[y][x]=meta->cfa[y*6+x];
     }else{error(err,err_len,"unsupported CFA");return 5;}
-    size_t patch_index=0;
-    for(size_t y=0;y<h;++y){
-      input_rows[y]=mosaic.data()+y*w;rrows[y]=red+y*w;grows[y]=green+y*w;brows[y]=blue+y*w;
-      if(cancel&&y%128==0&&cancel(cancel_context)){error(err,err_len,"cancelled");return 2;}
-      for(size_t x=0;x<w;++x){
-        unsigned channel=meta->cfa_width==2?bayer[y%2][x%2]:xtrans[y%6][x%6];
-        unsigned black_channel=meta->cfa_width==2?meta->black_cfa[(y%2)*2+(x%2)]:meta->black_cfa[(y%6)*6+(x%6)];
-        if(channel>2){error(err,err_len,"invalid CFA channel");return 5;}
-        if(black_channel>3){error(err,err_len,"invalid black CFA channel");return 5;}
-        float black=meta->black_base+meta->black_channels[black_channel];
-        if(meta->black_repeat_width&&meta->black_repeat_height){
-          size_t ix=(y%meta->black_repeat_height)*meta->black_repeat_width+(x%meta->black_repeat_width);
-          black+=meta->black_repeat[ix];
-        }
-        // Sensor scale 65535 is the established library's numerical contract.
-        // No pre-demosaic clamp: sampled under-black and over-white latitude is retained.
-        const float denominator=meta->white-black;
-        if(!std::isfinite(denominator)||denominator<=0.f){error(err,err_len,"invalid black/white denominator");return 5;}
-        uint16_t sample=samples[y*w+x];
-        if(patch_index<patch_count && patches[patch_index].index==y*w+x) sample=patches[patch_index++].value;
-        mosaic[y*w+x]=(float(sample)-black)*(65535.f/denominator)*gains[channel];
-      }
+    const Clock::time_point normalization_start = diagnostics ? Clock::now() : Clock::time_point{};
+    LwCancelState cancel_state{cancel,cancel_context};
+    NormalizeRows normalization{
+      samples, meta, patches, patch_count, gains, mosaic.data(), red, green, blue,
+      bayer, xtrans, &cancel_state, w, h,
+      &input_rows, &rrows, &grows, &brows
+    };
+    const size_t batches = (h + kNormalizeRowBatch - 1) / kNormalizeRowBatch;
+    int executor_status = 0;
+    if (executor && meta->cfa_width == 2 && count >= kNormalizeParallelPixelThreshold && batches > 1) {
+      executor_status = executor(executor_context, batches, normalize_rows, &normalization);
+    } else {
+      for (size_t batch = 0; batch < batches; ++batch) normalize_rows(&normalization, batch);
     }
+    if (diagnostics) {
+      diagnostics->normalization_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - normalization_start).count());
+    }
+    const int normalization_status = normalization.status.load(std::memory_order_relaxed);
+    if (executor_status == 2 || normalization_status == 2) { error(err,err_len,"cancelled"); return 2; }
+    if (executor_status != 0) { error(err,err_len,"normalization worker failed"); return 3; }
+    if (normalization_status == 5) { error(err,err_len,"invalid CFA or black/white denominator"); return 5; }
+    if (normalization_status != 0) { error(err,err_len,"normalization failed"); return 3; }
+    if (diagnostics && diagnostics->normalized_mosaic_capture)
+      std::memcpy(diagnostics->normalized_mosaic_capture, mosaic.data(), count * sizeof(float));
+    const Clock::time_point demosaic_start = diagnostics ? Clock::now() : Clock::time_point{};
     auto no_cancel=[](double){return false;}; // librtprocess ignores this return.
     rpError code=RP_WRONG_CFA;
     if(meta->cfa_width==2)
       code=rcd_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),bayer,no_cancel,2,false,false);
     else{
       float cam[3][4]{};for(size_t i=0;i<12;++i)cam[i/4][i%4]=meta->rgb_cam[i];
-      LwCancelState cancel_state{cancel,cancel_context};
       code=markesteijn_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),xtrans,cam,no_cancel,1,false,2,false,executor,executor_context,lw_tile_cancel,&cancel_state,test_fault);
+    }
+    if (diagnostics) {
+      diagnostics->demosaic_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - demosaic_start).count());
     }
     if(code!=RP_NO_ERROR){
       error(err,err_len,"float demosaic failed");
