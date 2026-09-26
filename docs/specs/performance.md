@@ -1627,16 +1627,15 @@ The unchanged-camera comparisons ran at load 3.2–6.5; final Fuji comparisons r
 processes increases from 917.3 MB to 933.2–933.4 MB (decimal bytes); this includes preparation and
 measurement, not just live demosaic scratch. The faster development uses about 19% more process CPU.
 
-Explicit Markesteijn heap scratch is globally capped at eight × 988,208 bytes, or 7,905,664 bytes,
-including the source-caller job. Stack arrays, tables, allocator overhead and full image buffers
-are additional. Callback cancellation, native faults, nested callers and teardown are tested;
+Explicit Markesteijn heap scratch is capped at eight × 988,208 bytes, or 7,905,664 bytes, for the
+one development the source worker runs at a time, including the source-caller job. Stack arrays,
+tables, allocator overhead and full image buffers are additional. Callback cancellation, native faults, nested callers and teardown are tested;
 no partial output is adopted.
 
 ### Bayer mosaic normalization
 
 For Bayer sources above one megapixel, native normalization submits 16-row batches to the existing
-shared executor before the RCD call. At most eight callbacks are admitted under
-the shared cap. Normalization writes the existing mosaic allocation, adds no per-worker scratch,
+shared executor before the RCD call. At most eight callbacks run at once. Normalization writes the existing mosaic allocation, adds no per-worker scratch,
 checks cancellation per row and retains the serial path for X-Trans. Whole normalized mosaics and
 RGB planes match bit for bit against the scalar serial oracle on authentic Nikon Z6 and DJI Air 2S
 Bayer inputs. Output guards, partial final batches, cancellation and worker-error behavior are
@@ -1687,7 +1686,7 @@ been repeated since.
 
 RCD runs its 194 px tiles as jobs of the same executor as Markesteijn, checking cancellation before
 every tile ([native demosaic parallelism](../design/native-demosaic-parallelism.md)). Each job holds
-one 978,536-byte scratch set under the shared eight-slot cap. Complete RGB planes match the pre-change
+one 978,536-byte scratch set under the same eight-lane cap. Complete RGB planes match the pre-change
 serial digest on the Z6 and Air 2S and the serial raster at every worker count.
 
 Native M4 Pro, 14 cores, release, 26 September 2026, one-minute load 3.2 to 4.1. Each run is the
@@ -1799,8 +1798,7 @@ The throughput gain does not materially move the proxy median; its p95 increases
 Earlier schedules were rejected because a preview waiter could steal long native work: draining
 row groups gave 216 ms proxy p95, one row per callback still about 64 ms, and a four-worker cap
 still about 60 ms. Ordinary pool callbacks now contain at most eight tiles. The dependent final
-two rows run on the existing external source caller, with the same global scratch admission and
-without holding a permit across a join.
+two rows run on the existing external source caller, which holds nothing across a join.
 
 A separate phase sweep starts preview work 0/75/125/175/225/275/325 ms after the RAW barrier,
 five trials at each offset and four renders per trial. The seven 20-observation proxy p95 values
