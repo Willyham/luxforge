@@ -46,6 +46,7 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 | Architecture and crate layout | [docs/design/architecture.md](docs/design/architecture.md) |
 | Milestone contracts M1 to M4 | [docs/design/history-first-roadmap.md](docs/design/history-first-roadmap.md) |
 | Develop screen layout, tool array, visual language and desktop architecture | [docs/design/develop-workspace.md](docs/design/develop-workspace.md) |
+| Masks: model, kinds, commands, and the Masks panel and next kinds (proposal) | [docs/design/masking.md](docs/design/masking.md), [docs/design/masking-workspace.md](docs/design/masking-workspace.md) |
 | History graph, named versions | [docs/design/versions-and-lineage.md](docs/design/versions-and-lineage.md) |
 | Specs: history, crop and export, recovery, performance | [docs/specs](docs/specs) |
 | Task plans and conventions | [tasks/README.md](tasks/README.md) |

@@ -12,6 +12,8 @@ Rendered at 1440 × 900 logical points, 2× scale, from the design artboards, re
 | [Module panels](develop-workspace/module-panels.png) | Every registered module expanded, exactly as its descriptor declares it, at the implemented density, with the mixer's groups as tabs: the reference for each section's layout |
 | [Crop draft](develop-workspace/crop-draft.png) | Crop mode: dimmed overlay, thirds, handles, the draft bar and the Crop section held expanded with the exact values it would commit |
 | [Changed elsewhere](develop-workspace/changed-elsewhere.png) | An agent commits during a slider gesture: the conflict notice, actor-attributed history and a control's Copy as JSON request menu |
+| [Mask mode](develop-workspace/mask-mode.png) | Mask mode with a radial handle drag open: the tint overlay, handles, draft bar, the Masks panel and the maskable sections carrying the mask's scope chip ([design](masking-workspace.md)) |
+| [Mask panels](develop-workspace/mask-panels.png) | The Masks panel's rows and states, the New mask menu, Brush section, model-selection states and the range and polygon kinds proposed next ([design](masking-workspace.md)) |
 | [Components](develop-workspace/components.png) | Slider states, the module and group hierarchy, history rows, canvas modes, notices and the command palette |
 
 ![Develop workspace, default state](develop-workspace/default.png)
