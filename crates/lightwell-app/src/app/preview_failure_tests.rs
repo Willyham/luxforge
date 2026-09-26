@@ -6,6 +6,12 @@
 //! refused. These tests drive the real preview queue: the failing job is a JPEG source whose
 //! declared size is over the 512 MiB frame limit, so the worker answers `resource-limit` exactly as
 //! a refused render does.
+//!
+//! Where a test is about the order of two jobs on the one worker — a job still running when the
+//! next is requested, a job still waiting in the pending slot — the job it needs held carries a
+//! [`Hold`]'s gate, so that order is decided by the test and never by how fast this machine renders
+//! while it is loaded. Every wait fails at once, naming what it waited for, when nothing more can
+//! arrive: the queue is idle, or its job is held at a gate this test has not opened.
 use super::{
     Editor, ProxyFrame,
     crop::PendingStage,
@@ -19,29 +25,249 @@ use super::{
 };
 use crate::state::{canvas::PhotoView, histogram::HistogramStatus};
 use lightwell_core::{
-    AssetId, BASIC_EFFECT, CropPayload, CropStage, EFFECT_FORMAT, EntryId, Error, ErrorKind,
-    HistoryEntry, Layer, LayerId, POINTER_MODE, PreviewJob, PreviewSource, SourceImage, Zoom,
+    ActionInput, ActionPlan, AssetId, Availability, BASIC_EFFECT, ColorOperation, CropPayload,
+    CropStage, EFFECT_FORMAT, EffectDescriptor, EffectStage, EntryId, Error, ErrorKind,
+    HistoryEntry, Layer, LayerId, ModuleDescriptor, ModuleRegistry, POINTER_MODE, PointwiseColor,
+    PreviewJob, PreviewSource, Processing, SourceImage, Stage, StageContext, ToolModule, Zoom,
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::{
+    cell::RefCell,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak},
     time::{Duration, Instant},
 };
 
-/// Deliver worker results until `done` holds. The deadline is generous: these tests assert what is
-/// shown, never how fast.
-fn poll_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
+/// The effect a [`Hold`] puts ahead of the stack of the job it holds.
+const HELD_EFFECT: &str = "test.held.effect";
+
+/// A gate a render waits at, row by row, while it is shut. It is a pointwise colour unit that
+/// leaves every pixel as it found it, so a job carrying it renders the frame it would render
+/// without it; all it changes is *when* that render can finish.
+struct Gate {
+    state: Mutex<GateState>,
+    opened: Condvar,
+}
+
+struct GateState {
+    shut: bool,
+    /// Renders waiting here now.
+    waiting: usize,
+}
+
+impl Gate {
+    fn lock(&self) -> MutexGuard<'_, GateState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether a render is waiting here, which nothing but the test that shut the gate can end.
+    fn holding(&self) -> bool {
+        let state = self.lock();
+        state.shut && state.waiting > 0
+    }
+}
+
+impl PointwiseColor for Gate {
+    fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
+        let mut state = self.lock();
+        while state.shut {
+            state.waiting += 1;
+            state = self
+                .opened
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+            state.waiting -= 1;
+        }
+    }
+    fn is_finite(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> String {
+        "held render".into()
+    }
+}
+
+/// The module that compiles [`HELD_EFFECT`] to one [`Gate`].
+struct HeldModule {
+    descriptor: ModuleDescriptor,
+    gate: Arc<Gate>,
+}
+
+impl ToolModule for HeldModule {
+    fn descriptor(&self) -> &ModuleDescriptor {
+        &self.descriptor
+    }
+    fn parse(&self, action_id: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
+        Ok(ActionInput {
+            action_id: action_id.into(),
+            parameters: Map::new(),
+        })
+    }
+    fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
+        Err(Error::validation("a held render has no action"))
+    }
+    fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
+        Ok(())
+    }
+    fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
+        Ok("held render".into())
+    }
+    fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+        let unit: Arc<dyn PointwiseColor> = self.gate.clone();
+        Ok(Processing::Color(ColorOperation::new(vec![unit])))
+    }
+}
+
+thread_local! {
+    /// The gates this test has shut, so a wait can tell that its job is held at one. Each test runs
+    /// on its own thread, so no test sees another's.
+    static GATES: RefCell<Vec<Weak<Gate>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A test's hold on one preview job: the job waits at a shut gate on its first row until the test
+/// opens it. Dropping the hold opens the gate, so a failing test never leaves a worker waiting.
+///
+/// A held job renders [`small`]: below the renderer's one-megapixel parallel threshold, so it runs
+/// chunk by chunk on the preview worker itself and holds no Rayon thread, and taller than one
+/// 16-row chunk, so a job superseded while it is held reads its token at its next chunk and answers
+/// cancelled whenever its gate is opened.
+struct Hold(Arc<Gate>);
+
+impl Hold {
+    fn shut() -> Self {
+        let gate = Arc::new(Gate {
+            state: Mutex::new(GateState {
+                shut: true,
+                waiting: 0,
+            }),
+            opened: Condvar::new(),
+        });
+        GATES.with(|gates| gates.borrow_mut().push(Arc::downgrade(&gate)));
+        Self(gate)
+    }
+
+    /// Hold `job`: one gate layer ahead of its stack — inside a truncated job's prefix — rendered
+    /// by the built-in modules and this gate's.
+    fn hold(&self, job: &mut PreviewJob) {
+        job.recipe.layers.insert(
+            0,
+            Layer {
+                id: LayerId::new(),
+                effect_id: HELD_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({}),
+                mask: None,
+                artifacts: Vec::new(),
+            },
+        );
+        job.layer_count = job.layer_count.map(|count| count + 1);
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(Arc::new(HeldModule {
+                descriptor: ModuleDescriptor {
+                    id: "test.held".into(),
+                    title: "Held".into(),
+                    effects: vec![EffectDescriptor {
+                        id: HELD_EFFECT.into(),
+                        format: EFFECT_FORMAT,
+                        stage: EffectStage::Color,
+                        order: 0,
+                        artifacts: false,
+                        single: false,
+                        maskable: false,
+                    }],
+                    availability: Availability::Available,
+                    ..ModuleDescriptor::default()
+                },
+                gate: self.0.clone(),
+            }))
+            .expect("a valid holding module");
+        job.registry = Arc::new(registry);
+    }
+
+    fn open(&self) {
+        self.0.lock().shut = false;
+        self.0.opened.notify_all();
+    }
+
+    /// Wait until the held job is inside its render, so a newer request finds it running and
+    /// unable to finish, rather than about to answer cancelled before its first row.
+    fn reached(&self, editor: &Editor, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !self.0.holding() {
+            assert!(
+                editor.preview_queue.is_busy() && !editor.preview_queue.ready(),
+                "{what} can never reach its gate: the job ended first: {}",
+                editor.status
+            );
+            assert!(
+                Instant::now() < deadline,
+                "{what} never reached its gate: {}",
+                editor.status
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.open();
+    }
+}
+
+/// Deliver worker results with `poll` until `done` holds, failing at once when nothing more can
+/// arrive: the queue has nothing running, waiting or ready, or its running job is held at a gate
+/// this test has not opened and nothing is ready. The deadline is only a backstop for a render that
+/// is still progressing: these tests assert what is shown, never how fast.
+fn wait_for(
+    editor: &mut Editor,
+    what: &str,
+    done: impl Fn(&Editor) -> bool,
+    poll: impl Fn(&mut Editor),
+) {
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !done(editor) {
+    loop {
+        if done(editor) {
+            return;
+        }
+        poll(editor);
+        if done(editor) {
+            return;
+        }
+        let queue = &editor.preview_queue;
+        assert!(
+            queue.is_busy(),
+            "{what} can never happen: the preview queue has nothing running, waiting or ready: {}",
+            editor.status
+        );
+        let held = GATES.with(|gates| {
+            gates
+                .borrow()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .any(|gate| gate.holding())
+        });
+        assert!(
+            !held || queue.ready(),
+            "{what} can never happen: the running preview job is held at a gate this test has not \
+             opened: {}",
+            editor.status
+        );
         assert!(
             Instant::now() < deadline,
             "{what} never happened: {}",
             editor.status
         );
-        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// Deliver worker results through `update` until `done` holds; see [`wait_for`].
+fn poll_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
+    wait_for(editor, what, done, |editor| {
+        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    });
 }
 
 /// A committed entry that straightens and crops the one before it.
@@ -420,7 +646,8 @@ fn a_scripted_step_waiting_for_a_preview_ends_on_its_failure() {
     finish(editor, catalog);
 }
 
-/// A layer the crop's input stage renders, so that stage costs a real colour pass.
+/// A layer ahead of the crop, so the crop's input stage is a real prefix of the stack with a colour
+/// pass of its own.
 fn basic() -> Layer {
     Layer {
         id: LayerId::new(),
@@ -429,19 +656,6 @@ fn basic() -> Layer {
         payload: json!({"exposure": 0.5, "contrast": 20.0}),
         mask: None,
         artifacts: Vec::new(),
-    }
-}
-
-/// A photograph whose input stage is still rendering when the next request arrives: its colour
-/// pass takes over half a second in the unoptimized test build, and the update that supersedes it
-/// arrives within a millisecond.
-fn large() -> SourceImage {
-    SourceImage {
-        width: 4000,
-        height: 3000,
-        rgba: [90, 110, 130, 255].repeat(4000 * 3000).into(),
-        fingerprint: "f".into(),
-        orientation: 1,
     }
 }
 
@@ -457,12 +671,13 @@ fn draft_job(editor: &Editor, source: SourceImage) -> PreviewJob {
     job
 }
 
-/// Another client commits: the event sync reads the state back and requests the new entry's frame.
+/// Another client commits: the event sync reads the state back and requests the new entry's frame,
+/// held at `hold`'s gate when there is one.
 fn committed_elsewhere(
     editor: &mut Editor,
     asset: &AssetId,
     sequence: u64,
-    source: SourceImage,
+    hold: Option<&Hold>,
 ) -> HistoryEntry {
     let current = editor
         .state
@@ -472,7 +687,10 @@ fn committed_elsewhere(
         .clone();
     let mut next = entry(asset, sequence, Some(&current.id));
     next.snapshot = current.snapshot.clone();
-    let refresh = committed(asset, &next, &[&current], source);
+    let mut refresh = committed(asset, &next, &[&current], small());
+    if let Some(hold) = hold {
+        hold.hold(&mut refresh.job);
+    }
     let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(SyncResult::changed(
         refresh,
     )))));
@@ -482,16 +700,9 @@ fn committed_elsewhere(
 /// [`poll_until`] through `dispatch`, so the mode a draft's end asks the session for is still
 /// there to read afterwards rather than folded into a task this test never runs.
 fn dispatch_polls_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while !done(editor) {
-        assert!(
-            Instant::now() < deadline,
-            "{what} never happened: {}",
-            editor.status
-        );
+    wait_for(editor, what, done, |editor| {
         let _ = editor.dispatch(Message::Preview(PreviewMessage::Poll));
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    });
 }
 
 /// A starting draft's input stage is still rendering when another client's commit requests the
@@ -499,6 +710,10 @@ fn dispatch_polls_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) 
 /// the draft's own generation, and the draft ends explicitly, back in the pointer mode with the
 /// reason in the status bar, instead of waiting for pixels that will never come. The new entry's
 /// frame is then shown as usual, and its own status replaces the reason.
+///
+/// Both jobs are held: the draft's until the commit has superseded it, so it cannot finish first
+/// and open the draft; the new entry's until the draft has ended, so its frame cannot follow the
+/// draft's end in the same poll and replace the reason before it is read.
 #[test]
 fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() {
     let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
@@ -507,17 +722,30 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     });
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    let job = draft_job(&editor, large());
+    let (stage, frame) = (Hold::shut(), Hold::shut());
+    let mut job = draft_job(&editor, small());
+    stage.hold(&mut job);
     let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
     let draft = editor
         .draft_generation
         .expect("the draft's job was requested");
     assert_eq!(editor.status, "Rendering the crop's input stage…");
+    assert_eq!(
+        editor.preview_queue.pending_generation(),
+        None,
+        "the draft's job is running"
+    );
+    stage.reached(&editor, "the draft's input stage");
 
-    // The new entry is as large, so its frame is still rendering when the draft ends.
-    let next = committed_elsewhere(&mut editor, &asset, 5, large());
+    let next = committed_elsewhere(&mut editor, &asset, 5, Some(&frame));
     let newer = editor.preview_generation;
     assert!(newer > draft);
+    assert_eq!(
+        editor.preview_queue.pending_generation(),
+        Some(newer),
+        "the new entry's job waits behind the draft's"
+    );
+    stage.open();
     dispatch_polls_until(&mut editor, "the draft's end", |editor| {
         editor.crop_pending().is_none()
     });
@@ -533,6 +761,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
         "The crop's input stage was superseded by a newer preview: start the crop again"
     );
 
+    frame.open();
     dispatch_polls_until(&mut editor, "the new entry's frame", |editor| {
         editor.presented_generation == newer && !editor.preview_queue.is_busy()
     });
@@ -566,6 +795,9 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
 /// it is replaced, and keeps the conflicted draft it was rebasing for another reapply. The status
 /// bar goes straight on to the second commit's frame, which is what the photograph is waiting for;
 /// the draft's own notice still says it changed elsewhere.
+///
+/// The first commit's job is held inside its render until the second commit has replaced the
+/// reapply's, so the reapply's job is still waiting behind it however slowly this test runs.
 #[test]
 fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_draft() {
     let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
@@ -581,13 +813,15 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
             angle: 0.0,
         },
     );
-    // The first commit makes the draft conflicted; its frame is still rendering.
-    committed_elsewhere(&mut editor, &asset, 5, large());
+    // The first commit makes the draft conflicted; its frame is held inside its render.
+    let first = Hold::shut();
+    committed_elsewhere(&mut editor, &asset, 5, Some(&first));
+    first.reached(&editor, "the first commit's frame");
     assert!(core_draft(&editor).expect("the draft is kept").conflicted);
     let _ = editor.update(Message::Crop(CropMessage::Reapply));
     assert!(editor.crop_pending().expect("a pending rebase").reapply);
     let log = attach_log(&mut editor);
-    let job = draft_job(&editor, large());
+    let job = draft_job(&editor, small());
     let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
     let reapply = editor
         .draft_generation
@@ -598,7 +832,7 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
         "the reapply's job waits behind the first commit's frame"
     );
 
-    let next = committed_elsewhere(&mut editor, &asset, 6, small());
+    let next = committed_elsewhere(&mut editor, &asset, 6, None);
     assert!(
         editor.crop_pending().is_none() && editor.draft_generation.is_none(),
         "the replaced reapply is still waiting"
@@ -608,6 +842,7 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
     assert!(draft.conflicted, "the kept draft is still conflicted");
     assert_eq!(draft.base_revision, 4);
 
+    first.open();
     poll_until(&mut editor, "the second commit's frame", |editor| {
         editor.presented_entry.as_ref() == Some(&next.id) && !editor.preview_queue.is_busy()
     });
@@ -679,9 +914,13 @@ fn a_draft_opens_on_its_input_stage_in_the_update_that_takes_it_up() {
     let job = draft_job(&editor, small());
     let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
     let draft = editor.draft_generation.expect("the draft's job");
-    while !editor.preview_queue.ready() {
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    // Nothing is taken up until the stage is ready, so one `Poll` takes it up.
+    wait_for(
+        &mut editor,
+        "the draft's input stage",
+        |editor| editor.preview_queue.ready(),
+        |_| {},
+    );
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
     let open = editor.crop().expect("the draft opened in the same update");
     assert_eq!((open.stage.width, open.stage.height), (64, 48));
