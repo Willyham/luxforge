@@ -28,7 +28,7 @@ pub use context::{RenderContext, ScratchBudget, SpatialBudget};
 pub(crate) use entry::layer_input;
 pub use entry::{Render, RenderOptions, RenderPhase, RenderSource, render};
 pub use linear::{LinearImage, LinearSettings, WhiteBalanceApproximation};
-pub(crate) use pipeline::{Evaluation, PixelDomain, SpatialMode};
+pub(crate) use pipeline::{Evaluation, PixelDomain, RowScratch, SpatialMode};
 use pipeline::{SegmentRows, Taps, segment_pass, spatial_output};
 use spatial::{build_reduction, fill_planes, resolve_globals};
 
@@ -147,6 +147,7 @@ impl<'a> ColorRun<'a> {
     }
 }
 
+#[derive(Clone)]
 struct ColorRuns<'a> {
     operations: &'a [Processing],
     stage: Stage,

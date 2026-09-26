@@ -24,16 +24,16 @@
 //! exactly what the next boundary reads. The linear driver ([`super::linear::rasterize`]) writes
 //! only the last segment's rows and pulls everything before them through [`Evaluation`], because a
 //! linear value between two boundaries is an `f64` the next resample blends: materializing it as
-//! `f32` would change bytes and as `f64` would double the RAW planar bound. A spatial operation's
-//! output is `f32` on both paths, so the linear driver materializes those, as a render always has.
+//! `f32` would change bytes and as `f64` would double the RAW planar bound. It pulls a bounded
+//! rectangle at a time ([`Evaluation::region_in`]) — a spatial operation's input one row at a
+//! time, a resample's taps one block at a time — so the colour before a boundary still runs over
+//! rows. A spatial operation's output is `f32` on both paths, so the linear driver materializes
+//! those, as a render always has.
 
 use super::{
     Cancel, ColorRun, Compiled, Entry, RenderContext, ScratchBudget, Segment, color_chunk_rows,
     color_runs, mapped_replacements,
-    spatial::{
-        PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
-        run_tile,
-    },
+    spatial::{PointTiles, SpatialPlan, build_reduction, resolve_globals, run_batches, run_tile},
 };
 use crate::{
     Error, ErrorKind,
@@ -96,6 +96,22 @@ pub(crate) trait PixelDomain: Sync {
 
     /// The pixel a segment answers, once its replacement and colour are applied.
     fn finish(pixel: Self::Pixel) -> Result<Self::Pixel, Error>;
+
+    /// [`Self::colour`] and [`Self::finish`] over one contiguous run of row `y` starting at column
+    /// `x0`. Units are pointwise and are handed a row with its coordinates, so a domain may run
+    /// them over the whole row at once; this default applies them one pixel at a time.
+    fn colour_row<'r>(
+        pixels: &mut [Self::Pixel],
+        runs: impl Iterator<Item = ColorRun<'r>> + Clone,
+        y: u32,
+        x0: u32,
+        _scratch: &mut RowScratch,
+    ) -> Result<(), Error> {
+        for (offset, pixel) in pixels.iter_mut().enumerate() {
+            *pixel = Self::finish(Self::colour(*pixel, runs.clone(), x0 + offset as u32, y)?)?;
+        }
+        Ok(())
+    }
 
     /// One resample tap set: the bilinear blend at the continuous input coordinate `(u, v)` of a
     /// `width` × `height` stage, whose pixels `fetch` reads.
@@ -234,9 +250,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 cancel,
                 evaluation.context,
                 |region, planes, parallelism| {
-                    fill_planes(region, planes, parallelism, |x, y| {
-                        evaluation.spatial_read(index, x, y)
-                    })
+                    evaluation.fill_rows(index - 1, region, planes, parallelism)
                 },
                 |x, y| evaluation.alpha_in(index - 1, x, y).unwrap_or(255),
             )?);
@@ -369,6 +383,99 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         Ok(D::spatial_input(pixel))
     }
 
+    /// Segment `index`'s output over `region`, row-major, into `out`: exactly the values
+    /// [`Self::pixel_in`] answers there, for a caller that reads a neighbourhood of them. A
+    /// segment with colour and no replacement pulls each row's entry through its geometry and
+    /// runs its colour over the row at once ([`PixelDomain::colour_row`]), which is the same
+    /// arithmetic as one pixel at a time; any other segment is pulled pixel by pixel. `region`
+    /// must lie inside the segment's output stage.
+    pub(super) fn region_in(
+        &self,
+        index: usize,
+        region: Region,
+        out: &mut Vec<D::Pixel>,
+        scratch: &mut RowScratch,
+    ) -> Result<(), Error> {
+        out.clear();
+        let segment = &self.compiled.segments[index];
+        let batched = segment.has_color && !segment.has_pixels;
+        let outside = || Error::new(ErrorKind::Render, "a region read was outside its stage");
+        for y in region.y0..region.y1() {
+            let start = out.len();
+            for x in region.x0..region.x1() {
+                if batched {
+                    let (input_x, input_y) = segment.geometry.unmap(x, y);
+                    out.push(self.entry_pixel(index, input_x, input_y)?);
+                } else {
+                    out.push(self.pixel_in(index, x, y)?.ok_or_else(outside)?);
+                }
+            }
+            if batched {
+                D::colour_row(
+                    &mut out[start..],
+                    color_runs(segment),
+                    y,
+                    region.x0,
+                    scratch,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Segment `index`'s output over `region`, as the three planes a spatial operation reads: one
+    /// [`Self::region_in`] per row, on the pool under [`Parallelism::Pool`].
+    fn fill_rows(
+        &self,
+        index: usize,
+        region: Region,
+        planes: &mut [f32],
+        parallelism: Parallelism,
+    ) -> Result<(), Error> {
+        if region.is_empty() {
+            return Ok(());
+        }
+        let len = region.pixels() as usize;
+        let width = region.width as usize;
+        let (red, rest) = planes[..3 * len].split_at_mut(len);
+        let (green, blue) = rest.split_at_mut(len);
+        let row = |scratch: &mut (Vec<D::Pixel>, RowScratch),
+                   (row, ((red, green), blue)): PlaneRow<'_>|
+         -> Result<(), Error> {
+            let (pixels, scratch) = scratch;
+            let line = Region {
+                x0: region.x0,
+                y0: region.y0 + row as u32,
+                width: region.width,
+                height: 1,
+            };
+            self.region_in(index, line, pixels, scratch)?;
+            for (column, pixel) in pixels.iter().enumerate() {
+                let [r, g, b] = D::spatial_input(*pixel);
+                red[column] = r;
+                green[column] = g;
+                blue[column] = b;
+            }
+            Ok(())
+        };
+        match parallelism {
+            Parallelism::Pool => red
+                .par_chunks_mut(width)
+                .zip(green.par_chunks_mut(width))
+                .zip(blue.par_chunks_mut(width))
+                .enumerate()
+                .try_for_each_init(Default::default, row),
+            Parallelism::Serial => {
+                let mut scratch = Default::default();
+                red.chunks_mut(width)
+                    .zip(green.chunks_mut(width))
+                    .zip(blue.chunks_mut(width))
+                    .enumerate()
+                    .try_for_each(|item| row(&mut scratch, item))
+            }
+        }
+    }
+
     /// The global estimates of spatial segment `index`, from the store or from one reduction of
     /// its input stage. A frame and a point evaluation of the same recipe ask with the same key, so
     /// they use the same estimate. A frame's reduction reads the stage as a render does; a point
@@ -465,6 +572,18 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             }
         }
     }
+}
+
+/// One row of three planes being filled, with its index in the region.
+type PlaneRow<'p> = (usize, ((&'p mut [f32], &'p mut [f32]), &'p mut [f32]));
+
+/// The float rows a domain runs one row's colour through, reused by every row one worker takes.
+#[derive(Default)]
+pub(crate) struct RowScratch {
+    /// The row itself, in `f32`.
+    pub(super) linear: Vec<[f32; 3]>,
+    /// One row of a masked operation's own input.
+    pub(super) snapshot: Vec<[f32; 3]>,
 }
 
 /// The four pixels a bilinear sample at one continuous input coordinate reads, with indices clamped
