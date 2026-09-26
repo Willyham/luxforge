@@ -2810,7 +2810,7 @@
     {
       "id": "TASK-046",
       "description": "Evaluate the JPEG and RAW domains with one pipeline generic over its pixel domain, building on the RAW row batching, so there are no longer two rasterizers.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-044"
       ],
@@ -3064,7 +3064,7 @@
     {
       "id": "TASK-050",
       "description": "Replace the private error helper copies with error constructors such as `Error::validation(..)`, last, because it touches everything.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-038",
         "TASK-043",
