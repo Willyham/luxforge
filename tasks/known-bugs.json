@@ -169,13 +169,12 @@
     {
       "id": "TASK-004",
       "description": "Make the `raw-panel` scenario pass on the DJI Air 2S, whose approximate white-balance drag frame misses the one-code average agreement check.",
-      "status": "blocked",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Blocked on the owner's decision about the check; measured, and no sound approximation fix was found.",
         "`raw-panel` fails on the Air 2S only at 100% (3500 K to 2500 K, red gain × 0.741, blue × 1.664): released against drafted is 1.223 codes on average, deterministic across three runs; Fit passes at 0.345, and the Z6 and X100VI pass at both zooms. The error is the demosaic's colour-difference interpolation, which is not equivariant under a strong gain change, spread broadly rather than on specular pixels.",
         "Two candidate approximations were measured on the full sensor and rejected (a clip-aware clamp, 1.13 to 1.06 codes; a green high-pass correction, 1.00, which breaks the per-pixel matrix and its commuting with the proxy downscale).",
-        "The measured case and the proposed drag-relative check (released within a tenth of the drag's own difference at both zooms, the absolute one-code check kept at Fit) are in the instant-preview design's proposals, awaiting the owner."
+        "The owner accepted the drag-relative check on 2026-09-26; it is in `raw_panel_smoke.rs` and described in the instant-preview design."
       ],
       "context_links": [
         {

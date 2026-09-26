@@ -248,6 +248,10 @@ fn raw_payload(frame: &Value) -> Result<&Value> {
         .ok_or_else(|| "The stack has no RAW layer".into())
 }
 
+/// The most the released exact frame may differ from the drafted approximate one, as a share of the
+/// drag's own change from the frame before it (owner decision, 2026-09-26).
+const MAX_SETTLED_SHARE: f64 = 0.1;
+
 /// How far the photo surface of one capture is from another's: the mean absolute channel
 /// difference in codes over the surface columns the frame records, between its top and bottom
 /// tenths (the title and status bars stay outside), and the share of those pixels differing by more
@@ -860,7 +864,8 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
 /// Released, the commit redevelops the mosaic and lands the exact frame: unlabelled, its report
 /// adopted, and the first frame handed to the surface after the commit — so the approximate frame
 /// stayed on screen until it was replaced, with nothing drawn in between. On average it is within
-/// a code of the approximate one. That the release closes the draft in one entry is the plan's.
+/// a tenth of the drag's own change from the approximate one, and at Fit within a code of it. That
+/// the release closes the draft in one entry is the plan's.
 fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
     let kelvin = drag.kelvin;
     let (before, drafted, released) = (
@@ -1014,10 +1019,29 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         "The committed frame's report was not adopted",
     )?;
     let (settled_mean, settled_over) = surface_difference(drafted, released)?;
+    // The approximation removes nearly all of the difference the drag is about: the exact frame is
+    // within a tenth of the drag's own change from the approximate one, at either zoom. A drafted
+    // frame that never moved scores about the whole change, so a stale or wrong frame still fails.
+    // At Fit, where the proxy averages the demosaic's non-equivariance away, it is also within a
+    // code in absolute terms; at 100% the Air 2S's strong gain change leaves more than a code
+    // (instant-preview design, accuracy).
+    let (change_mean, _) = surface_difference(before, released)?;
+    let ratio = settled_mean / change_mean;
     ensure(
-        settled_mean < 1.0,
-        format!("The exact frame is {settled_mean:.3} codes from the approximate one on average"),
+        ratio <= MAX_SETTLED_SHARE,
+        format!(
+            "The exact frame is {settled_mean:.3} codes from the approximate one on average, {:.1}% of the drag's own {change_mean:.3}",
+            ratio * 100.0
+        ),
     )?;
+    if drag.fit {
+        ensure(
+            settled_mean < 1.0,
+            format!(
+                "The exact frame is {settled_mean:.3} codes from the approximate one on average"
+            ),
+        )?;
+    }
     let tint = keeps_the_tint_in_force(before, drafted, released, drag)?;
     Ok(json!({
         "step": drag.drag,
@@ -1032,6 +1056,8 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         "released_render": state["status_bar"]["render"],
         "released_histogram": histogram["status"],
         "released_against_drafted": {"mean_codes": settled_mean, "share_over_2": settled_over},
+        "released_against_before": {"mean_codes": change_mean},
+        "settled_share_of_change": ratio,
         "surface_versions": [versions.0, versions.1],
     }))
 }

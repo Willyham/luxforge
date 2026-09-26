@@ -144,6 +144,10 @@ Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7
 - The Develop workspace mockup images stay in git without LFS and are regenerated only when the design changes, because every agent worktree would otherwise need LFS.
 - Fusing Basic's colour units (exposure into the white-balance matrix, and one Oklab pass shared by colour and the mixer) waits for a measurement showing that the pointwise pass limits a gesture.
 
+## RAW white-balance drafts
+
+- The `raw-panel` scenario checks a drafted RAW white balance relative to the drag (owner, 2026-09-26): at Fit and at 100% the released exact frame is within a tenth of the drag's own change from the approximate frame, and at Fit within one code of it on average. The Air 2S's full-size error at a strong gain change is above a code, which the design's accuracy table already records; see [instant previews](design/instant-preview.md#a-raw-white-balance-during-a-drag).
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
