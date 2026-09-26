@@ -37,8 +37,8 @@ Accepted on 2026-09-20 for the [Develop workspace](design/develop-workspace.md) 
 
 - State panel on the left (versions, history, recipe), tools panel on the right, both collapsible independently.
 - Modules render as stacked collapsible sections in registry order. A build lists only registered modules; nothing is drawn for modules that do not exist.
-- A history row shows the action title plus a one-value summary supplied by the module through a declared `summary` template; the host stores the rendered label with the entry.
-- Test modules (pixel proof) live in a Developer section that is hidden unless the desktop is launched with `--developer`; the registry marks them `developer: true` and their API is unaffected.
+- A history row shows the action title plus a one-value summary supplied by the module; the host stores the rendered label with the entry. The module supplies it through `label()` since the [post-consolidation review](#post-consolidation-review), which replaced declared `summary` templates.
+- Test modules (pixel proof) live in a Developer section that is hidden unless the desktop is launched with `--developer`; the registry marks them `developer: true`, and since the [post-consolidation review](#post-consolidation-review) they register only in developer mode, so a normal build's API lists none of their methods.
 - Compare is hold-`\` for the Original entry, through `preview.select` and `preview.return-current`. Dark theme only; a light theme is not planned.
 - Basic, histogram, export, Locate, heal and mask are outside this work. Their sections, buttons and notices are left out of the build entirely rather than drawn as placeholders. The generated tools panel must accept a `number` slider module without desktop changes, which is how Basic lands later.
 
@@ -96,7 +96,7 @@ Decided on 2026-09-23 under the owner's delegation for the [shared module capabi
 Revised by the owner on 2026-09-24, after the [architecture review](#architecture-review):
 
 - The framework stays and is trimmed to what its consumers need: bound artifacts travel on the recipe as strokes do, `artifact.relocate` goes because the directory moves with its catalog, a grant no longer records its last use, settings and grants share one document store, settings use the module parameter vocabulary, capability jobs report through the activity board, and the proof endpoint leaves the shipped core crate.
-- The transport uses a well-known, tested HTTP client, pinned (such as `ureq`), behind the existing address policy, instead of the hand-written HTTP/1.1 client. The policy itself is unchanged.
+- The transport uses a well-known, tested HTTP client, pinned (such as `ureq`), behind the existing address policy, instead of the hand-written HTTP/1.1 client. The policy itself is unchanged. On 2026-09-26 this was confirmed as `ureq`'s own agent, after a spike on cancellation ([post-consolidation review](#post-consolidation-review)).
 - The `read-user-file` capability and the `file` setting kind are removed until a module needs them. They were thought to serve presets, but `preset.import` takes the file's text from its client, so nothing uses them. A module that reads a user-chosen file may add them back later, consented per canonical path.
 
 ## Programmable operations and modules
@@ -127,12 +127,12 @@ The owner asked on 2026-09-23 for presets, with native presets and Lightroom imp
 
 ## Architecture review
 
-Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7ce9557`. The owner decided the first two and asked for the review's recommendation on the rest. The work is planned in [consolidation](design/consolidation.md), and each spec changes when its behaviour does.
+Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7ce9557`. The owner decided the first two and asked for the review's recommendation on the rest. The consolidation is delivered and its outcome lives in the specs it changed; the work that follows it is planned in [after the consolidation](design/post-consolidation.md).
 
 - Consolidate rather than rewrite. Each cross-cutting mechanism keeps one implementation that every feature extends, and the copies are deleted. That covers committing and planning an edit, method dispatch and parameters, jobs, latest-job workers, desktop drafts, the JPEG and RAW evaluators, field-patch modules, colour math, smoke scenarios and test support.
 - **Controls are the same for every source kind.** A JPEG and a RAW photo show one Exposure control and one White balance (temperature and tint) control set, as Lightroom does. Each control behaves as its source requires: on a RAW photo it sets the source development's white balance and exposure, and on a JPEG it sets Basic's relative adjustment. The RAW section's duplicate Exposure and white-balance controls merge into that one set. A module's applicability to a source kind is declared, not named by the desktop.
 - **Mask coverage stays bit-identical** to its frozen `f64` reference. The mask gesture's extra runtime hop is fixed first. Faster `f32` coverage within the `1e-6` tolerance is considered only if a measurement then shows coverage limiting a paint gesture.
-- The brush's cap of 64 segments per grid cell is measured on a realistic back-and-forth scrub before it changes. After that, either the cap rises with its recorded per-pixel cost, or a stroke that reaches it starts a new brush component.
+- The brush's cap of 64 segments per grid cell is measured on a realistic back-and-forth scrub before it changes. How a stroke that would pass it is handled was decided on 2026-09-26 ([post-consolidation review](#post-consolidation-review)).
 - The crop draft moves onto the core `draft.*` lifecycle once the desktop has one draft driver, so agents see it in `session.state`. The crop geometry and canvas stay as they are. This supersedes "the crop draft stays desktop-local".
 - Every mutating method carries `{request_id, actor}` and is deduplicated, with `expected_revision` wherever a revision exists, so an agent can retry any mutation safely. This supersedes the presets default that library methods take no mutation envelope.
 - A mask's coverage grid is delivered with the proxy phase rather than after the exact render, because it reads no pixel of the exact frame.
@@ -148,6 +148,31 @@ Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7
 
 - The `raw-panel` scenario checks a drafted RAW white balance relative to the drag (owner, 2026-09-26): at Fit and at 100% the released exact frame is within a tenth of the drag's own change from the approximate frame, and at Fit within one code of it on average. The Air 2S's full-size error at a strong gain change is above a code, which the design's accuracy table already records; see [instant previews](design/instant-preview.md#a-raw-white-balance-during-a-drag).
 
+## Post-consolidation review
+
+Decided by the owner on 2026-09-26, who took the recommendations of a whole-codebase review of `main` at `4f8c3e1`. The work is planned in [after the consolidation](design/post-consolidation.md), and each spec changes when its behaviour does.
+
+- **Declared source kinds land now.** `EffectDescriptor.sources` and one applicability rule replace every check of the RAW module's name, ahead of the open questions in [source controls](design/source-controls.md), none of which they touch.
+- **The transport runs on `ureq`'s own agent** behind the unchanged address policy, after a one-day spike proves that cancelling a request by shutting its socket down works through rustls. If it cannot, this decision is amended to record that Luxforge owns its I/O loop.
+- **A brush stroke that would pass the occupancy cap is refused when it is painted**, not when a layer first draws the mask. The cap stays at 64 segments per grid cell. A measurement on a realistic back-and-forth scrub sizes a decimation tolerance relative to the brush radius, which lowers occupancy without changing the coverage of any stored stroke. A stroke that reaches the cap does not start a new component, because components combine by maximum and painting would stop building up.
+- **Undo, Redo and Restore are refused while a draft is open**, with the reason in the status bar, as every other discrete commit is.
+- **A panic while the catalog owner serves a message is contained** and answered as `internal`, and the owner keeps serving other clients. Every worker contains its panics the same way.
+- **`verify` reports a tier with a skipped or unrun component as incomplete**, with a distinct non-zero exit that names what was skipped.
+- **The module capabilities framework stays and is trimmed further.** Activation is deferred with `local-runtime` until a module needs it. The desktop surface shrinks to the consent notice, the task control, the resource row and a settings form built from the tool controls. A resource installs from its pinned URL only. At the 1,024-record cap the oldest remote-image grant is evicted instead of a new grant being refused; asking again only reduces privilege.
+- **A drafted preview may skip its exact phase at Fit while the gesture moves**, so the histogram and clipping overlay refresh on a pause or the release, if `editor-latency --mode paint` shows it closes the paint latency tail.
+- **A crop draft at Fit shows its input stage at display resolution** from the proxy, with the exact stage only at a percentage zoom, and opens before the stage's pixels arrive.
+- **The desktop's per-region derivation keys are removed** if the logged derivation stays under about 0.2 ms per message; otherwise only the heavy region is keyed, on one value.
+- **`draft.begin`, `draft.cancel` and `draft.reapply` run synchronously on the desktop thread**, like `draft.set`, proven by a press-to-first-frame measurement; only `draft.commit` stays an owner task.
+- **One job API.** `job.read` and `job.cancel` serve every job kind, in place of `analysis.read`, `analysis.cancel`, `module.job.read` and `module.job.cancel`. **Events name the asset and revision they changed**, and JSON clients get an `events.wait` long poll before the MCP adapter.
+- **One RAW development per process stays** until the development executor and normalization changes land. Then the hold-`\` compare on the X100VI is measured, and a byte-budgeted second slot or a compare that shows only the proxy is added if a switch still takes more than about 150 ms. A byte-budgeted source cache that keeps JPEG decodes beside the one RAW development follows an RSS measurement on the M4.
+- **Frames are opaque by contract**; the renderer carries no alpha.
+- **`editor-acceptance` keeps only what `cargo test` cannot prove at the same layer**: the release run of the conformance suite, Basic numerics on the photo fixture, placement, and mask reopen through a fresh owner.
+- **The components board shows widget states only**; the real panels are proven by their own scenarios.
+- **A module supplies its history label through `label()`**, with its title as the default, in place of `summary` templates. Stored labels are unchanged.
+- **Test modules, including the pixel proof, register only in developer mode.** Whether `PointReplace` seeds the Corrections repair primitive or is deleted is decided with the repair stage.
+
+Not adopted: deferring the whole capabilities framework until the first Corrections adapter. Still open: where Detail's sharpening and noise reduction run (below).
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -159,6 +184,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
+- Where do Detail's sharpening and noise reduction run: before tone, and shown at Fit? Spatial layers are placed after all colour work today. Decide before the Detail design.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 

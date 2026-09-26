@@ -1,0 +1,919 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "masking",
+  "title": "Masking, paths and strokes",
+  "objective": "Make brush masks safe to paint on — the occupancy cap refused on the stroke that crosses it and a decimation that keeps ordinary painting under it — make the path limits agree, get the kind table ready for the next kinds, cut paint latency where the measurement points, store only new strokes, type the mask commands, and prove each mask property once; then generalize the path primitives before Corrections needs them.",
+  "context_summary": "Masks run on the one action path, the component-kind table dispatches validate and compile, the desktop has one shape editor per drawn kind, and strokes are content-addressed and shared, with coverage bit-identical to its frozen f64 reference. The 64-segments-per-cell occupancy cap was never measured on real painting and is enforced only when a layer first draws the mask, so ordinary strokes commit and it is the next masked adjustment that gets refused. Paint latency misses its bound for reasons outside the mask mathematics, and the mask tests — about 21,000 lines against roughly 12,000 lines of production — repeat each kind's checklist by hand and keep reference studies inside the core's own test binary. The path primitives a brush stroke is built from are still the mask's own, and both the next proposed kind and the Corrections brush need them generalized.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Refuse a brush stroke that would push any grid cell over the 64-segment occupancy cap at the moment it is painted, and add a core test that measures maximum cell occupancy from a realistic scrub.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. The owner made the occupancy cap's future conditional on a measurement that was never taken, and this is the largest correctness risk found in masking.",
+        "`SEGMENTS_PER_PIXEL` (64, in `mask/brush.rs`) is enforced only inside `Compiled::new`, reached through `compile`, which `modules/registry/compile.rs` runs only for a mask some layer's `mask` field actually names (the test `the_mask_table_is_checked_on_admission_and_not_by_compile` confirms an undrawn mask is never compiled). `brush::validate`, which every `mask.add-stroke` goes through at admission, only calls `parse` and never builds the index. So every stroke committed to a mask no layer yet draws is accepted regardless of occupancy, and the refusal only surfaces later, on the first adjustment that binds a layer to that mask — and stays refused until strokes are deleted, since `Compiled::new` runs again on every compile.",
+        "A faithful port of the index build (`Index::build`, `decimate_to_grid`) into a standalone simulation shows ordinary hand-drawn painting exceeds the cap: 67–185 for one six-pass scrub with 1 px jitter, 73–364 for six overlapping strokes, and 165–181 for eight short arcs at the default brush size. Every shipped brush measurement is a straight or collinear path instead (the `mask-brush` smoke's 2-point strokes, the latency workload's collinear path decimating to 2 points), so no curved stroke has ever been compiled in evidence.",
+        "Owner decision (2026-09-26): a stroke that would cross the cap is refused when it is painted, not when a layer first draws the mask; the cap itself stays at 64 segments per cell, and a stroke that reaches it does not spill into a new component, because components combine by the Zadeh maximum rather than a stroke-screen union, so a spill would silently stop that area's painting from building up further.",
+        "The claim in `brush.rs` that \"a brush that could not be evaluated cannot be committed either\" is false for a mask no layer draws yet; correct or remove it, and give `mask::rules` an entry for this refusal so the panel can state it before a stroke is even sent.",
+        "Coverage of every stroke that does commit stays bit-identical to its f64 reference: neither the fold nor the per-stroke equation changes here, only where the cap is checked."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "Resource and responsiveness constraints",
+          "relevance": "States the 64-segment cap, today described as checked at compile time."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture review decisions",
+          "target": "docs/decisions.md",
+          "locator": "Architecture review",
+          "relevance": "The cap's measure-first precondition and the bit-identical coverage requirement."
+        },
+        {
+          "kind": "file",
+          "label": "Brush component",
+          "target": "crates/luxforge-core/src/mask/brush.rs",
+          "locator": "SEGMENTS_PER_PIXEL, Index::build, Compiled::new",
+          "relevance": "Where the cap is enforced today, and only at compile."
+        },
+        {
+          "kind": "file",
+          "label": "Mask command planning",
+          "target": "crates/luxforge-core/src/editor/masks.rs",
+          "locator": "plan_mask_command",
+          "relevance": "Has the asset and recipe in hand; where the stroke-time refusal belongs."
+        },
+        {
+          "kind": "file",
+          "label": "Module compile",
+          "target": "crates/luxforge-core/src/modules/registry/compile.rs",
+          "relevance": "Compiles only a layer's bound mask, which is why an unbound mask's strokes commit unchecked today."
+        },
+        {
+          "kind": "file",
+          "label": "Occupancy cap decision",
+          "target": "docs/decisions.md",
+          "locator": "Post-consolidation review",
+          "relevance": "The cap refused at stroke time, the radius-relative decimation and no spill into a new component (2026-09-26)."
+        }
+      ],
+      "acceptance_criteria": [
+        "A stroke whose commit would put more than 64 segments over one grid cell is refused with `resource-limit`, naming the mask and component, and nothing about it commits.",
+        "An adjustment on a mask that is already committed is never refused for occupancy: the cap is fully paid for by the stroke that crosses it.",
+        "A core test replays a generated back-and-forth scrub through `Stroke::capture` and `CompiledMask::new` and records the maximum cell occupancy and per-pixel cost.",
+        "The measured scrub figures are recorded in docs/design/masking.md, and its \"checked at compile time\" cap description is corrected to say when the check now runs.",
+        "Coverage of every stroke that does commit stays bit-identical to its f64 reference; the existing bit-identity tests pass unchanged."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add a core test that replays a generated realistic scrub (multi-pass, jittered, arced) through capture and compile and records the maximum cell occupancy and per-pixel cost.",
+          "Add a test that a stroke crossing the cap is refused at `mask.add-stroke` time and changes nothing.",
+          "Add a test that a committed mask's later adjustment is never refused for occupancy.",
+          "Run the existing brush and mask bit-identity suites unchanged."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --test mask brush",
+          "cargo test -p luxforge-core masks",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The scrub test reports its maximum occupancy and per-pixel cost as part of the suite.",
+          "Existing brush and mask tests, including bit-identity, pass unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Decimate a captured stroke with a tolerance relative to its brush radius, sized from the scrub measurement, so ordinary painting stays under the 64-segment occupancy cap.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Wave 1, fix. This is the remedy the previous task's scrub measurement exists to size, and it is the option the owner chose over raising the cap or spilling to a new component.",
+        "Today `decimate_to_grid` (`path.rs`) keeps any point that deviates by more than `DECIMATION_TOLERANCE` — 2 grid steps, 0.49 px at 4000 px stage height — regardless of the stroke's own radius, and screen-quantized pointer positions routinely deviate by more than that. The occupancy cell side is the component's largest radius, and a segment enters every cell its radius-grown box reaches (about 3 cells per axis), so one cell counts every segment within roughly 1.5 R of it: a fixed pixel tolerance stores far more segments per cell for a small brush than a large one.",
+        "The scrub simulation shows a relative tolerance of 1–2% of the brush radius cuts the worst measured occupancy from 185 to 19 and from 364 to 58, and roughly halves the number of stored points, at the brush sizes the previous task measured.",
+        "This changes what a new capture stores — the decimation contract in docs/design/masking.md (\"Storing a path\") and `path.rs` — which current shapes only allows: no migration or old-stroke compatibility is needed, only a stored contract met the same way going forward.",
+        "Coverage of every stroke, old or newly captured, stays bit-identical to its f64 reference, because the fold and the per-stroke equation are untouched; only how many points a new capture keeps changes."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "Storing a path",
+          "relevance": "The decimation contract this task changes."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture review decisions",
+          "target": "docs/decisions.md",
+          "locator": "Architecture review",
+          "relevance": "The cap and measurement decision this remedy implements."
+        },
+        {
+          "kind": "file",
+          "label": "Path primitives",
+          "target": "crates/luxforge-core/src/path.rs",
+          "locator": "decimate_to_grid, DECIMATION_TOLERANCE",
+          "relevance": "Where the fixed tolerance is declared today."
+        },
+        {
+          "kind": "file",
+          "label": "Brush component",
+          "target": "crates/luxforge-core/src/mask/brush.rs",
+          "locator": "Index::build",
+          "relevance": "Why the cell side and segment count depend on the brush radius."
+        },
+        {
+          "kind": "file",
+          "label": "Occupancy cap decision",
+          "target": "docs/decisions.md",
+          "locator": "Post-consolidation review",
+          "relevance": "The cap refused at stroke time, the radius-relative decimation and no spill into a new component (2026-09-26)."
+        }
+      ],
+      "acceptance_criteria": [
+        "A new capture's decimation tolerance scales with the stroke's own radius, sized from the previous task's scrub measurement.",
+        "The scrub test from the previous task stays under the 64-segment cap at the declared default and small brush sizes.",
+        "docs/design/masking.md's \"Storing a path\" contract states the relative tolerance and its measured effect on stored points and worst-case occupancy.",
+        "Coverage of every stroke, existing or newly captured, stays bit-identical to its f64 reference."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Change the decimation tolerance to scale with the stroke radius and re-run the scrub test from the previous task.",
+          "Extend path.rs's decimation tests with radius-scaled cases at the brush's declared minimum, default and maximum sizes.",
+          "Run the mask-brush smoke to confirm a real paint session still behaves."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core path",
+          "cargo test -p luxforge-core --test mask brush",
+          "cargo xtask smoke --scenario mask-brush --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The scrub test's maximum occupancy stays under 64 at default and small brush sizes.",
+          "Stored point counts drop roughly in line with the measured simulation, and bit-identity tests pass unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Apply the 1,024-position stroke limit after decimation as the design states, and declare one legal stroke-radius range read alike by capture, storage and compile.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. Two contract mismatches in the path primitives are cheap, verified defects, independent of the occupancy work above.",
+        "The generic parameter check (`modules/descriptor.rs`'s `ParameterKind::Points` case, against the `points` parameter `mask/commands.rs` declares with `points_max = POINTS_PER_STROKE`) refuses a posted path longer than 1,024 positions before `Stroke::capture` ever decimates it. docs/design/masking.md says the limit is \"1024 after decimation\" and that an agent may post a raw, undecimated path, so a raw 2,000-position path that would decimate under the limit is refused today for a reason the design does not intend.",
+        "The stroke radius has three different legal ranges depending which code reads it: `path.rs`'s `SIZE_MIN..SIZE_MAX` (about 6e-5 to 2), `mask/commands.rs`'s declared parameter range `DISTANCE_MIN..SIZE_MAX`, and `mask/brush.rs`'s own check at `DISTANCE_MIN..DISTANCE_MAX` (64) — three different maximums for what should be one number.",
+        "Current shapes only: there is no stored data to migrate, only which check runs where and which range it reads.",
+        "Keep the two checks conceptually distinct — a posted path is checked generously before decimation, and the decimated stroke is checked at 1,024 positions after — rather than collapsing them into one number that would reintroduce one or the other defect."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "Storing a path",
+          "relevance": "States the 1,024-after-decimation limit and that a raw path may be posted."
+        },
+        {
+          "kind": "file",
+          "label": "Path primitives",
+          "target": "crates/luxforge-core/src/path.rs",
+          "locator": "POINTS_PER_STROKE, SIZE_MIN, SIZE_MAX, Stroke::capture",
+          "relevance": "The decimated-stroke limit and one of the three radius ranges."
+        },
+        {
+          "kind": "file",
+          "label": "Mask commands",
+          "target": "crates/luxforge-core/src/mask/commands.rs",
+          "locator": "the points and size parameter declarations",
+          "relevance": "Declares the posted-path bound and a second radius range."
+        },
+        {
+          "kind": "file",
+          "label": "Brush component",
+          "target": "crates/luxforge-core/src/mask/brush.rs",
+          "locator": "DISTANCE_MIN, DISTANCE_MAX",
+          "relevance": "The third radius range, checked again at compile."
+        },
+        {
+          "kind": "file",
+          "label": "Parameter validation",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "locator": "ParameterKind::Points",
+          "relevance": "Where the posted-path length is checked before decimation."
+        }
+      ],
+      "acceptance_criteria": [
+        "A raw posted path over 1,024 positions that decimates to at or under 1,024 is accepted; the 1,024 bound is enforced on the decimated stroke, matching docs/design/masking.md.",
+        "The posted-path bound checked before decimation is generous enough that it never refuses a path a real gesture or a reasonable agent would post.",
+        "Capture, the stored-stroke recheck and brush compile all read one declared radius range; refusal messages name that one range.",
+        "Existing path and mask tests pass with the corrected limits."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add a test that a raw path over 1,024 positions but decimating under it is accepted.",
+          "Add a test that capture, check_stored and brush compile all use the one radius range, and a value just outside it is refused the same way from each.",
+          "Run the existing path and mask unit suites."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core path",
+          "cargo test -p luxforge-core masks"
+        ],
+        "expected_results": [
+          "A previously refused raw path that decimates under 1,024 positions now succeeds.",
+          "One radius range is declared once and every reader agrees; existing tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Bind each generated mask control to its parameter's declared kind instead of assuming Number, validate the host mask descriptor like any module's, and correct the docs' \"one module and one row\" claim.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 2, finish the consolidation. This gets the kind table into the shape the next mask kinds need, without building any of those kinds yet.",
+        "`CONTROLS` in `mask/commands.rs` builds a `Control::number(...)` for every parameter every geometry kind declares (`declared_geometry_kinds`, `component_parameters`), with no check of the parameter's own declared kind. Every kind today is all-numeric, so this is latent, but a kind whose geometry includes a `points` parameter — the polygon proposed next — would silently get a broken number control for its vertex list.",
+        "The host's mask descriptor (`mask::commands::descriptor()`) is deliberately never passed to `ModuleRegistry::register`, so it never reaches `ModuleDescriptor::validate` the way every `ToolModule`'s descriptor does: it is the one descriptor in the system exempt from the rules it asks modules to meet.",
+        "docs/design/masking.md says twice that a new kind is \"one module and one row\" (component kinds, and the desktop's drawn-kind table). docs/design/masking-workspace.md's own polygon proposal shows that is not true for a kind whose geometry is not a flat list of numbers, or that needs an artifact binding: a polygon alone touches about 24 places across roughly 20 files, because `ShapeEditor` and `MaskHandle` are numbers-only and closed, the canvas knows only two gesture families, and the kind table's `Binding` carries no artifacts for a model-based kind to bind at compile time.",
+        "Do only the three cheap, safe parts now — filtering `CONTROLS` by parameter kind, validating the host descriptor, and correcting the docs — and record the rest (a JSON-geometry `ShapeEditor`, pointer semantics owned by each editor, a wider `Binding`, artifact discovery from mask components) in masking-workspace.md as what a new kind still needs; none of it is built until a kind is authorized."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "Component kinds; Geometry for the desktop",
+          "relevance": "The \"one module and one row\" claim this task corrects."
+        },
+        {
+          "kind": "file",
+          "label": "Masks workspace proposal",
+          "target": "docs/design/masking-workspace.md",
+          "locator": "Kinds proposed next",
+          "relevance": "The polygon and model-selection proposals that expose the real touch points."
+        },
+        {
+          "kind": "file",
+          "label": "Mask commands",
+          "target": "crates/luxforge-core/src/mask/commands.rs",
+          "locator": "CONTROLS, descriptor()",
+          "relevance": "Where controls are generated and the host descriptor is declared."
+        },
+        {
+          "kind": "file",
+          "label": "Kind table",
+          "target": "crates/luxforge-core/src/mask/mod.rs",
+          "locator": "declared_geometry_kinds, component_parameters, Binding",
+          "relevance": "The one row per kind this task keeps single."
+        },
+        {
+          "kind": "file",
+          "label": "Module registry",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
+          "locator": "register, descriptor.validate()",
+          "relevance": "The validation every registered module's descriptor gets, and the host descriptor does not."
+        },
+        {
+          "kind": "file",
+          "label": "Repository checks",
+          "target": "xtask/src/repository.rs",
+          "locator": "BOUNDARIES",
+          "relevance": "Where a forbidden-token rule keeping the kind table single is added."
+        }
+      ],
+      "acceptance_criteria": [
+        "`CONTROLS` generates a number control only for a parameter whose declared kind is Number; a non-number geometry parameter gets no control from this path.",
+        "A test runs `ModuleDescriptor::validate` against the host mask descriptor and passes, and would fail if the descriptor were made invalid.",
+        "docs/design/masking.md no longer claims a new kind is one module and one row; docs/design/masking-workspace.md lists the real touch points a polygon or a model-selection kind needs.",
+        "A `cargo xtask check-repository` rule fails if a component-kind name match appears outside the kind table's own module and each kind's own file, so a second kind dispatch cannot return.",
+        "`schema.list` and the existing kind table tests are unchanged for linear, radial and brush."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Filter CONTROLS to Number-kind parameters and add a test that a non-number geometry parameter gets no generated control.",
+          "Add a test that runs ModuleDescriptor::validate on mask::commands::descriptor() and passes.",
+          "Add a check-repository rule and a fixture test that a kind-string match outside its home is caught.",
+          "Correct the two docs and add the touch-points list to masking-workspace.md."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core mask",
+          "cargo test -p xtask repository",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "CONTROLS never emits a control for a non-number geometry parameter.",
+          "The host descriptor validates like a module's; schema.list is unchanged.",
+          "The new repository rule fails on a synthetic second kind match and passes on the current tree."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Cut paint latency at its measured cause: offer at most one new paint position per presented drafted frame, hand the proxy frame over before the overlay grid is filled, and measure with a feathered brush.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 3, speed. A byte-identical speedup that needs a before-and-after figure recorded with scope in docs/specs/performance.md.",
+        "The recorded attribution already shows the mask mathematics is not the cause: the worker render is 4.6/5.4 ms p50/p95 and `draft.set` is 0.04 ms, while request-to-worker-start is 6.6/18.2 ms and the pre-result residual is 7.3/20.3 ms. This task should record the per-point mask work (index build, hashing, recompiles) as a non-cause so nobody re-optimizes it later.",
+        "Two real causes are in the code path: every `CursorMoved` re-decimates and re-serializes the whole captured path on the desktop (`mask_canvas.rs`, `mask_draft/brush.rs`), and `draft.set` (`api/methods.rs`) validates the whole path and echoes it back, after which planning re-captures and re-hashes it again (`editor/plan.rs`, `mask/commands.rs`) — work proportional to the whole path, roughly eight times per pointer event, so a stroke's per-event cost grows with its length even though the workload's collinear path decimates to 2 points and never shows it.",
+        "Separately, in `preview/worker.rs`'s job runner, the mask overlay's coverage grid is computed and attached to the proxy `PreviewResult` before that result reaches `running.send`, so the overlay sits ahead of the frame reaching the screen instead of following it in a second message.",
+        "The workload itself hides the second cause: `xtask/src/editor_latency.rs`'s `PAINT_FEATHER` is 0.0, which makes the brush hard-edged and forces the 2×2 proxy supersample (`mask/brush.rs`, `mask_field.rs`) — the opposite of its own comment, which says a hard edge keeps the profile cheap.",
+        "Coordinate with whoever measures the drafted job's own full-resolution exact phase, a competing candidate cause, so each figure is attributed to the right change; coverage mathematics are untouched here and renders stay byte-identical."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups, including that the drafted exact phase is measured before this task paces its offers."
+        },
+        {
+          "kind": "file",
+          "label": "Instant preview design",
+          "target": "docs/design/instant-preview.md",
+          "locator": "Two phases per job",
+          "relevance": "The proxy-then-exact job shape this task reorders the delivery of."
+        },
+        {
+          "kind": "file",
+          "label": "Performance record",
+          "target": "docs/specs/performance.md",
+          "locator": "A painted stroke's own latency",
+          "relevance": "The recorded attribution this task's figures are compared against and added to."
+        },
+        {
+          "kind": "file",
+          "label": "Preview worker",
+          "target": "crates/luxforge-core/src/preview/worker.rs",
+          "locator": "run, mask_overlay_for, running.send",
+          "relevance": "Where the overlay grid is computed ahead of the proxy frame's delivery."
+        },
+        {
+          "kind": "file",
+          "label": "Mask canvas",
+          "target": "crates/luxforge-app/src/mask_canvas.rs",
+          "relevance": "Re-decimates and re-serializes the whole path on every CursorMoved."
+        },
+        {
+          "kind": "file",
+          "label": "Draft methods",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "locator": "draft_set",
+          "relevance": "Validates and echoes the whole drafted path on every call."
+        },
+        {
+          "kind": "file",
+          "label": "Latency workload",
+          "target": "xtask/src/editor_latency.rs",
+          "locator": "PAINT_FEATHER, run_paint",
+          "relevance": "The workload whose hard-edged brush hides the overlay and supersample cost."
+        }
+      ],
+      "acceptance_criteria": [
+        "Per pointer event, the desktop and the owner each do work proportional to the new points offered, not to the whole path.",
+        "The proxy frame reaches the screen before the mask overlay's coverage grid is computed, not after.",
+        "The latency workload paints with a feathered brush, or the task states plainly that it measures the 2×2-supersampled path instead.",
+        "`editor-latency --mode paint` is run on a curved path before and after this change, at 24 MP and 60 MP, and both figures are recorded in docs/specs/performance.md with host, load and scope.",
+        "Renders and mask coverage stay byte-identical; the non-causes (index build, hashing, recompiles) are recorded as such."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Change the desktop's paint gesture to offer at most one position per presented drafted frame, or let draft.set append positions to an open draft.",
+          "Reorder the worker so the proxy PreviewResult is sent before the overlay grid is computed, in a second message.",
+          "Fix the latency workload's brush to be feathered, or document that it deliberately measures the supersampled path.",
+          "Run editor-latency --mode paint before and after on a curved path at 24 MP and 60 MP."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app masks",
+          "cargo test -p luxforge-core preview",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode paint",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode paint"
+        ],
+        "expected_results": [
+          "The paint workload's p95 round trip drops, and the figures are recorded with host, load and scope in docs/specs/performance.md.",
+          "Renders stay byte-identical and every existing mask and preview test passes unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Write only the strokes captured since the entry's recipe was last read on each commit, and hash a hydrated stroke once instead of twice.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 3, speed. A byte-identical speedup with its own before-and-after figure.",
+        "`store_strokes` (`editor/catalog.rs`) re-serializes and `INSERT OR IGNORE`s every stroke the recipe's whole mask table references (`Recipe::stroke_references`, which walks every mask and every component, not only the ones this commit touched) on every entry write — O(references) per commit and O(n²) CPU over a session, even though the SQL is a no-op for a stroke already stored. At the measured 1,809-stroke ceiling (docs/design/masking.md \"Stroke storage\", docs/specs/performance.md) that is an estimated 9–18 ms of owner-thread time per commit, and 1–3 ms at a few hundred strokes: the growth the content-addressed store removed from stored bytes reappears as CPU time.",
+        "Separately, `hydrate_strokes` hashes each resolved stroke twice: once in `Stroke::from_stored`'s content-address check and again in `StrokeTable::insert`, which recomputes the stroke's id from the same bytes.",
+        "Catalog bytes must stay identical: `INSERT OR IGNORE` semantics are kept, so writing only the strokes captured since the recipe was read changes what work happens, not what ends up stored.",
+        "The existing painting-session measurement (`measure_mask_growth_across_a_painting_session` in `editor/catalog.rs`) times reopen and reports catalog size but not per-commit write time; extend it, or add beside it, to record commit time across a long session before and after this change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "Stroke storage",
+          "relevance": "The measured stroke-storage figures this change must not regress."
+        },
+        {
+          "kind": "file",
+          "label": "Performance record",
+          "target": "docs/specs/performance.md",
+          "locator": "Stroke storage",
+          "relevance": "Where the before-and-after commit-time figure is recorded."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog writes",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
+          "locator": "store_strokes, hydrate_strokes, measure_mask_growth_across_a_painting_session",
+          "relevance": "The write path this task changes and the existing session measurement to extend."
+        },
+        {
+          "kind": "file",
+          "label": "Stroke store",
+          "target": "crates/luxforge-core/src/path.rs",
+          "locator": "StrokeTable::insert, Stroke::from_stored",
+          "relevance": "Where a stroke's content address is hashed, today twice per hydrated reference."
+        }
+      ],
+      "acceptance_criteria": [
+        "A commit writes only the strokes captured since the entry's recipe was read, proved by a count of writes issued.",
+        "Hydration hashes each resolved stroke once, proved by a read-count or hash-count test.",
+        "The stroke store's existing integrity and bit-identity tests pass unchanged, and catalog bytes are identical to before.",
+        "The per-commit write time across a long painting session near the measured stroke ceiling is recorded before and after in docs/specs/performance.md."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add a fresh set to the stroke table, filled only by capture, and write only fresh strokes in store_strokes.",
+          "Add an insert_verified path for hydration so it does not re-hash through insert.",
+          "Add a counting test for writes-per-commit and a read-count test for hashes-per-hydration.",
+          "Extend the painting-session measurement to record per-commit write time and re-run it before and after."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core catalog",
+          "cargo test -p luxforge-core masks",
+          "cargo test --release --package luxforge-core --lib measure_mask_growth -- --ignored --nocapture"
+        ],
+        "expected_results": [
+          "Only new strokes are written per commit, and each resolved stroke is hashed once at hydration.",
+          "Catalog bytes and reopen figures are unchanged, and the recorded commit time drops at high stroke counts."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Dispatch every mask command through an exhaustive MaskOp enum instead of a method-string match, replace the five-value Planned tuple with a named struct, and split mask/commands.rs by concern.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Wave 4, structure. This follows once the kind table is ready for new kinds, so the split lands on a settled shape.",
+        "`plan` in `mask/commands.rs` dispatches the generated geometry and sample methods cleanly through `command.geometry`/`command.samples`, but falls through to `match command.method { \"mask.delete\" => .., \"mask.rename\" => .., \"mask.duplicate\" => .., .. other => .. }` for every kind-independent command, with a string fallback arm. `Planned`, what one command touched, is an unnamed five-value tuple built at over a dozen call sites, which invites a positional mistake the compiler cannot catch.",
+        "`mask/commands.rs` is about 3,400 lines: roughly 800 of declaration (the COMMANDS table, CONTROLS, the descriptor), 800 of planning, 130 of listing and result types, 200 of helpers and 1,400 of tests. The old JSON-versus-in-process command path is already gone, so what remains here is what stays, just not yet organized by concern.",
+        "Two small cleanups in the same file: `unknown_kind` only forwards to `rules::unknown_kind`, and the desktop's `app/masks.rs` hand-copies `MaskTarget::insert_into` instead of calling it.",
+        "No behavior change: this is a dispatch and file-shape change over the same commands, the same COMMANDS table and the same `schema.list` output."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "Host commands",
+          "relevance": "The command family this file implements and must keep behaving as documented."
+        },
+        {
+          "kind": "file",
+          "label": "Mask commands",
+          "target": "crates/luxforge-core/src/mask/commands.rs",
+          "locator": "plan, MaskCommand, Planned, unknown_kind",
+          "relevance": "The string-dispatched match and the tuple this task types and splits."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop mask actions",
+          "target": "crates/luxforge-app/src/app/masks.rs",
+          "locator": "the hand copy of insert_into",
+          "relevance": "The duplicate this task replaces with a call to the shared implementation."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every command dispatches through an exhaustive match on a MaskOp enum; no command reaches its behavior by comparing command.method to a string.",
+        "The touched-object tuple becomes a named struct with named fields.",
+        "mask/commands.rs is split into modules by concern (declaration, planning, listing) with no behavior change.",
+        "The desktop's hand copy of insert_into is replaced with a call to the shared implementation; unknown_kind's pass-through is removed or justified.",
+        "schema.list's output and the mask command test suite are unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Introduce MaskOp and the touched-object struct, and convert the string match to an exhaustive enum match.",
+          "Split the file along the declared boundaries and update module paths.",
+          "Point the desktop's insert_into call at the shared implementation.",
+          "Run the existing commands.rs and mask command test suites unchanged."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core mask",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Every existing mask command test passes unchanged; schema.list output is byte-identical.",
+          "The compiler enforces exhaustiveness on the new MaskOp match."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Let each mask kind validate its parameters against its own declared ranges instead of hand-checking them again, and share one bounds-to-region helper between brush and radial.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Wave 4, structure. Cleanup inside the kind modules, sequenced after the occupancy fix since both touch the brush's compile path.",
+        "`linear.rs`, `radial.rs` and `range.rs` hand-write range checks that restate ranges their own declared parameters already state, instead of validating a payload against `parameters(true)`.",
+        "The roughly 25-line block that turns a feathered floating bounding box into an integer Region — the grow_low/grow_high closures, the is_finite guard, the whole_stage/empty_region fallbacks — is byte-identical between `mask/brush.rs`'s box-bounds function and `mask/radial.rs`'s ellipse-bounds function, differing only in the earlier lines that compute the box from different inputs (corner points versus centre and extent).",
+        "Several kinds also implement `ComponentField` only as inherent methods plus a trait impl that forwards to them, one extra layer with nothing behind it.",
+        "No product change: bounds stay conservative (the existing bounds-never-excludes-a-non-zero-pixel tests guard this), and refusal wording may change to the generic check's wording, which current shapes only allows."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "Component kinds",
+          "relevance": "The per-kind contract these helpers must keep meeting."
+        },
+        {
+          "kind": "file",
+          "label": "Brush component",
+          "target": "crates/luxforge-core/src/mask/brush.rs",
+          "locator": "box_bounds",
+          "relevance": "One of the two byte-identical bounds-to-region blocks."
+        },
+        {
+          "kind": "file",
+          "label": "Radial component",
+          "target": "crates/luxforge-core/src/mask/radial.rs",
+          "locator": "ellipse_bounds",
+          "relevance": "The other byte-identical bounds-to-region block."
+        },
+        {
+          "kind": "file",
+          "label": "Linear component",
+          "target": "crates/luxforge-core/src/mask/linear.rs",
+          "relevance": "Hand-written range checks that restate its own declared parameters."
+        },
+        {
+          "kind": "file",
+          "label": "Range component",
+          "target": "crates/luxforge-core/src/mask/range.rs",
+          "relevance": "A third copy of hand-written range checks."
+        },
+        {
+          "kind": "file",
+          "label": "Kind table",
+          "target": "crates/luxforge-core/src/mask/mod.rs",
+          "locator": "whole_stage, empty_region",
+          "relevance": "Where the shared region_from_bounds helper belongs, beside these."
+        }
+      ],
+      "acceptance_criteria": [
+        "linear, radial and range validate a payload against their own declared parameters and keep only the rules a declared range cannot express (axis length, low at most high, a shoulder of 0 or at least 1, sample counts).",
+        "One region-from-bounds helper beside whole_stage/empty_region in mask/mod.rs computes the region for both brush and radial from their own four bounds.",
+        "Each kind implements ComponentField directly, with no forwarding-only inherent/trait pair left.",
+        "Exact-region and coverage tests are unchanged; renders stay byte-identical."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Extract region_from_bounds and point brush.rs and radial.rs at it.",
+          "Replace each kind's hand-written range checks with its own declared-parameter check plus the residual rules.",
+          "Remove the forwarding-only trait implementations.",
+          "Run the existing mask unit suite, including the exact-region and bounds tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core mask"
+        ],
+        "expected_results": [
+          "All existing mask unit tests, including exact-region and bounds-never-excludes tests, pass unchanged.",
+          "The kind modules are collectively shorter, with no duplicated bounds or range logic left."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Move the mask, brush and range studies into the reference crate's own studies binary, and delete the production tests that re-prove properties bit-identity already covers.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 5, tests. A move plus a deletion, independent of the other masking work.",
+        "`crates/luxforge-core/tests/mask/study.rs` (1,081 lines), `brush_study.rs` (986) and `range_study.rs` (1,381) — 3,448 lines and 66 tests in all — import only `luxforge_reference` and its reference-typed helpers; no `luxforge_core` item appears in any of them, and `range_study.rs`'s own header already says the binary \"shares no code with luxforge-core's production sources.\" Every other independent study (mixer, presence, tone, vignette, colour, white balance, exposure) already lives in `crates/luxforge-reference/tests/studies/`; these three are the exceptions, so they rebuild and relink as part of the core's `mask` test binary — about 31% of its 11,300 lines — on every core edit that touches nothing they use.",
+        "Separately, roughly 330 lines of production tests in `tests/mask/radial.rs` and `tests/mask/brush.rs` re-prove algebraic properties — a feather of zero is a hard edge, invert is the exact complement, a circle is a circle at every aspect ratio, strokes commute — that the studies already prove on the reference, and that bit-identity to the reference (already tested over randomized payloads and whole small stages) already carries over to production.",
+        "No product change and no coverage loss: keep every kind's bit-identity tests, move the studies as they are including their ignored figure tests, and update docs/engineering/development.md's description of the mask test binary to match."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "locator": "luxforge-reference",
+          "relevance": "States that the reference crate holds the independent studies."
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "locator": "Every integration-test binary",
+          "relevance": "Describes the mask binary as holding the three studies; needs updating once they move."
+        },
+        {
+          "kind": "file",
+          "label": "Mask study",
+          "target": "crates/luxforge-core/tests/mask/study.rs",
+          "relevance": "One of the three studies this task moves."
+        },
+        {
+          "kind": "file",
+          "label": "Reference studies binary",
+          "target": "crates/luxforge-reference/tests/studies/main.rs",
+          "relevance": "Where every other independent study already lives, and where these three move to."
+        },
+        {
+          "kind": "file",
+          "label": "Radial component tests",
+          "target": "crates/luxforge-core/tests/mask/radial.rs",
+          "relevance": "Holds part of the production property re-proofs this task deletes."
+        }
+      ],
+      "acceptance_criteria": [
+        "The three studies run from the reference crate's studies binary with the same test count, and their ignored figure tests stay ignored.",
+        "The core's mask test binary no longer builds or links any of the three studies.",
+        "The listed production property re-proofs are deleted, each named in the commit with the bit-identity test that already covers it.",
+        "docs/engineering/development.md's description of the mask test binary matches the new location."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Move the three study files and their shared helpers into the reference crate's studies binary.",
+          "Delete the listed property re-proofs from tests/mask/radial.rs and brush.rs, naming each deletion's covering bit-identity test.",
+          "Update docs/engineering/development.md's description of the mask and studies binaries."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference",
+          "cargo test -p luxforge-core --test mask"
+        ],
+        "expected_results": [
+          "The reference crate's test count increases by the moved studies' count.",
+          "The core's mask binary's test count drops by the moved studies plus the deleted re-proofs, and both runs pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Write one kind-conformance test suite driven by a per-kind adapter, delete the mask command-contract tests that now duplicate the field-patch conformance suite, and remove masked-edit tests it already proves.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Wave 5, tests. Sequenced after the typed command dispatch so the suite this task writes is tested against a settled shape.",
+        "The same per-kind checklist — bit-identical to the reference on random and small-stage payloads, bounds never exclude a non-zero pixel, an off-frame shape bounds to nothing and an inverted one to the whole stage, validation names the field, min_feature_px is the measured ramp, the kind table claims the kind, a sample equals the rendered byte — is written out by hand in `tests/mask/unit.rs`, `radial.rs`, `brush.rs`, `range.rs` and again inside `mask/mod.rs`'s own tests: about 1,500 lines across five places for four kinds.",
+        "`mask/command_contracts.rs` (1,806 lines) was written when the JSON path and the in-process path were two separate implementations; since a prior change made `Direct::run` call the same `EditorService::run_action` the JSON path already reaches, its parity test and driver compare that one function with itself, and its retry test re-proves generic deduplication already tested elsewhere. It is a `#[cfg(test)]` module inside `src/`, so it cannot use the shared JSON test client and carries its own.",
+        "Masked-edit tests overlap the field-patch conformance suite, which already drafts, commits and updates a masked layer for every maskable module through JSON: parts of `tests/mask/masked_edit_end_to_end.rs`, `masked_colour.rs`'s schema check, and part of `editor/masks.rs`'s own mask-target test duplicate what that suite proves once for every module.",
+        "No product change: keep each kind's genuinely distinct tests (the radial's rotated box, the brush index and occupancy, range's value-basedness), the draft-lifecycle tests, and the mask-order and non-maskable-action refusal tests that nothing else covers. Run the old and new suites side by side with the same seeds before deleting anything."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "Component kinds",
+          "relevance": "The per-kind contract the new conformance suite proves once."
+        },
+        {
+          "kind": "file",
+          "label": "Command contracts",
+          "target": "crates/luxforge-core/src/mask/command_contracts.rs",
+          "relevance": "The parity and retry tests that now duplicate run_action against itself."
+        },
+        {
+          "kind": "file",
+          "label": "Linear kind tests",
+          "target": "crates/luxforge-core/tests/mask/unit.rs",
+          "relevance": "One of the five places the per-kind checklist is written out by hand."
+        },
+        {
+          "kind": "file",
+          "label": "Kind table",
+          "target": "crates/luxforge-core/src/mask/mod.rs",
+          "relevance": "Holds its own copy of the linear kind's conformance tests."
+        },
+        {
+          "kind": "file",
+          "label": "Masked edit end to end",
+          "target": "crates/luxforge-core/tests/mask/masked_edit_end_to_end.rs",
+          "relevance": "Bridges a gap the field-patch conformance suite has since closed."
+        }
+      ],
+      "acceptance_criteria": [
+        "One kind-conformance suite runs the shared checklist through one adapter per kind; a new kind needs about 80 lines of tests instead of 600 to 900.",
+        "mask/command_contracts.rs's parity driver and retry test are deleted; its unique draft-lifecycle and discovery tests move to the kind-conformance or command test files.",
+        "The masked-edit tests the field-patch conformance suite already covers are deleted; the mask-order placement and non-maskable-action refusal tests remain.",
+        "Each deleted assertion is named, in the commit, with the kept test that proves it.",
+        "Every kind's coverage, bounds and bit-identity guarantees are unchanged; renders stay byte-identical."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Write the per-kind adapter and the shared conformance suite, and run it alongside the existing per-kind tests with the same seeds.",
+          "Delete the duplicated per-kind tests and command_contracts.rs's parity and retry tests once the new suite passes.",
+          "Delete the masked-edit tests the field-patch conformance suite already covers.",
+          "List each deletion against its keeper in the commit message."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --test mask",
+          "cargo test -p luxforge-core --lib mask",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The new kind-conformance suite passes for every kind with the same seeds the old per-kind tests used.",
+          "Every deleted test's property still has a named test that proves it, and the deletions are listed in the commit."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Generalize the path primitives so a second stroke-carrying consumer can share them: a content-addressed store keyed by consumer-declared stroke types, and draft targets from declared identity parameters.",
+      "status": "blocked",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 6, roadmap groundwork.",
+        "Blocked: starts with the Corrections brush-based repair work; do not begin until that work starts.",
+        "Today `path.rs` — meant to be a host primitive with no mention of masks — imports `mask::{REFINE_MAX, REFINE_MIN}` and defines `ColourLimit` as \"the pixel the operation the mask modulates receives.\" The desktop's brush gesture (`mask_draft/brush.rs`) hard-codes the `mask.add-stroke` method by name, and the core `Draft.target` field is typed as an optional `MaskTarget`, so no other module's identity can be a draft target. docs/design/masking.md and docs/design/corrections.md both describe these primitives as already shared, which the code does not yet support.",
+        "Masks must keep working unchanged once the primitives generalize: the same content-addressed store, the same stroke addresses, and bit-identical coverage.",
+        "Update docs/design/masking.md and docs/design/corrections.md to describe the shared primitive as the code now actually supports it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups, including that this groundwork precedes Corrections."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "One brush system",
+          "relevance": "Claims the path primitives are already host primitives shared with a second consumer."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "The Corrections brush-based repair work this task's generalization must support."
+        },
+        {
+          "kind": "file",
+          "label": "Path primitives",
+          "target": "crates/luxforge-core/src/path.rs",
+          "locator": "ColourLimit, Stroke",
+          "relevance": "Where mask-specific imports and types sit in a file meant to hold none."
+        },
+        {
+          "kind": "file",
+          "label": "Draft state",
+          "target": "crates/luxforge-core/src/draft.rs",
+          "locator": "Draft::target",
+          "relevance": "Fixed today to MaskTarget; this task widens it to any action's declared identity parameters."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop brush gesture",
+          "target": "crates/luxforge-app/src/mask_draft/brush.rs",
+          "relevance": "Hard-codes the mask.add-stroke method by name."
+        }
+      ],
+      "acceptance_criteria": [
+        "path.rs carries no mask-specific import or type; each consumer, including the mask brush, declares its own stroke payload and colour or limit semantics.",
+        "The content-addressed store holds consumer-declared stroke types, not only the mask's own Stroke.",
+        "Draft.target is taken from an action's declared identity parameters, checked the way is_identity already checks them, rather than a fixed MaskTarget; MaskTarget leaves draft.rs.",
+        "Masks use the generalized store and draft target unchanged: the same stroke content addresses and bit-identical coverage.",
+        "docs/design/masking.md and docs/design/corrections.md describe the shared primitive as the code now supports it."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Move the mask-specific colour-limit and stroke-field logic out of path.rs and into the mask module's own stroke type.",
+          "Widen Draft.target to an action's declared identity parameters and update draft_begin's mask-specific handling.",
+          "Re-run the full mask test suite to confirm identical stroke content addresses and coverage."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core mask",
+          "cargo test -p luxforge-core path",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Every existing mask test passes unchanged, with the same stroke content addresses and bit-identical coverage.",
+          "A second consumer can declare its own stroke type against the same store."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-009",
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002",
+        "TASK-007",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-010"
+      ]
+    }
+  ]
+}

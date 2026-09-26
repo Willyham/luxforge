@@ -1,6 +1,6 @@
 # RAW integration contract
 
-Status: continuous RAW editing is implemented and verified on supplied files; broader qualification remains tracked. The editor opens the supplied Nikon Z6, Fujifilm X100VI and DJI Air 2S originals through the typed RAW path. Real-file adapter tests and background Metal renders pass; complete control, concurrency, resource and portability acceptance is tracked in [initial RAW](initial-raw.md) and the [task plan](../../tasks/implementation-initial-raw.json). The supplied FC3411 DNG uses required GainMap/WarpRectilinear corrections; its [contract](air2s-dng.md) records the precise encoding and float interpretation.
+Status: continuous RAW editing is implemented and verified on supplied files; broader qualification remains tracked. The editor opens the supplied Nikon Z6, Fujifilm X100VI and DJI Air 2S originals through the typed RAW path. Real-file adapter tests and background Metal renders pass; complete control, concurrency, resource and portability acceptance is tracked in [initial RAW](initial-raw.md) and the [RAW plan](../../tasks/raw.json). The supplied FC3411 DNG uses required GainMap/WarpRectilinear corrections; its [contract](air2s-dng.md) records the precise encoding and float interpretation.
 
 Camera-specific mode and processing policy is defined in the validated embedded
 [RAW camera catalog](raw-camera-profiles.md). Camera profiles select existing

@@ -1,13 +1,6 @@
-//! One distribution type and one process sampler for every timing tool.
-//!
-//! Before this, `editor_latency.rs`, `editor_performance.rs`, `raw_editor.rs` and
-//! `diagnostics::measure` each wrote their own p50/p95 JSON shape, and three of the four used their
-//! own copy of the same nearest-rank percentile while `diagnostics::measure` used an interpolated
-//! median and a different p95 index. `usage(root, pid)` was byte-identical in `diagnostics.rs` and
-//! `editor_latency.rs`, `raw_editor.rs` read only the RSS half of the same `ps` line under its own
-//! name, and the settle-then-idle window (a one second settle, then a thirty second window) was
-//! written twice. This module is the one place all of that lives now; see
-//! `docs/design/consolidation.md` (TASK-025).
+//! One distribution type and one process sampler for every timing tool: the nearest-rank
+//! percentile and its JSON shape, `usage(root, pid)` for CPU time and RSS, and the one
+//! settle-then-idle window (a one second settle, then a thirty second window).
 use crate::*;
 use std::time::{Duration, Instant};
 

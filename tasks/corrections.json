@@ -3,7 +3,7 @@
   "plan_id": "corrections",
   "title": "Corrections module: Clone, Heal and AI Remove",
   "objective": "Deliver an offline, non-destructive Clone/Heal baseline and an optional provider-agnostic AI Remove workflow with durable frozen results, user-controlled models and exact UI/API parity.",
-  "context_summary": "Planning proposal, not implementation authorization. The earlier roadmap excludes generative editing until the owner accepts the new scope. Clone/Heal can proceed independently. AI implementation requires the shared settings, permissions, resource and derived-artifact capabilities in docs/design/module-capabilities.md; no cross-file task IDs are used.",
+  "context_summary": "Planning proposal, not implementation authorization. The earlier roadmap excludes generative editing until the owner accepts the new scope. Clone/Heal can proceed independently. AI implementation requires the shared settings, permissions, resource and derived-artifact capabilities in docs/design/module-capabilities.md; no cross-file task IDs are used. The groundwork it needs in the rendering, masking and capabilities work (stage-boundary methods, per-tile input regions, generic path primitives, candidates as job results, activation with local-runtime) is done when this plan starts, as each task's context says.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -106,7 +106,8 @@
       ],
       "extra_context": [
         "Preserve stored layer order; no catalog migration or generalized graph. The owner thread plans but never rasterizes.",
-        "Answer every performance-rules checklist item for changes under crates."
+        "Answer every performance-rules checklist item for changes under crates.",
+        "Groundwork before this starts: the compiled render entries gain methods for what their match arms ask (input stage, point mapping, rectangle read, materialise, point), so a repair boundary is one implementation rather than about thirty match arms; and a spatial operation declares the input region each tile reads, because a clone reads at an arbitrary offset beyond the 512 px summed-halo bound and a heal needs a per-patch solve larger than the 4 KiB global estimate."
       ],
       "context_links": [
         {
@@ -155,7 +156,8 @@
         "TASK-001"
       ],
       "extra_context": [
-        "Pointer events remain desktop-only; API clients submit bounded stroke geometry, source coordinates and add/subtract operations directly."
+        "Pointer events remain desktop-only; API clients submit bounded stroke geometry, source coordinates and add/subtract operations directly.",
+        "The path primitives are the mask brush's own today: `path.rs` imports mask constants and carries the colour limit, a draft's target is a mask target, and the desktop's brush gesture names `mask.add-stroke`. They are generalised into a store for consumer-owned stroke types, with draft targets taken from declared identity parameters, before this starts."
       ],
       "context_links": [
         {
@@ -340,7 +342,8 @@
       ],
       "extra_context": [
         "Requires the generic host artifact storage from the module-capabilities design before implementation; no cross-plan task IDs are encoded here.",
-        "Rendering uses a frozen host-owned patch and never invokes its generation provider."
+        "Rendering uses a frozen host-owned patch and never invokes its generation provider.",
+        "Every task result is recorded as a catalog artifact and unreferenced ones are collected only when a catalog opens; return candidates as bounded job results and publish only the accepted patch as an artifact."
       ],
       "context_links": [
         {
@@ -391,7 +394,8 @@
       ],
       "extra_context": [
         "If qualification rejects all local models, complete this task only by recording a no-go with evidence and keep local AI unavailable; do not substitute an unreviewed model.",
-        "Generic download, settings, permissions, activation and bounded workers from module-capabilities are prerequisites."
+        "Generic download, settings, permissions, activation and bounded workers from module-capabilities are prerequisites.",
+        "Activation (preloading a model with a cancellable worker) is deferred together with the `local-runtime` capability; this adapter brings both back with its first real consumer."
       ],
       "context_links": [
         {
@@ -439,7 +443,8 @@
       ],
       "extra_context": [
         "Requires generic settings, secret storage, network permission and jobs; first live providers are chosen in the qualification task.",
-        "Do not pass original paths, EXIF or extra image bytes by default."
+        "Do not pass original paths, EXIF or extra image bytes by default.",
+        "The transport runs on `ureq`'s own agent behind the unchanged address policy; at the 1,024-record grant cap the oldest remote-image grant is evicted, so per-asset consent keeps working, and whether remote-photo consent is per asset or remembered is settled in the decision task before the first adapter ships."
       ],
       "context_links": [
         {

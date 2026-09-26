@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW priority and quality expectations, the first external module use case, and accepted performance workloads/budgets.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW priority and quality expectations, the first external module use case, accepted performance workloads/budgets, the Presence, colour mixer and vignette defaults, and where Detail's sharpening and noise reduction run.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -261,6 +261,51 @@
           "No proposal is silently treated as accepted."
         ]
       }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Decide where Detail's sharpening and noise reduction run in the stage order, and whether they show at Fit, before the Detail module is designed.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Every spatial layer is placed after all colour work today (the placement rule in the module registry), so noise reduction or sharpening before tone cannot be expressed; proxy eligibility is decided per stage, with no per-effect policy, so a spatial layer makes the proxy approximate at Fit.",
+        "Lightroom-style noise reduction usually runs early on scene-referred data while output sharpening runs late; the choice decides whether Detail needs a new stage or an ordering rule inside the spatial stage.",
+        "It is the one question the post-consolidation design leaves open (docs/design/post-consolidation.md, Out of scope)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Open product questions",
+          "relevance": "Where the answer is recorded."
+        },
+        {
+          "kind": "file",
+          "label": "Placement",
+          "target": "crates/luxforge-core/src/modules/registry/placement.rs",
+          "relevance": "The effect-stage order that places spatial layers after colour."
+        },
+        {
+          "kind": "file",
+          "label": "Presence, mixer and vignette design",
+          "target": "docs/design/presence-mixer-vignette.md",
+          "relevance": "The spatial primitive, its stage and its proxy behaviour."
+        }
+      ],
+      "acceptance_criteria": [
+        "The owner chooses where Detail's operations run and how they show at Fit, and the decision is recorded in docs/decisions.md before a Detail design starts."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the stage order and proxy behaviour with the owner."
+        ],
+        "commands": [],
+        "expected_results": [
+          "The Detail design starts from a recorded decision."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -271,7 +316,8 @@
         "TASK-002",
         "TASK-003",
         "TASK-004",
-        "TASK-005"
+        "TASK-005",
+        "TASK-006"
       ]
     }
   ]

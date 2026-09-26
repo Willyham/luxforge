@@ -1,6 +1,6 @@
 # Source-kind controls: one Exposure and one White balance
 
-Status: **proposal; implementation follows the owner's review of the open questions.** This is TASK-028 of the [consolidation](consolidation.md); TASK-010 implements it in wave 3, after wave 2's one plan path. The owner's decision is in [decisions](../decisions.md#architecture-review): a JPEG and a RAW photo show one Exposure control and one White balance set, each control behaves as its source requires, and a module's applicability to a source kind is declared rather than named by the desktop. The [proposals](#proposals-with-recorded-defaults) at the end are the owner's to decide.
+Status: **proposal; implementation follows the owner's review of the open questions.** Step 1 of the shape below, declared source kinds, is authorized ahead of those questions ([decisions](../decisions.md#post-consolidation-review)); both are planned in the [module contract plan](../../tasks/module-contract.json). The owner's decision is in [decisions](../decisions.md#architecture-review): a JPEG and a RAW photo show one Exposure control and one White balance set, each control behaves as its source requires, and a module's applicability to a source kind is declared rather than named by the desktop. The [proposals](#proposals-with-recorded-defaults) at the end are the owner's to decide.
 
 ## Outcome and scope
 

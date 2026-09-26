@@ -1,0 +1,944 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "module-contract",
+  "title": "Module contract, tool modules and presets",
+  "objective": "Finish the module contract so a new tool is a declaration plus its equations: declared source kinds, one presettable-action rule, field patches over the whole parameter vocabulary with structural invariants, a descriptor snapshot instead of hand-kept lists, a smaller ToolModule and descriptor, developer-only test modules, and the shared Exposure and White balance controls once the owner answers their open questions.",
+  "context_summary": "The consolidation made Basic, the colour mixer, Presence and the vignette one field-patch module each, gave the host layer identity, format and mask, and one placement rule. What remains: applicability to a source kind is decided by the RAW module's name in six places even though the declaration itself is already decided; field patches take numbers only, so the developer controls proof is a second patch implementation and Tone Curve could not be expressed as a spec; field-patch specs restate their invariants by hand; four hard-coded lists of built-in modules must be edited for every new module; and the trait, descriptor and test suites carry mechanisms with only one user. The owner's decisions are in docs/decisions.md's \"Post-consolidation review\" section; constraints are in docs/design/post-consolidation.md.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Replace the preset importer's false \"Luxforge has no masks\" message and correct the presets design doc's stale masking and catalog-format passages.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. Masking is delivered, so telling an importing user Luxforge has no masks is a false statement about current behavior, not a scope note.",
+        "`presets/mapping.rs`'s `NO_MASKS` constant reads \"Luxforge has no masks or local corrections\" and is reported for every imported Lightroom mask row; `presets/tests.rs` asserts that exact text. `docs/design/presets.md` repeats \"Luxforge has no such tool\" for the same row, and separately says \"The current format is 7\" with the format's branch history, while the catalog's own format marker is 10.",
+        "Reword the reason to something like \"Lightroom masks and local corrections are not imported\" (mask presets stay out of scope by decision; only the wording is wrong). Point the format passage at its one authoritative home instead of restating the number or its history.",
+        "No behavior changes: the importer still refuses Lightroom mask settings, only the message and the doc text change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Preset mapping",
+          "target": "crates/luxforge-core/src/presets/mapping.rs",
+          "relevance": "The NO_MASKS constant and its report text.",
+          "locator": "NO_MASKS"
+        },
+        {
+          "kind": "file",
+          "label": "Preset mapping tests",
+          "target": "crates/luxforge-core/src/presets/tests.rs",
+          "relevance": "Asserts the current NO_MASKS wording word for word."
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "The stale \"no masks\" and \"current format is 7\" passages."
+        },
+        {
+          "kind": "file",
+          "label": "Versions and lineage",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "The catalog format's one authoritative home, at format 10.",
+          "locator": "Storage: catalog format 10"
+        }
+      ],
+      "acceptance_criteria": [
+        "The import report's mask-row reason states that Lightroom masks and local corrections are not imported, without claiming Luxforge has no masks; the assertion in presets/tests.rs matches the new wording.",
+        "docs/design/presets.md no longer says Luxforge has no masks, and its catalog-format passage points to the format's one authoritative section instead of restating the number and its history.",
+        "The presets test suite passes with no other behavior change."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Reword NO_MASKS and update its assertion in presets/tests.rs",
+          "Correct the two docs/design/presets.md passages"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core presets",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Presets tests pass with the corrected message",
+          "No import behavior changes"
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Declare each effect's source-kind applicability on EffectDescriptor and resolve \"does this apply to this photo\" through one function used by action refusal, admission, module.list and the desktop.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 2, finish the consolidation. Declared source kinds remove the desktop's name checks in the same change.",
+        "The rule \"RAW applies only to a RAW photo\" is written six times today: `api/methods.rs`'s `module_list` filters the literal `\"luxforge.raw\"`, but only when the request carries an `asset_id`; the desktop's own call to it (`app/tasks.rs`'s `modules_task`) sends none, so the desktop's own checks are what actually enforce this there. `editor/source.rs`'s `validate_source_recipe` names `crate::RAW_EFFECT` directly on its JPEG branch. The desktop repeats `module.id != \"luxforge.raw\"` (or the mode-string form) in `app/mod.rs`, `state/tools.rs`, `state/canvas.rs` (whose own comment calls this \"the one thing the descriptor cannot say\") and `state/palette.rs`.",
+        "Owner decision: a module's applicability to a source kind is declared, not named by the desktop. This is part 1 of the source-kind design and touches none of that design's open questions, so it lands on its own.",
+        "Current shapes only: EffectDescriptor gaining a `sources` field is an additive schema change. The RAW-only invariants that stay separate (one source layer at index zero, calibration equal to the asset's) are not part of this rule and are untouched.",
+        "The rendered raw-panel check needs a private RAW manifest; without one, verification is limited to the JPEG smoke scenarios and the desktop's unit and state tests."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Source-kind controls design",
+          "target": "docs/design/source-controls.md",
+          "relevance": "Part 1 of the shape: declared sources, independent of the design's open questions.",
+          "locator": "The shape"
+        },
+        {
+          "kind": "file",
+          "label": "Host methods",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "module_list's asset_id-only RAW filter."
+        },
+        {
+          "kind": "file",
+          "label": "Source admission",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "validate_source_recipe's JPEG branch names RAW_EFFECT."
+        },
+        {
+          "kind": "file",
+          "label": "RAW module",
+          "target": "crates/luxforge-core/src/modules/raw.rs",
+          "relevance": "The module whose identity every check names."
+        },
+        {
+          "kind": "file",
+          "label": "Tools panel state",
+          "target": "crates/luxforge-app/src/state/tools.rs",
+          "relevance": "One of the four desktop name checks."
+        },
+        {
+          "kind": "file",
+          "label": "Canvas state",
+          "target": "crates/luxforge-app/src/state/canvas.rs",
+          "relevance": "The pick-gate check, commented as \"the one thing the descriptor cannot say\"."
+        },
+        {
+          "kind": "file",
+          "label": "Palette state",
+          "target": "crates/luxforge-app/src/state/palette.rs",
+          "relevance": "The palette's name check."
+        }
+      ],
+      "acceptance_criteria": [
+        "EffectDescriptor carries a sources list (defaulting to every kind); the RAW effect declares [\"raw\"]; one function answers applicability and is called by action refusal, admission, module.list and all four desktop sites.",
+        "No production code outside modules/raw* (and its tests) names \"luxforge.raw\" or RAW_EFFECT; a cargo xtask check-repository rule refuses a reintroduced literal anywhere else.",
+        "module.list reports each module's sources and returns the same filtered result whether or not the caller passes asset_id.",
+        "Desktop state tests show the correct sections, palette entries, mode shortcuts and pick gate on a JPEG asset and on a RAW asset.",
+        "docs/design/modules-and-api.md, docs/features.md and the user guide describe the declared sources field."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add EffectDescriptor.sources and one applies_to(kind) resolver",
+          "Point action refusal, admission, module.list and the four desktop sites at it",
+          "Add the check-repository rule refusing the RAW literal outside its module and tests",
+          "Add desktop state tests deriving sections, palette, mode strip and pick gate on a JPEG and a RAW asset"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core registry",
+          "cargo test -p luxforge-app tools",
+          "cargo xtask verify --tier quick",
+          "cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR"
+        ],
+        "expected_results": [
+          "JPEG and RAW desktop states show the correct RAW-only surfaces without any code naming the module",
+          "check-repository fails a build that reintroduces the luxforge.raw literal outside modules/raw*"
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Resolve \"is this a presettable action\" and its settings-set shape through one registry method used by the preset library, capture, apply, the Lightroom mapping and composite plans.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 2, finish the consolidation.",
+        "The rule \"registered, a field-patch action, and its module available\" is checked five times with three different message vocabularies: `presets/mod.rs`'s `validate_settings`, `presets/library.rs`'s `unavailable_actions` and again inline in `capture_preset`, `presets/mapping.rs`'s `transfer_value` (\"Luxforge has no X action\" / \"X is not available\"), and `editor/plan.rs`'s composite-step handling. The settings-set shape (action count, field names, non-empty field objects) is separately checked in `descriptor.rs`'s `check_settings`, `presets/mod.rs` and `presets/library.rs`.",
+        "Add a `ModuleRegistry::patch_action(id)` that refuses an unknown, non-patch or unavailable action with one wording; rebuild `validate_settings` as `check_settings` plus `patch_action` plus `check_parameters`.",
+        "Host-facing error messages stay byte-identical; only the Lightroom mapping's report text (which already used its own wording) may reword."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Presets validation",
+          "target": "crates/luxforge-core/src/presets/mod.rs",
+          "relevance": "validate_settings, the settings-set shape check."
+        },
+        {
+          "kind": "file",
+          "label": "Preset library",
+          "target": "crates/luxforge-core/src/presets/library.rs",
+          "relevance": "unavailable_actions and capture_preset's own checks."
+        },
+        {
+          "kind": "file",
+          "label": "Preset mapping",
+          "target": "crates/luxforge-core/src/presets/mapping.rs",
+          "relevance": "transfer_value's own wording for the same rule."
+        },
+        {
+          "kind": "file",
+          "label": "Editor plan",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
+          "relevance": "Composite steps checking action.patch directly."
+        },
+        {
+          "kind": "file",
+          "label": "Module descriptor",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "relevance": "check_settings, the settings-set shape rule."
+        }
+      ],
+      "acceptance_criteria": [
+        "One ModuleRegistry method resolves a presettable action for the preset library, capture, apply, composite plans and the Lightroom mapping.",
+        "Existing preset validation, capture and apply error messages are unchanged; only the Lightroom mapping's report wording may differ.",
+        "presets/tests.rs, library_tests.rs and the presets conformance tests pass unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add patch_action with its three refusal cases",
+          "Point all five call sites at it and delete their own checks",
+          "Run the presets and library test suites"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core presets",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All five call sites share one resolver and one set of messages",
+          "Presets and library tests pass unchanged"
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Generalize the field-patch module's Field and Values to any declared parameter kind, and turn the developer controls proof into a field-patch spec so every patch control shares one semantics.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 2, finish the consolidation. Tone Curve, the next planned module, needs this to be a spec rather than a third hand-written module.",
+        "`field_patch.rs`'s Field holds only f64 state and Values holds a Vec<f64>, so its `read` re-implements the numeric range check `check_value` already provides, and its labels format numbers only. `tests/modules/conformance/shape.rs`'s `Field::read` accepts only Number parameters, so a curve, enum or boolean patch module is invisible to the suite.",
+        "`modules/controls.rs` (281 lines, the only exerciser of curve, toggle, choice and colour patch controls) hand-writes merge, canonical form, a no-op test by JSON-map equality (so a stored `{\"amount\":1}` and the bare number `1.0` count as different), and \"exactly one field\" enforced twice, and it refuses a stored default that equals the field's own declared default.",
+        "The curve control vocabulary stays even though only the controls proof uses it today; Tone Curve is its planned consumer, so the generalization must leave curve, enum, boolean and colour controls usable by a real module, not only the proof.",
+        "Renders stay byte-identical: every numeric module must keep compiling the same f64s through the generalized accessor. A stored-payload refusal's wording may change under current-shapes-only, but the conformance suite's refusal-by-name checks must still pass."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Field patch",
+          "target": "crates/luxforge-core/src/modules/field_patch.rs",
+          "relevance": "Field, Values and read, numeric-only today."
+        },
+        {
+          "kind": "file",
+          "label": "Controls proof",
+          "target": "crates/luxforge-core/src/modules/controls.rs",
+          "relevance": "The hand-written second patch implementation."
+        },
+        {
+          "kind": "file",
+          "label": "Module descriptor",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "relevance": "check_value, summary_value and title_case to reuse."
+        },
+        {
+          "kind": "file",
+          "label": "Conformance shape",
+          "target": "crates/luxforge-core/tests/modules/conformance/pixels.rs",
+          "relevance": "Where the suite's field-patch shape rules live beside shape.rs."
+        }
+      ],
+      "acceptance_criteria": [
+        "Field wraps a declared parameter of any kind (number, integer, boolean, enum, colour, curve) with its slider label, history word, rail and own-control flag; Values holds canonical Values with a number(name) accessor for numeric fields.",
+        "read validates every stored key with the one generic parameter check; the canonical form drops a field equal to its default by value equality, not JSON-map identity.",
+        "ControlsModule is rebuilt as a spec plus its sample query rather than a hand-written ToolModule; the conformance suite derives payloads for enum, boolean, colour and curve fields.",
+        "Every existing numeric field-patch module's render output is byte-identical before and after."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Extend Field and Values to the non-numeric ParameterKinds",
+          "Rebuild ControlsModule as a spec over the generalized field table",
+          "Extend the conformance suite to cover the new field kinds",
+          "Run the numeric modules' render and sample tests to confirm byte-identity"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core field_patch",
+          "cargo test -p luxforge-core --test modules",
+          "cargo test -p luxforge-app proof_controls",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The conformance suite exercises curve, toggle, choice and colour patches the same way it exercises numeric ones",
+          "Every existing numeric module's render output is unchanged"
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Add a validating Spec constructor for field-patch modules, check group membership at build time, and replace the four hard-coded built-in-module lists with one committed descriptor snapshot.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation.",
+        "The same EffectDescriptor literal (format: EFFECT_FORMAT, artifacts: false, single: true) and templated set/reset ActionText are repeated in basic/mod.rs, mixer/mod.rs, presence/mod.rs and vignette/mod.rs, each also repeating its own neutral short-circuit; about 680 lines across those four files' tests exist only to restate the same descriptor table. field_patch.rs builds a module's groups with filter_map(|name| self.field(name)), so a misspelled group entry silently produces a field with no slider whose group reset does not reset it, and nothing today catches that.",
+        "Separately, registering a built-in module means editing four hard-coded lists: the 22-method literal in api/methods.rs's host_and_generated_methods_are_unique_complete_and_match_the_schema test, registry/tests.rs's action list and descriptors().len() == 9 assertions, xtask/src/editor_acceptance.rs's module and action lists, and the maskable-effects list in registry/lookups_tests.rs.",
+        "Descriptor JSON must serialize identically before and after; the snapshot this task adds is the proof. A spec must not silently allow single: false or another change to the forced fields."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Field patch",
+          "target": "crates/luxforge-core/src/modules/field_patch.rs",
+          "relevance": "The group filter_map that silently drops a misspelled field."
+        },
+        {
+          "kind": "file",
+          "label": "Basic module",
+          "target": "crates/luxforge-core/src/modules/basic/mod.rs",
+          "relevance": "One of the four modules repeating the same descriptor literal."
+        },
+        {
+          "kind": "file",
+          "label": "Vignette module",
+          "target": "crates/luxforge-core/src/modules/vignette/mod.rs",
+          "relevance": "Another of the four; shares the pattern with mixer and presence."
+        },
+        {
+          "kind": "file",
+          "label": "Host methods",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "The hard-coded 22-method generated-list test."
+        },
+        {
+          "kind": "file",
+          "label": "Registry tests",
+          "target": "crates/luxforge-core/src/modules/registry/tests.rs",
+          "relevance": "The hard-coded action list and descriptor count."
+        },
+        {
+          "kind": "file",
+          "label": "Registry lookups tests",
+          "target": "crates/luxforge-core/src/modules/registry/lookups_tests.rs",
+          "relevance": "The hard-coded maskable-effects list."
+        },
+        {
+          "kind": "file",
+          "label": "Editor acceptance",
+          "target": "xtask/src/editor_acceptance.rs",
+          "relevance": "The hard-coded module and action lists."
+        }
+      ],
+      "acceptance_criteria": [
+        "Spec::new(id, title, hint, effect_id, stage) derives the set-/reset- action identities, titles, notes and noun, and forces format: EFFECT_FORMAT, artifacts: false and single: true; group validation at build time refuses an unknown field name and a field belonging to zero or more than one group.",
+        "FieldPatchModule::compile returns the neutral operation from one place shared by every field-patch module, not once per module.",
+        "One committed snapshot of module.list and schema.list for ModuleRegistry::builtin() replaces the four hard-coded lists; editor_acceptance compares against builtin_modules() instead of a literal.",
+        "The descriptor-restatement tests in basic/mod.rs, mixer/mod.rs, presence/mod.rs and vignette/mod.rs are deleted, each naming in the commit the kept test (the snapshot, plus each module's own history-word test) that proves the same fact.",
+        "Registering a new built-in field-patch module touches only its own directory, one registration line and its own tests."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add Spec::new with its forced fields and group validation at build",
+          "Generate and commit the module.list/schema.list snapshot",
+          "Point editor_acceptance and the maskable-list test at builtin_modules()",
+          "Delete the four modules' descriptor-restatement tests, naming their keepers in the commit"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core field_patch",
+          "cargo test -p luxforge-core --test modules",
+          "cargo test -p xtask",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The committed snapshot matches the pre-change descriptor JSON exactly",
+          "A misspelled group entry fails at build, not silently at runtime",
+          "Registering a new built-in module requires no edit to the four former lists"
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Implement the shared Exposure and White balance control set for JPEG and RAW photos per the source-controls design, once the owner has answered its open questions.",
+      "status": "blocked",
+      "dependencies": [
+        "TASK-002",
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation.",
+        "Blocked on the owner's answers to the design's open questions: where Exposure lives on RAW, masked white balance on RAW, the JPEG and RAW scales and ranges, Lightroom RAW temperature and tint import, presets across source kinds, and whether Reset Basic also returns RAW white balance to As shot. Declared source kinds land independently of those questions, ahead of this work.",
+        "The host still reads the RAW module's payload directly: editor/source.rs's raw_settings, resolve_raw_settings, development_gains and raw_payload all parse RawPayload, and resolve_raw_settings and development_gains each resolve its white-balance mode to gains with the same As-shot/Custom match, written a third time inside the module itself. The payload's capture calibration (as_shot_gains, cam_xyz) is stored in every entry and re-compared against the asset's own at admission. Let the RAW module compile its own payload into a host source-development value instead, and take calibration from the stage context the way sensor_neutral already does.",
+        "Without a field patch that accepts every declared parameter kind, a patched set-raw would be a third hand-written patch semantics alongside the field patch and the developer controls proof. StageContext also carries no source kind today, so the RAW module's plan inspects the stack's first layer directly instead of being told the kind; give it one as part of this work.",
+        "A query also carries no mask target, so a masked Neutral picker would resolve against the stage before the global Basic layer applies, which is wrong whenever a global white balance exists; the desktop avoids this today only by leaving mask mode before entering Basic's pick mode. Resolve this rather than leaving it latent.",
+        "RAW action identities and payload fields are hard-coded in the harness (xtask/src/raw_editor.rs's script steps and control checks, xtask/src/raw_panel_smoke.rs's constants and field lookups); these move to the merged action and its fields with this change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Source-kind controls design",
+          "target": "docs/design/source-controls.md",
+          "relevance": "The full shape, semantics, descriptor form and verification section to implement."
+        },
+        {
+          "kind": "file",
+          "label": "Initial RAW design",
+          "target": "docs/design/initial-raw.md",
+          "relevance": "The frozen RAW locus and minimal-controls integration this work must not change."
+        },
+        {
+          "kind": "file",
+          "label": "RAW module",
+          "target": "crates/luxforge-core/src/modules/raw.rs",
+          "relevance": "The module whose payload and actions change."
+        },
+        {
+          "kind": "file",
+          "label": "Source admission and development",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "Where the host reads the RAW payload directly today."
+        },
+        {
+          "kind": "file",
+          "label": "Instant previews design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "The drafted RAW white-balance approximation this change must keep working."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every exact test the design's verification section lists passes: descriptor variant validation, source-kind refusals (a RAW action refused on JPEG, a superseded Basic field refused on a RAW global target and accepted on a mask), set-raw's field-patch behavior, and drafts.",
+        "A JPEG and a RAW photo show identical Basic sections (same labels, order and controls) except where a declared variant differs; a desktop parity test fails if desktop code outside tests names luxforge.raw.",
+        "Preset behavior matches the design: the importer rows for Exposure and white balance, skip reporting for a setting that does not apply to a photo's kind, and capture under As shot, a custom pair and a pick.",
+        "The basic-panel and raw-panel rendered scenarios are updated for the merged section, including As shot, the double-click resets and the section's edited dot.",
+        "An Exposure drag on RAW is measured before and after the move from the source read into the colour run, recorded with host, load and scope in docs/specs/performance.md."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Port the RAW plan's white-balance tests to set-raw and add the design's descriptor, applicability and preset tests",
+          "Add the desktop parity test that fails if desktop code names luxforge.raw outside tests",
+          "Update the basic-panel and raw-panel rendered scenarios",
+          "Measure the Exposure drag before and after on a RAW source"
+        ],
+        "commands": [
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "All pass with the design's evidence",
+          "The exposure-move timing is recorded with its scope in docs/specs/performance.md"
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Build the vignette's per-row and per-column falloff tables lazily on first use instead of in the unit's constructor, and measure owner-thread time per slider tick with a shaped vignette at 60 MP.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 3, speed.",
+        "modules/vignette/unit.rs's Vignette::new builds two Vec<f64> tables sized width and height (15,840 entries combined at 60 MP, 9504x6336) with a powf call per entry whenever roundness is negative (the superellipse branch), and it runs at every compile, not only at render; vignette/mod.rs's compile constructs a fresh Vignette on every call.",
+        "The registry's compile_layers_sampled (modules/registry/compile.rs, which imports render::{Compiled, Entry, Segment, spatial} directly) also runs for callers that need only the output stage: editor/plan.rs's with_stage_context (every plan, draft.set, a composite step and a query), editor/evaluate.rs's analysis_identity (once per preview job), and editor/describe.rs through input_stages.",
+        "Suspected cost: roughly +0.1 to +1.5 ms of owner-thread time per slider tick on any module when the stack holds a superellipse vignette (two to three compiles per tick, plus one per preset step), against the draft.set round-trip p50 of about 0.2-0.3 ms recorded in docs/specs/performance.md.",
+        "Renders and the vignette's describe and is_finite outputs must stay byte-identical; this is a lazy-build change only, not a change to the falloff arithmetic."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Vignette unit",
+          "target": "crates/luxforge-core/src/modules/vignette/unit.rs",
+          "relevance": "Vignette::new, building both tables eagerly."
+        },
+        {
+          "kind": "file",
+          "label": "Vignette module",
+          "target": "crates/luxforge-core/src/modules/vignette/mod.rs",
+          "relevance": "compile, constructing a fresh unit every call."
+        },
+        {
+          "kind": "file",
+          "label": "Registry compile",
+          "target": "crates/luxforge-core/src/modules/registry/compile.rs",
+          "relevance": "compile_layers_sampled and its stage-only callers."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The checklist every change under crates/ answers, and the measurement rule."
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "The existing draft.set round-trip baseline to compare against."
+        }
+      ],
+      "acceptance_criteria": [
+        "Vignette's row and column tables are built once, lazily, on first pixel access rather than in the constructor; describe and is_finite do not force the build.",
+        "Renders and analysis output are byte-identical before and after.",
+        "Owner-thread time per slider tick with a superellipse vignette at 60 MP is measured before and after, back to back, and recorded with host, load and scope in docs/specs/performance.md."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Wrap the row and column tables in a lazily-filled cell",
+          "Confirm describe and is_finite need no table",
+          "Run the vignette unit and render tests",
+          "Measure a 60 MP roundness drag before and after, back to back"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core vignette",
+          "cargo xtask verify --tier quick",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode drag --action set-vignette --parameter roundness --samples 30"
+        ],
+        "expected_results": [
+          "Vignette renders and samples are unchanged",
+          "The recorded owner-time-per-tick figure and its scope are in docs/specs/performance.md"
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Trim ToolModule to one describe hook in place of three always-together methods, collapse to one history-label mechanism, stop parse re-validating already-declared ranges, and remove the always-unreachable Unavailable forwarding wrapper.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Wave 4, structure.",
+        "modules/mod.rs's ToolModule trait has 11 methods. describe_layer, values and is_neutral are always read together, by editor/describe.rs and registry/compile.rs's layer_neutral, each re-reading the same payload; collapsing them into one describe(...) -> LayerReport removes about 60 lines across the 8 implementations and the wrapper.",
+        "Two label mechanisms coexist: label() (used by the field patch and presets) and declared summary templates (used by pixel.rs, crop/module.rs and transform.rs, with their own machinery in descriptor.rs), combined at one site in editor/plan.rs; the desktop never reads summary.",
+        "parse in crop/module.rs, pixel.rs and modules/raw.rs re-checks ranges and enum membership the generic parameter check already enforces (raw.rs's own wording includes \"missing EV\" and \"missing Kelvin\"), about 80 lines of a second validation vocabulary. The Unavailable wrapper in registry/mod.rs forwards all 11 methods, but every host path checks availability first (plan.rs's available(), compile.rs through provider(), describe.rs, the capability host), so only its parse forward in a composite step is ever reached.",
+        "Owner decision: label() with the action's title as its default replaces summary templates; every stored history label stays byte-equal. This changes the mechanism, not the outcome, of the earlier decision to declare summary templates.",
+        "Stored labels for every built-in action must be byte-equal before and after, proven against the descriptor snapshot; renders are unchanged; parse keeps only cross-field rules, not range or enum re-checks."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Module trait",
+          "target": "crates/luxforge-core/src/modules/mod.rs",
+          "relevance": "ToolModule's 11 methods and StageContext."
+        },
+        {
+          "kind": "file",
+          "label": "Registry",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
+          "relevance": "The Unavailable forwarding wrapper."
+        },
+        {
+          "kind": "file",
+          "label": "Registry compile",
+          "target": "crates/luxforge-core/src/modules/registry/compile.rs",
+          "relevance": "layer_neutral, reading the three hooks together."
+        },
+        {
+          "kind": "file",
+          "label": "Editor describe",
+          "target": "crates/luxforge-core/src/editor/describe.rs",
+          "relevance": "Where describe_layer, values and is_neutral are read together."
+        },
+        {
+          "kind": "file",
+          "label": "Editor plan",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
+          "relevance": "Where label() and summary are combined today."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API design",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Describes the trait surface and label mechanism to update."
+        }
+      ],
+      "acceptance_criteria": [
+        "describe_layer, values and is_neutral collapse into one describe method; the trait shrinks from 11 methods accordingly.",
+        "label() with the action title as default is the only history-label mechanism; every built-in action's stored label is byte-identical to today's, proven against the descriptor snapshot.",
+        "parse in crop, pixel and RAW no longer re-checks a range or enum the generic parameter check already enforces.",
+        "The Unavailable wrapper is removed; availability lives on the registry's own entry and is consulted before a module method runs.",
+        "docs/design/modules-and-api.md describes the trimmed trait and the one label mechanism."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Merge describe_layer, values and is_neutral into one describe method across all implementers",
+          "Replace summary templates with label() defaults and compare stored labels against the snapshot",
+          "Delete parse's redundant range and enum checks, keeping only cross-field rules",
+          "Remove the Unavailable wrapper and move availability onto the registry entry"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core modules",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Every built-in action's stored history label is unchanged",
+          "Renders are unchanged"
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Delete the prebuilt JSON-descriptor parse path, give each Control variant its own struct so a wrong builder call is a compile error, add EffectDescriptor and ActionDescriptor constructors, and split descriptor.rs by concern.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Wave 4, structure.",
+        "modules/descriptor.rs is 2,410 production lines (types and builders, module validation, parameter declaration, check_value, labels and the generic check) plus about 2,500 test lines, including one large single test function. ModuleDescriptor::parse, check_raw_control_hints and capabilities::descriptor::check_raw are error-message passes for descriptors arriving as JSON; the only production caller is ControlsModule::new's static JSON literal in modules/controls.rs, while every other built-in module is typed.",
+        "The Control builder setters silently no-op when called on the wrong variant, for example calling a choice-only setter on a number control. Literal EffectDescriptor, ActionDescriptor and parameter-descriptor construction sites number in the dozens across the crate, mostly in tests.",
+        "AGENTS.md rules out building for external module loading now (\"required later, not now\"), so deleting the JSON-parse path removes dead generality rather than a used capability. Descriptor JSON must serialize identically before and after, proven by the committed snapshot this plan already introduces."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Module descriptor",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "relevance": "The 2,410-line file to split; parse, check_raw_control_hints and the Control builders."
+        },
+        {
+          "kind": "file",
+          "label": "Controls proof",
+          "target": "crates/luxforge-core/src/modules/controls.rs",
+          "relevance": "The one production caller of the JSON-parse path."
+        },
+        {
+          "kind": "file",
+          "label": "Capabilities descriptor",
+          "target": "crates/luxforge-core/src/capabilities/descriptor.rs",
+          "relevance": "check_raw, the capability descriptor's own JSON-error pass."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API design",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Describes the descriptor shape this split must keep true."
+        }
+      ],
+      "acceptance_criteria": [
+        "ModuleDescriptor::parse, check_raw_control_hints and capabilities::descriptor::check_raw are deleted; ControlsModule is built with typed builders like every other module.",
+        "Each Control variant is its own struct (or an internally-tagged variant with its own fields), so calling a variant-specific setter on the wrong variant fails to compile.",
+        "EffectDescriptor::new(id, stage) and ActionDescriptor::new(id, title, notes) constructors exist and replace literal struct construction at the call sites this change touches.",
+        "descriptor.rs is split into descriptor/{types,validate,values,labels}.rs, each with its own tests beside it; the committed module-list and schema-list snapshot is unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Delete the JSON-parse path and rebuild ControlsModule with typed builders",
+          "Give each Control variant its own struct",
+          "Add the EffectDescriptor and ActionDescriptor constructors",
+          "Split descriptor.rs into its four files with tests alongside each"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core descriptor",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The committed descriptor snapshot is unchanged",
+          "A wrong-variant builder call fails to compile"
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Register test-only modules, including the always-on pixel proof, only in developer mode, and assemble the built-in registry through one function shared by the desktop and luxforge-json.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 4, structure.",
+        "The pixel proof's descriptor declares developer: true, but luxforge_core::builtin_modules() always includes it, so its PointReplace primitive, its pixel stage and about 150 render lines stay live and edit.set-pixel is on every production API, unlike the controls proof, which luxforge-app's app/lifecycle.rs registers only when developer mode is on.",
+        "luxforge-app/src/json.rs assembles its own registry from ModuleRegistry::builtin() plus an optional capabilities-proof module, separately from app/lifecycle.rs's own registry() function, so the desktop and the JSON CLI can drift on what a developer build serves.",
+        "Owner decision: test modules, including the pixel proof, register only in developer mode. PointReplace's own fate (seed the eventual repair primitive, or deletion) is decided separately alongside the repair-stage design; this task only stops registering it by default.",
+        "Developer builds must keep every developer-only module unchanged; a normal build's schema.list must drop every developer-only method."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Pixel module",
+          "target": "crates/luxforge-core/src/modules/pixel.rs",
+          "relevance": "The always-registered developer: true proof."
+        },
+        {
+          "kind": "file",
+          "label": "App lifecycle",
+          "target": "crates/luxforge-app/src/app/lifecycle.rs",
+          "relevance": "The desktop's own registry() function, developer-gated."
+        },
+        {
+          "kind": "file",
+          "label": "JSON CLI",
+          "target": "crates/luxforge-app/src/json.rs",
+          "relevance": "The separate registry assembly for luxforge-json."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Describes developer-mode surfaces to keep accurate."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace design",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Describes the developer-only surfaces this change gates."
+        }
+      ],
+      "acceptance_criteria": [
+        "The pixel proof registers only in developer mode, matching the controls proof.",
+        "The desktop launch and luxforge-json both assemble their registry through one shared function; there is no second assembly.",
+        "A normal (non-developer) build's schema.list lists no developer-only method or action; a developer build's method list is unchanged.",
+        "docs/user-guide.md and docs/design/develop-workspace.md describe developer-only registration accurately."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Gate the pixel proof's registration on developer mode",
+          "Share one registry-assembly function between the desktop and luxforge-json",
+          "Compare schema.list between a normal and a developer build"
+        ],
+        "commands": [
+          "cargo test -p luxforge-app lifecycle",
+          "cargo test -p luxforge-app --test json_cli",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "A normal build's schema.list has no developer-only method",
+          "Developer builds are unchanged"
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Delete the per-module copies of sample-equals-render, the host-journey re-run, neutral-compiles-to-nothing and compile-refusal checks that the shape-driven conformance suite now proves generically, naming each deleted assertion's keeper.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Wave 5, tests.",
+        "Per-module copies of host-level checks remain after the registry-driven conformance suite took them over: sample-equals-render in tests/basic/{exposure,white_balance,tone,colour}.rs, tests/modules/{mixer,presence}.rs and xtask/src/basic_acceptance.rs; the host journey re-run in tests/basic/exposure.rs; \"neutral compiles to nothing\" in modules/basic/mod.rs, modules/mixer/mod.rs, modules/presence/mod.rs and presence/oracle.rs; compile refusals in basic/mod.rs; and discovery checks in vignette/mod.rs and tests/basic/white_balance.rs.",
+        "The per-module Presence sampling alone is the most expensive part of the modules test binary: tests/modules/presence.rs runs 2 images times 4 parameter sets times 1,280 pixels times 2 render paths, about 26 million pixel evaluations, to prove what the render-level spatial suite already proves with cheap units.",
+        "Keep each module's numerics against its own frozen corpus, its history-word tests, its placement test and any genuinely module-specific behavior. Add the field-order assertions the deleted per-module tests incidentally provided for the mixer and vignette (one describe-based assertion each), so a field-order swap is still caught. A commit that deletes a test names, for each assertion, the kept test that proves the same fact.",
+        "Separately, replace the private re-implementations of the sRGB transfer function scattered across roughly 15 test files (three different, mutually disagreeing definitions under the same few names, including inside the reference crate's own studies) with calls to one named set of functions the reference crate exports."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Conformance pixels",
+          "target": "crates/luxforge-core/tests/modules/conformance/pixels.rs",
+          "relevance": "The suite's own sample-equals-render proof, per module and per path."
+        },
+        {
+          "kind": "file",
+          "label": "Presence tests",
+          "target": "crates/luxforge-core/tests/modules/presence.rs",
+          "relevance": "The most expensive per-module sampling to delete."
+        },
+        {
+          "kind": "file",
+          "label": "Presence oracle",
+          "target": "crates/luxforge-core/src/modules/presence/oracle.rs",
+          "relevance": "One of the per-module neutral-compiles-to-nothing copies."
+        },
+        {
+          "kind": "file",
+          "label": "Reference crate",
+          "target": "crates/luxforge-reference/src/lib.rs",
+          "relevance": "Exports the sRGB functions the copies should call instead."
+        }
+      ],
+      "acceptance_criteria": [
+        "The listed per-module copies are deleted; the commit names, for each deleted assertion, the kept test that proves the same property.",
+        "One describe-based field-order assertion exists for the mixer and for the vignette, replacing what the deleted corpus tests incidentally covered.",
+        "Breaking one module's sample path, its draft-cancel behavior or its neutral rule still makes the conformance suite fail by name, confirmed with a deliberate mutation.",
+        "Every private sRGB transfer-function copy in test code is replaced with a call to the reference crate's one named implementation; the frozen-corpus reload tests still pass unchanged.",
+        "The modules test binary's wall time is recorded before and after the deletions."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Delete each listed per-module copy, naming its keeper in the commit",
+          "Add the mixer and vignette field-order assertions",
+          "Spot-check with a deliberate mutation that the suite still catches a broken sample path",
+          "Replace the private sRGB copies with the reference crate's named functions"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --test modules",
+          "cargo test -p luxforge-core --test basic",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The conformance suite still names a module whose sample path, draft cancel or neutral rule is broken",
+          "The modules binary's wall time drops, recorded before and after"
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Give ToolModule a defaulted carry hook so a later geometry module is repositioned by the orientation the way the crop is today, instead of transform.rs naming the crop directly.",
+      "status": "blocked",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 6, roadmap groundwork.",
+        "Blocked: starts when the first new geometry module (for example upright or perspective) is designed.",
+        "modules/transform.rs imports crop::stored_payload and CROP_EFFECT directly and re-expresses only the crop through a turn, via CropPayload's carried method in modules/crop/geometry.rs — the one piece of module-to-module coupling anywhere in modules/. A second geometry effect placed after the orientation (an upright or perspective module, say) would keep its stored payload unchanged while its input stage turns, so it would silently address different image content; nothing today refuses this.",
+        "Non-affine geometry is out of scope for the hook itself: it would need a new host primitive through processing.rs, registry/compile.rs's output_stage, render.rs's point walk, render/pipeline.rs, render/linear.rs, render/window.rs and render's locate path. Record that in docs/design/architecture.md so a future module does not fake one through the carry hook."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Transform module",
+          "target": "crates/luxforge-core/src/modules/transform.rs",
+          "relevance": "Imports the crop's payload type and effect id directly."
+        },
+        {
+          "kind": "file",
+          "label": "Crop geometry",
+          "target": "crates/luxforge-core/src/modules/crop/geometry.rs",
+          "relevance": "CropPayload::carried, the arithmetic the hook reuses."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture design",
+          "target": "docs/design/architecture.md",
+          "relevance": "Where the non-affine-geometry limit of this hook is recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "ToolModule gains a defaulted carry(effect_id, format, payload, input_stage, orientation) -> Result<Option<Value>> method whose default (None) means orientation-invariant.",
+        "transform.rs asks every geometry layer after the orientation through the registry's carry hook instead of naming the crop; the crop implements the hook with its existing carried arithmetic.",
+        "Orientation and crop rebase renders and tests are byte-identical before and after.",
+        "docs/design/architecture.md records that non-affine geometry needs a new host primitive beyond this hook."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add the defaulted carry hook to ToolModule",
+          "Move the crop's turn-carrying from transform.rs to the crop's own carry implementation",
+          "Run the orientation and crop rebase tests"
+        ],
+        "commands": [
+          "cargo test -p luxforge-core transform",
+          "cargo test -p luxforge-core crop",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Orientation and crop rebase behavior is unchanged",
+          "transform.rs no longer imports the crop's payload type or effect id"
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-007",
+        "TASK-010",
+        "TASK-012"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-005",
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-008",
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-009"
+      ]
+    }
+  ]
+}

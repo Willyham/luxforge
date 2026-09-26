@@ -1,0 +1,978 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "core-service",
+  "title": "Core service and API",
+  "objective": "Make the editor service's front doors single and honest: retries answered, panics contained, events that name what changed, one job table and job API, method envelopes and retry routes declared in the table, one bound evaluation, one preparation path, errors that carry their facts as data and an explicit public surface, then prepare the service for the MCP adapter, the library and export when those milestones start.",
+  "context_summary": "The consolidation gave the service one write path (`mutate` with one `admit`), one planning path and one method table; this plan finishes what that left: three job tables and method families, events with no subject, evaluation prologues repeated across several entry points, a synchronous preparation mode only tests and xtask use, facts clients still parse out of error text, and a public surface built from glob re-exports. The owner's 2026-09-26 decisions and the constraints on this work are recorded in docs/decisions.md and docs/design/post-consolidation.md. The roadmap-groundwork tasks are blocked until their milestone starts.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Answer a retried draft.commit from its stored answer, by declaring in each method's table entry who answers its retries rather than inferring it from envelope and route.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. A retried mutation must be safe to resend, and today one method breaks that rule.",
+        "`Owner::answer` in `api/owner.rs` derives a retry key only for `(Envelope::Request, _)` and `(Envelope::Revision, Route::Owner(_))`; every other combination gets no key, so its handler runs again on every retry. `draft.commit`'s parameters carry a `mutation: Mutation` field, which declares `Envelope::Revision`, but the method is a `service!` table entry, so its route is `Route::Service` — the one combination the match maps to no key at all.",
+        "`draft_commit` calls `session.held_draft(&p.draft_id)` before running the action, and a successful commit clears `session.draft`; because no key is derived, a retry with the same `request_id` re-enters the handler, finds no held draft, and fails validation instead of returning the first answer.",
+        "The owner's `a_retry_of_every_mutation_family_returns_the_first_answer_and_records_no_event` test in `api/owner.rs` covers `catalog.import`, the preset and version families, `artifact.collect` and `history.undo`, but not `draft.commit`."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Owner dispatch",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "`Owner::answer` derives the retry key from envelope and route, and the request table it checks."
+        },
+        {
+          "kind": "file",
+          "label": "Method table and draft.commit",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "The method table's envelope and route declarations, and the `draft_commit` handler that ends the draft on success.",
+          "locator": "draft_commit"
+        },
+        {
+          "kind": "file",
+          "label": "History spec",
+          "target": "docs/specs/edit-history.md",
+          "relevance": "The catalog and live API contract every mutation's retry must keep.",
+          "locator": "Catalog and live API"
+        }
+      ],
+      "acceptance_criteria": [
+        "A retried `draft.commit` with the same `request_id` returns the first answer marked `deduplicated: true`, writes no new history entry and emits no event.",
+        "Which route answers a method's retry, the catalog's request log or the owner's own table, is a field the method declares, not a value inferred from its envelope and route.",
+        "The every-mutation retry test in `api/owner.rs` covers `draft.commit` alongside the families it already checks."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add a `draft.commit` case to the existing every-mutation retry test.",
+          "Run the owner's dispatch and deduplication tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core api::owner",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "The new case fails before the fix and passes after it; the existing retry cases are unaffected."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Contain panics on the source worker and in the catalog owner's message loop, so a failure answers internal instead of leaving waiters blocked or ending the owner for every client.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. A single unhandled panic can currently take down the whole editor for every connected client, or leave one client waiting forever.",
+        "`source_worker` in `api/owner.rs` runs decode, RAW development and artifact reads with no `catch_unwind`; a panic there unwinds the worker thread before it posts `SourceComplete` or ends the activity, so the job stays `running` on `job.status` while the activity board already records it failed. `wait_source`'s reply channel has no timeout, so every caller blocked in it, including the desktop's refresh and import tasks, waits forever, and the next source job is refused because the worker stopped.",
+        "The catalog owner's own message loop has no containment either: its dispatch runs every handler inline, so a panic inside any one of them, for example `owner.call(call)`, ends the loop and every client's connection with it. `latest.rs`, `capabilities/jobs.rs` and `api/owner/point.rs` already wrap their work in `catch_unwind`; the source worker and the owner loop do not.",
+        "Also look at the production `.expect(...)` calls reachable on the owner thread while developing a RAW, such as `development_gains(asset, recipe)?.expect(\"RAW has development gains\")` in `editor/source.rs`, and either prove the invariant at the call site or turn it into a returned error.",
+        "Owner decision: a panic while the owner is serving one message is contained and answered `internal`, which is safe because every durable write is transactional and the entry cache only moves after a commit; every worker contains panics the same way."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Source worker and owner loop",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "`source_worker` runs with no `catch_unwind`, and the message loop dispatches every owner call with none either."
+        },
+        {
+          "kind": "file",
+          "label": "RAW preparation",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "`development_gains(...).expect(...)` and the other owner-thread preparation calls to audit."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "relevance": "The 2026-09-26 panic-containment decision this task implements.",
+          "locator": "Post-consolidation review"
+        }
+      ],
+      "acceptance_criteria": [
+        "A test hook that panics inside a source task leaves that job `failed` with `internal`, releases every client waiting on it, and lets the next source job run.",
+        "A panicking owner handler answers that one request `internal`, and the owner keeps serving every other client afterward.",
+        "`wait_source`, `job.status` and the activity board agree about a failed job's status."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add a panic hook to a source task in a test and assert the job, its waiters and the activity board agree.",
+          "Add a panicking owner handler in a test and assert the owner answers `internal` and keeps running.",
+          "Run the owner and source-job tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core api::owner",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Both panic tests pass; no waiter blocks past the panic, and the owner serves the next request."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Make every event name the asset and revision it changed, have the desktop refresh only for the photo it has open, and report a gap when a client's cursor is ahead of the log.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. Today any other client's change to any asset makes the desktop treat its own open photo as changed, and a JSON client has no way to be told anything changed at all.",
+        "`ApiEvent` in `api/mod.rs` is `{sequence, method, request_id}`; it names no asset or revision. The desktop's `sync_now` in `app/tasks.rs` classifies an event only by its method name: `is_library_event` matches `preset.*` and `capability_event` matches `module.*`/`task.*`; every other event, including an agent's edit to a different photo, another client's import, a version created on another asset or an artifact collection, is treated as \"this asset changed\" and triggers a full `refresh(..., Scope::Elsewhere)`, reading `asset.state`, `history.list`, `version.list`, `history.lineage`, `session.state`, `recipe.describe` and `mask.list`, and planning a new analysed preview job.",
+        "`EventLog::since` in `api/owner.rs` computes `gap: after.saturating_add(1) < oldest`, which is false whenever `after` is at or beyond the log's own current sequence, so a client cursor left over from an earlier owner process silently skips that process's first events instead of being told to catch up.",
+        "Owner decision: events name the asset and revision they changed. Move the event-origin plumbing, `Origin` (today in `capabilities/jobs.rs`) and `announce_once` (today in `capabilities/host.rs`), into `api`, since it is the owner's event mechanism, not a capability concern.",
+        "A JSON client's only way to notice a change today is polling `events.since`; a parked long poll is a separate task once events carry a subject, scoped apart because it is blocked on the MCP milestone."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "ApiEvent",
+          "target": "crates/luxforge-core/src/api/mod.rs",
+          "relevance": "The event shape with no subject fields today."
+        },
+        {
+          "kind": "file",
+          "label": "Event log",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "`EventLog::record` and `EventLog::since`, including the gap computation to correct."
+        },
+        {
+          "kind": "file",
+          "label": "Event origin",
+          "target": "crates/luxforge-core/src/capabilities/jobs.rs",
+          "relevance": "`Origin`, the event-origin type to extend with an asset id and revision, and to move into `api`."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop event sync",
+          "target": "crates/luxforge-app/src/app/tasks.rs",
+          "relevance": "`is_library_event`, `capability_event`, `sync_now` and `refresh`, which classify events by method-name prefix today."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Documents `events.since` and the live-session contract to update.",
+          "locator": "JSON automation"
+        }
+      ],
+      "acceptance_criteria": [
+        "In a two-asset owner test, another client's commit to asset B causes no refresh and no preview job for the desktop's open asset A.",
+        "A cursor whose `after` is at or beyond the log's current sequence gets `gap: true` on its next `events.since`.",
+        "`ApiEvent`/`events.since` carries the asset id and revision an event changed, when the change is known (a `mutate`, an import completion, a version); the desktop skips an event whose revision it already holds.",
+        "The user guide's description of `events.since` and the live session states the new fields."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Owner test: a second client's change to another asset causes no refresh or preview job for the first.",
+          "Owner test: a cursor at or beyond the log's sequence reports a gap.",
+          "Desktop test: an event naming a revision the desktop already holds is skipped."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core events",
+          "cargo test -p luxforge-app sync",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All new and existing tests pass; a spurious refresh across assets is gone."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Give source, analysis and capability jobs one job table and one read and cancel API, keeping their three schedulers and cancel semantics.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation. One job status vocabulary landed already; this closes the second half, one job table, that the same plan called for.",
+        "`SourceJobs` in `api/owner.rs` (a flight-key join, per-client interest, a completed ring of 64), `AnalysisStore` in `analysis/jobs.rs` (an identity join, per-client interest, a ring of 32) and `capabilities::jobs::Jobs` (lanes, `JobControl`, a ring of 32, panic containment) each re-implement id minting, interest with cancel-on-last-release, disconnect clean-up, a bounded finished ring and join-by-key. Three method families answer them, `job.status`/`job.adopt`/`job.cancel`, `analysis.read`/`analysis.cancel` and `module.job.read`/`module.job.cancel`, each with its own error shape, and the `activity.list` schema note has to tell a client which of the three reads a given job.",
+        "`capabilities::jobs::Jobs` is already a generic lane runner over a boxed closure, with per-kind admission and containment; it is the natural table to promote for every kind, with source preparation and analysis registering into it while keeping their own scheduling: source joins by flight key, analysis is latest-wins, capability lanes are FIFO.",
+        "JPEG export and Locate would each need their own job kind; without one table, each becomes a fourth copy of the same bookkeeping.",
+        "Owner decision: one job API, `job.read` and `job.cancel`, serves every kind, replacing `analysis.read`, `analysis.cancel`, `module.job.read` and `module.job.cancel`.",
+        "Keep exactly: a source or analysis cancel releases only the caller's interest, never the job itself; a capability cancel cancels the job for everyone; a deactivation already running cannot be cancelled while its activation exists; analysis supersede stays as it is."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Source jobs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "`SourceJobs` and the source worker, whose flight-key join folds into the shared table."
+        },
+        {
+          "kind": "file",
+          "label": "Analysis jobs",
+          "target": "crates/luxforge-core/src/analysis/jobs.rs",
+          "relevance": "`AnalysisStore` and `JobRecord`, whose latest-wins scheduling stays."
+        },
+        {
+          "kind": "file",
+          "label": "Capability jobs",
+          "target": "crates/luxforge-core/src/capabilities/jobs.rs",
+          "relevance": "The lane runner, `JobControl` and ring buffer this task promotes into the shared job table."
+        },
+        {
+          "kind": "file",
+          "label": "Job methods",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "The three method families and the `activity.list` note naming them, to collapse to one pair."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "relevance": "The 2026-09-26 one-job-API decision this task implements.",
+          "locator": "Post-consolidation review"
+        }
+      ],
+      "acceptance_criteria": [
+        "One job table serves source, analysis and capability jobs, each still admitted and scheduled by its own rule; `job.read` and `job.cancel` answer every kind with one shape, and `analysis.read`, `analysis.cancel`, `module.job.read` and `module.job.cancel` are gone from `schema.list`.",
+        "`activity.list` and `job.read` agree about a job's status for every kind.",
+        "The desktop, xtask and the user guide use the new methods; a check-repository rule refuses a second job table, such as a new struct holding its own finished-record ring outside the shared job module.",
+        "The two cancel semantics, release this client's interest against cancel the job outright, and analysis supersede behave exactly as before, proved by the existing per-kind tests moved onto the one table."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Move the source, analysis and capability job lifecycle tests onto the one table.",
+          "Add a test that `activity.list` and `job.read` agree for a job of each kind.",
+          "Run the desktop's job polling against the new methods."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core jobs",
+          "cargo test -p luxforge-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All moved tests pass unchanged in behaviour; the four retired methods are gone from `schema.list`."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Validate every mutation envelope once in the dispatcher, let service handlers say whether they changed anything, and replace the forwarding handlers and duplicated checks with table rows.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation. The dispatcher already knows each method's envelope and parameters; several handlers still repeat checks the table could make once.",
+        "Eighteen handlers across `api/methods.rs`, `api/owner.rs` and the capability host files call `mutation.validate()` (or `request.mutation.validate()`) themselves rather than the dispatcher validating it once for every method whose envelope is not `None`. `mutates()` in `api/methods.rs` decides whether a service method's answer emits an event by sniffing `outcome` and `deduplicated` out of its JSON, instead of the handler saying whether it changed anything.",
+        "`api/owner/capability.rs` is about twenty functions that each only forward one call, with `Owner`'s split borrows, to the capability host; a table macro that takes an inline handler expression would fold these into ordinary table rows and delete the file. Around thirty more service handlers in `api/methods.rs` are 12 lines or fewer, each only calling one service method.",
+        "`draft_begin` in `api/methods.rs` re-implements the mask and component target check inline instead of calling the shared `take_mask_target` (`editor/masks.rs`) and `check_parameters` (`modules/descriptor.rs`) that already enforce it at commit. `host_query` (`editor/masks.rs`) matches on the query id and re-parses named fields such as `x`/`y` from the raw parameter map after the generic check already ran. `Method::Task` carries no task id: `registry.task(task_id)` is used only to check the id exists, and the handler re-strips the id from the method name string afterward.",
+        "Nineteen capability method-name constants declared across `capabilities/host.rs`, `grants.rs`, `resources.rs`, `jobs.rs` and `settings.rs` are used only inside each file's own tests; production code retypes the same method-name strings dozens of times instead of importing them."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Method table and handlers",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "The 18 hand-placed `validate()` calls, `mutates`'s JSON sniffing, `draft_begin`'s inline target check and `Method::Task`."
+        },
+        {
+          "kind": "file",
+          "label": "Capability forwarders",
+          "target": "crates/luxforge-core/src/api/owner/capability.rs",
+          "relevance": "The forwarding functions this task folds into table rows."
+        },
+        {
+          "kind": "file",
+          "label": "Mask target and host queries",
+          "target": "crates/luxforge-core/src/editor/masks.rs",
+          "relevance": "`take_mask_target` and `host_query`'s own parameter re-parse."
+        },
+        {
+          "kind": "file",
+          "label": "Parameter checking",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "relevance": "`check_parameters`, the shared validation `draft_begin` should call instead of restating it."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "The host dispatch contract this task keeps true.",
+          "locator": "Host dispatch"
+        }
+      ],
+      "acceptance_criteria": [
+        "No handler calls `mutation.validate()` (or equivalent) itself; the dispatcher validates every method whose envelope is not `None` before any handler runs, and a check-repository rule refuses a new call to it inside a handler.",
+        "No answer decides whether it emits an event by reading its own JSON; service handlers report whether they changed something.",
+        "`api/owner/capability.rs` is deleted and its methods are table rows; `schema.list` is byte-identical to before except for the intended `Method::Task(String)` change.",
+        "`draft_begin` calls the shared target check instead of restating it, and `host_query` reads its declared parameters instead of re-parsing them; production uses the capability method-name constants instead of retyped literals, or the unused constants are removed.",
+        "The declared-fields test and the every-mutation retry test pass unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the declared-fields test and the every-mutation retry test.",
+          "Compare `schema.list` before and after.",
+          "Run the capability host and mask command tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core api::",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass; `schema.list` is unchanged apart from the intended `Method::Task` shape."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Build one bound evaluation value, compiled once, that carries the entry, recipe, source, registry, render context, draft and stage, and have preview, analysis and sample jobs carry it instead of re-deriving it.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 2, finish the consolidation. The plan called for the service to split around one bound evaluation context; the split happened by file, but the context type was never introduced.",
+        "`AnalysisPlan` and `SamplePlan` in `editor.rs`, `PreviewJob` in `preview/job.rs`, `AnalysisJob` in `analysis/jobs.rs` and `PointPlan` in `editor/evaluate.rs` each carry their own copy of the same bound source, recipe, registry and context. `editor/evaluate.rs` alone has about seven near-identical prologues, state, entry, plan the draft, bind artifacts, verify the source, work out what preparation is missing, and `editor/source.rs` repeats the same shape three more times.",
+        "`EditorService::state` returns an owned `EditorState` whose `current_entry` is a plain `HistoryEntry`, so every call deep-clones the cached `Arc<HistoryEntry>`; several callers only need the entry's id. On a drafted preview job the owner compiles the current stack for the plan context and the drafted stack again for the analysis identity, and the worker then compiles a third time.",
+        "Keep exactly the Strict and DraftPreview evaluation rule and each refusal's own named preparation needs; they do not change, only where they are computed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Evaluation prologues",
+          "target": "crates/luxforge-core/src/editor/evaluate.rs",
+          "relevance": "The seven near-identical state, entry, plan, bind and verify sequences this task replaces with one value."
+        },
+        {
+          "kind": "file",
+          "label": "Source-side prologues",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "The three more copies of the same sequence on the source-preparation side."
+        },
+        {
+          "kind": "file",
+          "label": "state() and entry()",
+          "target": "crates/luxforge-core/src/editor/describe.rs",
+          "relevance": "The deep clone of the cached entry every call makes."
+        },
+        {
+          "kind": "file",
+          "label": "Compile counting",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
+          "relevance": "The sample-compile counter pattern this task's compile-count test reuses."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Drafts and the evaluation rule this task must keep true.",
+          "locator": "Drafts"
+        }
+      ],
+      "acceptance_criteria": [
+        "One `Evaluation` value, entry, bound recipe, source, registry, context and stage, is built in one service method and owns the `needing` rule, compiled once.",
+        "`PreviewJob`, `AnalysisJob`, `SamplePlan` and `PointPlan` wrap that one value instead of re-deriving it; a test counts one owner compile per drafted preview job.",
+        "A head-only accessor exists for callers that need only the current entry's id, so they no longer force a full clone through `state()`.",
+        "The draft-equals-commit byte tests and the preparation-needs tests pass, and renders stay byte-identical."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add a compile-count test for a drafted preview job.",
+          "Run the draft-equals-commit byte tests and the preparation-needs tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core evaluate",
+          "cargo test -p luxforge-core plan",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "One compile per drafted preview job; renders and drafts stay byte-identical."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Delete the service's synchronous source mode and give tests and xtask one blocking prepare helper that runs the worker's own preparation and then the owner's own completion.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation. Production and tests currently exercise different preparation paths, so the path the product actually takes is proven mostly by owner tests alone.",
+        "`EditorService`'s `allow_sync_source` field (`editor.rs`) defaults to `true`; the owner turns it off with `disable_sync_source`, but nothing else does. With it on, `prepare_file`, `import` and `bind_artifacts` (`editor/source.rs`, `editor/artifact_store.rs`) read, hash and decode the original and its artifacts inline on the caller's thread instead of queuing the owner's worker.",
+        "`prepare_file` always calls `prepare_file_cancel` with `target: None`, so a RAW decoded through the inline path develops at as-shot gains, never the entry's own recorded gains the owner's path passes through `file_preparation`. The inline path also never runs the owner's own completion, `import_prepared` and `install_development` in `editor/source.rs`, so a test that needs a RAW with a custom white balance rebuilds the worker job and the adoption by hand.",
+        "None of `editor_performance.rs`, `editor_acceptance.rs` or `capabilities_smoke.rs` in xtask ever calls `disable_sync_source`, so all of them exercise the inline path the product never takes; the owner's own path is exercised only by owner tests."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "allow_sync_source",
+          "target": "crates/luxforge-core/src/editor.rs",
+          "relevance": "The flag this task deletes, defaulted on."
+        },
+        {
+          "kind": "file",
+          "label": "Source preparation",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "`prepare_file`, `import`, `import_prepared` and `install_development`, the inline branches to fold into one path."
+        },
+        {
+          "kind": "file",
+          "label": "Artifact binding",
+          "target": "crates/luxforge-core/src/editor/artifact_store.rs",
+          "relevance": "`bind_artifacts`'s inline read-and-hash branch."
+        },
+        {
+          "kind": "file",
+          "label": "Owner completion",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "Where the owner's own adoption runs today, to factor into the shared service method."
+        },
+        {
+          "kind": "file",
+          "label": "Performance harness",
+          "target": "xtask/src/editor_performance.rs",
+          "relevance": "A direct caller of the inline path whose cold-path timings this task's note applies to."
+        }
+      ],
+      "acceptance_criteria": [
+        "`allow_sync_source` and both inline branches are deleted.",
+        "One service method factors the owner's completion, import or develop, then adoption, so both the owner and a new blocking helper call the same code.",
+        "A `prepare(&mut self, needs: &PreparationNeeds)` helper runs the worker's own preparation functions inline and then that same completion; unit tests and xtask use it instead of the deleted inline path.",
+        "A reopen test of a RAW with a custom white balance develops at the entry's own gains with no hand-written adoption.",
+        "`editor-performance`'s cold-path rows are noted as measuring the real preparation path now that the inline shortcut is gone."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Port the direct-service unit tests, and xtask's callers, onto the new `prepare` helper.",
+          "Add a reopen test of a RAW with a custom white balance through the helper."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core source",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All ported tests pass; the reopened RAW develops at its own recorded gains."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Put the facts clients act on into error data and make the desktop read codes and data instead of matching the core's message text.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation. Error constructors are consistent by kind, but two facts a client needs to act on are still only in the message's prose.",
+        "`ready_preview_job` in `app/tasks.rs` recognises a full queue by matching `error.detail.starts_with(\"RAW mosaic queue is full\")` or `\"source preparation queue is full\"`, and `state/canvas.rs` parses an `unavailable effect <id>` prefix out of another message. If the core ever reworded either message, the desktop's wait would silently become a failure instead of a retry.",
+        "The desktop already has a `CallError { code, message, data, job_id }` type and the plumbing that fills `data` from a wire answer's error object, but the convenience `call()` wrapper in `app/tasks.rs` flattens results down to a display string, and the direct `From<luxforge_core::Error> for CallError` conversion used by the Rust-only entry points always sets `data: None`, so even where the type exists, the fact is not there to read.",
+        "`ErrorKind::Startup` and `ErrorKind::Diagnostics` (`error.rs`) have no caller anywhere outside the file that declares them."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Error and ErrorKind",
+          "target": "crates/luxforge-core/src/error.rs",
+          "relevance": "The `data` field already on `Error`, and the two unused kinds to delete."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop call path",
+          "target": "crates/luxforge-app/src/app/tasks.rs",
+          "relevance": "`CallError`, its `From<luxforge_core::Error>` conversion and `ready_preview_job`'s text match."
+        },
+        {
+          "kind": "file",
+          "label": "Canvas state",
+          "target": "crates/luxforge-app/src/state/canvas.rs",
+          "relevance": "The `unavailable effect` prefix parse to replace with structured data."
+        }
+      ],
+      "acceptance_criteria": [
+        "An unavailable-effect refusal's `data` names the effect id, and a full source or RAW queue's `data` marks it as worth retrying after a job ends; the message text is unchanged.",
+        "The `From<luxforge_core::Error> for CallError` conversion carries the error's `data` through instead of discarding it, and the desktop's queue-full and unavailable-effect handling reads `code` and `data` instead of matching `detail` text.",
+        "`ErrorKind::Startup` and `ErrorKind::Diagnostics` and their constructors are deleted.",
+        "The owner's queue-full test and a desktop wait test pass with the new `data` fields."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add `data` to the unavailable-effect and queue-full refusals.",
+          "Update the desktop's `CallError` conversion and its two text-matching sites to read `code`/`data`.",
+          "Run the owner's queue-full test and a desktop wait test."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core error",
+          "cargo test -p luxforge-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Both refusals carry the fact in `data`; no desktop code matches core message text; messages are unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Replace luxforge-core's glob re-exports with an explicit public surface and make everything else pub(crate), deleting what the compiler then reports unused.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Wave 4, structure. Land this after the other groups' own wave-2 changes to the core have merged, since a public-surface pass touches every module the core exports.",
+        "`lib.rs` re-exports `api::*`, `editor::*`, `model::*`, `modules::*`, `presets::*` and `preview::*`, so nearly every item in those modules is public and exempt from the dead-code lint. `modules/mod.rs` alone re-exports well over a hundred names, most with no user outside the core.",
+        "Several `EditorService` methods, `analysis_identity`, `analysis_plan`, `sample_draft`, `artifact_writer`, `register_artifact`, `bind_artifacts`, `describe_entry` and `inspect_source`, and `open_source` (`lib.rs`) are `pub` with no caller outside `luxforge-core` itself; the desktop, `luxforge-json` and xtask never call them.",
+        "This is a mechanical narrowing, not a redesign: what the desktop, `luxforge-json`, xtask and the testkit actually use stays exported; everything else becomes `pub(crate)`, and the compiler's own dead-code warnings say what is then genuinely unused."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Core lib",
+          "target": "crates/luxforge-core/src/lib.rs",
+          "relevance": "The six glob re-exports this task replaces with an explicit list."
+        },
+        {
+          "kind": "file",
+          "label": "Module re-exports",
+          "target": "crates/luxforge-core/src/modules/mod.rs",
+          "relevance": "The large re-export block to trim to what other crates actually use."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "The crate boundaries this task's public surface should reflect.",
+          "locator": "Boundaries"
+        }
+      ],
+      "acceptance_criteria": [
+        "`lib.rs` lists only what `luxforge-app`, `luxforge-json`, xtask and the testkit actually use; every glob re-export is gone.",
+        "Items with no caller outside the crate are `pub(crate)`, including the `EditorService` methods and `open_source` named above.",
+        "No `#[allow(dead_code)]` is added to hide a newly reported item; anything the compiler reports unused after narrowing visibility is deleted.",
+        "`cargo build --workspace` is warning-free."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Narrow `lib.rs` and the flagged items to `pub(crate)`, then read the compiler's dead-code warnings.",
+          "Delete what is reported unused; re-check the build is clean."
+        ],
+        "commands": [
+          "cargo build --workspace",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "A clean, warning-free build with a smaller, explicit public surface."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Prove each core service property once: delete the parity module that now holds by construction, reduce the schema test to structural properties, and delete the storage study and the historical catalog-format tests.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Wave 5, tests. Several tests prove a property that now holds by construction, or a design already decided, rather than a live risk.",
+        "`command_contracts.rs` is an 835-line test-only module, gated `#[cfg(test)]` in `lib.rs`, whose main assertion is that the `apply_*` wrappers, `apply_action` and the JSON API build identical stacks, true by construction now that all three reach `run_action`. Its descriptor assertions repeat ones `api/methods.rs`'s own schema test and the crop module's own tests already make, and it carries its own temp-catalog and fixture helpers.",
+        "`api/methods.rs`'s schema test hand-copies around fifty method names and descriptor strings that the module and command tables already own. `editor/catalog.rs` carries an `#[ignore = \"a measurement, not a gate\"]` mask-growth study of around 600 lines re-proving the content-addressed stroke store's design, which `one_stroke_is_stored_once_and_referenced_from_every_entry_that_holds_it` already guards structurally; three more tests hand-build format 2, 5 and 7 catalogs to prove refusals that the generic `unsupported_catalog_formats_are_rejected_without_rewriting_data` loop already covers for every unsupported marker.",
+        "Around ten files declare their own `mutation()` test helper with the same body.",
+        "Keep exactly: the malformed-request error's equality across the service and the API, currently `command_contracts.rs`'s one unique assertion, and format 5's unique check that no `.artifacts` directory is created for a refused catalog, both moved into the tests that stay."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Command contracts",
+          "target": "crates/luxforge-core/src/command_contracts.rs",
+          "relevance": "The test-only module this task deletes, and its one assertion worth keeping."
+        },
+        {
+          "kind": "file",
+          "label": "Schema test",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "The hand-copied method-name and descriptor assertions to reduce to structural checks."
+        },
+        {
+          "kind": "file",
+          "label": "Storage study and format tests",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
+          "relevance": "The ignored mask-growth study and the format 2, 5 and 7 tests, and the generic refusal loop that already covers them."
+        },
+        {
+          "kind": "file",
+          "label": "Project rules",
+          "target": "AGENTS.md",
+          "relevance": "Rules out old-version fixtures and historical parity checks, and requires naming a deleted test's replacement."
+        }
+      ],
+      "acceptance_criteria": [
+        "`command_contracts.rs` is deleted; its unique surviving assertion, the malformed-request error, equal across the service and the API, lives in the generated-dispatch test.",
+        "The schema test in `api/methods.rs` checks structural properties, names are unique, every listed method dispatches, the envelope matches whether it mutates, instead of hand-copied strings.",
+        "The mask-growth study and the format 2, 5 and 7 catalog tests are deleted; format 5's `.artifacts`-directory assertion moves into the generic unsupported-format loop.",
+        "Every deleted assertion is named in the commit next to the kept test that proves it, and one crate-level `mutation()` helper replaces the others.",
+        "The quick tier passes."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Match each assertion slated for deletion to the test that already proves it.",
+          "Delete `command_contracts.rs`, the storage study and the format 2, 5 and 7 tests, and reduce the schema test.",
+          "Run the full core test suite once."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Nothing is lost: every deleted assertion has a named surviving equivalent, and the quick tier passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Give JSON clients an events.wait {after, timeout_ms} long poll that the owner parks and answers when the log passes after or the timeout expires.",
+      "status": "blocked",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Wave 6, roadmap groundwork. Blocked: starts with the MCP adapter milestone on the roadmap.",
+        "Today an agent or another JSON client has no way to be woken by a change; it must poll `events.since` on its own schedule. The desktop's own `watch_events` is a Rust-only callback in `api/owner.rs`, not something a JSON client can ask for.",
+        "The owner already parks a reply and answers it later for `AwaitSource`, so `events.wait` parks the same way: hold the reply until the log passes `after` or a timeout expires, then answer.",
+        "This depends on events naming their subject, since a client will want to wait for a change to a specific asset as well as for any change at all."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Parked replies",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "`AwaitSource`'s existing parking pattern this method reuses."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "The agent-facing contract this method extends.",
+          "locator": "Agent contract"
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Where the long poll is documented for JSON clients.",
+          "locator": "JSON automation"
+        }
+      ],
+      "acceptance_criteria": [
+        "`events.wait {after, timeout_ms}` answers as soon as the log passes `after`, and answers with no new events at the timeout if none arrived.",
+        "Parked replies are bounded per client, so a client that never reads its answer cannot accumulate unbounded parked state.",
+        "The method is documented in the user guide and listed in `schema.list`."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Test that a call parked before the log advances wakes on the next event past `after`.",
+          "Test that a call with no events before its deadline answers empty at the timeout."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core api::owner"
+        ],
+        "expected_results": [
+          "Both the wake and the timeout paths answer correctly, and no parked reply survives a client disconnect."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Type every host method parameter with the module parameter vocabulary, so schema.list gives each host method a schema an MCP tool can use.",
+      "status": "blocked",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Wave 6, roadmap groundwork. Blocked: starts with the MCP adapter milestone.",
+        "`host_params!` (`api/params.rs`) publishes each host method's required and optional field names with a free-text note, such as \"u64\", \"1..100\" or \"{mode:fit} or {mode:percent,value:10..1600}\". A module's actions, queries, tasks and settings already publish typed `ParameterDescriptor`s (`modules/descriptor.rs`) through the same schema; the 71 host methods are the one place the parameter vocabulary is still prose.",
+        "An MCP adapter needs a JSON Schema per tool; without typed host parameters it would have to hand-write about seventy of them, the exact kind of second copy the method table exists to prevent.",
+        "Proposal: give each `host_params!` field a `ParameterKind`, identity kinds for asset, entry, draft, job, preset and artifact ids, integer and number ranges in place of the range prose, and one `json` kind for the handful of genuinely structured fields (`Zoom`, `AnalysisTarget`, `fields`, `settings`, `values`), so `schemas()` can list `parameters` for host methods the same way it already does for generated ones."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Host parameters",
+          "target": "crates/luxforge-core/src/api/params.rs",
+          "relevance": "`host_params!` and `ParamSchema`, which this task extends with typed kinds."
+        },
+        {
+          "kind": "file",
+          "label": "Parameter vocabulary",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
+          "relevance": "`ParameterKind` and `IdentityKind`, the vocabulary host methods adopt."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "The agent contract an MCP adapter builds on.",
+          "locator": "Agent contract"
+        }
+      ],
+      "acceptance_criteria": [
+        "Every host method's `schema.list` entry lists typed `parameters`, using the same `ParameterKind` vocabulary module descriptors use, with no new dependency.",
+        "The owner test that sends every listed field its declared value checks that each declared kind accepts a valid value and refuses an out-of-range one.",
+        "Structured fields that do not fit a scalar kind use the one `json` kind rather than a second vocabulary."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Extend the owner's declared-fields test to check each kind's valid and out-of-range behaviour.",
+          "Compare `schema.list`'s host-method parameters before and after."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core api::"
+        ],
+        "expected_results": [
+          "Every host method lists typed parameters; the declared-fields test passes for both valid and out-of-range values."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Prepare the service for several photos: selection per photo, a paged catalog.list with summary rows, and a relocation change that moves the cached head.",
+      "status": "blocked",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 6, roadmap groundwork. Blocked: starts with the library or Locate milestone, or earlier if an agent client needs to work on two photos at once.",
+        "`PreviewSession::can_edit` (`preview.rs`) takes no asset and is true only while `selection == HistorySelection::Current`, so while a client previews a historical entry of asset A, its edits to a completely different asset B are refused as a conflict, and `render.sample`, `render.locate` and `preset.capture` on B without an explicit `entry_id` resolve A's selected entry instead.",
+        "`catalog_list` (`api/methods.rs`) takes no parameters and returns `service.assets()` outright; `EditorService::assets` runs one unbounded query and JSON-decodes every stored source interpretation on every call, on the owner thread.",
+        "`EntryCache` (`editor/entries.rs`) has no way to record that an asset's own row changed; Locate, the first write that would change an asset's locator rather than its history, cannot update the cached head, which would leave the cache's old locator in place until the catalog is reopened.",
+        "`source.inspect` already exists and already answers one asset's full interpretation, so the fix for `catalog.list` is to stop it returning that detail for every row, not to invent a new method for it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Preview session",
+          "target": "crates/luxforge-core/src/preview.rs",
+          "relevance": "`PreviewSession` and `can_edit`, today global rather than per-asset."
+        },
+        {
+          "kind": "file",
+          "label": "catalog.list",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "The unbounded handler this task pages and trims.",
+          "locator": "catalog_list"
+        },
+        {
+          "kind": "file",
+          "label": "Entry cache",
+          "target": "crates/luxforge-core/src/editor/entries.rs",
+          "relevance": "`EntryCache`, which cannot yet record a change to an asset's own row."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "Where the paging bound is documented alongside the other limits.",
+          "locator": "Rendering and limits"
+        }
+      ],
+      "acceptance_criteria": [
+        "Session selection is keyed per asset, for example `selection: Option<(AssetId, HistorySelection)>`, and `can_edit` is checked against the asset a request names.",
+        "`catalog.list` accepts `limit` (bounded, for example to 500) and `after`, and returns summary rows (id, locator, kind, dimensions) with no source-interpretation decode; `source.inspect` remains the way to read one asset's full interpretation.",
+        "A relocation change moves the cached head where its write commits and emits an event naming the asset.",
+        "A two-asset owner test covers independent selection and editing, and a relocation test covers the cache staying coherent; the paging bound is documented in the architecture's limits."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Two-asset owner test: selection and editing on one asset while previewing history on another.",
+          "Owner test: `catalog.list` pages correctly and decodes no source interpretation.",
+          "Owner test: a relocation moves the cached head and emits an event naming the asset."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core"
+        ],
+        "expected_results": [
+          "Independent per-asset selection and editing; a bounded, cheap `catalog.list`; a coherent cache after relocation."
+        ]
+      }
+    },
+    {
+      "id": "TASK-014",
+      "description": "Prepare export on the one job table: an export job kind on a lane that is never superseded, progress through the activity board, and a full-resolution evaluation built off the owner.",
+      "status": "blocked",
+      "dependencies": [
+        "TASK-004",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "Wave 6, roadmap groundwork. Blocked: starts with the JPEG export milestone.",
+        "There is no lane for a long, uncancellable-by-supersede job today: the latest-wins preview and analysis workers replace their own pending job, and the FIFO source queue is what previews already wait behind, so an export cannot share either without starving or being starved.",
+        "The bound evaluation this plan introduces is exactly what export evaluates: a full-resolution render off the owner, driven from one `Evaluation` rather than a ninth prologue.",
+        "A 128 megapixel RAW render needs a row sink rather than one whole frame in memory; that shape is for the export milestone to design, once it has a lane and an evaluation to build on."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Job lanes",
+          "target": "crates/luxforge-core/src/capabilities/jobs.rs",
+          "relevance": "The lane runner an export job kind is added to."
+        },
+        {
+          "kind": "file",
+          "label": "Activity board",
+          "target": "crates/luxforge-core/src/activity.rs",
+          "relevance": "Where export progress is reported, alongside every other long-running job."
+        },
+        {
+          "kind": "file",
+          "label": "Roadmap",
+          "target": "docs/plan.md",
+          "relevance": "Names the JPEG export milestone this task's job lane prepares for."
+        }
+      ],
+      "acceptance_criteria": [
+        "An export job kind exists on the shared job table, on a lane that runs to completion rather than being superseded by a newer request.",
+        "Export progress and cancellation are reported through the activity board and the shared job API, not a separate mechanism.",
+        "A fake encoder proves the lane, its progress reporting and its cancellation; no real exporter or export UI is built here."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add an export job kind to the shared table with a fake encoder.",
+          "Test progress reporting through the activity board and cancellation mid-encode."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core jobs"
+        ],
+        "expected_results": [
+          "The export lane runs to completion under a newer request, reports progress, and cancels cleanly."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-006",
+        "TASK-013"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-004",
+        "TASK-005",
+        "TASK-007",
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-008",
+        "TASK-010",
+        "TASK-012",
+        "TASK-014"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-009"
+      ]
+    }
+  ]
+}

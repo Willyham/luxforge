@@ -1,0 +1,1114 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "harness",
+  "title": "Verification harness, tests and repository checks",
+  "objective": "Make verification honest and small: `verify` that provides its fixtures and never calls a skip a pass, no test that cannot fail, documentation that matches the code, a repository check that keeps each concept on one path, one rule for load-independent tests, one sRGB reference, one launch path and one distribution for every timing tool, `raw-editor` as a scenario, scenarios written as plans plus pixel claims, a structured architecture document, `editor-acceptance` limited to what `cargo test` cannot prove, and fewer test binaries.",
+  "context_summary": "The harness consolidation landed its core: one smoke table and plan library that derive scripts and frame counts, universal per-frame checks, a replay and a mutation proof, one serde evidence script, `luxforge-testkit`, an independent `luxforge-reference` and one percentile in xtask. It stopped at the edges: timing tools and `raw-editor` still launch and watch editors their own way, every scenario hand-writes its own evidence records, state checks and photo finders across roughly 13,600 lines for 18 scenarios, `verify` has two honesty defects, and some tests cannot fail. Test code is about 46% of the tree; each group plan deletes its own duplicates, and this plan owns the shared rules and the harness-wide pieces. The owner's decisions are recorded in `docs/decisions.md`; the programme's constraints are in `docs/design/post-consolidation.md`; verification practice is in `docs/engineering/development.md`.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Make fixture generation idempotent and derive `verify`'s fixture requirement from one table, so a checkout whose `fixtures/generated/` predates the range fixture still passes `verify --tier rendered` instead of failing at setup.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. A skip in fixture generation stops the tier the owner runs at integration points before its RAW and rendered components ever run.",
+        "`xtask/src/fixtures.rs`'s `generate` writes five files (24 MP, 60 MP, hue wheel, presence, range) but refuses outright when its output directory already exists; `xtask/src/verify.rs`'s own `GENERATED` list names only four of them, omitting `range.jpg`, which the `mask-range` scenario opens. `verify` schedules generation only when one of its four is missing, so a checkout whose fixtures directory predates the range fixture never regenerates it and `mask-range` fails; whenever the directory exists but lacks any one of the four, `verify`'s setup component fails outright and the whole tier stops there.",
+        "A new agent worktree hides this because it starts with no fixtures directory at all; a long-lived checkout, such as the owner's, does not.",
+        "Constraint: `generate-fixtures` must stay safe to run against an existing directory: write only what is missing, and refuse only a hash mismatch against the manifest, never an already-correct file."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Fixture generation",
+          "target": "xtask/src/fixtures.rs",
+          "relevance": "`generate`'s five outputs, its refusal of an existing directory, and the `check` golden-corpus test."
+        },
+        {
+          "kind": "file",
+          "label": "Verification tiers",
+          "target": "xtask/src/verify.rs",
+          "relevance": "`GENERATED`, the setup component, and where a tier decides what to generate."
+        },
+        {
+          "kind": "file",
+          "label": "Mask range scenario",
+          "target": "xtask/src/mask_range_smoke.rs",
+          "relevance": "Opens `range.jpg`; the scenario that fails when generation cannot fill the gap."
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Documents fixture generation and the tiers that depend on it."
+        }
+      ],
+      "acceptance_criteria": [
+        "`fixtures.rs` holds one table of generated fixtures (name, generator, manifest entry) that both `generate` and `verify` read; no second list of fixture names exists.",
+        "`generate-fixtures` run against an existing directory writes only the files that are missing and leaves correct existing files untouched; a hash mismatch against the manifest is refused, not silently rewritten.",
+        "`verify --tier rendered` and `--tier timing` regenerate whatever their scenarios and timing components actually need, so a directory missing only `range.jpg` still completes generation and `mask-range` passes.",
+        "Running `generate-fixtures` twice into the same directory succeeds both times and produces byte-identical files."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Unit test: plan the `rendered` tier against a directory missing only `range.jpg` and assert generation is scheduled and fills the gap.",
+          "Unit test: run `generate` twice into one directory and assert the second run succeeds and changes nothing.",
+          "Unit test: corrupt one generated file's bytes and assert generation refuses with a hash-mismatch error rather than silently overwriting it."
+        ],
+        "commands": [
+          "cargo test -p xtask fixtures",
+          "cargo test -p xtask verify",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "A checkout missing only the range fixture passes `verify --tier rendered` without manual intervention.",
+          "`generate-fixtures` is safe to run against an existing, already-correct directory."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Report a `verify` tier with any skipped or unrun component as incomplete, with a distinct non-zero exit naming what was skipped, and run the authentic RAW tests and `hardening` where a manifest and the full tier make them possible.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. `verify` is the honesty check the owner runs before trusting a milestone claim, and today it can report success while proving less than it looks like.",
+        "`Status::failure` in `xtask/src/verify.rs` counts only `failed` and `timed_out`, and a unit test pins `skipped` and `not_run` as equivalent to a pass. So the headline, `summary.json`'s status and the process exit code all read as success when `verify --tier full` runs with no `--manifest`: the RAW components are silently absent from the plan rather than recorded as skipped, and the only trace is one table row.",
+        "The authentic RAW native and JSON tests, in `luxforge-raw` and `luxforge-app`, are all `#[ignore]`d behind an owner-supplied RAW directory and sit in no tier at all, even when a manifest is given; `hardening`'s process-failure and never-frontmost checks are in no tier either.",
+        "Owner decision: `verify` reports a tier with a skipped or unrun component as incomplete, with a distinct non-zero exit naming what was skipped.",
+        "Constraint: `summary.json`'s shape may change freely (current shapes only; nothing outside this tool reads it)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Verify tiers and summary",
+          "target": "xtask/src/verify.rs",
+          "relevance": "`Status`, the plan for each tier, and the headline/summary/exit-code logic this task changes."
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "locator": "When to verify",
+          "relevance": "Documents the tier table, `full`'s scope and when to run it; needs the new status and `hardening`'s place."
+        },
+        {
+          "kind": "file",
+          "label": "Authentic RAW native tests",
+          "target": "crates/luxforge-raw/tests/real_files.rs",
+          "relevance": "The `#[ignore]`d tests behind an owner RAW directory that need a scheduled component."
+        },
+        {
+          "kind": "file",
+          "label": "Authentic RAW JSON tests",
+          "target": "crates/luxforge-app/tests/raw_json_cli.rs",
+          "relevance": "The other `#[ignore]`d authentic-file suite `full` should run with a manifest."
+        }
+      ],
+      "acceptance_criteria": [
+        "A tier with any `skipped` or `not_run` component reports `incomplete` in the headline and `summary.json`, naming which components and why, and exits with a distinct non-zero code, never the code a pass or an ordinary failure uses.",
+        "The summary tests are extended for `incomplete`, and the existing test that currently accepts a skipped RAW component and a not-run `measure` as `Ok` is rewritten to expect the new status.",
+        "With `--manifest`, `full` runs the authentic RAW native and JSON tests against the manifest's RAW directory as a tracked component, not left in no tier.",
+        "`hardening` is scheduled inside `full`.",
+        "`docs/engineering/development.md`'s tier table and prose describe the new status and `hardening`'s place in `full`."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Extend `verify`'s summary tests: a skipped and a not-run component both produce `incomplete` with a distinct exit code, and only an all-passed plan produces `passed`.",
+          "Add a component that runs the ignored authentic RAW tests with the manifest's directory, scheduled only when `--manifest` is given.",
+          "Add `hardening` to the `full` plan with its own test that it is scheduled there."
+        ],
+        "commands": [
+          "cargo test -p xtask verify",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "`verify --tier full` without a manifest reports `incomplete`, not `passed`, and exits with a code a script can distinguish from both a pass and an ordinary failure.",
+          "With a manifest, `full` proves the authentic RAW files and runs `hardening`."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Delete or rewrite the tests that cannot fail because they compare a value with a copy of itself or wait on a status no job reaches, and add the stroke-deletion test that actually proves a removed stroke stops affecting coverage.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. A test that cannot fail is counted as coverage; there are tautologies as well as a chapter step that fabricates its own outcome instead of asserting one.",
+        "In the core: two mask tests build both sides of their comparison from the same stroke list, so `mask.delete-stroke` could do nothing and both would still pass; five more compare an entry point with the cancellable function it is defined to call, or a value with its own clone, and one asserts `refine_radius(100.0) == refine_radius(100.0)`. The mask overlay module's parallel-split test runs below the one-megapixel threshold that selects the parallel path, so it compares the serial loop with itself and never reaches the branch it names.",
+        "In xtask: `basic_acceptance.rs` waits in a loop while a job's status equals `\"pending\"`, a status the current job vocabulary (queued, running, ready, failed, cancelled, superseded) does not have, so the loop never actually waits and the step passes only because an earlier step already cached the answer. `mask_acceptance.rs`'s changed-original step turns a refusal it expected but did not get into a fabricated `(\"reported\", …)` result instead of asserting the refusal code, and records `null` when its fixture is absent.",
+        "Constraint: the overlay fix must inject a low threshold for the test rather than lowering the production default, and the new stroke test must fail when a mask implementation is changed to fold every stored stroke rather than only the kept ones. Where a test is deleted outright rather than rewritten, the commit names the kept test that proves the same property."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Brush deletion test",
+          "target": "crates/luxforge-core/tests/mask/brush.rs",
+          "relevance": "`deleting_a_stroke_is_indistinguishable_from_one_never_made`, built from the same list on both sides."
+        },
+        {
+          "kind": "file",
+          "label": "Brush study deletion test",
+          "target": "crates/luxforge-core/tests/mask/brush_study.rs",
+          "relevance": "The second stroke-deletion tautology, and `refine_radius(100.0) == refine_radius(100.0)`."
+        },
+        {
+          "kind": "file",
+          "label": "Exposure layer-identity test",
+          "target": "crates/luxforge-core/tests/basic/exposure.rs",
+          "relevance": "Compares a layer id against `before_ids`, which returns that same id."
+        },
+        {
+          "kind": "file",
+          "label": "Mask overlay module",
+          "target": "crates/luxforge-core/src/analysis/mask_overlay.rs",
+          "relevance": "The parallel-split test that runs below its own parallel threshold."
+        },
+        {
+          "kind": "file",
+          "label": "Basic acceptance chapter",
+          "target": "xtask/src/basic_acceptance.rs",
+          "relevance": "The wait loop keyed on a status the job vocabulary no longer has."
+        },
+        {
+          "kind": "file",
+          "label": "Masking acceptance chapter",
+          "target": "xtask/src/mask_acceptance.rs",
+          "relevance": "The changed-original step that fabricates its outcome instead of asserting one."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every tautology named above is deleted or rewritten so both sides of its comparison can actually differ.",
+        "A new core test proves a stroke list with a deleted stroke produces coverage identical to a list that never held it, and fails when `CompiledMask` is made to fold every stored stroke.",
+        "The overlay test injects a low parallel threshold so it exercises the parallel path it claims to test, alongside a case that still exercises the serial path.",
+        "The Basic acceptance wait loop matches the job vocabulary's actual in-flight statuses, and the mask acceptance changed-original step asserts the refusal code rather than recording a fabricated or null outcome.",
+        "Each test deleted outright, rather than rewritten in place, is named in the commit alongside the kept test that proves the same property."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Rewrite or delete each named test; add the stroke-deletion coverage test.",
+          "Mutation-check: temporarily break the property each rewritten test claims (fold every stroke; skip the parallel branch) and confirm the rewritten test then fails.",
+          "Run the acceptance chapters once end to end to confirm the corrected wait and refusal assertion behave under a real job and a real refusal."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --test mask brush",
+          "cargo test -p luxforge-core --lib",
+          "cargo test -p xtask",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "No test in the suite can pass regardless of the behavior it names.",
+          "The stroke-deletion test fails on a deliberately broken `CompiledMask` and passes on the real one."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Correct the architecture, README, contributing and design-doc drift listed below, remove the crate-name leftovers from the Luxforge rename in the masking-workspace proposal, and replace stale numbered-task citations in docs and code comments with a plain statement of current behavior.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 1, fix. Every session reads at least `AGENTS.md`; drift in the files it points to is paid every time.",
+        "`README.md`'s pillars list skips pillars 5 and 6 and mislabels the last as \"7\"; its crate table lists six of the eight crates, omitting `luxforge-evidence` and `luxforge-reference`; `CONTRIBUTING.md`'s layout section names only two of the eight crates with no pointer to the rest. `docs/design/architecture.md`'s file list omits `editor/entries.rs`, and its module roster names three of the nine built-in modules where `modules-and-api.md` already lists all nine correctly.",
+        "`docs/design/masking-workspace.md` still names the pre-rename crates `lightwell-ui` and `lightwell-core` in three places. The catalog format number is restated as a bare literal in several docs (`features.md`, `user-guide.md`, `decisions.md`, `masking.md`, `presets.md`, `develop-workspace.md`, `architecture.md`) instead of linking `versions-and-lineage.md`'s storage section, which already carries an anchor for this.",
+        "Specific stale lines: `develop-workspace.md` calls the crop draft's state machine \"As today\", separately still says Apply commits it by sending `edit.crop` through its own state machine, and names only the slider and mask gestures as sharing the one draft driver even though crop now shares it too; `luxforge-raw/THIRD_PARTY.md` states a per-frame scratch-group count that measurement has since moved past; `docs/design/raw-integration.md` describes a \"memory-gate poll\" where the code now waits on a condvar with nothing polling; `docs/design/ui-components.md` refers to \"the existing thirteen\" widgets by count rather than name.",
+        "Several source comments cite numbered tasks as their justification: `luxforge-reference/src/vignette.rs`, `range.rs`, `mask.rs` and `tone.rs` cite a plan no longer in the repository; comments in `mask_range_smoke.rs`, `editor_latency.rs`, `editor/plan.rs`, `render/linear.rs`, `luxforge-raw/src/lib.rs`, `adapter.cpp`, `modules/basic/tone.rs` and `state/mod.rs` cite numbered entries of a defect tracker that has been retired. `mask-study.md`, `basic-white-balance.md` and `range-study.md` keep similar numbered-task provenance in their prose. Every one of these should state what the code does instead of which ticket asked for it.",
+        "Keep the dependency-advisory task references in `docs/engineering/dependencies.md` and `xtask/src/policy.rs`, which point at a plan that is still open and current."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Project overview",
+          "target": "README.md",
+          "relevance": "The pillars list and crate table this task corrects."
+        },
+        {
+          "kind": "file",
+          "label": "Contributing guide",
+          "target": "CONTRIBUTING.md",
+          "relevance": "The layout section that names only two of eight crates."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture overview",
+          "target": "docs/design/architecture.md",
+          "relevance": "The editor file list and module roster to correct; every session's first architectural reference."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Already carries the correct nine-module roster architecture.md should point to instead of restating."
+        },
+        {
+          "kind": "file",
+          "label": "Versions and lineage",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "The catalog format's one authoritative section, with the anchor other docs should link instead of restating the number."
+        },
+        {
+          "kind": "file",
+          "label": "Masking workspace proposal",
+          "target": "docs/design/masking-workspace.md",
+          "relevance": "Still names the pre-rename crates in three places."
+        }
+      ],
+      "acceptance_criteria": [
+        "README's pillars list states all seven pillars in order, and its crate table lists all eight crates; CONTRIBUTING.md's layout section points to `architecture.md` for the full crate list.",
+        "`architecture.md`'s editor file list includes `entries.rs`, and its module roster names or points to all nine built-in modules.",
+        "`masking-workspace.md` names `luxforge-ui` and `luxforge-core` throughout; the catalog format number appears as a link to its one authoritative section everywhere except that section itself.",
+        "Each stale line listed above (`develop-workspace.md`'s crop description, `THIRD_PARTY.md`'s scratch-group count, `raw-integration.md`'s poll description, `ui-components.md`'s widget count) states current behavior.",
+        "No source comment or design-doc sentence cites a numbered task as its justification; each states what the code does instead. `grep -rE \"TASK-[0-9]{3}\"` outside `tasks/`, `docs/engineering/dependencies.md` and `xtask/src/policy.rs` returns only test fixtures of the plan validator in `xtask/src/repository.rs`.",
+        "`cargo xtask check` passes."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Read and correct each named file.",
+          "Grep the tree for the catalog format literal, the pre-rename crate names and numbered-task citations outside the kept exceptions, and fix every hit.",
+          "Run the link checker inside `cargo xtask check`."
+        ],
+        "commands": [
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Every enumerable claim in `architecture.md` and `README.md` matches the code it describes.",
+          "No stale numbered-task citation remains outside the dependency-advisory exception."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Generalize `check-repository`'s three layering rules into a table of (token, allowed paths, reason) entries covering what already holds today, so a later task that finishes a concept can add its own one-path rule to the same mechanism.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 2, finish the consolidation. Every task in this programme that finishes a concept is expected to add the repository rule that keeps it single; this task builds the table those rules go into.",
+        "`xtask/src/repository.rs`'s `BOUNDARIES` constant enforces exactly three rules today: the desktop's view model may not reach Iced or `app::`; its view may not reach the core or call the owner directly; the widget crate may not reach the core at all. Nothing mechanical stops a second commit path, worker thread, owner-call helper or limit constant from returning once one is removed; every such leftover is findable with a grep, so a check can refuse it.",
+        "Proposal: generalize `BOUNDARIES` into a table of (token, allowed path prefixes, reason), checked over `crates/` and `xtask/`, with each rule choosing whether it covers test code. Seed it with rules that already hold today: thread spawning confined to the declared worker locations, no `Handle::from_rgba` anywhere in the app, and no bare `lightwell` identifier anywhere in source.",
+        "Document in `docs/engineering/development.md` that a task finishing a concept adds its own rule to this table rather than inventing a bespoke check."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups; states the one-path-stays-one-path rule this task's mechanism enforces."
+        },
+        {
+          "kind": "file",
+          "label": "Repository check",
+          "target": "xtask/src/repository.rs",
+          "relevance": "`BOUNDARIES`, `boundaries()` and `contains_token`, which this task generalizes into a table."
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Where the convention that concept-finishing tasks add their own rule is documented."
+        }
+      ],
+      "acceptance_criteria": [
+        "The rule table replaces `BOUNDARIES`, keeping the three existing rules' behavior unchanged, with a failure message that names the one table to extend rather than suggesting a bespoke check.",
+        "A unit test covers an allowed path and a refused path for each rule, including the ones seeded in this task.",
+        "The rules seeded in this task (thread spawning, `Handle::from_rgba`, the `lightwell` identifier) pass against the current tree.",
+        "`docs/engineering/development.md` states the convention that a concept-finishing task adds its rule here."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Generalize `BOUNDARIES` into the (token, allowed paths, reason) table with unit tests for each rule's allowed and refused paths.",
+          "Seed the three new rules and fix any incidental hit they find in the current tree before landing."
+        ],
+        "commands": [
+          "cargo test -p xtask repository",
+          "cargo xtask check-repository"
+        ],
+        "expected_results": [
+          "The three existing boundary rules still refuse exactly what they refused before.",
+          "The new seeded rules pass against the current tree and refuse a deliberately introduced violation in a test."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "State one rule for tests that must not depend on host load, no shared state, ordering from gates not sleeps, a deadline that only bounds a hang, and give every crate a core-free gate and wait helper in testkit, fixing the load-dependent tests found.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation. Four flakes have already been fixed one at a time; this states the rule that stops the next one and gives every crate the tool the fixes need.",
+        "The core's unit tests share one static render context across a whole test binary whose tests run in parallel: two mutexes serialize the tests that read shared budgets, dozens of call sites reset a shared estimate store, and several tests assert exact in-use or peak figures that any other concurrently running render can move. This is the same shape as a recently recorded flake in the RAW crate, where an admitted-permit count came in short because something outside a shared lock still held a slot.",
+        "Elsewhere, ordering is assumed from elapsed time rather than a gate: a desktop evidence test scripts a wait and asserts the very next tick sees nothing, which a scheduling delay between the two calls can violate; a preview-queue test asserts a second held job is pending without first waiting for the first job to reach its own gate; a spatial-render test raises its cancellation from a thread that merely sleeps 20 ms and panics if the render finished first; a capability journey test uses a proof endpoint's ten-second delay as if it were a gate that opens on its own schedule. Speed is also asserted in the default, non-timing suite: a process-counters test spins for 200 ms and requires 150 ms of measured CPU time, three capability tests bound their own promptness at two seconds, and a shared test server sleeps 50 ms and asserts the result lands in under a second.",
+        "The core already has a `RenderGate`/`HeldModule` pair for exactly this purpose, but it is `pub(crate)` and test-only, so the desktop keeps its own separate copy of the same idea rather than sharing it.",
+        "Constraint: the shared gate and wait helper must not depend on `luxforge-core`, so the core's own unit tests can use them too; each crate adds a small adapter rather than a second implementation.",
+        "The check-repository rule table this plan builds elsewhere gains an entry forbidding a second private test-ordering gate or wait helper outside `luxforge-testkit`, naming the shared `Gate`/`wait_until` as the one place to extend."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Where the one rule for load-independent tests is documented."
+        },
+        {
+          "kind": "file",
+          "label": "Test kit",
+          "target": "crates/luxforge-testkit/src/lib.rs",
+          "relevance": "Where the core-free `Gate` and `wait_until` are added."
+        },
+        {
+          "kind": "file",
+          "label": "Render testing context",
+          "target": "crates/luxforge-core/src/render.rs",
+          "relevance": "The shared static render context every `render::testing` helper renders through today."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop's own gate copy",
+          "target": "crates/luxforge-app/src/app/preview_failure_tests.rs",
+          "relevance": "`Hold`, `Gate` and `wait_for`, duplicating the core's gate idea for the same purpose."
+        },
+        {
+          "kind": "file",
+          "label": "Evidence wait test",
+          "target": "crates/luxforge-app/src/app/evidence.rs",
+          "relevance": "The scripted-wait test ordered by elapsed time rather than a gate."
+        }
+      ],
+      "acceptance_criteria": [
+        "`docs/engineering/development.md` states the rule: no shared mutable state between tests, ordering from gates and channels rather than sleeps, and a deadline that only bounds a hang and never asserts speed outside a timing tier.",
+        "A core-free `Gate` (shut, open, pass, reached) and a `wait_until` live in `luxforge-testkit`, usable by the core's own unit tests as well as the app's.",
+        "Each named instance is fixed: the core's unit-test helpers build a fresh render context per call instead of sharing one static; the evidence wait test, the preview-queue test, the spatial cancellation test and the capability journey test all order from a gate instead of elapsed time; the process-counters test measures the spinning thread's own CPU clock instead of a wall-clock bound; the two-second promptness bounds are dropped where the gate already proves the outcome.",
+        "The core, app and process test suites pass repeatedly beside another loaded build running on the same host.",
+        "The check-repository rule table gains an entry forbidding a second private test-ordering gate or wait helper outside `luxforge-testkit`."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add `Gate`/`wait_until` to `luxforge-testkit` with its own unit tests.",
+          "Rewrite each named test to use a fresh context or a gate instead of shared state or elapsed time.",
+          "Run the affected suites repeatedly while another build runs on the same machine, to reproduce the load conditions the original flakes needed."
+        ],
+        "commands": [
+          "cargo test --locked --workspace",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "No test in the affected files fails when run beside another loaded build.",
+          "The exact in-use and peak-count assertions in the core's render tests are deterministic because each test owns its own context."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Give tests one sRGB reference module in `luxforge-reference`, with named decode, encode and quantize variants, and replace the private sRGB transcriptions scattered across test code with it.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation. A disagreeing oracle is worse than none: this is the same duplication an earlier consolidation task removed from production colour math, still present in the tests that check it.",
+        "Test code carries roughly twenty private copies of sRGB decode, encode and quantize across the reference crate's own studies and the core's unit and integration tests, under a handful of shared names that actually mean three different functions: encoding clamped to `[0, 1]`, encoding clamped only below zero, and encoding left unclamped, with rounding written as both `floor(x + 0.5)` and `round()`. The reference crate itself exports its decode function under three aliased names.",
+        "Proposal: one `luxforge_reference::srgb` module with named variants (`decode`, `decode_encoded`, `encode_clamped`, `encode_nonnegative`, `encode_extended`, `quantize`, `code`), with the old aliases deleted and every study and test calling the new module.",
+        "Constraint: no committed number may move. The reference crate's own reload tests, which recompute each frozen corpus and fail on drift, must pass unchanged, and every production-against-reference comparison keeps its existing tolerance.",
+        "The check-repository rule table gains an entry forbidding a private sRGB transfer-function transcription outside `luxforge_reference::srgb`."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Reference crate root",
+          "target": "crates/luxforge-reference/src/lib.rs",
+          "relevance": "The three-times-aliased decode function and the encode/quantize functions this task consolidates."
+        },
+        {
+          "kind": "file",
+          "label": "Mask overlay test",
+          "target": "crates/luxforge-core/tests/mask/overlay.rs",
+          "relevance": "One of the core's private sRGB transcriptions to replace."
+        },
+        {
+          "kind": "file",
+          "label": "Conformance suite pixel probes",
+          "target": "crates/luxforge-core/tests/modules/conformance/pixels.rs",
+          "relevance": "Another private transcription, inside the suite every field-patch module is checked against."
+        }
+      ],
+      "acceptance_criteria": [
+        "`luxforge_reference::srgb` exists with the named variants, and the old aliased names are deleted.",
+        "Every private sRGB transcription in test code, including the reference crate's own studies and the core's mask, conformance, render, proxy and module tests, is replaced with a call to the shared module.",
+        "The corpus reload tests pass unchanged, proving no committed figure moved.",
+        "Every production-against-reference comparison that used a private copy now uses the shared module at the same tolerance.",
+        "The check-repository rule table gains an entry forbidding a private sRGB transfer-function transcription outside `luxforge_reference::srgb`."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add the `srgb` module with its named variants and unit tests for each.",
+          "Replace each private transcription with a call to the shared module, one file at a time.",
+          "Run the full reference and core test suites to confirm the corpus reload tests and every production comparison are unchanged."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference",
+          "cargo test -p luxforge-core"
+        ],
+        "expected_results": [
+          "Every committed corpus reload test still passes with no figure changed.",
+          "No private sRGB transcription remains in test code."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Launch and watch every editor process the timing tools start, `editor-latency`, `raw-editor`, `measure` and `hardening`, through the smoke scenario library's own launch envelope and one watch loop, instead of each tool assembling arguments and polling by hand.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation. An earlier task gave the smoke scenarios one launch builder and one run envelope; the timing tools are the one place that still does not use it.",
+        "`editor_latency.rs`, `raw_editor.rs` and `diagnostics.rs` each build their own `--evidence-dir`/`--evidence-script`/`--open`/`--catalog` argument list and carry their own process-watch loop with its own deadline, sample and sleep logic, eight such loops in all. `performance_smoke.rs` runs its own `ps` invocation beside the shared usage sampler rather than calling it. The provenance header (host, binary, lockfile) is written with drifting field names across the tools, and `editor-latency` records a fixed `\"profile\":\"release\"` regardless of the binary it was actually given.",
+        "Because only the smoke scenarios record a `launches` list, `verify` keeps a separate `Launches` enum that hand-codes how many editor processes each tool starts, which this task lets it delete in favor of reading the count each tool now records itself.",
+        "Constraint: timing figures must not move. Each watch loop's own poll rate stays a parameter rather than a shared constant, and the argument list produced for each tool must be byte-identical to today's before and after.",
+        "The check-repository rule table gains an entry forbidding a second editor-launch argument assembly outside the scenario library's `Launch`/`Run`."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Scenario launch envelope",
+          "target": "xtask/src/scenario/launch.rs",
+          "relevance": "`Launch` and `Run`, the one launch path this task extends to the timing tools."
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency tool",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "One of the tools with its own argument assembly and watch loop to migrate."
+        },
+        {
+          "kind": "file",
+          "label": "RAW editor timing tool",
+          "target": "xtask/src/raw_editor.rs",
+          "relevance": "Another tool with its own launch and watch logic."
+        },
+        {
+          "kind": "file",
+          "label": "Measure and hardening",
+          "target": "xtask/src/diagnostics.rs",
+          "relevance": "`measure` and `hardening`'s own argument assembly and watch loops."
+        },
+        {
+          "kind": "file",
+          "label": "Verification tiers",
+          "target": "xtask/src/verify.rs",
+          "relevance": "The `Launches` enum this task lets `verify` delete."
+        }
+      ],
+      "acceptance_criteria": [
+        "`editor-latency`, `raw-editor`, `measure` and `hardening` launch every editor process through the scenario library's `Launch`/`Run` builder, and each launch is recorded in a `launches` list.",
+        "One `watch` function serves every tool's process-watching loop, replacing the eight separate ones.",
+        "One `provenance` function writes the same header fields everywhere and reads the profile from the binary rather than asserting it.",
+        "`verify`'s `Launches` enum is deleted; launch counts are read from what each tool actually recorded.",
+        "A dumped argument list for each tool is unchanged from before this task, and one full `timing` tier run before and after, back to back, produces the same figures within normal run-to-run variation.",
+        "The check-repository rule table gains an entry forbidding a second editor-launch argument assembly outside `scenario::launch`."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add `data_root` and `evidence_dir` to the scenario library's `Launch` builder so the timing tools can use it.",
+          "Migrate each timing tool's argument assembly and watch loop to the shared builder and `watch` function, one tool at a time.",
+          "Dump each tool's argument list before and after migration and diff them for equality; delete `verify`'s `Launches` enum once every tool records its own launches."
+        ],
+        "commands": [
+          "cargo test -p xtask",
+          "cargo xtask verify --tier timing"
+        ],
+        "expected_results": [
+          "Every timing tool's arguments and scripts are byte-identical to before this task.",
+          "`verify`'s launch counts come from what each component recorded, with no tool-specific counting logic left."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Move `Distribution` into `luxforge-testkit` and use it everywhere a timing figure is computed, in xtask and in the crates' own ignored timing tests, deleting the forwarding wrappers and the four disagreeing percentile definitions it replaces.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation. Depends on the timing tools sharing one launch path, since this task also gives them one report shape to write into.",
+        "`stats::Distribution` in xtask is one correct nearest-rank percentile with its own golden tests. Around it, four one-line wrapper functions do nothing but forward to it, `mask-range`'s own stroke-latency check hand-writes a fifth percentile and its own JSON shape for a measurement `editor-latency`'s paint mode already makes, and the crates' own ignored timing tests, in `luxforge-core` and `luxforge-process`, use four more percentile definitions that disagree with nearest-rank and with each other at ordinary sample counts.",
+        "`verify`'s report collector still special-cases four different report layouts because not every tool writes the same shape, and whether a load reading counts as reliable is worded differently in different tools for the same underlying rule.",
+        "Constraint: recorded p95 figures from the crates' timing tests may shift by one rank once they move to nearest-rank; note this where a figure is recorded rather than silently changing it.",
+        "The check-repository rule table gains an entry forbidding a second percentile or distribution implementation outside `luxforge-testkit`'s `Distribution`."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Distribution and usage sampling",
+          "target": "xtask/src/stats.rs",
+          "relevance": "The one correct percentile this task relocates and the wrappers it replaces."
+        },
+        {
+          "kind": "file",
+          "label": "Test kit",
+          "target": "crates/luxforge-testkit/src/lib.rs",
+          "relevance": "Where `Distribution` moves to, so both xtask and the crates' own timing tests can use it."
+        },
+        {
+          "kind": "file",
+          "label": "Mask range scenario",
+          "target": "xtask/src/mask_range_smoke.rs",
+          "relevance": "Its own private percentile and JSON shape for stroke latency."
+        },
+        {
+          "kind": "file",
+          "label": "Verification report collection",
+          "target": "xtask/src/verify.rs",
+          "relevance": "`collect`'s four special-cased report layouts, to become one loop."
+        }
+      ],
+      "acceptance_criteria": [
+        "`Distribution` lives in `luxforge-testkit` and is used by xtask's timing tools and by the crates' own ignored timing tests; no second percentile definition remains anywhere in the workspace.",
+        "The four one-line forwarding wrappers and `mask-range`'s own percentile and JSON shape are deleted; `mask-range`'s stroke latency is reported in the one shared shape.",
+        "Every timing tool writes one `{\"rows\":[{\"metric\",\"unit\",\"distribution\"}]}` shape, and `verify`'s collector is one loop over it instead of four special cases.",
+        "One `reliable`/`unreliable` load rule is used by every tool that reports a load-dependent figure.",
+        "The check-repository rule table gains an entry forbidding a second percentile or distribution implementation outside `luxforge-testkit`."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Move `Distribution` to `luxforge-testkit` with its existing golden tests intact.",
+          "Replace each of the four wrappers, `mask-range`'s own percentile, and the four crate-level percentile definitions with the shared type.",
+          "Update `verify`'s collector to the one shared report shape and rerun a timing tier to confirm the figures are sane."
+        ],
+        "commands": [
+          "cargo test -p xtask stats",
+          "cargo test -p luxforge-testkit",
+          "cargo xtask verify --tier timing"
+        ],
+        "expected_results": [
+          "One percentile definition is used everywhere a p50/p95 figure is computed.",
+          "`verify`'s report collector no longer special-cases per-tool report shapes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Express `raw-editor`'s edit-and-reopen journey as a smoke scenario row on the plan library, with one RAW manifest reader shared by the row, `raw-corpus` and `verify`, in place of the tool's own launch, frame verifier and pixel sampler.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Wave 2, finish the consolidation. Depends on the timing tools sharing one launch path, since this scenario row needs the same envelope RAW-editor timing already moves onto.",
+        "`xtask/src/raw_editor.rs`, at 909 lines, keeps its own launch, frame verifier and pixel sampler, its own hand-kept frame indices, and its own exact request comparisons, so it gets none of the universal per-frame checks or the replay tool every smoke scenario already has. It branches on the literal camera mode name `\"DjiAir2sDng16\"` rather than the profile's own declared field, and separately re-reads and re-parses `cameras.json` untyped to check DNG provenance the RAW adapter has already enforced against the same profile. RAW manifests are read three separate ways across `raw_editor.rs`, `raw.rs` and `verify.rs`.",
+        "The scenario table already supports the two-launch, reopen-through-a-named-catalog shape this journey needs; the `basic-restart` and `unavailable` rows both do it, so this is a fit rather than a new mechanism.",
+        "Constraint: keep the manifest-specific checks (dimensions, orientation, DNG opcodes, the displayed RAW controls) as the new row's own verifier; if repeated trials are still wanted, they are `verify` running the row multiple times rather than a loop inside the tool.",
+        "The check-repository rule table gains an entry forbidding a second RAW manifest reader outside `raw.rs`."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "RAW editor timing tool",
+          "target": "xtask/src/raw_editor.rs",
+          "relevance": "The 909-line tool this task turns into a scenario row, including its DJI mode-name branch and untyped `cameras.json` re-read."
+        },
+        {
+          "kind": "file",
+          "label": "RAW corpus and manifest reading",
+          "target": "xtask/src/raw.rs",
+          "relevance": "One of the three manifest readers; where the single shared reader lands."
+        },
+        {
+          "kind": "file",
+          "label": "Scenario table",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Where the new row is added, and the `basic-restart`/`unavailable` rows this journey's shape follows."
+        },
+        {
+          "kind": "file",
+          "label": "RAW panel scenario",
+          "target": "xtask/src/raw_panel_smoke.rs",
+          "relevance": "The other `Source::Supplied` RAW scenario already on the plan library, for comparison."
+        }
+      ],
+      "acceptance_criteria": [
+        "`raw-editor`'s journey is a `Source::Supplied` scenario row with an edit launch and a reopen launch reading the first launch's catalog, verified through the plan library's universal per-frame checks plus its own manifest-specific checks.",
+        "One RAW manifest reader in `raw.rs` is used by the new row, `raw-corpus` and `verify`; the other two readers are deleted.",
+        "The DJI geometry branch keys off the camera profile's own declared field rather than the mode name string, and the untyped re-read of `cameras.json` is removed.",
+        "`smoke --verify-only` can replay a recorded run of the new row, and the plan-mutation proof still fails it on a dropped step or a changed label.",
+        "The check-repository rule table gains an entry forbidding a second RAW manifest reader outside `raw.rs`."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Add the new scenario row with its plan, launches and manifest-specific verifier.",
+          "Consolidate the three manifest readers into one in `raw.rs`.",
+          "Run the new row against the owner's RAW manifest and replay it with `--verify-only`."
+        ],
+        "commands": [
+          "cargo test -p xtask",
+          "cargo xtask smoke --scenario raw-editor --source RAW --output NEW_DIR",
+          "cargo xtask smoke --verify-only RUN_DIR --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The RAW editor journey runs as an ordinary smoke scenario with the same universal checks and replay every other scenario has (requires the owner's RAW manifest).",
+          "One manifest reader serves every RAW tool that reads one."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Give scenarios a checks recorder and richer plan expectations (masks, notices, status, mode, zoom) so a scenario is its plan plus its pixel claims, and replace the eleven ways scenarios locate the photograph with one locator built from recorded geometry.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Wave 4, structure. Depends on the timing tools' launch path landing first, so this restructuring starts from one settled shape rather than migrating scenarios twice.",
+        "The 18 smoke scenario files total roughly 13,600 lines. Most of that is hand-written evidence records, a dozen near-identical `record` closures across a dozen files, state checks the plan format cannot express (`Expect` covers commits, label, layer payloads, field text, same-layer identity, slider drafts, expanded sections and refusals, but nothing about masks, notices, status text, workspace mode or zoom, so most of the verifiers' several hundred state assertions are written by hand instead), and eleven separate ways of locating the photograph in a frame, one of them documented as fooled once its scanned strip outgrows the photograph and still in active use by the `presence` scenario.",
+        "Two scenarios (`zoom`, `raw-panel`) already predict the photograph's rectangle from recorded geometry instead of searching for it; that is the pattern to generalize, by having the editor record the drawn rectangle once per frame.",
+        "Constraint: checks must stay at least as strict as today. `smoke --verify-only` and the plan-mutation proof, which fails a scenario on a dropped step or a changed label, are the existing tools that prove this; migrate one scenario at a time and replay each one's last recorded run before and after."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Plan and Expect",
+          "target": "xtask/src/scenario/plan.rs",
+          "relevance": "The `Expect` struct this task extends, and the plan format scenarios already derive their frame checks from."
+        },
+        {
+          "kind": "file",
+          "label": "Photo locators",
+          "target": "xtask/src/scenario/pixels.rs",
+          "relevance": "`Scan` and the other photo-finding functions this task replaces with one recorded-rectangle locator."
+        },
+        {
+          "kind": "file",
+          "label": "Vignette scenario",
+          "target": "xtask/src/vignette_smoke.rs",
+          "relevance": "A representative scenario file this task's approach was sized against."
+        },
+        {
+          "kind": "file",
+          "label": "Scenario table and replay",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "`smoke --verify-only` and the plan-mutation proof this task's migration must keep passing."
+        }
+      ],
+      "acceptance_criteria": [
+        "A `Checks` recorder replaces the per-file `record` closures and hand-written evidence JSON with one `compare`/`note`/`write` path.",
+        "`Expect` gains mask, notice, status, mode and zoom expectations, moving the equivalent hand-written state assertions into scenario plans.",
+        "One photo locator, built from a rectangle the editor records per frame, replaces the eleven current finders, including the one documented as unreliable once a canvas element outgrows the photograph.",
+        "Every migrated scenario replays unchanged through `smoke --verify-only`, and the plan-mutation proof still fails it on a dropped step and a changed label.",
+        "The scenario files shrink substantially in total while keeping every existing check."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Build the `Checks` recorder, the extended `Expect` variants and the recorded-rectangle photo locator.",
+          "Migrate scenarios one at a time, replaying each one's last rendered run with `--verify-only` before and after its migration.",
+          "Run the plan-mutation proof against each migrated scenario to confirm it still fails on a dropped step and a changed label."
+        ],
+        "commands": [
+          "cargo test -p xtask",
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "Every migrated scenario's checks are at least as strict as before migration, proved by an unchanged replay.",
+          "The plan-mutation proof still catches a dropped step and a changed label in every migrated scenario."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Restructure `docs/design/architecture.md` into short sections with a limits table naming the constant that enforces each figure, and fold the finished, wave-named performance design documents into the performance spec they duplicate.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 4, structure. `architecture.md` is the source the performance-rules review checklist names for every current limit, so its readability as a checklist matters more than most documents in the tree.",
+        "Two single paragraphs hold 41% of the document's words: an unstructured paragraph of over a thousand words covering rendering, and a paragraph of several hundred words listing about 25 unrelated numeric limits with no grouping. A comparable long single paragraph exists in `develop-workspace.md`, which every module-placement task also reads.",
+        "Three design documents (a source-preparation-and-rendering one, a startup-and-RAW-throughput one, and an isolated-kernels one) are contracts for already-completed, already-qualified work, framed as run plans rather than current-state documents; their checklists belong in `docs/specs/performance.md`, which already records the measured results.",
+        "Constraint: no number changes, and the anchor `docs/engineering/performance-rules.md`'s rule 6 depends on to point at the rendering-and-limits section must keep resolving, whether by preserving it or updating the cross-reference. This is a restructuring pass, not a content rewrite."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture overview",
+          "target": "docs/design/architecture.md",
+          "relevance": "The document this task restructures."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "locator": "Review checklist",
+          "relevance": "Rule 6 names architecture.md as the source of every current limit; its anchor into the restructured document must keep resolving."
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where the three folded documents' checklists and measured results land."
+        },
+        {
+          "kind": "file",
+          "label": "Source preparation and rendering performance",
+          "target": "docs/design/performance-second-wave.md",
+          "relevance": "One of the three finished-work documents to fold and delete."
+        },
+        {
+          "kind": "file",
+          "label": "Isolated rendering performance",
+          "target": "docs/design/isolated-performance.md",
+          "relevance": "Another of the three finished-work documents to fold and delete."
+        }
+      ],
+      "acceptance_criteria": [
+        "`architecture.md` has short sections, overview, workspace and crates, boundaries, sources and layers, persistence, rendering split into pixel domains/stage boundaries/point queries/preview scheduling, limits, histogram and analysis, agent contract, and modules, in place of the two long paragraphs.",
+        "A limits table names, for every current numeric limit, the constant or type that enforces it.",
+        "`performance-second-wave.md`, `performance-third-wave.md` and `isolated-performance.md` are folded into `docs/specs/performance.md` and deleted; nothing that links them is left broken.",
+        "Every number in the restructured document is unchanged from before, and every internal and external link to the folded sections, including `performance-rules.md` rule 6's, still resolves."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Restructure the document section by section, moving prose into the new headings without changing any figure.",
+          "Build the limits table by reading each figure's enforcing constant from source.",
+          "Fold the three wave-named documents' checklists into `docs/specs/performance.md` and update every link that pointed at them, including `performance-rules.md`'s."
+        ],
+        "commands": [
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Every figure in the restructured document matches the constant it names.",
+          "The link checker in `cargo xtask check` passes with no broken reference to the folded documents or their old sections."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Narrow `editor-acceptance` to what `cargo test` cannot already prove at the same layer: the release-profile conformance run, Basic's numerics against the independent reference, placement, and mask reopen through a fresh owner; delete the chapters and steps that re-walk core tests.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 5, tests. All four chapters drive the owner through the same JSON method layer the core's own conformance journey and command-contract tests already exercise on every `cargo test` run.",
+        "The mask chapter's sections on command refusals and on a masked module made unavailable are subsets of the mask command-contract tests and the conformance journey's own unavailable-module step; a Basic step duplicates a specific owner test the chapter's own text already calls out as \"referenced rather than duplicated\"; the whole M1 through M4 journey (history order, read-only preview, undo/redo/restore, the orientation layer, the crop, placement, reopen) re-walks milestones the core's own tests already pin. One duplicated step has already gone stale, which is exactly the risk a second copy of a proof creates.",
+        "Owner decision: `editor-acceptance` keeps only what `cargo test` cannot prove at the same layer, the release-profile run of the shared conformance suite, Basic's numerics on the photo fixture against the independent reference, the placement chapter, and mask reopen through a fresh owner.",
+        "Constraint: every deleted check must be mapped, in the commit, to the specific core test that proves it, following the rule that a deleted test names its keeper."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups; states the rule that a deleted test names its keeper."
+        },
+        {
+          "kind": "file",
+          "label": "Editor acceptance journey",
+          "target": "xtask/src/editor_acceptance.rs",
+          "relevance": "The M1 through M4 journey this task narrows to what only it can prove."
+        },
+        {
+          "kind": "file",
+          "label": "Masking acceptance chapter",
+          "target": "xtask/src/mask_acceptance.rs",
+          "relevance": "The command-refusal and unavailable-module sections that duplicate core tests."
+        },
+        {
+          "kind": "file",
+          "label": "Basic and histogram acceptance chapter",
+          "target": "xtask/src/basic_acceptance.rs",
+          "relevance": "Keeps its numerics-against-reference checks; loses the step already marked as duplicating a named owner test."
+        },
+        {
+          "kind": "file",
+          "label": "Acceptance chapters documentation",
+          "target": "docs/engineering/development.md",
+          "relevance": "Documents what each chapter proves today; states the new rule after this task."
+        },
+        {
+          "kind": "file",
+          "label": "Conformance journey",
+          "target": "crates/luxforge-core/tests/modules/conformance/journey.rs",
+          "relevance": "The core-layer test the mask chapter's unavailable-module step duplicates."
+        }
+      ],
+      "acceptance_criteria": [
+        "`editor-acceptance` retains exactly the release-profile conformance run, Basic's independent-reference numerics, the placement chapter and mask reopen through a fresh owner; every other chapter and step listed above as a duplicate is deleted.",
+        "The commit maps each deleted check to the core test that already proves it.",
+        "`docs/engineering/development.md`'s acceptance section states the rule: a chapter step exists only if no `cargo test` proves it at the same layer.",
+        "`editor-acceptance` still runs to completion and its retained checks pass unchanged."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "For each candidate deletion, name the core test that proves the same property at the same layer.",
+          "Delete the mapped chapters and steps, keeping the four retained pieces.",
+          "Run the narrowed chapter and the core test suite together to confirm nothing lost coverage."
+        ],
+        "commands": [
+          "cargo xtask editor-acceptance --output NEW_DIR",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "`editor-acceptance` proves only what the core's own tests cannot prove at the same layer.",
+          "Every deleted check has a named core test standing in for it."
+        ]
+      }
+    },
+    {
+      "id": "TASK-014",
+      "description": "Split the loopback test server and other core-free helpers out of `luxforge-testkit` into a crate with no core dependency, so a core `--lib` edit builds the core once, and merge the app's three CLI test binaries and `resources_cost` into their siblings.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Wave 5, tests. `cargo test --workspace` builds 24 test executables; 13 link `luxforge-core`, and the core itself dev-depends on `luxforge-testkit`, which depends back on the core, so the recommended edit loop of testing the core's library alone builds the core twice.",
+        "That cycle is also why the core's own tens of thousands of lines of unit tests cannot use testkit's typed helpers: a `luxforge-core` type inside testkit is a different type from the one the core's own unit tests see. The result is duplication testkit was meant to remove: several private `mutation` helpers inside the core's unit tests alone, near-identical owner test harnesses in two capability test files, and the same small SQL-seeding helper repeated in two mask test files.",
+        "The core already has three small test-support modules (`editor/test_support.rs`, `capabilities/testing.rs`, `artifacts/testing.rs`); this consolidates future owner-harness and mutation-envelope helpers there instead of adding a fourth.",
+        "Separately, three of the app's `tests/` binaries each spin up their own process for a small, non-overlapping slice of CLI behavior, and one core integration binary (`resources_cost`) is a single ignored test that could run inside another binary instead."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Test kit",
+          "target": "crates/luxforge-testkit/src/lib.rs",
+          "relevance": "The crate this task splits into a core-free half and a core-typed half."
+        },
+        {
+          "kind": "file",
+          "label": "Core crate manifest",
+          "target": "crates/luxforge-core/Cargo.toml",
+          "relevance": "The dev-dependency on `luxforge-testkit` that creates the build cycle."
+        },
+        {
+          "kind": "file",
+          "label": "One of three app CLI test binaries",
+          "target": "crates/luxforge-app/tests/json_cli.rs",
+          "relevance": "One of the three binaries this task merges into one."
+        },
+        {
+          "kind": "file",
+          "label": "Existing core test-support module",
+          "target": "crates/luxforge-core/src/editor/test_support.rs",
+          "relevance": "One of three existing support modules this task consolidates future helpers into."
+        }
+      ],
+      "acceptance_criteria": [
+        "The loopback test server, scratch and fixture paths move to a crate with no dependency on `luxforge-core`; testkit's typed helpers stay where core-dependent tests can use them.",
+        "`cargo test -p luxforge-core --lib` no longer triggers a second full build of the core through the testkit dependency cycle, and its incremental build time is recorded before and after.",
+        "The app's three CLI test binaries are merged into one binary with one module per CLI; `resources_cost` is merged into `cancellation` and still runs by name.",
+        "The full workspace test suite passes unchanged after every merge."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Split the core-free parts of testkit into a new crate and repoint the core's dev-dependency at it.",
+          "Merge the app's three CLI test binaries and `resources_cost` into their targets, keeping every test runnable by name.",
+          "Measure `cargo test -p luxforge-core --lib`'s incremental build time before and after the split."
+        ],
+        "commands": [
+          "cargo test --workspace",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Every existing test still passes, addressable by the same or an equivalently named path.",
+          "The core's `--lib` edit loop no longer rebuilds the core a second time through testkit."
+        ]
+      }
+    },
+    {
+      "id": "TASK-015",
+      "description": "Clear the harness's remaining small defects: dead fields, a Windows-incompatible test, redundant CI jobs, hard-coded scenario lists, copied desktop formatters, an uninjectable buffer-size constant, and run-log prose in the development guide.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Wave 5, tests. Depends on the one distribution type landing first, since one of these items, `editor-latency`'s dead `upload_ms` field, is otherwise entangled with the timing report shape that task settles.",
+        "Portability: `verify`'s pool tests spawn `/bin/sleep`, so `cargo test -p xtask` cannot pass on Windows, where CI only runs `cargo xtask check`; spawn the xtask test binary itself instead, as the scenario launch tests already do, or confine the sleep-based tests to Unix.",
+        "Redundant or drifted checks: the CI fixtures job re-runs the same fixture check `check`'s own test run already runs as `golden_corpus`; the CI Linux smoke step hard-codes eight scenario names instead of iterating `smoke --list`; `docs/engineering/development.md`'s CI section says CI runs `cargo xtask check` and that Linux runs every smoke scenario, when the workflow actually runs `verify --tier quick` and the same eight named scenarios.",
+        "Dead and copied code: `editor-latency` carries an `upload_ms`/`gpu_upload` field the editor never emits, backed by a test that fabricates the value it checks; the harness re-implements the desktop's own byte, percentage and elapsed-time formatters instead of importing them, and the two copies already disagree on how a non-finite value prints; the core's artifact LRU accounting test fills real 64 MiB buffers because its size constant cannot be injected, when a parameterized bound would let it test with kilobytes.",
+        "Prose: `docs/engineering/development.md` carries a dated scenario-workload quote and a per-run measurement log that duplicate figures this plan's other tasks keep current elsewhere, plus roughly 180 lines restating each scenario's own plan, which duplicates what each scenario's module doc already provides to `smoke --list`.",
+        "Constraint: each item in this task is independent; where a fix is not worth its own change, explain why in the commit rather than leaving it silently undone."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Post-consolidation design",
+          "target": "docs/design/post-consolidation.md",
+          "relevance": "Constraints, waves and the order across groups."
+        },
+        {
+          "kind": "file",
+          "label": "Verify pool tests",
+          "target": "xtask/src/verify.rs",
+          "relevance": "The `/bin/sleep`-spawning tests that block Windows portability."
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency tool",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "The dead `upload_ms`/`gpu_upload` field and its fabricated test."
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "The CI section's drifted claims and the run-log prose this task removes."
+        },
+        {
+          "kind": "file",
+          "label": "CI workflow",
+          "target": ".github/workflows/check.yml",
+          "relevance": "The redundant fixtures job and the hard-coded eight-scenario Linux smoke list."
+        },
+        {
+          "kind": "file",
+          "label": "Artifact LRU accounting",
+          "target": "crates/luxforge-core/src/artifacts/mod.rs",
+          "relevance": "The uninjectable buffer-size constant its own test works around with real 64 MiB buffers."
+        }
+      ],
+      "acceptance_criteria": [
+        "`cargo test -p xtask` passes without spawning a Unix-only binary, or the affected tests are confined to Unix explicitly.",
+        "The CI fixtures job and the hard-coded Linux scenario list are removed in favor of what `check` and `smoke --list` already provide, and `docs/engineering/development.md`'s CI section states what CI actually runs.",
+        "The dead `upload_ms` field and its fabricated test are removed; the harness imports the desktop's own formatters instead of a second copy that can disagree with it.",
+        "The run-log prose and the roughly 180 lines of per-scenario restatement in `docs/engineering/development.md` are removed in favor of each scenario's own module doc.",
+        "Every item in this task's scope is either fixed or has a stated reason it is not, in the commit."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Fix each item, confirming test portability changes by running the affected suite.",
+          "Confirm the CI workflow still runs an equivalent or better check after removing the redundant job and the hard-coded list.",
+          "Confirm the harness's formatted output matches the desktop's own after importing its formatters."
+        ],
+        "commands": [
+          "cargo test -p xtask",
+          "cargo test -p luxforge-testkit",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "`cargo test -p xtask` is portable to a host without `/bin/sleep`.",
+          "No dead field, redundant CI job or restated formatter remains where a shared one already exists."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-012",
+        "TASK-013",
+        "TASK-014"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-009",
+        "TASK-010",
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-015"
+      ]
+    }
+  ]
+}
