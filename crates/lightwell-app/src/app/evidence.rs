@@ -222,6 +222,11 @@ pub(crate) struct PacedStroke {
     pub(crate) interval_ms: u64,
     /// Whether the last tick releases the stroke, which is what commits it as one history entry.
     pub(crate) release: bool,
+    /// Hold each later tick until the position before it has its own frame on screen, rather than
+    /// trusting `interval_ms` to outrun the render pipeline. Set from the step's own field, so a
+    /// heavily loaded host stretches the stroke's real time instead of superseding a position before
+    /// it is ever measured.
+    pub(crate) settle_between: bool,
 }
 
 /// The script's step types are the shared evidence script crate's: the desktop reads them and
@@ -984,6 +989,7 @@ impl Editor {
                 points,
                 release,
                 interval_ms,
+                settle_between,
             } => {
                 if self.mask_shape().and_then(MaskDraft::brush).is_none() {
                     return self.fail_step("no painted gesture is open to paint into");
@@ -1001,6 +1007,7 @@ impl Editor {
                             sent: 0,
                             interval_ms,
                             release,
+                            settle_between,
                         });
                     }
                     return Task::none();
@@ -1495,15 +1502,38 @@ impl Editor {
         Task::batch(tasks)
     }
 
+    /// A paced stroke's own frame is on screen: no draft round trip is left in flight or waiting on
+    /// the owner, and the newest preview this client has asked for is the one the surface is
+    /// showing. Checked before every tick after the first of a stroke paced with `settle_between`,
+    /// so the next position cannot be sent, and therefore cannot supersede the render the one before
+    /// it is still waiting on, until that render has actually reached the screen. A slow host then
+    /// stretches the stroke's real time instead of losing positions to the render pipeline.
+    fn paced_stroke_settled(&self) -> bool {
+        !self.mask_frame_pending() && self.presented_generation == self.preview_generation
+    }
+
     /// One tick of a paced stroke step: the next pointer position, through the same
     /// [`MaskPointer`](crate::app::message::MaskPointer) messages a hand on the canvas raises.
     ///
     /// The first tick presses, every later one moves, and the last releases when the step said to —
-    /// so one paced step is still one stroke and one history entry, and each position is one input
-    /// whose round trip drains before the next tick. A tick with nothing left to send does nothing:
-    /// the subscription that drives it exists only while positions remain.
+    /// so one paced step is still one stroke and one history entry. A tick with nothing left to send
+    /// does nothing: the subscription that drives it exists only while positions remain. A step that
+    /// asked to settle between positions holds every tick after the first until
+    /// [`Self::paced_stroke_settled`] says the position before it has reached the screen; the timer
+    /// simply retries on its next tick, so a loaded host lengthens the stroke rather than superseding
+    /// a position no `preview_displayed` will ever answer for.
     pub(crate) fn stroke_paced_tick(&mut self) -> Task<Message> {
         use crate::app::message::MaskPointer;
+        let Some(paced) = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.paced_stroke.as_ref())
+        else {
+            return Task::none();
+        };
+        if paced.sent > 0 && paced.settle_between && !self.paced_stroke_settled() {
+            return Task::none();
+        }
         let Some(paced) = self
             .evidence
             .as_mut()

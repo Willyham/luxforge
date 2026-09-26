@@ -751,6 +751,7 @@ fn paint_precondition() -> Vec<script::Step> {
             points: vec![[0.2, 0.3], [0.8, 0.3]],
             release: true,
             interval_ms: None,
+            settle_between: false,
         }),
         script::Step::Slider(SliderStep::new(SET_BASIC, EXPOSURE, [PAINT_EV]).release()),
         script::Step::Mask(MaskStep::Paint(PaintStep::Component(Reference::Index(0)))),
@@ -776,6 +777,11 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
         points: path,
         release: true,
         interval_ms: Some(PAINT_INTERVAL_MS),
+        // Deliberately left unset (TASK-018): this run is a controlled, dedicated measurement of
+        // one host rather than a smoke scenario sharing it with whatever else is running, so
+        // `PAINT_INTERVAL_MS` alone is kept as the measurement's own definition rather than folding
+        // in the mask-range scenario's load-tolerant wait. See `mask_range_smoke::stroke_latency`.
+        settle_between: false,
     }));
     steps
 }

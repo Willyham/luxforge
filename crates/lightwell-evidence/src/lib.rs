@@ -294,6 +294,10 @@ fn is_true(value: &bool) -> bool {
     *value
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn yes() -> bool {
     true
 }
@@ -1391,6 +1395,14 @@ pub enum MaskStep {
         /// one update, which is what a **latency** measurement needs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         interval_ms: Option<u64>,
+        /// Wait for each position's own drafted frame to reach the screen before sending the next
+        /// one, instead of trusting `interval_ms` alone to outrun the render pipeline. A host under
+        /// load can take longer than the interval to answer a position, and every later position
+        /// then supersedes the one before it reaches the screen — a latency measurement that
+        /// depends on at least one paired frame needs this held to true rather than assumed.
+        /// Rejected without `interval_ms`, since it paces nothing on its own.
+        #[serde(default, skip_serializing_if = "is_false")]
+        settle_between: bool,
     },
     /// A whole shape drawn in one stroke: the press at `from`, the pointer at `to`. The pointer is
     /// still down afterwards, exactly as it is mid-drag, so the release is a step of its own.
@@ -1425,6 +1437,7 @@ impl MaskStep {
             points: points.into(),
             release,
             interval_ms: None,
+            settle_between: false,
         }
     }
 
@@ -1442,6 +1455,7 @@ impl MaskStep {
             Self::Stroke {
                 points,
                 interval_ms,
+                settle_between,
                 ..
             } => {
                 if points.is_empty() {
@@ -1450,7 +1464,11 @@ impl MaskStep {
                 points
                     .iter()
                     .try_for_each(|point| content_point(*point, "mask stroke point"))?;
-                positive(*interval_ms, "mask stroke interval_ms")
+                positive(*interval_ms, "mask stroke interval_ms")?;
+                if *settle_between && interval_ms.is_none() {
+                    return Err("mask stroke settle_between needs interval_ms".into());
+                }
+                Ok(())
             }
             Self::Sweep { from, to } => {
                 content_point(*from, "mask sweep from")?;

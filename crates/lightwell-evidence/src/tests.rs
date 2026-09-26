@@ -451,6 +451,7 @@ fn every_mask_verb_round_trips_its_script() {
         {"mask":{"brush":{"nudge":["size",-2.0]}}},
         {"mask":{"stroke":{"points":[[0.3,0.3],[0.4,0.35]],"release":true}}},
         {"mask":{"stroke":{"points":[[0.5,0.5]],"release":false,"interval_ms":24}}},
+        {"mask":{"stroke":{"points":[[0.5,0.5]],"release":true,"interval_ms":24,"settle_between":true}}},
         {"mask":{"sweep":{"from":[0.5,0.2],"to":[0.5,0.8]}}},
         {"mask":{"release":true}},
         {"mask":{"drag":{"handle":"radius+x","points":[[0.4,0.4],[0.45,0.4]]}}},
@@ -493,7 +494,17 @@ fn every_mask_verb_round_trips_its_script() {
         MaskStep::stroke([[0.3, 0.3], [0.4, 0.35]], true).into()
     );
     assert_eq!(
-        steps[21],
+        steps[19],
+        MaskStep::Stroke {
+            points: vec![[0.5, 0.5]],
+            release: true,
+            interval_ms: Some(24),
+            settle_between: true,
+        }
+        .into()
+    );
+    assert_eq!(
+        steps[22],
         MaskStep::Drag {
             handle: DragHandle::RadiusPlusX,
             points: vec![[0.4, 0.4], [0.45, 0.4]]
@@ -501,7 +512,7 @@ fn every_mask_verb_round_trips_its_script() {
         .into()
     );
     assert_eq!(
-        steps[29],
+        steps[30],
         MaskStep::Row(MaskRow::new(0, RowStep::DeleteStroke(Reference::Index(1)))).into()
     );
     // A stroke is released unless it says otherwise.
@@ -601,6 +612,10 @@ fn every_mask_verb_round_trips_its_script() {
         (
             json!({"mask":{"stroke":{"points":[[0.5,0.5]],"interval_ms":0}}}),
             "positive integer",
+        ),
+        (
+            json!({"mask":{"stroke":{"points":[[0.5,0.5]],"settle_between":true}}}),
+            "settle_between needs interval_ms",
         ),
         (
             json!({"mask":{"stroke":{"points":[[0.5,0.5]],"speed":2}}}),

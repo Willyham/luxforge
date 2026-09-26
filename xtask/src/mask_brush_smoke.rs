@@ -172,6 +172,7 @@ fn stroke(name: &str, points: [[f64; 2]; 2], label: &str) -> Step {
             points: Vec::from(points),
             release: true,
             interval_ms: None,
+            settle_between: false,
         },
     )
     .commits(1)

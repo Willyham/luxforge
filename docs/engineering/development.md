@@ -819,6 +819,21 @@ the path, the distribution and the one-minute load average, and marks itself `pr
 8.0 threshold. It exists because the `mask-range` scenario's paint figure is taken on four masked
 colour layers, three of whose masks bind the whole stage, and is therefore not a baseline for the
 gesture; the pairing itself is one function shared with that scenario so the two cannot drift.
+This mode's own paced stroke leaves the step's `settle_between` field unset: it is a controlled,
+dedicated run of one host rather than a smoke scenario sharing it with whatever else is running, so
+`PAINT_INTERVAL_MS` alone stays the measurement's own definition (TASK-018 in
+`tasks/known-bugs.json`).
+
+The `mask-range` scenario's own paced stroke, by contrast, sets `settle_between: true` on its
+`mask` stroke step: the desktop then holds every position after the first until the position before
+it has its own frame on the screen, instead of trusting `STROKE_INTERVAL_MS` alone to outrun the
+render pipeline. On a quiet host this changes nothing the eye would notice — the wait is already
+satisfied by the time the next tick fires — but on a heavily loaded one (TASK-018 recorded failures
+at a one-minute load average of 27 to 48) it stretches the stroke's real time instead of letting a
+later position supersede a drafted frame before it ever reaches the screen, which used to leave the
+scenario's `stroke_latency` check with no pair to measure at all. The check that a fully unpaired
+stroke fails the scenario is unchanged and still fires for a genuinely broken stroke; what changed is
+that a busy host no longer produces one.
 
 On macOS, smoke, hardening, measurement, latency and RAW editor subprocesses always use the same background bundle as `develop --background`, and every one of them that launches the editor passes `--hidden-window`, so the run has neither an activated process nor a window on screen. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation, and with an invisible window they do not include the cost of compositing a visible one either.
 

@@ -425,6 +425,7 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
                 points: vec![at("sky-bottom"), at("foliage")],
                 release: true,
                 interval_ms: None,
+                settle_between: false,
             },
         )
         .commits(1)
@@ -456,6 +457,7 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
                 points: vec![at("foliage"), at("sky-bottom")],
                 release: true,
                 interval_ms: None,
+                settle_between: false,
             },
         )
         .commits(1)
@@ -487,6 +489,16 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         // time, so each is its own input with its own round trip and its own drafted frame. That is
         // the only way an end-to-end figure for a paint gesture exists at all: `editor-latency`
         // drives field-patch sliders, and a stroke is a different gesture.
+        //
+        // `settle_between` is what TASK-018 added: on a heavily loaded host `STROKE_INTERVAL_MS`
+        // alone is not enough — the render can take longer than the interval to reach the screen, so
+        // every later position supersedes the frame before it and the stroke has nothing to pair a
+        // latency to. Setting it holds each tick after the first until the position before it has
+        // actually reached the screen (`Editor::paced_stroke_settled`), so the wall-clock cadence
+        // stretches under load instead of the run losing every frame. `editor-latency --mode paint`
+        // takes the same measurement without this field: it is a controlled, dedicated run rather
+        // than a smoke scenario sharing the host, so `docs/design/masking.md` and
+        // `docs/engineering/development.md` record the choice as scoped to this scenario.
         Step::new(
             "plain-brush",
             MaskStep::Brush(BrushStep {
@@ -507,6 +519,7 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
                 points: paced_path(),
                 release: true,
                 interval_ms: Some(STROKE_INTERVAL_MS),
+                settle_between: true,
             },
         )
         .commits(1)
@@ -730,17 +743,30 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 /// that generation. A gesture holds one round trip at a time, so a set with no answer between it and
 /// the next one is a fault and not a measurement.
 ///
+/// **TASK-018.** The stroke this pairs is painted with `settle_between: true` (see `verify`'s
+/// `paced-stroke` step), so the desktop itself holds every position after the first until the one
+/// before it has reached the screen: a heavily loaded host stretches the stroke's real time rather
+/// than superseding every drafted frame before it can be paired. That leaves the emptiness check
+/// below to catch a genuine fault — a stroke that never puts a single frame on screen at all — rather
+/// than the load-only flakiness it used to catch, so it stays an `ensure` and not a provisional
+/// reading: an empty pairing is a broken stroke, not a busy host.
+///
 /// **What this figure is not.** It is one stroke on one 1.4 MP fixture during a smoke run, not an
 /// `editor-latency` baseline: that harness drives field-patch sliders over the 24 MP and 60 MP
-/// fixtures and a stroke is a different gesture. It is also taken on the **heaviest** recipe this
-/// scenario builds — four masked colour layers, three of them holding a component that reads pixels
-/// and therefore bounds the whole stage — which is recorded beside it, because that is most of what
-/// the number is. The one-minute load average is recorded too, since a figure taken above `8.0` is
-/// provisional by the repository's own rule.
+/// fixtures and a stroke is a different gesture; its own `--mode paint` paced stroke does not set
+/// `settle_between`, because it is a controlled, dedicated run rather than a smoke scenario sharing
+/// the host with whatever else is running, so its measurement definition is left as `STROKE_INTERVAL_MS`
+/// alone. This figure is also taken on the **heaviest** recipe this scenario builds — four masked
+/// colour layers, three of them holding a component that reads pixels and therefore bounds the whole
+/// stage — which is recorded beside it, because that is most of what the number is. The one-minute
+/// load average is recorded too, since a figure taken above `8.0` is provisional by the repository's
+/// own rule.
 fn stroke_latency(root: &Path, events: &[Value], recipe: Value) -> Result<Value> {
     // The pairing itself lives in `editor_latency`, beside the `--mode paint` run that takes the same
     // measurement on a bare recipe at 24 and 60 MP, so the two figures are one definition and not
-    // two implementations that could drift apart.
+    // two implementations that could drift apart. Neither this call nor that function changed for
+    // TASK-018: what changed is that the paced stroke itself no longer races the render pipeline, so
+    // there is always at least one pair to find here unless the stroke is genuinely broken.
     let (queued, mut latencies) = editor_latency::paced_stroke_latencies(events)?;
     ensure(
         !latencies.is_empty(),
@@ -1389,4 +1415,75 @@ fn verify_launch2(launch: &Checked, launch1: &Value) -> Result<Value> {
         "frames": shows,
         "scope": "Mean Rec. 709 luminance of the twelve fixture patches in the displayed photograph, read back from the renderer; every comparison is against the frame before it in the same launch, and none is a colorimetric claim",
     }))
+}
+
+/// TASK-018's own regression coverage over synthetic events: `stroke_latency` must still pass a
+/// stroke every one of whose positions reached the screen, and must still fail one that reached it
+/// for none of them, which is the "broken stroke" the acceptance criteria keep as a real failure
+/// rather than the load-only flakiness the `settle_between` fix removed.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One `mask_draft_set`/`mask_draft_preview`/`preview_displayed` triple per `(set_ms,
+    /// preview_ms, displayed_ms, generation)`, the same shape `paced_stroke_latencies` reads out of
+    /// a run's own `events.jsonl`.
+    fn paired(set_ms: f64, preview_ms: f64, displayed_ms: f64, generation: u64) -> Vec<Value> {
+        vec![
+            json!({"event":"mask_draft_set","elapsed_ms":set_ms}),
+            json!({"event":"mask_draft_preview","elapsed_ms":preview_ms,"detail":{"generation":generation}}),
+            json!({"event":"preview_displayed","elapsed_ms":displayed_ms,"detail":{"generation":generation}}),
+        ]
+    }
+
+    /// A `mask_draft_set`/`mask_draft_preview` pair with no `preview_displayed` at all: the
+    /// generation queued a preview job that never reached the screen, exactly what a heavily loaded
+    /// host used to do to every position before TASK-018.
+    fn superseded(set_ms: f64, preview_ms: f64, generation: u64) -> Vec<Value> {
+        vec![
+            json!({"event":"mask_draft_set","elapsed_ms":set_ms}),
+            json!({"event":"mask_draft_preview","elapsed_ms":preview_ms,"detail":{"generation":generation}}),
+        ]
+    }
+
+    #[test]
+    fn a_settled_stroke_pairs_every_position_and_passes() {
+        // Three positions, each settled before the next was sent (as `settle_between` now
+        // guarantees), so every one of them has its own displayed frame to pair a latency to.
+        let mut events = Vec::new();
+        events.extend(paired(0.0, 4.0, 28.0, 1));
+        events.extend(paired(28.0, 32.0, 56.0, 2));
+        events.extend(paired(56.0, 60.0, 84.0, 3));
+        let root = tempfile::tempdir().expect("a temp scenario root");
+
+        let latency =
+            stroke_latency(root.path(), &events, json!({})).expect("a settled stroke pairs");
+
+        assert_eq!(latency["inputs"], json!(3));
+        assert_eq!(latency["displayed"], json!(3));
+        assert_eq!(
+            latency["samples_ms"].as_array().expect("sample list").len(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_stroke_that_never_reaches_the_screen_still_fails() {
+        // Every position queues a preview job, exactly as a settled one does, but none of their
+        // generations is ever displayed: a genuinely broken stroke, not a busy host, and the
+        // scenario's own guard must still refuse to call it a measurement.
+        let mut events = Vec::new();
+        events.extend(superseded(0.0, 4.0, 1));
+        events.extend(superseded(24.0, 28.0, 2));
+        events.extend(superseded(48.0, 52.0, 3));
+        let root = tempfile::tempdir().expect("a temp scenario root");
+
+        let error = stroke_latency(root.path(), &events, json!({}))
+            .expect_err("a stroke with no displayed frame is not a measurement");
+
+        assert_eq!(
+            error.to_string(),
+            "The run painted no stroke whose drafted frame reached the screen"
+        );
+    }
 }
