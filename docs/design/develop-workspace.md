@@ -18,7 +18,7 @@ Rendered at 1440 × 900 logical points, 2× scale, from the design artboards, re
 
 ![Develop workspace, default state](develop-workspace/default.png)
 
-Every board is also kept as a standalone HTML page, at its design size and with the photograph beside it, under [develop-workspace/html](develop-workspace/html/index.html): open `index.html` for all seven boards laid out as the design canvas arranges them, and any board's own page to inspect it at full scale in a browser. The pages are exported from the design canvas, so they change only when the boards do. The two mask boards predate the shell alignment and still draw the earlier title bar, state panel and status bar.
+Every board is also kept as a standalone HTML page, at its design size and with the photograph beside it, under [develop-workspace/html](develop-workspace/html/index.html): open `index.html` for all seven boards laid out as the design canvas arranges them, and any board's own page to inspect it at full scale in a browser. The pages are exported from the design canvas, so they change only when the boards do.
 
 One render per module, cropped to its panel at 300 pt, is kept under [develop-workspace/modules](develop-workspace/modules): `raw`, `basic`, `presence`, `colour-mixer` (all three tabs), `transforms`, `crop-and-straighten` (drafting, and an idle state the built section does not match), `vignette`, `developer-pixel` and `states` (collapsed, unavailable and later bands). They are the per-section references for the [Module panels](#module-panels) design.
 
