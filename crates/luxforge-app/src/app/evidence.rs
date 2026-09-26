@@ -418,6 +418,8 @@ impl Editor {
                     scale,
                     &self.workspace,
                 );
+                // Where Fit lays the photograph out: the canvas less the Fit padding.
+                let fit = view::canvas::fit_rect_in(canvas, scale);
                 let Some(evidence) = &self.evidence else {
                     return Task::none();
                 };
@@ -439,7 +441,7 @@ impl Editor {
                             ::image::ColorType::Rgba8,
                         )
                         .map_err(|e| e.to_string())?;
-                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns,"canvas_rect":canvas});
+                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns,"canvas_rect":canvas,"fit_rect":fit});
                         std::fs::write(
                             dir.join(format!("state-{number}.json")),
                             serde_json::to_vec_pretty(&frame).expect("frame is serializable"),

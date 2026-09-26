@@ -13,14 +13,14 @@ use luxforge_ui::{MenuChoiceModel, caption, gallery_named_states, menu_choice, t
 const PAGES: [(&str, usize, usize); 10] = [
     ("Sliders and sections", 0, 9),
     ("Actions, history and performance", 9, 23),
-    ("Notices and menus", 23, 29),
-    ("Histogram and typography", 29, 42),
-    ("Rails and number fields", 42, 52),
-    ("Toggles, choices and swatches", 52, 61),
-    ("Colour picker", 61, 64),
-    ("Curve points", 64, 66),
-    ("Curve channels, named vector icons and Basic", 66, 70),
-    ("Module panels", 70, 78),
+    ("Notices, canvas chrome and menus", 23, 32),
+    ("Histogram and typography", 32, 46),
+    ("Rails and number fields", 46, 56),
+    ("Toggles, choices and swatches", 56, 65),
+    ("Colour picker", 65, 68),
+    ("Curve points", 68, 70),
+    ("Curve channels, named vector icons and Basic", 70, 74),
+    ("Module panels", 74, 82),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

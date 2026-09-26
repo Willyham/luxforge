@@ -142,10 +142,10 @@ impl Editor {
         );
         match self.session.preview.view.zoom {
             Zoom::Fit => {
-                let padding = 2.0 * view::canvas::PHOTO_PADDING;
+                let inset = view::canvas::FIT_INSET;
                 bounds_of((
-                    (surface.0 - padding).max(0.0) * self.scale_factor,
-                    (surface.1 - padding).max(0.0) * self.scale_factor,
+                    (surface.0 - inset.0).max(0.0) * self.scale_factor,
+                    (surface.1 - inset.1).max(0.0) * self.scale_factor,
                 ))
             }
             Zoom::Percent { value } => {
@@ -155,7 +155,7 @@ impl Editor {
                     stage,
                     surface,
                     self.scale_factor,
-                    view::canvas::PHOTO_PADDING,
+                    view::canvas::FIT_INSET,
                 )?;
                 // Strictly smaller in both axes, so a proxy is never asked for a frame that would
                 // have to be magnified back up to show the detail the zoom asked for.

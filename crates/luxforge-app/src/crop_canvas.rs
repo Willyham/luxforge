@@ -20,9 +20,9 @@ use iced::{
 };
 use luxforge_core::{BoxRect, Edge};
 
-/// The hit radius of a handle and the drawn size of one, in logical pixels.
+/// The hit radius of a handle in logical pixels: a corner answers inside a 16 pt square, larger than
+/// its drawn 9 pt square, and an edge along its whole length.
 const HIT_RADIUS: f32 = 8.0;
-const HANDLE_SIZE: f32 = 8.0;
 /// How much of the source stays visible outside the crop rectangle.
 const DIM_OPACITY: f32 = 0.35;
 
@@ -203,13 +203,17 @@ impl canvas::Program<Message> for CropCanvas<'_> {
                 Stroke::default().with_color(guides).with_width(1.0),
             );
         }
-        // Eight handles, drawn at the same size whatever the zoom.
-        for point in handle_points(&self.draft.rect) {
+        // Eight handles, drawn at the same size whatever the zoom: a square on each corner and a bar
+        // along each edge at its midpoint, as the crop board draws them.
+        for (point, size) in handle_shapes(&self.draft.rect) {
             let centre = self.view.canvas_point(point.0, point.1);
-            frame.fill_rectangle(
-                Point::new(centre.x - HANDLE_SIZE / 2.0, centre.y - HANDLE_SIZE / 2.0),
-                Size::new(HANDLE_SIZE, HANDLE_SIZE),
-                border,
+            frame.fill(
+                &Path::rounded_rectangle(
+                    Point::new(centre.x - size.width / 2.0, centre.y - size.height / 2.0),
+                    size,
+                    luxforge_ui::theme::CROP_CORNER_RADIUS.into(),
+                ),
+                Color::WHITE,
             );
         }
         if let Some((from, to)) = self.draft.guide_line() {
@@ -262,6 +266,21 @@ fn cursor_for(handle: Handle) -> mouse::Interaction {
         Handle::Move => mouse::Interaction::Move,
         Handle::Guide => mouse::Interaction::Crosshair,
     }
+}
+
+/// Each handle's centre in box pixels and its drawn size in logical pixels: a
+/// [`luxforge_ui::theme::CROP_CORNER`] square on each corner, then a
+/// [`luxforge_ui::theme::CROP_EDGE_LENGTH`] × [`luxforge_ui::theme::CROP_EDGE_THICKNESS`] bar lying
+/// along each edge (left, right, top, bottom) at its midpoint.
+fn handle_shapes(rect: &BoxRect) -> Vec<((f64, f64), Size)> {
+    use luxforge_ui::theme::{CROP_CORNER, CROP_EDGE_LENGTH, CROP_EDGE_THICKNESS};
+    let corner = Size::new(CROP_CORNER, CROP_CORNER);
+    let upright = Size::new(CROP_EDGE_THICKNESS, CROP_EDGE_LENGTH);
+    let lying = Size::new(CROP_EDGE_LENGTH, CROP_EDGE_THICKNESS);
+    let sizes = [corner; 4]
+        .into_iter()
+        .chain([upright, upright, lying, lying]);
+    handle_points(rect).into_iter().zip(sizes).collect()
 }
 
 /// The eight handle positions in box pixels: four corners and four edge midpoints.
@@ -390,5 +409,43 @@ mod tests {
         );
         assert_eq!(cursor_for(Handle::Move), mouse::Interaction::Move);
         assert_eq!(cursor_for(Handle::Guide), mouse::Interaction::Crosshair);
+    }
+
+    /// The board's handles: 9 pt corner squares and 22 × 5 pt bars lying along each edge, and a
+    /// press anywhere on a drawn handle still grabs it.
+    #[test]
+    fn handles_are_corner_squares_and_edge_bars_inside_their_hit_areas() {
+        let rect = BoxRect {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 50.0,
+        };
+        let shapes = handle_shapes(&rect);
+        assert_eq!(shapes.len(), 8);
+        for (_, size) in &shapes[..4] {
+            assert_eq!(*size, Size::new(9.0, 9.0));
+        }
+        // Left and right bars stand upright; top and bottom bars lie flat.
+        assert_eq!(shapes[4], ((10.0, 45.0), Size::new(5.0, 22.0)));
+        assert_eq!(shapes[5], ((110.0, 45.0), Size::new(5.0, 22.0)));
+        assert_eq!(shapes[6], ((60.0, 20.0), Size::new(22.0, 5.0)));
+        assert_eq!(shapes[7], ((60.0, 70.0), Size::new(22.0, 5.0)));
+        // At 100% a logical pixel is a box pixel, so the drawn extents compare directly.
+        let draft = CropDraft::neutral(stage(480, 320, 0.0), 0);
+        let view = CanvasView::percent(100.0, 1.0).expect("a percent view");
+        for ((x, y), size) in handle_shapes(&draft.rect) {
+            for (dx, dy) in [(-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0)] {
+                let point = (
+                    x + dx * f64::from(size.width) / 2.0,
+                    y + dy * f64::from(size.height) / 2.0,
+                );
+                assert_ne!(
+                    draft.hit(point, view.tolerance(HIT_RADIUS)),
+                    Handle::Move,
+                    "the drawn edge of the handle at ({x}, {y}) is outside its hit area"
+                );
+            }
+        }
     }
 }

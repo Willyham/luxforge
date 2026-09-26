@@ -311,16 +311,17 @@ fn the_fit_bounds_are_the_padded_photo_surface_in_physical_pixels() {
     editor.session.workspace.state_panel = true;
     editor.session.workspace.tools_panel = true;
     let surface = state::histogram::photo_surface(editor.window, true, true);
-    let padding = 2.0 * view::canvas::PHOTO_PADDING;
+    let inset = view::canvas::FIT_INSET;
     let bounds = editor
         .proxy_bounds()
         .expect("Fit is bounded by the display");
     assert_eq!(
         (bounds.width, bounds.height),
         (
-            ((surface.0 - padding) * 2.0).round() as u32,
-            ((surface.1 - padding) * 2.0).round() as u32
+            ((surface.0 - inset.0) * 2.0).round() as u32,
+            ((surface.1 - inset.1) * 2.0).round() as u32
         ),
+        "the surface less 20 pt at the top and sides and the strip's 56 pt at the bottom"
     );
     // Collapsing a panel widens the surface, so the next job's bounds widen with it.
     editor.session.workspace.state_panel = false;

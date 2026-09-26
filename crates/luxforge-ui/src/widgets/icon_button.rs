@@ -35,11 +35,15 @@ pub enum Icon {
     ChevronDown,
     ChevronRight,
     Return,
+    // The canvas chrome's icons: the mask mode, the Changed elsewhere spark and the thirds grid.
+    Mask,
+    Spark,
+    Thirds,
 }
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 27] = [
+    pub const NAMED: [(&'static str, Icon); 30] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -67,6 +71,9 @@ impl Icon {
         ("chevron-down", Self::ChevronDown),
         ("chevron-right", Self::ChevronRight),
         ("return", Self::Return),
+        ("mask", Self::Mask),
+        ("spark", Self::Spark),
+        ("thirds", Self::Thirds),
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -427,6 +434,51 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
         }
         Icon::ChevronDown => poly(frame, &CHEVRON_DOWN),
         Icon::ChevronRight => poly(frame, &CHEVRON_RIGHT),
+        // A feathered selection, as the mode boards draw the mask: a dashed ring round a solid dot.
+        Icon::Mask => {
+            const DASHES: usize = 8;
+            let step = std::f32::consts::TAU / DASHES as f32;
+            for dash in 0..DASHES {
+                let start = dash as f32 * step - std::f32::consts::FRAC_PI_2 + step * 0.2;
+                let mut path = canvas::path::Builder::new();
+                path.arc(canvas::path::Arc {
+                    center: p(8.0, 8.0),
+                    radius: 5.8 * s,
+                    start_angle: iced::Radians(start),
+                    end_angle: iced::Radians(start + step * 0.6),
+                });
+                frame.stroke(&path.build(), stroke);
+            }
+            frame.fill(&canvas::Path::circle(p(8.0, 8.0), 2.2 * s), color);
+        }
+        // A four-point spark: each side a curve drawn in towards the centre between two tips.
+        Icon::Spark => {
+            let tips = [(8.0, 1.8), (14.2, 8.0), (8.0, 14.2), (1.8, 8.0)];
+            let bends = [(9.0, 7.0), (9.0, 9.0), (7.0, 9.0), (7.0, 7.0)];
+            let mut path = canvas::path::Builder::new();
+            path.move_to(p(tips[0].0, tips[0].1));
+            for index in 0..tips.len() {
+                let (bend, tip) = (bends[index], tips[(index + 1) % tips.len()]);
+                path.quadratic_curve_to(p(bend.0, bend.1), p(tip.0, tip.1));
+            }
+            path.close();
+            frame.stroke(&path.build(), stroke);
+        }
+        // The thirds overlay: a rounded square cut into three by three.
+        Icon::Thirds => {
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    p(2.0, 2.0),
+                    iced::Size::new(12.0 * s, 12.0 * s),
+                    (2.0 * s).into(),
+                ),
+                stroke,
+            );
+            for at in [6.0, 10.0] {
+                line(frame, (at, 2.0), (at, 14.0));
+                line(frame, (2.0, at), (14.0, at));
+            }
+        }
     }
 }
 

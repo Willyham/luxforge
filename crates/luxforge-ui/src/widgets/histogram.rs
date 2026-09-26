@@ -1,4 +1,4 @@
-//! The histogram plot and the two clipping triangles under it.
+//! The histogram plot and the two clipping triangles inside its bottom corners.
 //!
 //! Like every widget here, this one holds no logic: it is handed three arrays of 256 heights that
 //! are **already normalized** into `0.0..=1.0` against whatever shared scale the caller chose, and
@@ -6,11 +6,11 @@
 //! render identity, so it cannot disagree with the model about what the plot means — and it cannot
 //! normalize one channel differently from another, because it never sees the raw numbers at all.
 
-use crate::{Icon, icon, theme};
+use crate::theme;
 use iced::{
-    Color, Element, Length, Point, Rectangle, Renderer, Size, Theme,
-    alignment::Horizontal,
-    widget::{button, canvas, container, stack, text, text::LineHeight, tooltip},
+    Alignment, Color, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme,
+    alignment::{Horizontal, Vertical},
+    widget::{Space, button, canvas, container, row, stack, text, text::LineHeight, tooltip},
 };
 use std::cell::Cell;
 
@@ -108,36 +108,39 @@ pub fn polygon_points(bins: &[f32; BINS], size: Size) -> Vec<Point> {
     points
 }
 
-/// The plot: three filled, overlapping channel polygons drawn over the panel surface at the design's
-/// fixed height.
+/// The plot: three filled, overlapping channel polygons on the Canvas surface, inside a faint
+/// rounded outline, at the design's fixed height.
 pub fn histogram<'a, M: 'a>(model: &HistogramModel) -> Element<'a, M> {
     container(
         canvas(Plot { model: *model })
             .width(Length::Fill)
             .height(Length::Fill),
     )
+    .padding(theme::BORDER_WIDTH)
     .width(Length::Fill)
     .height(Length::Fixed(theme::HISTOGRAM_HEIGHT))
-    .style(theme::control_surface)
+    .style(theme::histogram_surface)
     .into()
 }
 
-/// The plot as the inspector shows it: [`histogram`], with what it describes stated on hover and,
-/// while there is nothing to plot, `notice` drawn in caption style in the middle of the plot's own
-/// area.
+/// The inspector at the top of the tools panel: the [`histogram`] with the two clipping triangles
+/// inside its bottom corners, `shadow` at the left and `highlight` at the right, and, while there is
+/// nothing to plot, `notice` drawn in caption style in the middle of the plot's own area. It states
+/// no caption of its own, on hover or otherwise.
 ///
-/// Neither changes the plot's size. The notice is a layer over the plot rather than a row under it,
-/// clipped to the plot, so a long reason wraps inside it instead of growing it, and nothing below
-/// the plot moves as a notice comes and goes. The caller decides what either says.
-pub fn described_histogram<'a, M: 'a>(
+/// Nothing here changes the plot's size. The notice and the triangles are layers over the plot
+/// rather than rows under it, and the notice is clipped to the plot, so a long reason wraps inside it
+/// instead of growing it and nothing below the plot moves as a notice comes and goes. The caller
+/// decides what the notice and each triangle's tooltip say.
+pub fn histogram_inspector<'a, M: Clone + 'a>(
     model: &HistogramModel,
-    description: String,
     notice: Option<String>,
+    shadow: (&ClipTriangleModel, Option<M>),
+    highlight: (&ClipTriangleModel, Option<M>),
 ) -> Element<'a, M> {
-    let plot = histogram(model);
-    let content: Element<'a, M> = match notice {
-        Some(notice) => stack![
-            plot,
+    let mut layers: Vec<Element<'a, M>> = vec![histogram(model)];
+    if let Some(notice) = notice {
+        layers.push(
             container(
                 text(notice)
                     .size(theme::SIZE_CAPTION)
@@ -147,24 +150,37 @@ pub fn described_histogram<'a, M: 'a>(
             )
             .center(Length::Fill)
             .padding(theme::SPACING)
-            .clip(true),
-        ]
-        .width(Length::Fill)
-        .into(),
-        None => plot,
-    };
-    tooltip(
-        content,
+            .clip(true)
+            .into(),
+        );
+    }
+    // Each triangle's ink sits CLIP_TRIANGLE_INSET from the plot's side and bottom edges; its
+    // button reaches TRIANGLE_HIT_PAD beyond the ink, so the corner it sits in is what a click hits.
+    let corner = theme::CLIP_TRIANGLE_INSET - TRIANGLE_HIT_PAD;
+    layers.push(
         container(
-            text(description)
-                .size(theme::SIZE_CAPTION)
-                .color(theme::TEXT_PRIMARY),
+            row![
+                clip_triangle(shadow.0, shadow.1),
+                Space::new().width(Length::Fill),
+                clip_triangle(highlight.0, highlight.1),
+            ]
+            .align_y(Alignment::End),
         )
-        .padding(theme::TOOLTIP_PADDING)
-        .style(theme::bar_surface),
-        tooltip::Position::Bottom,
-    )
-    .into()
+        .padding(Padding {
+            top: 0.0,
+            right: corner,
+            bottom: corner,
+            left: corner,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(Vertical::Bottom)
+        .into(),
+    );
+    stack(layers)
+        .width(Length::Fill)
+        .height(Length::Fixed(theme::HISTOGRAM_HEIGHT))
+        .into()
 }
 
 /// The canvas program. It owns a copy of the model (three 256-float arrays, 3 KiB) rather than
@@ -241,11 +257,10 @@ impl<M> canvas::Program<M> for Plot {
     }
 }
 
-/// One clipping triangle: the icon, whether the plot found any pixel at that endpoint, and whether
-/// its overlay is currently drawn.
+/// One clipping triangle: whether the plot found any pixel at that endpoint, and whether its overlay
+/// is currently drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClipTriangleModel {
-    pub icon: Icon,
     /// The rule this triangle follows, stated in full on hover.
     pub tooltip: String,
     /// The colour this endpoint's overlay uses; the icon takes it when `tinted`.
@@ -257,42 +272,53 @@ pub struct ClipTriangleModel {
     pub enabled: bool,
 }
 
-/// The triangle's own square, small enough for the two to sit in the plot's bottom corners.
-const TRIANGLE_SIZE: f32 = 20.0;
+/// How far a triangle's button reaches beyond its ink on every side: the click target, and the chip
+/// an overlay that is on fills.
+const TRIANGLE_HIT_PAD: f32 = 3.0;
 
-/// One clipping triangle with the rule in its tooltip. It publishes `on_press` and nothing else:
-/// which flag that toggles, and what the rule says, are the caller's.
+/// The ink of one clipping triangle: [`theme::CLIP_TRIANGLE_REST`] while its endpoint has no pixels
+/// or it is disabled, and its overlay's own colour once the endpoint has some.
+pub fn triangle_ink(model: &ClipTriangleModel) -> Color {
+    if model.enabled && model.tinted {
+        model.tint
+    } else {
+        theme::CLIP_TRIANGLE_REST
+    }
+}
+
+/// One clipping triangle with the rule in its tooltip: a filled [`theme::CLIP_TRIANGLE_WIDTH`] ×
+/// [`theme::CLIP_TRIANGLE_HEIGHT`] triangle pointing up, in a button reaching [`TRIANGLE_HIT_PAD`]
+/// beyond it. It publishes `on_press` and nothing else: which flag that toggles, and what the rule
+/// says, are the caller's.
 pub fn clip_triangle<'a, M: Clone + 'a>(
     model: &ClipTriangleModel,
     on_press: Option<M>,
 ) -> Element<'a, M> {
     let tint = model.tint;
     let active = model.active;
-    let icon_color = match (model.enabled, model.tinted) {
-        (false, _) => theme::TEXT_TERTIARY,
-        (true, true) => tint,
-        (true, false) => theme::TEXT_TERTIARY,
-    };
-    let control =
-        button(container(icon(model.icon, theme::SIZE_CONTROL, icon_color)).center(Length::Fill))
-            .width(Length::Fixed(TRIANGLE_SIZE))
-            .height(Length::Fixed(TRIANGLE_SIZE))
-            .padding(0.0)
-            .style(move |theme: &Theme, status: button::Status| {
-                let mut style = theme::button_plain(theme, status);
-                if active {
-                    // An overlay that is on reads as a filled chip in its own clipping colour, which is the
-                    // same colour the overlay draws on the photograph.
-                    style.background = Some(iced::Background::Color(Color { a: 0.22, ..tint }));
-                    style.border = iced::Border {
-                        color: tint,
-                        width: theme::BORDER_WIDTH,
-                        radius: theme::RADIUS.into(),
-                    };
-                }
-                style
-            })
-            .on_press_maybe(if model.enabled { on_press } else { None });
+    let mark = canvas(TriangleMark {
+        color: triangle_ink(model),
+    })
+    .width(Length::Fixed(theme::CLIP_TRIANGLE_WIDTH))
+    .height(Length::Fixed(theme::CLIP_TRIANGLE_HEIGHT));
+    let control = button(mark)
+        .padding(TRIANGLE_HIT_PAD)
+        .style(move |theme: &Theme, status: button::Status| {
+            let mut style = theme::button_plain(theme, status);
+            style.border.radius = TRIANGLE_HIT_PAD.into();
+            if active {
+                // An overlay that is on reads as a filled chip in its own clipping colour, which is
+                // the same colour the overlay draws on the photograph.
+                style.background = Some(iced::Background::Color(Color { a: 0.22, ..tint }));
+                style.border = iced::Border {
+                    color: tint,
+                    width: theme::BORDER_WIDTH,
+                    radius: TRIANGLE_HIT_PAD.into(),
+                };
+            }
+            style
+        })
+        .on_press_maybe(if model.enabled { on_press } else { None });
     tooltip(
         control,
         container(
@@ -307,9 +333,83 @@ pub fn clip_triangle<'a, M: Clone + 'a>(
     .into()
 }
 
+/// The three corners of a clipping triangle filling `size`: apex at the top centre, base along the
+/// bottom edge.
+pub fn triangle_points(size: Size) -> [Point; 3] {
+    [
+        Point::new(0.0, size.height),
+        Point::new(size.width / 2.0, 0.0),
+        Point::new(size.width, size.height),
+    ]
+}
+
+/// A clipping triangle's ink. It holds no state and caches nothing: three points, filled.
+struct TriangleMark {
+    color: Color,
+}
+
+impl<M> canvas::Program<M> for TriangleMark {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let [a, b, c] = triangle_points(bounds.size());
+        let mut path = canvas::path::Builder::new();
+        path.move_to(a);
+        path.line_to(b);
+        path.line_to(c);
+        path.close();
+        frame.fill(&path.build(), self.color);
+        vec![frame.into_geometry()]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A triangle is grey until its endpoint has pixels, then its overlay's colour; a disabled one
+    /// stays grey whatever the counts say.
+    #[test]
+    fn a_triangle_takes_its_tint_only_when_its_endpoint_has_pixels() {
+        let model = ClipTriangleModel {
+            tooltip: String::new(),
+            tint: theme::CLIPPING_SHADOW,
+            tinted: false,
+            active: false,
+            enabled: true,
+        };
+        assert_eq!(triangle_ink(&model), theme::CLIP_TRIANGLE_REST);
+        let tinted = ClipTriangleModel {
+            tinted: true,
+            ..model.clone()
+        };
+        assert_eq!(triangle_ink(&tinted), theme::CLIPPING_SHADOW);
+        let disabled = ClipTriangleModel {
+            enabled: false,
+            ..tinted
+        };
+        assert_eq!(triangle_ink(&disabled), theme::CLIP_TRIANGLE_REST);
+        let size = Size::new(theme::CLIP_TRIANGLE_WIDTH, theme::CLIP_TRIANGLE_HEIGHT);
+        assert_eq!(
+            triangle_points(size),
+            [
+                Point::new(0.0, 8.0),
+                Point::new(5.0, 0.0),
+                Point::new(10.0, 8.0)
+            ]
+        );
+        // The button's reach fits inside the corner inset, so the layer's padding that places the
+        // ink CLIP_TRIANGLE_INSET from the plot's edges is never negative.
+        const { assert!(TRIANGLE_HIT_PAD <= theme::CLIP_TRIANGLE_INSET) };
+    }
 
     #[test]
     fn bins_span_the_whole_plot_width_evenly() {

@@ -54,11 +54,11 @@ pub use curve_editor::{
 };
 pub use disclosure_heading::disclosure_heading;
 pub use double_click::double_click;
-pub use floating_bar::floating_bar;
+pub use floating_bar::{DraftBarModel, draft_bar, floating_bar};
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
-    BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle,
-    described_histogram, histogram, polygon_points,
+    BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle, histogram,
+    histogram_inspector, polygon_points, triangle_ink, triangle_points,
 };
 pub use icon_button::{Icon, IconButtonModel, header_icon_button, icon, icon_button};
 pub use inline_menu::inline_menu;
@@ -66,7 +66,7 @@ pub use job_row::{JobRowModel, job_row, job_row_height, progress_fraction};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row};
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
-pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip};
+pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip, tooltip_text};
 pub use notice_card::{NoticeCardModel, Tone, notice_card};
 pub use number_field::{
     NumberFieldModel, ValueEdit, boxed_input, channel_row, label_line, number_field, value_input,

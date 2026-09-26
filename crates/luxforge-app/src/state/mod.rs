@@ -1979,18 +1979,31 @@ mod tests {
         assert_eq!(strip[0].id, POINTER_MODE);
         assert_eq!(strip[0].shortcut.as_deref(), Some("V"));
         assert!(strip[0].selected, "the pointer is the default mode");
+        assert_eq!(strip[0].icon.as_deref(), Some("pointer"));
         // Mask is the host's own takeover mode: a mask is a host object in the recipe, so it is
-        // offered whatever modules are registered and no module declares its canvas.
-        assert_eq!(strip[1].id, luxforge_core::MASK_MODE);
-        assert_eq!(strip[1].label, "Mask");
-        assert_eq!(strip[1].shortcut.as_deref(), Some("M"));
+        // offered whatever modules are registered and no module declares its canvas. It comes
+        // after the modules' modes, as the boards order the strip.
+        let mask = strip.last().expect("the mask mode");
+        assert_eq!(mask.id, luxforge_core::MASK_MODE);
+        assert_eq!(mask.label, "Mask");
+        assert_eq!(mask.shortcut.as_deref(), Some("M"));
+        assert_eq!(mask.icon.as_deref(), Some("mask"));
         let crop = strip
             .iter()
             .find(|mode| mode.id == "luxforge.crop")
             .expect("the crop module declares a canvas mode");
         assert_eq!(crop.label, "Crop", "the descriptor's own canvas title");
         assert_eq!(crop.shortcut.as_deref(), Some("R"));
+        assert_eq!(
+            crop.icon.as_deref(),
+            Some("crop"),
+            "the descriptor's own icon"
+        );
         assert!(crop.enabled);
+        assert_eq!(
+            strip[1].id, crop.id,
+            "the modules' modes follow the pointer"
+        );
         assert_eq!(
             strip.len(),
             3,
@@ -2182,13 +2195,16 @@ mod tests {
         let notice = &scene.derive().canvas.notices[0];
         assert_eq!(notice.title, "Changed elsewhere");
         assert!(notice.body.contains("revision 3"), "{}", notice.body);
+        // The board's card: the accent tone with the spark, and its two actions.
+        assert_eq!(notice.tone, crate::state::canvas::NoticeTone::Warning);
+        assert_eq!(notice.icon, crate::state::canvas::NoticeIcon::Spark);
         assert_eq!(
             notice
                 .actions
                 .iter()
                 .map(|(label, _)| label.as_str())
                 .collect::<Vec<_>>(),
-            ["Discard", "Reapply"]
+            ["Discard draft", "Reapply"]
         );
     }
 

@@ -187,8 +187,9 @@ pub const ICON_SIZE: f32 = 16.0;
 /// Every vector icon's stroke, in points whatever the icon's size, so a 14 pt reset and a 16 pt
 /// mode icon draw the same line.
 pub const ICON_STROKE_WIDTH: f32 = 1.2;
-/// The histogram plot's height at the top of the tools panel, from the Develop workspace layout.
-pub const HISTOGRAM_HEIGHT: f32 = 96.0;
+/// The histogram plot's height at the top of the tools panel, its outline included, as the Develop
+/// workspace boards draw it. The clipping triangles sit inside it; see [`HISTOGRAM_PADDING`].
+pub const HISTOGRAM_HEIGHT: f32 = 88.0;
 
 // -- Module panel density ---------------------------------------------------------------------
 //
@@ -419,6 +420,119 @@ pub const JOB_LABEL_INSET: f32 = 16.0;
 /// Between a job row's detail line and its progress bar, which is a [`RAIL_WIDTH`] rail.
 pub const JOB_PROGRESS_GAP: f32 = 2.0;
 
+// -- Canvas chrome ----------------------------------------------------------------------------
+//
+// The floating chrome over the canvas — the mode strip, the draft bar and the notices — and the
+// photograph's inset at Fit, from the Canvas section of the Develop workspace design as its boards
+// draw them. The tinted colours are sampled from the boards, precomputed opaque over [`BAR`] for the
+// same reason as [`RULE`].
+
+/// How far the floating chrome sits from the canvas edge: the mode strip above the bottom, the draft
+/// bar and the notices below the top.
+pub const CHROME_INSET: f32 = 12.0;
+/// Between the draft bar and a notice stacked under it.
+pub const CHROME_STACK_SPACING: f32 = 8.0;
+/// The draft bar's and a notice's corner radius.
+pub const CHROME_RADIUS: f32 = 9.0;
+/// The outline of the floating chrome: 8% white over [`BAR`].
+pub const CHROME_BORDER: Color = Color::from_rgb8(0x34, 0x34, 0x37);
+/// The soft shadow under the floating chrome, which lifts it off a photograph as the boards draw it.
+pub const CHROME_SHADOW: Shadow = Shadow {
+    color: Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.35,
+    },
+    offset: iced::Vector { x: 0.0, y: 4.0 },
+    blur_radius: 16.0,
+};
+/// The mode strip's padding inside its border, the gap between its tools and its radius.
+pub const STRIP_PADDING: f32 = 3.0;
+pub const STRIP_SPACING: f32 = 2.0;
+pub const STRIP_RADIUS: f32 = 10.0;
+/// One icon-only tool in the mode strip, and its radius.
+pub const STRIP_TOOL_WIDTH: f32 = 34.0;
+pub const STRIP_TOOL_HEIGHT: f32 = 30.0;
+pub const STRIP_TOOL_RADIUS: f32 = 7.0;
+/// A tool's icon at rest; a selected tool's is [`ACCENT`].
+pub const STRIP_ICON: Color = Color::from_rgb8(0xb9, 0xb9, 0xbf);
+/// A selected tool or an overlay that is on: the accent at 16% over [`BAR`].
+pub const STRIP_SELECTED: Color = Color::from_rgb8(0x41, 0x3a, 0x30);
+/// The rule between the modes and the view toggles, 1 × [`STRIP_RULE_HEIGHT`] with
+/// [`STRIP_RULE_MARGIN`] either side: 10% white over [`BAR`].
+pub const STRIP_RULE: Color = Color::from_rgb8(0x39, 0x39, 0x3c);
+pub const STRIP_RULE_HEIGHT: f32 = 16.0;
+pub const STRIP_RULE_MARGIN: f32 = 4.0;
+/// The strip's whole height: a tool, the padding and the border on both sides.
+pub const STRIP_HEIGHT: f32 = STRIP_TOOL_HEIGHT + 2.0 * (STRIP_PADDING + BORDER_WIDTH);
+/// The photograph's inset from the canvas at Fit, at the top and on both sides.
+pub const FIT_INSET: f32 = 20.0;
+/// The photograph's inset from the canvas bottom at Fit: the strip, its inset and a gap, so at Fit
+/// no pixel of the photograph lies under the strip in either orientation.
+pub const FIT_INSET_BOTTOM: f32 = 56.0;
+/// The draft bar's height, padding and the gap between its parts.
+pub const DRAFT_BAR_HEIGHT: f32 = 34.0;
+pub const DRAFT_BAR_PADDING: Padding = Padding {
+    top: 0.0,
+    right: 6.0,
+    bottom: 0.0,
+    left: 12.0,
+};
+pub const DRAFT_BAR_SPACING: f32 = 12.0;
+/// A notice card's width, padding and the gap between its icon, text and actions.
+pub const NOTICE_WIDTH: f32 = 560.0;
+pub const NOTICE_PADDING: Padding = Padding {
+    top: 10.0,
+    right: 10.0,
+    bottom: 10.0,
+    left: 14.0,
+};
+pub const NOTICE_SPACING: f32 = 12.0;
+/// A notice's title and body sizes.
+pub const SIZE_NOTICE_TITLE: f32 = 12.5;
+pub const SIZE_NOTICE_BODY: f32 = 11.5;
+/// A notice's title: a step brighter than [`TEXT_PRIMARY`], as the notice boards set it.
+pub const TEXT_BRIGHT: Color = Color::from_rgb8(0xf0, 0xf0, 0xf2);
+/// A neutral notice's outline: 10% white over [`BAR`], the same as [`STRIP_RULE`].
+pub const NOTICE_BORDER: Color = STRIP_RULE;
+/// A notice that needs a decision: the accent at 35% over [`BAR`].
+pub const NOTICE_WARNING_BORDER: Color = Color::from_rgb8(0x65, 0x55, 0x3d);
+/// A notice that reports a failure: [`CLIPPING_HIGHLIGHT`] over [`BAR`], as the components board
+/// samples it.
+pub const NOTICE_ERROR_BORDER: Color = Color::from_rgb8(0x71, 0x36, 0x34);
+/// The primary button's ink on the accent fill.
+pub const PRIMARY_INK: Color = Color::from_rgb8(0x1a, 0x14, 0x08);
+/// A crop overlay's corner handle, a square with this side and radius centred on the corner.
+pub const CROP_CORNER: f32 = 9.0;
+pub const CROP_CORNER_RADIUS: f32 = 1.0;
+/// A crop overlay's edge handle, a bar this long and thick along the edge at its midpoint.
+pub const CROP_EDGE_LENGTH: f32 = 22.0;
+pub const CROP_EDGE_THICKNESS: f32 = 5.0;
+
+// -- Histogram inspector ----------------------------------------------------------------------
+
+/// Around the histogram plot at the top of the tools panel.
+pub const HISTOGRAM_PADDING: Padding = Padding {
+    top: 10.0,
+    right: 12.0,
+    bottom: 6.0,
+    left: 12.0,
+};
+/// The plot's corner radius.
+pub const HISTOGRAM_RADIUS: f32 = 6.0;
+/// The plot's 1 px outline: 5% white over [`CANVAS`].
+pub const HISTOGRAM_BORDER: Color = Color::from_rgb8(0x24, 0x24, 0x26);
+/// A clipping triangle's size inside the plot, and its inset from the plot's side and bottom.
+pub const CLIP_TRIANGLE_WIDTH: f32 = 10.0;
+pub const CLIP_TRIANGLE_HEIGHT: f32 = 8.0;
+pub const CLIP_TRIANGLE_INSET: f32 = 6.0;
+/// A clipping triangle whose endpoint has no pixels.
+pub const CLIP_TRIANGLE_REST: Color = TEXT_FAINT;
+/// The inspector's whole, unconditional height.
+pub const HISTOGRAM_INSPECTOR_HEIGHT: f32 =
+    HISTOGRAM_PADDING.top + HISTOGRAM_HEIGHT + HISTOGRAM_PADDING.bottom;
+
 /// Builds the dark, custom Luxforge theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
 pub fn theme() -> Theme {
@@ -476,6 +590,56 @@ pub fn warning_surface(_theme: &Theme) -> container::Style {
     })
 }
 
+/// A piece of floating canvas chrome — the mode strip, the draft bar or a notice — on the Bar
+/// surface with `border`, `radius` and the soft [`CHROME_SHADOW`].
+pub fn chrome_surface(border: Color, radius: f32) -> container::Style {
+    surface(BAR)
+        .border(Border {
+            color: border,
+            width: BORDER_WIDTH,
+            radius: radius.into(),
+        })
+        .shadow(CHROME_SHADOW)
+}
+
+/// One tool in the mode strip: transparent at rest, [`CONTROL`] under the pointer and
+/// [`STRIP_SELECTED`] when it is the active mode or an overlay that is on.
+pub fn strip_tool(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = match (selected, status) {
+            (true, _) => Some(Background::Color(STRIP_SELECTED)),
+            (false, button::Status::Hovered | button::Status::Pressed) => {
+                Some(Background::Color(CONTROL))
+            }
+            (false, button::Status::Active | button::Status::Disabled) => None,
+        };
+        button::Style {
+            background,
+            text_color: match (selected, status) {
+                (_, button::Status::Disabled) => TEXT_TERTIARY,
+                (true, _) => ACCENT,
+                (false, _) => STRIP_ICON,
+            },
+            border: Border {
+                radius: STRIP_TOOL_RADIUS.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
+/// The histogram plot: the Canvas surface with its faint outline and rounded corners.
+pub fn histogram_surface(_theme: &Theme) -> container::Style {
+    surface(CANVAS).border(Border {
+        color: HISTOGRAM_BORDER,
+        width: BORDER_WIDTH,
+        radius: HISTOGRAM_RADIUS.into(),
+    })
+}
+
 /// A plain, background-free button: list rows, chips and inline menu items.
 pub fn button_plain(_theme: &Theme, status: button::Status) -> button::Style {
     let background = match status {
@@ -507,7 +671,7 @@ pub fn button_accent(_theme: &Theme, status: button::Status) -> button::Style {
         background: Some(Background::Color(background)),
         text_color: match status {
             button::Status::Disabled => TEXT_TERTIARY,
-            _ => CANVAS,
+            _ => PRIMARY_INK,
         },
         border: Border {
             radius: RADIUS.into(),
@@ -873,7 +1037,7 @@ mod tests {
             assert_ne!(a, b);
         }
         assert!((0.0..1.0).contains(&CHANNEL_ALPHA), "the fills overlap");
-        assert_eq!(HISTOGRAM_HEIGHT, 96.0);
+        assert_eq!(HISTOGRAM_HEIGHT, 88.0);
     }
 
     #[test]
@@ -1078,5 +1242,114 @@ mod tests {
             [[0x4f, 0x9f, 0x60], [0x7d, 0x7f, 0x82], [0xbd, 0x56, 0xb6]]
         );
         assert_eq!(DECORATED_RAIL_OPACITY, 0.85);
+    }
+
+    /// Composites `colour` at `opacity` over `background` in sRGB, as the boards' CSS does, to the
+    /// 8-bit code a board samples.
+    fn composite(colour: Color, background: Color, opacity: f32) -> [u8; 3] {
+        crate::geometry::over(
+            [colour.r, colour.g, colour.b],
+            [background.r, background.g, background.b],
+            opacity,
+        )
+        .map(|channel| (channel * 255.0).round() as u8)
+    }
+
+    fn code(colour: Color) -> [u8; 3] {
+        [colour.r, colour.g, colour.b].map(|channel| (channel * 255.0).round() as u8)
+    }
+
+    /// The canvas chrome's sizes are the boards', and Fit keeps the photograph clear of the strip:
+    /// the bottom inset holds the strip, its own inset and a gap.
+    #[test]
+    fn canvas_chrome_sizes_match_the_boards() {
+        assert_eq!(CHROME_INSET, 12.0);
+        assert_eq!(CHROME_STACK_SPACING, 8.0);
+        assert_eq!(CHROME_RADIUS, 9.0);
+        assert_eq!(
+            (STRIP_PADDING, STRIP_SPACING, STRIP_RADIUS),
+            (3.0, 2.0, 10.0)
+        );
+        assert_eq!((STRIP_TOOL_WIDTH, STRIP_TOOL_HEIGHT), (34.0, 30.0));
+        assert_eq!(STRIP_TOOL_RADIUS, 7.0);
+        assert_eq!((STRIP_RULE_HEIGHT, STRIP_RULE_MARGIN), (16.0, 4.0));
+        assert_eq!(
+            STRIP_HEIGHT, 38.0,
+            "a tool, 3 pt padding and a 1 pt border each side"
+        );
+        assert_eq!((FIT_INSET, FIT_INSET_BOTTOM), (20.0, 56.0));
+        const {
+            assert!(
+                FIT_INSET_BOTTOM >= CHROME_INSET + STRIP_HEIGHT + 2.0 * STRIP_SPACING,
+                "at Fit no photograph pixel lies under the strip"
+            )
+        };
+        assert_eq!(DRAFT_BAR_HEIGHT, 34.0);
+        assert_eq!(
+            (
+                DRAFT_BAR_PADDING.top,
+                DRAFT_BAR_PADDING.right,
+                DRAFT_BAR_PADDING.left
+            ),
+            (0.0, 6.0, 12.0)
+        );
+        assert_eq!(DRAFT_BAR_SPACING, 12.0);
+        assert_eq!(NOTICE_WIDTH, 560.0);
+        assert_eq!(
+            (
+                NOTICE_PADDING.top,
+                NOTICE_PADDING.right,
+                NOTICE_PADDING.bottom,
+                NOTICE_PADDING.left
+            ),
+            (10.0, 10.0, 10.0, 14.0)
+        );
+        assert_eq!(NOTICE_SPACING, 12.0);
+        assert_eq!((SIZE_NOTICE_TITLE, SIZE_NOTICE_BODY), (12.5, 11.5));
+        assert_eq!((CROP_CORNER, CROP_CORNER_RADIUS), (9.0, 1.0));
+        assert_eq!((CROP_EDGE_LENGTH, CROP_EDGE_THICKNESS), (22.0, 5.0));
+    }
+
+    /// The chrome's tints are the boards' samples: each is its CSS alpha composited over the Bar
+    /// surface in sRGB, to within a code of the board.
+    #[test]
+    fn canvas_chrome_tints_are_the_boards_composites() {
+        let white = Color::WHITE;
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1);
+        assert!(near(code(CHROME_BORDER), composite(white, BAR, 0.08)));
+        assert!(near(code(STRIP_RULE), composite(white, BAR, 0.10)));
+        assert!(near(code(STRIP_SELECTED), composite(ACCENT, BAR, 0.16)));
+        assert!(near(
+            code(NOTICE_WARNING_BORDER),
+            composite(ACCENT, BAR, 0.35)
+        ));
+        assert!(near(
+            code(NOTICE_ERROR_BORDER),
+            composite(CLIPPING_HIGHLIGHT, BAR, 0.40)
+        ));
+        assert!(near(code(HISTOGRAM_BORDER), composite(white, CANVAS, 0.05)));
+        assert_eq!(code(STRIP_ICON), [0xb9, 0xb9, 0xbf]);
+        assert_eq!(code(TEXT_BRIGHT), [0xf0, 0xf0, 0xf2]);
+        assert_eq!(code(PRIMARY_INK), [0x1a, 0x14, 0x08]);
+        assert_eq!(code(CLIP_TRIANGLE_REST), [0x55, 0x55, 0x5c]);
+    }
+
+    /// The histogram inspector is the plot and its padding and nothing else, so its height is one
+    /// constant whatever the analysis says.
+    #[test]
+    fn the_histogram_inspector_matches_the_boards() {
+        assert_eq!(
+            (
+                HISTOGRAM_PADDING.top,
+                HISTOGRAM_PADDING.right,
+                HISTOGRAM_PADDING.bottom,
+                HISTOGRAM_PADDING.left
+            ),
+            (10.0, 12.0, 6.0, 12.0)
+        );
+        assert_eq!(HISTOGRAM_RADIUS, 6.0);
+        assert_eq!((CLIP_TRIANGLE_WIDTH, CLIP_TRIANGLE_HEIGHT), (10.0, 8.0));
+        assert_eq!(CLIP_TRIANGLE_INSET, 6.0);
+        assert_eq!(HISTOGRAM_INSPECTOR_HEIGHT, 104.0);
     }
 }
