@@ -242,12 +242,38 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 
     // Back to current, rotated again.
     let current = launch.at("current")?;
+    let label = current["state"]["stack"]["label"].as_str().unwrap_or("");
     ensure(
-        current["state"]["status"]
-            .as_str()
-            .is_some_and(|status| status.starts_with("Current")),
-        "Return to current did not restore the current marker",
+        current["state"]["status"].as_str().is_some_and(|status| {
+            status.starts_with("Returned to entry ")
+                && status.ends_with(&format!(" \u{b7} {label}"))
+        }),
+        format!(
+            "Return to current did not say it returned to the current entry: {}",
+            current["state"]["status"]
+        ),
     )?;
+    // The status bar says what happened in words: no frame's status names the entry, snapshot or
+    // source identity the correlated state carries.
+    for frame in [preview_frame, current] {
+        let status = frame["state"]["status"].as_str().unwrap_or("");
+        let displayed = &frame["state"]["stack"]["displayed"];
+        for identity in [
+            &frame["state"]["stack"]["entry"],
+            &displayed["entry"],
+            &displayed["snapshot"],
+        ] {
+            let identity = identity.as_str().unwrap_or("");
+            ensure(
+                identity.is_empty() || !status.contains(&identity[..identity.len().min(12)]),
+                format!("The status {status:?} names the identity {identity}"),
+            )?;
+        }
+        ensure(
+            !status.contains("snapshot") && !status.contains("source"),
+            format!("The status {status:?} names a snapshot or a source"),
+        )?;
+    }
     record(
         current,
         "returned to the current, rotated state",

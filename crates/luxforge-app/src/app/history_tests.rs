@@ -113,29 +113,24 @@ fn a_historical_preview_names_the_entry_and_keeps_the_panels_visible() {
         reason: None,
         render_ms: Some(3.0),
     };
-    assert!(
-        editor.displayed_status(&upload).starts_with("Current · "),
-        "the current state is not a preview"
-    );
+    // The current state says what last happened, in words: no entry, snapshot or source identity.
+    let current = editor.displayed_status(&upload);
+    assert!(!current.starts_with("Previewing"), "{current}");
+    for identity in [entry_id.as_str(), older.id.as_str(), "snapshot", "source"] {
+        assert!(!current.contains(identity), "{current}");
+    }
 
     editor.session.preview.selection = HistorySelection::Entry(older.id.clone());
-    assert!(
-        editor
-            .displayed_status(&upload)
-            .starts_with("Previewing entry 2 · "),
-        "{}",
-        editor.displayed_status(&upload)
+    assert_eq!(
+        editor.displayed_status(&upload),
+        format!("Previewing entry 2 \u{b7} {}", older.label)
     );
     // An entry the loaded page does not hold is still reported, without inventing a number.
     let unknown = Upload {
         entry_id: luxforge_core::EntryId::new(),
         ..upload
     };
-    assert!(
-        editor
-            .displayed_status(&unknown)
-            .starts_with("Previewing history · ")
-    );
+    assert_eq!(editor.displayed_status(&unknown), "Previewing history");
 
     editor.rederive();
     assert!(

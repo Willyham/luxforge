@@ -107,7 +107,7 @@ pub fn labelled_button<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let ink = match (model.tone, model.enabled) {
         (_, false) => theme::TEXT_TERTIARY,
-        (ButtonTone::Primary, true) => theme::CANVAS,
+        (ButtonTone::Primary, true) => theme::PRIMARY_INK,
         (ButtonTone::Selected, true) => theme::ACCENT,
         (ButtonTone::Control | ButtonTone::Quiet, true) => theme::TEXT_PRIMARY,
     };

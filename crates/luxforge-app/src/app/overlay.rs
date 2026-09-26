@@ -295,7 +295,7 @@ impl Editor {
             source,
             surface,
             self.scale_factor,
-            view::canvas::PHOTO_PADDING,
+            view::canvas::FIT_INSET,
         )?;
         let (cells_w, cells_h) = state::histogram::overlay_cells(source, displayed)?;
         Some(OverlayRequest {
@@ -335,7 +335,7 @@ impl Editor {
             source,
             surface,
             self.scale_factor,
-            view::canvas::PHOTO_PADDING,
+            view::canvas::FIT_INSET,
         )?;
         state::histogram::overlay_cells(source, displayed)
     }

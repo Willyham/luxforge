@@ -7,7 +7,7 @@
 //! an activation or tasks gets the same surface.
 use crate::state::{
     Inputs,
-    canvas::{Notice, NoticeAction, NoticeTone},
+    canvas::{Notice, NoticeAction, NoticeIcon, NoticeTone},
 };
 use luxforge_core::{
     AssetId, EditorState, ModuleDescriptor, ParameterKind,
@@ -1267,6 +1267,7 @@ pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
     }
     Some(Notice {
         tone: NoticeTone::Warning,
+        icon: NoticeIcon::Triangle,
         title: format!("Allow {} to {verb}?", disclosure.module),
         body: lines.join("\n"),
         actions: vec![

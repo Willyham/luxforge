@@ -780,6 +780,7 @@ fn the_hosts_canvas_pick_runs_a_host_query_into_a_host_command() {
             action,
             title,
             shortcut,
+            icon,
         } = pick
         else {
             panic!("a mask's pick is a sample-apply");
@@ -787,6 +788,10 @@ fn the_hosts_canvas_pick_runs_a_host_query_into_a_host_command() {
         assert_eq!(query, commands::SAMPLE_INPUT);
         assert_eq!(action, &format!("mask.add-{kind}-sample"));
         assert!(shortcut.is_none(), "a mask's pick is offered by its panel");
+        assert!(
+            icon.is_none(),
+            "a mask's pick has no mode strip entry to draw"
+        );
         assert!(title.starts_with("Pick"), "{title}");
         // The query declares the two coordinates the pick fills.
         // The query is one of the host descriptor's reads, never one of its actions.

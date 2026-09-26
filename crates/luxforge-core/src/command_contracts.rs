@@ -775,6 +775,7 @@ fn crop_actions_are_discoverable_and_identical_through_actions_and_the_api() {
             "aspect": "aspect",
             "title": "Crop",
             "shortcut": "R",
+            "icon": "crop",
         })
     );
 

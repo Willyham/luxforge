@@ -1,4 +1,4 @@
-//! Ten renderer captures of the full 78-state widget gallery in the real desktop.
+//! Ten renderer captures of the full 86-state widget gallery in the real desktop.
 use crate::{
     scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
@@ -7,7 +7,7 @@ use luxforge_evidence::{self as script};
 
 pub const WINDOW: [&str; 2] = ["1440", "1000"];
 pub const PAGES: usize = 10;
-pub const STATES: usize = 78;
+pub const STATES: usize = 86;
 
 /// The step that shows gallery page `page`.
 fn page_step(page: usize) -> String {

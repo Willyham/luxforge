@@ -35,11 +35,19 @@ pub enum Icon {
     ChevronDown,
     ChevronRight,
     Return,
+    // The canvas chrome's icons: the mask mode, the Changed elsewhere spark and the thirds grid.
+    Mask,
+    Spark,
+    Thirds,
+    // The shell's title bar and status bar.
+    Folder,
+    Compare,
+    Copy,
 }
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 27] = [
+    pub const NAMED: [(&'static str, Icon); 33] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -67,6 +75,13 @@ impl Icon {
         ("chevron-down", Self::ChevronDown),
         ("chevron-right", Self::ChevronRight),
         ("return", Self::Return),
+        ("mask", Self::Mask),
+        ("spark", Self::Spark),
+        ("thirds", Self::Thirds),
+        // The shell's title bar and status bar.
+        ("folder", Self::Folder),
+        ("compare", Self::Compare),
+        ("copy", Self::Copy),
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -93,14 +108,17 @@ pub fn icon<'a, M: 'a>(icon: Icon, size: f32, color: Color) -> Element<'a, M> {
         .into()
 }
 
+/// A [`theme::ICON_BUTTON_SIZE`] square with a [`theme::ICON_SIZE`] icon, as the title bar draws
+/// its actions: secondary ink at rest, faint ink disabled, and accent ink on the accent tint while
+/// selected.
 pub fn icon_button<'a, M: Clone + 'a>(
     model: &IconButtonModel,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let color = if model.enabled {
-        theme::TEXT_PRIMARY
-    } else {
-        theme::TEXT_TERTIARY
+    let color = match (model.enabled, model.selected) {
+        (false, _) => theme::TEXT_FAINT,
+        (true, true) => theme::ACCENT,
+        (true, false) => theme::TEXT_SECONDARY,
     };
     sized_icon_button(
         model,
@@ -271,12 +289,24 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             line(frame, (3.0, 8.0), (13.0, 8.0));
         }
         Icon::Minus => line(frame, (3.0, 8.0), (13.0, 8.0)),
-        Icon::Reset | Icon::RotateLeft | Icon::RotateRight | Icon::Undo | Icon::Redo => {
+        // A return arrow, as the default board draws Undo: a head pointing left, a stroke back
+        // along the top and a half turn down into a short tail, so it never reads as the rotation
+        // a Transforms button performs. Redo is the mirror image.
+        Icon::Undo | Icon::Redo => {
+            let x = |x: f32| if icon == Icon::Redo { 16.0 - x } else { x };
+            poly(frame, &[(x(6.0), 3.0), (x(2.8), 6.2), (x(6.0), 9.4)]);
+            let mut path: Vec<(f32, f32)> = vec![(2.8, 6.2), (9.6, 6.2)];
+            path.extend(arc_points(9.6, 9.3, 3.1, -90.0, 90.0));
+            path.push((6.4, 12.4));
+            let path: Vec<(f32, f32)> = path.into_iter().map(|(px, py)| (x(px), py)).collect();
+            poly(frame, &path);
+        }
+        Icon::Reset | Icon::RotateLeft | Icon::RotateRight => {
             // A circular arrow: an open circle from the top, round through the right and the
             // bottom to the left, with an L-shaped head in the gap at its upper left. The
             // clockwise icons are the mirror image. A quarter turn is the transform itself rather
             // than a header's small reset, so it draws the larger arrow the Transforms row does.
-            let mirror = matches!(icon, Icon::RotateRight | Icon::Redo);
+            let mirror = icon == Icon::RotateRight;
             let turn = matches!(icon, Icon::RotateLeft | Icon::RotateRight);
             let x = |x: f32| if mirror { 16.0 - x } else { x };
             let (arc, head) = if turn {
@@ -417,16 +447,117 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             path.close();
             frame.fill(&path.build(), color);
         }
+        // A rounded window with its left or right panel ruled off, as the default board draws the
+        // two panel toggles.
         Icon::StatePanel | Icon::ToolsPanel => {
             frame.stroke(
-                &canvas::Path::rectangle(p(2.0, 2.0), iced::Size::new(12.0 * s, 12.0 * s)),
+                &canvas::Path::rounded_rectangle(
+                    p(2.2, 3.2),
+                    iced::Size::new(11.6 * s, 9.6 * s),
+                    (2.2 * s).into(),
+                ),
                 stroke,
             );
             let x = if icon == Icon::StatePanel { 6.0 } else { 10.0 };
-            line(frame, (x, 2.0), (x, 14.0));
+            line(frame, (x, 3.2), (x, 12.8));
         }
         Icon::ChevronDown => poly(frame, &CHEVRON_DOWN),
         Icon::ChevronRight => poly(frame, &CHEVRON_RIGHT),
+        // A feathered selection, as the mode boards draw the mask: a dashed ring round a solid dot.
+        Icon::Mask => {
+            const DASHES: usize = 8;
+            let step = std::f32::consts::TAU / DASHES as f32;
+            for dash in 0..DASHES {
+                let start = dash as f32 * step - std::f32::consts::FRAC_PI_2 + step * 0.2;
+                let mut path = canvas::path::Builder::new();
+                path.arc(canvas::path::Arc {
+                    center: p(8.0, 8.0),
+                    radius: 5.8 * s,
+                    start_angle: iced::Radians(start),
+                    end_angle: iced::Radians(start + step * 0.6),
+                });
+                frame.stroke(&path.build(), stroke);
+            }
+            frame.fill(&canvas::Path::circle(p(8.0, 8.0), 2.2 * s), color);
+        }
+        // A four-point spark: each side a curve drawn in towards the centre between two tips.
+        Icon::Spark => {
+            let tips = [(8.0, 1.8), (14.2, 8.0), (8.0, 14.2), (1.8, 8.0)];
+            let bends = [(9.0, 7.0), (9.0, 9.0), (7.0, 9.0), (7.0, 7.0)];
+            let mut path = canvas::path::Builder::new();
+            path.move_to(p(tips[0].0, tips[0].1));
+            for index in 0..tips.len() {
+                let (bend, tip) = (bends[index], tips[(index + 1) % tips.len()]);
+                path.quadratic_curve_to(p(bend.0, bend.1), p(tip.0, tip.1));
+            }
+            path.close();
+            frame.stroke(&path.build(), stroke);
+        }
+        // The thirds overlay: a rounded square cut into three by three.
+        Icon::Thirds => {
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    p(2.0, 2.0),
+                    iced::Size::new(12.0 * s, 12.0 * s),
+                    (2.0 * s).into(),
+                ),
+                stroke,
+            );
+            for at in [6.0, 10.0] {
+                line(frame, (at, 2.0), (at, 14.0));
+                line(frame, (2.0, at), (14.0, at));
+            }
+        }
+        // The shell's title bar and status bar.
+        // A folder: a rounded body with a tab rising at its upper left.
+        Icon::Folder => poly(
+            frame,
+            &[
+                (2.2, 12.6),
+                (2.2, 3.6),
+                (6.0, 3.6),
+                (7.4, 5.2),
+                (13.8, 5.2),
+                (13.8, 12.6),
+                (2.2, 12.6),
+            ],
+        ),
+        // Before and after in one: a ring whose right half is filled.
+        Icon::Compare => {
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 5.6 * s), stroke);
+            let mut half = canvas::path::Builder::new();
+            half.move_to(p(8.0, 2.4));
+            half.arc(canvas::path::Arc {
+                center: p(8.0, 8.0),
+                radius: 5.6 * s,
+                start_angle: iced::Radians(-std::f32::consts::FRAC_PI_2),
+                end_angle: iced::Radians(std::f32::consts::FRAC_PI_2),
+            });
+            half.close();
+            frame.fill(&half.build(), color);
+        }
+        // Two overlapping rounded squares, the front one lower right.
+        Icon::Copy => {
+            let square = |x: f32, y: f32| {
+                canvas::Path::rounded_rectangle(
+                    p(x, y),
+                    iced::Size::new(8.0 * s, 8.0 * s),
+                    (1.6 * s).into(),
+                )
+            };
+            // The back square shows only where the front one leaves it.
+            poly(
+                frame,
+                &[
+                    (5.6, 10.6),
+                    (3.0, 10.6),
+                    (3.0, 3.0),
+                    (10.6, 3.0),
+                    (10.6, 5.6),
+                ],
+            );
+            frame.stroke(&square(5.6, 5.6), stroke);
+        }
     }
 }
 

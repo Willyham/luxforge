@@ -45,6 +45,9 @@ pub(crate) enum SurfaceMode {
 pub(crate) struct ModeEntry {
     pub(crate) id: String,
     pub(crate) label: String,
+    /// The icon's name in the shared icon vocabulary: the host's own for the pointer and Mask, the
+    /// module's declared one for a module's mode. An entry without one shows its label.
+    pub(crate) icon: Option<String>,
     pub(crate) shortcut: Option<String>,
     pub(crate) selected: bool,
     pub(crate) enabled: bool,
@@ -65,11 +68,19 @@ pub(crate) struct DraftBar {
     pub(crate) apply_reason: Option<String>,
 }
 
-/// A notice's tone: whether it needs a decision or only says what happened.
+/// A notice's tone: whether it only says what happened, needs a decision, or reports a failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NoticeTone {
     Neutral,
     Warning,
+    Error,
+}
+
+/// A notice's leading icon: the spark for a change another client made, the triangle for the rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoticeIcon {
+    Spark,
+    Triangle,
 }
 
 /// What a notice's button does. Every one is an existing operation.
@@ -90,6 +101,7 @@ pub(crate) enum NoticeAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Notice {
     pub(crate) tone: NoticeTone,
+    pub(crate) icon: NoticeIcon,
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) actions: Vec<(String, NoticeAction)>,
@@ -145,15 +157,18 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         ModeEntry {
             id: POINTER_MODE.into(),
             label: "Pointer".into(),
+            icon: Some("pointer".into()),
             shortcut: Some("V".into()),
             selected: inputs.session.workspace.mode == POINTER_MODE,
             enabled: true,
         },
         // Mask is a host mode, not a module's: a mask is a host object in the recipe, so no module
-        // declares its canvas and the strip offers it whatever is registered.
+        // declares its canvas and the strip offers it whatever is registered. Its icon is the
+        // host's declaration for the same reason.
         ModeEntry {
             id: MASK_MODE.into(),
             label: "Mask".into(),
+            icon: Some("mask".into()),
             shortcut: Some("M".into()),
             selected: inputs.session.workspace.mode == MASK_MODE,
             enabled: editable,
@@ -169,6 +184,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
                 Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
                     id: module.id.clone(),
                     label: canvas.title().to_owned(),
+                    icon: canvas.icon().map(str::to_owned),
                     shortcut: canvas.shortcut().map(str::to_owned),
                     selected: inputs.session.workspace.mode == module.id,
                     enabled: editable,
@@ -314,6 +330,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
         let revision = inputs.state.map(|state| state.revision);
         notices.push(Notice {
             tone: NoticeTone::Warning,
+            icon: NoticeIcon::Spark,
             title: "Changed elsewhere".into(),
             body: match revision {
                 Some(revision) => format!(
@@ -322,7 +339,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
                 None => "Another client committed while your slider draft was open. Your draft is kept.".into(),
             },
             actions: vec![
-                ("Discard".into(), NoticeAction::DiscardGesture),
+                ("Discard draft".into(), NoticeAction::DiscardGesture),
                 ("Reapply".into(), NoticeAction::ReapplyGesture),
             ],
         });
@@ -331,6 +348,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
         let revision = inputs.state.map(|state| state.revision);
         notices.push(Notice {
             tone: NoticeTone::Warning,
+            icon: NoticeIcon::Spark,
             title: "Changed elsewhere".into(),
             body: match revision {
                 Some(revision) => format!(
@@ -339,7 +357,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
                 None => "Another client committed while your mask gesture was open. Your gesture is kept.".into(),
             },
             actions: vec![
-                ("Discard".into(), NoticeAction::DiscardGesture),
+                ("Discard draft".into(), NoticeAction::DiscardGesture),
                 ("Reapply".into(), NoticeAction::ReapplyGesture),
             ],
         });
@@ -348,6 +366,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
         let revision = inputs.state.map(|state| state.revision);
         notices.push(Notice {
             tone: NoticeTone::Warning,
+            icon: NoticeIcon::Spark,
             title: "Changed elsewhere".into(),
             body: match revision {
                 Some(revision) => format!(
@@ -356,7 +375,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
                 None => "Another client committed while your crop draft was open. Your draft is kept.".into(),
             },
             actions: vec![
-                ("Discard".into(), NoticeAction::DiscardDraft),
+                ("Discard draft".into(), NoticeAction::DiscardDraft),
                 ("Reapply".into(), NoticeAction::ReapplyDraft),
             ],
         });
@@ -364,6 +383,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
     if inputs.draft.is_some() && !inputs.session.preview.can_edit() {
         notices.push(Notice {
             tone: NoticeTone::Neutral,
+            icon: NoticeIcon::Triangle,
             title: "Draft paused".into(),
             body: "A historical state is shown; return to current to keep editing.".into(),
             actions: vec![("Return to current".into(), NoticeAction::ReturnCurrent)],
@@ -381,19 +401,22 @@ fn render_notice(modules: &[ModuleDescriptor], kind: ErrorKind, detail: &str) ->
         // A stack whose provider is missing is reported, never rendered without the effect.
         ErrorKind::Incompatible if detail.starts_with(UNAVAILABLE_EFFECT) => Some(Notice {
             tone: NoticeTone::Neutral,
+            icon: NoticeIcon::Triangle,
             title: "Preview is stale".into(),
             body: unavailable_body(modules, detail),
             actions: Vec::new(),
         }),
         // Locate is a later feature, so this notice names the cause and offers nothing.
         ErrorKind::SourceUnavailable | ErrorKind::FileAccess => Some(Notice {
-            tone: NoticeTone::Warning,
+            tone: NoticeTone::Error,
+            icon: NoticeIcon::Triangle,
             title: "Original not found".into(),
             body: detail.to_owned(),
             actions: Vec::new(),
         }),
         ErrorKind::ResourceLimit => Some(Notice {
-            tone: NoticeTone::Warning,
+            tone: NoticeTone::Error,
+            icon: NoticeIcon::Triangle,
             title: "Rendering limit".into(),
             body: detail.to_owned(),
             actions: Vec::new(),

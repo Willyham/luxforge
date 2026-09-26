@@ -16,25 +16,56 @@ use crate::{
     crop_canvas::{CropCanvas, Mode},
     mask_canvas::{MaskCanvas, Placement},
     state::canvas::{
-        CanvasModel, DraftBar, Notice, NoticeAction, NoticeTone, PhotoView, SurfaceMode, ZoomView,
+        CanvasModel, DraftBar, Notice, NoticeAction, NoticeIcon, NoticeTone, PhotoView,
+        SurfaceMode, ZoomView,
     },
     view::Surfaces,
 };
 use iced::{
-    Alignment, ContentFit, Element, Length, Point, Rectangle, Renderer, Size, Theme,
+    Alignment, ContentFit, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme,
     alignment::{Horizontal, Vertical},
     mouse::Cursor,
     widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, ModeEntry, NoticeCardModel, ToggleEntry, Tone, floating_bar,
-    mode_strip, notice_card, text_button, theme,
+    DraftBarModel, Icon, ModeEntry, NoticeCardModel, ToggleEntry, Tone, draft_bar, mode_strip,
+    notice_card, theme,
 };
 
-/// The surface the photograph is given around it at Fit, from the design's canvas rule.
-pub(crate) const PHOTO_PADDING: f32 = 20.0;
-/// How far the floating bars sit from the canvas edge.
-const BAR_INSET: f32 = 16.0;
+/// The surface the photograph is given around it at Fit, from the design's canvas rule: 20 pt at
+/// the top and sides, and at the bottom room for the mode strip, so at Fit no pixel of the
+/// photograph lies under it in either orientation. Every Fit rectangle — the photograph, its
+/// overlays, the crop frame, the mask handles, the proxy bounds and the evidence's `fit_rect` — is
+/// laid out inside this one padding.
+pub(crate) const FIT_PADDING: Padding = Padding {
+    top: theme::FIT_INSET,
+    right: theme::FIT_INSET,
+    bottom: theme::FIT_INSET_BOTTOM,
+    left: theme::FIT_INSET,
+};
+
+/// [`FIT_PADDING`]'s total horizontal and vertical inset, which is what the Fit arithmetic takes
+/// off the photo surface.
+pub(crate) const FIT_INSET: (f32, f32) = (
+    FIT_PADDING.left + FIT_PADDING.right,
+    FIT_PADDING.top + FIT_PADDING.bottom,
+);
+
+/// The area a photograph is fitted into at Fit inside a canvas region, as `[left, top, right,
+/// bottom]` physical pixels: `canvas` (the region [`crate::view::canvas_rect`] reports) less
+/// [`FIT_PADDING`] at `scale`. Evidence records it so a scenario that checks Fit placement follows
+/// the same constants the layout does.
+pub(crate) fn fit_rect_in(canvas: [u32; 4], scale: f32) -> [u32; 4] {
+    let inset =
+        |edge: u32, by: f32, sign: f32| (edge as f32 + sign * by * scale).round().max(0.0) as u32;
+    let [left, top, right, bottom] = canvas;
+    [
+        inset(left, FIT_PADDING.left, 1.0),
+        inset(top, FIT_PADDING.top, 1.0),
+        inset(right, FIT_PADDING.right, -1.0).max(inset(left, FIT_PADDING.left, 1.0)),
+        inset(bottom, FIT_PADDING.bottom, -1.0).max(inset(top, FIT_PADDING.top, 1.0)),
+    ]
+}
 
 /// The whole canvas region: the photograph, and the floating chrome stacked over it.
 pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a, Message> {
@@ -70,7 +101,7 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
     };
     match model.zoom {
         ZoomView::Fit => container(content)
-            .padding(PHOTO_PADDING)
+            .padding(FIT_PADDING)
             .width(Length::Fill)
             .height(Length::Fill)
             .into(),
@@ -85,6 +116,8 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
         .iter()
         .map(|mode| ModeEntry {
             label: mode.label.clone(),
+            // A name the desktop has no drawing for falls back to the label, as no name does.
+            icon: mode.icon.as_deref().and_then(Icon::from_name),
             shortcut: mode.shortcut.clone(),
             selected: mode.selected,
             enabled: mode.enabled,
@@ -92,6 +125,7 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
         .collect();
     let toggles = [ToggleEntry {
         label: "Thirds".into(),
+        icon: Some(Icon::Thirds),
         shortcut: Some("O".into()),
         on: model.thirds,
     }];
@@ -105,44 +139,41 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
     container(bar)
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding(BAR_INSET)
+        .padding(theme::CHROME_INSET)
         .align_x(Horizontal::Center)
         .align_y(Vertical::Bottom)
         .into()
 }
 
-/// The draft bar and the notices under it, at the top centre of the canvas.
+/// The draft bar and the notices under it, at the top centre of the canvas: the bar first and each
+/// notice under it, [`theme::CHROME_STACK_SPACING`] apart, so neither ever covers the other.
 fn top_chrome<'a>(model: &'a CanvasModel) -> Option<Element<'a, Message>> {
     if model.draft_bar.is_none() && model.notices.is_empty() {
         return None;
     }
     let mut column = Column::new()
-        .spacing(theme::SPACING)
+        .spacing(theme::CHROME_STACK_SPACING)
         .align_x(Alignment::Center);
     if let Some(bar) = &model.draft_bar {
-        column = column.push(draft_bar(bar));
+        column = column.push(draft_bar_view(bar));
     }
     for notice in &model.notices {
         column = column.push(notice_view(notice));
     }
     Some(
-        container(container(column).max_width(560.0))
+        container(column)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(BAR_INSET)
+            .padding(theme::CHROME_INSET)
             .align_x(Horizontal::Center)
             .align_y(Vertical::Top)
             .into(),
     )
 }
 
-fn draft_bar(model: &DraftBar) -> Element<'_, Message> {
-    let mut children: Vec<Element<'_, Message>> = vec![
-        luxforge_ui::title(model.title.clone()),
-        luxforge_ui::caption(model.readout.clone()),
-    ];
+fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
     // The bar belongs to whichever gesture is open; only one ever is.
-    let (cancel, apply_message) = if model.mask {
+    let (cancel, apply) = if model.mask {
         (
             Message::Draft(DraftMessage::Cancel),
             Message::Draft(DraftMessage::Commit),
@@ -153,31 +184,15 @@ fn draft_bar(model: &DraftBar) -> Element<'_, Message> {
             Message::Crop(CropMessage::Apply),
         )
     };
-    children.push(text_button(
-        "Cancel",
-        ButtonTone::Quiet,
-        ButtonSize::Compact,
-        Some(cancel),
-    ));
-    let apply = text_button(
-        "Apply",
-        ButtonTone::Primary,
-        ButtonSize::Compact,
-        model.can_apply.then_some(apply_message),
-    );
-    children.push(match &model.apply_reason {
-        // A refused Apply says why on hover instead of going quiet.
-        Some(reason) => iced::widget::tooltip(
-            apply,
-            container(luxforge_ui::caption(reason.clone()))
-                .padding(theme::TOOLTIP_PADDING)
-                .style(theme::bar_surface),
-            iced::widget::tooltip::Position::Bottom,
-        )
-        .into(),
-        None => apply,
-    });
-    floating_bar(children)
+    draft_bar(
+        &DraftBarModel {
+            title: model.title.clone(),
+            readout: model.readout.clone(),
+            apply_reason: model.apply_reason.clone(),
+        },
+        cancel,
+        model.can_apply.then_some(apply),
+    )
 }
 
 fn notice_view(notice: &Notice) -> Element<'_, Message> {
@@ -205,11 +220,16 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
         .collect();
     notice_card(
         &NoticeCardModel {
+            icon: match notice.icon {
+                NoticeIcon::Spark => Icon::Spark,
+                NoticeIcon::Triangle => Icon::Clipping,
+            },
             title: notice.title.clone(),
             body: notice.body.clone(),
             tone: match notice.tone {
                 NoticeTone::Neutral => Tone::Neutral,
                 NoticeTone::Warning => Tone::Warning,
+                NoticeTone::Error => Tone::Error,
             },
         },
         actions,
@@ -231,7 +251,7 @@ fn thirds<'a>(model: &'a CanvasModel) -> Option<Element<'a, Message>> {
                 .width(Length::Fill)
                 .height(Length::Fill),
         )
-        .padding(PHOTO_PADDING)
+        .padding(FIT_PADDING)
         .width(Length::Fill)
         .height(Length::Fill)
         .into(),
@@ -702,6 +722,50 @@ mod tests {
         assert_eq!(percent_pick(image, scale, Point::new(400.0, 0.0)), None);
         assert_eq!(percent_pick(image, scale, Point::new(-0.5, 0.0)), None);
         assert_eq!(percent_pick(image, 0.0, Point::new(1.0, 1.0)), None);
+    }
+
+    /// At Fit the photograph is laid out inside the Fit padding, and the bottom inset holds the
+    /// floating strip: in either orientation, at the design's 1440 × 900 with both panels open or
+    /// neither, no photograph pixel lies under the strip.
+    #[test]
+    fn fit_keeps_every_photograph_clear_of_the_mode_strip() {
+        assert_eq!(
+            (
+                FIT_PADDING.top,
+                FIT_PADDING.right,
+                FIT_PADDING.bottom,
+                FIT_PADDING.left
+            ),
+            (20.0, 20.0, 56.0, 20.0)
+        );
+        for panels in [true, false] {
+            let surface = crate::state::histogram::photo_surface((1440.0, 900.0), panels, panels);
+            let available = Size::new(surface.0 - FIT_INSET.0, surface.1 - FIT_INSET.1);
+            let strip_top = surface.1 - theme::CHROME_INSET - theme::STRIP_HEIGHT;
+            for image in [
+                (480, 320),
+                (320, 480),
+                (3389, 4236),
+                (6000, 4000),
+                (100, 1000),
+            ] {
+                let rect = fit_rect(image, available).expect("a drawn rectangle");
+                let bottom = FIT_PADDING.top + rect.y + rect.height;
+                assert!(
+                    bottom <= strip_top,
+                    "{image:?}: the photograph ends at {bottom}, the strip starts at {strip_top}"
+                );
+                assert!(FIT_PADDING.top + rect.y >= FIT_PADDING.top);
+            }
+        }
+        // The evidence's Fit rectangle is the canvas less the same padding, in physical pixels.
+        assert_eq!(
+            fit_rect_in([482, 90, 2398, 1746], 2.0),
+            [522, 130, 2358, 1634]
+        );
+        // A canvas too small for the padding collapses to an empty rectangle, never an inverted one.
+        let tiny = fit_rect_in([10, 10, 30, 30], 2.0);
+        assert!(tiny[2] >= tiny[0] && tiny[3] >= tiny[1], "{tiny:?}");
     }
 
     #[test]

@@ -10,7 +10,6 @@ use crate::{
         evidence::Settle,
         gesture::{Kind, Starting},
         message::{CropMessage, CropPointer, Message},
-        preview::short,
         tasks::{Refresh, crop_preview_task, mutation},
     },
     crop_draft::{ANGLE_RAIL_STEP, CropDraft, Modifiers as DraftModifiers},
@@ -662,8 +661,9 @@ impl Editor {
                 }
             };
         };
-        let (entry, revision) = (
+        let (entry, sequence, revision) = (
             refresh.state.current_entry.id.clone(),
+            refresh.state.current_entry.sequence,
             refresh.state.revision,
         );
         let request_id = refresh.request.clone();
@@ -672,7 +672,7 @@ impl Editor {
             "crop_draft_applied",
             json!({"request_id":request_id,"entry_id":entry.as_str(),"revision":revision,"draft":summary}),
         );
-        self.status = format!("Crop applied · entry {}", short(entry.as_str()));
+        self.status = format!("Crop applied \u{b7} entry {sequence}");
         Task::none()
     }
 

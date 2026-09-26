@@ -180,15 +180,16 @@ pub const BORDER_WIDTH: f32 = 1.0;
 /// note). A value with a word unit, such as `+0.35 EV`, may run past the box's left edge rather
 /// than wrap, so the right edge, where the units digit sits, never moves.
 pub const VALUE_WIDTH: f32 = 48.0;
-/// A square icon button: mode strip entries, title-bar actions, context toggles.
-pub const ICON_BUTTON_SIZE: f32 = 28.0;
+/// A square icon button: title-bar actions and context toggles.
+pub const ICON_BUTTON_SIZE: f32 = 26.0;
 /// The icon inside an [`ICON_BUTTON_SIZE`] button.
 pub const ICON_SIZE: f32 = 16.0;
 /// Every vector icon's stroke, in points whatever the icon's size, so a 14 pt reset and a 16 pt
 /// mode icon draw the same line.
 pub const ICON_STROKE_WIDTH: f32 = 1.2;
-/// The histogram plot's height at the top of the tools panel, from the Develop workspace layout.
-pub const HISTOGRAM_HEIGHT: f32 = 96.0;
+/// The histogram plot's height at the top of the tools panel, its outline included, as the Develop
+/// workspace boards draw it. The clipping triangles sit inside it; see [`HISTOGRAM_PADDING`].
+pub const HISTOGRAM_HEIGHT: f32 = 88.0;
 
 // -- Module panel density ---------------------------------------------------------------------
 //
@@ -419,6 +420,184 @@ pub const JOB_LABEL_INSET: f32 = 16.0;
 /// Between a job row's detail line and its progress bar, which is a [`RAIL_WIDTH`] rail.
 pub const JOB_PROGRESS_GAP: f32 = 2.0;
 
+// -- Canvas chrome ----------------------------------------------------------------------------
+//
+// The floating chrome over the canvas — the mode strip, the draft bar and the notices — and the
+// photograph's inset at Fit, from the Canvas section of the Develop workspace design as its boards
+// draw them. The tinted colours are sampled from the boards, precomputed opaque over [`BAR`] for the
+// same reason as [`RULE`].
+
+/// How far the floating chrome sits from the canvas edge: the mode strip above the bottom, the draft
+/// bar and the notices below the top.
+pub const CHROME_INSET: f32 = 12.0;
+/// Between the draft bar and a notice stacked under it.
+pub const CHROME_STACK_SPACING: f32 = 8.0;
+/// The draft bar's and a notice's corner radius.
+pub const CHROME_RADIUS: f32 = 9.0;
+/// The outline of the floating chrome: 8% white over [`BAR`].
+pub const CHROME_BORDER: Color = Color::from_rgb8(0x34, 0x34, 0x37);
+/// The soft shadow under the floating chrome, which lifts it off a photograph as the boards draw it.
+pub const CHROME_SHADOW: Shadow = Shadow {
+    color: Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.35,
+    },
+    offset: iced::Vector { x: 0.0, y: 4.0 },
+    blur_radius: 16.0,
+};
+/// The mode strip's padding inside its border, the gap between its tools and its radius.
+pub const STRIP_PADDING: f32 = 3.0;
+pub const STRIP_SPACING: f32 = 2.0;
+pub const STRIP_RADIUS: f32 = 10.0;
+/// One icon-only tool in the mode strip, and its radius.
+pub const STRIP_TOOL_WIDTH: f32 = 34.0;
+pub const STRIP_TOOL_HEIGHT: f32 = 30.0;
+pub const STRIP_TOOL_RADIUS: f32 = 7.0;
+/// A tool's icon at rest; a selected tool's is [`ACCENT`].
+pub const STRIP_ICON: Color = Color::from_rgb8(0xb9, 0xb9, 0xbf);
+/// A selected tool or an overlay that is on: the accent at 16% over [`BAR`].
+pub const STRIP_SELECTED: Color = Color::from_rgb8(0x41, 0x3a, 0x30);
+/// The rule between the modes and the view toggles, 1 × [`STRIP_RULE_HEIGHT`] with
+/// [`STRIP_RULE_MARGIN`] either side, and the title bar's rule before the panel toggles: 10% white
+/// over [`BAR`].
+pub const STRIP_RULE: Color = Color::from_rgb8(0x39, 0x39, 0x3c);
+pub const STRIP_RULE_HEIGHT: f32 = 16.0;
+pub const STRIP_RULE_MARGIN: f32 = 4.0;
+/// The strip's whole height: a tool, the padding and the border on both sides.
+pub const STRIP_HEIGHT: f32 = STRIP_TOOL_HEIGHT + 2.0 * (STRIP_PADDING + BORDER_WIDTH);
+/// The photograph's inset from the canvas at Fit, at the top and on both sides.
+pub const FIT_INSET: f32 = 20.0;
+/// The photograph's inset from the canvas bottom at Fit: the strip, its inset and a gap, so at Fit
+/// no pixel of the photograph lies under the strip in either orientation.
+pub const FIT_INSET_BOTTOM: f32 = 56.0;
+/// The draft bar's height, padding and the gap between its parts.
+pub const DRAFT_BAR_HEIGHT: f32 = 34.0;
+pub const DRAFT_BAR_PADDING: Padding = Padding {
+    top: 0.0,
+    right: 6.0,
+    bottom: 0.0,
+    left: 12.0,
+};
+pub const DRAFT_BAR_SPACING: f32 = 12.0;
+/// A notice card's width, padding and the gap between its icon, text and actions.
+pub const NOTICE_WIDTH: f32 = 560.0;
+pub const NOTICE_PADDING: Padding = Padding {
+    top: 10.0,
+    right: 10.0,
+    bottom: 10.0,
+    left: 14.0,
+};
+pub const NOTICE_SPACING: f32 = 12.0;
+/// A notice's title and body sizes.
+pub const SIZE_NOTICE_TITLE: f32 = 12.5;
+pub const SIZE_NOTICE_BODY: f32 = 11.5;
+/// A step brighter than [`TEXT_PRIMARY`]: a notice's title and the title bar's file name, as the
+/// boards set them.
+pub const TEXT_BRIGHT: Color = Color::from_rgb8(0xf0, 0xf0, 0xf2);
+/// A neutral notice's outline: 10% white over [`BAR`], the same as [`STRIP_RULE`].
+pub const NOTICE_BORDER: Color = STRIP_RULE;
+/// A notice that needs a decision: the accent at 35% over [`BAR`].
+pub const NOTICE_WARNING_BORDER: Color = Color::from_rgb8(0x65, 0x55, 0x3d);
+/// A notice that reports a failure: [`CLIPPING_HIGHLIGHT`] over [`BAR`], as the components board
+/// samples it.
+pub const NOTICE_ERROR_BORDER: Color = Color::from_rgb8(0x71, 0x36, 0x34);
+/// The primary button's ink on the accent fill.
+pub const PRIMARY_INK: Color = Color::from_rgb8(0x1a, 0x14, 0x08);
+/// A crop overlay's corner handle, a square with this side and radius centred on the corner.
+pub const CROP_CORNER: f32 = 9.0;
+pub const CROP_CORNER_RADIUS: f32 = 1.0;
+/// A crop overlay's edge handle, a bar this long and thick along the edge at its midpoint.
+pub const CROP_EDGE_LENGTH: f32 = 22.0;
+pub const CROP_EDGE_THICKNESS: f32 = 5.0;
+
+// -- Histogram inspector ----------------------------------------------------------------------
+
+/// Around the histogram plot at the top of the tools panel.
+pub const HISTOGRAM_PADDING: Padding = Padding {
+    top: 10.0,
+    right: 12.0,
+    bottom: 6.0,
+    left: 12.0,
+};
+/// The plot's corner radius.
+pub const HISTOGRAM_RADIUS: f32 = 6.0;
+/// The plot's 1 px outline: 5% white over [`CANVAS`].
+pub const HISTOGRAM_BORDER: Color = Color::from_rgb8(0x24, 0x24, 0x26);
+/// A clipping triangle's size inside the plot, and its inset from the plot's side and bottom.
+pub const CLIP_TRIANGLE_WIDTH: f32 = 10.0;
+pub const CLIP_TRIANGLE_HEIGHT: f32 = 8.0;
+pub const CLIP_TRIANGLE_INSET: f32 = 6.0;
+/// A clipping triangle whose endpoint has no pixels.
+pub const CLIP_TRIANGLE_REST: Color = TEXT_FAINT;
+/// The inspector's whole, unconditional height.
+pub const HISTOGRAM_INSPECTOR_HEIGHT: f32 =
+    HISTOGRAM_PADDING.top + HISTOGRAM_HEIGHT + HISTOGRAM_PADDING.bottom;
+
+// -- Shell ----------------------------------------------------------------------------------------
+//
+// The title bar, the state panel and the status bar around the canvas and the tools panel, from
+// the default board of the Develop workspace design. Every translucent fill the board draws is
+// stored opaque, composited over the surface it sits on, for the reason [`RULE`] gives.
+
+/// The rules between the shell's regions: [`BORDER`], 6% white, as the default board composites it
+/// over the Bar surface, which is the module band's border.
+pub const DIVIDER: Color = BAND_BORDER;
+/// The dimensions, format and colour space after the file name.
+pub const TEXT_IDENTITY: Color = Color::from_rgb8(0x8a, 0x8a, 0x90);
+/// The current history row's label.
+pub const TEXT_CURRENT_ROW: Color = Color::from_rgb8(0xf2, 0xf2, 0xf4);
+/// The dimensions line's size, between a caption and control text.
+pub const SIZE_IDENTITY: f32 = 11.5;
+/// A title-bar icon button's fill under the pointer: 6% white over the Bar surface.
+pub const ICON_HOVER: Color = Color::from_rgb8(0x30, 0x30, 0x33);
+/// A selected icon button's fill: [`ACCENT`] at 14% over the Bar surface.
+pub const ICON_SELECTED_FILL: Color = Color::from_rgb8(0x3e, 0x37, 0x2f);
+/// The toolbar rule's height and the margin on either side of it.
+pub const TOOLBAR_RULE_HEIGHT: f32 = 16.0;
+pub const TOOLBAR_RULE_MARGIN: f32 = 6.0;
+/// Between the title bar's groups of controls: the identity, the view controls.
+pub const TITLE_GROUP_SPACING: f32 = 10.0;
+/// Between the title bar's trailing actions.
+pub const TITLE_ACTION_SPACING: f32 = 4.0;
+/// The title bar's padding at its trailing edge, and at its leading edge where the window keeps its
+/// native frame.
+pub const TITLE_BAR_INSET: f32 = 12.0;
+/// A segmented control's track and its selected segment: the tab row's greys.
+pub const SEGMENT_TRACK: Color = TAB_TRACK;
+pub const SEGMENT_SELECTED: Color = TAB_SELECTED;
+/// A segment's height, its label's horizontal padding, and the track's inset and gap around and
+/// between segments.
+pub const SEGMENT_HEIGHT: f32 = 24.0;
+pub const SEGMENT_PADDING: f32 = 10.0;
+pub const SEGMENT_INSET: f32 = 2.0;
+/// The track's corner radius; a segment inside it is [`RADIUS`] less its inset, so the two
+/// curves stay concentric.
+pub const SEGMENT_RADIUS: f32 = 7.0;
+/// The state panel's padding: above its first section and below its last, and at its sides. A row
+/// adds its own [`SPACING`] inside, so text sits 16 pt from the panel's edge.
+pub const PANEL_PADDING_Y: f32 = 12.0;
+pub const PANEL_PADDING_X: f32 = 8.0;
+/// Between the state panel's sections.
+pub const PANEL_SECTION_SPACING: f32 = 12.0;
+/// A panel section's heading row: its capitalised label, and a caption or button at its right.
+pub const PANEL_HEADING_HEIGHT: f32 = 22.0;
+/// Between a panel heading and the chips under it, and between two chips.
+pub const VERSION_CHIP_SPACING: f32 = 6.0;
+/// A version chip: smaller than a ratio chip, its label at caption size.
+pub const VERSION_CHIP_HEIGHT: f32 = 16.0;
+pub const VERSION_CHIP_PADDING: f32 = 7.0;
+pub const VERSION_CHIP_RADIUS: f32 = 4.0;
+/// A list row's corner radius.
+pub const LIST_ROW_RADIUS: f32 = 5.0;
+/// The status bar's text and the spacing between its trailing facts.
+pub const STATUS_SPACING: f32 = 8.0;
+pub const STATUS_FACT_SPACING: f32 = 12.0;
+/// The dot beside the connected-agents count, and its colour while any other client is connected.
+pub const STATUS_DOT_SIZE: f32 = 6.0;
+pub const AGENT_CONNECTED: Color = Color::from_rgb8(0x57, 0xb5, 0x6b);
+
 /// Builds the dark, custom Luxforge theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
 pub fn theme() -> Theme {
@@ -457,7 +636,17 @@ pub fn panel_surface(_theme: &Theme) -> container::Style {
     surface(PANEL)
 }
 
-/// A floating bar, notice or title bar: bordered, rounded.
+/// The title bar: the Bar surface, flat, its rule drawn under it by the shell.
+pub fn title_bar_surface(_theme: &Theme) -> container::Style {
+    surface(BAR)
+}
+
+/// A rule between the shell's regions: [`DIVIDER`], opaque.
+pub fn divider_surface(_theme: &Theme) -> container::Style {
+    surface(DIVIDER)
+}
+
+/// A floating bar or notice: bordered, rounded.
 pub fn bar_surface(_theme: &Theme) -> container::Style {
     bordered_surface(BAR)
 }
@@ -473,6 +662,56 @@ pub fn warning_surface(_theme: &Theme) -> container::Style {
         color: ACCENT,
         width: BORDER_WIDTH,
         radius: RADIUS.into(),
+    })
+}
+
+/// A piece of floating canvas chrome — the mode strip, the draft bar or a notice — on the Bar
+/// surface with `border`, `radius` and the soft [`CHROME_SHADOW`].
+pub fn chrome_surface(border: Color, radius: f32) -> container::Style {
+    surface(BAR)
+        .border(Border {
+            color: border,
+            width: BORDER_WIDTH,
+            radius: radius.into(),
+        })
+        .shadow(CHROME_SHADOW)
+}
+
+/// One tool in the mode strip: transparent at rest, [`CONTROL`] under the pointer and
+/// [`STRIP_SELECTED`] when it is the active mode or an overlay that is on.
+pub fn strip_tool(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = match (selected, status) {
+            (true, _) => Some(Background::Color(STRIP_SELECTED)),
+            (false, button::Status::Hovered | button::Status::Pressed) => {
+                Some(Background::Color(CONTROL))
+            }
+            (false, button::Status::Active | button::Status::Disabled) => None,
+        };
+        button::Style {
+            background,
+            text_color: match (selected, status) {
+                (_, button::Status::Disabled) => TEXT_TERTIARY,
+                (true, _) => ACCENT,
+                (false, _) => STRIP_ICON,
+            },
+            border: Border {
+                radius: STRIP_TOOL_RADIUS.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
+/// The histogram plot: the Canvas surface with its faint outline and rounded corners.
+pub fn histogram_surface(_theme: &Theme) -> container::Style {
+    surface(CANVAS).border(Border {
+        color: HISTOGRAM_BORDER,
+        width: BORDER_WIDTH,
+        radius: HISTOGRAM_RADIUS.into(),
     })
 }
 
@@ -507,7 +746,7 @@ pub fn button_accent(_theme: &Theme, status: button::Status) -> button::Style {
         background: Some(Background::Color(background)),
         text_color: match status {
             button::Status::Disabled => TEXT_TERTIARY,
-            _ => CANVAS,
+            _ => PRIMARY_INK,
         },
         border: Border {
             radius: RADIUS.into(),
@@ -519,13 +758,49 @@ pub fn button_accent(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// A square icon-glyph button: mode strip entries, header actions, context toggles.
+/// A square icon-glyph button: mode strip entries, header actions, context toggles. No surface at
+/// rest, [`ICON_HOVER`] under the pointer.
 pub fn button_icon(_theme: &Theme, status: button::Status) -> button::Style {
-    button_plain(_theme, status)
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => Some(Background::Color(ICON_HOVER)),
+        button::Status::Active | button::Status::Disabled => None,
+    };
+    button::Style {
+        background,
+        text_color: text_color_for(status),
+        border: Border {
+            radius: RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
 }
 
-/// A selected icon button or chip: tinted with the accent.
+/// A selected icon button: [`ICON_SELECTED_FILL`] behind accent ink, with no outline, as the
+/// default board draws the open panels' toggles.
 pub fn button_selected(_theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(ICON_SELECTED_FILL)),
+        text_color: if matches!(status, button::Status::Disabled) {
+            TEXT_TERTIARY
+        } else {
+            ACCENT
+        },
+        border: Border {
+            radius: RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// An open colour swatch. The swatch fills its button, so a fill behind it would not show: the
+/// open state is the accent outline around it.
+pub fn swatch_open(_theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(Background::Color(Color { a: 0.18, ..ACCENT })),
         text_color: if matches!(status, button::Status::Disabled) {
@@ -540,6 +815,45 @@ pub fn button_selected(_theme: &Theme, status: button::Status) -> button::Style 
         },
         shadow: Shadow::default(),
         snap: false,
+    }
+}
+
+/// A segmented control's track: [`SEGMENT_TRACK`], its segments inset by [`SEGMENT_INSET`].
+pub fn segment_track(_theme: &Theme) -> container::Style {
+    surface(SEGMENT_TRACK).border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: SEGMENT_RADIUS.into(),
+    })
+}
+
+/// One segment. The selected one is raised on [`SEGMENT_SELECTED`] in [`TEXT_BRIGHT`] and never
+/// takes the accent, because it states a view rather than an edit; the others are bare, in
+/// secondary text.
+pub fn segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = match (selected, status) {
+            (true, _) => Some(Background::Color(SEGMENT_SELECTED)),
+            (false, button::Status::Hovered | button::Status::Pressed) => {
+                Some(Background::Color(CONTROL))
+            }
+            (false, _) => None,
+        };
+        button::Style {
+            background,
+            text_color: match (selected, status) {
+                (_, button::Status::Disabled) => TEXT_TERTIARY,
+                (true, _) => TEXT_BRIGHT,
+                (false, _) => TEXT_SECONDARY,
+            },
+            border: Border {
+                radius: (SEGMENT_RADIUS - SEGMENT_INSET).into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
     }
 }
 
@@ -678,9 +992,9 @@ pub fn button_control(_theme: &Theme, status: button::Status) -> button::Style {
 pub fn list_row_current(_theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(Background::Color(LIST_ROW_CURRENT)),
-        text_color: TEXT_PRIMARY,
+        text_color: TEXT_CURRENT_ROW,
         border: Border {
-            radius: RADIUS.into(),
+            radius: LIST_ROW_RADIUS.into(),
             width: 0.0,
             color: Color::TRANSPARENT,
         },
@@ -873,7 +1187,7 @@ mod tests {
             assert_ne!(a, b);
         }
         assert!((0.0..1.0).contains(&CHANNEL_ALPHA), "the fills overlap");
-        assert_eq!(HISTOGRAM_HEIGHT, 96.0);
+        assert_eq!(HISTOGRAM_HEIGHT, 88.0);
     }
 
     #[test]
@@ -1031,6 +1345,99 @@ mod tests {
         );
     }
 
+    /// The shell's translucent fills are the default board's alphas composited over the Bar
+    /// surface, stored opaque; its sizes are the board's.
+    #[test]
+    fn shell_tokens_match_the_default_board() {
+        let over_bar = |colour: Color, alpha: f32| {
+            let [r, g, b] =
+                crate::geometry::over([colour.r, colour.g, colour.b], [BAR.r, BAR.g, BAR.b], alpha)
+                    .map(|channel| (channel * 255.0).round() as u8);
+            Color::from_rgb8(r, g, b)
+        };
+        // The rules are sampled from the board, where the 6% border lands a code under white over
+        // the Bar; they are the module band's border.
+        assert_eq!(DIVIDER, BAND_BORDER);
+        assert_eq!(ICON_HOVER, over_bar(Color::WHITE, 0.06));
+        assert_eq!(STRIP_RULE, over_bar(Color::WHITE, 0.10));
+        // Sampled from the board's selected panel toggles, whose blue lands a code under the exact
+        // composite.
+        assert_eq!(ICON_SELECTED_FILL, Color::from_rgb8(62, 55, 47));
+        let composite = over_bar(ACCENT, 0.14);
+        for (sampled, exact) in [
+            (ICON_SELECTED_FILL.r, composite.r),
+            (ICON_SELECTED_FILL.g, composite.g),
+            (ICON_SELECTED_FILL.b, composite.b),
+        ] {
+            assert!((sampled - exact).abs() <= 1.0 / 255.0 + f32::EPSILON);
+        }
+        assert_eq!(TEXT_IDENTITY, Color::from_rgb8(0x8a, 0x8a, 0x90));
+        assert_eq!(TEXT_CURRENT_ROW, Color::from_rgb8(0xf2, 0xf2, 0xf4));
+        assert_eq!(AGENT_CONNECTED, Color::from_rgb8(0x57, 0xb5, 0x6b));
+        assert_eq!((SEGMENT_TRACK, SEGMENT_SELECTED), (TAB_TRACK, TAB_SELECTED));
+        assert_eq!(SEGMENT_TRACK, Color::from_rgb8(0x28, 0x28, 0x2c));
+        assert_eq!(SEGMENT_SELECTED, Color::from_rgb8(0x3b, 0x3b, 0x41));
+        assert_eq!((ICON_BUTTON_SIZE, ICON_SIZE), (26.0, 16.0));
+        assert_eq!(
+            (
+                SEGMENT_HEIGHT,
+                SEGMENT_PADDING,
+                SEGMENT_INSET,
+                SEGMENT_RADIUS
+            ),
+            (24.0, 10.0, 2.0, 7.0)
+        );
+        assert_eq!(
+            SEGMENT_HEIGHT + 2.0 * SEGMENT_INSET,
+            28.0,
+            "the control's height"
+        );
+        assert_eq!((TITLE_GROUP_SPACING, TITLE_ACTION_SPACING), (10.0, 4.0));
+        assert_eq!((TOOLBAR_RULE_HEIGHT, TOOLBAR_RULE_MARGIN), (16.0, 6.0));
+        assert_eq!(TITLE_BAR_INSET, 12.0);
+        assert_eq!(SIZE_IDENTITY, 11.5);
+        // Text sits 16 pt from the state panel's edge: the panel's padding and a row's own.
+        assert_eq!(PANEL_PADDING_X + SPACING, 16.0);
+        assert_eq!((PANEL_PADDING_Y, PANEL_SECTION_SPACING), (12.0, 12.0));
+        assert_eq!(PANEL_HEADING_HEIGHT, 22.0);
+        assert_eq!((VERSION_CHIP_HEIGHT, VERSION_CHIP_SPACING), (16.0, 6.0));
+        assert_eq!(LIST_ROW_RADIUS, 5.0);
+        assert_eq!(
+            (STATUS_SPACING, STATUS_FACT_SPACING, STATUS_DOT_SIZE),
+            (8.0, 12.0, 6.0)
+        );
+    }
+
+    /// A selected icon button is the accent tint behind accent ink, with no outline; the segmented
+    /// control's selection is the neutral raised fill, never the accent.
+    #[test]
+    fn selection_styles_match_the_default_board() {
+        let selected = button_selected(&theme(), button::Status::Active);
+        assert_eq!(
+            selected.background,
+            Some(Background::Color(ICON_SELECTED_FILL))
+        );
+        assert_eq!(selected.text_color, ACCENT);
+        assert_eq!(selected.border.width, 0.0);
+        let segment = segment(true)(&theme(), button::Status::Active);
+        assert_eq!(
+            segment.background,
+            Some(Background::Color(SEGMENT_SELECTED))
+        );
+        assert_eq!(segment.text_color, TEXT_BRIGHT);
+        let resting = super::segment(false)(&theme(), button::Status::Active);
+        assert_eq!(resting.background, None);
+        assert_eq!(resting.text_color, TEXT_SECONDARY);
+        assert_eq!(
+            button_icon(&theme(), button::Status::Hovered).background,
+            Some(Background::Color(ICON_HOVER))
+        );
+        assert_eq!(
+            button_icon(&theme(), button::Status::Active).background,
+            None
+        );
+    }
+
     #[test]
     fn faint_text_sits_between_the_panel_and_tertiary_text() {
         assert_eq!(TEXT_FAINT, Color::from_rgb8(0x55, 0x55, 0x5c));
@@ -1078,5 +1485,114 @@ mod tests {
             [[0x4f, 0x9f, 0x60], [0x7d, 0x7f, 0x82], [0xbd, 0x56, 0xb6]]
         );
         assert_eq!(DECORATED_RAIL_OPACITY, 0.85);
+    }
+
+    /// Composites `colour` at `opacity` over `background` in sRGB, as the boards' CSS does, to the
+    /// 8-bit code a board samples.
+    fn composite(colour: Color, background: Color, opacity: f32) -> [u8; 3] {
+        crate::geometry::over(
+            [colour.r, colour.g, colour.b],
+            [background.r, background.g, background.b],
+            opacity,
+        )
+        .map(|channel| (channel * 255.0).round() as u8)
+    }
+
+    fn code(colour: Color) -> [u8; 3] {
+        [colour.r, colour.g, colour.b].map(|channel| (channel * 255.0).round() as u8)
+    }
+
+    /// The canvas chrome's sizes are the boards', and Fit keeps the photograph clear of the strip:
+    /// the bottom inset holds the strip, its own inset and a gap.
+    #[test]
+    fn canvas_chrome_sizes_match_the_boards() {
+        assert_eq!(CHROME_INSET, 12.0);
+        assert_eq!(CHROME_STACK_SPACING, 8.0);
+        assert_eq!(CHROME_RADIUS, 9.0);
+        assert_eq!(
+            (STRIP_PADDING, STRIP_SPACING, STRIP_RADIUS),
+            (3.0, 2.0, 10.0)
+        );
+        assert_eq!((STRIP_TOOL_WIDTH, STRIP_TOOL_HEIGHT), (34.0, 30.0));
+        assert_eq!(STRIP_TOOL_RADIUS, 7.0);
+        assert_eq!((STRIP_RULE_HEIGHT, STRIP_RULE_MARGIN), (16.0, 4.0));
+        assert_eq!(
+            STRIP_HEIGHT, 38.0,
+            "a tool, 3 pt padding and a 1 pt border each side"
+        );
+        assert_eq!((FIT_INSET, FIT_INSET_BOTTOM), (20.0, 56.0));
+        const {
+            assert!(
+                FIT_INSET_BOTTOM >= CHROME_INSET + STRIP_HEIGHT + 2.0 * STRIP_SPACING,
+                "at Fit no photograph pixel lies under the strip"
+            )
+        };
+        assert_eq!(DRAFT_BAR_HEIGHT, 34.0);
+        assert_eq!(
+            (
+                DRAFT_BAR_PADDING.top,
+                DRAFT_BAR_PADDING.right,
+                DRAFT_BAR_PADDING.left
+            ),
+            (0.0, 6.0, 12.0)
+        );
+        assert_eq!(DRAFT_BAR_SPACING, 12.0);
+        assert_eq!(NOTICE_WIDTH, 560.0);
+        assert_eq!(
+            (
+                NOTICE_PADDING.top,
+                NOTICE_PADDING.right,
+                NOTICE_PADDING.bottom,
+                NOTICE_PADDING.left
+            ),
+            (10.0, 10.0, 10.0, 14.0)
+        );
+        assert_eq!(NOTICE_SPACING, 12.0);
+        assert_eq!((SIZE_NOTICE_TITLE, SIZE_NOTICE_BODY), (12.5, 11.5));
+        assert_eq!((CROP_CORNER, CROP_CORNER_RADIUS), (9.0, 1.0));
+        assert_eq!((CROP_EDGE_LENGTH, CROP_EDGE_THICKNESS), (22.0, 5.0));
+    }
+
+    /// The chrome's tints are the boards' samples: each is its CSS alpha composited over the Bar
+    /// surface in sRGB, to within a code of the board.
+    #[test]
+    fn canvas_chrome_tints_are_the_boards_composites() {
+        let white = Color::WHITE;
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1);
+        assert!(near(code(CHROME_BORDER), composite(white, BAR, 0.08)));
+        assert!(near(code(STRIP_RULE), composite(white, BAR, 0.10)));
+        assert!(near(code(STRIP_SELECTED), composite(ACCENT, BAR, 0.16)));
+        assert!(near(
+            code(NOTICE_WARNING_BORDER),
+            composite(ACCENT, BAR, 0.35)
+        ));
+        assert!(near(
+            code(NOTICE_ERROR_BORDER),
+            composite(CLIPPING_HIGHLIGHT, BAR, 0.40)
+        ));
+        assert!(near(code(HISTOGRAM_BORDER), composite(white, CANVAS, 0.05)));
+        assert_eq!(code(STRIP_ICON), [0xb9, 0xb9, 0xbf]);
+        assert_eq!(code(TEXT_BRIGHT), [0xf0, 0xf0, 0xf2]);
+        assert_eq!(code(PRIMARY_INK), [0x1a, 0x14, 0x08]);
+        assert_eq!(code(CLIP_TRIANGLE_REST), [0x55, 0x55, 0x5c]);
+    }
+
+    /// The histogram inspector is the plot and its padding and nothing else, so its height is one
+    /// constant whatever the analysis says.
+    #[test]
+    fn the_histogram_inspector_matches_the_boards() {
+        assert_eq!(
+            (
+                HISTOGRAM_PADDING.top,
+                HISTOGRAM_PADDING.right,
+                HISTOGRAM_PADDING.bottom,
+                HISTOGRAM_PADDING.left
+            ),
+            (10.0, 12.0, 6.0, 12.0)
+        );
+        assert_eq!(HISTOGRAM_RADIUS, 6.0);
+        assert_eq!((CLIP_TRIANGLE_WIDTH, CLIP_TRIANGLE_HEIGHT), (10.0, 8.0));
+        assert_eq!(CLIP_TRIANGLE_INSET, 6.0);
+        assert_eq!(HISTOGRAM_INSPECTOR_HEIGHT, 104.0);
     }
 }

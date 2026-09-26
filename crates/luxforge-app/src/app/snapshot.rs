@@ -160,9 +160,9 @@ impl Editor {
     /// The histogram inspector as a captured frame reports it: its status, the render identity the
     /// counts belong to, all ten endpoint counters and the count one full-height bin stands for, so
     /// a frame's plot can be checked against an independent reduction of the same fixture. Beside
-    /// them, where the inspector's words are drawn: `caption` is the domain the plot states on
-    /// hover, `notice` the text drawn inside the plot's own area (null while there is a report),
-    /// and `tooltips` what the plot and the two triangles state on hover.
+    /// them, where the inspector's words are drawn: `notice` is the text drawn inside the plot's own
+    /// area (null while there is a report), and `tooltips` what the two triangles state on hover.
+    /// The plot itself states nothing, so the summary carries no caption.
     pub(super) fn histogram_summary(&self) -> Value {
         let model = &self.workspace.histogram;
         let counters = &model.counters;
@@ -172,8 +172,9 @@ impl Editor {
             }
             None => Value::Null,
         };
-        let tooltips = json!({"plot":model.caption,"shadow":model.shadow_tooltip(),"highlight":model.highlight_tooltip()});
-        json!({"status":model.status.as_str(),"stale":model.stale,"caption":model.caption,"notice":model.notice(),"tooltips":tooltips,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
+        let tooltips =
+            json!({"shadow":model.shadow_tooltip(),"highlight":model.highlight_tooltip()});
+        json!({"status":model.status.as_str(),"stale":model.stale,"notice":model.notice(),"tooltips":tooltips,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
     }
 
     /// The clipping overlay a captured frame was drawn with: its cell grid, which flags it covers

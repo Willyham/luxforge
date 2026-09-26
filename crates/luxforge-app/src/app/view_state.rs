@@ -132,10 +132,12 @@ impl Editor {
             ViewMessage::Panned(x, y) => return self.pan(x, y),
             ViewMessage::Fit => {
                 self.zoom = "Fit".into();
+                self.zoom_editing = false;
                 return self.session_command("view.set", json!({"zoom":{"mode":"fit"}}));
             }
             ViewMessage::HundredPercent => {
                 self.zoom = "100".into();
+                self.zoom_editing = false;
                 return self
                     .session_command("view.set", json!({"zoom":{"mode":"percent","value":100.0}}));
             }
@@ -144,8 +146,26 @@ impl Editor {
                     self.status = "Zoom must be Fit or a percentage from 10 to 1600".into();
                     return Task::none();
                 };
+                self.zoom_editing = false;
                 return self
                     .session_command("view.set", json!({"zoom":{"mode":"percent","value":value}}));
+            }
+            ViewMessage::EditZoom => {
+                // The field starts from what the segment showed, without its percent sign.
+                self.zoom = self
+                    .workspace
+                    .title
+                    .zoom_percent
+                    .trim_end_matches('%')
+                    .to_owned();
+                self.zoom_editing = true;
+                return Task::batch([
+                    operation::focus(view::title_bar::ZOOM_FIELD),
+                    operation::select_all(view::title_bar::ZOOM_FIELD),
+                ]);
+            }
+            ViewMessage::DragWindow => {
+                return iced::window::oldest().and_then(iced::window::drag);
             }
             ViewMessage::ScaleFactor(scale) => {
                 if scale.is_finite() && scale > 0.0 {

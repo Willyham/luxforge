@@ -577,6 +577,18 @@ fn shows_crop(frame: &Value, source: [u32; 2], angle: f64, what: &str) -> Result
     Ok(output)
 }
 
+/// The area Fit lays the photograph out in, `[left, top, right, bottom]` physical pixels: the canvas
+/// less the Fit padding, recorded by the frame from the layout's own constants.
+fn fit_area(frame: &Value) -> Result<[u32; 4]> {
+    let rect: [u32; 4] = serde_json::from_value(frame["fit_rect"].clone())
+        .map_err(|_| "The frame records no Fit rectangle")?;
+    ensure(
+        rect[0] < rect[2] && rect[1] < rect[3],
+        format!("The frame's Fit rectangle {rect:?} is empty"),
+    )?;
+    Ok(rect)
+}
+
 /// The canvas background, read inside the canvas's own corner, which no photograph reaches.
 fn canvas_background(image: &image::RgbImage, frame: &Value) -> Result<([u8; 3], [u32; 4])> {
     let rect: [u32; 4] = serde_json::from_value(frame["canvas_rect"].clone())
@@ -601,20 +613,21 @@ fn draft_is_whole(frame: &Frame, source: [u32; 2]) -> Result<Value> {
     };
     let (box_width, box_height) = stage.bounding_box();
     let image = frame.image()?;
-    let (background, [left, top, right, bottom]) = canvas_background(image, frame)?;
+    let (background, [_, top, _, bottom]) = canvas_background(image, frame)?;
     let scale = frame["scale"]
         .as_f64()
         .ok_or("The frame records no scale")?;
-    // The Fit view: the canvas less the photo padding, the rotated box centred in it.
-    let padding = 20.0 * scale;
+    // The Fit view: the rotated box centred in the area the layout fits into, the canvas less the
+    // Fit padding, as the frame records it.
+    let [fit_left, fit_top, fit_right, fit_bottom] = fit_area(frame)?;
     let available = (
-        f64::from(right - left) - 2.0 * padding,
-        f64::from(bottom - top) - 2.0 * padding,
+        f64::from(fit_right - fit_left),
+        f64::from(fit_bottom - fit_top),
     );
     let zoom = (available.0 / box_width).min(available.1 / box_height);
     let origin = (
-        f64::from(left) + padding + (available.0 - box_width * zoom) / 2.0,
-        f64::from(top) + padding + (available.1 - box_height * zoom) / 2.0,
+        f64::from(fit_left) + (available.0 - box_width * zoom) / 2.0,
+        f64::from(fit_top) + (available.1 - box_height * zoom) / 2.0,
     );
     // The draft bar and the mode strip are drawn over the canvas; rows under them are skipped.
     let (first_row, last_row) = (
@@ -664,13 +677,12 @@ fn draft_is_whole(frame: &Frame, source: [u32; 2]) -> Result<Value> {
 fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
     let image = frame.image()?;
     let (background, [left, top, right, bottom]) = canvas_background(image, frame)?;
-    let scale = frame["scale"]
-        .as_f64()
-        .ok_or("The frame records no scale")?;
-    let padding = 20.0 * scale;
+    // The area Fit lays the photograph out in: the canvas less the Fit padding, as the frame
+    // records it, which is taller at the top than at the bottom where the mode strip floats.
+    let [fit_left, fit_top, fit_right, fit_bottom] = fit_area(frame)?;
     let available = (
-        f64::from(right - left) - 2.0 * padding,
-        f64::from(bottom - top) - 2.0 * padding,
+        f64::from(fit_right - fit_left),
+        f64::from(fit_bottom - fit_top),
     );
     let fit = (available.0 / f64::from(output[0])).min(available.1 / f64::from(output[1]));
     let expected = (f64::from(output[0]) * fit, f64::from(output[1]) * fit);
@@ -683,7 +695,7 @@ fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
             .any(|(a, b)| a.abs_diff(b) > 1)
     };
     // One row through the middle and one column a quarter of the way in, clear of the mode strip.
-    let row = (top + bottom) / 2;
+    let row = (fit_top + fit_bottom) / 2;
     let column = left + (right - left) / 4;
     let span = |positions: Vec<u32>| {
         positions
@@ -700,7 +712,10 @@ fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
         (f64::from(x0) + f64::from(x1) + 1.0) / 2.0,
         (f64::from(y0) + f64::from(y1) + 1.0) / 2.0,
     );
-    let wanted_centre = (f64::from(left + right) / 2.0, f64::from(top + bottom) / 2.0);
+    let wanted_centre = (
+        f64::from(fit_left + fit_right) / 2.0,
+        f64::from(fit_top + fit_bottom) / 2.0,
+    );
     let tolerance = 4.0;
     ensure(
         (measured.0 - expected.0).abs() <= tolerance
@@ -899,15 +914,18 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
             state["draft"]
         ),
     )?;
+    // The bar says the drafted frame is approximate at Fit and at 100% alike; the correlated state
+    // still says whether it is the proxy, which it is only at Fit.
     let render = state["status_bar"]["render"].as_str().unwrap_or_default();
-    let label = if drag.fit {
-        " ms (proxy, approximate)"
-    } else {
-        " ms (approximate)"
-    };
     ensure(
-        render.ends_with(label) && state["status_bar"]["render_approximate"] == true,
-        format!("The status bar does not say the drafted frame is approximate: {render:?}"),
+        render.starts_with("Approximate render \u{b7} ")
+            && (render.ends_with(" ms") || render.ends_with(" s"))
+            && state["status_bar"]["render_approximate"] == true
+            && state["status_bar"]["render_proxy"] == json!(drag.fit),
+        format!(
+            "The status bar does not say the drafted frame is approximate: {render:?}, proxy {}",
+            state["status_bar"]["render_proxy"]
+        ),
     )?;
     let histogram = &state["histogram"];
     ensure(

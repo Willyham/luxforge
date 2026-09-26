@@ -11,9 +11,10 @@
 //! core render of the same fixture through the same recipe, so the plot is verified against the
 //! reducer rather than against itself — and so are the words the triangles' tooltips state them in.
 //!
-//! The inspector is the plot and the triangle row and nothing else; the pointer readout is in the
-//! status bar. The hover frame is compared with the frame before it pixel for pixel: the tools
-//! panel is identical, and the status bar changes only inside the readout's own slot.
+//! The inspector is the plot with the triangles in its bottom corners and nothing else, with no
+//! caption; the pointer readout is in the status bar. The hover frame is compared with the frame
+//! before it pixel for pixel: the tools panel is identical, and the status bar changes only inside
+//! the readout's own slot.
 use crate::{
     scenario::{Checked, Fixture, Frame, Plan, Run, Step, pixels, plan::only},
     *,
@@ -39,14 +40,11 @@ const BOTH_RGB: [u8; 3] = [0, 128, 255];
 const RULE: &str =
     "Any channel at 0 \u{b7} blue; any at 255 \u{b7} red; both endpoints \u{b7} magenta";
 
-/// What the plot states on hover: the domain the counts describe.
-const DOMAIN: &str = "Output \u{b7} sRGB \u{b7} after crop";
-
 /// The editor's layout in points, which a capture's recorded scale turns into physical rows and
 /// columns: the title bar and the status bar, each with its 1 pt rule, and the width of the status
 /// bar's readout slot.
-const TITLE_BAR_PT: f64 = 44.0;
-const STATUS_BAR_PT: f64 = 26.0;
+const TITLE_BAR_PT: f64 = 43.0;
+const STATUS_BAR_PT: f64 = 25.0;
 const RULE_PT: f64 = 1.0;
 const READOUT_SLOT_PT: f64 = 240.0;
 /// The trailing facts at the status bar's right edge (the zoom and what it means on this display)
@@ -274,11 +272,12 @@ fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result
         state["stale"] == json!(false),
         format!("{what}: the shown counts are stale"),
     )?;
+    // The plot carries no caption at all, neither under it nor on hover (owner, 2026-09-26).
     ensure(
-        state["caption"] == json!(DOMAIN) && state["tooltips"]["plot"] == json!(DOMAIN),
+        state.get("caption").is_none() && state["tooltips"].get("plot").is_none(),
         format!(
-            "{what}: the plot states the domain as {} (caption {})",
-            state["tooltips"]["plot"], state["caption"]
+            "{what}: the plot states a caption {} (tooltip {})",
+            state["caption"], state["tooltips"]["plot"]
         ),
     )?;
     // A frame with a report draws nothing over the plot: the notice is only for a missing one.

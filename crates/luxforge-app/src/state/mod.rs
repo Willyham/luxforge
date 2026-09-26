@@ -31,6 +31,10 @@ use std::{
     hash::{DefaultHasher, Hash, Hasher},
 };
 
+/// The actor this desktop records on every request it sends, which is how its own history entries
+/// are told from another client's.
+pub(crate) const ACTOR: &str = "desktop";
+
 /// What an inline menu was opened on. Menus carry no state of their own.
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,6 +206,11 @@ pub(crate) struct Inputs<'a> {
     pub(crate) compare_held: bool,
     pub(crate) scale_factor: f32,
     pub(crate) zoom: &'a str,
+    /// The zoom field is open for typing in the title bar's view control.
+    pub(crate) zoom_editing: bool,
+    /// The window's logical size, which with the panels and the display scale decides what Fit
+    /// comes to as a percentage.
+    pub(crate) window: (f32, f32),
     pub(crate) version_name: &'a str,
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
@@ -311,6 +320,15 @@ fn state_key<'a>(inputs: &Inputs<'a>) -> Option<(&'a luxforge_core::AssetId, u64
         .map(|state| (&state.asset.id, state.revision, &state.current_entry.id))
 }
 
+/// The window's size and display scale, which decide what Fit comes to as a percentage.
+fn window_key(inputs: &Inputs<'_>) -> (u32, u32, u32) {
+    (
+        inputs.window.0.to_bits(),
+        inputs.window.1.to_bits(),
+        inputs.scale_factor.to_bits(),
+    )
+}
+
 /// A draft being dragged changes with every pointer move, so a section that draws one is built on
 /// every derivation while it is open: a fresh stamp can never match.
 fn drafting_key(open: bool) -> Option<u64> {
@@ -337,16 +355,12 @@ impl Built {
             &inputs.gallery_refusal,
             session,
             state,
-            inputs.zoom,
+            (inputs.zoom, inputs.zoom_editing),
+            window_key(inputs),
         ));
         let panel = key((
-            (
-                stamps.history,
-                stamps.versions,
-                stamps.lineage,
-                stamps.recipe,
-            ),
-            (stamps.masks, stamps.menu, session),
+            (stamps.history, stamps.versions, stamps.lineage),
+            (stamps.menu, session),
             inputs.lineage_floor,
             inputs.display_entry,
             state,
@@ -434,7 +448,9 @@ impl Built {
             inputs
                 .render
                 .map(|render| (render.ms.to_bits(), render.proxy, render.approximate)),
-            (inputs.rendering, inputs.scale_factor.to_bits()),
+            inputs.rendering,
+            inputs.dimensions,
+            window_key(inputs),
             session,
             inputs.status,
         ));
@@ -621,8 +637,7 @@ mod tests {
         tabs_descriptor,
     };
     use luxforge_core::{
-        AssetId, AssetRecord, Availability, CropPayload, LayerDescription, Orientation,
-        POINTER_MODE,
+        AssetId, AssetRecord, Availability, CropPayload, Orientation, POINTER_MODE,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -821,6 +836,8 @@ mod tests {
                 compare_held: false,
                 scale_factor: 2.0,
                 zoom: "100",
+                zoom_editing: false,
+                window: (1440.0, 900.0),
                 version_name: "",
                 version_form_open: false,
                 dimensions: Some((480, 320)),
@@ -947,7 +964,8 @@ mod tests {
         let workspace = scene.derive();
         let row = &workspace.panel.history[0];
         assert_eq!(row.label, "Crop 4:5", "the stored label, not a rebuild");
-        assert_eq!(row.actor, "agent");
+        // The scene's entry is another client's, which the row names as an agent.
+        assert_eq!(row.actor.as_deref(), Some("agent \u{b7} agent"));
         assert_eq!(row.marker, Marker::Current);
         assert!(!row.branch);
         assert!(workspace.panel.preview.is_none());
@@ -1913,62 +1931,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn recipe_rows_come_from_the_owners_own_layer_descriptions() {
-        let crop = crop_descriptor();
-        let mut scene =
-            Scene::new(vec![crop.clone()]).opened(vec![crop_layer(CropPayload::NEUTRAL)]);
-        let layer_id = scene
-            .state
-            .as_ref()
-            .expect("an asset")
-            .current_entry
-            .snapshot
-            .recipe
-            .layers[0]
-            .id
-            .clone();
-        scene.recipe = Some(RecipeDescription {
-            entry_id: scene.display_entry.clone().expect("a displayed entry"),
-            layers: vec![LayerDescription {
-                id: layer_id.clone(),
-                effect: "luxforge.geometry.crop".into(),
-                module: Some(crop.id.clone()),
-                title: Some("Crop".into()),
-                summary: "Whole image".into(),
-                values: serde_json::Map::new(),
-                available: true,
-                mask: None,
-                artifacts: Vec::new(),
-                neutral: true,
-                input_stage: None,
-            }],
-        });
-        let workspace = scene.derive();
-        assert_eq!(workspace.panel.recipe.len(), 1);
-        assert_eq!(workspace.panel.recipe[0].title, "Crop");
-        assert_eq!(workspace.panel.recipe[0].summary, "Whole image");
-        assert!(workspace.panel.recipe[0].available);
-        // A description of a different entry is never shown against this one.
-        scene.display_entry = Some(EntryId::new());
-        assert!(scene.derive().panel.recipe.is_empty());
-    }
-
-    #[test]
-    fn an_empty_recipe_says_whether_anything_is_displayed_at_all() {
-        let mut scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
-        assert_eq!(
-            scene.derive().panel.recipe_caption.as_deref(),
-            Some("Original · no edit layers"),
-            "a displayed entry with no layers is the original, not an empty selection"
-        );
-        scene.display_entry = None;
-        assert_eq!(
-            scene.derive().panel.recipe_caption.as_deref(),
-            Some("No entry displayed")
-        );
-    }
-
     /// The strip holds the pointer, the canvas-takeover modes and the view overlays, and nothing
     /// else. A pick mode takes no canvas over: it belongs beside the controls its pick fills, so it
     /// is reached from its module's own picker control and never appears here.
@@ -1979,18 +1941,27 @@ mod tests {
         assert_eq!(strip[0].id, POINTER_MODE);
         assert_eq!(strip[0].shortcut.as_deref(), Some("V"));
         assert!(strip[0].selected, "the pointer is the default mode");
+        assert_eq!(strip[0].icon.as_deref(), Some("pointer"));
         // Mask is the host's own takeover mode: a mask is a host object in the recipe, so it is
         // offered whatever modules are registered and no module declares its canvas.
-        assert_eq!(strip[1].id, luxforge_core::MASK_MODE);
-        assert_eq!(strip[1].label, "Mask");
-        assert_eq!(strip[1].shortcut.as_deref(), Some("M"));
+        let mask = &strip[1];
+        assert_eq!(mask.id, luxforge_core::MASK_MODE);
+        assert_eq!(mask.label, "Mask");
+        assert_eq!(mask.shortcut.as_deref(), Some("M"));
+        assert_eq!(mask.icon.as_deref(), Some("mask"));
         let crop = strip
             .iter()
             .find(|mode| mode.id == "luxforge.crop")
             .expect("the crop module declares a canvas mode");
         assert_eq!(crop.label, "Crop", "the descriptor's own canvas title");
         assert_eq!(crop.shortcut.as_deref(), Some("R"));
+        assert_eq!(
+            crop.icon.as_deref(),
+            Some("crop"),
+            "the descriptor's own icon"
+        );
         assert!(crop.enabled);
+        assert_eq!(strip[2].id, crop.id, "the modules' modes follow Mask");
         assert_eq!(
             strip.len(),
             3,
@@ -2182,13 +2153,16 @@ mod tests {
         let notice = &scene.derive().canvas.notices[0];
         assert_eq!(notice.title, "Changed elsewhere");
         assert!(notice.body.contains("revision 3"), "{}", notice.body);
+        // The board's card: the accent tone with the spark, and its two actions.
+        assert_eq!(notice.tone, crate::state::canvas::NoticeTone::Warning);
+        assert_eq!(notice.icon, crate::state::canvas::NoticeIcon::Spark);
         assert_eq!(
             notice
                 .actions
                 .iter()
                 .map(|(label, _)| label.as_str())
                 .collect::<Vec<_>>(),
-            ["Discard", "Reapply"]
+            ["Discard draft", "Reapply"]
         );
     }
 
@@ -2196,20 +2170,34 @@ mod tests {
     fn the_status_bar_reports_clients_render_state_and_what_the_zoom_means() {
         let scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
         let status = scene.derive().status;
-        assert_eq!(status.clients, "1 client");
-        assert_eq!(status.render, "Rendered in 41 ms");
-        assert_eq!(status.zoom_text, "Fit", "the session's zoom, not the field");
-        assert_eq!(status.scale_text, "@2.00×");
+        assert_eq!(status.clients, "1 agent connected");
+        assert!(status.agents_connected, "the dot is lit");
+        assert_eq!(status.render, "Exact render \u{b7} 41 ms");
+        // The session's zoom, not the field, and what Fit comes to on this window: a 480 px
+        // photograph fitted larger than it is.
+        let effective = title::effective_percent(&scene.inputs()).expect("a fitted size");
+        assert!(effective > 100.0, "{effective}");
+        assert_eq!(
+            status.view,
+            format!(
+                "Fit \u{b7} {} \u{b7} 2\u{d7}",
+                title::percent_text(effective)
+            )
+        );
+        assert_eq!(
+            scene.derive().title.zoom_percent,
+            title::percent_text(effective)
+        );
 
         let mut inputs = scene.inputs();
         inputs.clients = Some(3);
         inputs.rendering = true;
         let mut workspace = Workspace::default();
         workspace.derive(&inputs);
-        assert_eq!(workspace.status.clients, "3 clients");
+        assert_eq!(workspace.status.clients, "3 agents connected");
         assert_eq!(workspace.status.render, "Rendering…");
 
-        // A display-size proxy on screen says so beside its own time.
+        // A display-size proxy on screen says it is approximate beside its own time.
         let mut inputs = scene.inputs();
         inputs.render = Some(status::RenderTime {
             ms: 7.6,
@@ -2217,7 +2205,7 @@ mod tests {
             approximate: false,
         });
         workspace.derive(&inputs);
-        assert_eq!(workspace.status.render, "Rendered in 8 ms (proxy)");
+        assert_eq!(workspace.status.render, "Approximate render \u{b7} 8 ms");
 
         // A drafted RAW white balance approximated on the developed planes says that too.
         let mut inputs = scene.inputs();
@@ -2227,18 +2215,54 @@ mod tests {
             approximate: true,
         });
         workspace.derive(&inputs);
-        assert_eq!(
-            workspace.status.render,
-            "Rendered in 9 ms (proxy, approximate)"
-        );
+        assert_eq!(workspace.status.render, "Approximate render \u{b7} 9 ms");
+
+        // Nobody else connected is a count of none, with the dot unlit.
+        let mut inputs = scene.inputs();
+        inputs.clients = Some(0);
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.clients, "No agents connected");
+        assert!(!workspace.status.agents_connected);
 
         // No local server is a stated fact, never a client count of zero.
         let mut inputs = scene.inputs();
         inputs.clients = None;
         inputs.render = None;
         workspace.derive(&inputs);
-        assert_eq!(workspace.status.clients, "live API unavailable");
+        assert_eq!(workspace.status.clients, "Live API unavailable");
+        assert!(!workspace.status.agents_connected);
         assert_eq!(workspace.status.render, "Idle");
+    }
+
+    /// The title bar names the file, its dimensions and the format the core reports, and no colour
+    /// space, because the core reports none.
+    #[test]
+    fn the_title_identity_is_the_dimensions_and_the_reported_format() {
+        let scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
+        let title = scene.derive().title;
+        assert_eq!(title.file_name.as_deref(), Some("photo.jpg"));
+        assert_eq!(
+            title.identity.as_deref(),
+            Some("480 \u{d7} 320 \u{b7} JPEG")
+        );
+        assert_eq!(title.zoom_segment, title::SEGMENT_FIT);
+        // An entry with no parent has nothing to undo, and nothing has been undone to redo.
+        assert!(!title.can_undo && !title.can_redo);
+        let mut undone = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
+        let state = undone.state.as_mut().expect("an open photograph");
+        state.redo.push(EntryId::new());
+        state.current_entry.undo_parent = Some(EntryId::new());
+        let title = undone.derive().title;
+        assert!(title.can_undo && title.can_redo);
+        let mut inputs = scene.inputs();
+        inputs.dimensions = None;
+        let mut workspace = Workspace::default();
+        workspace.derive(&inputs);
+        assert_eq!(workspace.title.identity, None);
+        assert_eq!(
+            workspace.title.zoom_percent, "%",
+            "nothing gives Fit a size yet"
+        );
     }
 
     /// The pointer readout is the status bar's, and only the status bar's: moving the pointer onto

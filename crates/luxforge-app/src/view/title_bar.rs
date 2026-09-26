@@ -1,32 +1,64 @@
-//! The title bar: the file's identity at the leading edge, the centred view control and, at the
-//! trailing edge, Undo, Redo and the two panel-visibility toggles the design keeps in the bar.
+//! The title bar: the file's identity and Open at the leading edge, the view control, Compare and
+//! Clipping centred on the window, and Undo, Redo and the two panel-visibility toggles at the
+//! trailing edge.
 //!
-//! The design's title bar carries no Open action, because opening belongs to a library the editor
-//! does not have yet. Until it does, Open stays here as a plain button at the leading edge: without
-//! it a fresh launch could reach no photograph at all.
+//! Open sits beside the file's identity, as the default board draws it: the editor has no library
+//! to open a photograph from, and without it a fresh launch could reach no photograph at all. Where
+//! the bar is the window's own title bar ([`crate::window_frame`]), its empty area drags the
+//! window; every control in it answers its own press first.
 use crate::{
     app::message::{HistoryMessage, Message, OverlayMessage, Panel, SyncMessage, ViewMessage},
     state::{
         Workspace,
-        title::{SEGMENT_FIT, SEGMENT_HUNDRED, TitleBarModel},
+        title::{SEGMENT_FIT, SEGMENT_HUNDRED, SEGMENT_PERCENT, TitleBarModel},
     },
+    window_frame,
 };
 use iced::{
-    Alignment, Element, Length,
-    widget::{mouse_area, row, text},
+    Alignment, Element, Length, Padding,
+    widget::{Space, container, mouse_area, row, stack, text, text_input},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, Icon, IconButtonModel, LabelledButtonModel, SegmentedModel,
-    icon_button, labelled_button, segmented, text_button, theme, value_input,
+    ButtonSize, ButtonTone, Icon, IconButtonModel, icon_button, segment, segment_track,
+    text_button, theme,
 };
+
+/// The typed zoom field's focus target, so opening it puts the caret in it.
+pub(crate) const ZOOM_FIELD: &str = "luxforge.title.zoom";
 
 /// How wide the typed-percentage field is: enough for four digits and the caret.
 const ZOOM_FIELD_WIDTH: f32 = 56.0;
 
-/// The file name, its dimensions when known, and the Open action.
-pub(crate) fn identity(model: &TitleBarModel) -> Element<'_, Message> {
-    let mut content = row![].spacing(theme::SPACING).align_y(Alignment::Center);
-    content = content.push(
+/// The whole bar: the identity and the actions at its two edges, with the view controls centred
+/// on the window over them rather than between them, so they stay put whatever the file's name.
+pub(crate) fn title_bar(model: &Workspace) -> Element<'_, Message> {
+    let edges = row![
+        identity(&model.title),
+        Space::new().width(Length::Fill),
+        actions(&model.title),
+    ]
+    .align_y(Alignment::Center)
+    .height(Length::Fill)
+    .padding(Padding {
+        top: 0.0,
+        right: theme::TITLE_BAR_INSET,
+        bottom: 0.0,
+        left: window_frame::TITLE_BAR_LEADING,
+    });
+    let centre = container(view_controls(model)).center(Length::Fill);
+    let bar = stack![edges, centre];
+    if window_frame::INTEGRATED_TITLE_BAR {
+        mouse_area(bar)
+            .on_press(Message::View(ViewMessage::DragWindow))
+            .into()
+    } else {
+        bar.into()
+    }
+}
+
+/// The file name, its dimensions and format when known, and Open.
+fn identity(model: &TitleBarModel) -> Element<'_, Message> {
+    let mut content = row![
         text(
             model
                 .file_name
@@ -34,77 +66,98 @@ pub(crate) fn identity(model: &TitleBarModel) -> Element<'_, Message> {
                 .unwrap_or_else(|| "Luxforge".to_owned()),
         )
         .size(theme::SIZE_TITLE)
-        .color(theme::TEXT_PRIMARY),
-    );
-    if let Some((width, height)) = model.dimensions {
-        content = content.push(luxforge_ui::caption(format!("{width} × {height}")));
+        .font(theme::FONT_SEMIBOLD)
+        .color(theme::TEXT_BRIGHT)
+        .wrapping(text::Wrapping::None),
+    ]
+    .spacing(theme::TITLE_GROUP_SPACING)
+    .align_y(Alignment::Center);
+    if let Some(identity) = &model.identity {
+        content = content.push(
+            text(identity.clone())
+                .size(theme::SIZE_IDENTITY)
+                .color(theme::TEXT_IDENTITY)
+                .wrapping(text::Wrapping::None),
+        );
     }
-    content = content.push(text_button(
-        "Open image",
-        ButtonTone::Quiet,
-        ButtonSize::Compact,
-        model.can_open.then_some(Message::Sync(SyncMessage::Open)),
-    ));
-    content.into()
+    content
+        .push(icon_button(
+            &IconButtonModel {
+                icon: Icon::Folder,
+                tooltip: crate::state::title::OPEN_TOOLTIP.into(),
+                enabled: model.can_open,
+                selected: false,
+            },
+            model.can_open.then_some(Message::Sync(SyncMessage::Open)),
+        ))
+        .into()
 }
 
-/// Fit, 100%, a typed percentage and Compare. Compare is held, not toggled, so it needs both the
-/// press and the release: a plain button would only report one of them, so the control is wrapped
-/// in a `mouse_area` that publishes both, and treats the pointer leaving as a release so a drag off
-/// the button cannot leave the original preview stuck on screen.
-pub(crate) fn view_controls(model: &Workspace) -> Element<'_, Message> {
+/// Fit, 100% and the effective percentage on one track, then Compare and Clipping. The
+/// percentage segment opens as the typed zoom field when pressed.
+fn view_controls(model: &Workspace) -> Element<'_, Message> {
     let title = &model.title;
     let can_view = title.can_view;
-    let zoom = segmented(
-        &SegmentedModel {
-            options: vec!["Fit".into(), "100%".into()],
-            selected: title.zoom_segment,
-            enabled: can_view,
-        },
-        |index| {
-            if index == SEGMENT_FIT {
-                Message::View(ViewMessage::Fit)
-            } else {
-                Message::View(ViewMessage::HundredPercent)
-            }
-        },
-    );
-    debug_assert_eq!(SEGMENT_HUNDRED, 1, "the second segment is 100%");
+    let percent: Element<'_, Message> = if title.zoom_editing {
+        text_input("%", &title.zoom_text)
+            .id(ZOOM_FIELD)
+            .on_input(|value| Message::View(ViewMessage::Zoom(value)))
+            .on_submit(Message::View(ViewMessage::ApplyZoom))
+            .size(theme::SIZE_CONTROL)
+            .padding([4.0, theme::SPACING])
+            .width(Length::Fixed(ZOOM_FIELD_WIDTH))
+            .style(theme::field_input_style(false))
+            .into()
+    } else {
+        segment(
+            title.zoom_percent.clone(),
+            title.zoom_segment == SEGMENT_PERCENT,
+            can_view.then_some(Message::View(ViewMessage::EditZoom)),
+        )
+    };
+    let zoom = segment_track(vec![
+        segment(
+            "Fit".into(),
+            title.zoom_segment == SEGMENT_FIT,
+            can_view.then_some(Message::View(ViewMessage::Fit)),
+        ),
+        segment(
+            "100%".into(),
+            title.zoom_segment == SEGMENT_HUNDRED,
+            can_view.then_some(Message::View(ViewMessage::HundredPercent)),
+        ),
+        percent,
+    ]);
     row![
         zoom,
-        value_input(
-            "%",
-            &title.zoom_text,
-            false,
-            true,
-            |value| Message::View(ViewMessage::Zoom(value)),
-            Message::View(ViewMessage::ApplyZoom)
-        )
-        .width(Length::Fixed(ZOOM_FIELD_WIDTH)),
         compare(title.compare_held, can_view),
+        icon_button(
+            &IconButtonModel {
+                icon: Icon::Clipping,
+                tooltip: "Clipping overlays (J)".into(),
+                enabled: can_view,
+                selected: title.clipping_on,
+            },
+            can_view.then_some(Message::Overlay(OverlayMessage::ToggleClipping(None))),
+        ),
     ]
-    .spacing(theme::SPACING / 2.0)
+    .spacing(theme::TITLE_GROUP_SPACING)
     .align_y(Alignment::Center)
     .into()
 }
 
-/// The Compare control. The button carries no `on_press` of its own so it never swallows the press
-/// the `mouse_area` around it needs; its style maps the resulting disabled status back to the
-/// resting one, so a held-not-clicked control still reads as a live control.
+/// The Compare control. Compare is held, not toggled, so it needs both the press and the release:
+/// a plain button would only report one of them, so the face carries no press of its own, which
+/// would swallow the one the `mouse_area` around it needs, and the area publishes both, treating
+/// the pointer leaving as a release so a drag off the button cannot leave the original preview
+/// stuck on screen.
 fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
-    let face = labelled_button(
-        &LabelledButtonModel {
-            label: "Compare".into(),
-            icon: None,
-            key_hint: None,
-            tone: if held {
-                ButtonTone::Selected
-            } else {
-                ButtonTone::Quiet
-            },
-            size: ButtonSize::Compact,
-            fill: false,
-            enabled: true,
+    let face = icon_button(
+        &IconButtonModel {
+            icon: Icon::Compare,
+            tooltip: "Compare with original (hold \\)".into(),
+            enabled: can_view,
+            selected: held,
         },
         None,
     );
@@ -118,22 +171,19 @@ fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
         .into()
 }
 
-/// Undo, Redo, the clipping toggle and the two panel-visibility toggles, at the bar's trailing
-/// edge. Clipping drives both overlays together, exactly as `J` does; the histogram's own two
-/// triangles drive them one at a time.
-pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
+/// Undo and Redo, a short rule, then the two panel-visibility toggles, at the bar's trailing edge.
+fn actions(model: &TitleBarModel) -> Element<'_, Message> {
+    let rule = container(
+        container(Space::new())
+            .width(Length::Fixed(theme::BORDER_WIDTH))
+            .height(Length::Fixed(theme::TOOLBAR_RULE_HEIGHT))
+            .style(|_: &iced::Theme| container::Style::default().background(theme::STRIP_RULE)),
+    )
+    .padding([
+        0.0,
+        theme::TOOLBAR_RULE_MARGIN - theme::TITLE_ACTION_SPACING,
+    ]);
     let mut actions = row![
-        icon_button(
-            &IconButtonModel {
-                icon: Icon::Clipping,
-                tooltip: "Clipping overlays (J)".into(),
-                enabled: model.can_view,
-                selected: model.clipping_on,
-            },
-            model
-                .can_view
-                .then_some(Message::Overlay(OverlayMessage::ToggleClipping(None))),
-        ),
         icon_button(
             &IconButtonModel {
                 icon: Icon::Undo,
@@ -156,6 +206,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
                 .can_redo
                 .then_some(Message::History(HistoryMessage::Redo)),
         ),
+        rule,
         icon_button(
             &IconButtonModel {
                 icon: Icon::StatePanel,
@@ -175,7 +226,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
             Some(Message::View(ViewMessage::TogglePanel(Panel::Tools))),
         ),
     ]
-    .spacing(theme::SPACING / 2.0)
+    .spacing(theme::TITLE_ACTION_SPACING)
     .align_y(Alignment::Center);
     if model.developer {
         actions = actions.push(text_button(

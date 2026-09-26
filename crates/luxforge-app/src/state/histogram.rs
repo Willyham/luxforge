@@ -7,20 +7,19 @@
 //! counter wording, the stale rule and the overlay's cell grid are all decided here so they can be
 //! proved without a window, and the widgets are handed numbers they cannot reinterpret.
 //!
-//! The inspector is the plot and the row of two triangles under it, and nothing else: a fixed
-//! height that never depends on the pointer, the analysis status or the counts, so nothing in the
-//! tools panel moves while a slider is dragged, the pointer crosses the photograph or a frame is
-//! re-analysed. Everything that varies lives where it cannot move a control. The domain is the
-//! plot's tooltip; a status with no report behind it is drawn inside the plot's own area
-//! ([`HistogramModel::notice`]); the endpoint counts are the triangles' tooltips
-//! ([`HistogramModel::shadow_tooltip`], [`HistogramModel::highlight_tooltip`]); and the pointer
-//! readout is in the status bar ([`readout_text`]).
+//! The inspector is the plot with the two triangles inside its bottom corners, and nothing else: a
+//! fixed height that never depends on the pointer, the analysis status or the counts, so nothing in
+//! the tools panel moves while a slider is dragged, the pointer crosses the photograph or a frame is
+//! re-analysed. Everything that varies lives where it cannot move a control. A status with no report
+//! behind it is drawn inside the plot's own area ([`HistogramModel::notice`]); the endpoint counts
+//! are the triangles' tooltips ([`HistogramModel::shadow_tooltip`],
+//! [`HistogramModel::highlight_tooltip`]); and the pointer readout is in the status bar
+//! ([`readout_text`]). The plot carries no caption, on hover or otherwise (owner, 2026-09-26).
 //!
 //! The described domain is fixed by the [histogram and clipping
 //! contract](../../../../docs/design/basic-and-histogram.md#histogram-and-clipping-contract): the
 //! rendered SDR sRGB **output** of the whole composition, after crop and edits, before any UI
-//! overlay or display scaling. It is never the camera or RAW histogram, which is why the plot says
-//! so on hover rather than leaving it to be inferred.
+//! overlay or display scaling. It is never the camera or RAW histogram.
 use crate::{
     state::{Inputs, canvas::ZoomView},
     view::{STATE_PANEL_WIDTH, STATUS_BAR_HEIGHT, TITLE_BAR_HEIGHT, TOOLS_PANEL_WIDTH},
@@ -29,10 +28,6 @@ use luxforge_core::{
     ErrorKind,
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, Report},
 };
-
-/// The plot's tooltip. It names the domain in the user's own words so an endpoint count is never
-/// read as evidence about the original capture.
-pub(crate) const DOMAIN_CAPTION: &str = "Output \u{b7} sRGB \u{b7} after crop";
 
 /// The rule both triangles state on hover, exactly as the contract words it.
 pub(crate) const SHADOW_RULE: &str =
@@ -173,8 +168,6 @@ pub(crate) struct HistogramModel {
     /// Why there is nothing to show, when the status is `Unavailable`.
     pub(crate) reason: Option<String>,
     pub(crate) identity: Option<RenderIdentity>,
-    /// The domain the counts describe, stated on hover over the plot.
-    pub(crate) caption: &'static str,
     /// The three channels' counts, normalized against one shared linear scale: the largest count in
     /// **any** channel. `None` while there is no report. Raw counts are never changed by this; the
     /// API keeps reporting them exactly as reduced.
@@ -189,15 +182,13 @@ pub(crate) struct HistogramModel {
     pub(crate) stale: bool,
 }
 
-/// The default is the empty inspector, not an empty plot: pending, no bins, and the domain already
-/// in place, because the domain never depends on what has been analysed.
+/// The default is the empty inspector, not an empty plot: pending, with no bins.
 impl Default for HistogramModel {
     fn default() -> Self {
         Self {
             status: HistogramStatus::default(),
             reason: None,
             identity: None,
-            caption: DOMAIN_CAPTION,
             bins: None,
             plotted_max: 0,
             counters: Counters::default(),
@@ -430,14 +421,15 @@ pub(crate) fn photo_surface(
 /// detail an overlay cell can show.
 ///
 /// At Fit the toolkit contains the image inside the padded surface, so the fitted size is the
-/// surface's own scaled by the display factor. At a percentage the zoom is defined against physical
-/// pixels — 100% means one physical pixel per source pixel — so the display factor does not enter.
+/// surface's own less `inset` — the Fit padding's total horizontal and vertical inset — scaled by
+/// the display factor. At a percentage the zoom is defined against physical pixels — 100% means one
+/// physical pixel per source pixel — so neither the inset nor the display factor enters.
 pub(crate) fn displayed_size(
     zoom: ZoomView,
     source: (u32, u32),
     surface: (f32, f32),
     scale_factor: f32,
-    padding: f32,
+    inset: (f32, f32),
 ) -> Option<(f32, f32)> {
     let (width, height) = (source.0 as f32, source.1 as f32);
     if !(width > 0.0 && height > 0.0) {
@@ -446,8 +438,8 @@ pub(crate) fn displayed_size(
     match zoom {
         ZoomView::Fit => {
             let available = (
-                (surface.0 - 2.0 * padding).max(0.0),
-                (surface.1 - 2.0 * padding).max(0.0),
+                (surface.0 - inset.0).max(0.0),
+                (surface.1 - inset.1).max(0.0),
             );
             if !(available.0 > 0.0 && available.1 > 0.0 && scale_factor > 0.0) {
                 return None;
@@ -640,10 +632,6 @@ mod tests {
         assert_eq!(model.status, HistogramStatus::Pending);
         assert_eq!(model.notice().as_deref(), Some("No analysis yet"));
         assert!(model.bins.is_none());
-        // The domain never depends on what has been analysed: the plot states it on hover even
-        // before the first report.
-        assert_eq!(model.caption, DOMAIN_CAPTION);
-        assert_eq!(model.caption, "Output \u{b7} sRGB \u{b7} after crop");
     }
 
     /// The notice is drawn inside the plot's own area, so it exists only where there is nothing
@@ -771,28 +759,38 @@ mod tests {
     fn the_displayed_size_follows_the_zoom() {
         let source = (480, 320);
         let surface = (900.0, 800.0);
-        let fit = displayed_size(ZoomView::Fit, source, surface, 2.0, 20.0).expect("a fit size");
-        // Available 860x760; the width binds at 860/480, and the capture is at 2x.
-        let scale = (860.0f32 / 480.0).min(760.0 / 320.0) * 2.0;
+        let inset = crate::view::canvas::FIT_INSET;
+        assert_eq!(
+            inset,
+            (40.0, 76.0),
+            "20 pt at the top and sides, 56 pt at the bottom"
+        );
+        let fit = displayed_size(ZoomView::Fit, source, surface, 2.0, inset).expect("a fit size");
+        // Available 860x724; the width binds at 860/480, and the capture is at 2x.
+        let scale = (860.0f32 / 480.0).min(724.0 / 320.0) * 2.0;
         assert!((fit.0 - 480.0 * scale).abs() < 1e-3);
         assert!((fit.1 - 320.0 * scale).abs() < 1e-3);
+        // A portrait photograph is bound by the height the strip leaves it.
+        let portrait =
+            displayed_size(ZoomView::Fit, (320, 480), surface, 2.0, inset).expect("a fit size");
+        assert!((portrait.1 - 724.0 * 2.0).abs() < 1e-3, "{portrait:?}");
         let hundred =
-            displayed_size(ZoomView::Percent(100.0), source, surface, 2.0, 20.0).expect("100%");
+            displayed_size(ZoomView::Percent(100.0), source, surface, 2.0, inset).expect("100%");
         assert_eq!(
             hundred,
             (480.0, 320.0),
             "one physical pixel per source pixel"
         );
         let half =
-            displayed_size(ZoomView::Percent(50.0), source, surface, 2.0, 20.0).expect("50%");
+            displayed_size(ZoomView::Percent(50.0), source, surface, 2.0, inset).expect("50%");
         assert_eq!(half, (240.0, 160.0));
         let double =
-            displayed_size(ZoomView::Percent(200.0), source, surface, 2.0, 20.0).expect("200%");
+            displayed_size(ZoomView::Percent(200.0), source, surface, 2.0, inset).expect("200%");
         assert_eq!(double, (960.0, 640.0));
         // Degenerate inputs produce no size rather than a wrong one.
-        assert!(displayed_size(ZoomView::Fit, (0, 0), surface, 2.0, 20.0).is_none());
-        assert!(displayed_size(ZoomView::Fit, source, (10.0, 10.0), 2.0, 20.0).is_none());
-        assert!(displayed_size(ZoomView::Percent(0.0), source, surface, 2.0, 20.0).is_none());
+        assert!(displayed_size(ZoomView::Fit, (0, 0), surface, 2.0, inset).is_none());
+        assert!(displayed_size(ZoomView::Fit, source, (10.0, 10.0), 2.0, inset).is_none());
+        assert!(displayed_size(ZoomView::Percent(0.0), source, surface, 2.0, inset).is_none());
     }
 
     #[test]

@@ -142,10 +142,10 @@ impl Editor {
         );
         match self.session.preview.view.zoom {
             Zoom::Fit => {
-                let padding = 2.0 * view::canvas::PHOTO_PADDING;
+                let inset = view::canvas::FIT_INSET;
                 bounds_of((
-                    (surface.0 - padding).max(0.0) * self.scale_factor,
-                    (surface.1 - padding).max(0.0) * self.scale_factor,
+                    (surface.0 - inset.0).max(0.0) * self.scale_factor,
+                    (surface.1 - inset.1).max(0.0) * self.scale_factor,
                 ))
             }
             Zoom::Percent { value } => {
@@ -155,7 +155,7 @@ impl Editor {
                     stage,
                     surface,
                     self.scale_factor,
-                    view::canvas::PHOTO_PADDING,
+                    view::canvas::FIT_INSET,
                 )?;
                 // Strictly smaller in both axes, so a proxy is never asked for a frame that would
                 // have to be magnified back up to show the detail the zoom asked for.
@@ -1070,6 +1070,9 @@ impl Editor {
             json!({
                 "entry_id":upload.entry_id,
                 "snapshot_id":upload.snapshot_id,
+                // The status bar no longer shows the source hash, so the log is where a frame is
+                // correlated with it.
+                "source_fingerprint":upload.source_fingerprint,
                 "generation":upload.generation,
                 "draft_revision":upload.draft_revision,
                 "dimensions":[upload.width,upload.height],
@@ -1165,35 +1168,31 @@ impl Editor {
         self.display_entry = Some(entry);
     }
 
-    /// What the status bar says about the frame that just reached the screen. A historical preview
-    /// names the entry it shows by the sequence number the history rows carry, so the status bar
-    /// and the state panel agree about which entry is on screen.
+    /// What the status bar says about the frame that just reached the screen: what last happened
+    /// to the photograph when it is the current state, and which entry is shown during a historical
+    /// preview, by the sequence number and label the history rows carry, so the status bar and the
+    /// state panel agree about which entry is on screen. It names no identity, snapshot or source
+    /// hash; those stay with the API and the evidence state.
     pub(super) fn displayed_status(&self, upload: &Upload) -> String {
-        let marker = if self.session.preview.can_edit() {
-            "Current".to_owned()
-        } else {
-            match self.sequence_of(&upload.entry_id) {
-                Some(sequence) => format!("Previewing entry {sequence}"),
-                None => "Previewing history".to_owned(),
+        if !self.session.preview.can_edit() {
+            if self.compare_return.is_some() {
+                return state::status::COMPARING.to_owned();
             }
-        };
-        format!(
-            "{marker} · {} × {} · entry {} · snapshot {} · source {}",
-            upload.width,
-            upload.height,
-            short(upload.entry_id.as_str()),
-            short(&upload.snapshot_id),
-            short(&upload.source_fingerprint)
-        )
-    }
-
-    /// The sequence number of a loaded entry, when the history page holds it.
-    pub(super) fn sequence_of(&self, entry_id: &luxforge_core::EntryId) -> Option<u64> {
-        self.history
-            .entries
-            .iter()
-            .find(|entry| &entry.id == entry_id)
-            .map(|entry| entry.sequence)
+            return state::status::previewing(
+                self.history
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == upload.entry_id)
+                    .map(|entry| (entry.sequence, entry.label.as_str())),
+            );
+        }
+        match (&self.happened, &self.state) {
+            (Some(happened), _) => happened.sentence(),
+            (None, Some(state)) => {
+                state::status::showing(state.current_entry.sequence, &state.current_entry.label)
+            }
+            (None, None) => String::new(),
+        }
     }
 
     /// The crop draft is displayed instead of the plain preview only while its own input stage is on
@@ -1201,8 +1200,4 @@ impl Editor {
     pub(crate) fn drafting(&self) -> bool {
         self.crop().is_some() && self.presenter.stage().is_some() && self.session.preview.can_edit()
     }
-}
-
-pub(crate) fn short(value: &str) -> &str {
-    value.get(..value.len().min(12)).unwrap_or(value)
 }

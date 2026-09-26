@@ -541,6 +541,12 @@ pub(crate) enum ViewMessage {
     Fit,
     HundredPercent,
     ApplyZoom,
+    /// The title bar's percentage segment was pressed: it opens as the zoom field, holding the
+    /// effective percentage, with the focus in it.
+    EditZoom,
+    /// The title bar's empty area was pressed where the app's bar is the window's title bar: the
+    /// window follows the pointer while the button is held.
+    DragWindow,
     /// A view change returned the owner's session.
     SessionUpdated(Result<ClientSession, String>),
     /// The photo surface scrolled to this absolute offset.

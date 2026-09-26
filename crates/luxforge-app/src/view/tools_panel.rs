@@ -31,10 +31,10 @@ use luxforge_ui::{
     NumberFieldModel, RailDecoration, RowPlacement, SectionHeaderModel, SegmentedModel,
     SliderModel, StepperModel, StepperRail, StepperRailMessages, SubGroupHeaderModel, Tab,
     TabRowModel, ToggleModel, badge, boxed_input, button_row, caption, channel_row, chip, chip_row,
-    chip_wrap, clip_triangle, color_picker, color_swatch, curve_editor, described_histogram,
-    equal_button_row, error_caption, focus_control, icon_button, icon_button_row, inline_menu,
-    label_line, labelled_button, list_heading, menu_choice, module_section, number_field,
-    readout_card, row_icon_button, section_label, segmented, slider, stepper, sub_group_header,
+    chip_wrap, color_picker, color_swatch, curve_editor, equal_button_row, error_caption,
+    focus_control, histogram_inspector, icon_button, icon_button_row, inline_menu, label_line,
+    labelled_button, list_heading, menu_choice, module_section, number_field, readout_card,
+    row_icon_button, section_label, segmented, slider, stepper, sub_group_header,
     sub_group_header_with_actions, tab_row, text_button, theme, toggle,
 };
 use serde_json::{Map, Value};
@@ -56,12 +56,11 @@ pub(crate) fn tools_panel<'a>(
     masking: bool,
 ) -> Element<'a, Message> {
     if let Some(message) = model.status.message() {
-        return scrollable(
-            iced::widget::container(
-                column![inspector(plot), caption(message)].spacing(theme::SPACING),
-            )
-            .padding(theme::SPACING),
-        )
+        return scrollable(column![
+            inspector(plot),
+            iced::widget::container(caption(message))
+                .padding([theme::SPACING, theme::HISTOGRAM_PADDING.left]),
+        ])
         .id(scroll_id())
         .height(Length::Fill)
         .into();
@@ -72,7 +71,7 @@ pub(crate) fn tools_panel<'a>(
     let mut panel = column![].width(Length::Fill);
     // The histogram sits above the first module section with no header of its own, as the Develop
     // workspace layout reserves.
-    panel = panel.push(iced::widget::container(inspector(plot)).padding(theme::SPACING));
+    panel = panel.push(inspector(plot));
     if masking {
         panel = panel.push(crate::view::masks_panel::masks_panel(masks, menu, plot));
         // The adjustments below the list are the maskable modules' own sections, bound to the open
@@ -106,15 +105,15 @@ pub(crate) fn tools_panel<'a>(
         .into()
 }
 
-/// The histogram inspector: the plot and the row of two clipping triangles under it, and nothing
-/// else.
+/// The histogram inspector: the plot with the two clipping triangles inside its bottom corners, in
+/// its padding, and nothing else.
 ///
 /// Its height is fixed and unconditional, which is the point: every control in the panel sits under
 /// this block, so anything in it that grew, wrapped or came and went with the pointer, the analysis
 /// status or the counts would make the whole tools panel jump while a slider is dragged. What
-/// varies is placed where it cannot move anything: the domain is the plot's tooltip, a status with
-/// no report is drawn inside the plot's own area, the endpoint counts are the triangles' tooltips,
-/// and the pointer readout is in the status bar.
+/// varies is placed where it cannot move anything: a status with no report is drawn inside the
+/// plot's own area, the endpoint counts are the triangles' tooltips, and the pointer readout is in
+/// the status bar. The plot states no caption at all.
 ///
 /// The view decides nothing here. Which channel is which colour, what the counts say, which
 /// triangle is tinted and what each tooltip and notice states are all in the model; this turns them
@@ -132,48 +131,45 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
             channel.bins = bins[index];
         }
     }
-    let plot = described_histogram(
+    let shadow = ClipTriangleModel {
+        tooltip: model.shadow_tooltip(),
+        tint: theme::CLIPPING_SHADOW,
+        tinted: model.shadow.tinted,
+        active: model.shadow.active,
+        enabled: model.shadow.enabled,
+    };
+    let highlight = ClipTriangleModel {
+        tooltip: model.highlight_tooltip(),
+        tint: theme::CLIPPING_HIGHLIGHT,
+        tinted: model.highlight.tinted,
+        active: model.highlight.active,
+        enabled: model.highlight.enabled,
+    };
+    debug_assert_eq!(BINS, 256, "one bin per 8-bit output code");
+    let plot = histogram_inspector(
         &luxforge_ui::HistogramModel {
             channels,
             stale: model.stale,
             version: plot_version(model),
         },
-        model.caption.to_owned(),
         model.notice(),
+        (
+            &shadow,
+            Some(Message::Overlay(OverlayMessage::ToggleClipping(Some(
+                ClipEndpoint::Shadows,
+            )))),
+        ),
+        (
+            &highlight,
+            Some(Message::Overlay(OverlayMessage::ToggleClipping(Some(
+                ClipEndpoint::Highlights,
+            )))),
+        ),
     );
-    let triangles = row![
-        clip_triangle(
-            &ClipTriangleModel {
-                icon: Icon::ShadowClipping,
-                tooltip: model.shadow_tooltip(),
-                tint: theme::CLIPPING_SHADOW,
-                tinted: model.shadow.tinted,
-                active: model.shadow.active,
-                enabled: model.shadow.enabled,
-            },
-            Some(Message::Overlay(OverlayMessage::ToggleClipping(Some(
-                ClipEndpoint::Shadows
-            )))),
-        ),
-        iced::widget::Space::new().width(Length::Fill),
-        clip_triangle(
-            &ClipTriangleModel {
-                icon: Icon::HighlightClipping,
-                tooltip: model.highlight_tooltip(),
-                tint: theme::CLIPPING_HIGHLIGHT,
-                tinted: model.highlight.tinted,
-                active: model.highlight.active,
-                enabled: model.highlight.enabled,
-            },
-            Some(Message::Overlay(OverlayMessage::ToggleClipping(Some(
-                ClipEndpoint::Highlights
-            )))),
-        ),
-    ]
-    .align_y(Alignment::Center);
-    let block = column![plot, triangles].spacing(theme::SPACING / 2.0);
-    debug_assert_eq!(BINS, 256, "one bin per 8-bit output code");
-    block.into()
+    iced::widget::container(plot)
+        .padding(theme::HISTOGRAM_PADDING)
+        .height(Length::Fixed(theme::HISTOGRAM_INSPECTOR_HEIGHT))
+        .into()
 }
 
 /// A cheap identity for the plot's geometry: it moves exactly when the bins or the dimming would,

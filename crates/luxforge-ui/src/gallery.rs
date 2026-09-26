@@ -4,12 +4,13 @@
 //! part of the public widget API; [`crate::gallery_states`] is the only path to it.
 
 use crate::{
-    BINS, ChipModel, ClipTriangleModel, HistogramChannel, HistogramModel, Icon, IconButtonModel,
-    ListRowModel, Marker, ModeEntry, NoticeCardModel, RailDecoration, SectionHeaderModel,
-    SegmentedModel, SliderModel, SubGroupHeaderModel, ToggleEntry, Tone, ValueEdit, caption, chip,
-    clip_triangle, double_click, error_caption, floating_bar, histogram, icon_button, inline_menu,
-    label, list_row, mode_strip, notice_card, section_header, section_label, segmented, slider,
-    sub_group_header, theme, title, value_text,
+    BINS, ChipModel, ClipTriangleModel, DraftBarModel, HistogramChannel, HistogramModel, Icon,
+    IconButtonModel, ListRowModel, Marker, ModeEntry, NoticeCardModel, RailDecoration,
+    SectionHeaderModel, SegmentedModel, SliderModel, SubGroupHeaderModel, ToggleEntry, Tone,
+    ValueEdit, caption, chip, clip_triangle, compact_chip, double_click, draft_bar, error_caption,
+    floating_bar, header_icon_button, histogram_inspector, icon_button, inline_menu, label,
+    list_row, mode_strip, notice_card, section_header, section_label, segment, segment_track,
+    segmented, slider, sub_group_header, theme, title, value_text,
 };
 use iced::Element;
 
@@ -256,6 +257,74 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
         None,
     ));
 
+    // -- The shell's title bar and status bar: the zoom control with Fit selected and the
+    // -- effective percentage as its third segment, Undo enabled beside Redo disabled, the
+    // -- compact version chips and the status bar's small Copy.
+    states.push(segment_track(vec![
+        segment("Fit".into(), true, Some(())),
+        segment("100%".into(), false, Some(())),
+        segment("18%".into(), false, Some(())),
+    ]));
+    states.push(
+        iced::widget::row![
+            icon_button(
+                &IconButtonModel {
+                    icon: Icon::Undo,
+                    tooltip: "Undo".into(),
+                    enabled: true,
+                    selected: false,
+                },
+                Some(()),
+            ),
+            icon_button(
+                &IconButtonModel {
+                    icon: Icon::Redo,
+                    tooltip: "Redo".into(),
+                    enabled: false,
+                    selected: false,
+                },
+                None,
+            ),
+        ]
+        .spacing(theme::TITLE_ACTION_SPACING)
+        .into(),
+    );
+    states.push(
+        iced::widget::row![
+            compact_chip(
+                &ChipModel {
+                    label: "Print draft".into(),
+                    trailing: Some("3".into()),
+                    selected: false,
+                    enabled: true,
+                },
+                Some(()),
+                Some(()),
+            ),
+            compact_chip(
+                &ChipModel {
+                    label: "Warm".into(),
+                    trailing: Some("5".into()),
+                    selected: true,
+                    enabled: true,
+                },
+                Some(()),
+                Some(()),
+            ),
+        ]
+        .spacing(theme::VERSION_CHIP_SPACING)
+        .into(),
+    );
+    states.push(header_icon_button(
+        &IconButtonModel {
+            icon: Icon::Copy,
+            tooltip: "Copy the status".into(),
+            enabled: true,
+            selected: false,
+        },
+        Some(()),
+    ));
+
     // -- Segmented control (crop ratio presets).
     states.push(segmented(
         &SegmentedModel {
@@ -352,17 +421,19 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     // -- The state panel's Performance section, beside the history rows it sits under.
     states.extend(crate::gallery_performance::gallery_performance());
 
-    // -- Notice cards: neutral and warning tone.
+    // -- Notice cards: error, warning and neutral tone, each with its leading icon.
     states.push(notice_card(
         &NoticeCardModel {
+            icon: Icon::Clipping,
             title: "Original not found".into(),
             body: "Edits and history are kept. Locate\u{2026} to point at the moved file.".into(),
-            tone: Tone::Neutral,
+            tone: Tone::Error,
         },
         vec![("Locate\u{2026}".to_string(), ())],
     ));
     states.push(notice_card(
         &NoticeCardModel {
+            icon: Icon::Spark,
             title: "Changed elsewhere".into(),
             body: "Draft kept. Discard or Reapply.".into(),
             tone: Tone::Warning,
@@ -372,38 +443,69 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             ("Reapply".to_string(), ()),
         ],
     ));
+    states.push(notice_card(
+        &NoticeCardModel {
+            icon: Icon::Clipping,
+            title: "Preview is stale".into(),
+            body: "Lens profile is unavailable: no provider is installed.".into(),
+            tone: Tone::Neutral,
+        },
+        Vec::new(),
+    ));
 
-    // -- A floating bar holding an arbitrary child.
+    // -- A floating bar holding an arbitrary child, and the draft bar built on it.
     states.push(floating_bar(vec![label::<()>("Crop")]));
+    states.push(draft_bar(
+        &DraftBarModel {
+            title: "Crop".into(),
+            readout: "Original 4:5 \u{b7} 2.4\u{b0} \u{b7} 2872 \u{d7} 3590 px".into(),
+            apply_reason: None,
+        },
+        (),
+        Some(()),
+    ));
 
     // -- The double-click wrapper. It has no appearance of its own — it delegates size, layout and
     // -- drawing to its content — so the board shows what wrapping costs visually: nothing.
     states.push(double_click(label::<()>("Double-click to reset"), ()));
 
-    // -- The mode strip: canvas modes plus a separated toggle group.
-    states.push(mode_strip(
-        &[
-            ModeEntry {
-                label: "Pointer".into(),
-                shortcut: Some("V".into()),
-                selected: true,
-                enabled: true,
-            },
-            ModeEntry {
-                label: "Crop".into(),
-                shortcut: Some("R".into()),
-                selected: false,
-                enabled: true,
-            },
-        ],
-        |_: usize| (),
-        &[ToggleEntry {
-            label: "Thirds".into(),
-            shortcut: Some("O".into()),
-            on: false,
-        }],
-        |_: usize| (),
-    ));
+    // -- The mode strip: canvas modes plus a separated toggle group, at rest and with Crop selected
+    // -- and Thirds on, as the crop board draws it.
+    for (crop, thirds) in [(false, false), (true, true)] {
+        states.push(mode_strip(
+            &[
+                ModeEntry {
+                    label: "Pointer".into(),
+                    icon: Some(Icon::Pointer),
+                    shortcut: Some("V".into()),
+                    selected: !crop,
+                    enabled: true,
+                },
+                ModeEntry {
+                    label: "Crop".into(),
+                    icon: Some(Icon::Crop),
+                    shortcut: Some("R".into()),
+                    selected: crop,
+                    enabled: true,
+                },
+                ModeEntry {
+                    label: "Mask".into(),
+                    icon: Some(Icon::Mask),
+                    shortcut: Some("M".into()),
+                    selected: false,
+                    enabled: true,
+                },
+            ],
+            |_: usize| (),
+            &[ToggleEntry {
+                label: "Thirds".into(),
+                icon: Some(Icon::Thirds),
+                shortcut: Some("O".into()),
+                on: thirds,
+            }],
+            |_: usize| (),
+        ));
+    }
 
     // -- An inline menu.
     states.push(inline_menu(vec![
@@ -422,26 +524,54 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             channel.bins[code] = (-offset * offset).exp();
         }
     }
-    states.push(histogram::<()>(&ready));
-    states.push(histogram::<()>(&HistogramModel {
-        stale: true,
-        ..ready
-    }));
+    // The inspector's two triangles: the shadow endpoint has pixels, the highlight endpoint none.
+    let shadow = ClipTriangleModel {
+        tooltip: "Any channel at 0 \u{b7} blue; both endpoints \u{b7} magenta".into(),
+        tint: theme::CLIPPING_SHADOW,
+        tinted: true,
+        active: false,
+        enabled: true,
+    };
+    let highlight = ClipTriangleModel {
+        tooltip: "Any channel at 255 \u{b7} red; both endpoints \u{b7} magenta".into(),
+        tint: theme::CLIPPING_HIGHLIGHT,
+        tinted: false,
+        active: false,
+        enabled: true,
+    };
+    let inspector = |model: &HistogramModel, notice: Option<&str>| {
+        histogram_inspector(
+            model,
+            notice.map(str::to_owned),
+            (&shadow, Some(())),
+            (&highlight, Some(())),
+        )
+    };
+    states.push(inspector(&ready, None));
+    states.push(inspector(
+        &HistogramModel {
+            stale: true,
+            ..ready
+        },
+        None,
+    ));
     // -- Empty: every bin zero, which is not the same thing as no result at all.
-    states.push(histogram::<()>(&HistogramModel {
+    let empty = HistogramModel {
         channels: [HistogramChannel {
             bins: [0.0; BINS],
             color: theme::CHANNEL_RED,
         }; 3],
         stale: false,
         version: 0,
-    }));
+    };
+    states.push(inspector(&empty, None));
+    // -- Pending: no result yet, said inside the plot's own area.
+    states.push(inspector(&empty, Some("No analysis yet")));
 
     // -- The clipping triangles: untinted (no endpoint pixels), tinted, tinted and active.
     for (tinted, active) in [(false, false), (true, false), (true, true)] {
         states.push(clip_triangle(
             &ClipTriangleModel {
-                icon: Icon::ShadowClipping,
                 tooltip: "Any channel at 0 \u{b7} blue; both endpoints \u{b7} magenta".into(),
                 tint: theme::CLIPPING_SHADOW,
                 tinted,
@@ -453,7 +583,6 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     }
     states.push(clip_triangle(
         &ClipTriangleModel {
-            icon: Icon::HighlightClipping,
             tooltip: "Any channel at 255 \u{b7} red; both endpoints \u{b7} magenta".into(),
             tint: theme::CLIPPING_HIGHLIGHT,
             tinted: true,
@@ -466,7 +595,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     // -- Text helpers, standalone.
     states.push(title::<()>("Basic"));
     states.push(label::<()>("White balance"));
-    states.push(caption::<()>("Output \u{b7} sRGB \u{b7} after crop"));
+    states.push(caption::<()>("Input stage 480 \u{d7} 320"));
     states.push(section_label::<()>("Tone"));
     states.push(error_caption::<()>("Range is -100 to 100"));
     states.push(value_text::<()>("+0.62"));

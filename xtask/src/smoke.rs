@@ -526,7 +526,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "gallery",
-        about: "All 78 widget gallery states across ten pages",
+        about: "All 82 widget gallery states across ten pages",
         launches: &[LaunchSpec {
             plan: gallery::plan,
             developer: true,
@@ -845,16 +845,16 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
     }
     if scenario.starts_with("large") {
         // A photo-sized source at Fit is shown as its display proxy, so the status bar's figure is
-        // the proxy phase's own render time and says so. A capture can land while a refit or the
-        // exact phase is still running, when the bar says "Rendering…"; the figure behind it is
-        // still recorded, and it must be the proxy's.
+        // the proxy phase's own render time and says it is approximate. A capture can land while a
+        // refit or the exact phase is still running, when the bar says "Rendering…"; the figure
+        // behind it is still recorded, and it must be the proxy's.
         let record = expect_render_times(&launch.events, &launch.frames)?;
         ensure(
             launch.frames.iter().all(|frame| {
                 let bar = &frame.state()["status_bar"];
                 bar["render_proxy"] == json!(true)
                     && bar["render"].as_str().is_some_and(|text| {
-                        text.ends_with("(proxy)") || text == "Rendering\u{2026}"
+                        text.starts_with("Approximate render") || text == "Rendering\u{2026}"
                     })
             }),
             "A photo-sized frame at Fit does not report the proxy's render time",
@@ -881,29 +881,30 @@ pub const RENDER_MS_BOUND: f64 = 5000.0;
 /// The status bar's wording of one frame's render time, exactly as the editor's
 /// `state::status::RenderTime` formats it, so a captured frame's text is checked against its own
 /// figure rather than against a copy of the text. `approximate` is a frame that approximates a
-/// drafted RAW white balance.
+/// drafted RAW white balance; it and the display proxy both read as an approximate render.
 pub fn render_text(ms: f64, proxy: bool, approximate: bool) -> String {
     let figure = if ms < 0.5 {
-        "<1".to_owned()
+        "<1 ms".to_owned()
+    } else if ms.round() >= 1000.0 {
+        format!("{:.1} s", ms / 1000.0)
     } else {
-        format!("{}", ms.round() as i64)
+        format!("{} ms", ms.round() as i64)
     };
-    let phase = match (proxy, approximate) {
-        (true, true) => " (proxy, approximate)",
-        (true, false) => " (proxy)",
-        (false, true) => " (approximate)",
-        (false, false) => "",
+    let kind = if proxy || approximate {
+        "Approximate"
+    } else {
+        "Exact"
     };
-    format!("Rendered in {figure} ms{phase}")
+    format!("{kind} render \u{b7} {figure}")
 }
 
 /// Every presented frame's render time, from its `preview_displayed` event: the preview worker's
 /// own time for the phase on screen. Each must be a finite number of milliseconds in
 /// `0..RENDER_MS_BOUND`, and there must be at least one. Then, for every captured frame, the status
 /// bar either says the renderer is busy or states a figure that one of those events carried, in
-/// exactly the editor's wording, with `(proxy)` exactly when the frame on screen is the proxy and
-/// `approximate` exactly when it approximates a drafted RAW white balance. Returns the evidence
-/// record.
+/// exactly the editor's wording, with the correlated proxy flag exactly when the frame on screen is
+/// the proxy and the approximate flag exactly when it approximates a drafted RAW white balance, and
+/// `Approximate render` exactly when either is set. Returns the evidence record.
 pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> Result<Value> {
     let mut displayed = Vec::new();
     for event in events.iter().filter(|e| e["event"] == "preview_displayed") {
@@ -995,19 +996,26 @@ mod tests {
     fn render_times_must_be_each_frames_own_and_plausible() {
         let displayed = |ms: Value| json!({"event":"preview_displayed","detail":{"generation":2,"proxy":true,"render_ms":ms}});
         let frame = |render: &str, ms: f64, proxy: bool| json!({"file":"frame-1.png","state":{"proxy":{"presented":proxy},"status_bar":{"render":render,"render_ms":ms,"render_proxy":proxy}}});
-        assert_eq!(render_text(12.4, true, false), "Rendered in 12 ms (proxy)");
-        assert_eq!(render_text(0.3, false, false), "Rendered in <1 ms");
+        assert_eq!(
+            render_text(12.4, true, false),
+            "Approximate render \u{b7} 12 ms"
+        );
+        assert_eq!(render_text(0.3, false, false), "Exact render \u{b7} <1 ms");
+        assert_eq!(
+            render_text(1234.0, false, false),
+            "Exact render \u{b7} 1.2 s"
+        );
         assert_eq!(
             render_text(9.2, true, true),
-            "Rendered in 9 ms (proxy, approximate)"
+            "Approximate render \u{b7} 9 ms"
         );
         assert_eq!(
             render_text(140.0, false, true),
-            "Rendered in 140 ms (approximate)"
+            "Approximate render \u{b7} 140 ms"
         );
         let good = expect_render_times(
             &[displayed(json!(12.4))],
-            &[frame("Rendered in 12 ms (proxy)", 12.4, true)],
+            &[frame("Approximate render \u{b7} 12 ms", 12.4, true)],
         );
         assert!(good.is_ok(), "{good:?}");
         // The old figure: half a million milliseconds since the open.
@@ -1022,7 +1030,7 @@ mod tests {
         assert!(
             expect_render_times(
                 &[displayed(json!(12.4))],
-                &[frame("Rendered in 90 ms (proxy)", 90.0, true)]
+                &[frame("Approximate render \u{b7} 90 ms", 90.0, true)]
             )
             .is_err()
         );
@@ -1030,7 +1038,7 @@ mod tests {
         assert!(
             expect_render_times(
                 &[displayed(json!(12.4))],
-                &[frame("Rendered in 12 ms", 12.4, false)
+                &[frame("Exact render \u{b7} 12 ms", 12.4, false)
                     .as_object()
                     .map(|object| {
                         let mut object = object.clone();

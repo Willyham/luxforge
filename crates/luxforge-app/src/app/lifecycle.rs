@@ -149,12 +149,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     .title("Luxforge")
     // An invisible window still owns a real surface and renders through it, so a hidden launch
     // captures the same renderer readbacks; it is simply never placed on the desktop.
-    .window(iced::window::Settings {
-        size: size.into(),
-        visible: !hidden,
-        exit_on_close_request: false,
-        ..iced::window::Settings::default()
-    })
+    .window(crate::window_frame::settings(size, !hidden))
     .theme(luxforge_ui::theme::theme())
     .subscription(Editor::subscription);
     // The bundled typeface is registered once, before the first frame, from bytes compiled into

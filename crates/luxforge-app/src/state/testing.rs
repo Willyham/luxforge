@@ -230,6 +230,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             aspect: "aspect".into(),
             title: "Crop".into(),
             shortcut: Some("R".into()),
+            icon: Some("crop".into()),
         }),
         developer: false,
         collapsed: false,

@@ -755,28 +755,8 @@ fn a_masked_control_sends_and_copies_the_request_an_independent_client_sends() {
             .all(|layer| layer.mask.is_some() || layer.module.as_deref() != Some("luxforge.basic")),
         "the global Basic layer was created by a masked edit"
     );
-
-    // The recipe panel groups the masked layer under its mask's name while keeping the durable
-    // processing order visible: the rows stay in order and each masked row names its mask.
-    let rows = &masking.editor.workspace.panel.recipe;
-    let row = rows
-        .iter()
-        .find(|row| row.mask.is_some())
-        .expect("a masked row");
-    let group = row.mask.as_ref().unwrap();
-    assert_eq!(group.id, mask);
-    assert_eq!(group.name, listing.masks[0].name);
-    assert_eq!(group.index, Some(0));
-    assert!(group.heading, "the first row of a mask carries its heading");
-    assert_eq!(
-        rows.iter().map(|row| &row.layer_id).collect::<Vec<_>>(),
-        described
-            .layers
-            .iter()
-            .map(|layer| &layer.id)
-            .collect::<Vec<_>>(),
-        "the rows are the recipe's own durable order"
-    );
+    // The listing names the mask the described layer is bound to.
+    assert_eq!(listing.masks[0].id, mask);
 
     // Leaving Mask mode binds the sections back to the global layer, so a field never shows a
     // value the control in front of it would not edit.

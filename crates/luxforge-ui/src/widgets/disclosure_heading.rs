@@ -27,6 +27,7 @@ pub fn disclosure_heading<'a, M: Clone + 'a>(
     let mut content = row![
         text(label.to_uppercase())
             .size(theme::SIZE_SECTION_LABEL)
+            .font(theme::FONT_SEMIBOLD)
             .wrapping(Wrapping::None),
         Space::new().width(Length::Fill),
     ]

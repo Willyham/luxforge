@@ -419,6 +419,7 @@ static CANVAS: LazyLock<Vec<CanvasInteraction>> = LazyLock::new(|| {
                 action: add.method.to_owned(),
                 title: format!("Pick {}", spoken(kind)),
                 shortcut: None,
+                icon: None,
             })
         })
         .collect()
