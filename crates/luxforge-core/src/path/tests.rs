@@ -120,20 +120,25 @@ fn a_path_over_the_declared_count_names_the_points_per_stroke_limit() {
     );
 }
 
+/// The brush sizes decimation is held to: the declared minimum, the desktop's default brush and the
+/// declared maximum.
+const SIZES: [f64; 3] = [SIZE_MIN, 0.1, SIZE_MAX];
+
 #[test]
 fn decimation_is_deterministic_and_stays_within_the_stated_deviation() {
     let mut rng = Rng(0xd1ce);
-    for _ in 0..200 {
+    for index in 0..300 {
+        let size = SIZES[index % SIZES.len()];
         let count = 2 + (rng.next() % 600) as usize;
         let path = captured(&mut rng, count);
-        let once = decimate(&path).expect("a legal path");
-        let twice = decimate(&path).expect("a legal path");
+        let once = decimate(&path, size).expect("a legal path");
+        let twice = decimate(&path, size).expect("a legal path");
         assert_eq!(once, twice, "decimation reads nothing but its input");
         // Idempotent: the desktop decimates before it posts, and the host decimates what it was
         // posted, so the two must agree or a stored stroke would depend on who prepared it.
         assert_eq!(
             once,
-            decimate(&once).expect("a decimated path is a legal path"),
+            decimate(&once, size).expect("a decimated path is a legal path"),
             "decimating a decimated path changes nothing"
         );
         assert!(
@@ -154,11 +159,12 @@ fn decimation_is_deterministic_and_stays_within_the_stated_deviation() {
         // Every captured position is within the stated deviation of the stored polyline. That is
         // the whole claim a tolerance makes, and it is checked against the positions that were
         // captured rather than against the ones that were kept.
+        let bound = stored_deviation(size);
         for point in &path {
             let distance = distance_to_polyline(*point, &once);
             assert!(
-                distance <= STORED_DEVIATION,
-                "a captured position moved {distance:e}, past the stated {STORED_DEVIATION:e}",
+                distance <= bound,
+                "a captured position moved {distance:e}, past the stated {bound:e} at size {size}",
             );
         }
         // And every stored position is on the stored grid, at the declared precision and no finer.
@@ -172,6 +178,80 @@ fn decimation_is_deterministic_and_stays_within_the_stated_deviation() {
                 );
             }
         }
+    }
+}
+
+/// The tolerance is a share of the stroke's radius as stored, and never under two grid steps: at the
+/// declared minimum it is the floor, at the default and the maximum it is four per cent of the radius.
+/// So one jagged path keeps fewer positions the larger the brush it is drawn with, and a bump a
+/// small brush keeps is one a large brush drops.
+#[test]
+fn the_tolerance_is_a_share_of_the_radius_and_never_under_two_grid_steps() {
+    let stored = |size: f64| (size * COORDINATE_STEPS_PER_UNIT).round() / COORDINATE_STEPS_PER_UNIT;
+    assert_eq!(decimation_tolerance(SIZE_MIN), DECIMATION_TOLERANCE_MIN);
+    assert_eq!(DECIMATION_TOLERANCE_MIN * COORDINATE_STEPS_PER_UNIT, 2.0);
+    for size in [0.1, SIZE_MAX] {
+        assert_eq!(
+            decimation_tolerance(size),
+            DECIMATION_TOLERANCE_OF_RADIUS * stored(size),
+            "size {size}"
+        );
+    }
+    assert_eq!(
+        stored_deviation(0.1),
+        decimation_tolerance(0.1) + GRID_ROUNDING
+    );
+
+    // A bump of ten grid steps across a straight run: past the floor and past four per cent of a
+    // small brush, inside four per cent of the default one.
+    let bump = 10.0 / COORDINATE_STEPS_PER_UNIT;
+    let path = [[0.1, 0.5], [0.3, 0.5 + bump], [0.5, 0.5]];
+    assert_eq!(
+        decimate(&path, SIZE_MIN).unwrap().len(),
+        3,
+        "the floor keeps it"
+    );
+    assert_eq!(
+        decimate(&path, 0.01).unwrap().len(),
+        3,
+        "a small brush keeps it"
+    );
+    assert_eq!(
+        decimate(&path, 0.1).unwrap().len(),
+        2,
+        "the default brush drops it"
+    );
+
+    // A pointer's whole-pixel staircase stores fewer positions the larger the brush.
+    let mut rng = Rng(0x57a1);
+    let jagged: Vec<[f64; 2]> = (0..400)
+        .map(|index| {
+            let t = index as f64 / 400.0;
+            let wobble = rng.range(-1.0, 1.0);
+            [
+                ((0.2 + 0.6 * t) * 1000.0 + wobble).round() / 1000.0,
+                ((0.5 + 0.1 * (t * 6.0).sin()) * 1000.0 + wobble).round() / 1000.0,
+            ]
+        })
+        .collect();
+    let kept: Vec<usize> = SIZES
+        .iter()
+        .map(|size| decimate(&jagged, *size).unwrap().len())
+        .collect();
+    assert!(
+        kept[0] > kept[1] && kept[1] > kept[2],
+        "stored positions at the minimum, default and maximum sizes: {kept:?}"
+    );
+
+    // A size no stroke can be captured at is refused by name here too.
+    for size in [0.0, f64::NAN, SIZE_MAX * 2.0] {
+        assert!(
+            decimate(&path, size)
+                .unwrap_err()
+                .detail
+                .starts_with("stroke size must be a number within"),
+            "{size}"
+        );
     }
 }
 
@@ -212,7 +292,7 @@ fn one_captured_path_has_one_content_address() {
 
         // Posting an already-decimated path reaches the same stored bytes as posting the raw one,
         // which is what lets the desktop decimate before it sends without changing what is stored.
-        let predecimated = decimate(&path).expect("a legal path");
+        let predecimated = decimate(&path, 0.05).expect("a legal path");
         let posted =
             Stroke::capture(&predecimated, 0.05, 50.0, 100.0, false).expect("a legal stroke");
         assert_eq!(once.id(), posted.id());
@@ -333,9 +413,10 @@ fn a_stroke_is_refused_by_name_outside_its_declared_bounds() {
     );
 }
 
-/// A path that survives decimation at full length — every third position far enough off the line
-/// between its neighbours to be kept — so the per-stroke bound is reached rather than decimated
-/// away, and `Stroke::capture` refuses it one past the bound by name.
+/// A path that survives decimation at full length for a brush small enough to take the two-step
+/// floor — every other position eight steps off the line between its neighbours — so the per-stroke
+/// bound is reached rather than decimated away, and `Stroke::capture` refuses it one past the bound
+/// by name.
 fn incompressible(count: usize) -> Vec<[f64; 2]> {
     (0..count)
         .map(|index| {
@@ -349,12 +430,12 @@ fn incompressible(count: usize) -> Vec<[f64; 2]> {
 #[test]
 fn a_captured_stroke_over_the_bound_names_the_points_per_stroke_limit() {
     let at_bound = incompressible(POINTS_PER_STROKE);
-    let stroke = Stroke::capture(&at_bound, 0.05, 50.0, 100.0, false).expect("the bound is legal");
+    let stroke = Stroke::capture(&at_bound, 0.001, 50.0, 100.0, false).expect("the bound is legal");
     assert_eq!(stroke.point_count(), POINTS_PER_STROKE);
 
     let error = Stroke::capture(
         &incompressible(POINTS_PER_STROKE + 1),
-        0.05,
+        0.001,
         50.0,
         100.0,
         false,
