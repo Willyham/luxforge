@@ -1,4 +1,4 @@
-//! TASK-018: independent proofs for the frozen brush coverage mathematics — the
+//! Independent proofs for the frozen brush coverage mathematics — the
 //! capsule profile, the per-stroke maximum, the screen union across add strokes
 //! and the multiply-complement for erase strokes.
 //!
@@ -638,7 +638,7 @@ fn the_brush_shares_the_studys_easing() {
 }
 
 // ---------------------------------------------------------------------------
-// The colour constraint (TASK-024), frozen in
+// The colour constraint, frozen in
 // `docs/design/mask-study.md#the-colour-constraint`
 // ---------------------------------------------------------------------------
 

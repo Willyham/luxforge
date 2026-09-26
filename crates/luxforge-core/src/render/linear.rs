@@ -3567,7 +3567,7 @@ mod tests {
     /// A sample from one `Compiled` shared by several points equals a sample that compiles for
     /// itself, at every point of a small stack with a colour layer: the split
     /// `HostStage::sample_before`'s RAW path takes to compile a prefix once and reuse it across the
-    /// points it samples (TASK-015) reads the same values as compiling fresh for each point.
+    /// points it samples reads the same values as compiling fresh for each point.
     #[test]
     fn sample_linear_compiled_from_a_shared_prefix_matches_sample_linear_per_point() {
         let registry = ModuleRegistry::builtin();

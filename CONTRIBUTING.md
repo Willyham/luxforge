@@ -7,6 +7,7 @@ Read [AGENTS.md](AGENTS.md) first. It holds the pillars, workflow and engineerin
 - `crates/luxforge-core`: images, recipes, rendering, SQLite catalog and history, preview scheduling, JSON API.
 - `crates/luxforge-app`: Iced desktop adapter plus the desktop and headless `luxforge-json` binaries.
 - `xtask`: all development, check, evidence and packaging commands.
+- The full crate list, with what each one holds and depends on, is in [architecture](docs/design/architecture.md#workspace).
 - `docs/`: product, design, spec, engineering and research documentation.
 - `tasks/`: JSON task plans ([index](tasks/README.md)).
 - `fixtures/`: small synthetic inputs with a hash manifest ([details](fixtures/README.md)). Generated large workloads live in ignored `fixtures/generated/`.

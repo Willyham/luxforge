@@ -372,8 +372,8 @@ extern "C" int lf_raw_develop(const uint16_t *samples,size_t count,
           // [0, 65536/65535] of sensor white before interpolation, except in
           // the 9 px border band the border pass fills from this unclamped
           // input. Markesteijn has no input clamp, so X-Trans keeps both
-          // under-black and over-white values (TASK-017; the luxforge-raw
-          // test bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not).
+          // under-black and over-white values (the luxforge-raw
+          // test bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not pins this).
           const float denominator = meta->white - black;
           if (!std::isfinite(denominator) || denominator <= 0.f) {
             error(err, err_len, "invalid black/white denominator");

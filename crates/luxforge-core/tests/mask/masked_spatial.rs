@@ -1,4 +1,4 @@
-//! TASK-014: the masked **spatial** primitive through the public pipeline — a Presence layer bound
+//! The masked **spatial** primitive through the public pipeline — a Presence layer bound
 //! to a mask, on the JPEG byte path and on the RAW linear path.
 //!
 //! What this file proves, and what it deliberately does not. The Presence filter itself is frozen
