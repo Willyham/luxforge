@@ -3,8 +3,8 @@
 //! events the call announced; the owner handlers the table names live here.
 use super::{
     ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult,
-    methods::{self, Planned, Route},
-    params::{Envelope, NoParams, host_params},
+    methods::{self, Planned, Retries, Route},
+    params::{NoParams, host_params},
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -1292,10 +1292,11 @@ pub(super) struct Owner {
 }
 
 impl Owner {
-    /// Answer one request: find its method, answer a retried revision-less mutation from the request
-    /// table, otherwise call its handler, then record the events its changes announced. A sample
-    /// through a spatial layer is only planned here: the point worker evaluates it and answers on
-    /// the call's own channel, with the sequence the owner had now, while the owner moves on.
+    /// Answer one request: find its method, answer a retry from the request table when the method
+    /// declares the owner answers its retries, otherwise call its handler, then record the events
+    /// its changes announced. A sample through a spatial layer is only planned here: the point
+    /// worker evaluates it and answers on the call's own channel, with the sequence the owner had
+    /// now, while the owner moves on.
     fn call(&mut self, call: OwnerCall) {
         let OwnerCall {
             client,
@@ -1323,14 +1324,11 @@ impl Owner {
     fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Planned, Error> {
         let method = methods::find(&self.service, &request.method)
             .ok_or_else(|| Error::protocol(format!("unknown method {}", request.method)))?;
-        // A retried mutation is answered from the request table, and its handler does not run
-        // again, unless the catalog answers it: the service records an asset change's request
-        // with the change. A settings write has a revision but no request log, so it is here too.
-        let key = match (method.envelope(), method.route()) {
-            (Envelope::Request, _) | (Envelope::Revision, Route::Owner(_)) => {
-                RequestKey::of(&request.method, &request.params)
-            }
-            (Envelope::None, _) | (Envelope::Revision, Route::Service) => None,
+        // A retried mutation whose method declares the owner answers it is answered from the
+        // request table, and its handler does not run again; the catalog answers the others.
+        let key = match method.retries() {
+            Retries::Owner => RequestKey::of(&request.method, &request.params),
+            Retries::Catalog | Retries::None => None,
         };
         if let Some(key) = &key
             && let Some(first) = self.requests.answered(key)?
@@ -3917,7 +3915,8 @@ mod tests {
     /// actor}` envelope, and a retry of it is answered from the owner's request table: the first
     /// answer comes back marked `deduplicated`, nothing changes again and no second event is
     /// recorded. The same `request_id` with other input is a conflict. A revisioned family,
-    /// history here, answers its retry from the catalog's own request table the same way.
+    /// history here, answers its retry from the catalog's own request table the same way, and
+    /// `draft.commit`, which ends its draft, from the owner's.
     #[test]
     fn a_retry_of_every_mutation_family_returns_the_first_answer_and_records_no_event() {
         let catalog = temp("retry-families.sqlite");
@@ -4085,6 +4084,48 @@ mod tests {
         assert_eq!(retry["deduplicated"], json!(true));
         assert_eq!(retry["current_entry_id"], first["current_entry_id"]);
         assert_eq!(events_after(&owner, client, 0).1, before + 1);
+
+        // draft: a commit ends the draft it names, so the owner's request table answers its retry.
+        let state = |owner: &OwnerHandle| {
+            ok(
+                owner,
+                client,
+                "state",
+                "asset.state",
+                json!({"asset_id": asset}),
+            )
+        };
+        let revision = state(&owner)["revision"].clone();
+        let begun = ok(
+            &owner,
+            client,
+            "begin",
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-basic"}),
+        );
+        let draft_id = begun["draft_id"].clone();
+        ok(
+            &owner,
+            client,
+            "set",
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"exposure": 0.5}}),
+        );
+        let commit = |draft_id: &Value| {
+            json!({
+                "draft_id": draft_id,
+                "mutation": {"expected_revision": revision, "request_id": "commit-1", "actor": "test"},
+            })
+        };
+        let (committed, _, announced) = twice("commit", "draft.commit", commit(&draft_id));
+        assert_eq!(
+            (committed["outcome"].clone(), announced),
+            (json!("applied"), 1)
+        );
+        let after = state(&owner);
+        assert_eq!(after["revision"], committed["revision"], "no second entry");
+        assert_eq!(after["current_entry"]["id"], committed["current_entry_id"]);
+        conflict("draft.commit", commit(&json!(crate::DraftId::new())));
 
         // The envelope is required and carries no revision here.
         for (method, params, expected) in [
