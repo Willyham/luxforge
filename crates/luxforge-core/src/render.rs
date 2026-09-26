@@ -5460,8 +5460,7 @@ mod tests {
             for count in [1usize, 8, 32, 64] {
                 let strokes = painted_strokes(count);
                 let (mask, table) = brush_mask(&strokes);
-                // The compile is where the grid index is built and the occupancy cap is checked,
-                // before a pixel is read. It is charged to the gesture, not to the frame, so it is
+                // The compile is where the grid index is built, before a pixel is read. It is charged to the gesture, not to the frame, so it is
                 // measured on its own.
                 let started = std::time::Instant::now();
                 let rounds = 20;

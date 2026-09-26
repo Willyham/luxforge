@@ -32,6 +32,12 @@ impl EditorService {
     /// the limit and never the colour, so nothing a client sends can put a colour in a stroke that
     /// the photograph does not have at that position, and the command family's planner stays pure —
     /// it is handed the pixel rather than reading one.
+    ///
+    /// A painted stroke is checked against the occupancy cap here, where the asset gives the content
+    /// stage its mask is drawn on: the component the stroke would leave behind is indexed at that
+    /// stage and a densest cell over the cap refuses the stroke before anything commits, whether or
+    /// not a layer draws the mask yet. A draft of the stroke plans through here too, so the refusal
+    /// arrives while the stroke is being painted.
     pub(super) fn plan_mask_command(
         &self,
         asset: &AssetRecord,
@@ -42,7 +48,20 @@ impl EditorService {
     ) -> Result<MaskOutcome, Error> {
         validate_source_recipe(asset, recipe)?;
         let seed = self.mask_colour_seed(asset, command, recipe, target, parameters)?;
-        crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, seed)
+        let outcome =
+            crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, seed)?;
+        if command.method == crate::mask::commands::ADD_STROKE
+            && let MaskOutcome::Change(change) = &outcome
+            && let (Some(mask), Some(component)) = (&change.mask, &change.component)
+            && let Some(mask) = change.recipe.masks.iter().find(|held| &held.id == mask)
+        {
+            let content = crate::modules::Stage {
+                width: asset.width,
+                height: asset.height,
+            };
+            crate::mask::check_painted_occupancy(mask, component, content, &change.recipe.strokes)?;
+        }
+        Ok(outcome)
     }
 
     /// One of the host's own reads about its own objects, from one entry's stack, with its

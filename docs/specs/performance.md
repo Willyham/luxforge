@@ -323,9 +323,9 @@ masked-colour row above uses, so the difference between the rows is the mask and
   rectangle has stopped growing: 8 → 32 strokes is 2.0 and 5.6 ms a stroke, 32 → 64 is 1.9 and
   4.8 ms, a ratio of 2.5 against the 2.5 the pixel counts predict. That is what a per-pixel field
   evaluation looks like, and it is the same shape the component table above measures.
-- **The compile is not a cost worth naming.** Building the grid index and checking the occupancy cap
-  takes 0.003 ms for one stroke and 0.029 ms for sixty-four at 24 MP, and less at 60 MP because the
-  work is in the strokes rather than the stage. It is charged to the gesture, once, before a pixel is
+- **The compile is not a cost worth naming.** Building the grid index takes 0.003 ms for one
+  stroke and 0.029 ms for sixty-four at 24 MP, and less at 60 MP because the work is in the strokes
+  rather than the stage. It is charged to the gesture, once, before a pixel is
   read — a thousandth of the frame it precedes.
 - **A point query stays a point query.** `Render::sample` through a brush mask answers in 0.0023 ms
   at one stroke and 0.0385 ms at sixty-four, on both stage sizes: it rasterizes nothing
