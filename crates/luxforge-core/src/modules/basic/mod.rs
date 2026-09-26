@@ -247,6 +247,7 @@ impl FieldPatch for Basic {
                 action: SET_BASIC.into(),
                 title: NEUTRAL_PICKER_LABEL.into(),
                 shortcut: Some("W".into()),
+                icon: None,
             }),
             collapsed: false,
             layout: crate::ModuleLayout::Stacked,
@@ -737,6 +738,7 @@ mod tests {
                 action: SET_BASIC.into(),
                 title: "Neutral picker".into(),
                 shortcut: Some("W".into()),
+                icon: None,
             })
         );
         assert_eq!(

@@ -910,6 +910,9 @@ pub enum CanvasInteraction {
         title: String,
         /// One uppercase ASCII letter that selects the mode, unique across the registry.
         shortcut: Option<String>,
+        /// The mode's icon in a client's mode strip; see [`CanvasInteraction::icon`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
         /// The pick is the whole request: a client submits `action` with the picked `x` and `y`
         /// at once, as one commit, instead of filling its fields for the person to submit. Only an
         /// action that declares no other parameter may commit on a pick, which
@@ -949,6 +952,9 @@ pub enum CanvasInteraction {
         title: String,
         /// One uppercase ASCII letter that selects the mode, unique across the registry.
         shortcut: Option<String>,
+        /// The mode's icon in a client's mode strip; see [`CanvasInteraction::icon`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
     },
     /// The host's crop-frame editor edits a transient draft of the named number parameters of
     /// `action` and derives its ratio presets from the `aspect` enum of `fit_action`. Only Apply
@@ -964,6 +970,9 @@ pub enum CanvasInteraction {
         aspect: String,
         title: String,
         shortcut: Option<String>,
+        /// The mode's icon in a client's mode strip; see [`CanvasInteraction::icon`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
     },
 }
 
@@ -983,6 +992,17 @@ impl CanvasInteraction {
             Self::PointPick { shortcut, .. }
             | Self::SampleApply { shortcut, .. }
             | Self::CropFrame { shortcut, .. } => shortcut.as_deref(),
+        }
+    }
+
+    /// The name of the icon a client's mode strip draws for this mode, when the module declares
+    /// one, from the same vocabulary an action control's `icon` names (`crop`, `mask`). A hint: a
+    /// client that does not know the name, or a mode without one, shows the title instead.
+    pub fn icon(&self) -> Option<&str> {
+        match self {
+            Self::PointPick { icon, .. }
+            | Self::SampleApply { icon, .. }
+            | Self::CropFrame { icon, .. } => icon.as_deref(),
         }
     }
 }
@@ -1213,9 +1233,10 @@ impl ModuleDescriptor {
                 y,
                 title,
                 shortcut,
+                icon,
                 commit,
             }) => {
-                self.check_canvas_mode(title, shortcut.as_deref())?;
+                self.check_canvas_mode(title, shortcut.as_deref(), icon.as_deref())?;
                 self.check_picker(pickers)?;
                 let declared = self.declared_action(action)?;
                 for name in [x, y] {
@@ -1247,8 +1268,9 @@ impl ModuleDescriptor {
                 action,
                 title,
                 shortcut,
+                icon,
             }) => {
-                self.check_canvas_mode(title, shortcut.as_deref())?;
+                self.check_canvas_mode(title, shortcut.as_deref(), icon.as_deref())?;
                 self.check_picker(pickers)?;
                 // The query answers the pick and the action receives its result, so both identities
                 // and both coordinate parameters must be declared here before a client sees them.
@@ -1274,8 +1296,9 @@ impl ModuleDescriptor {
                 aspect,
                 title,
                 shortcut,
+                icon,
             }) => {
-                self.check_canvas_mode(title, shortcut.as_deref())?;
+                self.check_canvas_mode(title, shortcut.as_deref(), icon.as_deref())?;
                 let declared = self.declared_action(action)?;
                 for name in [angle, x, y, width, height] {
                     self.canvas_number(declared, name)?;
@@ -1295,9 +1318,15 @@ impl ModuleDescriptor {
         Ok(())
     }
 
-    /// A canvas mode needs a name for the mode strip, and its optional shortcut is exactly one
-    /// uppercase ASCII letter so a keymap can hold it without parsing.
-    fn check_canvas_mode(&self, title: &str, shortcut: Option<&str>) -> Result<(), Error> {
+    /// A canvas mode needs a name for the mode strip, its optional shortcut is exactly one
+    /// uppercase ASCII letter so a keymap can hold it without parsing, and its optional icon is a
+    /// name from the vocabulary an action control's `icon` uses.
+    fn check_canvas_mode(
+        &self,
+        title: &str,
+        shortcut: Option<&str>,
+        icon: Option<&str>,
+    ) -> Result<(), Error> {
         if title.trim().is_empty() {
             return Err(Error::validation(format!(
                 "module {} declares a canvas interaction without a title",
@@ -1308,11 +1337,18 @@ impl ModuleDescriptor {
             Some(letter)
                 if letter.len() != 1 || !letter.starts_with(|c: char| c.is_ascii_uppercase()) =>
             {
-                Err(Error::validation(format!(
+                return Err(Error::validation(format!(
                     "canvas shortcut {letter} of module {} must be one uppercase ASCII letter",
                     self.id
-                )))
+                )));
             }
+            _ => {}
+        }
+        match icon {
+            Some(icon) if !valid_name(icon) => Err(Error::validation(format!(
+                "canvas mode of module {} has invalid icon name {icon}",
+                self.id
+            ))),
             _ => Ok(()),
         }
     }
@@ -2467,6 +2503,7 @@ mod tests {
             aspect: "aspect".into(),
             title: "Frame".into(),
             shortcut: Some("R".into()),
+            icon: None,
         }
     }
 
@@ -2546,6 +2583,7 @@ mod tests {
             action: action.into(),
             title: "Pick".into(),
             shortcut: Some("W".into()),
+            icon: None,
         }
     }
 
@@ -3006,6 +3044,7 @@ mod tests {
                         y: "rgb".into(),
                         title: "Pick".into(),
                         shortcut: None,
+                        icon: None,
                         commit: false,
                     }),
                     ..descriptor()
@@ -3232,6 +3271,7 @@ mod tests {
                         y: "x".into(),
                         title: "  ".into(),
                         shortcut: None,
+                        icon: None,
                         commit: false,
                     }),
                     ..descriptor()
@@ -3246,6 +3286,7 @@ mod tests {
                         y: "x".into(),
                         title: "Pick".into(),
                         shortcut: Some("r".into()),
+                        icon: None,
                         commit: false,
                     }),
                     ..descriptor()
@@ -3260,6 +3301,7 @@ mod tests {
                         y: "x".into(),
                         title: "Pick".into(),
                         shortcut: Some("RR".into()),
+                        icon: None,
                         commit: false,
                     }),
                     ..descriptor()
@@ -3275,6 +3317,7 @@ mod tests {
                         y: "x".into(),
                         title: "Pick".into(),
                         shortcut: None,
+                        icon: None,
                         commit: true,
                     }),
                     ..descriptor()
@@ -3354,6 +3397,7 @@ mod tests {
                         action: "set-thing".into(),
                         title: "  ".into(),
                         shortcut: Some("W".into()),
+                        icon: None,
                     }),
                     ..sample_descriptor()
                 },
@@ -3368,6 +3412,7 @@ mod tests {
                         action: "set-thing".into(),
                         title: "Pick".into(),
                         shortcut: Some("w".into()),
+                        icon: None,
                     }),
                     ..sample_descriptor()
                 },
@@ -3435,6 +3480,7 @@ mod tests {
                         y: "x".into(),
                         title: "Pick".into(),
                         shortcut: Some("W".into()),
+                        icon: None,
                         commit: false,
                     }),
                     ..descriptor()
@@ -4301,6 +4347,56 @@ mod tests {
             descriptor,
             "a crop-frame descriptor round-trips through JSON"
         );
+    }
+
+    /// A canvas mode's optional icon is a name from the vocabulary an action control's `icon` uses:
+    /// a declared one is validated and reported, and a mode without one serializes as before.
+    #[test]
+    fn a_canvas_mode_icon_is_a_validated_name_reported_only_when_declared() {
+        let with_icon = |name: Option<&str>| {
+            let mut descriptor = frame_descriptor();
+            if let Some(CanvasInteraction::CropFrame { icon, .. }) = &mut descriptor.canvas {
+                *icon = name.map(str::to_owned);
+            }
+            descriptor
+        };
+        let declared = with_icon(Some("crop"));
+        assert!(declared.validate().is_ok(), "a kebab-case name is accepted");
+        let canvas = declared.canvas.as_ref().expect("the frame canvas");
+        assert_eq!(canvas.icon(), Some("crop"));
+        assert_eq!(serde_json::to_value(canvas).unwrap()["icon"], json!("crop"));
+        assert_eq!(
+            ModuleDescriptor::parse(&serde_json::to_value(&declared).unwrap()).unwrap(),
+            declared,
+            "the icon round-trips through JSON"
+        );
+        let plain = with_icon(None);
+        assert_eq!(
+            plain.canvas.as_ref().and_then(CanvasInteraction::icon),
+            None
+        );
+        assert!(
+            serde_json::to_value(plain.canvas.as_ref().unwrap())
+                .unwrap()
+                .get("icon")
+                .is_none(),
+            "a mode without an icon reports none"
+        );
+        for bad in ["Bad_Icon", "crop frame", "", "-crop"] {
+            let error = with_icon(Some(bad))
+                .validate()
+                .expect_err("an icon outside the name vocabulary is refused");
+            assert!(
+                error.to_string().contains("invalid icon name"),
+                "{bad:?}: {error}"
+            );
+        }
+        // Every kind of canvas mode checks it the same way.
+        let mut pick = sample_descriptor();
+        if let Some(CanvasInteraction::SampleApply { icon, .. }) = &mut pick.canvas {
+            *icon = Some("Picker!".into());
+        }
+        assert!(pick.validate().is_err());
     }
 
     #[test]

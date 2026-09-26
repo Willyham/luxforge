@@ -192,6 +192,7 @@ parameters: Vec::new(),
                     aspect: "aspect".into(),
                     title: "Crop".into(),
                     shortcut: Some("R".into()),
+                    icon: Some("crop".into()),
                 }),
                 developer: false,
                 collapsed: true,
@@ -754,6 +755,7 @@ mod tests {
                 aspect: "aspect".into(),
                 title: "Crop".into(),
                 shortcut: Some("R".into()),
+                icon: Some("crop".into()),
             })
         );
         // The former Reset crop button is the module's header reset: the same API action.

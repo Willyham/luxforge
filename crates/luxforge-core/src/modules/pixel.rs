@@ -90,6 +90,7 @@ parameters: vec![
                     y: "y".into(),
                     title: "Pick pixel".into(),
                     shortcut: None,
+                    icon: None,
                     // The pick fills the coordinates; the person submits the colour with them.
                     commit: false,
                 }),

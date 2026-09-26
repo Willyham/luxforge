@@ -210,7 +210,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.list",
         ModuleList,
         module_list,
-        "every registered module descriptor with its effects, actions, parameters and controls"
+        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses"
     ),
     // Module settings are answered by the catalog owner, which holds the capability host: the
     // settings directory and the secret store. They are user-level, outside every catalog, and
@@ -2228,6 +2228,12 @@ mod tests {
         );
         assert_eq!(crop["canvas"]["title"], json!("Crop"));
         assert_eq!(crop["canvas"]["shortcut"], json!("R"));
+        assert_eq!(crop["canvas"]["icon"], json!("crop"));
+        assert_eq!(
+            pixel["canvas"]["icon"],
+            json!(null),
+            "a mode without an icon reports none"
+        );
         // A preset is applied through one generated method, whose parameters carry their kinds.
         let apply = &listed["edit.apply-preset"];
         assert_eq!(apply["mutates"], json!(true));
