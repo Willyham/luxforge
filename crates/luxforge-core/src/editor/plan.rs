@@ -2389,11 +2389,12 @@ mod tests {
                 &recipe.artifacts,
             )
             .unwrap();
+        let context = crate::RenderContext::new();
         let fresh = Render::compiled(
             RenderSource::Byte(&image),
             prefix,
             RenderOptions::default(),
-            crate::render::testing::context(),
+            &context,
         )
         .unwrap();
         for (point_index, cached) in sampled.iter().enumerate() {

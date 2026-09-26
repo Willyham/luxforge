@@ -28,16 +28,6 @@ use luxforge_reference::mask::{Algebra, Mask as RefMask, Stage as RefStage, cove
 use luxforge_testkit::fixtures::{render, render_linear, sample, sample_linear};
 use serde_json::json;
 
-/// The spatial budget and the estimate store are process-wide, so the tests in this binary run one
-/// at a time rather than racing each other for them.
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn serial() -> std::sync::MutexGuard<'static, ()> {
-    SERIAL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 // ---------------------------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------------------------
@@ -103,7 +93,6 @@ fn reference_coverage(oracle: &RefMask, size: (u32, u32), x: u32, y: u32) -> f64
 /// every tile and blends it with `M = 1`.
 #[test]
 fn the_mask_endpoints_are_byte_identical_to_the_unmasked_frames_on_both_paths() {
-    let _guard = serial();
     let registry = ModuleRegistry::builtin();
     let source = byte_source(SMALL);
     let linear = linear_source(SMALL);
@@ -172,7 +161,6 @@ fn the_mask_endpoints_are_byte_identical_to_the_unmasked_frames_on_both_paths() 
 /// input, and the tiles the mask reaches hold the effect.
 #[test]
 fn a_tile_the_mask_cannot_reach_holds_the_operation_input() {
-    let _guard = serial();
     let registry = ModuleRegistry::builtin();
     let source = byte_source(TILED);
     // A gradient confined to the right edge: its support cannot reach the two tiles whose columns
@@ -236,7 +224,6 @@ fn a_tile_the_mask_cannot_reach_holds_the_operation_input() {
 /// cannot reach costs the sample less than that, never more.
 #[test]
 fn a_sample_equals_the_rendered_byte_through_a_masked_spatial_layer() {
-    let _guard = serial();
     let registry = ModuleRegistry::builtin();
     let source = byte_source(SMALL);
     let linear = linear_source(SMALL);
@@ -310,7 +297,6 @@ fn a_sample_equals_the_rendered_byte_through_a_masked_spatial_layer() {
 /// endpoint or something outside the pair.
 #[test]
 fn a_partially_covered_frame_lies_between_the_two_endpoint_frames() {
-    let _guard = serial();
     let registry = ModuleRegistry::builtin();
     let source = byte_source(SMALL);
     let (mask, oracle) = gradient_mask(0.20, 0.10, 0.80, 0.90, 100.0);

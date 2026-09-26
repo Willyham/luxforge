@@ -35,11 +35,11 @@ pub const MAX_SPATIAL_UNITS: usize = 4;
 /// it is a `resource-limit` error naming the limit, not a silently dropped layer.
 pub const MAX_MASKED_SPATIAL_LAYERS: usize = 4;
 
-/// The default process-wide target for spatial working sets: 256 MiB, separate from the 64 MiB
-/// float scratch target the colour run streams through, because one tile of a 60 MP stage with all
-/// three frozen presence units needs about 101 MiB on its own. It sets how many tiles run at once;
-/// it never refuses a render or a sample, so one tile always runs even when that takes the process
-/// past it.
+/// The default target for one render context's spatial working sets: 256 MiB, separate from the
+/// 64 MiB float scratch target the colour run streams through, because one tile of a 60 MP stage
+/// with all three frozen presence units needs about 101 MiB on its own. It sets how many tiles run
+/// at once; it never refuses a render or a sample, so one tile always runs even when that takes the
+/// process past it.
 pub const SPATIAL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The per-side factor of the reduction a global estimate is prepared from. The reduced frame is at

@@ -97,8 +97,8 @@ are grouped into one binary per area, one module per file: `basic` (Exposure, wh
 Colour), `modules` (the mixer, Presence, the vignette, the controls proof, presets and the
 field-patch conformance suite), `mask` (the mask, brush and range studies, each kind against its
 reference, the coverage grid, geometry survival and masked edits on both paths and through the JSON
-method table), and `cancellation` and `resources_cost`, which stay apart because the first reads
-the process-wide scratch budget and the second is a timing measurement. Narrow a run with the
+method table), and `cancellation` and `resources_cost`, which stay apart because the first renders
+24 MP frames against a latency bound and the second is a timing measurement. Narrow a run with the
 module path, for example `cargo test -p luxforge-core --test basic white_balance::` or
 `--test mask range::`.
 Helpers tests share live in `luxforge-testkit` (`client`, `fixtures`, `JsonProcess`); the
