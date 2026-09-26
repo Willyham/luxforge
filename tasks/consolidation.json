@@ -2603,7 +2603,7 @@
     {
       "id": "TASK-043",
       "description": "Move the crop draft onto the core `draft.*` lifecycle through the desktop's one draft driver, and trim `app/gesture.rs` and `app/draft.rs`.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-036",
         "TASK-040",
