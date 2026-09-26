@@ -28,6 +28,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    ops::ControlFlow,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
         Arc, Weak,
@@ -110,6 +112,9 @@ enum OwnerMessage {
     /// How many planned samples wait behind the one the point worker is evaluating.
     #[cfg(test)]
     PointsWaiting(SyncSender<usize>),
+    /// Call this where the owner serves a message, or stop calling it.
+    #[cfg(test)]
+    Fault(Option<Fault>),
     /// Wake this client whenever another client's change lands in the event log.
     WatchEvents {
         client: ClientId,
@@ -130,11 +135,40 @@ enum OwnerMessage {
 /// log. It must only post a signal: the owner waits for it.
 pub type EventWake = Arc<dyn Fn() + Send + Sync>;
 
+/// What a test has the owner call, on its own thread, with what it is about to serve: a request's
+/// method just before its handler runs, or `source.complete` just before a finished source job's
+/// result is committed. A test that panics in it proves the owner contains the panic.
+#[cfg(test)]
+type Fault = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// One client blocked in [`OwnerHandle::wait_source`], answered by the completion it waits for.
 struct SourceWaiter {
     client: ClientId,
     job: Option<JobId>,
     reply: SyncSender<()>,
+}
+
+/// Whom one message owes an answer, kept aside before the owner serves it, so that a panic while
+/// serving it still answers: a call or a preview is answered `internal`, a wait is released, and a
+/// source job whose result was being committed fails `internal`.
+enum Owed {
+    Call(String, SyncSender<ApiResponse>),
+    Preview(SyncSender<Result<PreviewJob, Error>>),
+    Wait(SyncSender<()>),
+    Source(JobId),
+    Nobody,
+}
+
+impl Owed {
+    fn of(message: &OwnerMessage) -> Self {
+        match message {
+            OwnerMessage::Call(call) => Self::Call(call.request.id.clone(), call.response.clone()),
+            OwnerMessage::Preview { response, .. } => Self::Preview(response.clone()),
+            OwnerMessage::AwaitSource { reply, .. } => Self::Wait(reply.clone()),
+            OwnerMessage::SourceComplete(id, _) => Self::Source(id.clone()),
+            _ => Self::Nobody,
+        }
+    }
 }
 
 /// What one preview job should render. The client identity travels with it because a draft belongs
@@ -624,8 +658,8 @@ fn queue_preparation(
 }
 
 /// Where a test holds the source worker: after a task's activity has begun and before any of its
-/// work, so the test can read the task as running for as long as it needs to. Outside tests it is
-/// empty and holds nothing.
+/// work, so the test can read the task as running for as long as it needs to, or panic there as the
+/// task's work could. Outside tests it is empty and holds nothing.
 #[derive(Clone, Default)]
 struct SourceHold(#[cfg(test)] Option<Arc<dyn Fn() + Send + Sync>>);
 
@@ -688,6 +722,69 @@ fn read_artifacts(
         .collect()
 }
 
+/// One source task's work on the worker: decode the original and develop a RAW, read and verify
+/// artifacts, or remove a collection's files. A developed RAW's linear planes hold a lease on the
+/// worker's memory gate until they are released.
+fn run_source_task(
+    kind: SourceTaskKind,
+    key: &SourceFlightKey,
+    reads: &[ArtifactRead],
+    cancel: &AtomicBool,
+    gate: &Arc<PlaneGate>,
+) -> Result<SourceResult, Error> {
+    let mut result = match kind {
+        SourceTaskKind::File(target) => {
+            EditorService::prepare_file_cancel(&key.path, target.as_deref(), cancel).and_then(
+                |prepared| {
+                    if Some(&prepared.signature) != key.signature.as_ref() {
+                        return Err(Error::conflict("source changed after job was queued"));
+                    }
+                    if key
+                        .expected_fingerprint
+                        .as_deref()
+                        .is_some_and(|expected| expected != prepared.fingerprint)
+                    {
+                        return Err(Error::source_unavailable(
+                            "original source fingerprint changed",
+                        ));
+                    }
+                    let verified = read_artifacts(reads, cancel)?;
+                    Ok(SourceResult::File(prepared, verified))
+                },
+            )
+        }
+        SourceTaskKind::Develop(request) => RawPrepared::develop(
+            request.sensor.clone(),
+            request.fingerprint.clone(),
+            request.gains,
+            cancel,
+        )
+        .and_then(|developed| {
+            let verified = read_artifacts(reads, cancel)?;
+            Ok(SourceResult::Develop(request, developed, verified))
+        }),
+        SourceTaskKind::Artifacts(asset_id) => read_artifacts(reads, cancel)
+            .map(|verified| SourceResult::Artifacts(asset_id, verified)),
+        SourceTaskKind::Collect(collection) => {
+            artifacts::collect_files(&collection, cancel).map(SourceResult::Collected)
+        }
+    };
+    if let Ok(prepared) = &mut result {
+        let raw = match prepared {
+            SourceResult::File(file, _) => match &mut file.source {
+                crate::source::PreparedSource::Raw(raw) => Some(raw),
+                _ => None,
+            },
+            SourceResult::Develop(_, raw, _) => Some(raw),
+            SourceResult::Artifacts(..) | SourceResult::Collected(_) => None,
+        };
+        if let Some(linear) = raw.and_then(|raw| raw.linear.as_mut()) {
+            linear.hold(gate.lease());
+        }
+    }
+    result
+}
+
 fn source_worker(
     receiver: Receiver<SourceTask>,
     owner: SyncSender<OwnerMessage>,
@@ -728,59 +825,19 @@ fn source_worker(
         {
             break;
         }
-        hold.wait();
-        let mut result = match task.kind {
-            SourceTaskKind::File(target) => EditorService::prepare_file_cancel(
-                &task.key.path,
-                target.as_deref(),
+        // A task that panics fails `internal` like any other failed task, so its job, the clients
+        // waiting on it and the board agree, and the worker lives on for the next task.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            hold.wait();
+            run_source_task(
+                task.kind,
+                &task.key,
+                &task.artifacts,
                 &task.cancelled,
+                &gate,
             )
-            .and_then(|prepared| {
-                if Some(&prepared.signature) != task.key.signature.as_ref() {
-                    return Err(Error::conflict("source changed after job was queued"));
-                }
-                if task
-                    .key
-                    .expected_fingerprint
-                    .as_deref()
-                    .is_some_and(|expected| expected != prepared.fingerprint)
-                {
-                    return Err(Error::source_unavailable(
-                        "original source fingerprint changed",
-                    ));
-                }
-                let verified = read_artifacts(&task.artifacts, &task.cancelled)?;
-                Ok(SourceResult::File(prepared, verified))
-            }),
-            SourceTaskKind::Develop(request) => RawPrepared::develop(
-                request.sensor.clone(),
-                request.fingerprint.clone(),
-                request.gains,
-                &task.cancelled,
-            )
-            .and_then(|developed| {
-                let verified = read_artifacts(&task.artifacts, &task.cancelled)?;
-                Ok(SourceResult::Develop(request, developed, verified))
-            }),
-            SourceTaskKind::Artifacts(asset_id) => read_artifacts(&task.artifacts, &task.cancelled)
-                .map(|verified| SourceResult::Artifacts(asset_id, verified)),
-            SourceTaskKind::Collect(collection) => {
-                artifacts::collect_files(&collection, &task.cancelled).map(SourceResult::Collected)
-            }
-        };
-        if let Ok(prepared) = &mut result {
-            let raw = match prepared {
-                SourceResult::File(file, _) => match &mut file.source {
-                    crate::source::PreparedSource::Raw(raw) => Some(raw),
-                    _ => None,
-                },
-                SourceResult::Develop(_, raw, _) => Some(raw),
-                SourceResult::Artifacts(..) | SourceResult::Collected(_) => None,
-            };
-            if let Some(linear) = raw.and_then(|raw| raw.linear.as_mut()) {
-                linear.hold(gate.lease());
-            }
-        }
+        }))
+        .unwrap_or_else(|_| Err(Error::internal("the source job stopped unexpectedly")));
         // The activity ends before the owner learns the result, so a client that reads the job as
         // ready or failed never still finds it listed as running. A cancelled preparation fails
         // with a conflict rather than `Cancelled`, so the job's own flag says which it was.
@@ -1022,6 +1079,14 @@ impl OwnerHandle {
             .expect("the owner is running");
     }
 
+    /// Have the owner call `fault` with what it is about to serve ([`Fault`]), or stop calling it.
+    #[cfg(test)]
+    pub(crate) fn fault(&self, fault: Option<Fault>) {
+        self.sender
+            .send(OwnerMessage::Fault(fault))
+            .expect("the owner is running");
+    }
+
     /// How many planned samples wait behind the one the point worker is evaluating.
     #[cfg(test)]
     pub(crate) fn points_waiting(&self) -> usize {
@@ -1142,6 +1207,8 @@ fn owner_loop(
         watchers: HashMap::new(),
         notified: 0,
         source_waiters: Vec::new(),
+        #[cfg(test)]
+        fault: None,
     };
     while let Ok(message) = receiver.recv() {
         // The client whose request this message is: the events it records do not wake that client.
@@ -1149,54 +1216,68 @@ fn owner_loop(
             OwnerMessage::Call(call) => Some(call.client),
             _ => None,
         };
-        match message {
-            OwnerMessage::Stop => break,
-            OwnerMessage::Call(call) => owner.call(call),
-            #[cfg(test)]
-            OwnerMessage::HoldPoints(hold) => owner.points.hold(hold),
-            #[cfg(test)]
-            OwnerMessage::PointsWaiting(reply) => {
-                let _ = reply.send(owner.points.waiting());
-            }
-            OwnerMessage::Preview { request, response } => {
-                let _ = response.send(owner.preview(request));
-            }
-            OwnerMessage::Register { client, authority } => {
-                owner.sessions.entry(client).or_default().authority = authority;
-            }
-            OwnerMessage::CapabilityFinished { job_id, result } => {
-                owner
-                    .host
-                    .finished(&mut owner.service, &job_id, result, &mut owner.announced);
-                owner.record_announced();
-            }
-            #[cfg(test)]
-            OwnerMessage::CapabilityThreads(reply) => {
-                let _ = reply.send(owner.host.lanes_started());
-            }
-            OwnerMessage::WatchEvents { client, wake } => {
-                owner.watchers.insert(client, wake);
-            }
-            OwnerMessage::AwaitSource { client, job, reply } => {
-                owner.await_source(client, job, reply);
-            }
-            OwnerMessage::Disconnect(client) => owner.disconnect(client),
-            OwnerMessage::SourceStarted(id) => {
-                if let Some(job) = owner.jobs.jobs.get_mut(&id) {
-                    job.state = SourceState::Preparing;
+        // A panic while serving one message is contained: whoever the message owed an answer is
+        // answered `internal`, and the owner serves the next message. Every durable write is one
+        // transaction and the entry cache moves only after a commit, so nothing is left half done.
+        let owed = Owed::of(&message);
+        let served = catch_unwind(AssertUnwindSafe(|| {
+            match message {
+                OwnerMessage::Stop => return ControlFlow::Break(()),
+                OwnerMessage::Call(call) => owner.call(call),
+                #[cfg(test)]
+                OwnerMessage::HoldPoints(hold) => owner.points.hold(hold),
+                #[cfg(test)]
+                OwnerMessage::PointsWaiting(reply) => {
+                    let _ = reply.send(owner.points.waiting());
                 }
-            }
-            OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
-            OwnerMessage::AnalysisReady => {
-                while let Some(outcome) = owner.queue.poll() {
-                    if owner.analyses.awaits(&outcome.job_id) {
-                        owner.analyses.complete(&outcome.job_id, outcome.result);
+                #[cfg(test)]
+                OwnerMessage::Fault(fault) => owner.fault = fault,
+                OwnerMessage::Preview { request, response } => {
+                    let _ = response.send(owner.preview(request));
+                }
+                OwnerMessage::Register { client, authority } => {
+                    owner.sessions.entry(client).or_default().authority = authority;
+                }
+                OwnerMessage::CapabilityFinished { job_id, result } => {
+                    owner
+                        .host
+                        .finished(&mut owner.service, &job_id, result, &mut owner.announced);
+                    owner.record_announced();
+                }
+                #[cfg(test)]
+                OwnerMessage::CapabilityThreads(reply) => {
+                    let _ = reply.send(owner.host.lanes_started());
+                }
+                OwnerMessage::WatchEvents { client, wake } => {
+                    owner.watchers.insert(client, wake);
+                }
+                OwnerMessage::AwaitSource { client, job, reply } => {
+                    owner.await_source(client, job, reply);
+                }
+                OwnerMessage::Disconnect(client) => owner.disconnect(client),
+                OwnerMessage::SourceStarted(id) => {
+                    if let Some(job) = owner.jobs.jobs.get_mut(&id) {
+                        job.state = SourceState::Preparing;
                     }
                 }
+                OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
+                OwnerMessage::AnalysisReady => {
+                    while let Some(outcome) = owner.queue.poll() {
+                        if owner.analyses.awaits(&outcome.job_id) {
+                            owner.analyses.complete(&outcome.job_id, outcome.result);
+                        }
+                    }
+                }
+                OwnerMessage::AnalysisSubmitted { identity, report } => {
+                    owner.analyses.submit(*identity, *report);
+                }
             }
-            OwnerMessage::AnalysisSubmitted { identity, report } => {
-                owner.analyses.submit(*identity, *report);
-            }
+            ControlFlow::Continue(())
+        }));
+        match served {
+            Ok(ControlFlow::Break(())) => break,
+            Ok(ControlFlow::Continue(())) => {}
+            Err(_) => owner.contained(owed),
         }
         owner.notify_watchers(caller);
     }
@@ -1289,6 +1370,8 @@ pub(super) struct Owner {
     notified: u64,
     /// Clients blocked until a source job ends ([`OwnerHandle::wait_source`]).
     source_waiters: Vec<SourceWaiter>,
+    #[cfg(test)]
+    fault: Option<Fault>,
 }
 
 impl Owner {
@@ -1340,6 +1423,10 @@ impl Owner {
             request,
             origin: Origin::new(&request.method, &request.id),
         };
+        #[cfg(test)]
+        if let Some(fault) = &self.fault {
+            fault(&request.method);
+        }
         let result = match method.route() {
             Route::Owner(handler) => handler(self, &call).map(Planned::Value),
             Route::Service => {
@@ -1412,6 +1499,34 @@ impl Owner {
                 true
             }
         });
+    }
+
+    /// Answer what a message that panicked owed. A change it committed before the panic is
+    /// durable, so its event is recorded. A caller reads one answer, so where the message already
+    /// answered, that answer stands; a source job it already settled keeps its state.
+    fn contained(&mut self, owed: Owed) {
+        self.record_announced();
+        let error = || Error::internal("the catalog owner failed while serving this message");
+        match owed {
+            Owed::Call(id, response) => {
+                let _ = response.try_send(ApiResponse::failure(id, self.log.sequence, error()));
+            }
+            Owed::Preview(response) => {
+                let _ = response.try_send(Err(error()));
+            }
+            Owed::Wait(reply) => {
+                let _ = reply.try_send(());
+            }
+            Owed::Source(id) => {
+                if self.jobs.jobs.get(&id).is_some_and(|job| {
+                    matches!(job.state, SourceState::Queued | SourceState::Preparing)
+                }) {
+                    self.jobs.complete(&id, SourceState::Failed(error()));
+                }
+                self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == &id));
+            }
+            Owed::Nobody => {}
+        }
     }
 
     /// Record every change the message just handled announced, once each.
@@ -1502,6 +1617,12 @@ impl Owner {
             .jobs
             .get(id)
             .is_some_and(|job| !job.clients.is_empty());
+        #[cfg(test)]
+        let result = result.inspect(|_| {
+            if let Some(fault) = &self.fault {
+                fault("source.complete");
+            }
+        });
         let service = &mut self.service;
         let outcome = if interested {
             result.and_then(|prepared| match prepared {
@@ -3737,6 +3858,193 @@ mod tests {
         assert!(notes.contains("needs no asset"), "{notes}");
         assert!(notes.contains("emits no event"), "{notes}");
         assert!(notes.contains("job.status"), "{notes}");
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+    }
+
+    /// Block in [`OwnerHandle::wait_source`] on a thread of its own, as the desktop's refresh and
+    /// import tasks do; the receiver yields its answer, so a test fails on a deadline rather than
+    /// hanging when nothing releases the wait.
+    fn waiting(
+        owner: &OwnerHandle,
+        client: ClientId,
+        job: Option<JobId>,
+    ) -> Receiver<Result<(), Error>> {
+        let (sender, receiver) = sync_channel(1);
+        let owner = owner.clone();
+        thread::spawn(move || {
+            let _ = sender.send(owner.wait_source(client, job.as_ref()));
+        });
+        receiver
+    }
+
+    /// A source task that panics fails `internal` like any other failed task: `job.status` reads
+    /// the job failed, the activity board records it failed, every client waiting on it is
+    /// released, and the worker runs the next source job. The panic comes from the worker's test
+    /// hold, inside the task, after its activity began and before its work.
+    #[test]
+    fn a_panicking_source_task_fails_internal_releases_its_waiters_and_the_worker_runs_on() {
+        let catalog = temp("source-panic.sqlite");
+        let photo = temp("source-panic.jpg");
+        let _ = std::fs::remove_file(&catalog);
+        std::fs::copy(fixture(), &photo).unwrap();
+        let gate = crate::modules::RenderGate::open_gate();
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let armed = Arc::new(AtomicBool::new(true));
+        let (hold, fault) = (gate.clone(), armed.clone());
+        let (owner, join) = OwnerHandle::start_observed(
+            &catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            board,
+            Some(Arc::new(move || {
+                hold.pass();
+                if fault.swap(false, Ordering::SeqCst) {
+                    panic!("a source task panicked");
+                }
+            })),
+        )
+        .unwrap();
+        let client = owner.register();
+        let other = owner.register();
+
+        // The task is held inside its work while two clients wait: one on the job, one on any.
+        gate.shut();
+        let queued = ok(
+            &owner,
+            client,
+            "import",
+            "catalog.import",
+            import_params(&photo),
+        );
+        let job_id = queued["job_id"].clone();
+        let job = JobId::parse(job_id.as_str().unwrap()).unwrap();
+        listed(&owner, client, |list| active_kind(list, "source.prepare"));
+        let waits = [
+            waiting(&owner, client, Some(job.clone())),
+            waiting(&owner, other, None),
+        ];
+        gate.open();
+        for wait in waits {
+            wait.recv_timeout(Duration::from_secs(20))
+                .expect("the wait is released")
+                .expect("the owner answered the wait");
+        }
+
+        // The job, the board and a wait that starts now agree: failed, internal.
+        let status = ok(
+            &owner,
+            client,
+            "status",
+            "job.status",
+            json!({"job_id": job_id}),
+        );
+        assert_eq!(status["status"], json!("failed"), "{status}");
+        assert_eq!(status["error"]["code"], json!("internal"), "{status}");
+        let list = ok(&owner, client, "list", "activity.list", json!({}));
+        assert_eq!(list["active"], json!([]), "{list}");
+        assert_eq!(list["recent"][0]["job_id"], job_id, "{list}");
+        assert_eq!(list["recent"][0]["outcome"], json!("failed"), "{list}");
+        owner
+            .wait_source(client, Some(&job))
+            .expect("a failed job is not waited for");
+
+        // The worker lives on: the next source job runs, and every other client is served.
+        let again = ok(
+            &owner,
+            client,
+            "again",
+            "catalog.import",
+            import_params(&photo),
+        );
+        assert_ne!(again["job_id"], job_id, "a new job");
+        assert_eq!(
+            wait_source(&owner, client, again["job_id"].as_str().unwrap())["status"],
+            json!("ready")
+        );
+        assert!(ok(&owner, other, "list", "catalog.list", json!({}))["assets"].is_array());
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+    }
+
+    /// A panic while the owner serves one message is contained. The request it was serving is
+    /// answered `internal`; a source job whose completion it was committing fails `internal`,
+    /// commits nothing and releases its waiters; and the owner goes on serving that client, every
+    /// other client and the next source job. The panic comes from the owner's test fault, where a
+    /// handler or a completion's commit runs.
+    #[test]
+    fn a_panic_while_the_owner_serves_a_message_answers_internal_and_the_owner_serves_on() {
+        let catalog = temp("owner-panic.sqlite");
+        let photo = temp("owner-panic.jpg");
+        let _ = std::fs::remove_file(&catalog);
+        std::fs::copy(fixture(), &photo).unwrap();
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let other = owner.register();
+        let panicking = |at: &'static str| -> Fault {
+            Arc::new(move |served: &str| {
+                if served == at {
+                    panic!("the owner panicked serving {served}");
+                }
+            })
+        };
+        let assets =
+            |client| ok(&owner, client, "list", "catalog.list", json!({}))["assets"].clone();
+
+        // A handler that panics answers its own request `internal`, and the owner serves on.
+        owner.fault(Some(panicking("catalog.list")));
+        let error = failure(&owner, client, "panics", "catalog.list", json!({}));
+        assert_eq!(error.code, "internal", "{}", error.message);
+        assert!(
+            ok(&owner, other, "state", "session.state", json!({}))["revision"].is_u64(),
+            "another client is served"
+        );
+        owner.fault(None);
+        assert_eq!(assets(client), json!([]), "and so is the same client");
+
+        // A completion that panics as it commits fails its job and releases its waiters.
+        owner.fault(Some(panicking("source.complete")));
+        let queued = ok(
+            &owner,
+            client,
+            "import",
+            "catalog.import",
+            import_params(&photo),
+        );
+        let job_id = queued["job_id"].clone();
+        let job = JobId::parse(job_id.as_str().unwrap()).unwrap();
+        waiting(&owner, client, Some(job))
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the wait is released")
+            .expect("the owner answered the wait");
+        let status = ok(
+            &owner,
+            client,
+            "status",
+            "job.status",
+            json!({"job_id": job_id}),
+        );
+        assert_eq!(status["status"], json!("failed"), "{status}");
+        assert_eq!(status["error"]["code"], json!("internal"), "{status}");
+        assert_eq!(assets(other), json!([]), "the failed commit added nothing");
+
+        // The next source job commits.
+        owner.fault(None);
+        let again = ok(
+            &owner,
+            client,
+            "again",
+            "catalog.import",
+            import_params(&photo),
+        );
+        assert_eq!(
+            wait_source(&owner, client, again["job_id"].as_str().unwrap())["status"],
+            json!("ready")
+        );
+        assert_eq!(assets(other).as_array().map(Vec::len), Some(1));
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

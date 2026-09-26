@@ -376,7 +376,7 @@ Keep the process and its input open while requests are in progress. For example,
 {"id":"import","method":"catalog.import","params":{"path":"/path/to/photo.jpg","mutation":{"request_id":"import-1","actor":"my-client"}}}
 ```
 
-Import returns a job acknowledgment. Poll `job.status` with the returned `job_id` until it is `ready` or `failed`; a ready result includes the asset state. `job.adopt` adopts the client's latest ready import into its session. `job.cancel` removes that client's interest in a job; another client's use of the same source continues. Ending the connection cancels its pending work.
+Import returns a job acknowledgment. Poll `job.status` with the returned `job_id` until it is `ready` or `failed`; a ready result includes the asset state. A job whose work fails unexpectedly, a panic included, reads `failed` with an `internal` error, the activity list records it failed, and the next job runs. `job.adopt` adopts the client's latest ready import into its session. `job.cancel` removes that client's interest in a job; another client's use of the same source continues. Ending the connection cancels its pending work.
 
 A source-dependent request after reopen can return `preparation-required` with `error.job_id`. Wait for that job and retry against the current asset revision. `source.prepare` also allows explicit preparation. Loading, hashing, decoding and RAW development run on a bounded worker so other catalog requests can continue.
 
@@ -539,4 +539,4 @@ Derived artifacts live beside the catalog in `CATALOG.artifacts/`; move that dir
 
 While the desktop owns a catalog it creates `CATALOG.live-session.json` beside it, recording a `127.0.0.1` address and a token. That session accepts the same newline-delimited requests with the token as the request's top-level `token`. The file is owner-readable on Unix and removed on orderly shutdown. Up to eight clients are accepted; requests are limited to 1 MiB and retained events to 256. Use `events.since`, and refresh with `asset.state` if it reports a gap.
 
-A catalog has one owner. Starting the headless command against a catalog open in the GUI fails instead of creating competing state. Request IDs deduplicate retries; reusing one with different input fails.
+A catalog has one owner. Starting the headless command against a catalog open in the GUI fails instead of creating competing state. A request the owner fails to serve unexpectedly is answered `internal`, and the owner goes on serving every client. Request IDs deduplicate retries; reusing one with different input fails.
