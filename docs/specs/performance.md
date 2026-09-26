@@ -1655,25 +1655,21 @@ every tile ([native demosaic parallelism](../design/native-demosaic-parallelism.
 one 978,536-byte scratch set under the shared eight-slot cap. Complete RGB planes match the pre-change
 serial digest on the Z6 and Air 2S and the serial raster at every worker count.
 
-Preliminary figures only: native M4 Pro, 14 cores, release, 25 September 2026, on a host shared with
-parallel builds (one-minute load 12 to 23). Each run is the crate's
-`bayer_normalization_release_abba_profile`: 30 warm observations per arm in 15 ABBA pairs in one
-fresh process. The pre-change build and this build ran back to back and then reversed (before, after,
-after, before) per camera. The executor arm is the production path; the no-executor arm is the same
-serial code in both builds and serves as a control (Z6 277 to 286 ms, Air 2S 236 to 245 ms wall
-p50). The first Air 2S before-run was disturbed (its control rose to 434 ms) and is left out. Timing
-covers retained-mosaic development only, as in the table above.
+Native M4 Pro, 14 cores, release, 26 September 2026, one-minute load 3.2 to 4.1. Each run is the
+crate's `bayer_normalization_release_abba_profile`: 30 warm observations per arm in 15 ABBA pairs in
+one fresh process. The build before pooled RCD and this build ran back to back and then reversed
+(before, after, after, before) per camera. The executor arm is the production path. Timing covers
+retained-mosaic development only, as in the table above.
 
-| Source | Build | Load at start | Wall p50 / p95 | Demosaic p50 / p95 | Process CPU p50 / p95 |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Nikon Z6 | before | 23.1, 14.5 | 251.8 / 263.0, 244.0 / 250.2 ms | 215.7 / 225.3, 208.9 / 215.0 ms | 306.5 / 319.7, 297.3 / 306.1 ms |
-| Nikon Z6 | after | 18.8, 17.0 | 80.0 / 90.2, 79.0 / 85.0 ms | 43.7 / 50.9, 42.9 / 47.7 ms | 338.9 / 357.6, 333.4 / 351.6 ms |
-| DJI Air 2S | before | 16.2 | 206.0 / 455.2 ms | 175.4 / 294.5 ms | 257.1 / 360.8 ms |
-| DJI Air 2S | after | 20.8, 17.9 | 64.0 / 86.2, 62.6 / 142.9 ms | 31.7 / 47.2, 31.8 / 54.9 ms | 283.3 / 345.0, 281.7 / 347.0 ms |
+| Source | Build | Wall p50 / p95 | Demosaic p50 / p95 | Process CPU p50 / p95 |
+| --- | --- | ---: | ---: | ---: |
+| Nikon Z6 | before | 237.8 / 240.8, 238.7 / 247.4 ms | 203.8 / 205.9, 204.1 / 212.6 ms | 290.5 / 296.0, 291.7 / 301.2 ms |
+| Nikon Z6 | after | 55.9 / 58.3, 56.0 / 62.2 ms | 40.8 / 42.9, 40.8 / 44.9 ms | 301.3 / 307.2, 300.5 / 319.1 ms |
+| DJI Air 2S | before | 199.0 / 201.8, 199.2 / 202.7 ms | 168.6 / 171.1, 168.9 / 171.2 ms | 250.1 / 253.7, 249.9 / 253.7 ms |
+| DJI Air 2S | after | 44.2 / 45.1, 44.3 / 46.1 ms | 30.7 / 31.0, 30.6 / 31.1 ms | 256.0 / 262.3, 257.4 / 262.6 ms |
 
-Development wall p50 falls by about 68% on both cameras and the demosaic by about 80%, for about 10%
-more process CPU. Requalify on a quiet host before quoting these as the cost, and measure concurrent
-Fit proxies against a pooled RCD development before relying on preview latency. To repeat, run each
+Development wall p50 falls by about 77% on both cameras and the demosaic by about 80%, for about 3%
+more process CPU. Concurrent Fit proxies against a pooled RCD development are not yet measured. To repeat, run each
 build's profile once per camera in the order before, after, after, before:
 
 ```sh
