@@ -66,10 +66,12 @@ pub mod srgb {
         table
     });
 
-    /// One 8-bit channel decoded through [`TO_LINEAR`].
+    /// The table itself, [`TO_LINEAR`], indexed by code, for a pass that decodes many codes per
+    /// pixel: it takes the table once, since every dereference of the lazy static is an atomic
+    /// load the compiler cannot merge.
     #[inline]
-    pub(crate) fn decode_channel(code: u8) -> f32 {
-        TO_LINEAR[code as usize]
+    pub(crate) fn decode_table() -> &'static [f32; 256] {
+        &TO_LINEAR
     }
 
     /// One 8-bit pixel decoded into linear sRGB.
@@ -149,6 +151,7 @@ pub mod srgb {
 
     /// The sRGB transfer function applied forwards to a clamped value and rounded to the nearest
     /// 8-bit code in floating point, `round(255 · encode(v))`: the resample's bilinear sample.
+    #[inline]
     pub(crate) fn linear_to_srgb(linear: f64) -> u8 {
         let linear = linear.clamp(0.0, 1.0);
         (encode(linear) * 255.0).round() as u8

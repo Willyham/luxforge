@@ -2,9 +2,7 @@
 use crate::ErrorKind;
 use crate::{
     Error, Recipe, SnapshotId, SourceImage,
-    colour::srgb::{
-        decode_channel, decode_pixel, linear_to_srgb, quantize_channel, quantize_pixel,
-    },
+    colour::srgb::{decode_pixel, decode_table, linear_to_srgb, quantize_channel, quantize_pixel},
     mask_field::MaskField,
     modules::{
         ColorOperation, ExactGeometry, ModuleRegistry, Parallelism, Processing, Region, Resample,
@@ -388,6 +386,7 @@ fn bilinear(
     height: u32,
     mut fetch: impl FnMut(u32, u32) -> Result<[u8; 4], Error>,
 ) -> Result<[u8; 4], Error> {
+    let table = decode_table();
     let taps = Taps::new(u, v, width, height);
     let [top_left, top_right, bottom_left, bottom_right] = taps.corners;
     let [w0, w1, w2, w3] = taps.weights;
@@ -401,7 +400,7 @@ fn bilinear(
     for (channel, slot) in pixel.iter_mut().enumerate().take(3) {
         let linear: f64 = corners
             .iter()
-            .map(|(corner, weight)| weight * f64::from(decode_channel(corner[channel])))
+            .map(|(corner, weight)| weight * f64::from(table[corner[channel] as usize]))
             .sum();
         *slot = linear_to_srgb(linear);
     }
