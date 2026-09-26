@@ -217,7 +217,7 @@
     {
       "id": "TASK-005",
       "description": "Bound the display proxy of a tightly cropped RAW to the size the display needs.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The proxy fits the crop's output to the display bounds, so a tight crop's proxy source approaches the source's own size: a 1801 × 1574 crop of the X100VI built a 7363 × 4909 proxy (414 MiB of float planes).",
