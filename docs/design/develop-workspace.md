@@ -4,7 +4,7 @@ Status: implemented and verified on the M4 Mac for the shell, the widget library
 
 ## Mockup
 
-Rendered at 1440 × 900 logical points, 2× scale, from the design artboards, rebased on 2026-09-22 to the modules the registry holds today (RAW, Basic, Presence, Colour mixer, Transforms, Crop and straighten, Vignette, and Pixel under Developer) and redrawn on 2026-09-26 with the owner's shell decisions: no histogram caption, no Recipe section, Performance pinned in the state panel and Presets leading the tools panel. The photograph is the owner's Sapa drone JPEG from the fixtures; the slider values, history and agent are illustrative. The built workspace matches the boards, shell and tools panel alike, except for the differences listed under [what is not matched](#what-is-not-matched). Rendered evidence of the built screen comes from `cargo xtask smoke --scenario workspace`, `--scenario histogram` and `--scenario unavailable` (see [verification](#verification)).
+Rendered at 1440 × 900 logical points, 2× scale, from the design artboards, rebased on 2026-09-22 to the modules the registry holds today (RAW, Basic, Presence, Colour mixer, Transforms, Crop and straighten, Vignette, and Pixel under Developer) and redrawn on 2026-09-26 with the owner's shell decisions: no histogram caption, no Recipe section, Performance pinned in the state panel and Presets leading the tools panel. The photograph is the owner's Sapa drone JPEG; the slider values, history and agent are illustrative. The built workspace matches the boards, shell and tools panel alike, except for the differences listed under [what is not matched](#what-is-not-matched). Rendered evidence of the built screen comes from `cargo xtask smoke --scenario workspace`, `--scenario histogram` and `--scenario unavailable` (see [verification](#verification)).
 
 | Board | Shows |
 | --- | --- |
@@ -17,6 +17,8 @@ Rendered at 1440 × 900 logical points, 2× scale, from the design artboards, re
 | [Components](develop-workspace/components.png) | Slider states, the module and group hierarchy, history rows, canvas modes, buttons and chips, notices and the command palette |
 
 ![Develop workspace, default state](develop-workspace/default.png)
+
+Every board is also kept as a standalone HTML page, at its design size and with the photograph beside it, under [develop-workspace/html](develop-workspace/html/index.html): open `index.html` for all seven boards laid out as the design canvas arranges them, and any board's own page to inspect it at full scale in a browser. The pages are exported from the design canvas, so they change only when the boards do. The two mask boards predate the shell alignment and still draw the earlier title bar, state panel and status bar.
 
 One render per module, cropped to its panel at 300 pt, is kept under [develop-workspace/modules](develop-workspace/modules): `raw`, `basic`, `presence`, `colour-mixer` (all three tabs), `transforms`, `crop-and-straighten` (drafting, and an idle state the built section does not match), `vignette`, `developer-pixel` and `states` (collapsed, unavailable and later bands). They are the per-section references for the [Module panels](#module-panels) design.
 
