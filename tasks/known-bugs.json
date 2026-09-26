@@ -266,7 +266,7 @@
     {
       "id": "TASK-006",
       "description": "Have the core report the crop layer's input stage instead of the desktop deriving it for the idle crop section.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "To show which ratio the committed crop reads as, the desktop folds the orientation layers over the photo's dimensions to size the crop's input stage, a copy of a geometry rule the core owns. It shows Free whenever any other geometry layer precedes the crop.",
@@ -747,7 +747,7 @@
     {
       "id": "TASK-018",
       "description": "Stop the `mask-range` scenario's stroke-latency check from failing when every drafted frame of its paced stroke is superseded on a heavily loaded host.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "On 2026-09-25, `mask-range` failed three times in about ten runs with \"The run painted no stroke whose drafted frame reached the screen\", always at a one-minute load average of about 27 to 48, and passed on rerun. In the failing runs no `preview_displayed` followed any `mask_draft_set` of the paced stroke: each drafted proxy was superseded before upload, so the pairing had no latency to record. The rest of the scenario's checks passed.",
