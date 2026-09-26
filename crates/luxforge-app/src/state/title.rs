@@ -79,7 +79,7 @@ pub(crate) fn effective_percent(inputs: &Inputs<'_>) -> Option<f32> {
                 source,
                 surface,
                 inputs.scale_factor,
-                view::canvas::PHOTO_PADDING,
+                view::canvas::FIT_INSET,
             )?;
             Some(width / source.0 as f32 * 100.0)
         }

@@ -43,8 +43,8 @@ const RULE: &str =
 /// The editor's layout in points, which a capture's recorded scale turns into physical rows and
 /// columns: the title bar and the status bar, each with its 1 pt rule, and the width of the status
 /// bar's readout slot.
-const TITLE_BAR_PT: f64 = 44.0;
-const STATUS_BAR_PT: f64 = 26.0;
+const TITLE_BAR_PT: f64 = 43.0;
+const STATUS_BAR_PT: f64 = 25.0;
 const RULE_PT: f64 = 1.0;
 const READOUT_SLOT_PT: f64 = 240.0;
 /// The trailing facts at the status bar's right edge (the zoom and what it means on this display)

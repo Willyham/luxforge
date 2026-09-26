@@ -460,7 +460,8 @@ pub const STRIP_ICON: Color = Color::from_rgb8(0xb9, 0xb9, 0xbf);
 /// A selected tool or an overlay that is on: the accent at 16% over [`BAR`].
 pub const STRIP_SELECTED: Color = Color::from_rgb8(0x41, 0x3a, 0x30);
 /// The rule between the modes and the view toggles, 1 × [`STRIP_RULE_HEIGHT`] with
-/// [`STRIP_RULE_MARGIN`] either side: 10% white over [`BAR`].
+/// [`STRIP_RULE_MARGIN`] either side, and the title bar's rule before the panel toggles: 10% white
+/// over [`BAR`].
 pub const STRIP_RULE: Color = Color::from_rgb8(0x39, 0x39, 0x3c);
 pub const STRIP_RULE_HEIGHT: f32 = 16.0;
 pub const STRIP_RULE_MARGIN: f32 = 4.0;
@@ -492,7 +493,8 @@ pub const NOTICE_SPACING: f32 = 12.0;
 /// A notice's title and body sizes.
 pub const SIZE_NOTICE_TITLE: f32 = 12.5;
 pub const SIZE_NOTICE_BODY: f32 = 11.5;
-/// A notice's title: a step brighter than [`TEXT_PRIMARY`], as the notice boards set it.
+/// A step brighter than [`TEXT_PRIMARY`]: a notice's title and the title bar's file name, as the
+/// boards set them.
 pub const TEXT_BRIGHT: Color = Color::from_rgb8(0xf0, 0xf0, 0xf2);
 /// A neutral notice's outline: 10% white over [`BAR`], the same as [`STRIP_RULE`].
 pub const NOTICE_BORDER: Color = STRIP_RULE;
@@ -542,8 +544,6 @@ pub const HISTOGRAM_INSPECTOR_HEIGHT: f32 =
 /// The rules between the shell's regions: [`BORDER`], 6% white, as the default board composites it
 /// over the Bar surface, which is the module band's border.
 pub const DIVIDER: Color = BAND_BORDER;
-/// The file name in the title bar: a step over primary.
-pub const TEXT_STRONG: Color = Color::from_rgb8(0xf0, 0xf0, 0xf2);
 /// The dimensions, format and colour space after the file name.
 pub const TEXT_IDENTITY: Color = Color::from_rgb8(0x8a, 0x8a, 0x90);
 /// The current history row's label.
@@ -554,8 +554,6 @@ pub const SIZE_IDENTITY: f32 = 11.5;
 pub const ICON_HOVER: Color = Color::from_rgb8(0x30, 0x30, 0x33);
 /// A selected icon button's fill: [`ACCENT`] at 14% over the Bar surface.
 pub const ICON_SELECTED_FILL: Color = Color::from_rgb8(0x3e, 0x37, 0x2f);
-/// The short vertical rule between Undo and Redo and the panel toggles: 10% white over the Bar.
-pub const TOOLBAR_RULE: Color = Color::from_rgb8(0x39, 0x39, 0x3c);
 /// The toolbar rule's height and the margin on either side of it.
 pub const TOOLBAR_RULE_HEIGHT: f32 = 16.0;
 pub const TOOLBAR_RULE_MARGIN: f32 = 6.0;
@@ -829,7 +827,7 @@ pub fn segment_track(_theme: &Theme) -> container::Style {
     })
 }
 
-/// One segment. The selected one is raised on [`SEGMENT_SELECTED`] in [`TEXT_STRONG`] and never
+/// One segment. The selected one is raised on [`SEGMENT_SELECTED`] in [`TEXT_BRIGHT`] and never
 /// takes the accent, because it states a view rather than an edit; the others are bare, in
 /// secondary text.
 pub fn segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
@@ -845,7 +843,7 @@ pub fn segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Sty
             background,
             text_color: match (selected, status) {
                 (_, button::Status::Disabled) => TEXT_TERTIARY,
-                (true, _) => TEXT_STRONG,
+                (true, _) => TEXT_BRIGHT,
                 (false, _) => TEXT_SECONDARY,
             },
             border: Border {
@@ -1361,7 +1359,7 @@ mod tests {
         // the Bar; they are the module band's border.
         assert_eq!(DIVIDER, BAND_BORDER);
         assert_eq!(ICON_HOVER, over_bar(Color::WHITE, 0.06));
-        assert_eq!(TOOLBAR_RULE, over_bar(Color::WHITE, 0.10));
+        assert_eq!(STRIP_RULE, over_bar(Color::WHITE, 0.10));
         // Sampled from the board's selected panel toggles, whose blue lands a code under the exact
         // composite.
         assert_eq!(ICON_SELECTED_FILL, Color::from_rgb8(62, 55, 47));
@@ -1373,7 +1371,6 @@ mod tests {
         ] {
             assert!((sampled - exact).abs() <= 1.0 / 255.0 + f32::EPSILON);
         }
-        assert_eq!(TEXT_STRONG, Color::from_rgb8(0xf0, 0xf0, 0xf2));
         assert_eq!(TEXT_IDENTITY, Color::from_rgb8(0x8a, 0x8a, 0x90));
         assert_eq!(TEXT_CURRENT_ROW, Color::from_rgb8(0xf2, 0xf2, 0xf4));
         assert_eq!(AGENT_CONNECTED, Color::from_rgb8(0x57, 0xb5, 0x6b));
@@ -1427,7 +1424,7 @@ mod tests {
             segment.background,
             Some(Background::Color(SEGMENT_SELECTED))
         );
-        assert_eq!(segment.text_color, TEXT_STRONG);
+        assert_eq!(segment.text_color, TEXT_BRIGHT);
         let resting = super::segment(false)(&theme(), button::Status::Active);
         assert_eq!(resting.background, None);
         assert_eq!(resting.text_color, TEXT_SECONDARY);

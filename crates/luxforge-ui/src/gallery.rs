@@ -4,7 +4,13 @@
 //! part of the public widget API; [`crate::gallery_states`] is the only path to it.
 
 use crate::{
-    BINS, ChipModel, ClipTriangleModel, DraftBarModel, HistogramChannel, HistogramModel, Icon, IconButtonModel, ListRowModel, Marker, ModeEntry, NoticeCardModel, RailDecoration, SectionHeaderModel, SegmentedModel, SliderModel, SubGroupHeaderModel, ToggleEntry, Tone, ValueEdit, caption, chip, clip_triangle, compact_chip, double_click, draft_bar, error_caption, floating_bar, header_icon_button, histogram, histogram_inspector, icon_button, inline_menu, label, list_row, mode_strip, notice_card, section_header, section_label, segment, segment_track, segmented, slider, sub_group_header, theme, title, value_text,
+    BINS, ChipModel, ClipTriangleModel, DraftBarModel, HistogramChannel, HistogramModel, Icon,
+    IconButtonModel, ListRowModel, Marker, ModeEntry, NoticeCardModel, RailDecoration,
+    SectionHeaderModel, SegmentedModel, SliderModel, SubGroupHeaderModel, ToggleEntry, Tone,
+    ValueEdit, caption, chip, clip_triangle, compact_chip, double_click, draft_bar, error_caption,
+    floating_bar, header_icon_button, histogram, histogram_inspector, icon_button, inline_menu,
+    label, list_row, mode_strip, notice_card, section_header, section_label, segment,
+    segment_track, segmented, slider, sub_group_header, theme, title, value_text,
 };
 use iced::Element;
 

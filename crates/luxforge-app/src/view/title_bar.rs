@@ -67,7 +67,7 @@ fn identity(model: &TitleBarModel) -> Element<'_, Message> {
         )
         .size(theme::SIZE_TITLE)
         .font(theme::FONT_SEMIBOLD)
-        .color(theme::TEXT_STRONG)
+        .color(theme::TEXT_BRIGHT)
         .wrapping(text::Wrapping::None),
     ]
     .spacing(theme::TITLE_GROUP_SPACING)
@@ -177,7 +177,7 @@ fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         container(Space::new())
             .width(Length::Fixed(theme::BORDER_WIDTH))
             .height(Length::Fixed(theme::TOOLBAR_RULE_HEIGHT))
-            .style(|_: &iced::Theme| container::Style::default().background(theme::TOOLBAR_RULE)),
+            .style(|_: &iced::Theme| container::Style::default().background(theme::STRIP_RULE)),
     )
     .padding([
         0.0,
