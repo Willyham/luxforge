@@ -10,6 +10,7 @@
 //! recipe or the catalog; each is `O(1)` or `O(components)`.
 use crate::{
     ComponentMode, Error,
+    mask::SEGMENTS_PER_PIXEL,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
 };
 
@@ -153,6 +154,23 @@ pub fn room_for_sample(
         return Err(Error::resource_limit(format!(
             "component {component} already holds {limit} sampled colours; the limit is \
                  {limit} per {kind} component"
+        )));
+    }
+    Ok(())
+}
+
+/// Painting a stroke that would leave brush component `component` of mask `mask` with `densest`
+/// stroke segments over one grid cell, at the content stage. More than [`SEGMENTS_PER_PIXEL`] is
+/// refused as a resource limit, and nothing about the stroke commits: the cap bounds what one pixel
+/// of the component can be made to test, and the stroke that would cross it pays for it in full, so
+/// a mask whose strokes committed is never refused for it later. A client that computes the same
+/// count before it sends a stroke states the same sentence.
+pub fn segments_per_pixel(mask: &str, component: &str, densest: usize) -> Result<(), Error> {
+    if densest > SEGMENTS_PER_PIXEL {
+        return Err(Error::resource_limit(format!(
+            "this stroke would put {densest} stroke segments over one pixel of mask {mask} \
+             component {component}; the limit is {SEGMENTS_PER_PIXEL} segments tested per pixel \
+             by a brush component"
         )));
     }
     Ok(())
