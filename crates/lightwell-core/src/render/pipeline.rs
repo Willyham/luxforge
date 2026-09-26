@@ -16,18 +16,20 @@
 //! Everything else exists once, here: walking a point back through the segments ([`Evaluation`]),
 //! the resample recursion, a spatial entry answered from the query's tiles or from a materialized
 //! frame, the global estimates a spatial operation reads, a spatial operation's output built tile
-//! by tile ([`spatial_output`]) and the terminal conversion a sample and a grid share.
+//! by tile ([`spatial_output`]), the replacements and colour runs applied to rows of a segment's
+//! output ([`segment_pass`]) and the terminal conversion a sample and a grid share.
 //!
 //! What stays with each domain's rasterizer is which frames it materializes. The byte driver
 //! ([`super::rasterize`]) writes every segment's output as a byte frame, because a byte frame is
-//! exactly what the next boundary reads. The linear driver ([`super::linear::rasterize`]) pulls
-//! every output pixel through [`Evaluation`], because a linear value between two boundaries is an
-//! `f64` the next resample blends: materializing it as `f32` would change bytes and as `f64` would
-//! double the RAW planar bound. A spatial operation's output is `f32` on both paths, so the linear
-//! driver materializes those, as a render always has.
+//! exactly what the next boundary reads. The linear driver ([`super::linear::rasterize`]) writes
+//! only the last segment's rows and pulls everything before them through [`Evaluation`], because a
+//! linear value between two boundaries is an `f64` the next resample blends: materializing it as
+//! `f32` would change bytes and as `f64` would double the RAW planar bound. A spatial operation's
+//! output is `f32` on both paths, so the linear driver materializes those, as a render always has.
 
 use super::{
-    Cancel, ColorRun, Compiled, Entry, RenderContext, color_runs,
+    Cancel, ColorRun, Compiled, Entry, RenderContext, ScratchBudget, Segment, color_chunk_rows,
+    color_runs, mapped_replacements,
     spatial::{
         PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
         run_tile,
@@ -37,9 +39,10 @@ use crate::{
     Error, ErrorKind,
     modules::{Global, Parallelism, Region, SpatialOperation, Stage},
 };
+use rayon::prelude::*;
 #[cfg(test)]
 use std::sync::Weak;
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, ops::Range, sync::Arc};
 
 /// What separates one pixel domain from the other. Every method is the one place a difference
 /// between the byte and the linear evaluation is written; see the [module](self) documentation.
@@ -83,7 +86,7 @@ pub(crate) trait PixelDomain: Sync {
     fn replace(pixel: Self::Pixel, rgb: [u8; 3]) -> Self::Pixel;
 
     /// Every colour run of `runs`, in order, over one pixel at `(x, y)` of its segment's output
-    /// stage, with the arithmetic a rasterizing pass applies to a row of them.
+    /// stage: the per-pixel form of [`SegmentRows::run`], with the same arithmetic.
     fn colour<'r>(
         pixel: Self::Pixel,
         runs: impl Iterator<Item = ColorRun<'r>>,
@@ -136,7 +139,7 @@ pub(crate) trait PixelDomain: Sync {
         stage: Stage,
         tile: Region,
         output: Self::TileOutput,
-        alpha: &(dyn Fn(u32, u32) -> u8 + Sync),
+        alpha: &impl Fn(u32, u32) -> u8,
     );
 
     /// One pixel of a spatial frame of `stage`.
@@ -230,7 +233,11 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 evaluation.tile,
                 cancel,
                 evaluation.context,
-                |x, y| evaluation.spatial_read(index, x, y),
+                |region, planes, parallelism| {
+                    fill_planes(region, planes, parallelism, |x, y| {
+                        evaluation.spatial_read(index, x, y)
+                    })
+                },
                 |x, y| evaluation.alpha_in(index - 1, x, y).unwrap_or(255),
             )?);
             #[cfg(test)]
@@ -313,6 +320,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
 
     /// One pixel of segment `index`'s input frame, which its exact geometry reads: the source, a
     /// spatial operation's output or a resample of the segment before it.
+    #[inline(always)]
     pub(super) fn entry_pixel(&self, index: usize, x: u32, y: u32) -> Result<D::Pixel, Error> {
         match &self.compiled.segments[index].entry {
             None => self.domain.source_pixel(x, y),
@@ -509,8 +517,8 @@ fn clamp_index(value: f64, limit: u32) -> u32 {
 }
 
 /// One spatial operation's output over its whole `stage`, written tile by tile into the domain's
-/// frame: `globals` resolves the operation's global estimates once the plan is known, `read` pulls
-/// one pixel of the stage it reads and `alpha` that pixel's alpha. Every tile runs through
+/// frame: `globals` resolves the operation's global estimates once the plan is known, `fill` reads
+/// one rectangle of the stage it reads into three planes and `alpha` one pixel's alpha. Every tile runs through
 /// [`run_tile`], in batches whose concurrency the spatial budget sets, checking `cancel` between
 /// batches. No full-frame float buffer exists beside the output, only one tile's working set per
 /// tile in flight, charged to the spatial budget before each batch of tiles allocates.
@@ -522,7 +530,7 @@ pub(super) fn spatial_output<D: PixelDomain>(
     tile: u32,
     cancel: &Cancel,
     context: &RenderContext,
-    read: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+    fill: impl Fn(Region, &mut [f32], Parallelism) -> Result<(), Error> + Sync,
     alpha: impl Fn(u32, u32) -> u8 + Sync,
 ) -> Result<D::SpatialFrame, Error> {
     let plan = SpatialPlan::new(operation, stage, tile)?;
@@ -539,7 +547,7 @@ pub(super) fn spatial_output<D: PixelDomain>(
                 &globals,
                 tile,
                 parallelism,
-                |region, planes| fill_planes(region, planes, parallelism, &read),
+                |region, planes| fill(region, planes, parallelism),
             )?;
             Ok(D::tile_output(region, values, tile, parallelism))
         },
@@ -549,4 +557,145 @@ pub(super) fn spatial_output<D: PixelDomain>(
         },
     )?;
     Ok(frame)
+}
+
+/// How one domain holds a chunk of a segment's output rows while the segment's operations run over
+/// them. [`segment_pass`] calls these in the one order both domains share.
+pub(super) trait SegmentRows: Sync {
+    /// What one worker reuses for every chunk it takes.
+    type Scratch: Default + Send;
+
+    /// The float scratch one chunk of `rows` rows of `width` pixels holds while it runs, of which
+    /// colour runs reach `coloured`, reserved from the colour budget; zero reserves nothing.
+    fn scratch_bytes(&self, width: usize, rows: usize, coloured: usize) -> usize;
+
+    /// Read the segment's input into the chunk of output rows starting at row `y0`: through the
+    /// segment's exact geometry, from its input frame or its entry.
+    fn load(&self, scratch: &mut Self::Scratch, y0: u32, chunk: &mut [u8]) -> Result<(), Error>;
+
+    /// Write one point replacement at pixel `offset` of the chunk.
+    fn replace(
+        &self,
+        scratch: &mut Self::Scratch,
+        chunk: &mut [u8],
+        offset: usize,
+        rgb: [u8; 3],
+    ) -> Result<(), Error>;
+
+    /// Apply one colour run to the chunk's rows `rows`, which start at row `y0 + rows.start` of the
+    /// stage. `snapshot` is one row of a masked operation's own input.
+    fn run(
+        &self,
+        scratch: &mut Self::Scratch,
+        chunk: &mut [u8],
+        run: &ColorRun<'_>,
+        y0: u32,
+        rows: Range<usize>,
+        snapshot: &mut [[f32; 3]],
+    ) -> Result<(), Error>;
+
+    /// Write the chunk's finished values as its bytes.
+    fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [u8]) -> Result<(), Error>;
+}
+
+/// One segment's output, `frame`, written in bounded row chunks: each chunk is loaded, then the
+/// segment's replacements and colour runs are applied to it as ordered phases — the replacements
+/// before a colour run, then that run, then the replacements after it, so a later replacement wins
+/// at the same coordinate exactly as a later layer does — and stored. Colour runs reach only the
+/// rows in `band`; a resample that follows reads no other.
+///
+/// The chunks run on the shared Rayon pool above the one-megapixel threshold and serially below it.
+/// No full-frame float buffer exists at any point: each chunk reserves its float scratch from
+/// `budget` before it uses it, in a buffer its worker allocates once and reuses. `cancel` is read
+/// once per chunk, before the reservation.
+///
+/// Pointwise operations are independent per pixel and a unit is handed one row at a time with its
+/// row and first column, so applying the phases chunk by chunk is the same arithmetic in the same
+/// order as applying each phase to the whole frame, and as [`Evaluation::pixel_in`] applying the
+/// runs after the winning replacement to one pixel.
+pub(super) fn segment_pass<R: SegmentRows>(
+    rows: &R,
+    segment: &Segment,
+    frame: &mut [u8],
+    band: Range<usize>,
+    cancel: &Cancel,
+    budget: &ScratchBudget,
+) -> Result<(), Error> {
+    let width = segment.width as usize;
+    if frame.is_empty() || width == 0 {
+        return Ok(());
+    }
+    let replacements = mapped_replacements(segment);
+    let runs: Vec<ColorRun<'_>> = color_runs(segment).collect();
+    // Whether this pass needs snapshot scratch at all, decided once for the pass: an unmasked
+    // segment reserves and allocates exactly what it would without masks.
+    let masked = runs.iter().any(|run| run.has_mask());
+    let chunk_rows = color_chunk_rows(segment.width);
+    let chunk_bytes = chunk_rows * width * 4;
+    let process = |scratch: &mut (R::Scratch, Vec<[f32; 3]>),
+                   index: usize,
+                   chunk: &mut [u8]|
+     -> Result<(), Error> {
+        // Before the reservation, so a cancelled pass never takes scratch it will not use.
+        cancel.check()?;
+        let count = chunk.len() / (width * 4);
+        let y0 = index * chunk_rows;
+        // The chunk's rows that colour runs reach, as rows of the chunk.
+        let coloured = band.start.clamp(y0, y0 + count) - y0..band.end.clamp(y0, y0 + count) - y0;
+        let colours = !runs.is_empty() && !coloured.is_empty();
+        let bytes = rows.scratch_bytes(width, count, coloured.len());
+        let _reservation = (bytes > 0).then(|| budget.reserve(bytes));
+        // One row of snapshot scratch for a masked operation's own input, reserved before it is
+        // used and released with the chunk. It is a row and not a chunk because a unit is handed
+        // one row at a time, and an unmasked segment takes none of it.
+        let _snapshot_reservation =
+            (masked && colours).then(|| budget.reserve(width * std::mem::size_of::<[f32; 3]>()));
+        let (scratch, snapshot) = scratch;
+        let mut unused = [[0.0f32; 3]; 1];
+        let snapshot: &mut [[f32; 3]] = if masked {
+            // Allocated by the worker's first chunk and exactly one row long from then on; a
+            // masked operation overwrites what it reads, so an earlier chunk's values never show.
+            snapshot.resize(width, [0.0; 3]);
+            snapshot
+        } else {
+            &mut unused
+        };
+        rows.load(scratch, y0 as u32, chunk)?;
+        let mut next = 0;
+        let mut write = |scratch: &mut R::Scratch, chunk: &mut [u8], before: usize| {
+            while let Some(&(index, x, y, rgb)) = replacements.get(next) {
+                if index >= before {
+                    break;
+                }
+                let y = y as usize;
+                if (y0..y0 + count).contains(&y) {
+                    rows.replace(scratch, chunk, (y - y0) * width + x as usize, rgb)?;
+                }
+                next += 1;
+            }
+            Ok::<(), Error>(())
+        };
+        for run in &runs {
+            write(scratch, chunk, run.start)?;
+            if colours {
+                rows.run(scratch, chunk, run, y0 as u32, coloured.clone(), snapshot)?;
+            }
+        }
+        write(scratch, chunk, usize::MAX)?;
+        rows.store(scratch, chunk)
+    };
+    if segment.width as u64 * segment.height as u64 >= super::PARALLEL_RENDER_PIXELS {
+        frame
+            .par_chunks_mut(chunk_bytes)
+            .enumerate()
+            .try_for_each_init(Default::default, |scratch, (index, chunk)| {
+                process(scratch, index, chunk)
+            })
+    } else {
+        let mut scratch = Default::default();
+        frame
+            .chunks_mut(chunk_bytes)
+            .enumerate()
+            .try_for_each(|(index, chunk)| process(&mut scratch, index, chunk))
+    }
 }

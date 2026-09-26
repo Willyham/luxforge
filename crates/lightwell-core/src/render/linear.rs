@@ -7,15 +7,14 @@
 //! exactly as it evaluates a JPEG's bytes, and only what a linear pixel is lives here.
 
 use super::{
-    Cancel, ColorRun, Compiled, Entry, Evaluation, PixelDomain, Raster, RenderContext,
-    ScratchBudget, Segment, SpatialMode, Taps, apply_units, spatial,
+    Cancel, ColorRun, Compiled, Entry, Evaluation, PixelDomain, Raster, RenderContext, Segment,
+    SegmentRows, SpatialMode, Taps, apply_units, segment_pass, spatial,
 };
 use crate::{
     Error, ErrorKind, SnapshotId,
     colour::{mat3, srgb},
-    modules::{Parallelism, Processing, Region, Stage},
+    modules::{Parallelism, Region, Stage},
 };
-use rayon::prelude::*;
 use std::{borrow::Cow, sync::Arc};
 
 const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
@@ -23,9 +22,6 @@ const MAX_SIDE: u32 = 16_384;
 const MAX_SOURCE_BYTES: u64 = lightwell_raw::MAX_RGB_BYTES as u64;
 const MAX_RGBA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RESAMPLES: usize = 1;
-const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
-/// Amortize row dispatch while keeping each callback short enough for cancellation and pool peers.
-const LINEAR_COLOR_ROWS_PER_CHUNK: usize = 8;
 
 fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
     if width == 0 || height == 0 {
@@ -146,6 +142,7 @@ impl View {
         }
     }
 
+    #[inline]
     fn map(self, x: u32, y: u32) -> Option<(u32, u32)> {
         let (source_x, source_y) = match self.orientation {
             1 => (x, y),
@@ -372,6 +369,7 @@ impl LinearImage {
     }
 
     /// Read one view pixel without allocating. This is also useful to a source-stage picker.
+    #[inline]
     pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
         let (width, height) = self.view.output_dimensions();
         if x >= width || y >= height {
@@ -390,6 +388,7 @@ impl LinearImage {
         ])
     }
 
+    #[inline(always)]
     fn pixel_f64(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
         let pixel = self.pixel(x, y).ok_or_else(|| {
             Error::new(
@@ -595,6 +594,7 @@ impl LinearSettings {
     }
 }
 
+#[inline]
 fn decode_rgb(value: [u8; 3]) -> [f64; 3] {
     value.map(srgb::decode_u8)
 }
@@ -674,7 +674,7 @@ impl<'a> Linear<'a> {
     /// `exposure · (W · p)` under an approximate white balance. Shared by the point evaluation and
     /// the rendered rows, so both keep the exact f64 WB-then-exposure order and the same
     /// finite-result failure.
-    #[inline]
+    #[inline(always)]
     fn adjust_source_pixel(&self, pixel: [f64; 3]) -> Result<[f64; 3], Error> {
         let output = match &self.white_balance {
             // The arithmetic an exact evaluation has always done, untouched.
@@ -737,7 +737,7 @@ impl PixelDomain for Linear<'_> {
         output_len(width, height).map(drop)
     }
 
-    #[inline]
+    #[inline(always)]
     fn source_pixel(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
         self.adjust_source_pixel(self.source.pixel_f64(x, y)?)
     }
@@ -755,6 +755,7 @@ impl PixelDomain for Linear<'_> {
     /// value in place and nothing is quantized between runs, which is the whole point of the linear
     /// path: a scene value above 1 or below 0 survives to the next unit and only the terminal
     /// boundary encodes it.
+    #[inline(always)]
     fn colour<'r>(
         pixel: [f64; 3],
         runs: impl Iterator<Item = ColorRun<'r>>,
@@ -771,7 +772,7 @@ impl PixelDomain for Linear<'_> {
         Ok(linear[0].map(f64::from))
     }
 
-    #[inline]
+    #[inline(always)]
     fn finish(pixel: [f64; 3]) -> Result<[f64; 3], Error> {
         if pixel.iter().all(|value| value.is_finite()) {
             Ok(pixel)
@@ -783,6 +784,7 @@ impl PixelDomain for Linear<'_> {
         }
     }
 
+    #[inline(always)]
     fn blend(
         u: f64,
         v: f64,
@@ -861,7 +863,7 @@ impl PixelDomain for Linear<'_> {
         stage: Stage,
         tile: Region,
         (region, values): (Region, Vec<f32>),
-        _: &(dyn Fn(u32, u32) -> u8 + Sync),
+        _: &impl Fn(u32, u32) -> u8,
     ) {
         let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
         for y in tile.y0..tile.y1() {
@@ -887,6 +889,7 @@ impl PixelDomain for Linear<'_> {
     }
 }
 
+#[inline]
 pub(super) fn terminal_pixel(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
     Ok([
         terminal_srgb(pixel[0])?,
@@ -896,232 +899,182 @@ pub(super) fn terminal_pixel(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
     ])
 }
 
-/// A plain source rendition can bypass generic per-pixel recipe resolution. This is called only on
-/// an already validated/compiled evaluation; even neutral or unavailable layers must have passed
-/// through the registry first. Source views still apply through the reader.
-fn source_rows<'a>(evaluation: &Evaluation<'_, Linear<'a>>) -> Option<ViewReader<'a>> {
-    source_segment(evaluation)
-        .filter(|segment| segment.operations.is_empty())
-        .map(|_| evaluation.domain.source.reader())
-}
-
-/// The narrowly eligible source-only colour pass. Keeping replacements, geometry, masks and stage
-/// boundaries on the generic evaluator preserves their per-pixel resolution semantics.
-fn source_color_segment<'e>(evaluation: &'e Evaluation<'_, Linear<'_>>) -> Option<&'e Segment> {
-    let segment = source_segment(evaluation)?;
-    (!segment.operations.is_empty()
-        && segment.operations.iter().all(
-            |operation| matches!(operation, Processing::Color(color) if color.mask().is_none()),
-        ))
-    .then_some(segment)
-}
-
-fn source_segment<'e>(evaluation: &'e Evaluation<'_, Linear<'_>>) -> Option<&'e Segment> {
-    let [segment] = evaluation.compiled.segments.as_slice() else {
-        return None;
-    };
-    let source = evaluation.domain.source;
-    (segment.entry.is_none()
-        && segment
-            .geometry
-            .is_identity(source.width(), source.height()))
-    .then_some(segment)
-}
-
 /// The whole frame of a frames-mode evaluation, terminally produced as bytes: the linear path's half
 /// of [`super::Render::frame`], for the exact phase and the proxy phase alike.
+///
+/// This driver materializes only the last segment's output, as terminal bytes, in one
+/// [`segment_pass`] whose rows pull their entry through the evaluation: the source's rows directly
+/// when the stack is one segment read through the identity, and otherwise each pixel through the
+/// geometry from the source, the evaluation's spatial frame or a resample of the segment before.
+/// What lies before a resample is pulled, never materialized, because it is `f64`.
 pub(super) fn rasterize(
     evaluation: &Evaluation<'_, Linear<'_>>,
     snapshot_id: SnapshotId,
     cancel: &Cancel,
     context: &RenderContext,
 ) -> Result<Raster, Error> {
-    let source = evaluation.domain.source;
-    let Stage { width, height } = evaluation.stage();
-    let output_len = output_len(width, height)?;
-    let row_bytes = usize::try_from(u64::from(width) * 4).map_err(|_| {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            "linear output row is not addressable",
-        )
-    })?;
+    let stage = evaluation.stage();
     // Write into the Arc-backed frame that the raster returns, avoiding an output publication copy.
-    let mut frame = super::zeroed_frame(output_len);
-    let output = super::frame_mut(&mut frame);
-    if let Some(segment) = source_color_segment(evaluation) {
-        render_source_color_rows(
+    let mut frame = super::zeroed_frame(output_len(stage.width, stage.height)?);
+    let index = evaluation.compiled.segments.len() - 1;
+    let segment = &evaluation.compiled.segments[index];
+    let source = evaluation.domain.source;
+    let reader = (segment.entry.is_none()
+        && segment
+            .geometry
+            .is_identity(source.width(), source.height()))
+    .then(|| source.reader());
+    segment_pass(
+        &LinearRows {
             evaluation,
+            index,
             segment,
-            cancel,
-            context.scratch(),
-            output,
-            row_bytes,
-        )?;
-    } else {
-        let source_rows = source_rows(evaluation);
-        // One relaxed load per output row, ahead of that row's evaluations; the f64 evaluation and
-        // the terminal boundary are untouched.
-        let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
-            cancel.check()?;
-            if let Some(reader) = &source_rows {
-                let pixels = reader.row(row_index as u32).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Render,
-                        "linear output coordinate was outside stage",
-                    )
-                })?;
-                for (pixel, rgba) in pixels.zip(row.chunks_exact_mut(4)) {
-                    // Immutable source planes were checked finite on construction. Widen at the
-                    // same boundary as source_pixel, without an intermediate f32 exposure multiply.
-                    let pixel = evaluation
-                        .domain
-                        .adjust_source_pixel(pixel.map(f64::from))?;
-                    rgba.copy_from_slice(&terminal_pixel(pixel)?);
-                }
-                return Ok(());
-            }
-            for x in 0..width {
-                let pixel = evaluation.pixel(x, row_index as u32)?.ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Render,
-                        "linear output coordinate was outside stage",
-                    )
-                })?;
-                let rgba = terminal_pixel(pixel)?;
-                let offset = x as usize * 4;
-                row[offset..offset + 4].copy_from_slice(&rgba);
-            }
-            Ok(())
-        };
-        if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
-            output
-                .par_chunks_exact_mut(row_bytes)
-                .enumerate()
-                .try_for_each(|(row, pixels)| render_row(row, pixels))?;
-        } else {
-            output
-                .chunks_exact_mut(row_bytes)
-                .enumerate()
-                .try_for_each(|(row, pixels)| render_row(row, pixels))?;
-        }
-    }
+            reader,
+        },
+        segment,
+        super::frame_mut(&mut frame),
+        0..stage.height as usize,
+        cancel,
+        context.scratch(),
+    )?;
     Ok(Raster {
-        width,
-        height,
+        width: stage.width,
+        height: stage.height,
         rgba: frame,
         source_fingerprint: source.fingerprint.clone(),
         snapshot_id,
     })
 }
 
-/// Batch an eligible source-only colour segment by rows. Recipe resolution is still performed
-/// before this call; only its already-compiled unmasked pointwise operations are shared across
-/// each row's pixels.
-fn render_source_color_rows(
-    evaluation: &Evaluation<'_, Linear<'_>>,
-    segment: &Segment,
-    cancel: &Cancel,
-    budget: &ScratchBudget,
-    output: &mut [u8],
-    row_bytes: usize,
-) -> Result<(), Error> {
-    let mut runs = super::color_runs(segment);
-    let run = runs.next().ok_or_else(|| {
-        Error::new(
-            ErrorKind::Internal,
-            "eligible source colour segment has no colour run",
-        )
-    })?;
-    debug_assert!(runs.next().is_none());
+/// The last segment's rows on the linear path. A segment with colour holds its rows as `f32`
+/// between its entry and the terminal boundary, exactly the value [`Linear::colour`] converts a
+/// pixel to; one without colour has nothing to hold, so its entry and replacements go straight to
+/// terminal bytes.
+struct LinearRows<'e, 'x, 's> {
+    evaluation: &'e Evaluation<'x, Linear<'s>>,
+    index: usize,
+    segment: &'e Segment,
+    /// The source's rows, when the segment reads the source through the identity.
+    reader: Option<ViewReader<'e>>,
+}
 
-    let width = segment.width as usize;
-    let height = segment.height as usize;
-    let row_scratch_bytes = width
-        .checked_mul(std::mem::size_of::<[f32; 3]>())
-        .ok_or_else(|| {
+impl LinearRows<'_, '_, '_> {
+    /// One viewed source row, which the reader resolves once instead of per pixel.
+    fn source_row<'r>(
+        reader: &'r ViewReader<'_>,
+        y: u32,
+    ) -> Result<impl ExactSizeIterator<Item = [f32; 3]> + 'r, Error> {
+        reader.row(y).ok_or_else(|| {
             Error::new(
-                ErrorKind::ResourceLimit,
-                "linear colour row scratch is not addressable",
+                ErrorKind::Render,
+                "linear output coordinate was outside stage",
             )
-        })?;
-    let chunk_bytes = row_bytes
-        .checked_mul(LINEAR_COLOR_ROWS_PER_CHUNK)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::ResourceLimit,
-                "linear colour row chunk is not addressable",
-            )
-        })?;
-    let reader = evaluation.domain.source.reader();
-    let process_chunk = |chunk_index: usize,
-                         chunk: &mut [u8],
-                         pixels: &mut Vec<[f32; 3]>,
-                         scratch: &mut [[f32; 3]; 1]|
-     -> Result<(), Error> {
-        for (row_in_chunk, row) in chunk.chunks_exact_mut(row_bytes).enumerate() {
-            // Cancellation is observed once per row even though Rayon dispatch is amortized over
-            // eight rows. A superseded RAW preview therefore never holds the pool for a full frame.
-            cancel.check()?;
-            let y = chunk_index * LINEAR_COLOR_ROWS_PER_CHUNK + row_in_chunk;
-            if y >= height {
-                return Err(Error::new(
-                    ErrorKind::Render,
-                    "linear colour row was outside stage",
-                ));
+        })
+    }
+
+    /// The segment's entry value under output pixel `(x, y)`, through its exact geometry.
+    #[inline]
+    fn entry(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
+        let (input_x, input_y) = self.segment.geometry.unmap(x, y);
+        self.evaluation.entry_pixel(self.index, input_x, input_y)
+    }
+}
+
+impl SegmentRows for LinearRows<'_, '_, '_> {
+    /// A chunk's rows while a colour segment's runs evaluate them, allocated by a worker's first
+    /// chunk and reused; empty for a segment without colour.
+    type Scratch = Vec<[f32; 3]>;
+
+    fn scratch_bytes(&self, width: usize, rows: usize, _: usize) -> usize {
+        if self.segment.has_color {
+            rows * width * std::mem::size_of::<[f32; 3]>()
+        } else {
+            0
+        }
+    }
+
+    fn load(&self, scratch: &mut Self::Scratch, y0: u32, chunk: &mut [u8]) -> Result<(), Error> {
+        let width = self.segment.width as usize;
+        let domain = &self.evaluation.domain;
+        scratch.clear();
+        for (row, bytes) in chunk.chunks_exact_mut(width * 4).enumerate() {
+            let y = y0 + row as u32;
+            // Immutable source planes were checked finite on construction. A source row widens at
+            // the same boundary as the point path's source pixel.
+            match (&self.reader, self.segment.has_color) {
+                (Some(reader), true) => {
+                    for pixel in Self::source_row(reader, y)? {
+                        let pixel = domain.adjust_source_pixel(pixel.map(f64::from))?;
+                        scratch.push(pixel.map(|value| value as f32));
+                    }
+                }
+                (Some(reader), false) => {
+                    for (pixel, rgba) in Self::source_row(reader, y)?.zip(bytes.chunks_exact_mut(4))
+                    {
+                        let pixel = domain.adjust_source_pixel(pixel.map(f64::from))?;
+                        rgba.copy_from_slice(&terminal_pixel(pixel)?);
+                    }
+                }
+                (None, true) => {
+                    for x in 0..width as u32 {
+                        scratch.push(self.entry(x, y)?.map(|value| value as f32));
+                    }
+                }
+                (None, false) => {
+                    for (x, rgba) in bytes.chunks_exact_mut(4).enumerate() {
+                        rgba.copy_from_slice(&terminal_pixel(self.entry(x as u32, y)?)?);
+                    }
+                }
             }
-            let source_row = reader.row(y as u32).ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Render,
-                    "linear colour source row was outside stage",
-                )
-            })?;
-            pixels.clear();
-            for source_pixel in source_row {
-                // Preserve the generic path's f64 WB/exposure step and its single f32 boundary
-                // before colour units.
-                let adjusted = evaluation
-                    .domain
-                    .adjust_source_pixel(source_pixel.map(f64::from))?;
-                pixels.push(adjusted.map(|value| value as f32));
-            }
-            apply_units(&run, y as u32, 0, pixels, scratch)?;
-            for (rgba, pixel) in row.chunks_exact_mut(4).zip(pixels.iter()) {
+        }
+        Ok(())
+    }
+
+    fn replace(
+        &self,
+        scratch: &mut Self::Scratch,
+        chunk: &mut [u8],
+        offset: usize,
+        rgb: [u8; 3],
+    ) -> Result<(), Error> {
+        let pixel = decode_rgb(rgb);
+        if self.segment.has_color {
+            scratch[offset] = pixel.map(|value| value as f32);
+        } else {
+            chunk[offset * 4..offset * 4 + 4].copy_from_slice(&terminal_pixel(pixel)?);
+        }
+        Ok(())
+    }
+
+    fn run(
+        &self,
+        scratch: &mut Self::Scratch,
+        _: &mut [u8],
+        run: &ColorRun<'_>,
+        y0: u32,
+        rows: std::ops::Range<usize>,
+        snapshot: &mut [[f32; 3]],
+    ) -> Result<(), Error> {
+        let width = self.segment.width as usize;
+        // The same coordinates the byte path hands its units, so a position-dependent unit makes
+        // a linear sample and a linear frame agree pixel for pixel.
+        for (offset, row) in scratch[rows.start * width..rows.end * width]
+            .chunks_mut(width)
+            .enumerate()
+        {
+            apply_units(run, y0 + (rows.start + offset) as u32, 0, row, snapshot)?;
+        }
+        Ok(())
+    }
+
+    fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [u8]) -> Result<(), Error> {
+        if self.segment.has_color {
+            for (rgba, pixel) in chunk.chunks_exact_mut(4).zip(scratch.iter()) {
                 rgba.copy_from_slice(&terminal_pixel(pixel.map(f64::from))?);
             }
         }
         Ok(())
-    };
-
-    let pixel_count = u64::from(segment.width) * u64::from(segment.height);
-    let active_row_scratch = u64::try_from(row_scratch_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_mul(rayon::current_num_threads() as u64);
-    let parallel = pixel_count >= PARALLEL_RENDER_PIXELS && active_row_scratch <= budget.target();
-    if parallel {
-        output
-            .par_chunks_mut(chunk_bytes)
-            .enumerate()
-            .try_for_each_init(
-                || {
-                    (
-                        budget.reserve(row_scratch_bytes),
-                        Vec::with_capacity(width),
-                        [[0.0_f32; 3]; 1],
-                    )
-                },
-                |(_reservation, pixels, scratch), (chunk_index, chunk)| {
-                    process_chunk(chunk_index, chunk, pixels, scratch)
-                },
-            )?;
-    } else {
-        let _reservation = budget.reserve(row_scratch_bytes);
-        let mut pixels = Vec::with_capacity(width);
-        let mut scratch = [[0.0_f32; 3]; 1];
-        for (chunk_index, chunk) in output.chunks_mut(chunk_bytes).enumerate() {
-            process_chunk(chunk_index, chunk, &mut pixels, &mut scratch)?;
-        }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1138,6 +1091,7 @@ mod tests {
         Layer, Recipe, SnapshotId,
         modules::{CropPayload, ModuleRegistry},
     };
+    use rayon::prelude::*;
     use sha2::{Digest, Sha256};
     use std::time::Instant;
 
@@ -1151,9 +1105,10 @@ mod tests {
         LinearImage::with_fingerprint(width, height, planes, "sha256:linear-test").unwrap()
     }
 
-    /// The pre-existing generic pixel evaluator remains the reference for the bulk source path.
-    /// It resolves the segment and view for every pixel, retains the production row scheduling
-    /// threshold, and never calls the source row reader.
+    /// The point evaluator is the reference for the rendered rows: it resolves the segment, the
+    /// replacement that wins and the view for every pixel, applies the colour runs to that pixel
+    /// alone, never calls the source row reader, and keeps the production row scheduling
+    /// threshold.
     fn generic_linear_reference(
         registry: &ModuleRegistry,
         source: &LinearImage,
@@ -1171,7 +1126,7 @@ mod tests {
             SpatialMode::Frames,
         )
         .unwrap();
-        let Stage { width, height } = evaluation.stage();
+        let crate::modules::Stage { width, height } = evaluation.stage();
         let mut frame = super::super::zeroed_frame(output_len(width, height).unwrap());
         let rgba = super::super::frame_mut(&mut frame);
         let row_bytes = width as usize * 4;
@@ -1186,7 +1141,7 @@ mod tests {
             }
             Ok(())
         };
-        if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
+        if u64::from(width) * u64::from(height) >= super::super::PARALLEL_RENDER_PIXELS {
             rgba.par_chunks_exact_mut(row_bytes)
                 .enumerate()
                 .try_for_each(|(row, pixels)| render_row(row, pixels))
@@ -1388,17 +1343,6 @@ mod tests {
         };
 
         for recipe in recipes {
-            let evaluation = linear_evaluation(
-                &registry,
-                &source,
-                &recipe,
-                settings,
-                &Cancel::never(),
-                PRODUCTION_TILE,
-                SpatialMode::Frames,
-            )
-            .unwrap();
-            assert!(source_color_segment(&evaluation).is_some());
             let snapshot = SnapshotId::new();
             let actual =
                 render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap();
@@ -1437,8 +1381,139 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// Every shape of stack the rows cover — replacements on either side of a colour run, colour
+    /// after a straightened crop's resample, colour after a spatial operation's frame, a masked
+    /// spatial operation behind geometry, a steep crop behind a masked colour segment and behind
+    /// one with a replacement — renders the bytes the point evaluator answers at every pixel, and
+    /// a point sample the rendered byte, under exact, exposed and approximately white-balanced
+    /// settings, on a small stage and on one several row chunks tall.
     #[test]
-    fn source_colour_rows_leave_masked_and_geometric_recipes_on_generic_path() {
+    fn every_stack_shape_renders_rows_equal_to_the_point_evaluator() {
+        let _guard = crate::render::spatial::tests::spatial_guard();
+        let sources = [
+            varied(41, 29).with_view([1, 2, 38, 26], 6).unwrap(),
+            varied(157, 101).with_view([2, 1, 150, 97], 3).unwrap(),
+        ];
+        let registry = ModuleRegistry::builtin();
+        let basic = colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({"exposure": 0.4, "contrast": 20.0, "vibrance": 15.0}),
+        );
+        let vignette = colour_layer(
+            crate::VIGNETTE_EFFECT,
+            serde_json::json!({"amount": -40.0, "midpoint": 30.0}),
+        );
+        let presence = colour_layer(
+            crate::PRESENCE_EFFECT,
+            serde_json::json!({"clarity": 40.0, "texture": 25.0}),
+        );
+        let crop = Layer::crop(CropPayload {
+            angle: 4.0,
+            x: 0.15,
+            y: 0.1,
+            width: 0.7,
+            height: 0.75,
+        });
+        let steep = Layer::crop(CropPayload {
+            angle: -30.0,
+            x: 0.3,
+            y: 0.3,
+            width: 0.4,
+            height: 0.4,
+        });
+        let turn = Layer::orientation(crate::Orientation {
+            mirror: true,
+            turns: 1,
+        });
+        let mut mask = crate::Mask::new("Mask 1");
+        mask.components.push(crate::Component::new(
+            "Linear 1",
+            crate::ComponentMode::Add,
+            "linear",
+            serde_json::json!({"x0": 0.2, "y0": 0.1, "x1": 0.8, "y1": 0.9}),
+        ));
+        let masked = |layer: &Layer| Layer {
+            mask: Some(mask.id.clone()),
+            ..layer.clone()
+        };
+        let recipes = [
+            colour_recipe(vec![
+                Layer::pixel(3, 4, [250, 10, 20]),
+                basic.clone(),
+                Layer::pixel(5, 6, [1, 200, 30]),
+                Layer::pixel(3, 4, [9, 9, 240]),
+            ]),
+            colour_recipe(vec![Layer::pixel(2, 2, [40, 50, 60]), turn.clone()]),
+            colour_recipe(vec![basic.clone(), crop.clone(), vignette.clone()]),
+            colour_recipe(vec![
+                basic.clone(),
+                turn.clone(),
+                crop.clone(),
+                Layer::pixel(7, 3, [255, 0, 128]),
+            ]),
+            colour_recipe(vec![presence.clone(), basic.clone(), vignette.clone()]),
+            Recipe {
+                layers: vec![basic.clone(), masked(&presence), turn.clone(), crop.clone()],
+                masks: vec![mask.clone()],
+                ..Recipe::default()
+            },
+            Recipe {
+                layers: vec![masked(&basic), steep.clone(), vignette.clone()],
+                masks: vec![mask.clone()],
+                ..Recipe::default()
+            },
+            colour_recipe(vec![
+                basic.clone(),
+                Layer::pixel(9, 8, [200, 100, 50]),
+                steep.clone(),
+            ]),
+        ];
+        let balance = WhiteBalanceApproximation::from_matrix([
+            [1.21, -0.11, -0.02],
+            [-0.06, 1.08, -0.02],
+            [0.01, -0.13, 1.12],
+        ])
+        .unwrap();
+        for settings in [
+            LinearSettings::default(),
+            LinearSettings {
+                exposure_ev: 0.7,
+                white_balance: None,
+            },
+            LinearSettings {
+                exposure_ev: -0.3,
+                white_balance: Some(balance),
+            },
+        ] {
+            for source in &sources {
+                for (case, recipe) in recipes.iter().enumerate() {
+                    crate::render::testing::clear_estimates();
+                    let snapshot = SnapshotId::new();
+                    let rendered =
+                        render_linear(&registry, source, snapshot.clone(), recipe, settings)
+                            .unwrap();
+                    assert_eq!(
+                        rendered,
+                        generic_linear_reference(&registry, source, snapshot, recipe, settings),
+                        "case {case}, {settings:?}"
+                    );
+                    let (width, height) = (rendered.width, rendered.height);
+                    for (x, y) in [(0, 0), (width / 2, height / 3), (width - 1, height - 1)] {
+                        assert_eq!(
+                            sample_linear(&registry, source, recipe, settings, x, y)
+                                .unwrap()
+                                .rgba,
+                            rendered.pixel(x, y),
+                            "case {case}, {settings:?} at ({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn masked_and_geometric_colour_rows_match_the_point_evaluator() {
         let source = varied(19, 13);
         let registry = ModuleRegistry::builtin();
         let settings = LinearSettings::default();
@@ -1467,17 +1542,6 @@ mod tests {
         ]);
 
         for recipe in [&masked_recipe, &geometric_recipe] {
-            let evaluation = linear_evaluation(
-                &registry,
-                &source,
-                recipe,
-                settings,
-                &Cancel::never(),
-                PRODUCTION_TILE,
-                SpatialMode::Frames,
-            )
-            .unwrap();
-            assert!(source_color_segment(&evaluation).is_none());
             let snapshot = SnapshotId::new();
             assert_eq!(
                 render_linear(&registry, &source, snapshot.clone(), recipe, settings).unwrap(),
@@ -2298,18 +2362,6 @@ mod tests {
         let source = varied(9, 7);
         let registry = ModuleRegistry::builtin();
         let settings = LinearSettings::default();
-        let evaluate = |recipe: &Recipe, settings| {
-            linear_evaluation(
-                &registry,
-                &source,
-                recipe,
-                settings,
-                &Cancel::never(),
-                PRODUCTION_TILE,
-                SpatialMode::Frames,
-            )
-        };
-        assert!(source_rows(&evaluate(&Recipe::default(), settings).unwrap()).is_some());
         for recipe in [
             Recipe {
                 layers: vec![Layer::pixel(1, 1, [30, 60, 90])],
@@ -2334,7 +2386,6 @@ mod tests {
             },
             cancellation_recipe(),
         ] {
-            assert!(source_rows(&evaluate(&recipe, settings).unwrap()).is_none());
             let snapshot = SnapshotId::new();
             assert_eq!(
                 render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap(),

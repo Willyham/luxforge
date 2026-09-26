@@ -1,6 +1,8 @@
 use crate::{
     Error, ErrorKind, Recipe, SnapshotId, SourceImage,
-    colour::srgb::{decode_channel, decode_pixel, linear_to_srgb, quantize_pixel},
+    colour::srgb::{
+        decode_channel, decode_pixel, linear_to_srgb, quantize_channel, quantize_pixel,
+    },
     mask_field::MaskField,
     modules::{
         ColorOperation, ExactGeometry, ModuleRegistry, Parallelism, Processing, Region, Resample,
@@ -27,8 +29,8 @@ pub(crate) use entry::layer_input;
 pub use entry::{Render, RenderOptions, RenderPhase, RenderSource, render};
 pub use linear::{LinearImage, LinearSettings, WhiteBalanceApproximation};
 pub(crate) use pipeline::{Evaluation, PixelDomain, SpatialMode};
-use pipeline::{Taps, spatial_output};
-use spatial::{build_reduction, resolve_globals};
+use pipeline::{SegmentRows, Taps, segment_pass, spatial_output};
+use spatial::{build_reduction, fill_planes, resolve_globals};
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
 
@@ -125,6 +127,7 @@ pub(crate) struct ColorRun<'a> {
 impl<'a> ColorRun<'a> {
     /// This run's colour operations in evaluation order, each with its index in the segment's
     /// operation list.
+    #[inline]
     fn colour_operations(self) -> impl Iterator<Item = (usize, &'a ColorOperation)> {
         self.operations[self.start..=self.end]
             .iter()
@@ -153,6 +156,7 @@ struct ColorRuns<'a> {
 impl<'a> Iterator for ColorRuns<'a> {
     type Item = ColorRun<'a>;
 
+    #[inline]
     fn next(&mut self) -> Option<ColorRun<'a>> {
         while self.position < self.operations.len() {
             if !matches!(self.operations[self.position], Processing::Color(_)) {
@@ -182,6 +186,7 @@ impl<'a> Iterator for ColorRuns<'a> {
     }
 }
 
+#[inline]
 fn color_runs(segment: &Segment) -> ColorRuns<'_> {
     ColorRuns {
         operations: &segment.operations,
@@ -271,6 +276,7 @@ impl<'a> MaskPlacement<'a> {
 /// are pointwise, so a masked span is processed in blocks of at most `scratch.len()` pixels and the
 /// result does not depend on the block size. The rasterizing pass hands it one row of float scratch
 /// reserved from the budget; a point query hands it one pixel on the stack and allocates nothing.
+#[inline]
 fn apply_units(
     run: &ColorRun<'_>,
     y: u32,
@@ -291,6 +297,7 @@ fn apply_units(
 }
 
 /// Every unit of one operation, in order, over the whole slice it is given.
+#[inline]
 fn apply_operation(
     operation: &ColorOperation,
     y: u32,
@@ -363,99 +370,6 @@ fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>, x: u32, y: u32) -> Result<[u8; 
     let mut scratch = [[0.0f32; 3]; 1];
     apply_units(run, y, x, &mut pixel, &mut scratch)?;
     Ok(quantize_pixel(pixel[0]))
-}
-
-/// One streamed colour pass over a frame, in place: bounded row chunks on the shared Rayon pool
-/// above the same one-megapixel threshold the other passes use, serial below it. No full-frame
-/// float buffer exists at any point; each chunk reserves its scratch from `budget` before it uses
-/// it, in a buffer its worker allocates once and reuses for every chunk it takes.
-fn apply_color_run(
-    pixels: &mut [u8],
-    width: u32,
-    rows: std::ops::Range<usize>,
-    run: &ColorRun<'_>,
-    cancel: &Cancel,
-    budget: &ScratchBudget,
-) -> Result<(), Error> {
-    if pixels.is_empty() || width == 0 || rows.is_empty() {
-        return Ok(());
-    }
-    let stride = width as usize * 4;
-    // Only the band of rows the caller names is coloured; every other row keeps its bytes. The
-    // whole frame is the band whenever nothing after this pass reads less than that.
-    let pixels = &mut pixels[rows.start * stride..rows.end * stride];
-    let height = (rows.end - rows.start) as u32;
-    let chunk_rows = color_chunk_rows(width);
-    let chunk_bytes = chunk_rows * width as usize * 4;
-    // Whether this run needs snapshot scratch at all, decided once for the pass: an unmasked run
-    // reserves and allocates exactly what it did before masks existed.
-    let masked = run.has_mask();
-    // A chunk is a whole number of rows, so the row a pixel belongs to is the band's first row
-    // plus the chunk's offset inside it: every unit is handed one row at a time, at the
-    // coordinates of the stage this segment produces.
-    let process =
-        |scratch: &mut ColorScratch, chunk_index: usize, chunk: &mut [u8]| -> Result<(), Error> {
-            // Before the reservation, so a cancelled pass never takes scratch it will not use.
-            cancel.check()?;
-            let count = chunk.len() / 4;
-            let _reservation = budget.reserve(count * std::mem::size_of::<[f32; 3]>());
-            // One row of snapshot scratch for a masked operation's own input, reserved before it is
-            // used and released with the chunk. It is a row and not a chunk because `apply_units` is
-            // handed one row at a time; nothing here scales with the frame, and an unmasked run takes
-            // none of it.
-            let _snapshot_reservation =
-                masked.then(|| budget.reserve(width as usize * std::mem::size_of::<[f32; 3]>()));
-            let ColorScratch { linear, snapshot } = scratch;
-            let mut unused = [[0.0f32; 3]; 1];
-            let snapshot: &mut [[f32; 3]] = if masked {
-                // Allocated by the worker's first chunk and exactly one row long from then on; a
-                // masked operation overwrites what it reads, so an earlier chunk's values never show.
-                snapshot.resize(width as usize, [0.0; 3]);
-                snapshot
-            } else {
-                &mut unused
-            };
-            linear.clear();
-            linear.extend(
-                chunk
-                    .chunks_exact(4)
-                    .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]])),
-            );
-            let first_row = (rows.start + chunk_index * chunk_rows) as u32;
-            for (offset, row) in linear.chunks_mut(width as usize).enumerate() {
-                apply_units(run, first_row + offset as u32, 0, row, snapshot)?;
-            }
-            for (pixel, value) in chunk.chunks_exact_mut(4).zip(linear.iter()) {
-                pixel[..3].copy_from_slice(&quantize_pixel(*value));
-            }
-            Ok(())
-        };
-    if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
-        pixels
-            .par_chunks_mut(chunk_bytes)
-            .enumerate()
-            .try_for_each_init(ColorScratch::default, |scratch, (index, chunk)| {
-                process(scratch, index, chunk)
-            })
-    } else {
-        let mut scratch = ColorScratch::default();
-        pixels
-            .chunks_mut(chunk_bytes)
-            .enumerate()
-            .try_for_each(|(index, chunk)| process(&mut scratch, index, chunk))
-    }
-}
-
-/// The float scratch one worker streams its colour chunks through, allocated by its first chunk
-/// and reused by every later one it takes, instead of one allocation per chunk. The budget still
-/// sees each chunk: a chunk reserves what it uses before it touches these buffers and releases it
-/// when it is done, exactly as when every chunk allocated its own.
-#[derive(Default)]
-struct ColorScratch {
-    /// The chunk's pixels, decoded to linear light: at most [`COLOR_CHUNK_SCRATCH_BYTES`].
-    linear: Vec<[f32; 3]>,
-    /// One row of a masked operation's own input; empty for an unmasked run.
-    snapshot: Vec<[f32; 3]>,
 }
 
 /// One bilinear sample of a byte frame in linear light, through the taps [`Taps`] clamps to the
@@ -714,6 +628,7 @@ impl ExactGeometry {
         }
     }
 
+    #[inline]
     fn unmap(self, x: u32, y: u32) -> (u32, u32) {
         let translated_x = i64::from(x) - self.tx;
         let translated_y = i64::from(y) - self.ty;
@@ -733,6 +648,7 @@ impl ExactGeometry {
 /// Mapping the output of one resample back into its input frame is the host's too.
 impl Resample {
     /// The continuous input coordinate one output pixel center samples.
+    #[inline]
     fn input_at(self, x: u32, y: u32) -> (f64, f64) {
         let [m0, m1, m2, m3, m4, m5] = self.inverse;
         let center_x = f64::from(x) + 0.5;
@@ -770,47 +686,6 @@ fn rows_read_by(resample: Resample, input_height: u32) -> std::ops::Range<usize>
     let start = start.max(0.0).min(f64::from(input_height)) as usize;
     let end = end.max(0.0).min(f64::from(input_height)) as usize;
     start..end.max(start)
-}
-
-/// One exact pass over one input frame: every output pixel copies exactly one input pixel.
-fn copy_transformed(
-    input: &[u8],
-    input_width: u32,
-    geometry: ExactGeometry,
-    cancel: &Cancel,
-) -> Result<Arc<[u8]>, Error> {
-    let width = geometry.output_width;
-    let height = geometry.output_height;
-    cancel.check()?;
-    let mut frame = zeroed_frame(Raster::expected_len(width, height)?);
-    let output = frame_mut(&mut frame);
-    let row_bytes = usize::try_from(u64::from(width) * 4)
-        .map_err(|_| Error::new(ErrorKind::ResourceLimit, "image row is not addressable"))?;
-    // One relaxed load per output row, ahead of that row's copies; the arithmetic below is
-    // untouched.
-    let copy_row = |out_y: usize, row: &mut [u8]| -> Result<(), Error> {
-        cancel.check()?;
-        for out_x in 0..width {
-            let (input_x, input_y) = geometry.unmap(out_x, out_y as u32);
-            let from =
-                ((u64::from(input_y) * u64::from(input_width) + u64::from(input_x)) * 4) as usize;
-            let to = out_x as usize * 4;
-            row[to..to + 4].copy_from_slice(&input[from..from + 4]);
-        }
-        Ok(())
-    };
-    if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
-        output
-            .par_chunks_exact_mut(row_bytes)
-            .enumerate()
-            .try_for_each(|(out_y, row)| copy_row(out_y, row))?;
-    } else {
-        output
-            .chunks_exact_mut(row_bytes)
-            .enumerate()
-            .try_for_each(|(out_y, row)| copy_row(out_y, row))?;
-    }
-    Ok(frame)
 }
 
 /// One interpolating pass: the resample reads the frame it was given and writes the next one.
@@ -1069,40 +944,6 @@ fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u8; 3])> {
     mapped
 }
 
-/// Apply one segment's operation list to its rasterized frame as ordered phases: the point
-/// replacements before a colour run, then that run streamed over the frame, then the replacements
-/// after it. Writing the replacements in stack order lets a later one win at the same coordinate,
-/// exactly as a later layer does.
-fn apply_operations(
-    pixels: &mut [u8],
-    segment: &Segment,
-    rows: std::ops::Range<usize>,
-    cancel: &Cancel,
-    scratch: &ScratchBudget,
-) -> Result<(), Error> {
-    if !segment.writes_pixels() {
-        return Ok(());
-    }
-    let replacements = mapped_replacements(segment);
-    let mut next = 0;
-    let write = |next: &mut usize, before: usize, pixels: &mut [u8]| {
-        while let Some((index, x, y, rgb)) = replacements.get(*next).copied() {
-            if index >= before {
-                break;
-            }
-            let offset = ((u64::from(y) * u64::from(segment.width) + u64::from(x)) * 4) as usize;
-            pixels[offset..offset + 3].copy_from_slice(&rgb);
-            *next += 1;
-        }
-    };
-    for run in color_runs(segment) {
-        write(&mut next, run.start, pixels);
-        apply_color_run(pixels, segment.width, rows.clone(), &run, cancel, scratch)?;
-    }
-    write(&mut next, usize::MAX, pixels);
-    Ok(())
-}
-
 pub(super) fn check_source(source: &SourceImage) -> Result<(), Error> {
     if source.rgba.len() != Raster::expected_len(source.width, source.height)? {
         return Err(Error::new(
@@ -1113,6 +954,7 @@ pub(super) fn check_source(source: &SourceImage) -> Result<(), Error> {
     Ok(())
 }
 
+#[inline]
 fn source_pixel(source: &SourceImage, x: u32, y: u32) -> [u8; 4] {
     let offset = ((u64::from(y) * u64::from(source.width) + u64::from(x)) * 4) as usize;
     let pixel = &source.rgba[offset..offset + 4];
@@ -1357,8 +1199,12 @@ impl PixelDomain for Byte<'_> {
         let row = |(row, bytes): (usize, &mut [u8])| {
             let y = tile.y0 + row as u32;
             for (column, x) in (tile.x0..tile.x1()).enumerate() {
-                let rgb = quantize_pixel(spatial::plane_pixel(region, &values, x, y));
-                bytes[column * 3..column * 3 + 3].copy_from_slice(&rgb);
+                // `quantize_pixel` channel by channel, written out so this hot loop does not
+                // depend on the array map being inlined into it.
+                let rgb = spatial::plane_pixel(region, &values, x, y);
+                for (channel, value) in rgb.into_iter().enumerate() {
+                    bytes[column * 3 + channel] = quantize_channel(f64::from(value));
+                }
             }
         };
         let row_bytes = tile.width as usize * 3;
@@ -1374,7 +1220,7 @@ impl PixelDomain for Byte<'_> {
         stage: Stage,
         tile: Region,
         bytes: Vec<u8>,
-        alpha: &(dyn Fn(u32, u32) -> u8 + Sync),
+        alpha: &impl Fn(u32, u32) -> u8,
     ) {
         let output = frame_mut(frame);
         for (row, y) in (tile.y0..tile.y1()).enumerate() {
@@ -1391,6 +1237,104 @@ impl PixelDomain for Byte<'_> {
         let offset = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
         let pixel = &frame[offset..offset + 4];
         [pixel[0], pixel[1], pixel[2], pixel[3]]
+    }
+}
+
+/// One byte segment's rows, held in the frame the pass writes: loaded through the segment's exact
+/// geometry from its input frame, or left where they are when that geometry is the identity and the
+/// pass writes over its own copy of its input. Each colour run decodes the rows it reaches,
+/// evaluates them and quantizes them back.
+struct ByteRows<'f> {
+    /// The frame the geometry reads and its width, or `None` for a pass in place.
+    input: Option<(&'f [u8], u32)>,
+    geometry: ExactGeometry,
+    width: usize,
+    colours: bool,
+}
+
+impl<'f> ByteRows<'f> {
+    fn new(segment: &Segment, input: Option<(&'f [u8], u32)>) -> Self {
+        Self {
+            input,
+            geometry: segment.geometry,
+            width: segment.width as usize,
+            colours: segment.has_color,
+        }
+    }
+}
+
+impl SegmentRows for ByteRows<'_> {
+    /// A chunk's rows decoded to linear light while a run evaluates them: at most
+    /// [`COLOR_CHUNK_SCRATCH_BYTES`], allocated by a worker's first chunk and reused.
+    type Scratch = Vec<[f32; 3]>;
+
+    fn scratch_bytes(&self, width: usize, _: usize, coloured: usize) -> usize {
+        if self.colours {
+            coloured * width * std::mem::size_of::<[f32; 3]>()
+        } else {
+            0
+        }
+    }
+
+    /// Every output pixel copies exactly one input pixel.
+    fn load(&self, _: &mut Self::Scratch, y0: u32, chunk: &mut [u8]) -> Result<(), Error> {
+        let Some((input, input_width)) = self.input else {
+            return Ok(());
+        };
+        for (row, bytes) in chunk.chunks_exact_mut(self.width * 4).enumerate() {
+            let out_y = y0 + row as u32;
+            for out_x in 0..self.width as u32 {
+                let (input_x, input_y) = self.geometry.unmap(out_x, out_y);
+                let from = ((u64::from(input_y) * u64::from(input_width) + u64::from(input_x)) * 4)
+                    as usize;
+                let to = out_x as usize * 4;
+                bytes[to..to + 4].copy_from_slice(&input[from..from + 4]);
+            }
+        }
+        Ok(())
+    }
+
+    fn replace(
+        &self,
+        _: &mut Self::Scratch,
+        chunk: &mut [u8],
+        offset: usize,
+        rgb: [u8; 3],
+    ) -> Result<(), Error> {
+        chunk[offset * 4..offset * 4 + 3].copy_from_slice(&rgb);
+        Ok(())
+    }
+
+    fn run(
+        &self,
+        linear: &mut Self::Scratch,
+        chunk: &mut [u8],
+        run: &ColorRun<'_>,
+        y0: u32,
+        rows: std::ops::Range<usize>,
+        snapshot: &mut [[f32; 3]],
+    ) -> Result<(), Error> {
+        let row_bytes = self.width * 4;
+        let bytes = &mut chunk[rows.start * row_bytes..rows.end * row_bytes];
+        linear.clear();
+        linear.extend(
+            bytes
+                .chunks_exact(4)
+                .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]])),
+        );
+        // A chunk is a whole number of rows, so every unit is handed one row at a time, at the
+        // coordinates of the stage this segment produces.
+        for (offset, row) in linear.chunks_mut(self.width).enumerate() {
+            apply_units(run, y0 + (rows.start + offset) as u32, 0, row, snapshot)?;
+        }
+        for (pixel, value) in bytes.chunks_exact_mut(4).zip(linear.iter()) {
+            pixel[..3].copy_from_slice(&quantize_pixel(*value));
+        }
+        Ok(())
+    }
+
+    fn store(&self, _: &mut Self::Scratch, _: &mut [u8]) -> Result<(), Error> {
+        Ok(())
     }
 }
 
@@ -1571,6 +1515,13 @@ pub(super) fn transform_of(
 /// [`Render::frame`]. The exact phase and the proxy phase differ only in how their masks were
 /// compiled, so this one pass serves both. A cancelled token answers `Cancelled`, and every
 /// reservation held is released on the way out.
+///
+/// This driver materializes every segment's output as a byte frame, which is exactly what the next
+/// boundary reads: a segment's input frame is the source, a resample of the frame before it or a
+/// spatial operation's output, and one [`segment_pass`] writes the segment's frame from it through
+/// its exact geometry, replacements and colour runs. A segment whose geometry is the identity writes
+/// over its own copy of its input in place and one that writes nothing shares its input, so an
+/// identity stack returns the source allocation itself. At most two frames exist at once.
 pub(super) fn rasterize(
     source: &SourceImage,
     compiled: &Compiled,
@@ -1582,115 +1533,103 @@ pub(super) fn rasterize(
     // A token already cancelled when the call arrives costs no frame at all.
     cancel.check()?;
     let domain = Byte(source);
-    let first = &compiled.segments[0];
-    let mut width = first.width;
-    let mut height = first.height;
-    // An identity pass with nothing to write shares the source allocation instead of copying it.
-    // Every frame is an `Arc<[u8]>` from the start, so the last one written is the one returned.
-    let mut frame = if first.geometry.is_identity(source.width, source.height) {
-        first
-            .writes_pixels()
-            .then(|| Arc::<[u8]>::from(source.rgba.as_ref()))
-    } else {
-        Some(copy_transformed(
-            source.rgba.as_ref(),
-            source.width,
-            first.geometry,
-            cancel,
-        )?)
-    };
-    // A segment followed by a resample colours only the rows that resample reads; the last one
-    // colours its whole frame.
-    let band = |index: usize, height: u32| -> std::ops::Range<usize> {
-        match compiled
-            .segments
-            .get(index + 1)
-            .and_then(|next| next.entry.as_ref())
-        {
-            Some(Entry::Resample(resample)) => rows_read_by(*resample, height),
-            // A spatial boundary reads every row of the frame before it, plus a halo.
-            Some(Entry::Spatial { .. }) | None => 0..height as usize,
-        }
-    };
-    if let Some(pixels) = frame.as_mut() {
-        apply_operations(
-            frame_mut(pixels),
-            first,
-            band(0, height),
-            cancel,
-            context.scratch(),
-        )?;
-    }
-
-    for (index, segment) in compiled.segments.iter().enumerate().skip(1) {
-        let entry = segment
-            .entry
-            .as_ref()
-            .expect("every segment after the first enters through a stage boundary");
-        let previous = frame.take();
-        let input = previous.as_deref().unwrap_or(source.rgba.as_ref());
-        let mut next = match entry {
-            Entry::Resample(resample) => {
-                let frame = resample_frame(input, width, height, *resample, cancel)?;
-                width = resample.output_width;
-                height = resample.output_height;
-                frame
-            }
-            Entry::Spatial {
-                operation,
-                prefix_hash,
-            } => {
-                let stage = Stage { width, height };
-                let at = |x: u32, y: u32| {
-                    ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize
-                };
-                let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
-                    let offset = at(x, y);
-                    Ok(decode_pixel([
-                        input[offset],
-                        input[offset + 1],
-                        input[offset + 2],
-                    ]))
-                };
-                spatial_output::<Byte>(
-                    stage,
+    // The frame the next pass reads; `None` is the source itself. Every frame is an `Arc<[u8]>`
+    // from the start, so the last one written is the one returned.
+    let mut frame: Option<Arc<[u8]>> = None;
+    let (mut width, mut height) = (source.width, source.height);
+    for (index, segment) in compiled.segments.iter().enumerate() {
+        if let Some(entry) = &segment.entry {
+            let input = frame.as_deref().unwrap_or(source.rgba.as_ref());
+            let next = match entry {
+                Entry::Resample(resample) => {
+                    resample_frame(input, width, height, *resample, cancel)?
+                }
+                Entry::Spatial {
                     operation,
-                    || {
-                        resolve_globals(
-                            context.estimates(),
-                            operation,
-                            stage,
-                            domain.fingerprint(),
-                            &domain.estimate_prefix(prefix_hash),
-                            || build_reduction(stage, read),
-                        )
-                    },
-                    tile,
-                    cancel,
-                    context,
-                    read,
-                    |x, y| input[at(x, y) + 3],
-                )?
+                    prefix_hash,
+                } => {
+                    let stage = Stage { width, height };
+                    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+                        let offset =
+                            ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
+                        Ok(decode_pixel([
+                            input[offset],
+                            input[offset + 1],
+                            input[offset + 2],
+                        ]))
+                    };
+                    spatial_output::<Byte>(
+                        stage,
+                        operation,
+                        || {
+                            resolve_globals(
+                                context.estimates(),
+                                operation,
+                                stage,
+                                domain.fingerprint(),
+                                &domain.estimate_prefix(prefix_hash),
+                                || build_reduction(stage, read),
+                            )
+                        },
+                        tile,
+                        cancel,
+                        context,
+                        |region, planes, parallelism| {
+                            fill_planes(region, planes, parallelism, read)
+                        },
+                        |x, y| {
+                            input[((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4)
+                                as usize
+                                + 3]
+                        },
+                    )?
+                }
+            };
+            if let Some(resample) = entry.resample() {
+                (width, height) = (resample.output_width, resample.output_height);
             }
-        };
-        // The frame the boundary read is released before the next pass, so two frames is the peak.
-        drop(previous);
-        if !segment.geometry.is_identity(width, height) {
-            let transformed = copy_transformed(&next, width, segment.geometry, cancel)?;
-            next = transformed;
-            width = segment.width;
-            height = segment.height;
+            // The frame the boundary read is released before the next pass, so two frames is the
+            // peak.
+            frame = Some(next);
         }
-        apply_operations(
-            frame_mut(&mut next),
-            segment,
-            band(index, height),
-            cancel,
-            context.scratch(),
-        )?;
-        frame = Some(next);
+        let band = band(compiled, index);
+        if segment.geometry.is_identity(width, height) {
+            // An identity pass with nothing to write shares its input instead of copying it.
+            if segment.writes_pixels() {
+                let mut owned = frame
+                    .take()
+                    .unwrap_or_else(|| Arc::<[u8]>::from(source.rgba.as_ref()));
+                segment_pass(
+                    &ByteRows::new(segment, None),
+                    segment,
+                    frame_mut(&mut owned),
+                    band,
+                    cancel,
+                    context.scratch(),
+                )?;
+                frame = Some(owned);
+            }
+        } else {
+            let input = frame.take();
+            cancel.check()?;
+            let mut next = zeroed_frame(Raster::expected_len(segment.width, segment.height)?);
+            segment_pass(
+                &ByteRows::new(
+                    segment,
+                    Some((input.as_deref().unwrap_or(source.rgba.as_ref()), width)),
+                ),
+                segment,
+                frame_mut(&mut next),
+                band,
+                cancel,
+                context.scratch(),
+            )?;
+            // Released before the next pass, so two frames is the peak.
+            drop(input);
+            frame = Some(next);
+            (width, height) = (segment.width, segment.height);
+        }
     }
-
     Ok(Raster {
         width,
         height,
@@ -1698,6 +1637,20 @@ pub(super) fn rasterize(
         source_fingerprint: source.fingerprint.clone(),
         snapshot_id,
     })
+}
+
+/// The rows of segment `index`'s frame its colour runs reach: those the resample after it reads, or
+/// every row when a spatial boundary, which reads every row plus a halo, or nothing follows it.
+fn band(compiled: &Compiled, index: usize) -> std::ops::Range<usize> {
+    let height = compiled.segments[index].height;
+    match compiled
+        .segments
+        .get(index + 1)
+        .and_then(|next| next.entry.as_ref())
+    {
+        Some(Entry::Resample(resample)) => rows_read_by(*resample, height),
+        Some(Entry::Spatial { .. }) | None => 0..height as usize,
+    }
 }
 
 /// What the crate's unit tests render through: [`render`] with one context they all share, as they
