@@ -1,6 +1,6 @@
 # Consolidation
 
-Status: **authorized by the owner on 2026-09-24. Waves 1 and 2 are complete; the remaining work is planned as concrete tasks in the [task plan](../../tasks/consolidation.json), each of which deletes the copies it replaces and states its proof. The source-kind controls wait on the owner's answers to their design's open questions.** When the last task lands, delete this document and the plan; the outcome lives in the specs they changed.
+Status: **authorized by the owner on 2026-09-24. Every task in the [task plan](../../tasks/consolidation.json) is complete except the source-kind controls, which wait on the owner's answers to their [design](source-controls.md)'s open questions.** When that lands, delete this document and the plan; the outcome lives in the specs they changed.
 
 ## Why
 
