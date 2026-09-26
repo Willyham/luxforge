@@ -294,7 +294,11 @@ impl Drop for NativeHandle {
 
 fn c_text(chars: &[c_char]) -> String {
     let end = chars.iter().position(|&v| v == 0).unwrap_or(chars.len());
-    String::from_utf8_lossy(&chars[..end].iter().map(|&v| v as u8).collect::<Vec<_>>()).into_owned()
+    // c_char's signedness is platform-dependent (e.g. unsigned on aarch64 Linux,
+    // signed on Apple targets), so this cast is not a no-op everywhere clippy checks it.
+    #[allow(clippy::unnecessary_cast)]
+    let bytes: Vec<u8> = chars[..end].iter().map(|&v| v as u8).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn native_error(code: c_int, buffer: &[c_char]) -> RawError {
