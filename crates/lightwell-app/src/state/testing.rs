@@ -254,8 +254,22 @@ pub(crate) fn crop_layer(payload: CropPayload) -> lightwell_core::Layer {
 /// The rows the owner's `recipe.describe` gives an entry, from the core's own built-in modules:
 /// each layer's provider, summary and values, and the core's answer to whether it is neutral. The
 /// desktop derives none of this from a payload, so its tests describe a stack as the owner does.
+/// Each row's input stage is left unknown; [`described_at`] reports it for a test that reads it.
 pub(crate) fn described(entry: &HistoryEntry) -> RecipeDescription {
+    describe(entry, None)
+}
+
+/// [`described`] for an asset of `source` extents, with each row's input stage the core's own
+/// stage fold reports ([`lightwell_core::ModuleRegistry::input_stages`]), as the owner does.
+pub(crate) fn described_at(entry: &HistoryEntry, source: (u32, u32)) -> RecipeDescription {
+    describe(entry, Some(source))
+}
+
+fn describe(entry: &HistoryEntry, source: Option<(u32, u32)>) -> RecipeDescription {
     let registry = lightwell_core::ModuleRegistry::builtin();
+    let stages = source.map_or_else(Vec::new, |(width, height)| {
+        registry.input_stages(width, height, &entry.snapshot.recipe)
+    });
     RecipeDescription {
         entry_id: entry.id.clone(),
         layers: entry
@@ -263,7 +277,8 @@ pub(crate) fn described(entry: &HistoryEntry) -> RecipeDescription {
             .recipe
             .layers
             .iter()
-            .map(|layer| {
+            .enumerate()
+            .map(|(index, layer)| {
                 let module = registry.effect(&layer.effect_id).map(|(module, _)| module);
                 let read = |layer: &lightwell_core::Layer| {
                     module.and_then(|module| {
@@ -293,6 +308,10 @@ pub(crate) fn described(entry: &HistoryEntry) -> RecipeDescription {
                     mask: layer.mask.clone(),
                     artifacts: layer.artifacts.clone(),
                     neutral: registry.layer_neutral(layer),
+                    input_stage: stages.get(index).map(|stage| lightwell_core::StageSize {
+                        width: stage.width,
+                        height: stage.height,
+                    }),
                 }
             })
             .collect(),

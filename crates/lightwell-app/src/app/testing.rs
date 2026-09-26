@@ -225,6 +225,7 @@ pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
             neutral: module
                 .is_neutral(&layer.effect_id, layer.effect_format, &layer.payload)
                 .expect("RAW neutrality"),
+            input_stage: None,
         })
         .collect();
     refresh

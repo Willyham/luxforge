@@ -8,6 +8,7 @@ use crate::{
     mask_field::{MaskField, MaskSampling},
     modules::{
         EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Processing, SPATIAL_TILE, Stage,
+        ToolModule,
     },
     render::{
         Compiled, Entry, Segment,
@@ -359,51 +360,14 @@ impl ModuleRegistry {
                 width: segment.width,
                 height: segment.height,
             };
-            let processing = if layer.artifacts.is_empty() {
-                module.compile(&layer.effect_id, layer.effect_format, &layer.payload, stage)?
-            } else {
-                // The recipe carries the verified bytes it was bound with, so resolving them is a
-                // lookup; an artifact the recipe was not bound with is refused, never skipped.
-                self.check_artifacts(layer)?;
-                let bound = layer
-                    .artifacts
-                    .iter()
-                    .map(|id| {
-                        artifacts.get(id).cloned().ok_or_else(|| {
-                            Error::source_unavailable(format!(
-                                "artifact {id} of layer {} is not bound to this recipe",
-                                layer.id
-                            ))
-                        })
-                    })
-                    .collect::<Result<Vec<_>, Error>>()?;
-                // Registration refused a module that declares an artifact effect without its
-                // capability hooks, so this is only a guard.
-                let capabilities = module.capabilities().ok_or_else(|| {
-                    Error::internal(format!(
-                        "module {} compiles artifact layers without capability hooks",
-                        module.descriptor().id
-                    ))
-                })?;
-                capabilities.compile_bound(
-                    &layer.effect_id,
-                    layer.effect_format,
-                    &layer.payload,
-                    stage,
-                    &bound,
-                )?
-            };
+            let processing = self.compile_layer(module, layer, stage, artifacts)?;
+            // The stage this layer hands the next one, checked before anything is evaluated.
+            let output = Self::output_stage(&processing, stage)?;
             match processing {
                 Processing::ExactGeometry(step) => {
-                    if !step.reads_inside(segment.width, segment.height) {
-                        return Err(Error::validation(format!(
-                            "an exact mapping to {}x{} reads outside its {}x{} input stage",
-                            step.output_width, step.output_height, segment.width, segment.height
-                        )));
-                    }
                     segment.geometry = segment.geometry.then(step);
-                    segment.width = step.output_width;
-                    segment.height = step.output_height;
+                    segment.width = output.width;
+                    segment.height = output.height;
                     segment.operations.push(Processing::ExactGeometry(step));
                 }
                 Processing::PointReplace { x, y, rgb } => {
@@ -492,24 +456,135 @@ impl ModuleRegistry {
                     ));
                 }
                 Processing::Resample(resample) => {
-                    if resample.output_width == 0 || resample.output_height == 0 {
-                        return Err(Error::validation(
-                            "a resample declares an empty output stage",
-                        ));
-                    }
-                    if !resample.inverse.iter().all(|value| value.is_finite()) {
-                        return Err(Error::validation(
-                            "a resample declares a mapping that is not finite",
-                        ));
-                    }
                     segments.push(Segment::new(
                         Some(Entry::Resample(resample)),
-                        resample.output_width,
-                        resample.output_height,
+                        output.width,
+                        output.height,
                     ));
                 }
             }
         }
         Ok(Compiled { segments })
+    }
+
+    /// The stage each layer of `recipe` receives, in stack order: the source's extents for the
+    /// first layer and, for every later one, the output of the layers before it. It is the stage
+    /// [`crate::StageQuestions::stage_before`] answers for that index, folded once over the stack
+    /// by the rule [`Self::compile`] folds it with: each layer compiled against the stage it
+    /// receives ([`Self::compile_layer`]) and its declared output checked and taken
+    /// ([`Self::output_stage`]).
+    ///
+    /// The fold stops after the first layer whose output it cannot know (no available provider, a
+    /// payload its provider refuses, or a declared output the host refuses) and reports that
+    /// layer's own input, so the answer is a prefix of the stack and never a guess. `O(layers)`
+    /// payload compiles, as a write's admission compiles them; it compiles no mask, plans no
+    /// spatial tile and reads no pixel.
+    pub fn input_stages(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        recipe: &Recipe,
+    ) -> Vec<Stage> {
+        let mut stages = Vec::with_capacity(recipe.layers.len());
+        let mut stage = Stage {
+            width: source_width,
+            height: source_height,
+        };
+        for layer in &recipe.layers {
+            stages.push(stage);
+            let Some(module) = self.provider(&layer.effect_id) else {
+                break;
+            };
+            match self
+                .compile_layer(module, layer, stage, &recipe.artifacts)
+                .and_then(|processing| Self::output_stage(&processing, stage))
+            {
+                Ok(output) => stage = output,
+                Err(_) => break,
+            }
+        }
+        stages
+    }
+
+    /// One layer's processing against the stage it receives: its provider's compile or, for a
+    /// layer that references artifacts, the provider's capability compile over the verified bytes
+    /// the recipe was bound with. Reads no pixels.
+    fn compile_layer(
+        &self,
+        module: &dyn ToolModule,
+        layer: &Layer,
+        stage: Stage,
+        artifacts: &ArtifactTable,
+    ) -> Result<Processing, Error> {
+        if layer.artifacts.is_empty() {
+            return module.compile(&layer.effect_id, layer.effect_format, &layer.payload, stage);
+        }
+        // The recipe carries the verified bytes it was bound with, so resolving them is a lookup;
+        // an artifact the recipe was not bound with is refused, never skipped.
+        self.check_artifacts(layer)?;
+        let bound = layer
+            .artifacts
+            .iter()
+            .map(|id| {
+                artifacts.get(id).cloned().ok_or_else(|| {
+                    Error::source_unavailable(format!(
+                        "artifact {id} of layer {} is not bound to this recipe",
+                        layer.id
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        // Registration refused a module that declares an artifact effect without its capability
+        // hooks, so this is only a guard.
+        let capabilities = module.capabilities().ok_or_else(|| {
+            Error::internal(format!(
+                "module {} compiles artifact layers without capability hooks",
+                module.descriptor().id
+            ))
+        })?;
+        capabilities.compile_bound(
+            &layer.effect_id,
+            layer.effect_format,
+            &layer.payload,
+            stage,
+            &bound,
+        )
+    }
+
+    /// The stage a layer's processing hands the next layer: an exact mapping's or a resample's
+    /// declared output, once the host has checked it, and the same stage for everything else. This
+    /// is the one rule by which a stack's stages change.
+    fn output_stage(processing: &Processing, stage: Stage) -> Result<Stage, Error> {
+        match processing {
+            Processing::ExactGeometry(step) => {
+                if !step.reads_inside(stage.width, stage.height) {
+                    return Err(Error::validation(format!(
+                        "an exact mapping to {}x{} reads outside its {}x{} input stage",
+                        step.output_width, step.output_height, stage.width, stage.height
+                    )));
+                }
+                Ok(Stage {
+                    width: step.output_width,
+                    height: step.output_height,
+                })
+            }
+            Processing::Resample(resample) => {
+                if resample.output_width == 0 || resample.output_height == 0 {
+                    return Err(Error::validation(
+                        "a resample declares an empty output stage",
+                    ));
+                }
+                if !resample.inverse.iter().all(|value| value.is_finite()) {
+                    return Err(Error::validation(
+                        "a resample declares a mapping that is not finite",
+                    ));
+                }
+                Ok(Stage {
+                    width: resample.output_width,
+                    height: resample.output_height,
+                })
+            }
+            _ => Ok(stage),
+        }
     }
 }

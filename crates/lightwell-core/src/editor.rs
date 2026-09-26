@@ -10,7 +10,7 @@
 use crate::ErrorKind;
 use crate::{
     AssetId, Draft, DraftId, EntryId, Error, HistoryEntry, HistoryRow, LayerId, MaskId,
-    ModuleRegistry, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId,
+    ModuleRegistry, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId, StageSize,
     analysis::AnalysisIdentity,
     artifacts::{ArtifactId, LiveArtifacts, PreparedArtifacts},
     source::PreparedSource,
@@ -342,6 +342,14 @@ pub struct LayerDescription {
     /// provider is missing or unavailable or whose payload it cannot read. A client's "edited" mark
     /// reads this rather than parsing a payload.
     pub neutral: bool,
+    /// The stage this layer receives: the source's extents for the first layer and the output of
+    /// the layers before it for every later one, by the core's own stage fold
+    /// ([`crate::ModuleRegistry::input_stages`]). It is the stage the layer's payload addresses, so
+    /// a client reads a crop's pixel rectangle or its ratio from it without folding geometry itself.
+    /// `null` for every layer after one whose output cannot be known: a missing or unavailable
+    /// provider, or a payload its provider cannot compile.
+    #[serde(default)]
+    pub input_stage: Option<StageSize>,
 }
 
 /// One entry's ordered layers with their provider and summary. Reading only: no source, no render.

@@ -18,9 +18,8 @@ use crate::{
 };
 use lightwell_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
-    CropPayload, CropStage, CurveBackground, EffectStage, EntryId, Layer, MAX_ANGLE, MIN_ANGLE,
-    MaskId, ModuleDescriptor, NumberStyle, ORIENTATION_EFFECT, Orientation, ParameterDescriptor,
-    ParameterKind, RailDecoration, ResetAction,
+    CropPayload, CropStage, CurveBackground, EffectStage, EntryId, MAX_ANGLE, MIN_ANGLE, MaskId,
+    ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind, RailDecoration, ResetAction,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -1618,7 +1617,7 @@ fn lock_label(locked: bool) -> String {
 
 /// What the idle crop section reads from the displayed entry's committed crop: its straightening
 /// angle and the declared ratio its rectangle reads as, which is exactly what a draft opened on it
-/// seeds ([`CropDraft::from_layer`]). No crop layer, a neutral one or one whose payload cannot be
+/// seeds ([`CropDraft::from_layer`]). No crop layer, a neutral one or one whose values cannot be
 /// read is no crop: Free at 0°, as a draft on a stack without one starts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CommittedCrop {
@@ -1627,74 +1626,53 @@ pub(crate) struct CommittedCrop {
     pub(crate) aspect: Option<(String, f64)>,
 }
 
-/// The displayed entry's committed crop, as the idle section shows it. The draft that Start opens
-/// edits the stack's first crop layer, so this reads that same one. Reading it is `O(layers)` over
-/// stored payloads: no render, no sample, no request.
+/// The displayed entry's committed crop, as the idle section shows it, read from that entry's own
+/// `recipe.describe` row. The draft that Start opens edits the stack's first crop layer, so this
+/// reads that same one: its `neutral`, its `values` (the stored rectangle and angle) and its
+/// `input_stage`, the stage the core's own stage fold says the crop receives, whatever geometry
+/// precedes it. The desktop folds no geometry itself. Rows that describe another entry, which is
+/// what the desktop holds until the displayed entry's rows arrive, read as no crop, and a row
+/// without a stage (a provider before it the core cannot compile) reads as Free at its own angle.
+/// Reading it is `O(layers)` over rows already in hand: no render, no sample, no request.
 pub(crate) fn committed_crop(frame: &CropFrame<'_>, inputs: &Inputs<'_>) -> CommittedCrop {
-    let (Some(effect), Some(layers), Some(state)) =
-        (frame.effect(), inputs.displayed_layers, inputs.state)
+    let displayed = inputs
+        .display_entry
+        .or_else(|| inputs.state.map(|state| &state.current_entry.id));
+    let (Some(effect), Some(recipe)) = (frame.effect(), inputs.recipe) else {
+        return CommittedCrop::default();
+    };
+    if Some(&recipe.entry_id) != displayed {
+        return CommittedCrop::default();
+    }
+    let Some(row) = recipe.layers.iter().find(|row| row.effect == effect) else {
+        return CommittedCrop::default();
+    };
+    let Ok(payload) = serde_json::from_value::<CropPayload>(Value::Object(row.values.clone()))
     else {
         return CommittedCrop::default();
     };
-    let Some(index) = layers.iter().position(|layer| layer.effect_id == effect) else {
-        return CommittedCrop::default();
-    };
-    let Ok(payload) = serde_json::from_value::<CropPayload>(layers[index].payload.clone()) else {
-        return CommittedCrop::default();
-    };
-    if payload.is_neutral() {
+    if row.neutral {
         return CommittedCrop::default();
     }
-    let source = (state.asset.width, state.asset.height);
-    let aspect =
-        crop_input_stage(source, &layers[..index], inputs.modules).and_then(|(width, height)| {
-            let output = payload
-                .output_rect(&CropStage {
-                    width,
-                    height,
-                    angle: payload.angle,
-                })
-                .ok()?;
-            committed_aspect(
-                &frame.presets(),
-                (width, height),
-                (output.width, output.height),
-            )
-            .map(|(preset, ratio)| (preset.option.clone(), ratio))
-        });
+    let aspect = row.input_stage.and_then(|stage| {
+        let output = payload
+            .output_rect(&CropStage {
+                width: stage.width,
+                height: stage.height,
+                angle: payload.angle,
+            })
+            .ok()?;
+        committed_aspect(
+            &frame.presets(),
+            (stage.width, stage.height),
+            (output.width, output.height),
+        )
+        .map(|(preset, ratio)| (preset.option.clone(), ratio))
+    });
     CommittedCrop {
         angle: payload.angle,
         aspect,
     }
-}
-
-/// The crop layer's input stage, from the source's extents and the stored payloads of the layers
-/// before it. Only a geometry-stage effect changes a stage's extents, and the one such effect that
-/// can precede a crop today is the exact orientation, whose odd quarter turns swap them. Any other
-/// geometry, or a layer no listed module declares, answers `None` rather than a guess, and the
-/// section then reads the crop as Free; a draft learns the true stage from its truncated preview
-/// either way.
-fn crop_input_stage(
-    source: (u32, u32),
-    before: &[Layer],
-    modules: &[ModuleDescriptor],
-) -> Option<(u32, u32)> {
-    before.iter().try_fold(source, |(width, height), layer| {
-        if layer.effect_id == ORIENTATION_EFFECT {
-            let orientation: Orientation = serde_json::from_value(layer.payload.clone()).ok()?;
-            return Some(if orientation.turns % 2 == 1 {
-                (height, width)
-            } else {
-                (width, height)
-            });
-        }
-        let stage = modules
-            .iter()
-            .flat_map(|module| module.effects.iter())
-            .find(|effect| effect.id == layer.effect_id)?
-            .stage;
-        (stage != EffectStage::Geometry).then_some((width, height))
-    })
 }
 
 /// The draft's own numbers, in the order the panel prints them: the input stage, the rectangle in

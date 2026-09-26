@@ -73,8 +73,7 @@ pub(crate) struct SliderDrafting<'a> {
 
 /// The stamps of the inputs too large to compare on every message: each moves whenever its value
 /// may have changed ([`tracked::Tracked`]), so a section built from them knows in one comparison
-/// whether to build again. The session and the displayed stack are stamped by the editor, which
-/// compares the one and names the other by its entry.
+/// whether to build again. The session is stamped by the editor, which compares it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Stamps {
     pub(crate) modules: u64,
@@ -93,8 +92,6 @@ pub(crate) struct Stamps {
     pub(crate) preset_form: u64,
     pub(crate) capabilities: u64,
     pub(crate) session: u64,
-    /// The displayed stack's entry: its stored layers never change under one entry.
-    pub(crate) displayed: u64,
 }
 
 #[cfg(test)]
@@ -120,7 +117,6 @@ impl Stamps {
             preset_form: stamp(),
             capabilities: stamp(),
             session: stamp(),
-            displayed: stamp(),
         }
     }
 }
@@ -139,14 +135,12 @@ pub(crate) struct Inputs<'a> {
     pub(crate) display_entry: Option<&'a EntryId>,
     pub(crate) modules: &'a [ModuleDescriptor],
     pub(crate) modules_ready: bool,
-    /// The displayed entry's layers as the owner described them.
+    /// The displayed entry's layers as the owner described them. The idle crop section reads the
+    /// committed crop, and the stage it receives, from these rows.
     pub(crate) recipe: Option<&'a RecipeDescription>,
     /// The current entry's layers as the owner described them, whichever entry is displayed. A
     /// section's edited dot reads each row's `neutral`, the core's own answer.
     pub(crate) current_recipe: Option<&'a RecipeDescription>,
-    /// The displayed entry's stored layers, payloads included, as the preview job that shows it
-    /// carries them. The idle crop section reads the committed crop from these.
-    pub(crate) displayed_layers: Option<&'a [lightwell_core::Layer]>,
     pub(crate) fields: &'a Fields,
     /// Local presentation state for generated controls; it never enters the recipe.
     pub(crate) control_ui: &'a tools::ControlsUi,
@@ -299,12 +293,6 @@ impl Built {
             }
         }
     }
-
-    /// The displayed stack's stamp: its entry's identity, since an entry's stored layers never
-    /// change.
-    pub(crate) fn displayed_stamp(&self, entry: Option<&lightwell_core::HistoryEntry>) -> u64 {
-        key(entry.map(|entry| &entry.id))
-    }
 }
 
 /// One section's key: the values it reads, hashed. Nothing here allocates.
@@ -419,12 +407,7 @@ impl Built {
                 stamps.controls,
                 stamps.expanded,
             ),
-            (
-                stamps.current_recipe,
-                stamps.displayed,
-                stamps.menu,
-                session,
-            ),
+            (stamps.current_recipe, stamps.recipe, stamps.menu, session),
             (stamps.presets, stamps.preset_form, stamps.capabilities),
             (inputs.busy, inputs.developer, inputs.modules_ready),
             (inputs.crop_angle, inputs.crop_custom, inputs.crop_guide),
@@ -786,7 +769,6 @@ mod tests {
                 modules_ready: true,
                 recipe: self.recipe.as_ref(),
                 current_recipe: self.current_recipe.as_ref(),
-                displayed_layers: self.displayed_layers(),
                 fields: &self.fields,
                 control_ui: &self.control_ui,
                 editing: self.editing.as_ref(),
@@ -873,13 +855,20 @@ mod tests {
             workspace
         }
 
-        /// The stored layers of the displayed entry: whichever history entry the scene displays.
-        fn displayed_layers(&self) -> Option<&[lightwell_core::Layer]> {
-            let displayed = self.display_entry.as_ref()?;
-            self.stacks
+        /// Give the scene the owner's `recipe.describe` rows for whichever entry it displays,
+        /// described against the open asset's extents, input stages included.
+        fn describe_displayed(&mut self) {
+            let displayed = self.display_entry.as_ref().expect("a displayed entry");
+            let asset = &self.state.as_ref().expect("an open asset").asset;
+            let entry = self
+                .stacks
                 .iter()
                 .find(|entry| &entry.id == displayed)
-                .map(|entry| entry.snapshot.recipe.layers.as_slice())
+                .expect("the displayed entry's stack");
+            self.recipe = Some(crate::state::testing::described_at(
+                entry,
+                (asset.width, asset.height),
+            ));
         }
 
         /// Add one entry's row to the loaded page, and its stack to what the scene can display.
@@ -890,11 +879,13 @@ mod tests {
             self.stacks.push(entry);
         }
 
-        /// The open asset's source dimensions, which the crop layer's input stage starts from.
+        /// The open asset's source dimensions, which the crop layer's input stage starts from, and
+        /// the displayed entry's rows described against them.
         fn sized(mut self, width: u32, height: u32) -> Self {
             let asset = &mut self.state.as_mut().expect("an open asset").asset;
             asset.width = width;
             asset.height = height;
+            self.describe_displayed();
             self
         }
     }
@@ -1166,6 +1157,37 @@ mod tests {
         });
         assert_eq!(chosen(&idle(vec![turned, crop_layer(tall)])), ["16:9"]);
         assert_eq!(chosen(&idle(vec![crop_layer(tall)])), ["Free"]);
+
+        // Whatever precedes the crop, the section reads the stage the core reports on the crop's
+        // row and folds no geometry itself. Here the rows say another geometry layer, one this
+        // desktop has no descriptor for, hands the crop 200 × 120: a square fitted there reads as
+        // 1:1, and the same rectangle read against the source's own stage would not.
+        let shrunk = lightwell_core::CropStage {
+            width: 200,
+            height: 120,
+            angle: 3.0,
+        };
+        let mut scene = Scene::new(vec![crop.clone()])
+            .opened(vec![crop_layer(fitted(shrunk, 1.0))])
+            .sized(480, 320);
+        assert_eq!(chosen(&crop_model(&scene.derive(), &crop.id)), ["Free"]);
+        fn row(scene: &mut Scene) -> &mut lightwell_core::LayerDescription {
+            &mut scene.recipe.as_mut().expect("described rows").layers[0]
+        }
+        row(&mut scene).input_stage = Some(lightwell_core::StageSize {
+            width: 200,
+            height: 120,
+        });
+        let model = crop_model(&scene.derive(), &crop.id);
+        assert_eq!(chosen(&model), ["1:1"]);
+        assert!(model.locked);
+        assert_eq!(model.angle, "3");
+        // A row without a stage, which the core reports after a layer it cannot compile, reads as
+        // Free at the crop's own angle rather than as a guess.
+        row(&mut scene).input_stage = None;
+        let model = crop_model(&scene.derive(), &crop.id);
+        assert_eq!(chosen(&model), ["Free"]);
+        assert_eq!(model.angle, "3");
     }
 
     /// The idle controls read the displayed entry, not the current one, and a historical preview or
@@ -1201,6 +1223,14 @@ mod tests {
         scene.session.preview.selection = lightwell_core::HistorySelection::Entry(older.id);
         let model = crop_model(&scene.derive(), &crop.id);
         assert!(!model.enabled && !model.can_swap);
+        assert_eq!(
+            chosen(&model),
+            ["Free"],
+            "rows that describe another entry are not the displayed entry's crop"
+        );
+        assert_eq!(model.angle, "0");
+        scene.describe_displayed();
+        let model = crop_model(&scene.derive(), &crop.id);
         assert_eq!(chosen(&model), ["Free"], "the displayed entry has no crop");
         assert_eq!(model.angle, "0");
     }
@@ -1911,6 +1941,7 @@ mod tests {
                 mask: None,
                 artifacts: Vec::new(),
                 neutral: true,
+                input_stage: None,
             }],
         });
         let workspace = scene.derive();

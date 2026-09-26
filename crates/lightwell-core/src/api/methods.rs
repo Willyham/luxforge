@@ -204,7 +204,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "recipe.describe",
         RecipeDescribe,
         recipe_describe,
-        "an entry's stored layers in order with their module, title, summary, values, availability and whether each is neutral (changes nothing, by its module's own rule); reads payloads only and renders nothing"
+        "an entry's stored layers in order with their module, title, summary, values, availability, whether each is neutral (changes nothing, by its module's own rule) and input_stage, the {width, height} the layer receives from the layers before it (null after a layer whose output cannot be known); reads and compiles payloads only and renders nothing"
     ),
     service!(
         "module.list",
@@ -2995,6 +2995,18 @@ mod tests {
             );
             assert_eq!(described["layers"][1]["effect"], json!(MARK_EFFECT));
             assert_eq!(described["layers"][1]["title"], json!("Mark"));
+            // Each row names the stage its layer receives: the fixture's own, then the stage the
+            // quarter turn produced, which is what the mark's payload addresses.
+            assert_eq!(
+                (
+                    &described["layers"][0]["input_stage"],
+                    &described["layers"][1]["input_stage"]
+                ),
+                (
+                    &json!({"width": 480, "height": 320}),
+                    &json!({"width": 320, "height": 480})
+                )
+            );
             assert_eq!(
                 described["entry_id"],
                 ok(

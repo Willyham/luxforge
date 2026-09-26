@@ -739,7 +739,6 @@ impl Editor {
             preset_form: self.preset_form.stamp(),
             capabilities: self.capabilities.stamp(),
             session: built.session_stamp(&self.session),
-            displayed: built.displayed_stamp(self.requested_render_entry.as_ref()),
         };
         let inputs = state::Inputs {
             stamps,
@@ -753,10 +752,6 @@ impl Editor {
             modules_ready: self.modules_ready,
             recipe: self.recipe.as_ref(),
             current_recipe: self.current_recipe.as_ref(),
-            displayed_layers: self
-                .requested_render_entry
-                .as_ref()
-                .map(|entry| entry.snapshot.recipe.layers.as_slice()),
             fields: &self.fields,
             control_ui: &self.controls_ui,
             editing: self.editing.as_ref(),
