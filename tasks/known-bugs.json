@@ -819,7 +819,7 @@
     {
       "id": "TASK-020",
       "description": "Stop the crop-draft cancellation app test from hanging for 60 seconds on a loaded host.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "On 2026-09-26 `a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly` waited 60 s at \"Preparing pixels for display…\" inside a `rendered` tier's workspace tests, at a high load, and passed five times alone, in two full workspace runs and on rerun.",
