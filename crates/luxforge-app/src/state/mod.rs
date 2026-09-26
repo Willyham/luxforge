@@ -1981,9 +1981,8 @@ mod tests {
         assert!(strip[0].selected, "the pointer is the default mode");
         assert_eq!(strip[0].icon.as_deref(), Some("pointer"));
         // Mask is the host's own takeover mode: a mask is a host object in the recipe, so it is
-        // offered whatever modules are registered and no module declares its canvas. It comes
-        // after the modules' modes, as the boards order the strip.
-        let mask = strip.last().expect("the mask mode");
+        // offered whatever modules are registered and no module declares its canvas.
+        let mask = &strip[1];
         assert_eq!(mask.id, luxforge_core::MASK_MODE);
         assert_eq!(mask.label, "Mask");
         assert_eq!(mask.shortcut.as_deref(), Some("M"));
@@ -2000,10 +1999,7 @@ mod tests {
             "the descriptor's own icon"
         );
         assert!(crop.enabled);
-        assert_eq!(
-            strip[1].id, crop.id,
-            "the modules' modes follow the pointer"
-        );
+        assert_eq!(strip[2].id, crop.id, "the modules' modes follow Mask");
         assert_eq!(
             strip.len(),
             3,

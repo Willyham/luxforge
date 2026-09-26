@@ -153,14 +153,27 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
     // not a canvas takeover: it belongs beside the controls its pick fills, so its module declares
     // a picker control in its own panel and the strip does not list it. Developer modules stay out
     // of the strip unless the run asked for them.
-    let mut modes = vec![ModeEntry {
-        id: POINTER_MODE.into(),
-        label: "Pointer".into(),
-        icon: Some("pointer".into()),
-        shortcut: Some("V".into()),
-        selected: inputs.session.workspace.mode == POINTER_MODE,
-        enabled: true,
-    }];
+    let mut modes = vec![
+        ModeEntry {
+            id: POINTER_MODE.into(),
+            label: "Pointer".into(),
+            icon: Some("pointer".into()),
+            shortcut: Some("V".into()),
+            selected: inputs.session.workspace.mode == POINTER_MODE,
+            enabled: true,
+        },
+        // Mask is a host mode, not a module's: a mask is a host object in the recipe, so no module
+        // declares its canvas and the strip offers it whatever is registered. Its icon is the
+        // host's declaration for the same reason.
+        ModeEntry {
+            id: MASK_MODE.into(),
+            label: "Mask".into(),
+            icon: Some("mask".into()),
+            shortcut: Some("M".into()),
+            selected: inputs.session.workspace.mode == MASK_MODE,
+            enabled: editable,
+        },
+    ];
     modes.extend(
         inputs
             .modules
@@ -181,17 +194,6 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
                 | None => None,
             }),
     );
-    // Mask is a host mode, not a module's: a mask is a host object in the recipe, so no module
-    // declares its canvas and the strip offers it whatever is registered, after the modules' modes as
-    // the boards order them. Its icon is the host's declaration for the same reason.
-    modes.push(ModeEntry {
-        id: MASK_MODE.into(),
-        label: "Mask".into(),
-        icon: Some("mask".into()),
-        shortcut: Some("M".into()),
-        selected: inputs.session.workspace.mode == MASK_MODE,
-        enabled: editable,
-    });
     CanvasModel {
         photo: photo_view(inputs, drafting),
         zoom: match inputs.session.preview.view.zoom {
