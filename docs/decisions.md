@@ -51,6 +51,13 @@ Decided on 2026-09-23:
 - The state panel's [Performance section](design/performance-panel.md#decisions) starts open on every launch. Memory is shown in binary units with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
 - A module whose controls are a single group shows them without a sub-group header: a header naming the module's only group, such as RAW's "RAW development" or Transforms' "Exact transforms", repeats the band above it. The band keeps the module's reset. Descriptors and the API are unchanged.
 
+Decided on 2026-09-26, aligning the shell with the boards:
+
+- The histogram has no caption at all, neither a row under the plot nor a hover tooltip; the pointer readout stays in the status bar.
+- The status bar leads with a plain sentence of what last happened. Entry, snapshot and source identifiers are not shown or copied there; they remain available through the API.
+- On macOS the app's title bar is the window's title bar: a transparent, full-size-content native bar with the traffic lights inside the app's own. Windows and Linux keep their native frames.
+- The state panel has no Recipe section. The layer stack stays readable through `recipe.describe`.
+
 ## Basic adjustments and histogram
 
 Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-histogram.md). These settle the product questions; implementation was authorized the same day and is delivered.

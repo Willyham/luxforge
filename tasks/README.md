@@ -9,6 +9,7 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](product-decisions.json) | Open product questions |
 | [Consolidation](consolidation.json) | One implementation per cross-cutting mechanism: the defects where copies diverged, the core front doors, the module contract, the desktop draft driver, one render pipeline and the smoke harness, per the [design](../docs/design/consolidation.md) |
+| [Desktop design alignment](desktop-design-alignment.json) | The shell (title bar, state panel, canvas chrome, histogram, status bar) brought into line with the Develop workspace boards and the owner's 2026-09-26 decisions |
 | [Known bugs](known-bugs.json) | Independent defects found in use, each with its measured symptom and acceptance |
 
 The Corrections plan is a planning proposal. Its AI implementation builds on the implemented [module capabilities](../docs/design/module-capabilities.md) and depends on owner acceptance of the scope and consequential product choices in the [Corrections design](../docs/design/corrections.md).
