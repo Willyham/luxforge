@@ -3064,7 +3064,7 @@
     {
       "id": "TASK-050",
       "description": "Replace the private error helper copies with error constructors such as `Error::validation(..)`, last, because it touches everything.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-038",
         "TASK-043",
