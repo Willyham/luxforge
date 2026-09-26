@@ -33,7 +33,10 @@
 use super::{
     Cancel, ColorRun, Compiled, Entry, RenderContext, ScratchBudget, Segment, color_chunk_rows,
     color_runs, mapped_replacements,
-    spatial::{PointTiles, SpatialPlan, build_reduction, resolve_globals, run_batches, run_tile},
+    spatial::{
+        PointTiles, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
+        run_tile,
+    },
 };
 use crate::{
     Error, ErrorKind,
@@ -424,7 +427,9 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     }
 
     /// Segment `index`'s output over `region`, as the three planes a spatial operation reads: one
-    /// [`Self::region_in`] per row, on the pool under [`Parallelism::Pool`].
+    /// [`Self::region_in`] per row, on the pool under [`Parallelism::Pool`], for a segment whose
+    /// colour runs over rows. Any other segment is read pixel by pixel straight into the planes,
+    /// since a row buffer would only copy what a pull already answers.
     fn fill_rows(
         &self,
         index: usize,
@@ -432,6 +437,12 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         planes: &mut [f32],
         parallelism: Parallelism,
     ) -> Result<(), Error> {
+        let segment = &self.compiled.segments[index];
+        if !segment.has_color || segment.has_pixels {
+            return fill_planes(region, planes, parallelism, |x, y| {
+                self.spatial_read(index + 1, x, y)
+            });
+        }
         if region.is_empty() {
             return Ok(());
         }
