@@ -787,7 +787,7 @@
     {
       "id": "TASK-019",
       "description": "Make the process-counter GPU test robust to a loaded host.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "`a_metal_dispatch_raises_gpu_time_and_allocations` in `lightwell-process` failed twice on 2026-09-25 inside `verify --tier quick` at a load average above 20, on unrelated changes, and passed alone and on rerun. It asserts that GPU time rises after one Metal dispatch, which a busy GPU or a coarse counter update can delay."
