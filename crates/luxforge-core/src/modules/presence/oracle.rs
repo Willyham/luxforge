@@ -14,15 +14,12 @@
 
 use super::{PRESENCE_EFFECT, PresenceModule, presence_halo};
 use crate::{
-    EFFECT_FORMAT, Error, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId,
-    SourceImage,
+    EFFECT_FORMAT, Error, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, RenderContext,
+    RenderOptions, SnapshotId, SourceImage,
     modules::{Global, Parallelism, Region, SpatialOperation, Stage, ToolModule},
     render::{
-        spatial::{
-            Cancel, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_tile,
-            tests::spatial_guard,
-        },
-        testing::{cached_estimates, clear_estimates, context, render_tiled},
+        spatial::{Cancel, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_tile},
+        testing::{frame_in, render_tiled, sample_in},
     },
 };
 use serde_json::{Value, json};
@@ -224,7 +221,6 @@ fn compiled(case: &Value) -> SpatialOperation {
 
 #[test]
 fn production_matches_every_oracle_case_within_the_frozen_tolerance() {
-    let _guard = spatial_guard();
     let cases = fixture_cases();
     assert_eq!(cases.len(), 10, "every committed case is checked");
     let mut worst = 0.0_f64;
@@ -267,7 +263,6 @@ fn production_matches_every_oracle_case_within_the_frozen_tolerance() {
 /// this is a tolerance check rather than a bit-exact one; the observed figure is far below it.
 #[test]
 fn a_tiled_evaluation_agrees_with_the_whole_frame_at_every_tile_size() {
-    let _guard = spatial_guard();
     let mut worst = 0.0_f64;
     for case in &fixture_cases() {
         let name = case["name"].as_str().expect("a name");
@@ -332,8 +327,8 @@ fn every_unit_at_zero_is_omitted_and_the_neutral_payload_compiles_to_nothing() {
 /// tile, so this is the performance claim that the frozen declarations keep one tile inside it.
 #[test]
 fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
-    let _guard = spatial_guard();
     let module = PresenceModule::new();
+    let context = RenderContext::new();
     for (width, height) in [(6000_u32, 4000_u32), (10_000, 6000)] {
         let stage = Stage { width, height };
         let crate::modules::Processing::Spatial(operation) = module
@@ -350,11 +345,11 @@ fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
         let plan = SpatialPlan::new(&operation, stage, crate::modules::SPATIAL_TILE)
             .unwrap_or_else(|error| panic!("{width}x{height}: {error}"));
         assert!(
-            plan.working_set() <= context().spatial().target(),
+            plan.working_set() <= context.spatial().target(),
             "{width}x{height}: one tile needs {} bytes",
             plan.working_set()
         );
-        assert!(context().spatial().concurrency(plan.working_set()) >= 1);
+        assert!(context.spatial().concurrency(plan.working_set()) >= 1);
         assert!(
             operation.summed_halo(stage) <= crate::modules::MAX_SPATIAL_HALO,
             "{width}x{height}: the summed halo is over the host's bound"
@@ -366,7 +361,6 @@ fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
 /// the host's shrink rule says: the one arithmetic the units and the host must agree on.
 #[test]
 fn a_tiles_rectangles_follow_the_declared_halos() {
-    let _guard = spatial_guard();
     let module = PresenceModule::new();
     let stage = Stage {
         width: 2000,
@@ -460,8 +454,7 @@ fn operation(payload: &Value, stage: Stage) -> SpatialOperation {
 
 #[test]
 fn texture_and_clarity_never_reduce_for_an_unused_estimate() {
-    let _guard = spatial_guard();
-    clear_estimates();
+    let context = RenderContext::new();
     let stage = Stage {
         width: 64,
         height: 48,
@@ -473,7 +466,7 @@ fn texture_and_clarity_never_reduce_for_an_unused_estimate() {
     ] {
         let operation = operation(&payload, stage);
         let globals = resolve_globals(
-            context().estimates(),
+            context.estimates(),
             &operation,
             stage,
             "source",
@@ -483,7 +476,7 @@ fn texture_and_clarity_never_reduce_for_an_unused_estimate() {
         .unwrap();
         assert_eq!(globals, vec![None; operation.len()]);
         assert_eq!(
-            cached_estimates(),
+            context.estimates().len(),
             0,
             "no unused entries in the bounded store"
         );
@@ -492,8 +485,7 @@ fn texture_and_clarity_never_reduce_for_an_unused_estimate() {
 
 #[test]
 fn dehaze_reuses_only_strength_independent_estimates() {
-    let _guard = spatial_guard();
-    clear_estimates();
+    let context = RenderContext::new();
     let stage = Stage {
         width: 64,
         height: 48,
@@ -501,7 +493,7 @@ fn dehaze_reuses_only_strength_independent_estimates() {
     let reductions = std::cell::Cell::new(0);
     let resolve = |payload: Value, stage: Stage, source: &str, prefix: &str| {
         resolve_globals(
-            context().estimates(),
+            context.estimates(),
             &operation(&payload, stage),
             stage,
             source,
@@ -537,7 +529,7 @@ fn dehaze_reuses_only_strength_independent_estimates() {
             1,
             "amount edits and unused units need no reduction"
         );
-        assert_eq!(cached_estimates(), 1);
+        assert_eq!(context.estimates().len(), 1);
     }
     for (changed_stage, source, prefix) in [
         (stage, "different source", "prefix"),
@@ -564,7 +556,6 @@ fn dehaze_reuses_only_strength_independent_estimates() {
 
 #[test]
 fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths() {
-    let _guard = spatial_guard();
     let registry = ModuleRegistry::builtin();
     let source = textured_source(96, 64);
     let pixels: Vec<_> = source
@@ -580,51 +571,56 @@ fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths()
     let settings = crate::LinearSettings::default();
     let seed = presence_recipe(json!({"dehaze": 60.0}));
     for linear_path in [false, true] {
-        let render = |recipe: &Recipe| {
+        let input = || {
             if linear_path {
-                crate::render::testing::render_linear(
-                    &registry,
-                    &linear,
-                    SnapshotId::new(),
-                    recipe,
-                    settings,
-                )
-                .unwrap()
+                crate::render::testing::linear(&linear, settings)
             } else {
-                crate::render::testing::render(&registry, &source, SnapshotId::new(), recipe)
-                    .unwrap()
+                crate::RenderSource::Byte(&source)
             }
+        };
+        let render = |context: &RenderContext, recipe: &Recipe| {
+            frame_in(
+                context,
+                &registry,
+                input(),
+                SnapshotId::new(),
+                recipe,
+                RenderOptions::default(),
+            )
+            .unwrap()
         };
         for payload in [
             json!({"dehaze": 61.0}),
             json!({"dehaze": -40.0}),
             json!({"dehaze": 35.0, "texture": 40.0, "clarity": -30.0}),
         ] {
-            clear_estimates();
-            render(&seed);
+            let context = RenderContext::new();
+            render(&context, &seed);
             let mut changed = seed.clone();
             changed.layers[0].payload = payload;
-            let reused = render(&changed);
+            let reused = render(&context, &changed);
             assert_eq!(
-                cached_estimates(),
+                context.estimates().len(),
                 1,
                 "only the seed atmosphere is retained"
             );
-            clear_estimates();
-            let fresh = render(&changed);
+            let fresh = render(&RenderContext::new(), &changed);
             assert_eq!(
                 reused.rgba, fresh.rgba,
                 "reusing the estimate changes no byte"
             );
+            // The samples read the seed's atmosphere from the store, as the reused render did.
             for (x, y) in [(0, 0), (47, 31), (95, 63)] {
-                let sampled = if linear_path {
-                    crate::render::testing::sample_linear(
-                        &registry, &linear, &changed, settings, x, y,
-                    )
-                    .unwrap()
-                } else {
-                    crate::render::testing::sample(&registry, &source, &changed, x, y).unwrap()
-                };
+                let sampled = sample_in(
+                    &context,
+                    &registry,
+                    input(),
+                    &changed,
+                    RenderOptions::default(),
+                    x,
+                    y,
+                )
+                .unwrap();
                 assert_eq!(sampled.rgba, reused.pixel(x, y));
             }
         }
@@ -636,8 +632,6 @@ fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths()
 /// tests use to prove tile invariance.
 #[test]
 fn a_render_at_tile_128_and_at_tile_512_agree_on_every_code() {
-    let _guard = spatial_guard();
-    clear_estimates();
     let registry = ModuleRegistry::builtin();
     // Larger than one production tile on both sides of the 512 grid, so both tile sizes exercise
     // partial edge tiles and more than one batch.
@@ -750,7 +744,6 @@ fn a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
 #[test]
 #[ignore = "measurement, run explicitly in release"]
 fn presence_timing() {
-    let _guard = spatial_guard();
     let registry = ModuleRegistry::builtin();
     let module = PresenceModule::new();
     let mib = (1024 * 1024) as f64;
@@ -776,18 +769,26 @@ fn presence_timing() {
             let plan =
                 SpatialPlan::new(&operation, stage, crate::modules::SPATIAL_TILE).expect("a plan");
             // Warm the source and the estimate store, then measure.
-            crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
-                .expect("a warm render");
-            context().spatial().reset_peak();
+            let context = RenderContext::new();
+            let render = || {
+                frame_in(
+                    &context,
+                    &registry,
+                    &source,
+                    SnapshotId::new(),
+                    &stack,
+                    RenderOptions::default(),
+                )
+            };
+            render().expect("a warm render");
+            context.spatial().reset_peak();
             let mut sampler = luxforge_process::Sampler::new();
             let mut samples = Vec::new();
             let mut cpu = Vec::new();
             for _ in 0..10 {
                 let before = sampler.read().cpu_time_ns.expect("this process's CPU time");
                 let started = std::time::Instant::now();
-                let raster =
-                    crate::render::testing::render(&registry, &source, SnapshotId::new(), &stack)
-                        .expect("a render");
+                let raster = render().expect("a render");
                 let elapsed = started.elapsed();
                 let after = sampler.read().cpu_time_ns.expect("this process's CPU time");
                 samples.push(elapsed.as_secs_f64() * 1000.0);
@@ -807,9 +808,9 @@ fn presence_timing() {
                 operation.summed_halo(stage),
                 plan.tiles().len(),
                 plan.working_set() as f64 / mib,
-                context().spatial().concurrency(plan.working_set()),
-                context().spatial().peak() as f64 / mib,
-                context().spatial().target() as f64 / mib,
+                context.spatial().concurrency(plan.working_set()),
+                context.spatial().peak() as f64 / mib,
+                context.spatial().target() as f64 / mib,
             );
         }
     }

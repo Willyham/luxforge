@@ -1,10 +1,8 @@
 //! The photo-sized cancellation case: how promptly a superseded full-resolution render stops, and
 //! what it leaves behind.
 //!
-//! This is its own test binary because the scratch budget is process-wide. In the lib test binary
-//! 250 other tests run beside this one and several hold colour-pass reservations while it would be
-//! reading the counter, so `in_use` there describes the whole process rather than this render. Here
-//! nothing else reserves, and the figure means what it says.
+//! Each test renders through a context of its own, so the scratch budget it reads holds its own
+//! render's reservations and nothing else's.
 
 use luxforge_core::{
     BASIC_EFFECT, BoxRect, Cancel, CropStage, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId,
@@ -70,22 +68,16 @@ fn stack(width: u32, height: u32) -> Recipe {
     }
 }
 
-/// The two tests below both read the process-wide scratch counter, so they take turns rather than
-/// observing each other's reservations.
-static BUDGET: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn budget_guard() -> std::sync::MutexGuard<'static, ()> {
-    BUDGET
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Start a 24 MP render of the stack on its own thread: the parallel path in every pass, and far
-/// more work than either bound below allows.
-fn start_render(cancel: &Cancel) -> thread::JoinHandle<Result<luxforge_core::Raster, Error>> {
+/// Start a 24 MP render of the stack on its own thread, through `context`: the parallel path in
+/// every pass, and far more work than either bound below allows.
+fn start_render(
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> thread::JoinHandle<Result<luxforge_core::Raster, Error>> {
     let source = Arc::new(source(6000, 4000));
     let recipe = Arc::new(stack(6000, 4000));
     let cancel = cancel.clone();
+    let context = context.clone();
     thread::spawn(move || {
         let registry = ModuleRegistry::builtin();
         luxforge_core::render(
@@ -93,7 +85,7 @@ fn start_render(cancel: &Cancel) -> thread::JoinHandle<Result<luxforge_core::Ras
             &*source,
             &recipe,
             RenderOptions::exact(&cancel),
-            context(),
+            &context,
         )?
         .frame(SnapshotId::new())
     })
@@ -125,9 +117,9 @@ fn cancelled(outcome: Result<luxforge_core::Raster, Error>, elapsed: Duration, w
 
 #[test]
 fn a_cancelled_render_returns_promptly_and_yields_no_frame() {
-    let _guard = budget_guard();
+    let context = RenderContext::new();
     let cancel = Cancel::new();
-    let worker = start_render(&cancel);
+    let worker = start_render(&cancel, &context);
     // Five milliseconds into a 24 MP render the exact transform pass is still copying the frame,
     // so this is the rasterizing pass's own latency.
     thread::sleep(Duration::from_millis(5));
@@ -140,7 +132,7 @@ fn a_cancelled_render_returns_promptly_and_yields_no_frame() {
         "5 ms in, during the transform pass",
     );
     assert_eq!(
-        context().scratch().in_use(),
+        context.scratch().in_use(),
         0,
         "a cancelled render leaves no reservation behind"
     );
@@ -148,11 +140,10 @@ fn a_cancelled_render_returns_promptly_and_yields_no_frame() {
 
 #[test]
 fn a_colour_pass_cancelled_mid_chunk_releases_every_reservation() {
-    let _guard = budget_guard();
-    let budget = context().scratch();
-    assert_eq!(budget.in_use(), 0, "nothing else in this process reserves");
+    let context = RenderContext::new();
+    let budget = context.scratch();
     let cancel = Cancel::new();
-    let worker = start_render(&cancel);
+    let worker = start_render(&cancel, &context);
     // A non-zero counter means a colour chunk is holding its scratch right now, which is the only
     // thing that reserves. Waiting for it is what makes this the colour pass's test and not the
     // transform pass's: a fixed delay lands in the transform pass on this host.
@@ -177,11 +168,4 @@ fn a_colour_pass_cancelled_mid_chunk_releases_every_reservation() {
         budget.peak() > 0,
         "the counter this test waited on was a real reservation"
     );
-}
-
-/// The one context this binary's renders share, so a test reads the scratch budget its render
-/// reserved from.
-fn context() -> &'static RenderContext {
-    static CONTEXT: std::sync::OnceLock<RenderContext> = std::sync::OnceLock::new();
-    CONTEXT.get_or_init(RenderContext::new)
 }

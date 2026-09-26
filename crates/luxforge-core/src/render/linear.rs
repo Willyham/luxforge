@@ -1187,12 +1187,12 @@ mod tests {
     use crate::render::{
         spatial::PRODUCTION_TILE,
         testing::{
-            linear_evaluation, render_linear, render_linear_cancellable,
-            render_linear_proxy_cancellable, sample_linear,
+            frame_in, linear, linear_evaluation, render_linear, render_linear_cancellable,
+            render_linear_proxy_cancellable, sample_in, sample_linear,
         },
     };
     use crate::{
-        Layer, Recipe, SnapshotId,
+        Layer, Recipe, RenderContext, RenderOptions, SnapshotId,
         modules::{CropPayload, ModuleRegistry},
     };
     use rayon::prelude::*;
@@ -1220,12 +1220,13 @@ mod tests {
         recipe: &Recipe,
         settings: LinearSettings,
     ) -> Raster {
+        let context = RenderContext::new();
         let evaluation = linear_evaluation(
+            &context,
             registry,
             source,
             recipe,
             settings,
-            &Cancel::never(),
             PRODUCTION_TILE,
             SpatialMode::Frames,
         )
@@ -1492,7 +1493,6 @@ mod tests {
     /// several blocks wide and several row chunks tall.
     #[test]
     fn every_stack_shape_renders_rows_equal_to_the_point_evaluator() {
-        let _guard = crate::render::spatial::tests::spatial_guard();
         let sources = [
             varied(41, 29).with_view([1, 2, 38, 26], 6).unwrap(),
             varied(157, 101).with_view([2, 1, 150, 97], 3).unwrap(),
@@ -1590,7 +1590,6 @@ mod tests {
         ] {
             for source in &sources {
                 for (case, recipe) in recipes.iter().enumerate() {
-                    crate::render::testing::clear_estimates();
                     let snapshot = SnapshotId::new();
                     let rendered =
                         render_linear(&registry, source, snapshot.clone(), recipe, settings)
@@ -2555,12 +2554,13 @@ mod tests {
             ),
         };
         let overflowing_source = image(1, 1, &[[1.0; 3]]);
+        let context = RenderContext::new();
         let generic = linear_evaluation(
+            &context,
             &registry,
             &overflowing_source,
             &Recipe::default(),
             overflow,
-            &Cancel::never(),
             PRODUCTION_TILE,
             SpatialMode::Frames,
         )
@@ -2820,12 +2820,13 @@ mod tests {
             masks: Vec::new(),
             ..Recipe::default()
         };
+        let context = RenderContext::new();
         let evaluation = linear_evaluation(
+            &context,
             &ModuleRegistry::builtin(),
             &view,
             &recipe,
             LinearSettings::default(),
-            &Cancel::new(),
             PRODUCTION_TILE,
             SpatialMode::Point,
         )
@@ -3397,18 +3398,17 @@ mod tests {
 
     #[test]
     fn a_point_evaluation_builds_no_frame_for_its_spatial_segment() {
-        let _guard = crate::render::spatial::tests::spatial_guard();
-        crate::render::testing::clear_estimates();
+        let context = RenderContext::new();
         let source = cancellation_image(96, 64);
         let registry = ModuleRegistry::builtin();
         let stack = presence_stack(serde_json::json!({"clarity": 40.0}));
         let evaluate = |mode| {
             linear_evaluation(
+                &context,
                 &registry,
                 &source,
                 &stack,
                 LinearSettings::default(),
-                &Cancel::new(),
                 PRODUCTION_TILE,
                 mode,
             )
@@ -3497,18 +3497,17 @@ mod tests {
     /// be counted alive.
     #[test]
     fn a_linear_evaluation_keeps_at_most_two_spatial_frames() {
-        let _guard = crate::render::spatial::tests::spatial_guard();
-        crate::render::testing::clear_estimates();
+        let context = RenderContext::new();
         let source = cancellation_image(96, 64);
         let registry = ModuleRegistry::builtin();
         let stack = four_spatial_segments();
         let evaluate = |mode| {
             linear_evaluation(
+                &context,
                 &registry,
                 &source,
                 &stack,
                 LinearSettings::default(),
-                &Cancel::new(),
                 PRODUCTION_TILE,
                 mode,
             )
@@ -3618,6 +3617,7 @@ mod tests {
         for y in 0..3 {
             for x in 0..3 {
                 let expected = sample_linear(&registry, &source, &recipe, settings, x, y).unwrap();
+                let context = RenderContext::new();
                 let actual = crate::render::Render::compiled(
                     crate::RenderSource::Linear {
                         image: &source,
@@ -3625,7 +3625,7 @@ mod tests {
                     },
                     compiled.clone(),
                     crate::RenderOptions::default(),
-                    crate::render::testing::context(),
+                    &context,
                 )
                 .unwrap()
                 .sample(x, y)
@@ -3674,9 +3674,16 @@ mod tests {
             serde_json::json!({"clarity": 60.0, "dehaze": 30.0}),
         ] {
             let stack = presence_stack(payload.clone());
-            crate::render::testing::clear_estimates();
-            let raster =
-                render_linear(&registry, &image, SnapshotId::new(), &stack, settings).unwrap();
+            let context = RenderContext::new();
+            let raster = frame_in(
+                &context,
+                &registry,
+                linear(&image, settings),
+                SnapshotId::new(),
+                &stack,
+                RenderOptions::default(),
+            )
+            .unwrap();
             let mut state = 0x2545_f491_4f6c_dd1d_u64;
             let mut points: Vec<(u32, u32)> = (0..40)
                 .map(|_| {
@@ -3693,7 +3700,16 @@ mod tests {
             let mut samples = Vec::new();
             for &(x, y) in &points {
                 let start = Instant::now();
-                let sampled = sample_linear(&registry, &image, &stack, settings, x, y).unwrap();
+                let sampled = sample_in(
+                    &context,
+                    &registry,
+                    linear(&image, settings),
+                    &stack,
+                    RenderOptions::default(),
+                    x,
+                    y,
+                )
+                .unwrap();
                 samples.push(ms(start));
                 assert_eq!(sampled.rgba, raster.pixel(x, y), "{payload} at ({x}, {y})");
             }
@@ -3701,11 +3717,11 @@ mod tests {
             for _ in 0..3 {
                 let start = Instant::now();
                 linear_evaluation(
+                    &context,
                     &registry,
                     &image,
                     &stack,
                     settings,
-                    &Cancel::new(),
                     PRODUCTION_TILE,
                     SpatialMode::Frames,
                 )

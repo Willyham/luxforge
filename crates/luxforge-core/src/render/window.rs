@@ -309,7 +309,7 @@ mod tests {
         LinearImage, LinearSettings, Mask, ModuleRegistry, Orientation, PRESENCE_EFFECT,
         PreviewSource, ProxyBounds, ProxyPlan, RECIPE_FORMAT, Recipe, SnapshotId, SourceImage,
         VIGNETTE_EFFECT,
-        render::{Cancel, Render, RenderOptions, render, testing::context},
+        render::{Cancel, Render, RenderContext, RenderOptions, render},
     };
     use serde_json::{Value, json};
 
@@ -399,8 +399,9 @@ mod tests {
         }
     }
 
-    /// The exact compilation a preview job starts from.
+    /// The exact compilation a preview job starts from, in the test's `context`.
     fn exact<'a>(
+        context: &'a RenderContext,
         registry: &ModuleRegistry,
         source: &'a PreviewSource,
         stack: &Recipe,
@@ -410,7 +411,7 @@ mod tests {
             source.input(),
             stack,
             RenderOptions::default(),
-            context(),
+            context,
         )
         .expect("the exact compilation")
     }
@@ -418,6 +419,7 @@ mod tests {
     /// What the preview worker does for one job after its exact compilation: the fitted plan, its
     /// window, the windowed proxy source and the frame rendered against it.
     fn windowed_frame(
+        context: &RenderContext,
         registry: &ModuleRegistry,
         source: &PreviewSource,
         exact: &Render<'_>,
@@ -435,7 +437,7 @@ mod tests {
                 stack,
                 plan,
                 &Cancel::never(),
-                context(),
+                context,
             )
             .expect("the windowed compilation")
             .frame(SnapshotId::new())
@@ -446,6 +448,7 @@ mod tests {
     /// The whole proxy stage's frame: the exact recipe over the exact downscale, which is what the
     /// proxy phase has always been proven to be.
     fn whole_frame(
+        context: &RenderContext,
         registry: &ModuleRegistry,
         source: &PreviewSource,
         stack: &Recipe,
@@ -457,7 +460,7 @@ mod tests {
             whole.input(),
             stack,
             RenderOptions::proxy(&Cancel::never()),
-            context(),
+            context,
         )
         .expect("the whole proxy stage")
         .frame(SnapshotId::new())
@@ -470,6 +473,7 @@ mod tests {
     /// on both pixel domains.
     #[test]
     fn a_windowed_proxy_frame_is_the_whole_proxy_stages_frame() {
+        let context = RenderContext::new();
         let registry = ModuleRegistry::builtin();
         let mask = gradient("Mask 1");
         let stacks = [
@@ -520,8 +524,9 @@ mod tests {
         };
         for (domain, source) in [("jpeg", jpeg(1500, 1000)), ("raw", raw(1500, 1000))] {
             for (name, stack) in &stacks {
-                let exact = exact(&registry, &source, stack);
-                let (plan, frame) = windowed_frame(&registry, &source, &exact, stack, bounds);
+                let exact = exact(&context, &registry, &source, stack);
+                let (plan, frame) =
+                    windowed_frame(&context, &registry, &source, &exact, stack, bounds);
                 let window = plan.window.expect("a tight crop's proxy is windowed");
                 assert!(
                     u64::from(window.width) * u64::from(window.height)
@@ -530,7 +535,7 @@ mod tests {
                     plan.width,
                     plan.height
                 );
-                let whole = whole_frame(&registry, &source, stack, plan);
+                let whole = whole_frame(&context, &registry, &source, stack, plan);
                 assert_eq!(
                     (frame.width, frame.height),
                     (whole.width, whole.height),
@@ -549,6 +554,7 @@ mod tests {
     /// the box its output reads plus the taps' margin.
     #[test]
     fn a_tight_crops_proxy_source_is_bounded_by_the_display_not_the_crop() {
+        let context = RenderContext::new();
         let registry = ModuleRegistry::builtin();
         let source = jpeg(1500, 1000);
         let bounds = ProxyBounds {
@@ -567,7 +573,7 @@ mod tests {
                     )],
                     Vec::new(),
                 );
-                let exact = exact(&registry, &source, &stack);
+                let exact = exact(&context, &registry, &source, &stack);
                 let plan = exact.proxy_plan(bounds).expect("a proxy is worthwhile");
                 let plan = exact.proxy_window(&registry, &stack, plan);
                 let (width, height) = plan.source_dimensions();
@@ -578,7 +584,7 @@ mod tests {
                     whole.input(),
                     &stack,
                     RenderOptions::default(),
-                    context(),
+                    &context,
                 )
                 .unwrap()
                 .stage();
@@ -613,6 +619,7 @@ mod tests {
     /// the approximation a spatial proxy already reports, and no other.
     #[test]
     fn a_windowed_spatial_proxy_is_the_whole_stage_with_the_exact_estimates() {
+        let context = RenderContext::new();
         let registry = ModuleRegistry::builtin();
         let mask = gradient("Mask 1");
         let presence = json!({"clarity": 45, "dehaze": 30, "texture": 25});
@@ -640,8 +647,9 @@ mod tests {
         };
         for (domain, source) in [("jpeg", jpeg(2400, 1600)), ("raw", raw(2400, 1600))] {
             for (index, stack) in stacks.iter().enumerate() {
-                let exact = exact(&registry, &source, stack);
-                let (plan, frame) = windowed_frame(&registry, &source, &exact, stack, bounds);
+                let exact = exact(&context, &registry, &source, stack);
+                let (plan, frame) =
+                    windowed_frame(&context, &registry, &source, &exact, stack, bounds);
                 let window = plan.window.expect("a tight crop's proxy is windowed");
                 assert!(
                     window.width < plan.width && window.height < plan.height,
@@ -669,7 +677,7 @@ mod tests {
                     whole.input(),
                     compiled,
                     RenderOptions::proxy(&Cancel::never()),
-                    context(),
+                    &context,
                 )
                 .unwrap();
                 assert!(reference.approximation().spatial);
