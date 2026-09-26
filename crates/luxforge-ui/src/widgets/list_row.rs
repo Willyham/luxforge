@@ -6,7 +6,8 @@ use super::text::{caption, section_label};
 use super::truncated_text::truncated_text;
 use crate::theme;
 use iced::alignment::Horizontal;
-use iced::widget::{Space, button, container, mouse_area, row};
+use iced::widget::text::Wrapping;
+use iced::widget::{Space, button, container, mouse_area, row, text};
 use iced::{Alignment, Border, Color, Element, Length, Theme};
 
 /// A list row's marker, drawn as a small circle.
@@ -48,7 +49,7 @@ pub fn list_row<'a, M: Clone + 'a>(
     let label_color = if model.dimmed {
         theme::TEXT_TERTIARY
     } else if current {
-        theme::TEXT_PRIMARY
+        theme::TEXT_CURRENT_ROW
     } else {
         theme::TEXT_LABEL
     };
@@ -78,8 +79,14 @@ pub fn list_row<'a, M: Clone + 'a>(
     .spacing(theme::SPACING)
     .align_y(Alignment::Center);
 
+    // The actor, a step under the sequence number's caption.
     if let Some(trailing) = &model.trailing {
-        content = content.push(caption(trailing.clone()));
+        content = content.push(
+            text(trailing.clone())
+                .size(theme::SIZE_SMALL_CAPTION)
+                .color(theme::TEXT_TERTIARY)
+                .wrapping(Wrapping::None),
+        );
     }
 
     let control = button(content.height(Length::Fill))
@@ -106,6 +113,25 @@ pub fn list_heading<'a, M: Clone + 'a>(label: &str) -> Element<'a, M> {
     container(section_label(label.to_owned()))
         .padding(iced::Padding::default().bottom(theme::LIST_HEADING_SPACING))
         .into()
+}
+
+/// A state-panel section's heading: its capitalised label in a [`theme::PANEL_HEADING_HEIGHT`] row,
+/// with `trailing` (a caption such as History's revision, or a small button such as Versions'
+/// `+`) at the row's right edge.
+pub fn panel_heading<'a, M: Clone + 'a>(
+    label: &str,
+    trailing: Option<Element<'a, M>>,
+) -> Element<'a, M> {
+    let mut content = row![
+        section_label(label.to_owned()),
+        Space::new().width(Length::Fill)
+    ]
+    .align_y(Alignment::Center)
+    .height(Length::Fixed(theme::PANEL_HEADING_HEIGHT));
+    if let Some(trailing) = trailing {
+        content = content.push(trailing);
+    }
+    content.into()
 }
 
 /// A small marker circle: filled, outlined or hollow depending on [`Marker`].

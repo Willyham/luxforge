@@ -42,7 +42,7 @@ pub use button_row::{
     ButtonSize, ButtonTone, LabelledButtonModel, RowPlacement, button_row, button_row_height,
     equal_button_row, icon_button_row, labelled_button, row_icon_button, text_button,
 };
-pub use chip::{ChipModel, chip, chip_row, chip_wrap};
+pub use chip::{ChipModel, chip, chip_row, chip_wrap, compact_chip};
 pub use color_picker::{
     ColorPickerEvent, ColorPickerModel, color_picker, hex_to_rgb, hsv_to_rgb, hue_fraction,
     plane_fraction, rgb_to_hex, rgb_to_hsv,
@@ -63,7 +63,7 @@ pub use histogram::{
 pub use icon_button::{Icon, IconButtonModel, header_icon_button, icon, icon_button};
 pub use inline_menu::inline_menu;
 pub use job_row::{JobRowModel, job_row, job_row_height, progress_fraction};
-pub use list_row::{ListRowModel, Marker, list_heading, list_row};
+pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
 pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip, tooltip_text};
@@ -76,7 +76,7 @@ pub use section_header::{
     SectionHeaderModel, collapsed_section_height, expanded_section_height, module_section,
     section_body, section_header,
 };
-pub use segmented::{SegmentedModel, segmented};
+pub use segmented::{SegmentedModel, segment, segment_track, segmented};
 pub use slider::{RailDecoration, SliderModel, slider};
 pub use sparkline::{SparklineModel, sparkline, sparkline_points};
 pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper, stepper_rail_width};

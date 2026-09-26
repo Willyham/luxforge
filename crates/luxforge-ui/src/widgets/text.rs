@@ -44,11 +44,14 @@ pub fn error_caption<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'
         .into()
 }
 
-/// 10.5 pt capitalised sub-group label (White balance, Tone, Color).
+/// 10.5 pt semibold capitalised section label (Versions, History, Adjustments). Iced has no letter
+/// spacing, so the boards' tracking is not drawn.
 pub fn section_label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     text(content.into().to_uppercase())
         .size(theme::SIZE_SECTION_LABEL)
+        .font(theme::FONT_SEMIBOLD)
         .color(theme::TEXT_TERTIARY)
+        .wrapping(Wrapping::None)
         .into()
 }
 

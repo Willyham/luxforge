@@ -4,12 +4,7 @@
 //! part of the public widget API; [`crate::gallery_states`] is the only path to it.
 
 use crate::{
-    BINS, ChipModel, ClipTriangleModel, DraftBarModel, HistogramChannel, HistogramModel, Icon,
-    IconButtonModel, ListRowModel, Marker, ModeEntry, NoticeCardModel, RailDecoration,
-    SectionHeaderModel, SegmentedModel, SliderModel, SubGroupHeaderModel, ToggleEntry, Tone,
-    ValueEdit, caption, chip, clip_triangle, double_click, draft_bar, error_caption, floating_bar,
-    histogram_inspector, icon_button, inline_menu, label, list_row, mode_strip, notice_card,
-    section_header, section_label, segmented, slider, sub_group_header, theme, title, value_text,
+    BINS, ChipModel, ClipTriangleModel, DraftBarModel, HistogramChannel, HistogramModel, Icon, IconButtonModel, ListRowModel, Marker, ModeEntry, NoticeCardModel, RailDecoration, SectionHeaderModel, SegmentedModel, SliderModel, SubGroupHeaderModel, ToggleEntry, Tone, ValueEdit, caption, chip, clip_triangle, compact_chip, double_click, draft_bar, error_caption, floating_bar, header_icon_button, histogram, histogram_inspector, icon_button, inline_menu, label, list_row, mode_strip, notice_card, section_header, section_label, segment, segment_track, segmented, slider, sub_group_header, theme, title, value_text,
 };
 use iced::Element;
 
@@ -254,6 +249,74 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             selected: false,
         },
         None,
+    ));
+
+    // -- The shell's title bar and status bar: the zoom control with Fit selected and the
+    // -- effective percentage as its third segment, Undo enabled beside Redo disabled, the
+    // -- compact version chips and the status bar's small Copy.
+    states.push(segment_track(vec![
+        segment("Fit".into(), true, Some(())),
+        segment("100%".into(), false, Some(())),
+        segment("18%".into(), false, Some(())),
+    ]));
+    states.push(
+        iced::widget::row![
+            icon_button(
+                &IconButtonModel {
+                    icon: Icon::Undo,
+                    tooltip: "Undo".into(),
+                    enabled: true,
+                    selected: false,
+                },
+                Some(()),
+            ),
+            icon_button(
+                &IconButtonModel {
+                    icon: Icon::Redo,
+                    tooltip: "Redo".into(),
+                    enabled: false,
+                    selected: false,
+                },
+                None,
+            ),
+        ]
+        .spacing(theme::TITLE_ACTION_SPACING)
+        .into(),
+    );
+    states.push(
+        iced::widget::row![
+            compact_chip(
+                &ChipModel {
+                    label: "Print draft".into(),
+                    trailing: Some("3".into()),
+                    selected: false,
+                    enabled: true,
+                },
+                Some(()),
+                Some(()),
+            ),
+            compact_chip(
+                &ChipModel {
+                    label: "Warm".into(),
+                    trailing: Some("5".into()),
+                    selected: true,
+                    enabled: true,
+                },
+                Some(()),
+                Some(()),
+            ),
+        ]
+        .spacing(theme::VERSION_CHIP_SPACING)
+        .into(),
+    );
+    states.push(header_icon_button(
+        &IconButtonModel {
+            icon: Icon::Copy,
+            tooltip: "Copy the status".into(),
+            enabled: true,
+            selected: false,
+        },
+        Some(()),
     ));
 
     // -- Segmented control (crop ratio presets).

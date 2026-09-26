@@ -12,15 +12,15 @@ use luxforge_ui::{MenuChoiceModel, caption, gallery_named_states, menu_choice, t
 /// large canvases get their own pages, while related compact states stay together.
 const PAGES: [(&str, usize, usize); 10] = [
     ("Sliders and sections", 0, 9),
-    ("Actions, history and performance", 9, 23),
-    ("Notices, canvas chrome and menus", 23, 32),
-    ("Histogram and typography", 32, 46),
-    ("Rails and number fields", 46, 56),
-    ("Toggles, choices and swatches", 56, 65),
-    ("Colour picker", 65, 68),
-    ("Curve points", 68, 70),
-    ("Curve channels, named vector icons and Basic", 70, 74),
-    ("Module panels", 74, 82),
+    ("Actions, history and performance", 9, 27),
+    ("Notices, canvas chrome and menus", 27, 36),
+    ("Histogram and typography", 36, 50),
+    ("Rails and number fields", 50, 60),
+    ("Toggles, choices and swatches", 60, 69),
+    ("Colour picker", 69, 72),
+    ("Curve points", 72, 74),
+    ("Curve channels, named vector icons and Basic", 74, 78),
+    ("Module panels", 78, 86),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

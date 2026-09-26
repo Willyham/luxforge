@@ -72,6 +72,53 @@ pub fn chip<'a, M: Clone + 'a>(
     }
 }
 
+/// Renders one compact chip, as the state panel draws a version: [`theme::VERSION_CHIP_HEIGHT`]
+/// tall with its label and its trailing caption as one caption-sized line (`Warm · 5`) in the
+/// chip's ink. `on_context` fires on a right-click.
+pub fn compact_chip<'a, M: Clone + 'a>(
+    model: &ChipModel,
+    on_press: Option<M>,
+    on_context: Option<M>,
+) -> Element<'a, M> {
+    let style = if model.selected {
+        theme::chip_selected
+    } else {
+        theme::button_control
+    };
+    let ink = match (model.enabled, model.selected) {
+        (false, _) => theme::TEXT_TERTIARY,
+        (true, true) => theme::ACCENT,
+        (true, false) => theme::CHIP_LABEL,
+    };
+    let label = match &model.trailing {
+        Some(trailing) => format!("{} \u{b7} {trailing}", model.label),
+        None => model.label.clone(),
+    };
+    let control = button(
+        container(
+            text(label)
+                .size(theme::SIZE_CAPTION)
+                .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
+                .wrapping(Wrapping::None)
+                .color(ink),
+        )
+        .center_y(Length::Fill),
+    )
+    .padding([0.0, theme::VERSION_CHIP_PADDING])
+    .height(Length::Fixed(theme::VERSION_CHIP_HEIGHT))
+    .style(move |iced_theme: &iced::Theme, status| {
+        let mut style = style(iced_theme, status);
+        style.border.radius = theme::VERSION_CHIP_RADIUS.into();
+        style
+    })
+    .on_press_maybe(model.enabled.then_some(on_press).flatten());
+    let area = mouse_area(control);
+    match on_context.filter(|_| model.enabled) {
+        Some(message) => area.on_right_press(message).into(),
+        None => area.into(),
+    }
+}
+
 /// Sets chips in rows that wrap at the panel's width, [`theme::CHIP_SPACING`] apart both ways,
 /// with the button row's margin above and, when another row follows, [`theme::CHIP_ROW_BOTTOM`]
 /// below.

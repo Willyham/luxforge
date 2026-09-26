@@ -22,7 +22,7 @@ pub fn color_swatch<'a, M: Clone + 'a>(model: &ColorSwatchModel, on_press: M) ->
     )
     .padding(0)
     .style(if model.open {
-        theme::button_selected
+        theme::swatch_open
     } else {
         theme::button_plain
     })

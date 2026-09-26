@@ -180,8 +180,8 @@ pub const BORDER_WIDTH: f32 = 1.0;
 /// note). A value with a word unit, such as `+0.35 EV`, may run past the box's left edge rather
 /// than wrap, so the right edge, where the units digit sits, never moves.
 pub const VALUE_WIDTH: f32 = 48.0;
-/// A square icon button: mode strip entries, title-bar actions, context toggles.
-pub const ICON_BUTTON_SIZE: f32 = 28.0;
+/// A square icon button: title-bar actions and context toggles.
+pub const ICON_BUTTON_SIZE: f32 = 26.0;
 /// The icon inside an [`ICON_BUTTON_SIZE`] button.
 pub const ICON_SIZE: f32 = 16.0;
 /// Every vector icon's stroke, in points whatever the icon's size, so a 14 pt reset and a 16 pt
@@ -533,6 +533,73 @@ pub const CLIP_TRIANGLE_REST: Color = TEXT_FAINT;
 pub const HISTOGRAM_INSPECTOR_HEIGHT: f32 =
     HISTOGRAM_PADDING.top + HISTOGRAM_HEIGHT + HISTOGRAM_PADDING.bottom;
 
+// -- Shell ----------------------------------------------------------------------------------------
+//
+// The title bar, the state panel and the status bar around the canvas and the tools panel, from
+// the default board of the Develop workspace design. Every translucent fill the board draws is
+// stored opaque, composited over the surface it sits on, for the reason [`RULE`] gives.
+
+/// The rules between the shell's regions: [`BORDER`], 6% white, as the default board composites it
+/// over the Bar surface, which is the module band's border.
+pub const DIVIDER: Color = BAND_BORDER;
+/// The file name in the title bar: a step over primary.
+pub const TEXT_STRONG: Color = Color::from_rgb8(0xf0, 0xf0, 0xf2);
+/// The dimensions, format and colour space after the file name.
+pub const TEXT_IDENTITY: Color = Color::from_rgb8(0x8a, 0x8a, 0x90);
+/// The current history row's label.
+pub const TEXT_CURRENT_ROW: Color = Color::from_rgb8(0xf2, 0xf2, 0xf4);
+/// The dimensions line's size, between a caption and control text.
+pub const SIZE_IDENTITY: f32 = 11.5;
+/// A title-bar icon button's fill under the pointer: 6% white over the Bar surface.
+pub const ICON_HOVER: Color = Color::from_rgb8(0x30, 0x30, 0x33);
+/// A selected icon button's fill: [`ACCENT`] at 14% over the Bar surface.
+pub const ICON_SELECTED_FILL: Color = Color::from_rgb8(0x3e, 0x37, 0x2f);
+/// The short vertical rule between Undo and Redo and the panel toggles: 10% white over the Bar.
+pub const TOOLBAR_RULE: Color = Color::from_rgb8(0x39, 0x39, 0x3c);
+/// The toolbar rule's height and the margin on either side of it.
+pub const TOOLBAR_RULE_HEIGHT: f32 = 16.0;
+pub const TOOLBAR_RULE_MARGIN: f32 = 6.0;
+/// Between the title bar's groups of controls: the identity, the view controls.
+pub const TITLE_GROUP_SPACING: f32 = 10.0;
+/// Between the title bar's trailing actions.
+pub const TITLE_ACTION_SPACING: f32 = 4.0;
+/// The title bar's padding at its trailing edge, and at its leading edge where the window keeps its
+/// native frame.
+pub const TITLE_BAR_INSET: f32 = 12.0;
+/// A segmented control's track and its selected segment: the tab row's greys.
+pub const SEGMENT_TRACK: Color = TAB_TRACK;
+pub const SEGMENT_SELECTED: Color = TAB_SELECTED;
+/// A segment's height, its label's horizontal padding, and the track's inset and gap around and
+/// between segments.
+pub const SEGMENT_HEIGHT: f32 = 24.0;
+pub const SEGMENT_PADDING: f32 = 10.0;
+pub const SEGMENT_INSET: f32 = 2.0;
+/// The track's corner radius; a segment inside it is [`RADIUS`] less its inset, so the two
+/// curves stay concentric.
+pub const SEGMENT_RADIUS: f32 = 7.0;
+/// The state panel's padding: above its first section and below its last, and at its sides. A row
+/// adds its own [`SPACING`] inside, so text sits 16 pt from the panel's edge.
+pub const PANEL_PADDING_Y: f32 = 12.0;
+pub const PANEL_PADDING_X: f32 = 8.0;
+/// Between the state panel's sections.
+pub const PANEL_SECTION_SPACING: f32 = 12.0;
+/// A panel section's heading row: its capitalised label, and a caption or button at its right.
+pub const PANEL_HEADING_HEIGHT: f32 = 22.0;
+/// Between a panel heading and the chips under it, and between two chips.
+pub const VERSION_CHIP_SPACING: f32 = 6.0;
+/// A version chip: smaller than a ratio chip, its label at caption size.
+pub const VERSION_CHIP_HEIGHT: f32 = 16.0;
+pub const VERSION_CHIP_PADDING: f32 = 7.0;
+pub const VERSION_CHIP_RADIUS: f32 = 4.0;
+/// A list row's corner radius.
+pub const LIST_ROW_RADIUS: f32 = 5.0;
+/// The status bar's text and the spacing between its trailing facts.
+pub const STATUS_SPACING: f32 = 8.0;
+pub const STATUS_FACT_SPACING: f32 = 12.0;
+/// The dot beside the connected-agents count, and its colour while any other client is connected.
+pub const STATUS_DOT_SIZE: f32 = 6.0;
+pub const AGENT_CONNECTED: Color = Color::from_rgb8(0x57, 0xb5, 0x6b);
+
 /// Builds the dark, custom Luxforge theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
 pub fn theme() -> Theme {
@@ -571,7 +638,17 @@ pub fn panel_surface(_theme: &Theme) -> container::Style {
     surface(PANEL)
 }
 
-/// A floating bar, notice or title bar: bordered, rounded.
+/// The title bar: the Bar surface, flat, its rule drawn under it by the shell.
+pub fn title_bar_surface(_theme: &Theme) -> container::Style {
+    surface(BAR)
+}
+
+/// A rule between the shell's regions: [`DIVIDER`], opaque.
+pub fn divider_surface(_theme: &Theme) -> container::Style {
+    surface(DIVIDER)
+}
+
+/// A floating bar or notice: bordered, rounded.
 pub fn bar_surface(_theme: &Theme) -> container::Style {
     bordered_surface(BAR)
 }
@@ -683,13 +760,49 @@ pub fn button_accent(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// A square icon-glyph button: mode strip entries, header actions, context toggles.
+/// A square icon-glyph button: mode strip entries, header actions, context toggles. No surface at
+/// rest, [`ICON_HOVER`] under the pointer.
 pub fn button_icon(_theme: &Theme, status: button::Status) -> button::Style {
-    button_plain(_theme, status)
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => Some(Background::Color(ICON_HOVER)),
+        button::Status::Active | button::Status::Disabled => None,
+    };
+    button::Style {
+        background,
+        text_color: text_color_for(status),
+        border: Border {
+            radius: RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
 }
 
-/// A selected icon button or chip: tinted with the accent.
+/// A selected icon button: [`ICON_SELECTED_FILL`] behind accent ink, with no outline, as the
+/// default board draws the open panels' toggles.
 pub fn button_selected(_theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(ICON_SELECTED_FILL)),
+        text_color: if matches!(status, button::Status::Disabled) {
+            TEXT_TERTIARY
+        } else {
+            ACCENT
+        },
+        border: Border {
+            radius: RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// An open colour swatch. The swatch fills its button, so a fill behind it would not show: the
+/// open state is the accent outline around it.
+pub fn swatch_open(_theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(Background::Color(Color { a: 0.18, ..ACCENT })),
         text_color: if matches!(status, button::Status::Disabled) {
@@ -704,6 +817,45 @@ pub fn button_selected(_theme: &Theme, status: button::Status) -> button::Style 
         },
         shadow: Shadow::default(),
         snap: false,
+    }
+}
+
+/// A segmented control's track: [`SEGMENT_TRACK`], its segments inset by [`SEGMENT_INSET`].
+pub fn segment_track(_theme: &Theme) -> container::Style {
+    surface(SEGMENT_TRACK).border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: SEGMENT_RADIUS.into(),
+    })
+}
+
+/// One segment. The selected one is raised on [`SEGMENT_SELECTED`] in [`TEXT_STRONG`] and never
+/// takes the accent, because it states a view rather than an edit; the others are bare, in
+/// secondary text.
+pub fn segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = match (selected, status) {
+            (true, _) => Some(Background::Color(SEGMENT_SELECTED)),
+            (false, button::Status::Hovered | button::Status::Pressed) => {
+                Some(Background::Color(CONTROL))
+            }
+            (false, _) => None,
+        };
+        button::Style {
+            background,
+            text_color: match (selected, status) {
+                (_, button::Status::Disabled) => TEXT_TERTIARY,
+                (true, _) => TEXT_STRONG,
+                (false, _) => TEXT_SECONDARY,
+            },
+            border: Border {
+                radius: (SEGMENT_RADIUS - SEGMENT_INSET).into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
     }
 }
 
@@ -842,9 +994,9 @@ pub fn button_control(_theme: &Theme, status: button::Status) -> button::Style {
 pub fn list_row_current(_theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(Background::Color(LIST_ROW_CURRENT)),
-        text_color: TEXT_PRIMARY,
+        text_color: TEXT_CURRENT_ROW,
         border: Border {
-            radius: RADIUS.into(),
+            radius: LIST_ROW_RADIUS.into(),
             width: 0.0,
             color: Color::TRANSPARENT,
         },
@@ -1192,6 +1344,100 @@ mod tests {
         assert_eq!(
             SPARKLINE_AREA.a, 1.0,
             "opaque, not an alpha Iced would brighten"
+        );
+    }
+
+    /// The shell's translucent fills are the default board's alphas composited over the Bar
+    /// surface, stored opaque; its sizes are the board's.
+    #[test]
+    fn shell_tokens_match_the_default_board() {
+        let over_bar = |colour: Color, alpha: f32| {
+            let [r, g, b] =
+                crate::geometry::over([colour.r, colour.g, colour.b], [BAR.r, BAR.g, BAR.b], alpha)
+                    .map(|channel| (channel * 255.0).round() as u8);
+            Color::from_rgb8(r, g, b)
+        };
+        // The rules are sampled from the board, where the 6% border lands a code under white over
+        // the Bar; they are the module band's border.
+        assert_eq!(DIVIDER, BAND_BORDER);
+        assert_eq!(ICON_HOVER, over_bar(Color::WHITE, 0.06));
+        assert_eq!(TOOLBAR_RULE, over_bar(Color::WHITE, 0.10));
+        // Sampled from the board's selected panel toggles, whose blue lands a code under the exact
+        // composite.
+        assert_eq!(ICON_SELECTED_FILL, Color::from_rgb8(62, 55, 47));
+        let composite = over_bar(ACCENT, 0.14);
+        for (sampled, exact) in [
+            (ICON_SELECTED_FILL.r, composite.r),
+            (ICON_SELECTED_FILL.g, composite.g),
+            (ICON_SELECTED_FILL.b, composite.b),
+        ] {
+            assert!((sampled - exact).abs() <= 1.0 / 255.0 + f32::EPSILON);
+        }
+        assert_eq!(TEXT_STRONG, Color::from_rgb8(0xf0, 0xf0, 0xf2));
+        assert_eq!(TEXT_IDENTITY, Color::from_rgb8(0x8a, 0x8a, 0x90));
+        assert_eq!(TEXT_CURRENT_ROW, Color::from_rgb8(0xf2, 0xf2, 0xf4));
+        assert_eq!(AGENT_CONNECTED, Color::from_rgb8(0x57, 0xb5, 0x6b));
+        assert_eq!((SEGMENT_TRACK, SEGMENT_SELECTED), (TAB_TRACK, TAB_SELECTED));
+        assert_eq!(SEGMENT_TRACK, Color::from_rgb8(0x28, 0x28, 0x2c));
+        assert_eq!(SEGMENT_SELECTED, Color::from_rgb8(0x3b, 0x3b, 0x41));
+        assert_eq!((ICON_BUTTON_SIZE, ICON_SIZE), (26.0, 16.0));
+        assert_eq!(
+            (
+                SEGMENT_HEIGHT,
+                SEGMENT_PADDING,
+                SEGMENT_INSET,
+                SEGMENT_RADIUS
+            ),
+            (24.0, 10.0, 2.0, 7.0)
+        );
+        assert_eq!(
+            SEGMENT_HEIGHT + 2.0 * SEGMENT_INSET,
+            28.0,
+            "the control's height"
+        );
+        assert_eq!((TITLE_GROUP_SPACING, TITLE_ACTION_SPACING), (10.0, 4.0));
+        assert_eq!((TOOLBAR_RULE_HEIGHT, TOOLBAR_RULE_MARGIN), (16.0, 6.0));
+        assert_eq!(TITLE_BAR_INSET, 12.0);
+        assert_eq!(SIZE_IDENTITY, 11.5);
+        // Text sits 16 pt from the state panel's edge: the panel's padding and a row's own.
+        assert_eq!(PANEL_PADDING_X + SPACING, 16.0);
+        assert_eq!((PANEL_PADDING_Y, PANEL_SECTION_SPACING), (12.0, 12.0));
+        assert_eq!(PANEL_HEADING_HEIGHT, 22.0);
+        assert_eq!((VERSION_CHIP_HEIGHT, VERSION_CHIP_SPACING), (16.0, 6.0));
+        assert_eq!(LIST_ROW_RADIUS, 5.0);
+        assert_eq!(
+            (STATUS_SPACING, STATUS_FACT_SPACING, STATUS_DOT_SIZE),
+            (8.0, 12.0, 6.0)
+        );
+    }
+
+    /// A selected icon button is the accent tint behind accent ink, with no outline; the segmented
+    /// control's selection is the neutral raised fill, never the accent.
+    #[test]
+    fn selection_styles_match_the_default_board() {
+        let selected = button_selected(&theme(), button::Status::Active);
+        assert_eq!(
+            selected.background,
+            Some(Background::Color(ICON_SELECTED_FILL))
+        );
+        assert_eq!(selected.text_color, ACCENT);
+        assert_eq!(selected.border.width, 0.0);
+        let segment = segment(true)(&theme(), button::Status::Active);
+        assert_eq!(
+            segment.background,
+            Some(Background::Color(SEGMENT_SELECTED))
+        );
+        assert_eq!(segment.text_color, TEXT_STRONG);
+        let resting = super::segment(false)(&theme(), button::Status::Active);
+        assert_eq!(resting.background, None);
+        assert_eq!(resting.text_color, TEXT_SECONDARY);
+        assert_eq!(
+            button_icon(&theme(), button::Status::Hovered).background,
+            Some(Background::Color(ICON_HOVER))
+        );
+        assert_eq!(
+            button_icon(&theme(), button::Status::Active).background,
+            None
         );
     }
 
