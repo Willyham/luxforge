@@ -180,6 +180,16 @@ Decided by the owner on 2026-09-26, who took the recommendations of a whole-code
 
 Not adopted: deferring the whole capabilities framework until the first Corrections adapter. Still open: where Detail's sharpening and noise reduction run (below).
 
+## Interactive previews at 100%
+
+- The owner prioritizes immediate adjustment feedback while dragging (2026-09-27). A briefly
+  softer image at 100% is acceptable while a slider moves, provided full detail is restored on
+  pause or release and the histogram is marked updating meanwhile. This accepts the interaction
+  tradeoff in the [responsive-adjustments research](research/interactive-adjustments.md), not an
+  implemented latency result. Exact settled pixels, full-image analysis and export remain the
+  reference. The implementation, quality levels, numerical bounds and clipping-overlay policy
+  remain to be designed and verified.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).

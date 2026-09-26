@@ -2,6 +2,11 @@
 
 [Knowledge base index](README.md) · Evidence checked 2026-09-22. No local Lightroom benchmarks were run.
 
+The 100% source selection, tracking-mode redraw, GPU processing, Camera Raw cache and slider
+release-note claims were rechecked on 2026-09-27. The [Luxforge investigation](../interactive-adjustments.md)
+connects those findings to the current preview code and proposes viewport rendering, interaction
+scheduling and targeted caching/GPU work. It makes no new Lightroom timing claim.
+
 ## Several kinds of cached image data
 
 **D.** Adobe distinguishes these resources. They should not be described collectively as “the preview.” [S09: Optimize performance](https://helpx.adobe.com/lightroom-classic/desktop/technical-support/performance-guidelines/optimize-performance-lightroom.html) [S10: Smart Previews](https://helpx.adobe.com/lightroom-classic/desktop/viewing-photos/lightroom-smart-previews.html)

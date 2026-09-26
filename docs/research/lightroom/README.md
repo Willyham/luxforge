@@ -13,6 +13,7 @@ The [darktable companion](../darktable/README.md) examines corresponding behavio
 | Where are edits stored? What is genuinely non-destructive? | [Catalog, recipes, history and sidecars](storage-and-history.md) |
 | How do settings turn into displayed/exported pixels? | [Rendering, process versions and color](rendering-and-color.md) |
 | Why do loading, zooming and Develop have different costs? | [Previews, loading and performance](previews-and-performance.md) |
+| How can Luxforge make 100% adjustments and heavy stacks responsive? | [Code audit and implementation recommendations](../interactive-adjustments.md) |
 | What do Exposure, Contrast, Highlights, Shadows and curves do? | [Tone and color controls](tone-and-color-tools.md) |
 | How are Contrast, Clarity, Texture and sharpening different? | [Detail, local contrast and Dehaze](detail-and-local-contrast.md) |
 | What is known about demosaicing, denoise and upsampling? | [RAW and computational processing](raw-and-computational-tools.md) |
