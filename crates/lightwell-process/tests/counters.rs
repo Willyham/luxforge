@@ -18,6 +18,26 @@ fn spin(duration: Duration) {
     }
 }
 
+/// Poll `read` until `pred` accepts its value or `deadline` passes, then return the last value
+/// either way. A busy GPU or a coarse driver counter can delay a rise past a single sample; this
+/// keeps the assertion honest by returning the *unmet* value when the deadline runs out, so the
+/// caller's own assertion (not this helper) still fails the test.
+#[cfg(target_os = "macos")]
+fn wait_for<T>(
+    deadline: Duration,
+    mut read: impl FnMut() -> T,
+    mut pred: impl FnMut(&T) -> bool,
+) -> T {
+    let end = Instant::now() + deadline;
+    loop {
+        let value = read();
+        if pred(&value) || Instant::now() > end {
+            return value;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn cpu_time_grows_by_the_work_of_another_thread() {
     let mut sampler = Sampler::new();
@@ -114,7 +134,17 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
     gpu.dispatch(1);
     sampler = Sampler::new();
     sampler.enable_gpu_allocations();
-    let with_buffer = sampler.read().gpu;
+    // The driver's own allocation accounting can lag a freshly committed private buffer by a
+    // beat, the same coarse-update race the GPU time check below waits out.
+    let with_buffer = wait_for(
+        Duration::from_secs(2),
+        || sampler.read().gpu,
+        |with_buffer| {
+            with_buffer
+                .allocated_bytes
+                .is_ok_and(|now| now.saturating_sub(allocated) >= buffer)
+        },
+    );
     let now = with_buffer
         .allocated_bytes
         .expect("allocations once enabled");
@@ -139,14 +169,11 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
         // AppUsage is active GPU time while GPUStartTime..GPUEndTime is the command buffer's GPU
         // window; the blit can occupy a fraction of that window on Apple silicon. Wait for a
         // meaningful fraction rather than treating the command-buffer interval as equal GPU work.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let after = loop {
-            let after = sampler.read().gpu.time_ns.expect("GPU time");
-            if after.saturating_sub(before) >= (measured / 8).max(1) || Instant::now() > deadline {
-                break after;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        let after = wait_for(
+            Duration::from_secs(2),
+            || sampler.read().gpu.time_ns.expect("GPU time"),
+            |after| after.saturating_sub(before) >= (measured / 8).max(1),
+        );
         assert!(
             after > before,
             "GPU time stayed at {before} ns after a dispatch"
@@ -161,7 +188,17 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
     });
     // Releasing the queue takes its entry out of AppUsage; the time it spent stays counted.
     drop(gpu);
-    let released = sampler.read().gpu;
+    // The same lag applies in reverse: a released buffer's bytes can take a beat to leave the
+    // driver's own allocation accounting.
+    let released = wait_for(
+        Duration::from_secs(2),
+        || sampler.read().gpu,
+        |released| {
+            released
+                .allocated_bytes
+                .is_ok_and(|allocations| allocations < now)
+        },
+    );
     let allocations = released.allocated_bytes.unwrap();
     assert!(
         allocations < now,
