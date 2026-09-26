@@ -152,5 +152,55 @@ Recorded here as proposals, not decisions.
 
 - **Coarser proxy while the pointer moves.** With every Basic unit active, the proxy render is the largest remaining cost per input (about 50 ms at 24 MP under a rotated crop on this host). Rendering at half the display size while inputs keep arriving, then at display size once they pause, would cut that fourfold at the cost of a softer picture during the movement itself; it is a measured proposal, taken only if the GPU stage below is not.
 - **GPU colour stage.** If the proxy render of the full Basic layer still misses the two-frame target at Fit, the next step is to draw the proxy of the drafted layer's input stage through an `iced` shader primitive and apply the colour units as a fragment program with the coefficients as uniforms, so a tick costs a uniform write. That needs a WGSL transcription of each unit, a headless readback test against the CPU path within one code, and a fallback to the CPU proxy whenever a unit has no GPU program. The proxy source and the two-phase job are the foundation it needs and are built so that it changes only the presentation of the proxy phase.
-- **Viewport tiles at 100%.** A drag at 100% still renders the whole exact frame. Rendering only the visible region plus a margin needs the inverse of the geometry tail over a rectangle, which the crop contract does not yet define.
+- **Viewport tiles at 100%.** A drag at 100% still renders the whole exact frame. The inverse rectangle walk already exists in `WindowPlan::of` / `apply` for cropped proxies; the proposal below extends it to the viewport.
 - **Reduced pool.** Leaving one or two cores out of the shared Rayon pool for the desktop and owner threads may lower jitter; it is a measurement, not a default.
+
+### Viewport rendering at 100% (proposal)
+
+The [interactive-adjustments investigation](../research/interactive-adjustments.md) finds that
+100% currently waits for both off-screen CPU rendering and whole-raster GPU upload. A viewport
+render can retain exact 1:1 detail while avoiding that work. This section is a proposal; it does
+not change the current two-phase contract or claim an implemented speedup.
+
+- **Plan the requested rectangle.** Add a proposed `WindowPlan::of_rect` entry point that starts
+  the existing reverse walk from a non-empty, clipped output rectangle instead of the whole final
+  stage. Compile against full stage dimensions, then retain each required intermediate region,
+  resampling taps, spatial halo and tile-grid alignment. Preserve explicit fallback for unsupported
+  operations; the existing window planner refuses some positional/pixel operations and global
+  estimates behind earlier spatial operations.
+- **Preserve coordinates.** Finish units such as vignette currently receive frame coordinates,
+  and a positional segment cannot be cut. Give a cut region its full-stage origin while retaining
+  the unit's original stage dimensions, so a pan does not recenter the vignette. Masks likewise
+  evaluate in their declared stage through the same geometry. Do not simulate a viewport by adding
+  a recipe crop, which could change subsequent effect semantics and history.
+- **Read a source region.** Compose the needed rectangle with RAW's existing `LinearImage` view,
+  sharing its planes. For the byte domain, design an immutable origin/stride view over the shared
+  source; a bounded region copy is an alternative to measure if a view complicates the evaluator.
+  Never make a full-source copy to obtain a small visible window. Validate composition with all
+  source orientations and existing views.
+- **Preserve global context.** Use exact whole-stage estimates keyed to their actual inputs for an
+  exact viewport. Dehaze's global estimate must not be recomputed from only the visible rectangle,
+  which would change appearance when panning. An upstream edit can invalidate that estimate; this
+  is remaining full-image work, not a viewport speedup. Approximate estimates would require their
+  own measured preview contract.
+- **Present a region.** Carry full output dimensions, region origin, recipe/draft generation,
+  view identity and quality with the raster. Upload only the new region and position it in the
+  full canvas. Bound retained regions and pending work; reject obsolete results after pan, zoom,
+  resize or another input. Current texture tiling only handles device dimension limits and still
+  uploads the entire frame. Reuse the current full raster on settled pans when available; a pan
+  into unavailable current detail may request region work. That would be an explicit exception to
+  the current rule that view changes never render.
+- **Separate visible detail from full-image analysis.** Recommend prioritizing the visible result
+  while moving and on release, then completing the whole frame and histogram on pause/release.
+  Keep the previous exact histogram/counters marked updating; never substitute a viewport-only
+  histogram. Clipping over the visible current region can reflect its pixels with an appropriate
+  quality label, separately from whole-image counts. This extension beyond the accepted Fit
+  experiment has the owner's [acceptance of temporary softness and an updating histogram](../decisions.md#interactive-previews-at-100).
+  The proposed clipping-overlay policy and measured quality levels remain outstanding.
+
+Acceptance requires whole-buffer equality with the matching region of an exact full render,
+including fractional/rotated crops, masks, finish effects, spatial seams and estimates; bounded
+CPU/GPU residency; generation-correct pan/release behavior; and native input-to-present timings
+on photo-sized JPEG/RAW stacks. Viewport-only output must not satisfy a full-frame analysis,
+sample, export or evidence request. Unsupported region plans retain an explicit existing-path
+fallback. Implementation and its task-plan extension follow the outstanding product choices.
