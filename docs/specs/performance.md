@@ -1685,16 +1685,26 @@ LIGHTWELL_RAW_TIMING_OUTPUT=/path/to/z6.csv \
 
 ### RAW colour row batching
 
-The production RAW renderer batches eight rows for one source-only colour segment with identity
-geometry and unmasked colour operations. Masks, replacements, spatial stages and other recipes keep
-the generic evaluator. The row path uses the shared Rayon pool above one megapixel, checks
-cancellation per row and accounts one width-sized RGB-float buffer per Rayon folder. It switches to
-serial rows if the estimated pool-wide scratch exceeds 64 MiB. Complete-buffer tests cover Basic,
-Mixer and their combined recipe, a viewed source, a partial final chunk, and geometry/mask fallback.
+The production RAW renderer writes its last segment in the row chunks the JPEG colour pass uses
+(at most 16 rows and 1 MiB of RGB float per chunk), on the shared Rayon pool above one megapixel,
+checking cancellation and reserving the chunk's scratch from the colour budget per chunk. Every
+stack evaluates its colour runs over those rows: masks, replacements, exact geometry and the segment
+after a resample or a spatial operation as well as a source-only segment. The segments before a
+boundary are pulled, never materialized, a bounded rectangle at a time with their colour run over
+its rows: a spatial operation's input one row of its tile region at a time, and a straightened
+crop's taps one block of 64 output columns by the chunk's rows at a time, through the rectangle of
+at most 16,384 pixels those taps read, so each pixel before the resample is evaluated about once
+per block instead of once per tap. A segment with a point replacement is pulled pixel by pixel.
+Complete-buffer tests compare the rows with the point evaluator for Basic, Mixer and their combined
+recipe, a viewed source, a partial final chunk, replacements on either side of a colour run, colour
+after a straightened crop at 4 and -30 degrees and after Presence, masked colour and a masked
+Presence layer before a crop, on a stage narrower than one tap block and on one several blocks
+wide.
 
-Release core-render comparison on retained real RAW planes, 30 observations per variant and recipe
-in 15 ABBA pairs. The reference is the old per-pixel evaluator with the same parallel scheduling
-threshold. Timers include output allocation and drop, but exclude file read, decode/development,
+The measurements below were taken when only a source-only segment was batched, in eight-row
+chunks; they are the evidence for that path. Release core-render comparison on retained real RAW
+planes, 30 observations per variant and recipe in 15 ABBA pairs. The reference is the old per-pixel
+evaluator with the same parallel scheduling threshold. Timers include output allocation and drop, but exclude file read, decode/development,
 desktop scheduling, GPU upload and presentation. Process CPU is cumulative over the shared 14-core
 Rayon pool, sampled outside each render timer. No build or test ran with the timed profiles.
 
