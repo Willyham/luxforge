@@ -14,6 +14,7 @@ mod mask_draft;
 mod paths;
 mod state;
 mod view;
+mod window_frame;
 use app::evidence::Step;
 use diagnostics::Diagnostics;
 use std::{collections::VecDeque, path::PathBuf};

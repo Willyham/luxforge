@@ -185,3 +185,27 @@ fn a_message_that_changes_nothing_builds_no_section() {
     assert_eq!(editor.workspace.status.message, "Something happened");
     finish(editor, catalog);
 }
+
+/// The title bar's percentage segment opens as the zoom field holding the percentage it showed,
+/// and any zoom the field or a segment then sets closes it again.
+#[test]
+fn the_percentage_segment_opens_as_the_zoom_field_and_a_zoom_closes_it() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+    editor.dimensions = Some((480, 320));
+    editor.rederive();
+    let shown = editor.workspace.title.zoom_percent.clone();
+    assert!(shown.ends_with('%'), "{shown}");
+    let _ = editor.update(Message::View(ViewMessage::EditZoom));
+    assert!(editor.workspace.title.zoom_editing);
+    assert_eq!(editor.zoom, shown.trim_end_matches('%'));
+    let _ = editor.update(Message::View(ViewMessage::Zoom("50".into())));
+    let _ = editor.update(Message::View(ViewMessage::ApplyZoom));
+    assert!(!editor.workspace.title.zoom_editing);
+    let _ = editor.update(Message::View(ViewMessage::EditZoom));
+    let _ = editor.update(Message::View(ViewMessage::Fit));
+    assert!(
+        !editor.workspace.title.zoom_editing,
+        "a segment closes the field"
+    );
+    finish(editor, catalog);
+}

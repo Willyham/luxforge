@@ -1,8 +1,12 @@
-//! The state panel model: what has happened to this photograph. Versions, history and the recipe
-//! are three views of the same stored entries, never of the tools panel's values.
-use crate::state::{Inputs, MenuTarget};
-use luxforge_core::{EntryId, LayerId, MaskId};
-use std::collections::HashSet;
+//! The state panel model: what has happened to this photograph. Versions and history are two views
+//! of the same stored entries, never of the tools panel's values. The layer stack is not listed
+//! here: `recipe.describe` answers it for anyone who asks, and the tools panel's dots and the crop
+//! section read it.
+use crate::state::{ACTOR, Inputs, MenuTarget};
+use luxforge_core::EntryId;
+
+/// The actor the core records on the entries it writes itself, such as the Original.
+const SYSTEM_ACTOR: &str = "system";
 
 /// Where an entry sits relative to the current state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,7 +35,8 @@ pub(crate) struct HistoryRow {
     pub(crate) sequence: u64,
     /// The label the host stored with the entry, not a reconstruction.
     pub(crate) label: String,
-    pub(crate) actor: String,
+    /// Who made the entry, as the row says it ([`actor_caption`]); none for the core's own.
+    pub(crate) actor: Option<String>,
     pub(crate) marker: Marker,
     /// The entry was undone away from: it is on an abandoned branch.
     pub(crate) branch: bool,
@@ -44,48 +49,6 @@ pub(crate) struct PreviewControls {
     pub(crate) can_restore: bool,
 }
 
-/// The mask a recipe row's layer is modulated by, as the row shows it.
-///
-/// The rows stay in the recipe's durable processing order, because that order is what the list is
-/// for: a mask's layers belong to different stages and are not contiguous, so reordering them under
-/// a heading would hide the very thing the panel exists to show. Grouping is therefore a label on
-/// each masked row plus the mask's own heading on the first of its rows.
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RecipeMask {
-    pub(crate) id: MaskId,
-    /// The mask's display name, or its identity when the listing does not describe it.
-    pub(crate) name: String,
-    /// Position in the mask list, which is the order overlapping masks apply in.
-    pub(crate) index: Option<usize>,
-    /// This is the first row of that mask in processing order, so it carries the heading.
-    pub(crate) heading: bool,
-}
-
-impl RecipeMask {
-    /// What the heading above this mask's first row says: the mask's name, once.
-    ///
-    /// A default-named mask is called `Mask 1` *because* it is the first mask, so spelling its
-    /// position beside its name read `Mask 1 · mask 1` — the same fact twice, and a second ordering
-    /// inside a list whose whole subject is the processing order. The position a mask composes in
-    /// belongs to the Masks panel, whose list is that order.
-    pub(crate) fn heading_label(&self) -> String {
-        self.name.clone()
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RecipeRow {
-    pub(crate) layer_id: LayerId,
-    /// The providing module's title, or the effect identity when nothing provides it.
-    pub(crate) title: String,
-    pub(crate) summary: String,
-    pub(crate) available: bool,
-    /// The mask this layer applies through, or none for a layer that applies everywhere.
-    pub(crate) mask: Option<RecipeMask>,
-}
-
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StatePanelModel {
@@ -94,28 +57,28 @@ pub(crate) struct StatePanelModel {
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
     pub(crate) can_save: bool,
+    /// History's heading caption: the open asset's revision (`rev 41`), none while nothing is open.
+    pub(crate) revision: Option<String>,
     pub(crate) history: Vec<HistoryRow>,
     pub(crate) can_load_older: bool,
     pub(crate) preview: Option<PreviewControls>,
-    pub(crate) recipe: Vec<RecipeRow>,
-    /// What the recipe block says in place of rows: a displayed entry with no layers is the
-    /// original, and no displayed entry means nothing is open at all.
-    pub(crate) recipe_caption: Option<String>,
     pub(crate) menu: Option<MenuTarget>,
     /// A request is in flight, so nothing here may start another.
     pub(crate) busy: bool,
 }
 
+/// How a history row names who made its entry: this desktop's own entries read `you`, another
+/// client's `agent · <its actor name>`, and the core's own entries, such as the Original, nothing.
+pub(crate) fn actor_caption(actor: &str) -> Option<String> {
+    match actor {
+        ACTOR => Some("you".to_owned()),
+        SYSTEM_ACTOR => None,
+        other => Some(format!("agent \u{b7} {other}")),
+    }
+}
+
 pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
     let current = inputs.state.map(|state| &state.current_entry.id);
-    let recipe = recipe(inputs);
-    let recipe_caption = recipe.is_empty().then(|| {
-        if inputs.display_entry.is_some() {
-            "Original · no edit layers".to_owned()
-        } else {
-            "No entry displayed".to_owned()
-        }
-    });
     StatePanelModel {
         versions: inputs
             .versions
@@ -130,6 +93,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
         version_name: inputs.version_name.to_owned(),
         version_form_open: inputs.version_form_open,
         can_save: inputs.state.is_some() && inputs.display_entry.is_some() && !inputs.busy,
+        revision: inputs.state.map(|state| format!("rev {}", state.revision)),
         history: inputs
             .history
             .entries
@@ -138,7 +102,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
                 entry_id: entry.id.clone(),
                 sequence: entry.sequence,
                 label: entry.label.clone(),
-                actor: entry.actor.clone(),
+                actor: actor_caption(&entry.actor),
                 marker: if current == Some(&entry.id) {
                     Marker::Current
                 } else if inputs.display_entry == Some(&entry.id) {
@@ -154,8 +118,6 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
             can_return: !inputs.busy,
             can_restore: !inputs.busy,
         }),
-        recipe,
-        recipe_caption,
         menu: inputs.menu.cloned(),
         busy: inputs.busy,
     }
@@ -170,61 +132,23 @@ pub(crate) fn on_current_lineage(inputs: &Inputs<'_>, entry: &luxforge_core::His
             .is_some_and(|floor| entry.sequence <= floor)
 }
 
-/// The displayed entry's stored layers, as the owner described them.
-fn recipe(inputs: &Inputs<'_>) -> Vec<RecipeRow> {
-    let Some(described) = inputs
-        .recipe
-        .filter(|described| Some(&described.entry_id) == inputs.display_entry)
-    else {
-        return Vec::new();
-    };
-    // The listing names each mask; a row whose mask the listing does not describe still says which
-    // mask it is bound to, by identity, rather than silently reading as a global layer.
-    let listing = inputs
-        .masks
-        .filter(|listing| Some(&listing.entry_id) == inputs.display_entry);
-    let mut seen: HashSet<MaskId> = HashSet::new();
-    described
-        .layers
-        .iter()
-        .map(|layer| RecipeRow {
-            layer_id: layer.id.clone(),
-            title: layer.title.clone().unwrap_or_else(|| layer.effect.clone()),
-            summary: layer.summary.clone(),
-            available: layer.available,
-            mask: layer.mask.as_ref().map(|id| {
-                let report = listing
-                    .and_then(|listing| listing.masks.iter().find(|report| &report.id == id));
-                RecipeMask {
-                    id: id.clone(),
-                    name: report
-                        .map(|report| report.name.clone())
-                        .unwrap_or_else(|| id.as_str().to_owned()),
-                    index: report.map(|report| report.index),
-                    heading: seen.insert(id.clone()),
-                }
-            }),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The heading above a mask's first recipe row names the mask once, whatever its position and
-    /// whatever it is called. It read `Mask 1 · mask 1` before, which is the name and the position
-    /// the name is taken from.
+    /// This desktop's entries read `you`, another client's name the agent, and the core's own
+    /// entries, such as the Original, carry no actor at all.
     #[test]
-    fn a_masks_recipe_heading_names_it_once() {
-        for (name, index) in [("Mask 1", 0), ("Mask 2", 1), ("Sky", 1)] {
-            let mask = RecipeMask {
-                id: MaskId::new(),
-                name: name.to_owned(),
-                index: Some(index),
-                heading: true,
-            };
-            assert_eq!(mask.heading_label(), name);
-        }
+    fn a_history_row_names_its_actor_from_this_clients_point_of_view() {
+        assert_eq!(actor_caption(ACTOR).as_deref(), Some("you"));
+        assert_eq!(
+            actor_caption("lw-assist").as_deref(),
+            Some("agent \u{b7} lw-assist")
+        );
+        assert_eq!(actor_caption(SYSTEM_ACTOR), None);
+        assert_eq!(
+            ACTOR, "desktop",
+            "the actor this desktop sends with every request"
+        );
     }
 }

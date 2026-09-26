@@ -9,7 +9,10 @@ use super::{
         sync_task,
     },
 };
-use crate::state::fields::{self, Fields};
+use crate::state::{
+    self,
+    fields::{self, Fields},
+};
 use iced::Task;
 use luxforge_core::{ClientSession, HistoryRow, HistorySelection, ModuleDescriptor};
 use serde_json::{Value, json};
@@ -76,6 +79,10 @@ impl Editor {
                 let refreshed = self.dispatch(Message::Sync(SyncMessage::Refreshed(result)));
                 if !opened {
                     return refreshed;
+                }
+                // An open is what happened even when it is the photograph already on screen.
+                if let Some(state) = &self.state {
+                    self.happened = Some(state::status::Happened::opened(state));
                 }
                 return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
             }
@@ -363,6 +370,18 @@ impl Editor {
         }
         self.controls_ui.curve_samples.clear();
         self.curve_sample_requested_source.clear();
+        // What happened is read against the state and the history rows held before this one: a
+        // current entry the rows already held is a redo rather than a new entry.
+        let known = self
+            .history
+            .entries
+            .iter()
+            .any(|row| row.id == refresh.state.current_entry.id);
+        if let Some(happened) =
+            state::status::Happened::between(self.state.as_ref(), &refresh.state, known)
+        {
+            self.happened = Some(happened);
+        }
         if let Some(request) = refresh.request {
             self.read_back(request);
         }

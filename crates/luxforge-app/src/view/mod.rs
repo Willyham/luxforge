@@ -26,14 +26,15 @@ use iced::{
 };
 use luxforge_ui::theme;
 
-/// The title bar's fixed height.
-pub(crate) const TITLE_BAR_HEIGHT: f32 = 44.0;
+/// The title bar's fixed height above the 1 px rule under it: 44 pt with the rule, as the default
+/// board draws it.
+pub(crate) const TITLE_BAR_HEIGHT: f32 = 43.0;
 /// The state panel's fixed width, at the layout's left edge.
 pub(crate) const STATE_PANEL_WIDTH: f32 = 240.0;
 /// The tools panel's fixed width, at the layout's right edge.
 pub(crate) const TOOLS_PANEL_WIDTH: f32 = 300.0;
-/// The status bar's fixed height.
-pub(crate) const STATUS_BAR_HEIGHT: f32 = 26.0;
+/// The status bar's fixed height under the 1 px rule over it: 26 pt with the rule.
+pub(crate) const STATUS_BAR_HEIGHT: f32 = 25.0;
 
 /// The pixels and the transient draft the canvas borrows for one frame. They are not view-model
 /// data: the model says what to draw, these are what it is drawn from.
@@ -59,22 +60,10 @@ pub(crate) struct Surfaces<'a> {
 }
 
 pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Element<'a, Message> {
-    let title = container(
-        row![
-            title_bar::identity(&model.title),
-            Space::new().width(Length::Fill),
-            title_bar::view_controls(model),
-            Space::new().width(Length::Fill),
-            title_bar::actions(&model.title),
-        ]
-        .spacing(theme::SPACING)
-        .align_y(iced::Alignment::Center)
-        .width(Length::Fill),
-    )
-    .height(Length::Fixed(TITLE_BAR_HEIGHT))
-    .padding([0.0, theme::SPACING])
-    .align_y(iced::alignment::Vertical::Center)
-    .style(theme::bar_surface);
+    let title = container(title_bar::title_bar(model))
+        .width(Length::Fill)
+        .height(Length::Fixed(TITLE_BAR_HEIGHT))
+        .style(theme::title_bar_surface);
 
     let canvas_area = container(canvas::surface(&model.canvas, surfaces))
         .width(Length::Fill)
@@ -109,7 +98,7 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
 
     let status = container(status_bar::status_bar(&model.status))
         .height(Length::Fixed(STATUS_BAR_HEIGHT))
-        .padding([0.0, theme::SPACING])
+        .padding([0.0, theme::TITLE_BAR_INSET])
         .align_y(iced::alignment::Vertical::Center)
         .style(theme::panel_surface);
 
@@ -144,8 +133,10 @@ fn horizontal_divider<'a>() -> Element<'a, Message> {
         .into()
 }
 
-fn divider_style(_theme: &Theme) -> container::Style {
-    container::Style::default().background(theme::BORDER)
+/// The rules are [`theme::DIVIDER`], the border's 6% white stored opaque, because Iced blends in
+/// linear light and would draw the translucent border far brighter than the board does.
+fn divider_style(iced_theme: &Theme) -> container::Style {
+    theme::divider_surface(iced_theme)
 }
 
 /// The physical x range of the canvas region inside a captured frame, so evidence can prove the

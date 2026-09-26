@@ -150,6 +150,11 @@ impl Editor {
                     return Task::none();
                 }
                 let asset = state.asset.id.clone();
+                // Said once the current entry's frame is back on screen.
+                self.happened = Some(crate::state::status::Happened::Returned {
+                    label: state.current_entry.label.clone(),
+                    sequence: state.current_entry.sequence,
+                });
                 self.busy = true;
                 self.status = "Returning to current state…".into();
                 let proxy = self.proxy_bounds();

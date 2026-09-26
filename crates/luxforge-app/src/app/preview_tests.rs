@@ -2,7 +2,6 @@
 //! rendered at, and zoom handing the retained frame back without a render.
 use super::{
     evidence::Settle,
-    preview::short,
     tasks::Upload,
     testing::{analysed, attach_log, drafted, entry, finish, logged, opened},
     *,
@@ -516,10 +515,7 @@ fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_t
     };
     editor.present(upload, &raster);
     editor.rederive();
-    assert_eq!(
-        editor.workspace.status.render,
-        "Rendered in 9 ms (proxy, approximate)"
-    );
+    assert_eq!(editor.workspace.status.render, "Approximate render · 9 ms");
     let histogram = |editor: &Editor| {
         let model = &editor.workspace.histogram;
         (
@@ -565,7 +561,7 @@ fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_t
     assert!(!editor.presented_proxy);
     assert_eq!(
         editor.workspace.status.render,
-        "Rendered in 140 ms (approximate)"
+        "Approximate render · 140 ms"
     );
     let records = logged(&mut editor, &log);
     let displayed: Vec<_> = records
@@ -607,11 +603,11 @@ fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_t
     assert_eq!(histogram(&editor), (HistogramStatus::Ready, Some(9)));
     assert!(!editor.raster_approximate_white_balance);
     assert_eq!(editor.snapshot()["approximate_white_balance"], json!(false));
-    assert_eq!(editor.workspace.status.render, "Rendered in 150 ms");
+    assert_eq!(editor.workspace.status.render, "Exact render · 150 ms");
     finish(editor, catalog);
 }
 
-/// The status bar's "Rendered in" figure is the presented frame's own worker time, not the
+/// The status bar's render figure is the presented frame's own worker time, not the
 /// time since the last open or commit. A drafted frame, a zoom hand-over or a refit is
 /// presented long after that request; before this was measured on the worker, a frame
 /// presented minutes after the open reported minutes.
@@ -651,14 +647,14 @@ fn the_render_figure_is_the_presented_frames_own_time_not_the_time_since_the_req
     editor.present(upload(5, true, 12.4), &raster);
     editor.rederive();
     assert_eq!(
-        editor.workspace.status.render, "Rendered in 12 ms (proxy)",
+        editor.workspace.status.render, "Approximate render · 12 ms",
         "the proxy's own time, not the 500 s since the request"
     );
     // An exact frame presented later (a 100% view) reports its own time and says nothing of a
     // proxy.
     editor.present(upload(6, false, 85.2), &raster);
     editor.rederive();
-    assert_eq!(editor.workspace.status.render, "Rendered in 85 ms");
+    assert_eq!(editor.workspace.status.render, "Exact render · 85 ms");
     // The evidence event carries the same figure, so a run can assert it is plausible.
     let records = logged(&mut editor, &log);
     let displayed: Vec<_> = records
@@ -819,10 +815,4 @@ fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
     assert!(!evidence.capture_pending, "the old proxy is not captured");
     assert_eq!(evidence.awaiting, Some(Settle::Preview));
     finish(editor, catalog);
-}
-
-#[test]
-fn short_ids_are_safe_for_status_display() {
-    assert_eq!(short("abc"), "abc");
-    assert_eq!(short("123456789012345"), "123456789012");
 }

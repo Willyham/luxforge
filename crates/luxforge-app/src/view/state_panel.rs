@@ -1,7 +1,11 @@
 //! The state panel: what has happened to this photograph, and what the editor is doing now.
-//! Versions, history and the recipe scroll; the Performance section is pinned under them. Both
-//! render straight from their models with the widget library; nothing here decides what a row
-//! means, which figure a counter shows or which jobs are listed.
+//! Versions and history scroll; the Performance section is pinned under them. Both render straight
+//! from their models with the widget library; nothing here decides what a row means, which figure a
+//! counter shows or which jobs are listed.
+//!
+//! The panel pads its sections [`theme::PANEL_PADDING_X`] from its sides and each row adds its own
+//! grid unit inside that, so every label, chip and caption starts 16 pt from the panel's edge, as
+//! the default board draws them.
 use crate::{
     app::message::{HistoryMessage, MenuTarget, Message, PerformanceMessage, ViewMessage},
     state::{
@@ -11,27 +15,32 @@ use crate::{
 };
 use iced::{
     Alignment, Element, Length, Padding,
-    widget::{
-        Column, Space, column, container, row, scrollable, text, text::LineHeight, text::Wrapping,
-        text_input,
-    },
+    widget::{Column, Row, Space, button, column, container, row, scrollable, text, text_input},
 };
 use luxforge_ui::{
     ButtonSize, ButtonTone, ChipModel, Icon, IconButtonModel, JobRowModel, ListRowModel, Marker,
-    MetricRowModel, SparklineModel, chip, chip_wrap, disclosure_heading, icon_button, inline_menu,
-    job_row, list_heading, list_row, metric_row, section_label, text_button, theme, truncated_text,
+    MetricRowModel, SparklineModel, compact_chip, disclosure_heading, header_icon_button,
+    inline_menu, job_row, list_row, metric_row, panel_heading, text_button, theme,
 };
 
-/// The history and the recipe scroll above a 1 px rule, and the Performance section stays pinned
-/// under it, so the section never scrolls out of view and never pushes History off the panel. The
-/// rule is inset by the panel's padding, as the rules between the mockup's sections are.
+/// Where a row's text starts inside the panel's padding: the grid unit a list row pads itself by.
+const ROW_INSET: f32 = theme::SPACING;
+
+/// Where "Load older…" starts, under the history rows' labels: a row's inset, its sequence box, the
+/// marker and the gaps between them.
+const LABEL_INSET: f32 =
+    ROW_INSET + theme::LIST_LEADING_WIDTH + theme::SPACING + theme::MARKER_SIZE + theme::SPACING;
+
+/// Versions and History scroll above a 1 px rule, and the Performance section stays pinned under
+/// it, so the section never scrolls out of view and never pushes History off the panel. The rule is
+/// inset by the panel's padding.
 pub(crate) fn state_panel<'a>(
     model: &'a StatePanelModel,
     performance_model: &'a PerformanceModel,
 ) -> Element<'a, Message> {
-    let content = column![versions(model), history(model), recipe(model)]
-        .spacing(theme::SPACING * 2.0)
-        .padding(theme::SPACING)
+    let content = column![versions(model), history(model)]
+        .spacing(theme::PANEL_SECTION_SPACING)
+        .padding([theme::PANEL_PADDING_Y, theme::PANEL_PADDING_X])
         .width(Length::Fill);
     let rule = container(
         container(Space::new())
@@ -39,7 +48,7 @@ pub(crate) fn state_panel<'a>(
             .height(Length::Fixed(theme::BORDER_WIDTH))
             .style(theme::band_border_surface),
     )
-    .padding([0.0, theme::SPACING]);
+    .padding([0.0, theme::PANEL_PADDING_X]);
     column![
         scrollable(content).height(Length::Fill),
         rule,
@@ -50,8 +59,19 @@ pub(crate) fn state_panel<'a>(
     .into()
 }
 
+/// The pinned section's padding: the panel's own at its sides and foot, plus a row's inset so its
+/// heading starts where History's does, and a grid unit under the rule.
+fn pinned_padding() -> Padding {
+    Padding {
+        top: theme::SPACING,
+        right: theme::PANEL_PADDING_X + ROW_INSET,
+        bottom: theme::PANEL_PADDING_Y,
+        left: theme::PANEL_PADDING_X + ROW_INSET,
+    }
+}
+
 /// The Performance section in the panel's own padding, its heading at the same left edge as
-/// History and Recipe. Collapsed it is the heading alone. Expanded: the three metric rows under
+/// Versions and History. Collapsed it is the heading alone. Expanded: the three metric rows under
 /// the heading, then, one grid unit further down, the job rows and the caption counting any long
 /// jobs past the fourth.
 fn performance(model: &PerformanceModel) -> Element<'_, Message> {
@@ -63,7 +83,7 @@ fn performance(model: &PerformanceModel) -> Element<'_, Message> {
     );
     if !model.expanded {
         return container(heading)
-            .padding(theme::SPACING)
+            .padding(pinned_padding())
             .width(Length::Fill)
             .into();
     }
@@ -102,7 +122,9 @@ fn performance(model: &PerformanceModel) -> Element<'_, Message> {
             container(
                 text(more.clone())
                     .size(theme::SIZE_SMALL_CAPTION)
-                    .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
+                    .line_height(text::LineHeight::Absolute(
+                        theme::CAPTION_LINE_HEIGHT.into(),
+                    ))
                     .color(theme::TEXT_TERTIARY),
             )
             .padding(Padding::default().left(theme::JOB_LABEL_INSET)),
@@ -117,7 +139,7 @@ fn performance(model: &PerformanceModel) -> Element<'_, Message> {
         ]
         .spacing(theme::ROW_SPACING),
     )
-    .padding(theme::SPACING)
+    .padding(pinned_padding())
     .width(Length::Fill)
     .into()
 }
@@ -130,45 +152,64 @@ fn ui_marker(marker: PanelMarker) -> Marker {
     }
 }
 
-fn versions(model: &StatePanelModel) -> Element<'_, Message> {
-    let chips = model.versions.iter().map(|version| {
-        chip(
-            &ChipModel {
-                label: version.name.clone(),
-                trailing: Some(version.entry_sequence.to_string()),
-                selected: version.selected,
-                enabled: !model.busy,
-            },
-            (!model.busy)
-                .then(|| Message::History(HistoryMessage::Select(version.entry_id.clone()))),
-            Some(Message::View(ViewMessage::OpenMenu(MenuTarget::Version(
-                version.name.clone(),
-            )))),
-        )
-    });
-    let chip_row = chip_wrap(chips.collect());
+/// A heading, a chip row or a caption inset by a row's own grid unit, so it lines up with the
+/// history rows' text.
+fn inset<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content)
+        .padding([0.0, ROW_INSET])
+        .width(Length::Fill)
+        .into()
+}
 
+fn versions(model: &StatePanelModel) -> Element<'_, Message> {
+    let add = header_icon_button(
+        &IconButtonModel {
+            icon: Icon::Plus,
+            tooltip: "Save the displayed state as a version".into(),
+            enabled: true,
+            selected: model.version_form_open,
+        },
+        Some(Message::History(HistoryMessage::ToggleVersionForm)),
+    );
+    // The heading's `+` ends where the rows' captions do: the row's inset less the button's own
+    // clearance around its icon.
     let mut block = column![
-        row![
-            section_label("Versions"),
-            Space::new().width(Length::Fill),
-            icon_button(
-                &IconButtonModel {
-                    icon: Icon::Plus,
-                    tooltip: "Save the displayed state as a version".into(),
-                    enabled: true,
-                    selected: model.version_form_open,
-                },
-                Some(Message::History(HistoryMessage::ToggleVersionForm)),
-            ),
-        ]
-        .align_y(Alignment::Center),
-        chip_row,
+        container(panel_heading("Versions", Some(add)))
+            .padding(Padding {
+                left: ROW_INSET,
+                right: ROW_INSET - (theme::HEADER_BUTTON_SIZE - theme::HEADER_ICON_SIZE) / 2.0,
+                ..Padding::default()
+            })
+            .width(Length::Fill),
     ]
-    .spacing(theme::SPACING / 2.0);
+    .spacing(theme::VERSION_CHIP_SPACING);
+
+    if !model.versions.is_empty() {
+        let chips = model.versions.iter().map(|version| {
+            compact_chip(
+                &ChipModel {
+                    label: version.name.clone(),
+                    trailing: Some(version.entry_sequence.to_string()),
+                    selected: version.selected,
+                    enabled: !model.busy,
+                },
+                (!model.busy)
+                    .then(|| Message::History(HistoryMessage::Select(version.entry_id.clone()))),
+                Some(Message::View(ViewMessage::OpenMenu(MenuTarget::Version(
+                    version.name.clone(),
+                )))),
+            )
+        });
+        block = block.push(inset(
+            Row::with_children(chips.collect::<Vec<_>>())
+                .spacing(theme::VERSION_CHIP_SPACING)
+                .wrap()
+                .vertical_spacing(theme::VERSION_CHIP_SPACING),
+        ));
+    }
 
     if model.version_form_open {
-        block = block.push(
+        block = block.push(inset(
             row![
                 text_input("Name this version", &model.version_name)
                     .on_input(|value| Message::History(HistoryMessage::VersionName(value)))
@@ -180,17 +221,17 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
             ]
             .spacing(theme::SPACING / 2.0)
             .align_y(Alignment::Center),
-        );
+        ));
     }
 
     if let Some(MenuTarget::Version(name)) = &model.menu {
-        block = block.push(inline_menu(vec![
+        block = block.push(inset(inline_menu(vec![
             (
                 "Delete".to_string(),
                 Message::History(HistoryMessage::DeleteVersion(name.clone())),
             ),
             ("Cancel".to_string(), Message::View(ViewMessage::CloseMenu)),
-        ]));
+        ])));
     }
 
     block.into()
@@ -206,7 +247,19 @@ fn save_button(can_save: bool) -> Element<'static, Message> {
 }
 
 fn history(model: &StatePanelModel) -> Element<'_, Message> {
-    let mut block = column![list_heading("History")].spacing(theme::LIST_ROW_SPACING);
+    let revision = model.revision.clone().map(|revision| {
+        text(revision)
+            .size(theme::SIZE_SMALL_CAPTION)
+            .color(theme::TEXT_TERTIARY)
+            .wrapping(text::Wrapping::None)
+            .into()
+    });
+    // The heading clears the first row by the rows' own spacing twice, as the board spaces them.
+    let mut block = column![
+        container(inset(panel_heading("History", revision)))
+            .padding(Padding::default().bottom(theme::LIST_ROW_SPACING))
+    ]
+    .spacing(theme::LIST_ROW_SPACING);
     let editable = !model.busy;
     for entry in &model.history {
         block = block.push(list_row(
@@ -214,7 +267,7 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
                 marker: ui_marker(entry.marker),
                 leading: entry.sequence.to_string(),
                 label: entry.label.clone(),
-                trailing: Some(entry.actor.clone()),
+                trailing: entry.actor.clone(),
                 dimmed: entry.branch,
                 tag: entry.branch.then(|| "branch".to_string()),
                 enabled: editable,
@@ -226,15 +279,23 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
         ));
     }
     if model.can_load_older {
-        block = block.push(text_button(
-            "Load older",
-            ButtonTone::Quiet,
-            ButtonSize::Compact,
-            editable.then_some(Message::History(HistoryMessage::LoadOlder)),
-        ));
+        block = block.push(
+            button(
+                container(
+                    text("Load older\u{2026}")
+                        .size(theme::SIZE_CAPTION)
+                        .wrapping(text::Wrapping::None),
+                )
+                .center_y(Length::Fill),
+            )
+            .padding(Padding::default().left(LABEL_INSET))
+            .height(Length::Fixed(theme::LIST_ROW_HEIGHT))
+            .style(theme::button_disclosure)
+            .on_press_maybe(editable.then_some(Message::History(HistoryMessage::LoadOlder))),
+        );
     }
     if let Some(preview) = model.preview {
-        block = block.push(
+        block = block.push(inset(
             row![
                 text_button(
                     "Return to current",
@@ -254,96 +315,18 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
                 ),
             ]
             .spacing(theme::BUTTON_ROW_SPACING),
-        );
-    }
-    block.into()
-}
-
-fn recipe(model: &StatePanelModel) -> Element<'_, Message> {
-    let mut block = column![list_heading("Recipe")].spacing(theme::LIST_ROW_SPACING);
-    if let Some(message) = &model.recipe_caption {
-        block = block.push(luxforge_ui::caption(message.clone()));
-        return block.into();
-    }
-    for (index, layer) in model.recipe.iter().enumerate() {
-        // A mask's own heading sits above the first of its layers, in the durable processing order
-        // rather than in place of it: the list's whole job is to show the order edits are applied
-        // in, so a masked layer is labelled where it is rather than moved under its mask.
-        //
-        // The heading is the mask's name and nothing else. A default-named mask is called `Mask 1`
-        // because it is the first mask, so spelling its position beside its name read `Mask 1 ·
-        // mask 1`: the same fact twice, and a second ordering in a list whose whole subject is the
-        // processing order. The position a mask composes in belongs to the Masks panel, whose list
-        // *is* that order.
-        if let Some(mask) = &layer.mask
-            && mask.heading
-        {
-            block = block.push(section_label(mask.heading_label()));
-        }
-        block = block.push(recipe_row(
-            index,
-            layer.title.clone(),
-            layer.summary.clone(),
-            layer.available,
-            layer.mask.as_ref().map(|mask| mask.name.clone()),
         ));
     }
     block.into()
 }
 
-/// One recipe row: the sequence and the module title on their own line, the layer's payload
-/// summary as a caption underneath. Two short lines read better here than a trailing caption,
-/// which a long summary ("unavailable: disabled by --disable-module") would otherwise squeeze
-/// into a sliver next to a title that keeps the rest of the row. Both lines stay on one line each:
-/// the title clips (`Wrapping::None`) and the unbounded summary ends in an ellipsis.
-fn recipe_row(
-    index: usize,
-    title: String,
-    summary: String,
-    available: bool,
-    mask: Option<String>,
-) -> Element<'static, Message> {
-    let title_color = if available {
-        theme::TEXT_PRIMARY
-    } else {
-        theme::TEXT_TERTIARY
-    };
-    let mut heading = row![
-        container(luxforge_ui::caption((index + 1).to_string())).width(Length::Fixed(24.0)),
-        container(
-            text(title)
-                .size(theme::SIZE_CONTROL)
-                .color(title_color)
-                .wrapping(Wrapping::None),
-        )
-        .clip(true)
-        .width(Length::Fill),
-    ]
-    .spacing(theme::SPACING)
-    .align_y(Alignment::Center);
-    // The mask this layer applies through, on the row itself, so a masked layer is never mistaken
-    // for a global one wherever the processing order puts it.
-    if let Some(mask) = mask {
-        heading = heading.push(luxforge_ui::caption(mask));
-    }
-    let detail = container(truncated_text(
-        summary,
-        theme::SIZE_CAPTION,
-        theme::FONT,
-        theme::TEXT_TERTIARY,
-    ))
-    .width(Length::Fill)
-    .padding(Padding {
-        left: 32.0,
-        ..Padding::default()
-    });
-    column![heading, detail].spacing(2.0).into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::performance::{JobRow, MetricRow};
+    use crate::state::{
+        panel::{HistoryRow, PreviewControls, VersionChip},
+        performance::{JobRow, MetricRow},
+    };
 
     /// The section builds collapsed, expanded with every row kind, and with more jobs than rows.
     #[test]
@@ -396,24 +379,43 @@ mod tests {
         let _: Element<'_, Message> = state_panel(&panel, &quiet);
     }
 
-    /// A summary long enough to have caused the old trailing-caption layout to wrap into a tall
-    /// sliver still builds as one row, its own two lines, with no panic.
+    /// Versions, the naming form, a version's menu, rows by this client, another and the core, the
+    /// older-page button and the preview controls all build together.
     #[test]
-    fn a_long_recipe_summary_stays_a_two_line_row() {
-        let _: Element<'static, Message> = recipe_row(
-            0,
-            "Basic".into(),
-            "unavailable: disabled by --disable-module".into(),
-            false,
-            None,
-        );
-        // A masked row carries its mask's name beside the title and still builds as one row.
-        let _: Element<'static, Message> = recipe_row(
-            1,
-            "Basic".into(),
-            "exposure +0.45".into(),
-            true,
-            Some("Mask 1".into()),
-        );
+    fn the_history_and_versions_build_with_every_part_shown() {
+        // The view never names the core; a fresh identity is its type's default.
+        let row = |sequence: u64, actor: Option<&str>, marker: PanelMarker| HistoryRow {
+            entry_id: Default::default(),
+            sequence,
+            label: "Clarity +18".into(),
+            actor: actor.map(str::to_owned),
+            marker,
+            branch: false,
+        };
+        let panel = StatePanelModel {
+            versions: vec![VersionChip {
+                name: "Warm".into(),
+                entry_sequence: 5,
+                entry_id: Default::default(),
+                selected: true,
+            }],
+            version_name: "Print".into(),
+            version_form_open: true,
+            can_save: true,
+            revision: Some("rev 41".into()),
+            history: vec![
+                row(7, Some("you"), PanelMarker::Current),
+                row(4, Some("agent \u{b7} lw-assist"), PanelMarker::Previewed),
+                row(0, None, PanelMarker::Plain),
+            ],
+            can_load_older: true,
+            preview: Some(PreviewControls {
+                can_return: true,
+                can_restore: false,
+            }),
+            menu: Some(MenuTarget::Version("Warm".into())),
+            busy: false,
+        };
+        let _: Element<'_, Message> = state_panel(&panel, &PerformanceModel::default());
     }
 }

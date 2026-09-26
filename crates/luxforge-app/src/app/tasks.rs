@@ -37,7 +37,7 @@ use std::{
 pub(crate) static REQUEST_NUMBER: AtomicU64 = AtomicU64::new(1);
 pub(crate) const HISTORY_PAGE_SIZE: usize = 50;
 const LINEAGE_LIMIT: usize = 100;
-pub(crate) const ACTOR: &str = "desktop";
+pub(crate) use crate::state::ACTOR;
 
 /// Authoritative state read back from the owner after a change, as much of it as the change's
 /// [`Scope`] could have touched. A part that is `None` was not read, and the desktop keeps what it

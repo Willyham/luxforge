@@ -278,6 +278,9 @@ pub(crate) struct Editor {
     /// What Copy in the status bar copies instead of the line itself, while the status still reads
     /// that line: an import's whole report behind its one-line summary.
     pub(crate) status_copy: Option<(String, String)>,
+    /// What last happened to the open photograph, which the status bar says once the current
+    /// entry's frame is on screen.
+    pub(crate) happened: Option<state::status::Happened>,
     /// The event sync's cursor: the newest event sequence a poll has read up to. Only a poll moves
     /// it, and never backwards; the sequence any other answer carries counts events of other
     /// clients' that no poll has read yet.
@@ -345,6 +348,8 @@ pub(crate) struct Editor {
     /// The last pointer position over the photo in image pixels; a pick commits nothing.
     pub(crate) pointer: Option<(u32, u32)>,
     pub(crate) zoom: String,
+    /// The title bar's percentage segment has been opened for typing a zoom.
+    pub(crate) zoom_editing: bool,
     pub(crate) version_name: String,
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
@@ -531,6 +536,7 @@ impl Editor {
             picker_open: false,
             status: "Open a photo to begin".into(),
             status_copy: None,
+            happened: None,
             api_sequence: 0,
             own_requests: std::collections::VecDeque::new(),
             scale_factor: 1.0,
@@ -564,6 +570,7 @@ impl Editor {
             palette_selected: 0,
             pointer: None,
             zoom: "100".into(),
+            zoom_editing: false,
             version_name: String::new(),
             version_form_open: false,
             draft_generation: None,
@@ -682,6 +689,10 @@ impl Editor {
         // Whatever route changed the zoom — the buttons, the field, a script or an API client's
         // `view.set` reaching us through an adopted session — is answered in one place.
         let zoomed = self.zoom_changed(&zoom);
+        // The typed field closes on any zoom change, so the segment shows the zoom it now holds.
+        if self.session.preview.view.zoom != zoom {
+            self.zoom_editing = false;
+        }
         let refit = self.refit_proxy();
         // The panel's selection follows the stack and the mode before anything is derived from it,
         // so a section is never bound to a mask the recipe no longer holds.
@@ -797,6 +808,8 @@ impl Editor {
             compare_held: self.compare_return.is_some(),
             scale_factor: self.scale_factor,
             zoom: &self.zoom,
+            zoom_editing: self.zoom_editing,
+            window: self.window,
             version_name: &self.version_name,
             version_form_open: self.version_form_open,
             dimensions: self.dimensions,

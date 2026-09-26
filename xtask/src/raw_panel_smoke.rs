@@ -914,15 +914,18 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
             state["draft"]
         ),
     )?;
+    // The bar says the drafted frame is approximate at Fit and at 100% alike; the correlated state
+    // still says whether it is the proxy, which it is only at Fit.
     let render = state["status_bar"]["render"].as_str().unwrap_or_default();
-    let label = if drag.fit {
-        " ms (proxy, approximate)"
-    } else {
-        " ms (approximate)"
-    };
     ensure(
-        render.ends_with(label) && state["status_bar"]["render_approximate"] == true,
-        format!("The status bar does not say the drafted frame is approximate: {render:?}"),
+        render.starts_with("Approximate render \u{b7} ")
+            && (render.ends_with(" ms") || render.ends_with(" s"))
+            && state["status_bar"]["render_approximate"] == true
+            && state["status_bar"]["render_proxy"] == json!(drag.fit),
+        format!(
+            "The status bar does not say the drafted frame is approximate: {render:?}, proxy {}",
+            state["status_bar"]["render_proxy"]
+        ),
     )?;
     let histogram = &state["histogram"];
     ensure(
