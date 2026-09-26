@@ -948,10 +948,11 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             "coordinates": "A points parameter carries an ordered list of [x, y] positions in the content stage's normalized coordinates, in drawn order, where 1.0 is the stage's height on both axes, so a shape is the shape it looks like at any aspect ratio. Positions are not sorted and may repeat or reverse: a path is a path and not a function.",
             "range": [path::COORDINATE_MIN, path::COORDINATE_MAX],
             "stored_steps_per_unit": path::COORDINATE_STEPS_PER_UNIT,
-            "decimation_tolerance": path::DECIMATION_TOLERANCE,
-            "stored_deviation": path::STORED_DEVIATION,
+            "decimation_tolerance_of_radius": path::DECIMATION_TOLERANCE_OF_RADIUS,
+            "decimation_tolerance_min": path::DECIMATION_TOLERANCE_MIN,
+            "grid_rounding": path::GRID_ROUNDING,
             "points_per_stroke": path::POINTS_PER_STROKE,
-            "notes": "A posted path is snapped to a grid of stored_steps_per_unit steps per unit and decimated on that grid at decimation_tolerance, so a stored position is at most stored_deviation from the position that was posted and the same posted path always produces the same stored stroke. Decimation is idempotent: a desktop decimates before it posts, and a path posted undecimated arrives at the same stored bytes. A stroke is stored once under the hash of its contents and an entry's recipe references it by that hash, so a payload's strokes field holds addresses and never positions.",
+            "notes": "A posted path is snapped to a grid of stored_steps_per_unit steps per unit and decimated on that grid at a tolerance relative to the radius it is drawn with: decimation_tolerance_of_radius times the radius as stored on the same grid, and never less than decimation_tolerance_min. A stored position is therefore at most that tolerance plus grid_rounding from the position that was posted, and at one radius the same posted path always produces the same stored stroke. Decimation is idempotent: a desktop decimates at its radius before it posts, and a path posted undecimated arrives at the same stored bytes. A stroke is stored once under the hash of its contents and an entry's recipe references it by that hash, so a payload's strokes field holds addresses and never positions.",
         },
         // The one path bound that is the mask's own rather than the host path primitive's, so the
         // `paths` block above says nothing about masks and this one says what a mask adds. The mask
@@ -3259,11 +3260,13 @@ mod tests {
             json!([path::COORDINATE_MIN, path::COORDINATE_MAX])
         );
         assert_eq!(paths["stored_steps_per_unit"], json!(16384.0));
+        assert_eq!(paths["decimation_tolerance_of_radius"], json!(0.04));
         assert_eq!(
-            paths["decimation_tolerance"],
-            json!(path::DECIMATION_TOLERANCE)
+            paths["decimation_tolerance_min"],
+            json!(2.0 / 16384.0),
+            "two grid steps"
         );
-        assert_eq!(paths["stored_deviation"], json!(path::STORED_DEVIATION));
+        assert_eq!(paths["grid_rounding"], json!(path::GRID_ROUNDING));
         assert_eq!(paths["points_per_stroke"], json!(1024));
         for text in [&paths["coordinates"], &paths["notes"]] {
             let text = text.as_str().expect("prose a client can read");

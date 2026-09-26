@@ -978,6 +978,15 @@ fn a_realistic_scrub_records_its_occupancy_and_per_pixel_cost() {
                 figures.most_tested <= figures.densest,
                 "a pixel tested more segments than the densest cell lists"
             );
+            // Ordinary painting stays under the cap at the default brush and the smaller ones:
+            // decimation keeps a path to within a fraction of its own radius, so a larger brush
+            // stores proportionally fewer positions for the cells its radius makes larger.
+            assert!(
+                figures.densest <= SEGMENTS_PER_PIXEL,
+                "{name} at size {size} puts {} segments in one cell, over the \
+                 {SEGMENTS_PER_PIXEL}-segment cap",
+                figures.densest
+            );
         }
     }
 }
