@@ -217,7 +217,7 @@
     {
       "id": "TASK-005",
       "description": "Bound the display proxy of a tightly cropped RAW to the size the display needs.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "The proxy fits the crop's output to the display bounds, so a tight crop's proxy source approaches the source's own size: a 1801 × 1574 crop of the X100VI built a 7363 × 4909 proxy (414 MiB of float planes).",
@@ -266,7 +266,7 @@
     {
       "id": "TASK-006",
       "description": "Have the core report the crop layer's input stage instead of the desktop deriving it for the idle crop section.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "To show which ratio the committed crop reads as, the desktop folds the orientation layers over the photo's dimensions to size the crop's input stage, a copy of a geometry rule the core owns. It shows Free whenever any other geometry layer precedes the crop.",
@@ -747,7 +747,7 @@
     {
       "id": "TASK-018",
       "description": "Stop the `mask-range` scenario's stroke-latency check from failing when every drafted frame of its paced stroke is superseded on a heavily loaded host.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "On 2026-09-25, `mask-range` failed three times in about ten runs with \"The run painted no stroke whose drafted frame reached the screen\", always at a one-minute load average of about 27 to 48, and passed on rerun. In the failing runs no `preview_displayed` followed any `mask_draft_set` of the paced stroke: each drafted proxy was superseded before upload, so the pairing had no latency to record. The rest of the scenario's checks passed.",
@@ -787,7 +787,7 @@
     {
       "id": "TASK-019",
       "description": "Make the process-counter GPU test robust to a loaded host.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "`a_metal_dispatch_raises_gpu_time_and_allocations` in `lightwell-process` failed twice on 2026-09-25 inside `verify --tier quick` at a load average above 20, on unrelated changes, and passed alone and on rerun. It asserts that GPU time rises after one Metal dispatch, which a busy GPU or a coarse counter update can delay."
@@ -815,6 +815,46 @@
           "No load-only failures."
         ]
       }
+    },
+    {
+      "id": "TASK-020",
+      "description": "Stop the crop-draft cancellation app test from hanging for 60 seconds on a loaded host.",
+      "status": "in_progress",
+      "dependencies": [],
+      "extra_context": [
+        "On 2026-09-26 `a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly` waited 60 s at \"Preparing pixels for display…\" inside a `rendered` tier's workspace tests, at a high load, and passed five times alone, in two full workspace runs and on rerun.",
+        "Since then the preview queue became a persistent latest-job worker that starts a pending job itself, and the crop draft moved onto the core draft lifecycle; an earlier review noted that a sibling test asserts a job is still pending right after it is requested, which holds only while the first job is still rendering."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Preview failure tests",
+          "target": "crates/lightwell-app/src/app/preview_failure_tests.rs",
+          "relevance": "The test that hung."
+        },
+        {
+          "kind": "file",
+          "label": "Preview worker",
+          "target": "crates/lightwell-core/src/preview/worker.rs",
+          "relevance": "When a pending job starts and how a cancelled phase is delivered."
+        }
+      ],
+      "acceptance_criteria": [
+        "The test's ordering is made deterministic (for example by holding the first job with a render gate) rather than depending on how fast the worker renders, and a wait that cannot finish fails at once rather than after a deadline.",
+        "The test passes repeatedly beside a loaded host."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the preview failure tests repeatedly under load."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app --bin lightwell preview_failure"
+        ],
+        "expected_results": [
+          "No load-only hang."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -839,7 +879,8 @@
         "TASK-016",
         "TASK-017",
         "TASK-018",
-        "TASK-019"
+        "TASK-019",
+        "TASK-020"
       ]
     }
   ]
