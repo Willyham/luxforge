@@ -854,6 +854,41 @@
           "No load-only hang."
         ]
       }
+    },
+    {
+      "id": "TASK-021",
+      "description": "Make the RAW native-tiles permit test independent of the load the full workspace suite runs under.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "On 2026-09-26 `native_tiles::tests::rayon_waiter_runs_queued_permit_release_in_a_one_thread_pool` failed twice inside `cargo test --locked --workspace` (once under the quick verify tier, once in a plain run) with `assertion left == right failed: left: 7, right: 8` at its first assertion, `permit.count == MAX_SCRATCH_SLOTS`, and then passed five times in a row when run alone. The branch that observed it changed only design documents.",
+        "The test takes `TEST_BUDGET_LOCK` before admitting a permit, so a count of 7 means one scratch slot was still held by something outside that lock when the permit was admitted: a test in the same binary that does not take the lock, or a release that runs on the pool after its test returned."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Native tiles permit tests",
+          "target": "crates/luxforge-raw/src/native_tiles.rs",
+          "relevance": "The failing assertion and the budget lock the tests share."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every test that admits a scratch permit in this binary holds the same lock, and a permit's release is joined before the test that made it returns, so the admitted count is deterministic.",
+        "The test passes repeatedly inside the full workspace suite on a loaded host, not only alone."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the full workspace suite several times on a loaded host and the RAW library tests alone."
+        ],
+        "commands": [
+          "cargo test --locked --workspace",
+          "cargo test -p luxforge-raw --lib native_tiles"
+        ],
+        "expected_results": [
+          "No count short of MAX_SCRATCH_SLOTS in any run."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -879,7 +914,8 @@
         "TASK-017",
         "TASK-018",
         "TASK-019",
-        "TASK-020"
+        "TASK-020",
+        "TASK-021"
       ]
     }
   ]
