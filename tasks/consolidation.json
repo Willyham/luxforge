@@ -2455,7 +2455,7 @@
     {
       "id": "TASK-041",
       "description": "Poll events silently while idle through a subscription that yields only on events, give the desktop one owner-task helper with no sleep-poll loops on the executor, and remove per-message waste in derive and view.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-039"
       ],
@@ -2603,7 +2603,7 @@
     {
       "id": "TASK-043",
       "description": "Move the crop draft onto the core `draft.*` lifecycle through the desktop's one draft driver, and trim `app/gesture.rs` and `app/draft.rs`.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-036",
         "TASK-040",
