@@ -380,7 +380,7 @@ impl Coverage {
 /// over its source rectangle up to the one f32 store between the passes. The two source kinds differ
 /// only in how a source pixel is read — a JPEG code decoded through the render path's own sRGB
 /// table, a RAW value read through its view — and in how the output is stored, which each caller
-/// does with [`Self::pixel`]; the arithmetic is this one implementation.
+/// does in the closure it hands [`Self::row`]; the arithmetic is this one implementation.
 ///
 /// Allocations: the intermediate of `width × source_height × 3` f32, bounded by the 512 MiB frame
 /// limit. Every source pixel is read exactly once, so no per-row scratch exists at all.
@@ -393,14 +393,16 @@ struct BoxDownscale {
 }
 
 impl BoxDownscale {
-    /// Run the horizontal pass. `read(x, y)` is one source pixel in linear light; it is only asked
-    /// for coordinates inside the source.
-    fn new(
+    /// Run the horizontal pass. `row(y)` is source row `y`'s reader, taken once per row, and the
+    /// reader's `read(x)` is one of its pixels in linear light; it is only asked for coordinates
+    /// inside the source. Resolving the row once lets a reader index one row's slice rather than
+    /// the whole source for every pixel.
+    fn new<Read: Fn(u32) -> [f32; 3]>(
         source_width: u32,
         source_height: u32,
         width: u32,
         height: u32,
-        read: impl Fn(u32, u32) -> [f32; 3] + Sync,
+        row: impl Fn(u32) -> Read + Sync,
     ) -> Result<Self, Error> {
         let intermediate_len = float_values(width, source_height, "proxy downscale intermediate")?;
         let horizontal = Coverage::new(source_width, width);
@@ -408,18 +410,19 @@ impl BoxDownscale {
         let parallel = u64::from(source_width) * u64::from(source_height) >= PARALLEL_PROXY_PIXELS;
         let stride = width as usize * 3;
         let mut rows = vec![0f32; intermediate_len];
-        let pass = |(y, row): (usize, &mut [f32])| {
+        let pass = |(y, out): (usize, &mut [f32])| {
+            let read = row(y as u32);
             for index in 0..horizontal.len() {
                 let (first, weights) = horizontal.span(index);
                 let mut sum = [0f64; 3];
                 for (offset, weight) in weights.iter().enumerate() {
-                    let linear = read(first + offset as u32, y as u32);
+                    let linear = read(first + offset as u32);
                     for (channel, value) in sum.iter_mut().enumerate() {
                         *value += f64::from(linear[channel]) * weight;
                     }
                 }
                 for (channel, value) in sum.iter().enumerate() {
-                    row[index * 3 + channel] = *value as f32;
+                    out[index * 3 + channel] = *value as f32;
                 }
             }
         };
@@ -436,19 +439,24 @@ impl BoxDownscale {
         })
     }
 
-    /// The vertical pass for one output pixel: the weighted mean of its column of intermediate
-    /// rows, in f64, for the caller to store.
+    /// The vertical pass for output row `y`: hands `store(x, sum)` the weighted mean of each output
+    /// pixel's column of intermediate rows, in f64, for the caller to store. The row's span and
+    /// its slice of the intermediate are resolved once per row, not once per pixel.
     #[inline]
-    fn pixel(&self, x: usize, y: usize) -> [f64; 3] {
+    fn row(&self, y: usize, mut store: impl FnMut(usize, [f64; 3])) {
         let (first, weights) = self.vertical.span(y);
-        let mut sum = [0f64; 3];
-        for (offset, weight) in weights.iter().enumerate() {
-            let at = (first as usize + offset) * self.stride + x * 3;
-            for (channel, value) in sum.iter_mut().enumerate() {
-                *value += f64::from(self.rows[at + channel]) * weight;
+        let start = first as usize * self.stride;
+        let rows = &self.rows[start..start + weights.len() * self.stride];
+        for x in 0..self.stride / 3 {
+            let mut sum = [0f64; 3];
+            for (offset, weight) in weights.iter().enumerate() {
+                let at = offset * self.stride + x * 3;
+                for (channel, value) in sum.iter_mut().enumerate() {
+                    *value += f64::from(rows[at + channel]) * weight;
+                }
             }
+            store(x, sum);
         }
-        sum
     }
 }
 
@@ -465,22 +473,25 @@ fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<Sourc
     }
     let output_len = Raster::expected_len(width, height)?;
     let source_stride = source.width as usize * 4;
-    let downscale = BoxDownscale::new(source.width, source.height, width, height, |x, y| {
-        let at = y as usize * source_stride + x as usize * 4;
-        decode_pixel([source.rgba[at], source.rgba[at + 1], source.rgba[at + 2]])
+    let downscale = BoxDownscale::new(source.width, source.height, width, height, |y| {
+        let start = y as usize * source_stride;
+        let bytes = &source.rgba[start..start + source_stride];
+        move |x| {
+            let at = x as usize * 4;
+            decode_pixel([bytes[at], bytes[at + 1], bytes[at + 2]])
+        }
     })?;
     let mut frame = zeroed_frame(output_len);
     {
         let output = frame_mut(&mut frame);
         let pass = |(y, row): (usize, &mut [u8])| {
-            for x in 0..width as usize {
-                let sum = downscale.pixel(x, y);
+            downscale.row(y, |x, sum| {
                 let pixel = &mut row[x * 4..x * 4 + 4];
                 for (channel, value) in sum.iter().enumerate() {
                     pixel[channel] = quantize_channel(*value);
                 }
                 pixel[3] = 255;
-            }
+            });
         };
         let output_stride = width as usize * 4;
         if downscale.parallel {
@@ -522,20 +533,20 @@ fn downscale_linear(image: &LinearImage, width: u32, height: u32) -> Result<Line
     let plane_values = float_values(width, height, "proxy linear source")?;
     let plane_len = plane_values / 3;
     // Inside the view by construction: the coverage never leaves the source.
-    let downscale = BoxDownscale::new(source_width, source_height, width, height, |x, y| {
-        reader.pixel(x, y).unwrap_or([0.0; 3])
+    let downscale = BoxDownscale::new(source_width, source_height, width, height, |y| {
+        let reader = &reader;
+        move |x| reader.pixel(x, y).unwrap_or([0.0; 3])
     })?;
     let mut planes = vec![0f32; plane_values];
     {
         let (red, rest) = planes.split_at_mut(plane_len);
         let (green, blue) = rest.split_at_mut(plane_len);
         let pass = |(y, ((red, green), blue)): PlanarRow<'_>| {
-            for x in 0..width as usize {
-                let sum = downscale.pixel(x, y);
+            downscale.row(y, |x, sum| {
                 red[x] = sum[0] as f32;
                 green[x] = sum[1] as f32;
                 blue[x] = sum[2] as f32;
-            }
+            });
         };
         let row = width as usize;
         if downscale.parallel {
