@@ -12,7 +12,7 @@
 //! itself over the [`Checked`] launch, reading each frame by its step's name.
 use super::{Frame, preamble};
 use crate::*;
-use lightwell_evidence as script;
+use luxforge_evidence as script;
 
 /// The slider draft a frame's client holds.
 #[derive(Clone, Debug, PartialEq)]

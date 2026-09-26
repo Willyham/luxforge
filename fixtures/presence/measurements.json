@@ -1,5 +1,5 @@
 {
-  "generated_by": "crates/lightwell-reference/tests/studies/presence.rs generate_presence_fixtures",
+  "generated_by": "crates/luxforge-reference/tests/studies/presence.rs generate_presence_fixtures",
   "note": "Every figure quoted in docs/design/presence-study.md, recomputed from the same reference by measurements_match_reference on each test run.",
   "measurements": [
     {

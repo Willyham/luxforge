@@ -46,8 +46,8 @@ use crate::{
     },
     *,
 };
-use lightwell_core::BASIC_EFFECT;
-use lightwell_evidence::{
+use luxforge_core::BASIC_EFFECT;
+use luxforge_evidence::{
     self as script, BrushStep, MaskStep, PaintStep, Reference, SliderStep, WorkspaceStep,
 };
 

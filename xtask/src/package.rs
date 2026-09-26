@@ -2,9 +2,9 @@ use crate::*;
 use std::io::Write;
 
 fn native_raw_notices(root: &Path, out: &Path) -> Result {
-    let source = root.join("crates/lightwell-raw");
+    let source = root.join("crates/luxforge-raw");
     let notices = [
-        ("THIRD_PARTY.md", "lightwell-raw/THIRD_PARTY.md"),
+        ("THIRD_PARTY.md", "luxforge-raw/THIRD_PARTY.md"),
         (
             "vendor/libraw-0.22.2/LICENSE.LGPL",
             "libraw-0.22.2/LICENSE.LGPL",
@@ -38,9 +38,9 @@ fn native_raw_notices(root: &Path, out: &Path) -> Result {
 
 /// Copies the bundled UI font's provenance and its SIL Open Font License beside the other notices.
 fn bundled_font_notices(root: &Path, out: &Path) -> Result {
-    let source = root.join("crates/lightwell-ui");
+    let source = root.join("crates/luxforge-ui");
     let notices = [
-        ("THIRD_PARTY.md", "lightwell-ui/THIRD_PARTY.md"),
+        ("THIRD_PARTY.md", "luxforge-ui/THIRD_PARTY.md"),
         (
             "assets/fonts/inter-4.1/LICENSE.txt",
             "inter-4.1/LICENSE.txt",
@@ -132,7 +132,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                     "build":"Bundled RCD, Markesteijn and border source; no OpenMP"
                 }
             ],
-            "native_provenance":"native/lightwell-raw/THIRD_PARTY.md",
+            "native_provenance":"native/luxforge-raw/THIRD_PARTY.md",
             "bundled_fonts":[
                 {
                     "name":"Inter",
@@ -141,7 +141,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                     "files":["Inter-Regular.ttf","Inter-SemiBold.ttf"],
                     "license":"OFL-1.1",
                     "notices":"fonts/inter-4.1",
-                    "provenance":"fonts/lightwell-ui/THIRD_PARTY.md"
+                    "provenance":"fonts/luxforge-ui/THIRD_PARTY.md"
                 }
             ],
             "review_status":"Inventory only; manual license, native and asset reviews deferred"
@@ -159,7 +159,7 @@ fn archive(directory: &Path, destination: &Path) -> Result {
                 .to_str()
                 .ok_or("Archive path encoding")?
                 .replace('\\', "/");
-            let mode = if path.file_name().is_some_and(|s| s == "lightwell") {
+            let mode = if path.file_name().is_some_and(|s| s == "luxforge") {
                 0o755
             } else {
                 0o644
@@ -177,7 +177,7 @@ fn archive(directory: &Path, destination: &Path) -> Result {
             flate2::Compression::default(),
         );
         let mut tar = tar::Builder::new(gz);
-        tar.append_dir_all("Lightwell", directory)?;
+        tar.append_dir_all("Luxforge", directory)?;
         tar.into_inner()?.finish()?.sync_all()?;
     }
     Ok(())
@@ -186,16 +186,16 @@ pub fn package(root: &Path, out: &Path) -> Result {
     ensure(!out.exists(), "Package output must be new")?;
     cargo(root, "build", true)?;
     fs::create_dir_all(out)?;
-    let target = out.join("Lightwell");
+    let target = out.join("Luxforge");
     fs::create_dir(&target)?;
     let binary = binary(root)?;
     if cfg!(target_os = "macos") {
-        let app = target.join("Lightwell.app/Contents");
+        let app = target.join("Luxforge.app/Contents");
         fs::create_dir_all(app.join("MacOS"))?;
-        fs::copy(&binary, app.join("MacOS/lightwell"))?;
+        fs::copy(&binary, app.join("MacOS/luxforge"))?;
         fs::write(
             app.join("Info.plist"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.lightwell.app</string><key>CFBundleName</key><string>Lightwell</string><key>CFBundleExecutable</key><string>lightwell</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>0.0.0</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
+            r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.luxforge.app</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>0.0.0</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
         )?;
     } else {
         fs::copy(&binary, target.join(binary.file_name().unwrap()))?;
@@ -211,9 +211,9 @@ pub fn package(root: &Path, out: &Path) -> Result {
         "Unsigned development artifact. Manual license/native Windows/Linux reviews are deferred. See docs/engineering/platforms.md for runtime prerequisites.\n",
     )?;
     let archive_path = out.join(if cfg!(target_os = "linux") {
-        "lightwell-development.tar.gz"
+        "luxforge-development.tar.gz"
     } else {
-        "lightwell-development.zip"
+        "luxforge-development.zip"
     });
     archive(&target, &archive_path)?;
     writeln!(
@@ -242,7 +242,7 @@ mod tests {
         assert!(rtprocess_license.contains("GNU GENERAL PUBLIC LICENSE"));
         assert!(
             tmp.path()
-                .join("native/lightwell-raw/THIRD_PARTY.md")
+                .join("native/luxforge-raw/THIRD_PARTY.md")
                 .is_file()
         );
     }
@@ -255,20 +255,20 @@ mod tests {
         assert!(licence.contains("SIL OPEN FONT LICENSE Version 1.1"));
         assert!(
             tmp.path()
-                .join("fonts/lightwell-ui/THIRD_PARTY.md")
+                .join("fonts/luxforge-ui/THIRD_PARTY.md")
                 .is_file()
         );
     }
     #[test]
     fn archives_preserve_payload_and_zip_executable() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("Lightwell");
+        let dir = tmp.path().join("Luxforge");
         fs::create_dir(&dir).unwrap();
-        fs::write(dir.join("lightwell"), b"test executable").unwrap();
+        fs::write(dir.join("luxforge"), b"test executable").unwrap();
         let dest = tmp.path().join("test.zip");
         archive(&dir, &dest).unwrap();
         let mut zip = zip::ZipArchive::new(fs::File::open(dest).unwrap()).unwrap();
-        let mut file = zip.by_name("Lightwell/lightwell").unwrap();
+        let mut file = zip.by_name("Luxforge/luxforge").unwrap();
         assert_eq!(file.unix_mode().unwrap() & 0o777, 0o755);
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
@@ -280,7 +280,7 @@ mod tests {
         let mut found = false;
         for entry in tar.entries().unwrap() {
             let mut entry = entry.unwrap();
-            if entry.path().unwrap() == Path::new("Lightwell/lightwell") {
+            if entry.path().unwrap() == Path::new("Luxforge/luxforge") {
                 let mut bytes = Vec::new();
                 entry.read_to_end(&mut bytes).unwrap();
                 assert_eq!(bytes, b"test executable");

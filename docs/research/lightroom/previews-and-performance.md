@@ -41,7 +41,7 @@
 
 The first displayed image can be fast but stale, camera-rendered or lower resolution. “Time to image” and “time to correct image” are different measurements. RAW preview appearance changes can be expected during the transition from embedded imagery to Adobe's rendition. [S15: Color FAQ](https://helpx.adobe.com/lightroom-classic/desktop/technical-support/technical-issues/miscellaneous-issues/color-faq.html)
 
-**P.** For Lightwell, each result should identify asset, recipe revision, source/proxy, resolution and color state. Stale results must not replace newer selections. A quick thumbnail is valuable feedback; it should not masquerade as a completed render. These are engineering implications, not claims about Lightroom's internal job objects.
+**P.** For Luxforge, each result should identify asset, recipe revision, source/proxy, resolution and color state. Stale results must not replace newer selections. A quick thumbnail is valuable feedback; it should not masquerade as a completed render. These are engineering implications, not claims about Lightroom's internal job objects.
 
 ## GPU support is operation-specific and versioned
 

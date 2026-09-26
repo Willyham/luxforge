@@ -7,7 +7,7 @@ type Result<T=()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() != 2 { return Err("usage: lightwell-raw-probe SOURCE NEW_OUTPUT_DIRECTORY".into()); }
+    if args.len() != 2 { return Err("usage: luxforge-raw-probe SOURCE NEW_OUTPUT_DIRECTORY".into()); }
     let path = Path::new(&args[0]);
     let out = Path::new(&args[1]);
     fs::create_dir(out)?;

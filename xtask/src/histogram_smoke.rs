@@ -18,11 +18,11 @@ use crate::{
     scenario::{Checked, Fixture, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
-use lightwell_core::{
+use luxforge_core::{
     BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, PIXEL_EFFECT,
     RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
 };
-use lightwell_evidence::{self as script, PreviewStep, SliderStep, ViewStep, WorkspaceStep};
+use luxforge_evidence::{self as script, PreviewStep, SliderStep, ViewStep, WorkspaceStep};
 
 /// The fixture: 480x320, orientation 1, the quadrant pattern with the white centre line and the
 /// black dash band.
@@ -178,10 +178,10 @@ fn reference(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
 /// The same reduction without the source-sized expectation, for a composition whose crop changes
 /// the output stage.
 fn reduction(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
-    let source = lightwell_core::open_source(&root.join(FIXTURE))?;
+    let source = luxforge_core::open_source(&root.join(FIXTURE))?;
     let registry = ModuleRegistry::builtin();
-    let context = lightwell_core::RenderContext::new();
-    let options = lightwell_core::RenderOptions::default();
+    let context = luxforge_core::RenderContext::new();
+    let options = luxforge_core::RenderOptions::default();
     let raster =
         core_render(&registry, &source, recipe, options, &context)?.frame(SnapshotId::new())?;
     Ok(analysis::reduce_raster(&raster)?)
@@ -199,14 +199,14 @@ fn displayed_recipe(frame: &Value) -> Result<Recipe> {
             .iter()
             .map(|layer| -> Result<Layer> {
                 Ok(Layer {
-                    id: lightwell_core::LayerId::parse(
+                    id: luxforge_core::LayerId::parse(
                         layer["id"].as_str().ok_or("A displayed layer has no id")?,
                     )?,
                     effect_id: layer["effect"]
                         .as_str()
                         .ok_or("A displayed layer has no effect")?
                         .to_owned(),
-                    effect_format: lightwell_core::EFFECT_FORMAT,
+                    effect_format: luxforge_core::EFFECT_FORMAT,
                     payload: layer["payload"].clone(),
                     mask: None,
                     artifacts: Vec::new(),

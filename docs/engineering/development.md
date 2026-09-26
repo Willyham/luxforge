@@ -46,11 +46,11 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset, a stronger hue shift and the Saturation and Luminance tabs, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
-| Rendered Presets: section expand, an XMP and a Lightwell preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
+| Rendered Presets: section expand, an XMP and a Luxforge preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
 | Rendered Performance section: open and sampling from the launch, a filled window, a straighten and a Presence Clarity commit whose render is listed as long work and then as finished, collapsed and asleep, then reopened on a fresh window, over the generated 60 MP JPEG, with the editor's memory read by the runner from outside the process; `--source RAW` swaps the Clarity commit for a RAW temperature commit, outside `rendered` | `cargo xtask smoke --scenario performance --output NEW_DIR [--source RAW]` |
 | Rendered RAW section over a supplied RAW file, with Basic collapsed; a Custom temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit, carries its own report and is within a tenth of the drag's own change from the approximate one on average (and within a code of it at Fit), each drag keeping the tint in force (the first, from As shot, the core's as-shot tint) in the committed payload and in the Custom tint field throughout; then a double-click on each RAW slider and on Basic's Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused — Exposure back to 0 EV, Custom temperature and tint back to As shot (`use-as-shot-wb`, the entry labelled As shot white balance, both fields showing the core's as-shot equivalent, checked back through the forward map); and the RAW band's dot, absent on the untouched photograph, present after the committed custom temperature and absent again once the resets leave As shot at 0 EV; then a crop drafted on the RAW's whole input stage, 16:9 and straightened by 7°, whose draft is one picture (under 1% of up to 4800 samples of its interior show the canvas), applied at Fit, read at 100% through two pointer readouts and replaced by a −12° 3:2 `edit.crop-fit` at 100%: no step logs a failure, every committed frame shows the current entry at the output its payload declares, placed and centred at Fit within 4 px, and each readout's codes are the canvas's own at that stage pixel within one code; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Rendered module capabilities: settings, a profile and a masked key, the download consent denied then allowed, install, activation, the photo-data consent, a task with progress, Apply, a refused task and a revoked grant, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
-| The capability framework's own costs (registration, capability reads, activation, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p lightwell-core --lib capability_timing -- --ignored --nocapture` |
+| The capability framework's own costs (registration, capability reads, activation, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -87,27 +87,27 @@ The `dev` profile, which `cargo test`, `cargo xtask` and `develop --debug` build
 opt-level 1 with debug assertions and overflow checks on, and builds dependencies without debug
 info. The pixel tests are the reason. Back to back on the owner's M4, the five slowest test binaries
 took 139 to 150 s at opt-level 0 and 17 s at opt-level 1. A new worktree's first test build grew
-from 56 s to 97 s, and a rebuild after a one-function edit in `lightwell-core` by one to five
+from 56 s to 97 s, and a rebuild after a one-function edit in `luxforge-core` by one to five
 seconds. Building dependencies at opt-level 3 saved no test time and cost another 21 to 23 s of
 first build. To step through code in a debugger, build that once with `--config profile.dev.opt-level=0`.
 A dev build is not a timing build; timing uses release.
 
-Every integration-test binary links the whole of `lightwell-core`, so the core's integration tests
+Every integration-test binary links the whole of `luxforge-core`, so the core's integration tests
 are grouped into one binary per area, one module per file: `basic` (Exposure, white balance, Tone,
 Colour), `modules` (the mixer, Presence, the vignette, the controls proof, presets and the
 field-patch conformance suite), `mask` (the mask, brush and range studies, each kind against its
 reference, the coverage grid, geometry survival and masked edits on both paths and through the JSON
 method table), and `cancellation` and `resources_cost`, which stay apart because the first reads
 the process-wide scratch budget and the second is a timing measurement. Narrow a run with the
-module path, for example `cargo test -p lightwell-core --test basic white_balance::` or
+module path, for example `cargo test -p luxforge-core --test basic white_balance::` or
 `--test mask range::`.
-Helpers tests share live in `lightwell-testkit` (`client`, `fixtures`, `JsonProcess`); the
-independent references and their studies live in `lightwell-reference`
-(`cargo test -p lightwell-reference --test studies tone::`).
+Helpers tests share live in `luxforge-testkit` (`client`, `fixtures`, `JsonProcess`); the
+independent references and their studies live in `luxforge-reference`
+(`cargo test -p luxforge-reference --test studies tone::`).
 
 Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
 itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a
-build inheriting them would rebuild `ring`, `rustls`, `lightwell-core` and everything above them
+build inheriting them would rebuild `ring`, `rustls`, `luxforge-core` and everything above them
 after any build started from a shell, and the next shell build would rebuild them back. Without
 them, builds from `cargo xtask`, `verify` and a shell share their artifacts.
 
@@ -126,7 +126,7 @@ When to run each tier is in [when to verify](#when-to-verify). Without a manifes
 `raw-editor` as `skipped` with the reason `no --manifest`, and adds no `raw-panel` or RAW
 `performance` components at all, since there is no source to run them over: a skip is never a pass.
 
-The command builds `lightwell-app` and `xtask` once in release, then runs each component as a child
+The command builds `luxforge-app` and `xtask` once in release, then runs each component as a child
 process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
 and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
 that takes one; without it the executable just built is passed explicitly, so every component
@@ -145,7 +145,7 @@ serially, and the summary carries the pool's wall clock against the sum of the s
 times.
 
 Timing components never overlap, with each other or with anything else on the machine. Before the
-first one starts, `verify` takes a host-wide lock — `lightwell-timing.lock` in the OS temporary
+first one starts, `verify` takes a host-wide lock — `luxforge-timing.lock` in the OS temporary
 directory, holding the pid, treated as stale only once that pid is no longer alive — and releases it
 at the end of the run, including on failure. `measure`, `editor-latency`, `editor-performance` and
 `raw-editor` take the same lock when run by hand, so an ad hoc timing run and a `verify` timing tier
@@ -233,7 +233,7 @@ were read with `sysctl -n vm.loadavg` immediately before each run.
 The headless owner reads one JSON request per line:
 
 ```sh
-target/release/lightwell-json --catalog /path/to/catalog.sqlite < requests.jsonl
+target/release/luxforge-json --catalog /path/to/catalog.sqlite < requests.jsonl
 ```
 
 Start with `schema.list`. Request shapes and live-session behavior are in the [user guide](../user-guide.md). `--data-root DIR` puts module settings, grants and installed resources under that root instead of the platform directories, `--secret-store memory` keeps module secrets for the process only instead of the platform store, `--permission-authority` lets this client grant module consent (an explicit local setup step; without it `module.permission.grant` is `forbidden`), and `--proof-endpoint URL` registers the capability proof module. The desktop's own client always has that authority; an evidence run keeps module state inside its evidence directory with an in-memory secret store, so no automated run touches the person's configuration or login keychain. Only one process owns a catalog at a time; a second instance exits with an explanatory error. Diagnostics go to stderr, or to isolated logs under an explicit data root, never to protocol stdout. Editor mode writes only the catalog and a temporary live-session file beside it; the source original is never written.
@@ -307,7 +307,7 @@ own wording, with `(proxy)` exactly when the frame on screen is the proxy.
 `editor-acceptance` ends with a chapter that drives the whole Basic and histogram surface through
 the JSON method table with `OwnerHandle::call`, exactly as an independent client reaches it, against
 its own catalog inside the run's output directory. Its oracle is the independent f64 reference under
-`crates/lightwell-reference/src/`, compiled into `xtask` through a `#[path]` module rather
+`crates/luxforge-reference/src/`, compiled into `xtask` through a `#[path]` module rather
 than copied, so the acceptance journey and the core's own numerical tests check production against
 one written-from-the-formulas implementation that production code can never import; the crop
 sampler, the exact quarter turn and the histogram reduction the chapter compares against are written
@@ -326,14 +326,14 @@ its analysis staying attached through another client's commit, and analysis shar
 cancellation. The host behaviour Basic shares with every field-patch module is the
 [field-patch conformance chapter](#the-field-patch-conformance-chapter)'s. The supersede and
 disconnect races are covered by
-`lightwell_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest`
+`luxforge_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest`
 and are referenced rather than duplicated.
 
 ### The field-patch conformance chapter
 
 Basic, Presence, the colour mixer and the vignette are one declarative field-patch module each, and
 the host behaviour they share is proved once, for every module the built-in registry holds in that
-shape, by one suite in `crates/lightwell-core/tests/modules/conformance/`. The suite finds the
+shape, by one suite in `crates/luxforge-core/tests/modules/conformance/`. The suite finds the
 modules from their descriptors — one effect, one `patch` action whose parameters are all numbers
 with defaults, and the parameterless action the module reset names — and derives every payload
 it sends from the declared field table, so a new field-patch module is checked the day it is
@@ -380,7 +380,7 @@ are unchanged throughout.
 A module's own declaration (its descriptor and the words its history labels use for each field),
 its numerics against its frozen reference and its unique behaviour — Basic's neutral picker,
 Presence's halos and tiling, the vignette's recentring against its frozen reference — stay in that
-module's own tests under `crates/lightwell-core/tests/` and `src/modules/`, and Basic's
+module's own tests under `crates/luxforge-core/tests/` and `src/modules/`, and Basic's
 numerics on the photo fixture in the Basic and histogram chapter. The placement of Presence, the
 mixer and the vignette is `editor-acceptance`'s Presence, mixer and vignette chapter
 (`xtask/src/presence_mixer_vignette_acceptance.rs`, under `presence_mixer_vignette` in
@@ -424,15 +424,15 @@ has the store, so the owner is asked.
 
 `raw-editor` runs the actual background editor, then reopens the same isolated catalog in a second process. Each source passes exposure, gain and custom temperature/tint edits, a sensor-neutral pick, geometry, undo, Original/current history selection and Fit/100%. It checks displayed entry/snapshot/layers, bound control values, source hashes, actual photo pixels and exact reopened presentation. These comparisons prove reevaluation and state correlation, not controlled color accuracy. Large RAWs and required DNG corrections can take substantially longer than small fixtures; a script that continues producing correlated frames must be assessed against the whole-journey deadline.
 
-The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Mode strings, make and model must match the current [camera catalog](../../crates/lightwell-raw/data/cameras.json). DNG sources additionally supply exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies required opcode order, calibration and persisted interpretation against that profile. Keep private paths and derived evidence ignored. `--samples` defaults to 3 (range 1–100), a functional run; a latency distribution needs `--samples 30`. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
+The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Mode strings, make and model must match the current [camera catalog](../../crates/luxforge-raw/data/cameras.json). DNG sources additionally supply exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies required opcode order, calibration and persisted interpretation against that profile. Keep private paths and derived evidence ignored. `--samples` defaults to 3 (range 1–100), a functional run; a latency distribution needs `--samples 30`. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
 
 Reports include binary/lock/manifest hashes, launch mode, stage events, frame checks and sampled process RSS. The filesystem cache is not purged; app-cold is not OS-cache-cold. GPU memory is not isolated from RSS, and capture readbacks can affect memory. Same-process editing without repeated captures is a separate resource control.
 
 Native and JSON authentic-file tests are opt-in, ignored in the normal test suite:
 
 ```sh
-LIGHTWELL_RAW_OWNER_DIR=/path/to/private/raw LIGHTWELL_RAW_PUBLIC_DIR=/path/to/cc0/raw cargo test --release --locked -p lightwell-raw --test real_files -- --ignored --nocapture
-LIGHTWELL_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p lightwell-app --test raw_json_cli -- --ignored --nocapture
+LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw LUXFORGE_RAW_PUBLIC_DIR=/path/to/cc0/raw cargo test --release --locked -p luxforge-raw --test real_files -- --ignored --nocapture
+LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p luxforge-app --test raw_json_cli -- --ignored --nocapture
 ```
 
 The absence of private fixtures is a skip, not passing authentic-file evidence. Synthetic/reference tests remain normal CI checks.
@@ -451,7 +451,7 @@ for that frame, so a capture never shows a proxy made for the previous bounds. E
 messages and owner calls the controls use, so a script exercises the real paths rather than a
 parallel implementation. Parsing happens before the window opens; at most 64 steps.
 
-The steps are one set of serde types, the `lightwell-evidence` crate: the desktop parses a script
+The steps are one set of serde types, the `luxforge-evidence` crate: the desktop parses a script
 with them and xtask builds every scenario's script from them, so a step has one spelling on both
 ends. Parsing is strict. An unknown step kind or field, a missing field, or a value of the wrong type
 or out of its range fails the whole script with an error that names the step's position and kind,
@@ -512,8 +512,8 @@ Each step is an object with exactly one key.
 - `slider_draft` answers an open gesture's Changed elsewhere notice: `"discard"` or `"reapply"`.
 - `field` types into one generated field: `{"action": "set-basic", "parameter": "exposure", "text":
   "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.
-- `reset` runs a declared reset: `{"module": "lightwell.basic"}` is the module's own header reset and
-  `{"module": "lightwell.basic", "group": "Tone"}` is that control group's, found by its label.
+- `reset` runs a declared reset: `{"module": "luxforge.basic"}` is the module's own header reset and
+  `{"module": "luxforge.basic", "group": "Tone"}` is that control group's, found by its label.
 - `pick` clicks the photograph at a pixel of the raster on screen: `{"x": 120, "y": 80}`. What the
   click does is the active canvas mode's own declared pick, so a `workspace` step selects the mode
   first; a mode that declares none fails the step. A pick that commits is captured on the render it
@@ -598,20 +598,20 @@ match. Each run also writes `app/basic-panel-checks.json` with the measured valu
 
 `presets` opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and drives the Presets section over
 thirteen steps: Basic collapsed and Presets expanded, `fixtures/presets/develop.xmp` and
-`fixtures/presets/soft-film.lwpreset` imported (their names differ only in case), each applied from
+`fixtures/presets/soft-film.lfpreset` imported (their names differ only in case), each applied from
 its row, `history.undo`, the create form filled with the Basic Tone group alone and then submitted,
 `history.undo` to the Original, the native preset applied there, `preset.list` through the `api` step
 and the native preset deleted through its row menu. The runner checks every frame's `state.presets`
 rows (name, group, Partial) against the expected library, the XMP's import status line, the create
 form's fields and checkboxes, and each frame's revision, current entry, history label and stored
 layer payloads. The expected payloads are computed stepwise: each fixture's settings as
-`lightwell_core::inspect_preset` reads them, merged over the stack the frame before held, with every
+`luxforge_core::inspect_preset` reads them, merged over the stack the frame before held, with every
 field at its declared default omitted as the modules store it. It also reads one patch per quadrant
 of the photograph: each +0.35 EV preset brightens the four patches' mean luminance by more than 5
 codes, the XMP's own `green-luminance` and `red-hue` fields darken the green patch and add green to
 the red one by more than 5 codes, and each undo returns the patches of the stack it returns to within
 1.5 codes. It writes `app/presets-checks.json`. The scope is stored payloads and displayed direction,
-not a colorimetric claim, and not a claim that Lightwell renders what Lightroom renders.
+not a colorimetric claim, and not a claim that Luxforge renders what Lightroom renders.
 
 `performance` opens the generated `60mp.jpg` at 1440 × 900 and captures eight frames: the open, with
 the Performance section open and sampling as every launch starts it; a 3600 ms `wait`; a 16:9
@@ -738,7 +738,7 @@ luminance matches the render the first launch committed and is above a neutral o
 `unavailable` is not one launch but two, since a module can only be disabled at startup. The first
 opens the fixture and commits a 16:9 `edit.crop-fit` with every built-in module registered. The
 second reuses the first launch's own catalog (`--catalog <dir1>/catalog.sqlite`) with
-`--disable-module lightwell.crop` and reopens the same fixture, which the catalog dedupes to the same
+`--disable-module luxforge.crop` and reopens the same fixture, which the catalog dedupes to the same
 asset by file identity, so its stack still names the now-unavailable crop layer. The runner checks
 that the second launch's frame reports `state.render_error.code` `incompatible`, `state.notices`
 naming "Preview is stale", the crop module listed unavailable in `state.modules`, no fixture colour
@@ -747,7 +747,7 @@ drawn anywhere in the photo surface, and the source fixture's hash unchanged thr
 
 `cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 78 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its last page, module sections at the reference panel width: Basic expanded, collapsed and unavailable bands, Basic with its three groups collapsed, the tab row, the labelled buttons, band hints and history labels truncated to one line with an ellipsis, the icon-button row and the field rows each with no group header over its module's only group, and the crop section drafting and idle. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure (on Basic's Colour group, since the proof's controls are its module's only group and draw no header) and the module reset, then shows the Pixel section on its own with X and Y as px fields. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
 
-`cargo xtask smoke --scenario capabilities --output NEW_DIR` starts the loopback `ProofEndpoint` (from `lightwell-testkit`, which no shipped binary compiles) in the runner's own process with a sentinel API key and a held palette download and generation, launches the editor with `--developer --proof-endpoint`, opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and scripts 25 capability steps: expand the section, set strength, create a profile, set its endpoint and key, choose an input file, request the palette (the consent notice, Don't allow, the notice again with its denial, Allow), capture the download in progress and installed, activate, generate (the photo-data consent, Allow, progress, success), Apply, replace the key with a wrong one and generate again (the endpoint's 401), and revoke the photo-data grant. Its checks, written to `app/capabilities-checks.json`, compare each frame's capability summary with its step; require exactly one tint layer listing the task's artifact after Apply; compare the tinted photograph's mean colour over a centred window with the pre-Apply frame, in the direction of the published gains, and with an independent core render of the same stack within 2 codes; confirm the endpoint saw one held download, one authorised generation and one refusal; and scan every text file the run wrote, the catalog and the module files included, for the sentinel key.
+`cargo xtask smoke --scenario capabilities --output NEW_DIR` starts the loopback `ProofEndpoint` (from `luxforge-testkit`, which no shipped binary compiles) in the runner's own process with a sentinel API key and a held palette download and generation, launches the editor with `--developer --proof-endpoint`, opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and scripts 25 capability steps: expand the section, set strength, create a profile, set its endpoint and key, choose an input file, request the palette (the consent notice, Don't allow, the notice again with its denial, Allow), capture the download in progress and installed, activate, generate (the photo-data consent, Allow, progress, success), Apply, replace the key with a wrong one and generate again (the endpoint's 401), and revoke the photo-data grant. Its checks, written to `app/capabilities-checks.json`, compare each frame's capability summary with its step; require exactly one tint layer listing the task's artifact after Apply; compare the tinted photograph's mean colour over a centred window with the pre-Apply frame, in the direction of the published gains, and with an independent core render of the same stack within 2 codes; confirm the endpoint saw one held download, one authorised generation and one refusal; and scan every text file the run wrote, the catalog and the module files included, for the sentinel key.
 
 `editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
 
@@ -859,7 +859,7 @@ Rules for any UI or image check:
 
 ## Packaging
 
-`cargo xtask package` builds an unsigned host development artifact: a ZIP on macOS and Windows or a `.tar.gz` on Linux containing `Lightwell/` with the executable, notices, `build.json` (source revision, dirty state, target, profile, binary and lockfile hashes) and `checksums.txt`. Run smoke against the packaged executable with `--binary`. Packaging is repeatable, not byte-reproducible, and inventory is not a completed license audit. macOS bundles are unsigned and not notarized. No signing, stores or auto-update exist.
+`cargo xtask package` builds an unsigned host development artifact: a ZIP on macOS and Windows or a `.tar.gz` on Linux containing `Luxforge/` with the executable, notices, `build.json` (source revision, dirty state, target, profile, binary and lockfile hashes) and `checksums.txt`. Run smoke against the packaged executable with `--binary`. Packaging is repeatable, not byte-reproducible, and inventory is not a completed license audit. macOS bundles are unsigned and not notarized. No signing, stores or auto-update exist.
 
 ## CI
 

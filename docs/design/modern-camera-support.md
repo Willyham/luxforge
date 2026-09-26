@@ -12,7 +12,7 @@ subagents. Maintain exact make/model identities and recording-mode evidence.
 
 Profiles select bounded processing capabilities; no model-name processing
 branches. Source-dependent calibration remains authoritative in each file.
-LibRaw's camera list alone is not Lightwell qualification: its published list
+LibRaw's camera list alone is not Luxforge qualification: its published list
 assumes optional features which this build may not enable. Unknown modes,
 unsupported mandatory corrections and incompatible metadata fail explicitly.
 Do not invent full-sensor dimensions from advertised megapixels.
@@ -77,7 +77,7 @@ only the enabled selection entries. The owner fixture needs local access; it
 is not downloadable from the public repository. Run:
 
 ```sh
-cargo run --release --locked -p lightwell-raw --example qualify_profiles -- \
+cargo run --release --locked -p luxforge-raw --example qualify_profiles -- \
   /path/to/manifest.json /path/to/new-results.json
 ```
 

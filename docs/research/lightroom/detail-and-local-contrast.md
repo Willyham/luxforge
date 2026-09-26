@@ -39,7 +39,7 @@ For ordinary unsharp masking, `I_out = I + k(I − Gσ(I))`. Increasing `σ` aff
 
 **U.** These papers do not disclose today's Clarity settings, Texture algorithm, CPU/GPU kernels or the exact relationship between every Basic-panel slider and a pyramid stage. The 2011 method is a research foundation, not a drop-in Adobe clone. The Halide paper's many-stage example describes its benchmark configuration, not Lightroom's complete processing graph.
 
-**P.** For Lightwell, compare an edge-aware multiscale implementation with a simpler baseline on step edges, texture gradients and noisy shadows. Measure halos, color changes, zoom consistency, memory and latency. A sophisticated paper is a candidate to evaluate, not an automatic dependency decision.
+**P.** For Luxforge, compare an edge-aware multiscale implementation with a simpler baseline on step edges, texture gradients and noisy shadows. Measure halos, color changes, zoom consistency, memory and latency. A sophisticated paper is a candidate to evaluate, not an automatic dependency decision.
 
 ## Sharpening and manual noise reduction
 

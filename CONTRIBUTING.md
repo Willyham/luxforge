@@ -4,8 +4,8 @@ Read [AGENTS.md](AGENTS.md) first. It holds the pillars, workflow and engineerin
 
 ## Layout
 
-- `crates/lightwell-core`: images, recipes, rendering, SQLite catalog and history, preview scheduling, JSON API.
-- `crates/lightwell-app`: Iced desktop adapter plus the desktop and headless `lightwell-json` binaries.
+- `crates/luxforge-core`: images, recipes, rendering, SQLite catalog and history, preview scheduling, JSON API.
+- `crates/luxforge-app`: Iced desktop adapter plus the desktop and headless `luxforge-json` binaries.
 - `xtask`: all development, check, evidence and packaging commands.
 - `docs/`: product, design, spec, engineering and research documentation.
 - `tasks/`: JSON task plans ([index](tasks/README.md)).

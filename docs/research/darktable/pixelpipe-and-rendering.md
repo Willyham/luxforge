@@ -31,7 +31,7 @@ flowchart TD
 
 **S.** `commit_params()` is the preparation boundary: an EV setting can become a scale factor, a curve can become a table, and a module can decide whether its selected mode supports OpenCL or tiling. This is separate from applying those prepared values to every pixel. [Developer module guide](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/dev-doc/IOP_Module_API.md#L1) [Exposure](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/src/iop/exposure.c#L468) [Local contrast](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/src/iop/bilat.c#L293)
 
-**P.** For Lightwell, preserve this distinction between durable intent and derived execution data while retaining the existing core-owned command/history service. A slider widget should not become the only entry point to an edit.
+**P.** For Luxforge, preserve this distinction between durable intent and derived execution data while retaining the existing core-owned command/history service. A slider widget should not become the only entry point to an edit.
 
 ## Render order is not history order
 

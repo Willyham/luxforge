@@ -26,7 +26,7 @@ The auxiliary-file distinctions come from the catalog and sidecar documentation;
 
 **D.** Develop edits are stored automatically in the catalog. Saving metadata additionally writes sidecars for proprietary RAW formats and can embed metadata in JPEG/TIFF/PSD/DNG containers. Thus “source pixels were not overwritten by this adjustment” is a narrower promise than “the source file hash never changes.” Classic also has an explicit option to write capture-time changes into proprietary RAW files. [S02: Metadata and XMP](https://helpx.adobe.com/lightroom-classic/desktop/organize-photos-in-lightroom-classic/metadata-basics-actions.html) [S11: Create and manage catalogs](https://helpx.adobe.com/lightroom-classic/desktop/manage-catalogs-and-files/create-catalogs.html)
 
-**P.** Lightwell's existing original-preservation requirement should be tested at the byte level. Adobe's metadata behavior is a comparison point, not authorization to modify Lightwell originals.
+**P.** Luxforge's existing original-preservation requirement should be tested at the byte level. Adobe's metadata behavior is a comparison point, not authorization to modify Luxforge originals.
 
 **D.** Starting in Classic 15.0, sidecar saving places heavy masks/AI edits in `.acr` while keeping `.xmp` smaller. Ordinary edits can remain XMP-only. Lightroom manages companion sidecars when it moves, renames or deletes the image. This is conditional on the sidecar workflow; it does not mean every photo always gets two files. [S03: XMP and ACR sidecars](https://helpx.adobe.com/lightroom-classic/desktop/organize-photos-in-lightroom-classic/create-xmp-acr-files.html)
 
@@ -43,7 +43,7 @@ The auxiliary-file distinctions come from the catalog and sidecar documentation;
 
 **D.** Adobe documents chronological history states, selectable prior states and snapshots of complete settings. Clearing the History list leaves current image settings intact. That is direct evidence that history and active recipe are distinct concepts. [S07: Develop module options](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/develop-module-options.html) Virtual copies store alternate settings in the catalog, becoming physical images on export or external-edit copy creation. [S06: Manage photos and virtual copies](https://helpx.adobe.com/lightroom-classic/desktop/manage-catalogs-and-files/photos.html)
 
-**D.** Reset, individual-control reset and Undo are distinct operations. Adobe also documents an Option/Alt history action that clears later steps. Do not infer an immutable event ledger or retention of all branches from the word “history.” [S08: Develop module tools](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/develop-module-tools.html) Lightwell already has a stronger accepted retention contract: [append Restore and retain all historical states](../../specs/edit-history.md).
+**D.** Reset, individual-control reset and Undo are distinct operations. Adobe also documents an Option/Alt history action that clears later steps. Do not infer an immutable event ledger or retention of all branches from the word “history.” [S08: Develop module tools](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/develop-module-tools.html) Luxforge already has a stronger accepted retention contract: [append Restore and retain all historical states](../../specs/edit-history.md).
 
 ## Backup and recovery boundaries
 

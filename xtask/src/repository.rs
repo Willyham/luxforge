@@ -191,14 +191,14 @@ fn active_plans(root: &Path, plans: &[Value], s: &Value) -> Result<Vec<String>> 
 /// in `app`.
 const BOUNDARIES: [(&str, &[&str]); 3] = [
     (
-        "crates/lightwell-app/src/state",
+        "crates/luxforge-app/src/state",
         &["use iced", "iced::", "iced_runtime", "app::"],
     ),
     (
-        "crates/lightwell-app/src/view",
-        &["lightwell_core", "OwnerHandle", ".call("],
+        "crates/luxforge-app/src/view",
+        &["luxforge_core", "OwnerHandle", ".call("],
     ),
-    ("crates/lightwell-ui", &["lightwell_core"]),
+    ("crates/luxforge-ui", &["luxforge_core"]),
 ];
 
 /// Fail on the first forbidden token, naming the file, the line and the token.
@@ -247,12 +247,12 @@ fn contains_token(line: &str, token: &str) -> bool {
         .any(|(at, _)| !line[..at].ends_with(identifier))
 }
 
-/// The references are independent by construction: `lightwell-reference` depends on no workspace
+/// The references are independent by construction: `luxforge-reference` depends on no workspace
 /// crate, so nothing it builds against can reach the core it checks, directly or through a crate
 /// that depends on it. Every dependency table (normal, dev, build or target-specific) is read.
-const REFERENCE_MANIFEST: &str = "crates/lightwell-reference/Cargo.toml";
+const REFERENCE_MANIFEST: &str = "crates/luxforge-reference/Cargo.toml";
 
-/// Fail on the first dependency of the reference crate that names a `lightwell` crate or a path,
+/// Fail on the first dependency of the reference crate that names a `luxforge` crate or a path,
 /// naming the line; answer how many dependency lines were read.
 fn independent_references(root: &Path) -> Result<usize> {
     let path = root.join(REFERENCE_MANIFEST);
@@ -270,7 +270,7 @@ fn independent_references(root: &Path) -> Result<usize> {
         if !table.contains("dependencies") {
             continue;
         }
-        let names_a_crate = line.contains("lightwell");
+        let names_a_crate = line.contains("luxforge");
         let is_a_path = line.split(['{', ',', '}']).any(|part| {
             part.split('=')
                 .next()
@@ -279,8 +279,8 @@ fn independent_references(root: &Path) -> Result<usize> {
         ensure(
             !names_a_crate && !is_a_path,
             format!(
-                "{}:{}: lightwell-reference may depend on no workspace crate, so it can never \
-                 reach lightwell-core: {line}",
+                "{}:{}: luxforge-reference may depend on no workspace crate, so it can never \
+                 reach luxforge-core: {line}",
                 path.display(),
                 number + 1
             ),
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn layer_boundaries_reject_a_forbidden_import() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = tmp.path().join("crates/lightwell-app/src/state");
+        let state = tmp.path().join("crates/luxforge-app/src/state");
         fs::create_dir_all(&state).unwrap();
         fs::write(
             state.join("clean.rs"),
@@ -411,18 +411,18 @@ mod tests {
             );
         }
         fs::remove_file(state.join("bad.rs")).unwrap();
-        let view = tmp.path().join("crates/lightwell-app/src/view");
+        let view = tmp.path().join("crates/luxforge-app/src/view");
         fs::create_dir_all(&view).unwrap();
         fs::write(
             view.join("bad.rs"),
-            "\nlet state: lightwell_core::EditorState;\n",
+            "\nlet state: luxforge_core::EditorState;\n",
         )
         .unwrap();
         assert!(
             boundaries(tmp.path())
                 .unwrap_err()
                 .to_string()
-                .contains("lightwell_core")
+                .contains("luxforge_core")
         );
         fs::write(view.join("bad.rs"), "owner.call(client, request)\n").unwrap();
         assert!(
@@ -432,18 +432,18 @@ mod tests {
                 .contains(".call(")
         );
         fs::remove_file(view.join("bad.rs")).unwrap();
-        let ui = tmp.path().join("crates/lightwell-ui");
+        let ui = tmp.path().join("crates/luxforge-ui");
         fs::create_dir_all(&ui).unwrap();
         fs::write(
             ui.join("Cargo.toml"),
-            "[dependencies]\nlightwell_core = { path = \"../lightwell-core\" }\n",
+            "[dependencies]\nluxforge_core = { path = \"../luxforge-core\" }\n",
         )
         .unwrap();
         assert!(
             boundaries(tmp.path())
                 .unwrap_err()
                 .to_string()
-                .contains("lightwell-ui")
+                .contains("luxforge-ui")
         );
     }
     #[test]
@@ -451,26 +451,26 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let manifest = tmp.path().join(REFERENCE_MANIFEST);
         fs::create_dir_all(manifest.parent().unwrap()).unwrap();
-        let clean = "[package]\nname = \"lightwell-reference\"\n\n[dependencies]\n\n\
-                     [dev-dependencies]\nserde.workspace = true # not lightwell\n";
+        let clean = "[package]\nname = \"luxforge-reference\"\n\n[dependencies]\n\n\
+                     [dev-dependencies]\nserde.workspace = true # not luxforge\n";
         fs::write(&manifest, clean).unwrap();
         assert_eq!(independent_references(tmp.path()).unwrap(), 3);
         for (what, extra) in [
             (
                 "the core",
-                "[dependencies]\nlightwell-core = { path = \"../lightwell-core\" }\n",
+                "[dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n",
             ),
             (
                 "a crate that depends on the core",
-                "[dev-dependencies]\nlightwell-testkit.workspace = true\n",
+                "[dev-dependencies]\nluxforge-testkit.workspace = true\n",
             ),
             (
                 "the core under another name",
-                "[dependencies]\ncore = { package = \"lightwell-core\", version = \"0\" }\n",
+                "[dependencies]\ncore = { package = \"luxforge-core\", version = \"0\" }\n",
             ),
             (
                 "a table naming the core",
-                "[target.'cfg(unix)'.dependencies.lightwell-core]\nversion = \"0\"\n",
+                "[target.'cfg(unix)'.dependencies.luxforge-core]\nversion = \"0\"\n",
             ),
             (
                 "any path",

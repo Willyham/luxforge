@@ -1,9 +1,9 @@
 s = {
 	id = "8A3F5C2E-1B7D-4E90-A6C4-2D9E0F1B3A57",
 	internalName = "Synthetic Faded",
-	title = ZSTR "$$$/Lightwell/Fixtures/Faded=Faded Matte",
+	title = ZSTR "$$$/Luxforge/Fixtures/Faded=Faded Matte",
 	type = "Develop",
-	-- A synthetic preset written for Lightwell's importer tests, not exported from Lightroom.
+	-- A synthetic preset written for Luxforge's importer tests, not exported from Lightroom.
 	value = {
 		settings = {
 			AutoGrayscaleMix = true,

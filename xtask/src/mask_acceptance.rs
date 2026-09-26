@@ -14,10 +14,8 @@
 //! pixels and refusals the design states, and that the failure paths behave with masks in the recipe.
 use crate::basic_acceptance::{import, mutation};
 use crate::*;
-use lightwell_core::{OwnerHandle, mask::commands as mask_commands};
-use lightwell_testkit::client::{
-    Checked, as_str, as_u64, call, prepare, refused, registry_without,
-};
+use luxforge_core::{OwnerHandle, mask::commands as mask_commands};
+use luxforge_testkit::client::{Checked, as_str, as_u64, call, prepare, refused, registry_without};
 use std::{cell::RefCell, sync::Arc, time::Instant};
 
 /// The fixture this chapter runs on: the 480x320 synthetic quadrant pattern every other chapter
@@ -58,7 +56,7 @@ struct Refusal {
 /// both paths is proved by `mask/masked_colour.rs` and `mask/masked_spatial.rs`.
 fn sample(
     owner: &OwnerHandle,
-    client: lightwell_core::ClientId,
+    client: luxforge_core::ClientId,
     asset: &Value,
     at: (u32, u32),
 ) -> Checked<Vec<u64>> {
@@ -774,7 +772,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             .join()
             .map_err(|_| "The owner thread panicked")?;
         let (limited, limited_join) =
-            OwnerHandle::start_with(&catalog, Arc::new(registry_without("lightwell.presence")?))?;
+            OwnerHandle::start_with(&catalog, Arc::new(registry_without("luxforge.presence")?))?;
         let limited_detail = (|| -> Result<Value> {
             let client = limited.register();
             prepare(&limited, client, &asset)?;

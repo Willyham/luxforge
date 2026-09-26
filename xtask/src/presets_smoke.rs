@@ -1,5 +1,5 @@
 //! The `presets` smoke scenario: the Presets section on the real editor. It imports a Lightroom XMP
-//! preset and a Lightwell preset document through the section's own import task, applies each from
+//! preset and a Luxforge preset document through the section's own import task, applies each from
 //! its row, undoes, creates a native preset from the Basic Tone group, applies it to the Original,
 //! lists the library through a host `api` step and deletes the native preset through its row menu.
 //!
@@ -18,14 +18,14 @@ use crate::{
     scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
-use lightwell_evidence::{self as script, PresetCreateStep, PresetPick};
+use luxforge_evidence::{self as script, PresetCreateStep, PresetPick};
 use std::collections::BTreeMap;
 
 pub const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
 const XMP: &str = "fixtures/presets/develop.xmp";
-const DOCUMENT: &str = "fixtures/presets/soft-film.lwpreset";
-const PRESETS_MODULE: &str = "lightwell.presets";
-const BASIC_MODULE: &str = "lightwell.basic";
+const DOCUMENT: &str = "fixtures/presets/soft-film.lfpreset";
+const PRESETS_MODULE: &str = "luxforge.presets";
+const BASIC_MODULE: &str = "luxforge.basic";
 /// The native preset the scenario creates, in the default group the create form offers.
 const NATIVE: &str = "Tone only";
 const USER_GROUP: &str = "User presets";
@@ -207,7 +207,7 @@ struct Patches(BTreeMap<String, (String, BTreeMap<String, f64>)>);
 
 impl Patches {
     fn load() -> Result<Self> {
-        let registry = lightwell_core::ModuleRegistry::builtin();
+        let registry = luxforge_core::ModuleRegistry::builtin();
         let mut actions = BTreeMap::new();
         for module in registry.descriptors() {
             for action in module.actions.iter().filter(|action| action.patch) {
@@ -301,13 +301,9 @@ fn fixture_settings(root: &Path, path: &str) -> Result<serde_json::Map<String, V
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("A fixture has no file name")?;
-    lightwell_core::inspect_preset(
-        &text,
-        Some(name),
-        &lightwell_core::ModuleRegistry::builtin(),
-    )
-    .map(|preset| preset.settings)
-    .map_err(|error| format!("{path}: {error}").into())
+    luxforge_core::inspect_preset(&text, Some(name), &luxforge_core::ModuleRegistry::builtin())
+        .map(|preset| preset.settings)
+        .map_err(|error| format!("{path}: {error}").into())
 }
 
 /// The mean RGB of one patch per quadrant of the photograph, found the way `vignette` finds it.
@@ -584,7 +580,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // The native preset on the Original: a Basic layer holding exactly the Tone fields the Soft
     // film entry held, and nothing else.
     let native_frame = launch.at("native")?;
-    let basic = lightwell_core::BASIC_EFFECT.to_owned();
+    let basic = luxforge_core::BASIC_EFFECT.to_owned();
     let captured: serde_json::Map<String, Value> = soft
         .get(&basic)
         .and_then(Value::as_object)

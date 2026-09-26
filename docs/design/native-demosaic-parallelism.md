@@ -4,7 +4,7 @@ Status: implemented for one-pass Markesteijn and Bayer RCD on the shared Rayon p
 
 ## Execution boundary
 
-`RawSource::develop` owns one planar output and calls `lw_raw_develop` synchronously from the bounded source worker. Normalization, demosaic, output scaling/finite checks and mandatory DNG corrections retain their order. The private Rust executor joins all native workers before border handling or before returning any failure. No borrowed pointer, callback or worker survives the call; no C++ exception or Rust panic crosses the ABI. Markesteijn's shared cube-root table uses once-safe initialization.
+`RawSource::develop` owns one planar output and calls `lf_raw_develop` synchronously from the bounded source worker. Normalization, demosaic, output scaling/finite checks and mandatory DNG corrections retain their order. The private Rust executor joins all native workers before border handling or before returning any failure. No borrowed pointer, callback or worker survives the call; no C++ exception or Rust panic crosses the ABI. Markesteijn's shared cube-root table uses once-safe initialization.
 
 The pinned one-pass, non-CieLab algorithm retains its 114 px scratch tiles, 98 px stride, global origins, CFA phase, equations and per-pixel arithmetic order. Each ordinary full-height row is divided into consecutive jobs of at most eight full tiles, with the final two columns in one job to preserve right-edge scratch history. The final two rows share one original-order job and scratch allocation. Each job index is dispatched exactly once.
 

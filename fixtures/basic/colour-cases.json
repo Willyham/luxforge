@@ -1,6 +1,6 @@
 {
-  "generated_by": "crates/lightwell-reference/tests/studies/colour.rs generate_colour_fixtures",
-  "note": "Independent f64 reference (crates/lightwell-reference/src/colour.rs). expected_linear is linear sRGB after vibrance then saturation (the frozen order), full f64 precision, unclamped. Production is compared against this file within the tolerance frozen in docs/design/basic-colour.md.",
+  "generated_by": "crates/luxforge-reference/tests/studies/colour.rs generate_colour_fixtures",
+  "note": "Independent f64 reference (crates/luxforge-reference/src/colour.rs). expected_linear is linear sRGB after vibrance then saturation (the frozen order), full f64 precision, unclamped. Production is compared against this file within the tolerance frozen in docs/design/basic-colour.md.",
   "cases": [
     {
       "name": "red_v0_s0",

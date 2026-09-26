@@ -3,7 +3,7 @@ mod basic_smoke;
 mod capabilities_smoke;
 /// The field-patch conformance suite the core's own integration test runs, compiled in rather than
 /// copied, so `editor-acceptance` records the evidence of exactly the checks `cargo test` makes.
-#[path = "../../crates/lightwell-core/tests/modules/conformance/mod.rs"]
+#[path = "../../crates/luxforge-core/tests/modules/conformance/mod.rs"]
 mod conformance;
 mod controls_smoke;
 mod crop_smoke;
@@ -113,7 +113,7 @@ fn root() -> Result<PathBuf> {
             p.join("tools/task-plan.schema.json").is_file() && p.join("xtask/Cargo.toml").is_file()
         })
         .map(Path::to_path_buf)
-        .ok_or_else(|| "Run from a Lightwell checkout".into())
+        .ok_or_else(|| "Run from a Luxforge checkout".into())
 }
 fn absolute(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
@@ -134,7 +134,7 @@ fn binary(root: &Path) -> Result<PathBuf> {
             .ok_or("Missing target directory")?,
     )
     .join("release")
-    .join(format!("lightwell{}", std::env::consts::EXE_SUFFIX)))
+    .join(format!("luxforge{}", std::env::consts::EXE_SUFFIX)))
 }
 fn host(root: &Path) -> Result<String> {
     output(root, "rustc", &["-vV"])?
@@ -164,7 +164,7 @@ fn cargo_command() -> Command {
 }
 fn cargo(root: &Path, op: &str, release: bool) -> Result {
     let mut args = match op {
-        "build" => vec!["build", "--locked", "--package", "lightwell-app"],
+        "build" => vec!["build", "--locked", "--package", "luxforge-app"],
         "test" => vec!["test", "--locked", "--workspace"],
         "fmt" => vec!["fmt", "--all", "--", "--check"],
         "lint" => vec![
@@ -275,7 +275,7 @@ fn main_result() -> Result {
                 cmd.arg("--release");
             }
             ensure(
-                cmd.args(["--package", "lightwell-app", "--bin", "lightwell", "--"])
+                cmd.args(["--package", "luxforge-app", "--bin", "luxforge", "--"])
                     .args(a.0)
                     .status()?
                     .success(),

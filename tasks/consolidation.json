@@ -26,19 +26,19 @@
         {
           "kind": "file",
           "label": "Editor service",
-          "target": "crates/lightwell-core/src/editor.rs",
+          "target": "crates/luxforge-core/src/editor.rs",
           "relevance": "`restore`, `commit_snapshot`, `resolve_plan`, `recipe_for_target`."
         },
         {
           "kind": "file",
           "label": "API methods and owner",
-          "target": "crates/lightwell-core/src/api/methods.rs",
+          "target": "crates/luxforge-core/src/api/methods.rs",
           "relevance": "`mutates` and dispatch; the owner loop's fallthrough is in `api/owner.rs`."
         },
         {
           "kind": "file",
           "label": "Preset library",
-          "target": "crates/lightwell-core/src/presets/library.rs",
+          "target": "crates/luxforge-core/src/presets/library.rs",
           "relevance": "`capture_preset` reads a module's one layer."
         },
         {
@@ -61,7 +61,7 @@
           "Run the existing history, deduplication, restore, preset and mask command tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -90,13 +90,13 @@
         {
           "kind": "file",
           "label": "Desktop owner tasks",
-          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "target": "crates/luxforge-app/src/app/tasks.rs",
           "relevance": "`draft_set_now` and `mask_draft_set_task`."
         },
         {
           "kind": "file",
           "label": "Mask gesture driver",
-          "target": "crates/lightwell-app/src/app/masks.rs",
+          "target": "crates/luxforge-app/src/app/masks.rs",
           "relevance": "The mask draft lifecycle, cancel and set handlers."
         },
         {
@@ -118,7 +118,7 @@
           "Run the mask desktop tests."
         ],
         "commands": [
-          "cargo test -p lightwell-app masks",
+          "cargo test -p luxforge-app masks",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -147,19 +147,19 @@
         {
           "kind": "file",
           "label": "Spatial rendering",
-          "target": "crates/lightwell-core/src/render/spatial.rs",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
           "relevance": "`resolve_globals`, the estimate store and the masked-tile counters."
         },
         {
           "kind": "file",
           "label": "Presence units",
-          "target": "crates/lightwell-core/src/modules/presence/mod.rs",
+          "target": "crates/luxforge-core/src/modules/presence/mod.rs",
           "relevance": "`prepare` and `describe` of dehaze, clarity and texture."
         },
         {
           "kind": "file",
           "label": "Registry",
-          "target": "crates/lightwell-core/src/modules/registry/mod.rs",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
           "relevance": "`proxy_approximate`."
         },
         {
@@ -183,7 +183,7 @@
           "Run the spatial, presence, proxy and masked-spatial tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -212,25 +212,25 @@
         {
           "kind": "file",
           "label": "RAW linear path",
-          "target": "crates/lightwell-core/src/render/linear.rs",
+          "target": "crates/luxforge-core/src/render/linear.rs",
           "relevance": "Spatial frame retention and the linear output."
         },
         {
           "kind": "file",
           "label": "Byte render path",
-          "target": "crates/lightwell-core/src/render.rs",
+          "target": "crates/luxforge-core/src/render.rs",
           "relevance": "Frame output, colour scratch and `locate`."
         },
         {
           "kind": "file",
           "label": "Proxy",
-          "target": "crates/lightwell-core/src/proxy.rs",
+          "target": "crates/luxforge-core/src/proxy.rs",
           "relevance": "Proxy frame output."
         },
         {
           "kind": "file",
           "label": "RAW white balance",
-          "target": "crates/lightwell-core/src/modules/raw/white_balance.rs",
+          "target": "crates/luxforge-core/src/modules/raw/white_balance.rs",
           "relevance": "The locus coefficient."
         }
       ],
@@ -248,7 +248,7 @@
           "Run the render, linear, proxy, spatial and RAW tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -275,19 +275,19 @@
         {
           "kind": "file",
           "label": "Capabilities",
-          "target": "crates/lightwell-core/src/capabilities/host.rs",
+          "target": "crates/luxforge-core/src/capabilities/host.rs",
           "relevance": "Grants, consent, files, context, host and settings."
         },
         {
           "kind": "file",
           "label": "Artifact store",
-          "target": "crates/lightwell-core/src/editor/artifact_store.rs",
+          "target": "crates/luxforge-core/src/editor/artifact_store.rs",
           "relevance": "Relocation and the artifact root override."
         },
         {
           "kind": "file",
           "label": "Desktop capabilities",
-          "target": "crates/lightwell-app/src/state/capabilities.rs",
+          "target": "crates/luxforge-app/src/state/capabilities.rs",
           "relevance": "File settings and grant display."
         },
         {
@@ -315,8 +315,8 @@
           "Run the capability, artifact and desktop capability tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core capabilities",
-          "cargo test -p lightwell-app capabilities",
+          "cargo test -p luxforge-core capabilities",
+          "cargo test -p luxforge-app capabilities",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -344,7 +344,7 @@
         {
           "kind": "file",
           "label": "Transport",
-          "target": "crates/lightwell-core/src/capabilities/transport/mod.rs",
+          "target": "crates/luxforge-core/src/capabilities/transport/mod.rs",
           "relevance": "`http.rs` goes; `policy.rs` stays."
         },
         {
@@ -373,8 +373,8 @@
           "Run the transport and capability tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core transport",
-          "cargo test -p lightwell-core capabilities",
+          "cargo test -p luxforge-core transport",
+          "cargo test -p luxforge-core capabilities",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -533,7 +533,7 @@
         {
           "kind": "file",
           "label": "Editor service",
-          "target": "crates/lightwell-core/src/editor.rs",
+          "target": "crates/luxforge-core/src/editor.rs",
           "relevance": "The file to split."
         },
         {
@@ -554,7 +554,7 @@
           "Build and run the whole core suite once at the end."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -729,13 +729,13 @@
         {
           "kind": "file",
           "label": "Byte render path",
-          "target": "crates/lightwell-core/src/render.rs",
+          "target": "crates/luxforge-core/src/render.rs",
           "relevance": "`Evaluation`, `spatial_pixel` and the point path."
         },
         {
           "kind": "file",
           "label": "RAW linear path",
-          "target": "crates/lightwell-core/src/render/linear.rs",
+          "target": "crates/luxforge-core/src/render/linear.rs",
           "relevance": "`PointSegment` and its tile cache."
         },
         {
@@ -758,7 +758,7 @@
           "Run the render, spatial, linear and masked-spatial tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -788,19 +788,19 @@
         {
           "kind": "file",
           "label": "API methods",
-          "target": "crates/lightwell-core/src/api/methods.rs",
+          "target": "crates/luxforge-core/src/api/methods.rs",
           "relevance": "The METHODS table and handlers."
         },
         {
           "kind": "file",
           "label": "Owner loop",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "relevance": "Owner-answered methods and events."
         },
         {
           "kind": "file",
           "label": "Capability host",
-          "target": "crates/lightwell-core/src/capabilities/host.rs",
+          "target": "crates/luxforge-core/src/capabilities/host.rs",
           "relevance": "`answer`'s own method match."
         },
         {
@@ -819,7 +819,7 @@
       "acceptance_criteria": [
         "One table dispatches every host method; the owner loop has no per-method string match and no fallthrough.",
         "Each method's parameters are declared once and generate both the schema and the parser; every method refuses an unknown parameter.",
-        "Every mutating method takes `{request_id, actor}` and a retry returns the first answer; the desktop, `lightwell-json`, xtask and the docs use the new shapes.",
+        "Every mutating method takes `{request_id, actor}` and a retry returns the first answer; the desktop, `luxforge-json`, xtask and the docs use the new shapes.",
         "The event recording, held-draft lookup and selected-entry resolution each exist once."
       ],
       "test_strategy": {
@@ -829,8 +829,8 @@
           "A retry test per mutating method family."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-core",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -860,13 +860,13 @@
         {
           "kind": "file",
           "label": "Core lib",
-          "target": "crates/lightwell-core/src/lib.rs",
+          "target": "crates/luxforge-core/src/lib.rs",
           "relevance": "The loader and decode code."
         },
         {
           "kind": "file",
           "label": "Source",
-          "target": "crates/lightwell-core/src/source.rs",
+          "target": "crates/luxforge-core/src/source.rs",
           "relevance": "Where decoding belongs."
         },
         {
@@ -887,7 +887,7 @@
           "Port the input-contract tests to `open_source`; run the source and fixture checks."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask fixtures check",
           "cargo xtask verify --tier quick"
         ],
@@ -919,25 +919,25 @@
         {
           "kind": "file",
           "label": "Editor catalog",
-          "target": "crates/lightwell-core/src/editor/catalog.rs",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
           "relevance": "Entry decode and stroke hydration."
         },
         {
           "kind": "file",
           "label": "Editor reads",
-          "target": "crates/lightwell-core/src/editor/describe.rs",
+          "target": "crates/luxforge-core/src/editor/describe.rs",
           "relevance": "`state` and `entry`."
         },
         {
           "kind": "file",
           "label": "Paths and strokes",
-          "target": "crates/lightwell-core/src/path.rs",
+          "target": "crates/luxforge-core/src/path.rs",
           "relevance": "`StrokeTable`."
         },
         {
           "kind": "file",
           "label": "Editor source",
-          "target": "crates/lightwell-core/src/editor/source.rs",
+          "target": "crates/luxforge-core/src/editor/source.rs",
           "relevance": "RAW metadata and source-recipe validation."
         }
       ],
@@ -953,7 +953,7 @@
           "Counting tests for decodes and hashes; coherence tests per write path; the existing history, mask and RAW tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1037,31 +1037,31 @@
         {
           "kind": "file",
           "label": "Basic module",
-          "target": "crates/lightwell-core/src/modules/basic/mod.rs",
+          "target": "crates/luxforge-core/src/modules/basic/mod.rs",
           "relevance": "A field-patch module."
         },
         {
           "kind": "file",
           "label": "Registry",
-          "target": "crates/lightwell-core/src/modules/registry/mod.rs",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
           "relevance": "`builtin`, single-layer checks and placement."
         },
         {
           "kind": "file",
           "label": "Module trait",
-          "target": "crates/lightwell-core/src/modules/mod.rs",
+          "target": "crates/luxforge-core/src/modules/mod.rs",
           "relevance": "`ToolModule`, `ActionPlan`, `StageContext`."
         },
         {
           "kind": "file",
           "label": "Desktop module list",
-          "target": "crates/lightwell-app/src/app/mod.rs",
+          "target": "crates/luxforge-app/src/app/mod.rs",
           "relevance": "The re-listed modules and `Disabled`."
         },
         {
           "kind": "file",
           "label": "Desktop tools state",
-          "target": "crates/lightwell-app/src/state/tools.rs",
+          "target": "crates/luxforge-app/src/state/tools.rs",
           "relevance": "`neutral`."
         },
         {
@@ -1085,8 +1085,8 @@
           "Descriptor equality before and after; the existing module, preset, mask and describe tests; a dot test for every module with a neutral form."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-core",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1115,25 +1115,25 @@
         {
           "kind": "file",
           "label": "Owner",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "relevance": "Source jobs."
         },
         {
           "kind": "file",
           "label": "Analysis jobs",
-          "target": "crates/lightwell-core/src/analysis/jobs.rs",
+          "target": "crates/luxforge-core/src/analysis/jobs.rs",
           "relevance": "Analysis status."
         },
         {
           "kind": "file",
           "label": "Capability jobs",
-          "target": "crates/lightwell-core/src/capabilities/jobs.rs",
+          "target": "crates/luxforge-core/src/capabilities/jobs.rs",
           "relevance": "Capability status and progress."
         },
         {
           "kind": "file",
           "label": "Activity board",
-          "target": "crates/lightwell-core/src/activity.rs",
+          "target": "crates/luxforge-core/src/activity.rs",
           "relevance": "Where long-running work is published."
         },
         {
@@ -1154,8 +1154,8 @@
           "Update the job and activity tests; add one showing a capability job's progress on the board."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-core",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1186,19 +1186,19 @@
         {
           "kind": "file",
           "label": "Slider driver",
-          "target": "crates/lightwell-app/src/app/slider.rs",
+          "target": "crates/luxforge-app/src/app/slider.rs",
           "relevance": "`SliderDraft` and its lifecycle."
         },
         {
           "kind": "file",
           "label": "Mask driver",
-          "target": "crates/lightwell-app/src/app/masks.rs",
+          "target": "crates/luxforge-app/src/app/masks.rs",
           "relevance": "The mask gesture's draft fields and handlers."
         },
         {
           "kind": "file",
           "label": "Desktop tasks",
-          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "target": "crates/luxforge-app/src/app/tasks.rs",
           "relevance": "Draft owner calls."
         },
         {
@@ -1220,7 +1220,7 @@
           "Unit tests of the state machine; desktop tests for each race; the existing slider and mask tests."
         ],
         "commands": [
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1252,25 +1252,25 @@
         {
           "kind": "file",
           "label": "Editor history",
-          "target": "crates/lightwell-core/src/editor/history.rs",
+          "target": "crates/luxforge-core/src/editor/history.rs",
           "relevance": "Commit, navigate, restore, versions, no-ops."
         },
         {
           "kind": "file",
           "label": "Editor catalog",
-          "target": "crates/lightwell-core/src/editor/catalog.rs",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
           "relevance": "`insert_entry` and request rows."
         },
         {
           "kind": "file",
           "label": "Entry cache",
-          "target": "crates/lightwell-core/src/editor/entries.rs",
+          "target": "crates/luxforge-core/src/editor/entries.rs",
           "relevance": "Updated by every write."
         },
         {
           "kind": "file",
           "label": "Preset library",
-          "target": "crates/lightwell-core/src/presets/library.rs",
+          "target": "crates/luxforge-core/src/presets/library.rs",
           "relevance": "Its own transactions."
         },
         {
@@ -1293,7 +1293,7 @@
           "Existing history, dedup, rollback, restore, artifact, preset and cache-coherence tests; a validation-count test; a duplicate-request test for restore."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1383,19 +1383,19 @@
         {
           "kind": "file",
           "label": "Artifacts",
-          "target": "crates/lightwell-core/src/artifacts/mod.rs",
+          "target": "crates/luxforge-core/src/artifacts/mod.rs",
           "relevance": "The global index."
         },
         {
           "kind": "file",
           "label": "Model",
-          "target": "crates/lightwell-core/src/model.rs",
+          "target": "crates/luxforge-core/src/model.rs",
           "relevance": "`Recipe` and its stroke table."
         },
         {
           "kind": "file",
           "label": "Registry",
-          "target": "crates/lightwell-core/src/modules/registry/mod.rs",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
           "relevance": "Where compile resolves artifacts."
         },
         {
@@ -1416,7 +1416,7 @@
           "Existing artifact, proof and preview tests; a test that a recipe missing its bound artifact refuses to compile by name."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1506,19 +1506,19 @@
         {
           "kind": "file",
           "label": "Editor history",
-          "target": "crates/lightwell-core/src/editor/history.rs",
+          "target": "crates/luxforge-core/src/editor/history.rs",
           "relevance": "`history`, the page."
         },
         {
           "kind": "file",
           "label": "Editor catalog",
-          "target": "crates/lightwell-core/src/editor/catalog.rs",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
           "relevance": "Schema and entry rows."
         },
         {
           "kind": "file",
           "label": "Desktop refresh",
-          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "target": "crates/luxforge-app/src/app/tasks.rs",
           "relevance": "`refresh`, `ready_preview_job`, `preview_still_current`."
         },
         {
@@ -1546,8 +1546,8 @@
           "An owner-call count test for commit, undo and restore refreshes; history paging and lineage tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-core",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1580,25 +1580,25 @@
         {
           "kind": "file",
           "label": "Editor planning",
-          "target": "crates/lightwell-core/src/editor/plan.rs",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
           "relevance": "`apply_action`, `plan_input`, `with_stage_context`, `draft_recipe`, `run_query`."
         },
         {
           "kind": "file",
           "label": "Module trait",
-          "target": "crates/lightwell-core/src/modules/mod.rs",
+          "target": "crates/luxforge-core/src/modules/mod.rs",
           "relevance": "`StageContext`."
         },
         {
           "kind": "file",
           "label": "RAW module",
-          "target": "crates/lightwell-core/src/modules/raw.rs",
+          "target": "crates/luxforge-core/src/modules/raw.rs",
           "relevance": "Payload parsing."
         },
         {
           "kind": "file",
           "label": "Owner",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "relevance": "Preparation interception."
         },
         {
@@ -1620,8 +1620,8 @@
           "Draft-equals-commit tests for JPEG and RAW; the historical RAW sample test; existing module, draft, query and artifact tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-core",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1723,7 +1723,7 @@
         {
           "kind": "file",
           "label": "Field-patch module",
-          "target": "crates/lightwell-core/src/modules/field_patch.rs",
+          "target": "crates/luxforge-core/src/modules/field_patch.rs",
           "relevance": "What every such module shares."
         }
       ],
@@ -1738,7 +1738,7 @@
           "Run the suite; a deliberate break per property."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1757,7 +1757,7 @@
         "sRGB transfer, luminance weights, the Planckian locus and xy/uv conversion, 3×3 matrix products and inverse, and Oklab products are copied across Basic, RAW, the mixer, the vignette, Presence, masks, the renderers and the desktop's swatch; modules import `basic` as a colour library.",
         "About 60 twelve-field `ParameterDescriptor` literals and about 15 local builder helpers exist; four near-identical schema emitters serve actions, queries, tasks and mask commands.",
         "Moving an expression verbatim keeps bytes identical; any expression that changes arithmetic order is out of scope.",
-        "The RAW white-balance approximation's Hadamard-checked inverse keeps its own spelling: merging it onto the shared adjugate would flip the sign of an exactly zero cofactor, an arithmetic change. `lightwell-raw` keeps its own determinants because it cannot depend on the core."
+        "The RAW white-balance approximation's Hadamard-checked inverse keeps its own spelling: merging it onto the shared adjugate would flip the sign of an exactly zero cofactor, an arithmetic change. `luxforge-raw` keeps its own determinants because it cannot depend on the core."
       ],
       "context_links": [
         {
@@ -1769,19 +1769,19 @@
         {
           "kind": "file",
           "label": "Basic colour",
-          "target": "crates/lightwell-core/src/modules/basic/colour.rs",
+          "target": "crates/luxforge-core/src/modules/basic/colour.rs",
           "relevance": "Colour math other modules import."
         },
         {
           "kind": "file",
           "label": "Descriptors",
-          "target": "crates/lightwell-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
           "relevance": "Parameter and control types."
         },
         {
           "kind": "file",
           "label": "API methods",
-          "target": "crates/lightwell-core/src/api/methods.rs",
+          "target": "crates/luxforge-core/src/api/methods.rs",
           "relevance": "Schema emitters."
         }
       ],
@@ -1796,7 +1796,7 @@
           "Exact reference tests; descriptor and schema equality."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1863,19 +1863,19 @@
         {
           "kind": "file",
           "label": "Preview queue",
-          "target": "crates/lightwell-core/src/preview.rs",
+          "target": "crates/luxforge-core/src/preview.rs",
           "relevance": "`PreviewQueue` and the worker."
         },
         {
           "kind": "file",
           "label": "Analysis jobs",
-          "target": "crates/lightwell-core/src/analysis/jobs.rs",
+          "target": "crates/luxforge-core/src/analysis/jobs.rs",
           "relevance": "`AnalysisQueue`."
         },
         {
           "kind": "file",
           "label": "Overlay queue",
-          "target": "crates/lightwell-app/src/app/overlay.rs",
+          "target": "crates/luxforge-app/src/app/overlay.rs",
           "relevance": "The desktop's clipping overlay queue."
         },
         {
@@ -1903,8 +1903,8 @@
           "Queue and cancellation tests; the preview and analysis tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-core",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -1925,7 +1925,7 @@
         "`ProofEndpoint`, a loopback HTTP test server, is public API of the shipped core crate though only tests, the JSON CLI tests and xtask start it; two more hand-written test HTTP servers exist.",
         "`capabilities/host.rs` holds settings dispatch, permissions, jobs, activation, status and resources.",
         "The desktop's duplicated capability call and preparation wait move with the desktop's one owner-task helper, in the desktop consolidation, so this task stays in the core.",
-        "The test-support crate is `lightwell-testkit`, the one crate later harness work extends; there is no second test-support crate.",
+        "The test-support crate is `luxforge-testkit`, the one crate later harness work extends; there is no second test-support crate.",
         "Branch `consolidation-task-033` at `c1c6837` holds two finished but unverified commits (document store, `host.rs` split) and a work-in-progress commit moving the proof endpoint. Main has since added `capabilities/host/tasks.rs`; rebase if clean, otherwise restart from main using the branch as reference."
       ],
       "context_links": [
@@ -1938,25 +1938,25 @@
         {
           "kind": "file",
           "label": "Settings store",
-          "target": "crates/lightwell-core/src/capabilities/settings.rs",
+          "target": "crates/luxforge-core/src/capabilities/settings.rs",
           "relevance": "One document store."
         },
         {
           "kind": "file",
           "label": "Grants store",
-          "target": "crates/lightwell-core/src/capabilities/grants.rs",
+          "target": "crates/luxforge-core/src/capabilities/grants.rs",
           "relevance": "The other."
         },
         {
           "kind": "file",
           "label": "Proof endpoint",
-          "target": "crates/lightwell-testkit/src/proof.rs",
+          "target": "crates/luxforge-testkit/src/proof.rs",
           "relevance": "The proof endpoint, now in the test-support crate."
         },
         {
           "kind": "file",
           "label": "Capability host",
-          "target": "crates/lightwell-core/src/capabilities/host.rs",
+          "target": "crates/luxforge-core/src/capabilities/host.rs",
           "relevance": "The file to split."
         },
         {
@@ -1974,7 +1974,7 @@
       ],
       "acceptance_criteria": [
         "One document store serves settings, grants and the installed-resource record, with the settings request log replaced by revision conflicts; the artifact store uses the shared atomic write.",
-        "The proof endpoint is not part of the release core library, and the test HTTP servers are one, in `lightwell-testkit`.",
+        "The proof endpoint is not part of the release core library, and the test HTTP servers are one, in `luxforge-testkit`.",
         "`host.rs` is split into activation, permissions and resources; behaviour and the proof journey are unchanged.",
         "`task.*` takes the mutation envelope and a retried task starts no second job."
       ],
@@ -1984,8 +1984,8 @@
           "The settings, grants, lifecycle, proof and desktop capability tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-core",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2001,7 +2001,7 @@
         "TASK-004"
       ],
       "extra_context": [
-        "Main already runs Markesteijn tile rows on the shared Rayon pool with a cancellation check per tile (`native_tiles.rs`, `lw_tile_cancel`), parallelizes DNG correction rows, converts camera planes in exact bounded chunks and has a gated Bayer normalization prototype. The original banded-development scope is superseded by that work.",
+        "Main already runs Markesteijn tile rows on the shared Rayon pool with a cancellation check per tile (`native_tiles.rs`, `lf_tile_cancel`), parallelizes DNG correction rows, converts camera planes in exact bounded chunks and has a gated Bayer normalization prototype. The original banded-development scope is superseded by that work.",
         "What remains: `rcd_demosaic` is called with `multiThread = false` and a progress callback whose return librtprocess ignores, so the Bayer demosaic of the Z6 and the Air 2S has no cancellation point and runs on one thread. The adapter only checks cancellation before and after it.",
         "Route RCD's tiles through the same tile executor as Markesteijn (the pinned librtprocess source is vendored and already patched for Markesteijn), so each tile is admitted with the cancellation check and runs on the shared pool. Output must be byte-identical to the serial whole-frame demosaic, including tile borders.",
         "Branch `consolidation-task-034` at `c7ae3f8` is reference only: it predates main's parallel work and must not be rebased."
@@ -2016,19 +2016,19 @@
         {
           "kind": "file",
           "label": "RAW adapter",
-          "target": "crates/lightwell-raw/native/adapter.cpp",
+          "target": "crates/luxforge-raw/native/adapter.cpp",
           "relevance": "The native development entry."
         },
         {
           "kind": "file",
           "label": "RAW crate",
-          "target": "crates/lightwell-raw/src/lib.rs",
+          "target": "crates/luxforge-raw/src/lib.rs",
           "relevance": "The Rust side of development."
         },
         {
           "kind": "file",
           "label": "Source preparation",
-          "target": "crates/lightwell-core/src/source.rs",
+          "target": "crates/luxforge-core/src/source.rs",
           "relevance": "The camera-matrix pass."
         },
         {
@@ -2052,10 +2052,10 @@
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Byte-identity and cancellation tests in `lightwell-raw`; the ignored real-file tests on the supplied files; one before/after measurement at the end."
+          "Byte-identity and cancellation tests in `luxforge-raw`; the ignored real-file tests on the supplied files; one before/after measurement at the end."
         ],
         "commands": [
-          "cargo test -p lightwell-raw",
+          "cargo test -p luxforge-raw",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2086,25 +2086,25 @@
         {
           "kind": "file",
           "label": "Mask commands",
-          "target": "crates/lightwell-core/src/mask/commands.rs",
+          "target": "crates/luxforge-core/src/mask/commands.rs",
           "relevance": "The separate command resolution and planning."
         },
         {
           "kind": "file",
           "label": "Mask parameters",
-          "target": "crates/lightwell-core/src/mask/parameters.rs",
+          "target": "crates/luxforge-core/src/mask/parameters.rs",
           "relevance": "Identity parameters today."
         },
         {
           "kind": "file",
           "label": "Editor masks",
-          "target": "crates/lightwell-core/src/editor/masks.rs",
+          "target": "crates/luxforge-core/src/editor/masks.rs",
           "relevance": "The service side of mask commands."
         },
         {
           "kind": "file",
           "label": "Command contracts",
-          "target": "crates/lightwell-core/src/mask/command_contracts.rs",
+          "target": "crates/luxforge-core/src/mask/command_contracts.rs",
           "relevance": "The UI/API parity contracts."
         },
         {
@@ -2134,7 +2134,7 @@
           "Mask and command-contract tests; the mask, mask-brush, mask-range and mask-combine smokes."
         ],
         "commands": [
-          "cargo test -p lightwell-core mask",
+          "cargo test -p luxforge-core mask",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2165,31 +2165,31 @@
         {
           "kind": "file",
           "label": "Mask module",
-          "target": "crates/lightwell-core/src/mask/mod.rs",
+          "target": "crates/luxforge-core/src/mask/mod.rs",
           "relevance": "The component-kind table."
         },
         {
           "kind": "file",
           "label": "Mask canvas",
-          "target": "crates/lightwell-app/src/mask_canvas.rs",
+          "target": "crates/luxforge-app/src/mask_canvas.rs",
           "relevance": "Desktop drawing and hit testing."
         },
         {
           "kind": "file",
           "label": "Mask draft",
-          "target": "crates/lightwell-app/src/mask_draft.rs",
+          "target": "crates/luxforge-app/src/mask_draft.rs",
           "relevance": "Desktop drag handling per kind."
         },
         {
           "kind": "file",
           "label": "Crop canvas",
-          "target": "crates/lightwell-app/src/crop_canvas.rs",
+          "target": "crates/luxforge-app/src/crop_canvas.rs",
           "relevance": "The other canvas view."
         },
         {
           "kind": "file",
           "label": "Masks panel state",
-          "target": "crates/lightwell-app/src/state/masks.rs",
+          "target": "crates/luxforge-app/src/state/masks.rs",
           "relevance": "Rules re-derived on the desktop."
         }
       ],
@@ -2206,8 +2206,8 @@
           "Mask tests; app tests; the four mask smokes and the crop smoke."
         ],
         "commands": [
-          "cargo test -p lightwell-core mask",
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-core mask",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2236,13 +2236,13 @@
         {
           "kind": "file",
           "label": "Settings",
-          "target": "crates/lightwell-core/src/capabilities/settings.rs",
+          "target": "crates/luxforge-core/src/capabilities/settings.rs",
           "relevance": "The settings kinds."
         },
         {
           "kind": "file",
           "label": "Descriptors",
-          "target": "crates/lightwell-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
           "relevance": "The parameter vocabulary."
         },
         {
@@ -2262,7 +2262,7 @@
           "Capability tests; capabilities smoke."
         ],
         "commands": [
-          "cargo test -p lightwell-core capabilit",
+          "cargo test -p luxforge-core capabilit",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2292,19 +2292,19 @@
         {
           "kind": "file",
           "label": "Registry",
-          "target": "crates/lightwell-core/src/modules/registry/mod.rs",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
           "relevance": "The file to split."
         },
         {
           "kind": "file",
           "label": "Modules",
-          "target": "crates/lightwell-core/src/modules/mod.rs",
+          "target": "crates/luxforge-core/src/modules/mod.rs",
           "relevance": "`ToolModule`."
         },
         {
           "kind": "file",
           "label": "Capabilities proof module",
-          "target": "crates/lightwell-core/src/modules/capabilities_proof.rs",
+          "target": "crates/luxforge-core/src/modules/capabilities_proof.rs",
           "relevance": "The capability consumer."
         }
       ],
@@ -2318,7 +2318,7 @@
           "Core tests; list identity."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2334,7 +2334,7 @@
         "TASK-032"
       ],
       "extra_context": [
-        "`crates/lightwell-app/src/app/mod.rs` is about 9.2k lines: the editor struct, the update loop over one flat message enum, owner answers, preview presentation and a large test module.",
+        "`crates/luxforge-app/src/app/mod.rs` is about 9.2k lines: the editor struct, the update loop over one flat message enum, owner answers, preview presentation and a large test module.",
         "Nested message enums per seam (preview, owner answers, crop, masks, controls, capabilities, evidence) let each seam own its update function; the top-level update only routes.",
         "`state/` is derived view state and must not import `app/`; `check-repository` enforces the desktop layer boundaries and gains this rule."
       ],
@@ -2348,13 +2348,13 @@
         {
           "kind": "file",
           "label": "Desktop editor",
-          "target": "crates/lightwell-app/src/app/mod.rs",
+          "target": "crates/luxforge-app/src/app/mod.rs",
           "relevance": "The file to split."
         },
         {
           "kind": "file",
           "label": "Messages",
-          "target": "crates/lightwell-app/src/app/message.rs",
+          "target": "crates/luxforge-app/src/app/message.rs",
           "relevance": "The flat message enum."
         },
         {
@@ -2375,7 +2375,7 @@
           "App tests; rendered tier on the integrated branch."
         ],
         "commands": [
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2392,7 +2392,7 @@
       ],
       "extra_context": [
         "The displayed frame, the draft photo and the crop input stage are held and uploaded by separate paths with their own frame types.",
-        "Clipping, mask overlays and the crop input stage are drawn as separate images or canvases over the photo instead of on the photo surface (`lightwell-ui` `photo_surface`)."
+        "Clipping, mask overlays and the crop input stage are drawn as separate images or canvases over the photo instead of on the photo surface (`luxforge-ui` `photo_surface`)."
       ],
       "context_links": [
         {
@@ -2404,19 +2404,19 @@
         {
           "kind": "file",
           "label": "Desktop editor",
-          "target": "crates/lightwell-app/src/app/mod.rs",
+          "target": "crates/luxforge-app/src/app/mod.rs",
           "relevance": "Frame presentation."
         },
         {
           "kind": "file",
           "label": "Photo surface",
-          "target": "crates/lightwell-ui/src/photo_surface.rs",
+          "target": "crates/luxforge-ui/src/photo_surface.rs",
           "relevance": "The GPU surface."
         },
         {
           "kind": "file",
           "label": "Overlay",
-          "target": "crates/lightwell-app/src/app/overlay.rs",
+          "target": "crates/luxforge-app/src/app/overlay.rs",
           "relevance": "The clipping overlay."
         },
         {
@@ -2428,7 +2428,7 @@
         {
           "kind": "file",
           "label": "Presenter",
-          "target": "crates/lightwell-app/src/app/presenter.rs",
+          "target": "crates/luxforge-app/src/app/presenter.rs",
           "relevance": "The one holder of what is displayed."
         }
       ],
@@ -2443,7 +2443,7 @@
           "App tests; rendered tier."
         ],
         "commands": [
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick",
           "cargo xtask verify --tier rendered"
         ],
@@ -2474,25 +2474,25 @@
         {
           "kind": "file",
           "label": "Desktop tasks",
-          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "target": "crates/luxforge-app/src/app/tasks.rs",
           "relevance": "Task helpers and the event poll."
         },
         {
           "kind": "file",
           "label": "Desktop capabilities",
-          "target": "crates/lightwell-app/src/app/capabilities.rs",
+          "target": "crates/luxforge-app/src/app/capabilities.rs",
           "relevance": "The duplicate call and preparation wait."
         },
         {
           "kind": "file",
           "label": "Waker",
-          "target": "crates/lightwell-app/src/app/waker.rs",
+          "target": "crates/luxforge-app/src/app/waker.rs",
           "relevance": "Wakeups."
         },
         {
           "kind": "file",
           "label": "State",
-          "target": "crates/lightwell-app/src/state/mod.rs",
+          "target": "crates/luxforge-app/src/state/mod.rs",
           "relevance": "Derived state."
         },
         {
@@ -2514,7 +2514,7 @@
           "App tests; idle and gesture timing at the end."
         ],
         "commands": [
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2545,31 +2545,31 @@
         {
           "kind": "file",
           "label": "Controls",
-          "target": "crates/lightwell-app/src/app/controls.rs",
+          "target": "crates/luxforge-app/src/app/controls.rs",
           "relevance": "Control requests."
         },
         {
           "kind": "file",
           "label": "Fields",
-          "target": "crates/lightwell-app/src/state/fields.rs",
+          "target": "crates/luxforge-app/src/state/fields.rs",
           "relevance": "Control fields."
         },
         {
           "kind": "file",
           "label": "Tools state",
-          "target": "crates/lightwell-app/src/state/tools.rs",
+          "target": "crates/luxforge-app/src/state/tools.rs",
           "relevance": "Control tree walking."
         },
         {
           "kind": "file",
           "label": "Performance state",
-          "target": "crates/lightwell-app/src/state/performance.rs",
+          "target": "crates/luxforge-app/src/state/performance.rs",
           "relevance": "The mirror report types."
         },
         {
           "kind": "file",
           "label": "Control descriptors",
-          "target": "crates/lightwell-core/src/modules/controls.rs",
+          "target": "crates/luxforge-core/src/modules/controls.rs",
           "relevance": "Where commit-on-pick is declared."
         },
         {
@@ -2592,7 +2592,7 @@
           "App tests; covering smokes."
         ],
         "commands": [
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2624,31 +2624,31 @@
         {
           "kind": "file",
           "label": "Crop driver",
-          "target": "crates/lightwell-app/src/app/crop.rs",
+          "target": "crates/luxforge-app/src/app/crop.rs",
           "relevance": "The desktop-local crop draft."
         },
         {
           "kind": "file",
           "label": "Crop draft",
-          "target": "crates/lightwell-app/src/crop_draft.rs",
+          "target": "crates/luxforge-app/src/crop_draft.rs",
           "relevance": "Crop geometry."
         },
         {
           "kind": "file",
           "label": "Gesture",
-          "target": "crates/lightwell-app/src/app/gesture.rs",
+          "target": "crates/luxforge-app/src/app/gesture.rs",
           "relevance": "The gesture field."
         },
         {
           "kind": "file",
           "label": "Draft driver",
-          "target": "crates/lightwell-app/src/app/draft.rs",
+          "target": "crates/luxforge-app/src/app/draft.rs",
           "relevance": "The core-draft driver."
         },
         {
           "kind": "file",
           "label": "Core drafts",
-          "target": "crates/lightwell-core/src/draft.rs",
+          "target": "crates/luxforge-core/src/draft.rs",
           "relevance": "The draft lifecycle."
         },
         {
@@ -2669,7 +2669,7 @@
           "App tests; crop smokes; timing at the end."
         ],
         "commands": [
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-app",
           "cargo xtask verify --tier quick",
           "cargo xtask verify --tier rendered"
         ],
@@ -2701,19 +2701,19 @@
         {
           "kind": "file",
           "label": "Render",
-          "target": "crates/lightwell-core/src/render.rs",
+          "target": "crates/luxforge-core/src/render.rs",
           "relevance": "Entry points and globals."
         },
         {
           "kind": "file",
           "label": "Preview",
-          "target": "crates/lightwell-core/src/preview.rs",
+          "target": "crates/luxforge-core/src/preview.rs",
           "relevance": "Jobs and results."
         },
         {
           "kind": "file",
           "label": "Proxy",
-          "target": "crates/lightwell-core/src/proxy.rs",
+          "target": "crates/luxforge-core/src/proxy.rs",
           "relevance": "The proxy downscale."
         },
         {
@@ -2742,7 +2742,7 @@
           "Core render and preview tests; rendered tier."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2772,13 +2772,13 @@
         {
           "kind": "file",
           "label": "Mask overlay",
-          "target": "crates/lightwell-core/src/analysis/mask_overlay.rs",
+          "target": "crates/luxforge-core/src/analysis/mask_overlay.rs",
           "relevance": "The coverage grid."
         },
         {
           "kind": "file",
           "label": "Spatial",
-          "target": "crates/lightwell-core/src/render/spatial.rs",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
           "relevance": "Tile processing."
         },
         {
@@ -2799,7 +2799,7 @@
           "Core tests; mask smokes."
         ],
         "commands": [
-          "cargo test -p lightwell-core mask",
+          "cargo test -p luxforge-core mask",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2827,13 +2827,13 @@
         {
           "kind": "file",
           "label": "Render",
-          "target": "crates/lightwell-core/src/render.rs",
+          "target": "crates/luxforge-core/src/render.rs",
           "relevance": "Byte evaluation."
         },
         {
           "kind": "file",
           "label": "Linear render",
-          "target": "crates/lightwell-core/src/render/linear.rs",
+          "target": "crates/luxforge-core/src/render/linear.rs",
           "relevance": "RAW evaluation."
         },
         {
@@ -2854,7 +2854,7 @@
           "Core render tests; rendered and timing tiers at the end."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2864,7 +2864,7 @@
     },
     {
       "id": "TASK-047",
-      "description": "Clean up RAW preparation: sensor neutral sampling moves into `lightwell-raw`, redundant decode copies and finiteness scans go, a condvar replaces the 25 ms memory-gate poll, the DNG opcode allowlist lives in one place, and the camera catalog becomes static data.",
+      "description": "Clean up RAW preparation: sensor neutral sampling moves into `luxforge-raw`, redundant decode copies and finiteness scans go, a condvar replaces the 25 ms memory-gate poll, the DNG opcode allowlist lives in one place, and the camera catalog becomes static data.",
       "status": "completed",
       "dependencies": [
         "TASK-034"
@@ -2886,25 +2886,25 @@
         {
           "kind": "file",
           "label": "Source preparation",
-          "target": "crates/lightwell-core/src/source.rs",
+          "target": "crates/luxforge-core/src/source.rs",
           "relevance": "Neutral sampling and the memory gate."
         },
         {
           "kind": "file",
           "label": "RAW crate",
-          "target": "crates/lightwell-raw/src/lib.rs",
+          "target": "crates/luxforge-raw/src/lib.rs",
           "relevance": "Decode and development."
         },
         {
           "kind": "file",
           "label": "DNG",
-          "target": "crates/lightwell-raw/src/dng.rs",
+          "target": "crates/luxforge-raw/src/dng.rs",
           "relevance": "Opcode handling."
         },
         {
           "kind": "file",
           "label": "Profiles",
-          "target": "crates/lightwell-raw/src/profiles.rs",
+          "target": "crates/luxforge-raw/src/profiles.rs",
           "relevance": "The camera catalog."
         },
         {
@@ -2925,8 +2925,8 @@
           "RAW tests; ignored real-file tests; raw-panel smoke."
         ],
         "commands": [
-          "cargo test -p lightwell-raw",
-          "cargo test -p lightwell-core raw",
+          "cargo test -p luxforge-raw",
+          "cargo test -p luxforge-core raw",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -2952,7 +2952,7 @@
         {
           "kind": "file",
           "label": "Evidence",
-          "target": "crates/lightwell-app/src/app/evidence.rs",
+          "target": "crates/luxforge-app/src/app/evidence.rs",
           "relevance": "The desktop's script parser."
         },
         {
@@ -2978,7 +2978,7 @@
           "App and xtask tests; rendered tier."
         ],
         "commands": [
-          "cargo test -p lightwell-app",
+          "cargo test -p luxforge-app",
           "cargo test -p xtask",
           "cargo xtask verify --tier quick"
         ],
@@ -2989,14 +2989,14 @@
     },
     {
       "id": "TASK-049",
-      "description": "Build test support on `lightwell-testkit` and an independent `lightwell-reference` crate that cannot depend on the core, with fewer test binaries, the per-module field-patch tests in the field-patch suite, the historical-parity tests deleted and xtask's acceptance JSON helpers on the conformance client.",
+      "description": "Build test support on `luxforge-testkit` and an independent `luxforge-reference` crate that cannot depend on the core, with fewer test binaries, the per-module field-patch tests in the field-patch suite, the historical-parity tests deleted and xtask's acceptance JSON helpers on the conformance client.",
       "status": "completed",
       "dependencies": [
         "TASK-033"
       ],
       "extra_context": [
         "Test helpers are copied per test binary; the core has one integration-test binary per file (mask tests alone are about a dozen).",
-        "Reference implementations live in the core's test tree and can import the code they check; a `lightwell-reference` crate that cannot depend on `lightwell-core` makes them independent by construction.",
+        "Reference implementations live in the core's test tree and can import the code they check; a `luxforge-reference` crate that cannot depend on `luxforge-core` makes them independent by construction.",
         "Per-module field-patch tests remain in `basic`, `mixer`, `presence` and `vignette` beside the shared field-patch conformance suite.",
         "`tests/basic_tone.rs` and `tests/basic_colour.rs` compare against values saved before an earlier change, which the current-shapes rule forbids.",
         "xtask's `basic_acceptance.rs` has its own JSON helpers beside the conformance suite's client."
@@ -3011,25 +3011,25 @@
         {
           "kind": "file",
           "label": "Core tests",
-          "target": "crates/lightwell-core/tests/mask/unit.rs",
+          "target": "crates/luxforge-core/tests/mask/unit.rs",
           "relevance": "One of the mask test binaries."
         },
         {
           "kind": "file",
           "label": "Field-patch conformance",
-          "target": "crates/lightwell-core/tests/modules/field_patch.rs",
+          "target": "crates/luxforge-core/tests/modules/field_patch.rs",
           "relevance": "The shared suite."
         },
         {
           "kind": "file",
           "label": "Basic Tone tests",
-          "target": "crates/lightwell-core/tests/basic/tone.rs",
+          "target": "crates/luxforge-core/tests/basic/tone.rs",
           "relevance": "The Basic Tone tests that remain after the historical-parity tests were deleted."
         },
         {
           "kind": "file",
           "label": "Basic colour tests",
-          "target": "crates/lightwell-core/tests/basic/colour.rs",
+          "target": "crates/luxforge-core/tests/basic/colour.rs",
           "relevance": "The Basic colour tests that remain after the historical-parity tests were deleted."
         },
         {
@@ -3040,7 +3040,7 @@
         }
       ],
       "acceptance_criteria": [
-        "`lightwell-testkit` holds the shared helpers and `lightwell-reference` holds the independent references with no dependency on the core; the copies are deleted.",
+        "`luxforge-testkit` holds the shared helpers and `luxforge-reference` holds the independent references with no dependency on the core; the copies are deleted.",
         "The mask tests are one binary and the core has fewer test binaries.",
         "Per-module field-patch tests live in the field-patch suite.",
         "The historical-parity tests are deleted.",
@@ -3053,7 +3053,7 @@
           "Core and xtask tests; quick tier."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -3087,7 +3087,7 @@
         {
           "kind": "file",
           "label": "Error",
-          "target": "crates/lightwell-core/src/error.rs",
+          "target": "crates/luxforge-core/src/error.rs",
           "relevance": "The error type."
         }
       ],
@@ -3101,7 +3101,7 @@
           "Core and app tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core",
+          "cargo test -p luxforge-core",
           "cargo xtask verify --tier quick"
         ],
         "expected_results": [
@@ -3132,7 +3132,7 @@
         {
           "kind": "file",
           "label": "Basic module",
-          "target": "crates/lightwell-core/src/modules/basic/mod.rs",
+          "target": "crates/luxforge-core/src/modules/basic/mod.rs",
           "relevance": "Field descriptions."
         },
         {

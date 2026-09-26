@@ -652,7 +652,7 @@ mod tests {
         let reopened = Launch::named("launch2")
             .open_all(&[fixture.into()])
             .window(["1440", "900"])
-            .disable("lightwell.crop")
+            .disable("luxforge.crop")
             .catalog(Path::new("/out/launch1/catalog.sqlite"));
         assert_eq!(
             strings(reopened.arguments(Path::new("/out/launch2"), None)),
@@ -660,7 +660,7 @@ mod tests {
                 "--catalog",
                 "/out/launch1/catalog.sqlite",
                 "--disable-module",
-                "lightwell.crop",
+                "luxforge.crop",
                 "--evidence-dir",
                 "/out/launch2",
                 "--open",
@@ -709,9 +709,9 @@ mod tests {
             .catalog(Path::new("/c.sqlite"))
             .script(
                 "script2.json",
-                lightwell_evidence::write(&[lightwell_evidence::Step::wait(1)]),
+                luxforge_evidence::write(&[luxforge_evidence::Step::wait(1)]),
             )
-            .disable("lightwell.crop");
+            .disable("luxforge.crop");
         // The binary is absent, so the spawn fails, and nothing is recorded as started.
         assert!(run.launch(launch).is_err());
         assert!(run.launches.is_empty());

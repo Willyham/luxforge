@@ -4,7 +4,7 @@
 
 Sources S01–S44 were checked online on **2026-09-20**; S45–S48 and relevant existing sources were checked on **2026-09-22**; S49–S58 on **2026-09-23**. Dates in the entries describe the source, not the retrieval. This register is an annotated bibliography, not a claim that every linked API or feature was tested. Adobe pages often combine new sections with older text; the chapters record material conflicts. Summaries are deliberately concise; follow the original for figures, demonstrations and full procedures.
 
-Evidence labels: **D** = documented product behavior; **H** = historical engineering evidence; **C** = conceptual explanation; **P** = Lightwell proposal; **U** = unknown. Mirrored SDK documentation is identified explicitly; no forum speculation is used as algorithm evidence.
+Evidence labels: **D** = documented product behavior; **H** = historical engineering evidence; **C** = conceptual explanation; **P** = Luxforge proposal; **U** = unknown. Mirrored SDK documentation is identified explicitly; no forum speculation is used as algorithm evidence.
 
 | ID | Source | Provenance / date | What it establishes and its limits |
 | --- | --- | --- | --- |

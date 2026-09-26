@@ -1,5 +1,5 @@
 use crate::*;
-use lightwell_core::{
+use luxforge_core::{
     CROP_EFFECT, CropPayload, CropStage, EditorService, ModuleRegistry, Mutation, MutationOutcome,
     ORIENTATION_EFFECT, Transform,
 };
@@ -48,15 +48,15 @@ pub fn run(root: &Path, out: &Path) -> Result {
         ensure(
             modules
                 == [
-                    "lightwell.presets",
-                    "lightwell.pixel",
-                    "lightwell.raw",
-                    "lightwell.basic",
-                    "lightwell.presence",
-                    "lightwell.mixer",
-                    "lightwell.transform",
-                    "lightwell.crop",
-                    "lightwell.vignette",
+                    "luxforge.presets",
+                    "luxforge.pixel",
+                    "luxforge.raw",
+                    "luxforge.basic",
+                    "luxforge.presence",
+                    "luxforge.mixer",
+                    "luxforge.transform",
+                    "luxforge.crop",
+                    "luxforge.vignette",
                 ]
                 && actions
                     == [

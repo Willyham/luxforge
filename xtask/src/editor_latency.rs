@@ -26,8 +26,8 @@
 //!
 //! [design]: ../../../docs/design/basic-and-histogram.md
 use crate::*;
-use lightwell_core::{ModuleRegistry, ParameterKind};
-use lightwell_evidence::{
+use luxforge_core::{ModuleRegistry, ParameterKind};
+use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, MaskStep, PaintStep, Reference,
     SliderEnd, SliderStep, WorkspaceStep,
 };
@@ -42,7 +42,7 @@ const SET_BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
 const SET_CONTROLS: &str = "set-controls";
 const MASTER: &str = "master";
-const CONTROLS_MODULE: &str = "lightwell.controls";
+const CONTROLS_MODULE: &str = "luxforge.controls";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -77,7 +77,7 @@ struct FieldTarget {
 impl FieldTarget {
     /// The default this harness has always measured, `--action`/`--parameter` absent: Basic's
     /// exposure slider, -5..5 EV in steps of 0.01, mirroring
-    /// `lightwell_core::modules::basic::EXPOSURE_MIN/MAX/STEP`, which are not exported.
+    /// `luxforge_core::modules::basic::EXPOSURE_MIN/MAX/STEP`, which are not exported.
     fn basic_exposure() -> Self {
         Self {
             action: SET_BASIC.into(),
@@ -517,10 +517,10 @@ fn commit_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<sc
 fn curve_view_steps() -> Vec<script::Step> {
     // The latency source is JPEG; the RAW section is absent from its tools model entirely.
     let mut steps: Vec<script::Step> = [
-        "lightwell.basic",
-        "lightwell.pixel",
-        "lightwell.transform",
-        "lightwell.crop",
+        "luxforge.basic",
+        "luxforge.pixel",
+        "luxforge.transform",
+        "luxforge.crop",
     ]
     .into_iter()
     .map(|module| script::Step::section(module, false))
@@ -1497,7 +1497,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         },
         "view_setup":if options.control == Control::Curve {
             json!({"developer":true,"proof_section":CONTROLS_MODULE,
-                "collapsed":["lightwell.basic","lightwell.pixel","lightwell.transform","lightwell.crop"],
+                "collapsed":["luxforge.basic","luxforge.pixel","luxforge.transform","luxforge.crop"],
                 "raw_section":"absent for the JPEG latency source",
                 "tools_scroll":1.0})
         } else { Value::Null },

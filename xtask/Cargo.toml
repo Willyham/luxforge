@@ -13,10 +13,10 @@ workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image.workspace = true
-lightwell-core = { path = "../crates/lightwell-core" }
-lightwell-evidence = { path = "../crates/lightwell-evidence" }
-lightwell-reference = { path = "../crates/lightwell-reference" }
-lightwell-testkit = { path = "../crates/lightwell-testkit" }
+luxforge-core = { path = "../crates/luxforge-core" }
+luxforge-evidence = { path = "../crates/luxforge-evidence" }
+luxforge-reference = { path = "../crates/luxforge-reference" }
+luxforge-testkit = { path = "../crates/luxforge-testkit" }
 sha2 = "=0.10.9"
 regex = "=1.12.3"
 percent-encoding = "=2.3.2"

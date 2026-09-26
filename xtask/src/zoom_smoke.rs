@@ -19,7 +19,7 @@ use crate::{
     smoke::Scenario,
     *,
 };
-use lightwell_evidence::{self as script, ViewStep};
+use luxforge_evidence::{self as script, ViewStep};
 
 pub const SCENARIO: &str = "zoom";
 

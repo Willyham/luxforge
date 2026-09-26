@@ -8,9 +8,9 @@ A "component" is three things that must be kept apart, because they live in diff
 
 | Layer | Crate | Knows about | Never knows about |
 | --- | --- | --- | --- |
-| **Control kind** | `lightwell-core::modules::descriptor` | Actions, parameters, ranges, defaults, hints. Validated at registration, listed by `module.list` | Pixels, layout, colours, Iced |
-| **View model** | `lightwell-app/src/state/` | One control kind plus the displayed entry's values, drafts, field text, availability | Iced |
-| **Widget** | `lightwell-ui` | A plain-data model and message callbacks | `lightwell-core`, parameters, actions, validation, requests |
+| **Control kind** | `luxforge-core::modules::descriptor` | Actions, parameters, ranges, defaults, hints. Validated at registration, listed by `module.list` | Pixels, layout, colours, Iced |
+| **View model** | `luxforge-app/src/state/` | One control kind plus the displayed entry's values, drafts, field text, availability | Iced |
+| **Widget** | `luxforge-ui` | A plain-data model and message callbacks | `luxforge-core`, parameters, actions, validation, requests |
 
 A module declares a control kind bound to a parameter of one of its actions. The desktop chooses the widget and its states from the parameter's kind and hints. The widget draws what it is given. The rule of this design is that **nothing moves between these layers**: a widget takes formatted strings and clamped numbers, never a range to enforce; a control kind carries semantics, never a pixel size or a colour.
 
@@ -18,7 +18,7 @@ A module declares a control kind bound to a parameter of one of its actions. The
 
 Both references are read as [research](../research), not as targets.
 
-| Concern | Lightroom | darktable | Lightwell |
+| Concern | Lightroom | darktable | Luxforge |
 | --- | --- | --- | --- |
 | Range | One hard range per slider; a typed value is clamped | Soft range on the rail, hard range for typed values, adjustable per slider | Declared soft and hard ranges: the rail spans the soft range, typing reaches the hard range, and a value outside the soft range is shown on the rail as an over-range mark, never hidden |
 | Fine control | Option-drag and arrow keys | Right-click opens a fine slider; scroll wheel changes values | Arrow keys step, Shift steps ×10, Option steps ÷10, all declared by the parameter. No scroll-wheel editing: a trackpad scroll over a panel of sliders must never edit a photograph ([decision 1](#decisions)) |
@@ -78,7 +78,7 @@ A curve control names its module-owned query in `sample_query`. The query declar
 
 ### Icons
 
-Icon buttons name an icon; they never embed one. `lightwell-ui` owns one `Icon` enumeration (rotate-left, rotate-right, flip, mirror, crop, picker, reset, plus, minus, lock, swap, guide, pointer, and the ones the state panel and title bar already use) and draws each as a vector path in the text colour, replacing today's Unicode glyphs. The core validates only that an icon name is a lowercase hyphenated name; the desktop maps it and falls back to the label. This keeps the core free of a UI asset list and the widget crate free of a registry.
+Icon buttons name an icon; they never embed one. `luxforge-ui` owns one `Icon` enumeration (rotate-left, rotate-right, flip, mirror, crop, picker, reset, plus, minus, lock, swap, guide, pointer, and the ones the state panel and title bar already use) and draws each as a vector path in the text colour, replacing today's Unicode glyphs. The core validates only that an icon name is a lowercase hyphenated name; the desktop maps it and falls back to the label. This keeps the core free of a UI asset list and the widget crate free of a registry.
 
 ## Widget library
 
@@ -140,12 +140,12 @@ The crop section keeps its own draft and panel. Its ratio chips, custom ratio fi
 
 ## Controls proof module
 
-A developer test module `lightwell.controls` declares one control of every kind bound to one field-patch action `set-controls` with a parameter of every kind, an `action` in each style with an icon, and a `curve` with two channels and a histogram background, all inside one `group` whose reset is the module's, and compiles to a no-op colour stage. Because that group is the module's only one, the panel draws its controls without a sub-group header; a drawn group's header, disclosure and reset are exercised on Basic's three groups. It is registered and listed only in developer mode (automatic in debug builds, `--developer` in optimized builds); outside that mode both `module.list` and the workspace omit it. The existing pixel proof remains in the built-in API registry and is shown in the workspace only in developer mode. `edit.set-controls` accepts exactly one field; the module and group use the separate non-patch `edit.reset-controls` action. `query.sample-controls-curve` returns 257 piecewise-linear samples. The identity layer shares the source pixel allocation. It is how UI/API parity is proven for the vocabulary as a whole rather than for whichever module happens to use a kind first: every control's message produces the request an independent JSON client sends, and every request the client sends is reflected in the control.
+A developer test module `luxforge.controls` declares one control of every kind bound to one field-patch action `set-controls` with a parameter of every kind, an `action` in each style with an icon, and a `curve` with two channels and a histogram background, all inside one `group` whose reset is the module's, and compiles to a no-op colour stage. Because that group is the module's only one, the panel draws its controls without a sub-group header; a drawn group's header, disclosure and reset are exercised on Basic's three groups. It is registered and listed only in developer mode (automatic in debug builds, `--developer` in optimized builds); outside that mode both `module.list` and the workspace omit it. The existing pixel proof remains in the built-in API registry and is shown in the workspace only in developer mode. `edit.set-controls` accepts exactly one field; the module and group use the separate non-patch `edit.reset-controls` action. `query.sample-controls-curve` returns 257 piecewise-linear samples. The identity layer shares the source pixel allocation. It is how UI/API parity is proven for the vocabulary as a whole rather than for whichever module happens to use a kind first: every control's message produces the request an independent JSON client sends, and every request the client sends is reflected in the control.
 
 ## Verification and acceptance
 
 - **Core.** Registration rejects each new mismatched binding (a toggle on a number, a choice on a boolean, a curve on a colour, a rail hint on a colour, soft bounds outside the hard range, a fine step that is not positive, more channels than parameters); accepts each valid one; `module.list` shows every kind and hint; every new parameter kind validates requests and refuses bad ones with the field named.
-- **Widgets.** Pure mapping functions with tests: soft-range fill and over-range side, HSV and hex conversions both ways, curve hit test and fraction rounding. The gallery builds every state without panicking and links no `lightwell-core`. `cargo xtask check-repository` keeps the layer boundary.
+- **Widgets.** Pure mapping functions with tests: soft-range fill and over-range side, HSV and hex conversions both ways, curve hit test and fraction rounding. The gallery builds every state without panicking and links no `luxforge-core`. `cargo xtask check-repository` keeps the layer boundary.
 - **Desktop.** Parity for every control of the proof module through the JSON method table; per-kind gesture tests: a slider or curve drag opens one draft and commits once, a toggle sends one boolean, a choice sends one option, a picker drag drafts, a field commits on Enter and not on blur, Escape cancels each continuous gesture. Per-section re-derivation still keeps an untouched section's version.
 - **Rendered evidence.** A `gallery` smoke scenario and a `controls` smoke scenario over the proof module, captured with correlated state and logs on the M4 Mac, are compared with the components board. The 24 MP slider-to-frame latency measured by `cargo xtask editor-latency` does not regress with the rail decoration or the factored value field, and a curve point drag meets the same provisional threshold as a slider drag.
 - **Docs.** The workspace design's widget row, [feature status](../features.md) and the [user guide](../user-guide.md) describe the delivered kinds; the module design's descriptor table lists them.

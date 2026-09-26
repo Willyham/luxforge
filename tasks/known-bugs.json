@@ -19,7 +19,7 @@
         {
           "kind": "file",
           "label": "Tools-panel state",
-          "target": "crates/lightwell-app/src/state/tools.rs",
+          "target": "crates/luxforge-app/src/state/tools.rs",
           "relevance": "`active` and `neutral` decide the band's dot."
         },
         {
@@ -67,25 +67,25 @@
         {
           "kind": "file",
           "label": "Owner loop",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "relevance": "`OwnerCall` carries the reply channel; the loop's special-cased methods and its analysis worker are the pattern for a deferred answer and a bounded worker."
         },
         {
           "kind": "file",
           "label": "Sample planning",
-          "target": "crates/lightwell-core/src/editor/evaluate.rs",
+          "target": "crates/luxforge-core/src/editor/evaluate.rs",
           "relevance": "`sample_entry`, `sample_draft` and `SamplePlan`, which binds a stack for sampling off the owner."
         },
         {
           "kind": "file",
           "label": "Loopback transport",
-          "target": "crates/lightwell-core/src/api/transport.rs",
+          "target": "crates/luxforge-core/src/api/transport.rs",
           "relevance": "Serves one call at a time per connection, so a deferred answer keeps each client's order."
         },
         {
           "kind": "file",
           "label": "Linear point evaluation",
-          "target": "crates/lightwell-core/src/render/linear.rs",
+          "target": "crates/luxforge-core/src/render/linear.rs",
           "relevance": "`sample_linear` and the point evaluation of the last spatial segment."
         },
         {
@@ -136,7 +136,7 @@
         {
           "kind": "file",
           "label": "Crop draft driver",
-          "target": "crates/lightwell-app/src/app/crop.rs",
+          "target": "crates/luxforge-app/src/app/crop.rs",
           "relevance": "Pending draft start, queued idle changes and draft end."
         },
         {
@@ -227,7 +227,7 @@
         {
           "kind": "file",
           "label": "Proxy source",
-          "target": "crates/lightwell-core/src/proxy.rs",
+          "target": "crates/luxforge-core/src/proxy.rs",
           "relevance": "Proxy scale and source construction."
         },
         {
@@ -275,7 +275,7 @@
         {
           "kind": "file",
           "label": "Tools-panel state",
-          "target": "crates/lightwell-app/src/state/tools.rs",
+          "target": "crates/luxforge-app/src/state/tools.rs",
           "relevance": "`crop_input_stage` and `committed_crop`."
         },
         {
@@ -326,7 +326,7 @@
         {
           "kind": "file",
           "label": "Spatial primitive",
-          "target": "crates/lightwell-core/src/render/spatial.rs",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
           "relevance": "Tile batching under the spatial target, halos and global estimates."
         },
         {
@@ -374,7 +374,7 @@
         {
           "kind": "file",
           "label": "Capability journey test",
-          "target": "crates/lightwell-app/src/app/capabilities_tests.rs",
+          "target": "crates/luxforge-app/src/app/capabilities_tests.rs",
           "relevance": "The progress assertion right after the grant and the install are sent."
         }
       ],
@@ -387,7 +387,7 @@
           "Run the desktop suite repeatedly under load, for example beside `cargo xtask check` in another worktree."
         ],
         "commands": [
-          "cargo test -p lightwell-app --bin lightwell the_whole_journey"
+          "cargo test -p luxforge-app --bin luxforge the_whole_journey"
         ],
         "expected_results": [
           "No failure across repeated loaded runs."
@@ -407,19 +407,19 @@
         {
           "kind": "file",
           "label": "Desktop tasks",
-          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "target": "crates/luxforge-app/src/app/tasks.rs",
           "relevance": "The refresh that takes the maximum of any response's sequence."
         },
         {
           "kind": "file",
           "label": "Desktop editor",
-          "target": "crates/lightwell-app/src/app/mod.rs",
+          "target": "crates/luxforge-app/src/app/mod.rs",
           "relevance": "`PreviewLoaded` and the other answers that assign `api_sequence`."
         },
         {
           "kind": "file",
           "label": "Owner loop",
-          "target": "crates/lightwell-core/src/api/owner.rs",
+          "target": "crates/luxforge-core/src/api/owner.rs",
           "relevance": "The sequence each response carries."
         }
       ],
@@ -434,7 +434,7 @@
           "App tests beside the sync code."
         ],
         "commands": [
-          "cargo test -p lightwell-app --bin lightwell sequence"
+          "cargo test -p luxforge-app --bin luxforge sequence"
         ],
         "expected_results": [
           "The interleaved event is read; the sequence is monotonic."
@@ -453,13 +453,13 @@
         {
           "kind": "file",
           "label": "Desktop editor",
-          "target": "crates/lightwell-app/src/app/mod.rs",
+          "target": "crates/luxforge-app/src/app/mod.rs",
           "relevance": "`RunAction` and `run_mask_action`."
         },
         {
           "kind": "file",
           "label": "Gesture refusal",
-          "target": "crates/lightwell-app/src/app/gesture.rs",
+          "target": "crates/luxforge-app/src/app/gesture.rs",
           "relevance": "`gesture_refusal` and the `Starting` kinds."
         }
       ],
@@ -473,7 +473,7 @@
           "App tests."
         ],
         "commands": [
-          "cargo test -p lightwell-app --bin lightwell refus"
+          "cargo test -p luxforge-app --bin luxforge refus"
         ],
         "expected_results": [
           "Nothing is sent under an open gesture."
@@ -492,13 +492,13 @@
         {
           "kind": "file",
           "label": "Gesture",
-          "target": "crates/lightwell-app/src/app/gesture.rs",
+          "target": "crates/luxforge-app/src/app/gesture.rs",
           "relevance": "The commit answer."
         },
         {
           "kind": "file",
           "label": "Desktop editor",
-          "target": "crates/lightwell-app/src/app/mod.rs",
+          "target": "crates/luxforge-app/src/app/mod.rs",
           "relevance": "The preview answers."
         }
       ],
@@ -512,7 +512,7 @@
           "App test."
         ],
         "commands": [
-          "cargo test -p lightwell-app --bin lightwell busy"
+          "cargo test -p luxforge-app --bin luxforge busy"
         ],
         "expected_results": [
           "Busy is owned by the operation that set it."
@@ -531,13 +531,13 @@
         {
           "kind": "file",
           "label": "Desktop editor",
-          "target": "crates/lightwell-app/src/app/mod.rs",
+          "target": "crates/luxforge-app/src/app/mod.rs",
           "relevance": "`SetMode`."
         },
         {
           "kind": "file",
           "label": "Crop driver",
-          "target": "crates/lightwell-app/src/app/crop.rs",
+          "target": "crates/luxforge-app/src/app/crop.rs",
           "relevance": "The crop start and its refusals."
         }
       ],
@@ -551,7 +551,7 @@
           "App test."
         ],
         "commands": [
-          "cargo test -p lightwell-app --bin lightwell crop"
+          "cargo test -p luxforge-app --bin luxforge crop"
         ],
         "expected_results": [
           "The session mode matches the desktop's."
@@ -570,7 +570,7 @@
         {
           "kind": "file",
           "label": "Gesture",
-          "target": "crates/lightwell-app/src/app/gesture.rs",
+          "target": "crates/luxforge-app/src/app/gesture.rs",
           "relevance": "The conflicted notice for an open gesture."
         }
       ],
@@ -584,7 +584,7 @@
           "App tests."
         ],
         "commands": [
-          "cargo test -p lightwell-app --bin lightwell brush"
+          "cargo test -p luxforge-app --bin luxforge brush"
         ],
         "expected_results": [
           "The notice appears only when there is something to reapply."
@@ -618,7 +618,7 @@
           "Round-trip test; rendered tier on the integrated branch."
         ],
         "commands": [
-          "cargo test -p lightwell-core roundtrip"
+          "cargo test -p luxforge-core roundtrip"
         ],
         "expected_results": [
           "Stored doubles read back bit-exact."
@@ -637,7 +637,7 @@
         {
           "kind": "file",
           "label": "Plan stage context",
-          "target": "crates/lightwell-core/src/editor/plan.rs",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
           "relevance": "`HostStage::sample_before`."
         }
       ],
@@ -651,7 +651,7 @@
           "Core tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core sample_before"
+          "cargo test -p luxforge-core sample_before"
         ],
         "expected_results": [
           "One compile per prefix; identical samples."
@@ -670,7 +670,7 @@
         {
           "kind": "file",
           "label": "Capability tasks",
-          "target": "crates/lightwell-core/src/capabilities/host/tasks.rs",
+          "target": "crates/luxforge-core/src/capabilities/host/tasks.rs",
           "relevance": "The `task.*` methods."
         },
         {
@@ -690,7 +690,7 @@
           "Core tests."
         ],
         "commands": [
-          "cargo test -p lightwell-core task"
+          "cargo test -p luxforge-core task"
         ],
         "expected_results": [
           "A retried task returns the original job."
@@ -710,13 +710,13 @@
         {
           "kind": "file",
           "label": "RAW adapter",
-          "target": "crates/lightwell-raw/native/adapter.cpp",
+          "target": "crates/luxforge-raw/native/adapter.cpp",
           "relevance": "The normalization and its comment."
         },
         {
           "kind": "file",
           "label": "Vendored RCD",
-          "target": "crates/lightwell-raw/vendor/librtprocess-9a858270/src/demosaic/rcd.cc",
+          "target": "crates/luxforge-raw/vendor/librtprocess-9a858270/src/demosaic/rcd.cc",
           "relevance": "The input clamp."
         },
         {
@@ -733,10 +733,10 @@
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "A lightwell-raw test over a synthetic over-white mosaic."
+          "A luxforge-raw test over a synthetic over-white mosaic."
         ],
         "commands": [
-          "cargo test -p lightwell-raw"
+          "cargo test -p luxforge-raw"
         ],
         "expected_results": [
           "The behaviour matches the documents."
@@ -789,13 +789,13 @@
       "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "`a_metal_dispatch_raises_gpu_time_and_allocations` in `lightwell-process` failed twice on 2026-09-25 inside `verify --tier quick` at a load average above 20, on unrelated changes, and passed alone and on rerun. It asserts that GPU time rises after one Metal dispatch, which a busy GPU or a coarse counter update can delay."
+        "`a_metal_dispatch_raises_gpu_time_and_allocations` in `luxforge-process` failed twice on 2026-09-25 inside `verify --tier quick` at a load average above 20, on unrelated changes, and passed alone and on rerun. It asserts that GPU time rises after one Metal dispatch, which a busy GPU or a coarse counter update can delay."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Process counters",
-          "target": "crates/lightwell-process/src/lib.rs",
+          "target": "crates/luxforge-process/src/lib.rs",
           "relevance": "The counters the test reads."
         }
       ],
@@ -808,7 +808,7 @@
           "Run the test repeatedly beside a loaded host."
         ],
         "commands": [
-          "cargo test -p lightwell-process"
+          "cargo test -p luxforge-process"
         ],
         "expected_results": [
           "No load-only failures."
@@ -828,13 +828,13 @@
         {
           "kind": "file",
           "label": "Preview failure tests",
-          "target": "crates/lightwell-app/src/app/preview_failure_tests.rs",
+          "target": "crates/luxforge-app/src/app/preview_failure_tests.rs",
           "relevance": "The test that hung."
         },
         {
           "kind": "file",
           "label": "Preview worker",
-          "target": "crates/lightwell-core/src/preview/worker.rs",
+          "target": "crates/luxforge-core/src/preview/worker.rs",
           "relevance": "When a pending job starts and how a cancelled phase is delivered."
         }
       ],
@@ -848,7 +848,7 @@
           "Run the preview failure tests repeatedly under load."
         ],
         "commands": [
-          "cargo test -p lightwell-app --bin lightwell preview_failure"
+          "cargo test -p luxforge-app --bin luxforge preview_failure"
         ],
         "expected_results": [
           "No load-only hang."

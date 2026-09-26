@@ -88,7 +88,7 @@ Decided on 2026-09-23 under the owner's delegation for the [shared module capabi
 
 - Settings are user-level only: module settings and named provider profiles, outside every catalog, with no history entries. Secrets live only in the OS credential store, starting with the macOS Keychain; a locked or unsupported store fails explicitly with no plaintext fallback.
 - Sending image data is consented **per asset**: a grant names the module, profile, adapter, endpoint origin, data class and asset, and is not remembered for later photos. Downloads are granted per resource version and origin.
-- Only the desktop (after Allow) or `lightwell-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint or path change revokes the old grants.
+- Only the desktop (after Allow) or `luxforge-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint or path change revokes the old grants.
 - Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
 - No remote provider adapter ships with the framework; the first real adapters arrive with Corrections. `managed-storage` and `local-runtime` wait for their first consumer.
 - Derived artifacts live in a directory beside the catalog and move with it; catalog format 10 holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
@@ -118,7 +118,7 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 
 ## Presets
 
-The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (format 7), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Lightwell has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
+The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (format 7), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Luxforge has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
 
 ## Rendering memory
 

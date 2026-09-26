@@ -3,7 +3,7 @@ use crate::{
     scenario::{Checked, Frame, Plan, Run, Step, pixels, plan::only},
     *,
 };
-use lightwell_evidence::{self as script};
+use luxforge_evidence::{self as script};
 
 pub const WINDOW: [&str; 2] = ["1440", "1000"];
 pub const PAGES: usize = 10;

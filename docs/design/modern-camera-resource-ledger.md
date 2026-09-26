@@ -64,7 +64,7 @@ not current editor limits). Scratch generally scales with implementation and
 working tiles rather than only final pixel count, so a 128 MP value cannot be
 extrapolated as a release guarantee. The adapter sets LibRaw's
 `max_raw_memory_mb = 512`; that is a LibRaw internal allocation ceiling.
-It can reject a large source before Lightwell's own u16/float accounting is
+It can reject a large source before Luxforge's own u16/float accounting is
 reached, and it does not make a 512 MiB process budget true.
 
 ## Authentic baseline measurements

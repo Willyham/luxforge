@@ -10,7 +10,7 @@
 
 **C.** A rotated output pixel usually corresponds to a noninteger input coordinate, so it needs reconstruction from neighboring samples. Pure integer cropping can instead select an existing region. This distinction helps avoid unnecessary resampling and makes geometry tests more precise.
 
-**P.** Lightwell's accepted crop behavior—free handles, proportional Option scaling about a fixed center and composition-preserving straightening—remains its own specification. darktable's implementation is evidence for coordinate/ROI design, not a replacement for those product decisions.
+**P.** Luxforge's accepted crop behavior—free handles, proportional Option scaling about a fixed center and composition-preserving straightening—remains its own specification. darktable's implementation is evidence for coordinate/ROI design, not a replacement for those product decisions.
 
 ## Lens correction has both metadata and model dependencies
 

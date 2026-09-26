@@ -54,7 +54,7 @@ def fetch(sample, root, limit):
     path = root / f"{sample['id']}{suffix}"
     result = dict(sample, path=str(path.resolve()))
     try:
-        request = urllib.request.Request(url, headers={'User-Agent': 'Lightwell-camera-qualification/1'})
+        request = urllib.request.Request(url, headers={'User-Agent': 'Luxforge-camera-qualification/1'})
         with urllib.request.urlopen(request, timeout=60) as response, path.open('xb') as target:
             total = 0
             while chunk := response.read(1024 * 1024):

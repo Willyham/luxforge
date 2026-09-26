@@ -53,12 +53,12 @@ Frozen on 2026-09-21 against the delivered core and workspace before any core co
 
 ### Module, effect and payload
 
-- Module `lightwell.basic`, title `Basic`, hint `Exposure, tone, white balance and colour`, not a developer module. It registers in `ModuleRegistry::builtin()` after the pixel module and before transform, so its section is the first photo-editing section of the tools panel.
-- One effect `lightwell.basic.adjust`, format `1`, stage `color`. `EffectStage` gains the `color` variant; the host places a colour-stage layer exactly like a pixel-stage one (`insertion_index` returns the index of the first geometry layer), so the Basic layer joins the stack before quarter-turns, reflections and the crop and never moves afterwards.
+- Module `luxforge.basic`, title `Basic`, hint `Exposure, tone, white balance and colour`, not a developer module. It registers in `ModuleRegistry::builtin()` after the pixel module and before transform, so its section is the first photo-editing section of the tools panel.
+- One effect `luxforge.basic.adjust`, format `1`, stage `color`. `EffectStage` gains the `color` variant; the host places a colour-stage layer exactly like a pixel-stage one (`insertion_index` returns the index of the first geometry layer), so the Basic layer joins the stack before quarter-turns, reflections and the crop and never moves afterwards.
 - Payload: a JSON object whose keys are the implemented parameter names with their values as stored numbers. A missing key means neutral (`0`), an unknown key is refused by `validate_payload`, and a value outside the parameter's declared range is refused. Slice A persists only `exposure`; Slice B adds `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `temperature`, `tint`, `vibrance` and `saturation` as further optional keys of the same format, because adding a neutral-defaulting key changes no existing interpretation. Changing the meaning or range of an existing key bumps the format and older payloads are refused, never rewritten.
 - A neutral payload (every key neutral or absent) is a legal layer that compiles to no processing. Resetting keeps the layer with its identity, as crop reset does.
 - Internal evaluation order inside the one layer: white balance → exposure → tone (contrast, highlights, shadows, whites, blacks as one frozen curve) → vibrance → saturation. The module compiles a neutral unit to nothing.
-- At most one Basic layer per recipe is created. Planning against a stack holding more than one `lightwell.basic.adjust` layer fails with `validation: ambiguous Basic layers`, and so does rendering it; nothing is rewritten.
+- At most one Basic layer per recipe is created. Planning against a stack holding more than one `luxforge.basic.adjust` layer fails with `validation: ambiguous Basic layers`, and so does rendering it; nothing is rewritten.
 
 ### Actions and labels
 
@@ -107,7 +107,7 @@ Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<Dr
 
 ### Analysis jobs and identity
 
-- `analysis::reduce(raster) -> Report` is a pure function in `lightwell-core`: three `[u64; 256]` arrays and the endpoint counters `r0 g0 b0 r255 g255 b255 any_shadow any_highlight all_shadow all_highlight both`, reduced serially below one megapixel and on the Rayon pool above it with worker-local bins merged by addition. `analysis::clip_class(rgba) -> Option<Clip>` (`Shadow`, `Highlight`, `Both`) is the one predicate the counters, the overlays and the API share: any channel at code 0 is shadow, any at 255 is highlight.
+- `analysis::reduce(raster) -> Report` is a pure function in `luxforge-core`: three `[u64; 256]` arrays and the endpoint counters `r0 g0 b0 r255 g255 b255 any_shadow any_highlight all_shadow all_highlight both`, reduced serially below one megapixel and on the Rayon pool above it with worker-local bins merged by addition. `analysis::clip_class(rgba) -> Option<Clip>` (`Shadow`, `Highlight`, `Both`) is the one predicate the counters, the overlays and the API share: any channel at code 0 is shadow, any at 255 is highlight.
 - Identity: `{asset_id, source_fingerprint, entry_id, snapshot_id, recipe_hash, draft: Option<{draft_id, draft_revision}>, width, height, domain: "srgb-8bit-output"}`. `recipe_hash` is the SHA-256 of the effective recipe's canonical JSON. A report is bounded to 16 KiB before encoding.
 - Methods: `analysis.request {asset_id, target}` with `target` one of `{"kind": "current"}`, `{"kind": "entry", "entry_id"}` or `{"kind": "draft", "draft_id"}` returns `{job_id, status, identity}` promptly; `analysis.read {job_id}` returns `{status, identity, report?, error?}` with `status` the one job-status vocabulary source, analysis and capability jobs all share: `queued`, `running`, `ready`, `failed`, `superseded`, `cancelled`; `analysis.cancel {job_id}` drops this client's interest and cancels the job only when no other client holds it. A queued, running, failed or superseded result carries no counts.
 - Scheduling: the owner loop hands jobs to one persistent analysis worker (the latest-job primitive the preview also runs on) with one active and one replaceable pending slot; replacing the pending job marks its requesters `superseded`, and the worker starts the pending job itself when the active one ends. The worker renders the effective recipe from the cached verified source, reduces, retains no raster and wakes the owner, which takes the report. The render and the reduction check a cancellation token at chunk granularity: a job whose last interest is released stops within a chunk and ends `cancelled`. Identical identities share one job; completed reports are kept in an eight-entry store evicted oldest first; a client's disconnect releases its interests.
@@ -116,7 +116,7 @@ Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<Dr
 
 ### Ownership of the shared files
 
-`modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `modules/registry/mod.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs`, `api/owner.rs` and `api/mod.rs` are changed by the integrator tasks (draft lifecycle and field patch; pointwise colour stage; analysis jobs) in that order. Algorithm units live in `modules/basic/`, the reducer and predicates in `analysis.rs`, the f64 references and hand-counted fixtures under `crates/lightwell-reference/src/` and `fixtures/basic/`. The desktop's `app/`, `state/` and `view/` layers change only in the slider gesture driver, the histogram model and view, and the generic submit rule above.
+`modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `modules/registry/mod.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs`, `api/owner.rs` and `api/mod.rs` are changed by the integrator tasks (draft lifecycle and field patch; pointwise colour stage; analysis jobs) in that order. Algorithm units live in `modules/basic/`, the reducer and predicates in `analysis.rs`, the f64 references and hand-counted fixtures under `crates/luxforge-reference/src/` and `fixtures/basic/`. The desktop's `app/`, `state/` and `view/` layers change only in the slider gesture driver, the histogram model and view, and the generic submit rule above.
 
 ### What this contract does not decide
 
@@ -126,7 +126,7 @@ Tone, white balance and colour equations, ranges and tolerances were frozen by t
 
 Every Basic control in the table below is implemented — Temperature and Tint, Exposure, the five Tone controls (Contrast, Highlights, Shadows, Whites, Blacks), Vibrance and Saturation — at the ranges, steps and precisions shown, together with the `neutral-sample` picker query behind the White Balance group.
 
-These are the Lightwell ranges and units, taken from the [Lightroom research](../research/lightroom/tone-and-color-tools.md) as the owner decided, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. The numerical studies confirmed every range against independent references before the controls shipped. Ranges, step, display precision, defaults and descriptions live in the descriptor and the API schema.
+These are the Luxforge ranges and units, taken from the [Lightroom research](../research/lightroom/tone-and-color-tools.md) as the owner decided, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. The numerical studies confirmed every range against independent references before the controls shipped. Ranges, step, display precision, defaults and descriptions live in the descriptor and the API schema.
 
 | Group/control | Starting UI range | Required behavior |
 | --- | --- | --- |
@@ -317,5 +317,5 @@ The remaining choices (performance thresholds, the tone fallback, the overlay ru
 ## References
 
 - Repository contracts: [modules](modules-and-api.md), [history](../specs/edit-history.md), [crop](../specs/single-image.md), [architecture](architecture.md), [performance rules](../engineering/performance-rules.md).
-- Local research: [Lightroom tone/color](../research/lightroom/tone-and-color-tools.md), [rendering/color](../research/lightroom/rendering-and-color.md), [darktable algorithms](../research/darktable/tone-and-color-tools.md). These supply context, not accepted Lightwell behavior.
+- Local research: [Lightroom tone/color](../research/lightroom/tone-and-color-tools.md), [rendering/color](../research/lightroom/rendering-and-color.md), [darktable algorithms](../research/darktable/tone-and-color-tools.md). These supply context, not accepted Luxforge behavior.
 - Adobe describes Basic controls, relative JPEG temperature and RGB histogram/clipping interactions in [Image tone and color](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/image-tone-color.html). Familiar labels do not establish implementation equivalence.

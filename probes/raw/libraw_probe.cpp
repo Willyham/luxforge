@@ -1,4 +1,4 @@
-// Developer-only LibRaw unpack comparison. Never linked into Lightwell.
+// Developer-only LibRaw unpack comparison. Never linked into Luxforge.
 #include "libraw/libraw.h"
 #include <chrono>
 #include <cstdint>

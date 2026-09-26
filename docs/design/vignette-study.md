@@ -1,9 +1,9 @@
 # Vignette study: the frozen mask and amount equations
 
-Status: frozen and implemented by the `lightwell.vignette` module, which is checked against it. This
-document, the independent [`f64` reference](../../crates/lightwell-reference/src/vignette.rs)
+Status: frozen and implemented by the `luxforge.vignette` module, which is checked against it. This
+document, the independent [`f64` reference](../../crates/luxforge-reference/src/vignette.rs)
 and the checked-in [oracle fixtures](../../fixtures/vignette/README.md) are the complete
-specification a future `lightwell.vignette` unit is checked against. It answers the ["Vignette:
+specification a future `luxforge.vignette` unit is checked against. It answers the ["Vignette:
 one positional unit"](presence-mixer-vignette.md#vignette-one-positional-unit) section of the
 Presence, mixer and vignette design: a finish-stage layer evaluated after the geometry tail, in
 output-stage pixel coordinates, so a later crop update recentres it exactly.
@@ -347,17 +347,17 @@ results, not re-derived from first principles.
 ## Files
 
 - `docs/design/vignette-study.md` -- this document.
-- [`crates/lightwell-reference/src/vignette.rs`](../../crates/lightwell-reference/src/vignette.rs)
+- [`crates/luxforge-reference/src/vignette.rs`](../../crates/luxforge-reference/src/vignette.rs)
   -- the literal `f64` transcription of the equations above (`VignetteParams`, `mask`, `apply`,
   `vignette_pixel`, and the private `pixel_uv`/`shape_radius`/`smoothstep`/`falloff` helpers, plus
   the closed-form `corner_radius`).
-- [`crates/lightwell-reference/src/tone.rs`](../../crates/lightwell-reference/src/tone.rs)
+- [`crates/luxforge-reference/src/tone.rs`](../../crates/luxforge-reference/src/tone.rs)
   -- unchanged except for making `encode_srgb_extended`/`decode_srgb_extended` `pub` so this
   study's positive-amount branch can reuse them instead of duplicating the sRGB OETF a third time
   in this test tree; no formula in that file changed.
-- [`crates/lightwell-reference/src/lib.rs`](../../crates/lightwell-reference/src/lib.rs)
+- [`crates/luxforge-reference/src/lib.rs`](../../crates/luxforge-reference/src/lib.rs)
   -- unchanged; already declared `pub mod vignette;` ahead of this task.
-- [`crates/lightwell-reference/tests/studies/vignette.rs`](../../crates/lightwell-reference/tests/studies/vignette.rs)
+- [`crates/luxforge-reference/tests/studies/vignette.rs`](../../crates/luxforge-reference/tests/studies/vignette.rs)
   -- the independent proofs (identity, mirror/flip symmetry, monotonicity along a ray, the corner
   saturation condition and its safe grid, centre invariance stated precisely, corners black at
   amount -100 under that same condition, positive amount never exceeding encoded white for a

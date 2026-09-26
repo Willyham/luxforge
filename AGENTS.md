@@ -1,6 +1,6 @@
-# Working on Lightwell
+# Working on Luxforge
 
-Lightwell is an open-source, non-destructive desktop photo editor for macOS, Windows and Linux, built around a small, fast core that people, programs and agents operate equally. Read this file before changing anything. It is the source of truth for what we are building and how we work.
+Luxforge is an open-source, non-destructive desktop photo editor for macOS, Windows and Linux, built around a small, fast core that people, programs and agents operate equally. Read this file before changing anything. It is the source of truth for what we are building and how we work.
 
 ## Pillars
 
@@ -35,7 +35,7 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 - Decode, render, import and export never block the UI thread or the catalog owner thread. Bound queues and memory; cancel stale work.
 - Back image behavior with exact fixtures. Test source preservation and recovery, not just successful rendering.
 - Pin dependencies. Manual license, native and asset reviews are deferred by the owner; keep notices and never claim an audit is complete.
-- **Current shapes only.** Lightwell is pre-release and breaking changes are expected. Support only the latest catalog, recipe, API and module shapes. Do not maintain migrations, compatibility shims, old-version fixtures or historical parity checks. Internal format markers reject unsupported data explicitly without rewriting or discarding it; use a new catalog when necessary. Current UI/API correctness and exact image tests still apply. Missing or disabled providers report affected edits; they never silently omit an effect from a render or export.
+- **Current shapes only.** Luxforge is pre-release and breaking changes are expected. Support only the latest catalog, recipe, API and module shapes. Do not maintain migrations, compatibility shims, old-version fixtures or historical parity checks. Internal format markers reject unsupported data explicitly without rewriting or discarding it; use a new catalog when necessary. Current UI/API correctness and exact image tests still apply. Missing or disabled providers report affected edits; they never silently omit an effect from a render or export.
 
 ## Map
 

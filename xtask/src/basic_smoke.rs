@@ -13,10 +13,10 @@ use crate::{
     },
     *,
 };
-use lightwell_core::BASIC_EFFECT;
-use lightwell_evidence::{self as script, PreviewStep, SliderDraftStep, SliderStep, WorkspaceStep};
+use luxforge_core::BASIC_EFFECT;
+use luxforge_evidence::{self as script, PreviewStep, SliderDraftStep, SliderStep, WorkspaceStep};
 
-const BASIC_MODULE: &str = "lightwell.basic";
+const BASIC_MODULE: &str = "luxforge.basic";
 const SET_BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
 /// The group whose reset the scenario runs, as the Basic descriptor labels it.
@@ -565,7 +565,7 @@ fn balance(channels: [f64; 3]) -> f64 {
 /// Zero as one Basic field shows it: the parameter's own declared precision, read from the
 /// registry rather than written down here, so a field that changes its precision changes this too.
 fn neutral_text(name: &str) -> Result<String> {
-    let registry = lightwell_core::ModuleRegistry::builtin();
+    let registry = luxforge_core::ModuleRegistry::builtin();
     let decimals = usize::from(
         registry
             .descriptors()

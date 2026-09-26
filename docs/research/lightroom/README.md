@@ -1,10 +1,10 @@
 # Lightroom Classic technical knowledge base
 
-Researched September 2026. This describes Lightroom Classic, with explicitly labelled Camera Raw/shared-engine evidence. It is a reference for Lightwell, not a feature commitment or a recipe for exact Adobe output.
+Researched September 2026. This describes Lightroom Classic, with explicitly labelled Camera Raw/shared-engine evidence. It is a reference for Luxforge, not a feature commitment or a recipe for exact Adobe output.
 
 There is substantial public information about the architecture and tool behavior, plus a few unusually useful engineering explanations. Exact contemporary kernels, coefficients, scheduling and the complete processing graph remain proprietary or unverified. The source set includes Adobe documentation, engineers' explanations, original papers and SDK references; see the [annotated bibliography](sources.md).
 
-The [darktable companion](../darktable/README.md) examines corresponding behavior in open source, including [a comparison and Lightwell implications](../darktable/lightwell-implications.md).
+The [darktable companion](../darktable/README.md) examines corresponding behavior in open source, including [a comparison and Luxforge implications](../darktable/luxforge-implications.md).
 
 ## Read by question
 
@@ -19,9 +19,9 @@ The [darktable companion](../darktable/README.md) examines corresponding behavio
 | How do crop, lens correction, masks and repair fit together? | [Geometry, masking and retouching](geometry-masks-and-retouching.md) |
 | What can plugins and programs actually control? | [SDK and interoperability](sdk-and-interoperability.md) |
 | Which facts changed recently? Which sources conflict? | [Version notes and evidence caveats](versions-and-caveats.md) |
-| Do Lightwell's implemented sliders cover Lightroom's values? | [Slider range and preset-readiness audit](slider-parity.md) |
+| Do Luxforge's implemented sliders cover Lightroom's values? | [Slider range and preset-readiness audit](slider-parity.md) |
 | How are XMP and `.lrtemplate` presets written, and what can they contain? | [Preset file formats](presets.md) |
-| What should Lightwell learn, and what needs experiments? | [Engineering implications and research gaps](lightwell-implications.md) |
+| What should Luxforge learn, and what needs experiments? | [Engineering implications and research gaps](luxforge-implications.md) |
 
 ## Main findings
 
@@ -40,8 +40,8 @@ The [darktable companion](../darktable/README.md) examines corresponding behavio
 
 **C — Conceptual:** an explanatory equation or architectural inference. Never presented as Adobe's actual code.
 
-**P — Proposal:** a possible Lightwell design or experiment, still subject to its existing planning gates.
+**P — Proposal:** a possible Luxforge design or experiment, still subject to its existing planning gates.
 
 **U — Unknown:** no adequate public evidence found. Absence of a source is not proof that the behavior does not exist.
 
-This research informs decisions; it does not commit Lightwell to any Lightroom feature or algorithm.
+This research informs decisions; it does not commit Luxforge to any Lightroom feature or algorithm.

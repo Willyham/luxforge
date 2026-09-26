@@ -140,7 +140,7 @@
           "Measure photo-sized 24/60 MP output and point-query cost before integration."
         ],
         "commands": [
-          "cargo test --locked --package lightwell-core"
+          "cargo test --locked --package luxforge-core"
         ],
         "expected_results": [
           "The host primitive is exact, bounded and stage-correct."
@@ -167,7 +167,7 @@
         {
           "kind": "file",
           "label": "Module descriptor",
-          "target": "crates/lightwell-core/src/modules/descriptor.rs",
+          "target": "crates/luxforge-core/src/modules/descriptor.rs",
           "relevance": "Current canvas interaction validation."
         },
         {
@@ -189,7 +189,7 @@
           "Compare desktop-generated request with direct API request."
         ],
         "commands": [
-          "cargo test --locked --package lightwell-core"
+          "cargo test --locked --package luxforge-core"
         ],
         "expected_results": [
           "Brush mode is discoverable and UI/API paths describe the same edit."
@@ -232,7 +232,7 @@
           "Compare exact output and source hashes after reopen and restore."
         ],
         "commands": [
-          "cargo test --locked --package lightwell-core"
+          "cargo test --locked --package luxforge-core"
         ],
         "expected_results": [
           "Clone and Heal have reproducible durable results and complete API coverage."
@@ -375,7 +375,7 @@
           "Remove model and credentials and verify offline render, sample, export and history."
         ],
         "commands": [
-          "cargo test --locked --package lightwell-core"
+          "cargo test --locked --package luxforge-core"
         ],
         "expected_results": [
           "Frozen AI edits remain non-destructive, durable and honest about missing or stale data."

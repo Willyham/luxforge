@@ -1,9 +1,9 @@
-<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Lightwell synthetic fixture">
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Luxforge synthetic fixture">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about=""
     xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
     xmlns:xmp="http://ns.adobe.com/xap/1.0/"
-    xmp:CreatorTool="Lightwell fixture"
+    xmp:CreatorTool="Luxforge fixture"
     crs:PresetType="Normal"
     crs:Cluster=""
     crs:UUID="5E1F0A2B3C4D4E5F8091A2B3C4D5E6F7"

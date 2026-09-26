@@ -8,7 +8,7 @@
 //! outside the cross's own row range and clear of the dash band around the centre.
 //!
 //! The differential checks below (roundness -100 against +100, feather 0 against 100) are derived
-//! from the frozen mask geometry in `crates/lightwell-core/src/modules/vignette/unit.rs`: at the
+//! from the frozen mask geometry in `crates/luxforge-core/src/modules/vignette/unit.rs`: at the
 //! default midpoint and feather, an ellipse's edge-midpoint radius is well inside the falloff's
 //! inner bound while a rounded rectangle's is beyond its outer one, so roundness -100 darkens an
 //! edge midpoint fully while roundness +100 only partly does; a feather of 0 collapses the falloff
@@ -18,17 +18,17 @@ use crate::{
     scenario::{Bright, Checked, Frame, Plan, Run, Scan, Step, pixels, plan::only},
     *,
 };
-use lightwell_core::{CROP_EFFECT, VIGNETTE_EFFECT};
-use lightwell_evidence::{self as script, SliderStep, ViewStep};
+use luxforge_core::{CROP_EFFECT, VIGNETTE_EFFECT};
+use luxforge_evidence::{self as script, SliderStep, ViewStep};
 
-const VIGNETTE_MODULE: &str = "lightwell.vignette";
+const VIGNETTE_MODULE: &str = "luxforge.vignette";
 /// The sections the registry lists above Vignette that declare a real toggleable section (Pixel
 /// does not) and are expanded by their own descriptor's default (Mixer is already collapsed by
 /// default, so it needs no explicit step): collapsed first, so the module's own sliders are on
 /// screen without scrolling.
-const BASIC_MODULE: &str = "lightwell.basic";
-const TRANSFORM_MODULE: &str = "lightwell.transform";
-const CROP_MODULE: &str = "lightwell.crop";
+const BASIC_MODULE: &str = "luxforge.basic";
+const TRANSFORM_MODULE: &str = "luxforge.transform";
+const CROP_MODULE: &str = "luxforge.crop";
 const SET_VIGNETTE: &str = "set-vignette";
 const AMOUNT: &str = "amount";
 const ROUNDNESS: &str = "roundness";

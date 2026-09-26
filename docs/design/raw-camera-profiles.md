@@ -1,6 +1,6 @@
 # RAW camera profiles
 
-Lightwell's camera policy lives in `crates/lightwell-raw/data/cameras.json`.
+Luxforge's camera policy lives in `crates/luxforge-raw/data/cameras.json`.
 The catalog selects supported recording modes and implemented processing
 capabilities. The modern-camera expansion and its approved resource bounds
 are tracked in [modern camera support](modern-camera-support.md).
@@ -24,7 +24,7 @@ read through LibRaw or the bounded container readers. They must not be replaced
 with example-file values. Format signatures, TIFF tags, opcode layouts, numerical
 algorithm constants and hard resource bounds remain implementation constants.
 Pinned third-party LibRaw camera tables remain upstream-owned; this catalog owns
-all Lightwell camera-specific policy, not a fork of the decompressor's internals.
+all Luxforge camera-specific policy, not a fork of the decompressor's internals.
 
 Strict Rust types and semantic validation define the format: unknown fields,
 unknown versions/strategies, duplicate identities/mode identifiers, ambiguous mode
@@ -60,7 +60,7 @@ fields may be omitted; omitted calibration uses the backend matrix.
 | `illuminants`, `selected_matrix` | Expected two DNG illuminant IDs; select matrix `1` or `2` for fixed XYZ-to-camera calibration |
 | `calibration_identity` | Persisted description of the selected calibration; update when its interpretation changes |
 | `corrections` | `stage3_gain_map_then_warp` for the GainMap→Warp path, or `stage_ordered` for bounded ordered opcode processing |
-| `required_opcodes` | 0–8 ordered descriptors `{id, list, version, flags}`. Supported IDs, from the one allowlist in `crates/lightwell-raw/src/opcodes.rs`, are GainMap 9, WarpRectilinear 1, FixVignetteRadial 3, FixBadPixelsConstant 4, and FixBadPixelsList 5; list 51022 for stage-three operations and at most one list-51008 sensor repair, version 16973824 (`0x01030000`), flags 0 |
+| `required_opcodes` | 0–8 ordered descriptors `{id, list, version, flags}`. Supported IDs, from the one allowlist in `crates/luxforge-raw/src/opcodes.rs`, are GainMap 9, WarpRectilinear 1, FixVignetteRadial 3, FixBadPixelsConstant 4, and FixBadPixelsList 5; list 51022 for stage-three operations and at most one list-51008 sensor repair, version 16973824 (`0x01030000`), flags 0 |
 | `interpretation` | Persisted correction interpretation identity; update when processing semantics change |
 | `decoder_active_bottom_trim` | Optional integer 0–63. For a decoder whose reported active bottom is shorter than the authoritative DNG `ActiveArea`, requires the source bottom to equal decoder bottom plus this exact trim; all other edges must match. Omit when no decoder trim is needed. |
 
@@ -78,7 +78,7 @@ calibration; these are algorithm constraints shared by every profile selecting i
 To add a camera, create a unique make/model entry with mode selectors from
 actual decoder/container evidence, choose existing crop and processing
 capabilities, and run the RAW unit and authentic-file tests plus editor
-verification. `cargo build -p lightwell-raw --locked` validates the catalog and
+verification. `cargo build -p luxforge-raw --locked` validates the catalog and
 regenerates both language tables. Update the support/coverage documentation only
 after the new recording modes are demonstrated. Changing a profile does not
 rewrite catalogs: incompatible source interpretation still fails explicitly.
@@ -92,7 +92,7 @@ and generated probe outputs remain outside the repository.
 
 ## Acceptance
 
-- No Lightwell production branch selects processing by camera name or mode ID.
+- No Luxforge production branch selects processing by camera name or mode ID.
 - The current catalog contains 100 camera profiles and 103 recording modes.
   One authentic selected mode per model has adapter evidence; controlled color
   and broader recording-mode qualification remain separate.

@@ -25,8 +25,8 @@ use crate::{
     scenario::{Bright, Checked, Frame, Plan, Run, Scan, Step, Tolerance, pixels, plan::only},
     *,
 };
-use lightwell_core::PRESENCE_EFFECT;
-use lightwell_evidence::{
+use luxforge_core::PRESENCE_EFFECT;
+use luxforge_evidence::{
     self as script, MaskRow, MaskStep, Reference, RowStep, SliderStep, WorkspaceStep,
 };
 

@@ -4,7 +4,7 @@ Status: **proposal; implementation follows the owner's review of the open questi
 
 ## Outcome and scope
 
-Every photo shows the same Basic section: White balance (Temperature, Tint, Neutral picker, As shot) and Tone with Exposure first, in the same order and with the same labels. On a RAW photo, Temperature and Tint set the source development's white balance in Kelvin and Lightwell tint units against the camera matrix. On a JPEG they set Basic's relative correction. The RAW section goes, and so do Basic's duplicate controls on RAW. Every change a control makes has the API the control sends.
+Every photo shows the same Basic section: White balance (Temperature, Tint, Neutral picker, As shot) and Tone with Exposure first, in the same order and with the same labels. On a RAW photo, Temperature and Tint set the source development's white balance in Kelvin and Luxforge tint units against the camera matrix. On a JPEG they set Basic's relative correction. The RAW section goes, and so do Basic's duplicate controls on RAW. Every change a control makes has the API the control sends.
 
 In scope: descriptors, the RAW module's actions and payload, the refusals that keep one path, presets, history labels, the desktop's applicability checks and the evidence. Out of scope, with no placeholders: Auto and named white-balance modes, a control for RAW's explicit gains (they stay API-only), and any change to the frozen equations of [Basic white balance](basic-white-balance.md) or the [RAW locus](initial-raw.md#minimal-controls-and-shared-basic-integration).
 
@@ -15,7 +15,7 @@ In scope: descriptors, the RAW module's actions and payload, the refusals that k
 | Exposure | Basic `set-basic.exposure`, colour stage, maskable | RAW `set-raw-exposure.ev`, multiplied into each source pixel through `LinearSettings`, **and** Basic's, so exposure can act twice |
 | White balance | Basic `set-basic.temperature`, `tint`: relative ±100, a Bradford von Kries correction of the rendered image, 2e−4 CIE 1960 uv per tint unit | RAW `set-raw-temperature.kelvin` (2000–12000 K), `set-raw-tint.tint` (±100, 1e−4 uv per unit), `use-as-shot-wb`, `reset-raw` and the sensor pick, **and** Basic's relative pair |
 | Neutral picker | Basic's `neutral-sample` query through `sample-apply`, shortcut `W` | RAW's `pick-raw-neutral` through `point-pick`, shortcut `N`, and Basic's `W` |
-| Applicability | | Named, not declared: `module.list` filters `lightwell.raw` by identity, and so do the desktop's section list, palette, mode shortcuts and pick gate; the JPEG recipe check names the RAW effect |
+| Applicability | | Named, not declared: `module.list` filters `luxforge.raw` by identity, and so do the desktop's section list, palette, mode shortcuts and pick gate; the JPEG recipe check names the RAW effect |
 
 The two white balances are different operations and neither can stand in for the other. RAW's sets sensor gains before the nonlinear demosaic, which developed planes cannot undo; JPEG's corrects rendered pixels, which name no illuminant. Their scales stay distinct and nothing converts between them.
 
@@ -47,7 +47,7 @@ There is one Exposure, `set-basic.exposure`: −5..+5 EV, `2^EV` in linear light
 
 ### White balance on a RAW photo
 
-- Temperature (2000–12000 K) and Tint (±100 Lightwell units) set a custom white balance through `set-raw`, a field patch. The field not sent keeps the white balance in force, exactly as the two actions do today ([initial RAW](initial-raw.md#minimal-controls-and-shared-basic-integration)).
+- Temperature (2000–12000 K) and Tint (±100 Luxforge units) set a custom white balance through `set-raw`, a field patch. The field not sent keeps the white balance in force, exactly as the two actions do today ([initial RAW](initial-raw.md#minimal-controls-and-shared-basic-integration)).
 - As shot is `set-raw {white-balance: as-shot}`, the camera's as-shot gains. It now returns the payload to the Original's development and drops the custom values a return used to keep. Nothing reads them, since the next change starts from the as-shot equivalent. `is_neutral` becomes "equal to the Original's development", and `reset-raw` and `use-as-shot-wb` go.
 - A double-click on Temperature or Tint and the White balance group's reset run As shot.
 - The controls show the white balance in force. Under As shot and after a pick, that is the equivalent temperature and tint the core solves (`RawPayload::white_balance_controls`), as today.
@@ -75,7 +75,7 @@ A control (number, action or picker) and a group reset may carry `variants`:
 ```json
 {"kind": "number", "action": "set-basic", "parameter": "temperature", "label": "Temperature",
  "rail": "temperature",
- "variants": [{"source": "raw", "module": "lightwell.raw",
+ "variants": [{"source": "raw", "module": "luxforge.raw",
                "control": {"kind": "number", "action": "set-raw", "parameter": "temperature",
                            "label": "Temperature", "rail": "temperature",
                            "reset": {"action": "set-raw", "preset": {"white-balance": "as-shot"}}}}]}
@@ -117,7 +117,7 @@ Lightroom import, the rows of the [mapping](presets.md#mapping) that change:
 | `Temperature`, `Tint` | `set-raw.temperature`, `tint` | [Proposal 5](#proposals-with-recorded-defaults): converted together through the illuminant chromaticity they name, and refused together when either result is outside 2000–12000 K or ±100. Refused, as today, until the owner adopts it |
 | `WhiteBalance` | `As Shot`: `set-raw.white-balance: as-shot`, and `set-basic` Temperature and Tint 0 when the preset holds no incremental value. `Custom`: neutral when the values it names are mapped, otherwise refused with them | `Auto` and named modes stay refused |
 
-The conversion is camera-independent. Lightroom's pair defines a white through the DNG SDK's `dng_temperature`: a correlated colour temperature on the Planckian locus and a perpendicular offset, reportedly −3000 tint units per unit of CIE 1960 uv. The constants must be confirmed from the SDK source and recorded in the [Lightroom preset research](../research/lightroom/presets.md) before implementation. Lightwell then solves its own locus for the same uv with the inverse it already has. This converts values; it does not match renderings, because Lightwell turns that white into gains through LibRaw's camera matrix, not Adobe's profile.
+The conversion is camera-independent. Lightroom's pair defines a white through the DNG SDK's `dng_temperature`: a correlated colour temperature on the Planckian locus and a perpendicular offset, reportedly −3000 tint units per unit of CIE 1960 uv. The constants must be confirmed from the SDK source and recorded in the [Lightroom preset research](../research/lightroom/presets.md) before implementation. Luxforge then solves its own locus for the same uv with the inverse it already has. This converts values; it does not match renderings, because Luxforge turns that white into gains through LibRaw's camera matrix, not Adobe's profile.
 
 ## Existing data
 
@@ -129,7 +129,7 @@ Current shapes only; nothing is migrated.
 
 ## Verification
 
-Exact tests, in `lightwell-core` and `lightwell-app`:
+Exact tests, in `luxforge-core` and `luxforge-app`:
 
 - **Descriptors.** Basic's variants validate. A variant naming an unknown action, a module that does not apply to its kind, a control of another shape, or a second variant for one kind is refused. Every other descriptor is unchanged, compared before and after, as TASK-010 requires.
 - **Applicability.** Every RAW action is refused on a JPEG by the declared rule. `set-basic` Temperature or Tint on a RAW global target is refused naming `set-raw`, and is accepted on a RAW mask. Exposure is accepted everywhere. Admission refuses a RAW recipe whose global Basic layer holds a superseded field, and a JPEG recipe holding a RAW layer, without naming either module.
@@ -137,7 +137,7 @@ Exact tests, in `lightwell-core` and `lightwell-app`:
 - **Exposure move, measured before it lands** with today's code, on the three supplied RAW files: a development at `ev` against one at 0 EV plus Basic `exposure: ev`, at proxy and full size, for EV −2.37, −0.5, +0.01, +1 and +3.3. Record the largest code difference and the share of pixels more than one code apart in [performance](../specs/performance.md). Integer EV should be byte-identical, since both sides multiply by an exact power of two. This measurement is the evidence for proposal 1.
 - **Drafts.** The approximate white-balance tests move to `set-raw`, and an Exposure drag on RAW renders exactly with no redevelopment.
 - **Presets.** The importer rows above, skip reporting, and capture under As shot, custom and a pick. The JSON CLI parity test gains a RAW source.
-- **Parity.** A desktop state test derives the Basic section for a JPEG, a RAW global target and a RAW mask target. It checks that labels and order are identical, that units and ranges differ only where a variant declares them, and that each control's request equals the core's resolution. A test fails if desktop code outside tests names `lightwell.raw`.
+- **Parity.** A desktop state test derives the Basic section for a JPEG, a RAW global target and a RAW mask target. It checks that labels and order are identical, that units and ranges differ only where a variant declares them, and that each control's request equals the core's resolution. A test fails if desktop code outside tests names `luxforge.raw`.
 
 Rendered evidence:
 
@@ -156,7 +156,7 @@ Recommendations for the owner, recorded as proposals until decided. Implementati
 | 1. Where does Exposure live on RAW? | Basic's colour stage on every kind; the source development carries none | The decision's wording: source-development exposure, with `set-basic.exposure` routed to it on RAW, or kind-specific preset fields |
 | 2. Masked white balance on RAW | Relative (Basic's ±100), as Lightroom's local Temp and Tint are | Kelvin through a matrix approximation against the global development, which would move whenever the global white balance moves |
 | 3. JPEG scale and range | Keep the frozen relative ±100 Temperature and Tint, with As shot at 0 and 0. Basic's tint unit (2e−4 uv) stays twice RAW's (1e−4) | Re-freeze Basic's tint to RAW's unit; a Kelvin-like readout for JPEG, which has no illuminant to name |
-| 4. RAW ranges | Keep 2000–12000 K and ±100 Lightwell tint, validated against the camera matrices | Lightroom's 2000–50000 K and ±150, which needs a new study, because some matrices then give invalid whites or gains past the limit ([slider audit](../research/lightroom/slider-parity.md#preset-implication)) |
+| 4. RAW ranges | Keep 2000–12000 K and ±100 Luxforge tint, validated against the camera matrices | Lightroom's 2000–50000 K and ±150, which needs a new study, because some matrices then give invalid whites or gains past the limit ([slider audit](../research/lightroom/slider-parity.md#preset-implication)) |
 | 5. Lightroom `Temperature` and `Tint` import | Convert both through the chromaticity they name, refusing out-of-range pairs; a value conversion, not a rendering match | Keep refusing until a per-camera calibration exists, which is the current preset default |
 | 6. Presets across kinds | Store each kind's white balance separately; apply skips and reports what does not apply | Refuse a preset that holds a setting for another kind |
 | 7. Reset Basic on a RAW photo | Also returns the development to As shot, since the section shows its white balance | Reset Basic's layer only, leaving As shot as a separate reset |

@@ -12,7 +12,7 @@ Quarter-turns and reflections are one **orientation** layer holding the composed
 
 ### Payload
 
-Effect `lightwell.geometry.orientation`, format 1, geometry stage, payload `{"mirror": bool, "turns": 0..3}`. Its mapping is: mirror horizontally when `mirror` is true, then rotate clockwise by `turns` quarter-turns. Every one of the eight exact orientations has exactly one such payload; `{"mirror": false, "turns": 0}` is the neutral orientation with an identity mapping and unchanged stage.
+Effect `luxforge.geometry.orientation`, format 1, geometry stage, payload `{"mirror": bool, "turns": 0..3}`. Its mapping is: mirror horizontally when `mirror` is true, then rotate clockwise by `turns` quarter-turns. Every one of the eight exact orientations has exactly one such payload; `{"mirror": false, "turns": 0}` is the neutral orientation with an identity mapping and unchanged stage.
 
 The four actions keep their durable history identities (`rotate-left`, `rotate-right`, `mirror-horizontal`, `flip-vertical`) and their generated controls and API. Applying an action to a payload `(m, k)`:
 
@@ -38,7 +38,7 @@ These follow from `M ∘ R^k = R^(−k) ∘ M` and flip vertical being `R^2 ∘ 
 
 The rotated box turns and reflects with its input, and a reflection reverses the straightening angle, so a crop is carried by mapping its whole-pixel output rectangle through the orientation in box space. A quarter turn keeps the angle and swaps the box; a reflection negates the angle. At angle zero the box is the input stage, every edge stays on whole pixels and the carry is exact: the new render is byte-identical to the old one turned, and the inverse orientation carries the payload back. At any other angle the box extents are not whole pixels, so an edge measured from the far side of the box lands between pixels. The extents are kept and the origin moves to the nearest whole box pixel at which they are still covered, at most half a box pixel away; only a rectangle touching the rotated source on opposite sides has no such position and is fitted instead, which trims it by at most a pixel on an axis. The render is then the old one turned up to that sub-pixel resample, not byte-identical. The payload format and its output rounding are unchanged.
 
-The previous `lightwell.geometry.transform` effect is removed. Stacks holding it are refused explicitly as an unavailable effect, never rewritten; use a new catalog. This follows the current-shapes rule.
+The previous `luxforge.geometry.transform` effect is removed. Stacks holding it are refused explicitly as an unavailable effect, never rewritten; use a new catalog. This follows the current-shapes rule.
 
 ### Consequences
 

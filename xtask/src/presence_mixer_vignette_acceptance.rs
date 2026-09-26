@@ -11,11 +11,11 @@
 //! against their frozen references are the core's tests.
 use crate::basic_acceptance::{FIXTURE, import, mutation, render};
 use crate::*;
-use lightwell_core::{
+use luxforge_core::{
     BASIC_EFFECT, ClientId, MIXER_EFFECT, ORIENTATION_EFFECT, OwnerHandle, PRESENCE_EFFECT,
     SourceImage, VIGNETTE_EFFECT,
 };
-use lightwell_testkit::client::{self, call};
+use luxforge_testkit::client::{self, call};
 use std::time::Instant;
 
 /// The centre of the fixture's blue quadrant (`xtask/src/fixtures.rs`'s pattern), where the mixer's
@@ -63,7 +63,7 @@ type Section =
 /// One module's section against its own catalog: a new owner, one client and the fixture imported
 /// once. The owner is stopped however the section ends.
 fn section(fixture: &Path, catalog: &Path, run: Section) -> Result<Value> {
-    let source = lightwell_core::open_source(fixture)?;
+    let source = luxforge_core::open_source(fixture)?;
     let total = Instant::now();
     let mut checks = Vec::new();
     let (owner, join) = OwnerHandle::start(catalog)?;

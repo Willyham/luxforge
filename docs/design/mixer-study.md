@@ -1,6 +1,6 @@
 # Colour mixer mathematics
 
-Status: frozen and implemented by the `lightwell.mixer` module, which is checked against it. No production equations live here: this document, the independent f64 reference under `crates/lightwell-reference/src/mixer.rs` and the fixtures under `fixtures/mixer/mixer-cases.json` are the oracle the module's pointwise unit (`crates/lightwell-core/src/modules/mixer/unit.rs`) is checked against. Read it alongside [Presence, colour mixer and vignette](presence-mixer-vignette.md), whose "Colour mixer: one pointwise unit" section and verification items 1 and 2 this study answers, and [Saturation and Vibrance mathematics](basic-colour.md), whose Oklab conversion, achromatic-axis reasoning and gamut policy this study reuses unchanged.
+Status: frozen and implemented by the `luxforge.mixer` module, which is checked against it. No production equations live here: this document, the independent f64 reference under `crates/luxforge-reference/src/mixer.rs` and the fixtures under `fixtures/mixer/mixer-cases.json` are the oracle the module's pointwise unit (`crates/luxforge-core/src/modules/mixer/unit.rs`) is checked against. Read it alongside [Presence, colour mixer and vignette](presence-mixer-vignette.md), whose "Colour mixer: one pointwise unit" section and verification items 1 and 2 this study answers, and [Saturation and Vibrance mathematics](basic-colour.md), whose Oklab conversion, achromatic-axis reasoning and gamut policy this study reuses unchanged.
 
 Scope: the reference code under `tests/` never runs in a release build or against a real image row. The production unit answers the [performance rules](../engineering/performance-rules.md) checklist in its own commits.
 
@@ -16,7 +16,7 @@ Input and output are linear sRGB (D65) f64, unclamped in both directions. `Mixer
 
 ### Space
 
-Oklab, exactly as [the colour study](basic-colour.md#conversion) accepts it: Björn Ottosson's published `M1`/`M2` matrices with a signed cube root, and the independently published `M2⁻¹`/`M1⁻¹` for the inverse. The reference **reuses** `crates/lightwell-reference/src/colour.rs`'s `to_oklab`, `from_oklab`, `chroma` and `hue_degrees` rather than restating them, so the two colour studies cannot drift apart. Chroma is `C = sqrt(a² + b²)`, hue is `h = atan2(b, a)` in degrees, normalised here to `[0, 360)`.
+Oklab, exactly as [the colour study](basic-colour.md#conversion) accepts it: Björn Ottosson's published `M1`/`M2` matrices with a signed cube root, and the independently published `M2⁻¹`/`M1⁻¹` for the inverse. The reference **reuses** `crates/luxforge-reference/src/colour.rs`'s `to_oklab`, `from_oklab`, `chroma` and `hue_degrees` rather than restating them, so the two colour studies cannot drift apart. Chroma is `C = sqrt(a² + b²)`, hue is `h = atan2(b, a)` in degrees, normalised here to `[0, 360)`.
 
 Everything below happens between one `to_oklab` and one reconstruction (see [Exact greys](#exact-greys)). The conversion's own round-trip residual (~1e-7, measured over a 25³ sweep in the colour study) is therefore the floor under every exactness claim in this document, and is the identity tolerance stated below.
 
@@ -240,7 +240,7 @@ The rotation and the scaling are applied to `(a, b)` directly — `a' = f (a cos
 
 ### Exact greys
 
-The reconstruction is the Oklab-to-linear conversion with one achromatic branch: an achromatic Oklab colour (`a = b = 0`, either sign of zero) reconstructs to `L³` in all three channels. That is what the exact matrices give it: the first column of `M2⁻¹` is exactly one, so `(L, 0, 0)` maps to `LMS' = (L, L, L)`, and each row of `M1⁻¹` sums to one to ten decimals. The published rows are rounded, though, and in f32 the three products `M1⁻¹ · (x, x, x)` round differently: measured over 1 000 001 evenly spaced `L` in `[0, 1]`, the matrix path alone returns channels up to `5.36e-7` apart and puts 8 of them on different sides of an output code threshold, a grey rendered with one channel a code off (`an_achromatic_colour_reconstructs_to_three_identical_channels`). The achromatic branch gives three bit-identical channels. It lives in the shared production `from_oklab` (`crates/lightwell-core/src/colour.rs`), so Basic's Saturation `−100` renders the same exact greys; the f64 reference applies the same rule in its own reconstruction.
+The reconstruction is the Oklab-to-linear conversion with one achromatic branch: an achromatic Oklab colour (`a = b = 0`, either sign of zero) reconstructs to `L³` in all three channels. That is what the exact matrices give it: the first column of `M2⁻¹` is exactly one, so `(L, 0, 0)` maps to `LMS' = (L, L, L)`, and each row of `M1⁻¹` sums to one to ten decimals. The published rows are rounded, though, and in f32 the three products `M1⁻¹ · (x, x, x)` round differently: measured over 1 000 001 evenly spaced `L` in `[0, 1]`, the matrix path alone returns channels up to `5.36e-7` apart and puts 8 of them on different sides of an output code threshold, a grey rendered with one channel a code off (`an_achromatic_colour_reconstructs_to_three_identical_channels`). The achromatic branch gives three bit-identical channels. It lives in the shared production `from_oklab` (`crates/luxforge-core/src/colour.rs`), so Basic's Saturation `−100` renders the same exact greys; the f64 reference applies the same rule in its own reconstruction.
 
 ### Achromatic invariance
 
@@ -295,7 +295,7 @@ Measured: production's largest deviation from the reference over all 576 fixture
 [`fixtures/mixer/mixer-cases.json`](../../fixtures/mixer/README.md) — 576 cases: 48 inputs (the eight range-centre reference colours, a six-step achromatic ramp, three near-black chromatic pixels, two near-grey pixels, a 24-point hue wheel at Oklab `L = 0.6` and chroma 0.05/0.12/0.20, three skin-like patches and two out-of-gamut linear inputs) under twelve parameter sets (neutral, each effect at each extreme on a single range, one range with all three sliders set, all twenty-four sliders set, every hue slider at `+100`, red `+100` against orange `−100`, and every saturation slider at `−100`). Generated by the reference itself —
 
 ```sh
-cargo test --package lightwell-reference --test studies -- --ignored generate_mixer_fixtures
+cargo test --package luxforge-reference --test studies -- --ignored generate_mixer_fixtures
 ```
 
 — and reloaded by `mixer_fixtures_match_reference`, which recomputes every case from the same reference on every ordinary test run and fails the build if the file drifts from the frozen formulas. `expected_linear` is the unclamped linear sRGB output at full f64 precision; the reload tolerance is `1e-12`, covering only libm differences between the platform that generated the file and the platform re-verifying it.
@@ -303,7 +303,7 @@ cargo test --package lightwell-reference --test studies -- --ignored generate_mi
 The measured figures quoted throughout this document are printed by
 
 ```sh
-cargo test --package lightwell-reference --test studies -- --ignored --nocapture mixer_study_figures
+cargo test --package luxforge-reference --test studies -- --ignored --nocapture mixer_study_figures
 ```
 
 ## Files
@@ -311,9 +311,9 @@ cargo test --package lightwell-reference --test studies -- --ignored --nocapture
 | File | Purpose |
 | --- | --- |
 | `docs/design/mixer-study.md` | This document. |
-| `crates/lightwell-reference/src/mixer.rs` | The frozen f64 reference: constants, segments, weights, the hue warp and its limiting rule, the three equations, the reconstruction and `mix`. Reuses `reference/colour.rs`'s Oklab conversion unchanged. |
-| `crates/lightwell-reference/tests/studies/mixer.rs` | The property proofs and dense measurements above, the ignored figures test, and generation and re-verification of the fixtures. |
-| `crates/lightwell-core/src/modules/mixer/unit.rs` | The production f32 unit and its tests against the fixtures. |
+| `crates/luxforge-reference/src/mixer.rs` | The frozen f64 reference: constants, segments, weights, the hue warp and its limiting rule, the three equations, the reconstruction and `mix`. Reuses `reference/colour.rs`'s Oklab conversion unchanged. |
+| `crates/luxforge-reference/tests/studies/mixer.rs` | The property proofs and dense measurements above, the ignored figures test, and generation and re-verification of the fixtures. |
+| `crates/luxforge-core/src/modules/mixer/unit.rs` | The production f32 unit and its tests against the fixtures. |
 | `fixtures/mixer/mixer-cases.json` | Frozen expected values, reloaded on every test run. |
 | `fixtures/mixer/README.md` | The fixture file's structure, coverage and declared precision. |
 

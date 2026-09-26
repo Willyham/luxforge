@@ -14,7 +14,7 @@ cargo xtask audit
 | Advisory | Crate | Why it is tolerated | Expires (exclusive) | Task |
 | --- | --- | --- | --- | --- |
 | RUSTSEC-2024-0436 | paste 1.0.15 via metal and wgpu-hal | Build-time proc macro on dependency source, never on image data | 2026-12-18 | TASK-002 |
-| RUSTSEC-2026-0192 | ttf-parser 0.25.1 via the Iced text stack | Parses installed system and bundled fonts only; Lightwell has no font import. Upstream mentions an undisclosed security report, so the window is short and must be re-reviewed before distribution or any font-input feature | 2026-10-19 | TASK-001 |
+| RUSTSEC-2026-0192 | ttf-parser 0.25.1 via the Iced text stack | Parses installed system and bundled fonts only; Luxforge has no font import. Upstream mentions an undisclosed security report, so the window is short and must be re-reviewed before distribution or any font-input feature | 2026-10-19 | TASK-001 |
 
 Both were investigated in September 2026: no released Iced, wgpu, cosmic-text, metal or fontdb line removes either crate, so bumping transitive versions alone is not a supported fix. Do not replace the GUI stack or carry a private fork to clear a maintenance advisory.
 
@@ -24,7 +24,7 @@ License and source checks pass (BSL-1.0 in `clipboard-win` and `error-code` is G
 
 ## Bundled UI font
 
-The workspace's text is set in Inter 4.1 (SIL Open Font License 1.1), vendored as two unmodified static TTF instances in `crates/lightwell-ui/assets/fonts/inter-4.1/` with the upstream licence beside them and compiled in with `include_bytes!`. `crates/lightwell-ui/THIRD_PARTY.md` records the release, archive and file hashes; `cargo xtask inventory` copies it and the licence into the notices under `fonts/` and lists the font in `dependencies.json`. Changing a font file is a dependency update. The embedded-font review above still applies and is not complete.
+The workspace's text is set in Inter 4.1 (SIL Open Font License 1.1), vendored as two unmodified static TTF instances in `crates/luxforge-ui/assets/fonts/inter-4.1/` with the upstream licence beside them and compiled in with `include_bytes!`. `crates/luxforge-ui/THIRD_PARTY.md` records the release, archive and file hashes; `cargo xtask inventory` copies it and the licence into the notices under `fonts/` and lists the font in `dependencies.json`. Changing a font file is a dependency update. The embedded-font review above still applies and is not complete.
 
 ## RAW implementation dependencies
 

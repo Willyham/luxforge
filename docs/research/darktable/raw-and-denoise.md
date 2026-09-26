@@ -44,10 +44,10 @@ Two important processing families are present:
 
 These run within the module's noise-model/preconditioning machinery. Neither is just a Gaussian blur, and neither should be described as AI inference. [Profiled denoise](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/src/iop/denoiseprofile.c#L69)
 
-**S.** The release's noise-profile dataset contains Nikon **Z 6** and Fujifilm **X100VI** entries. That is useful evidence for Lightwell's camera research, but it establishes only the presence of profile data at this revision. It does not verify RAW decoding for the owner's exact recording modes, profile accuracy across all settings, or performance on the M4. [Camera noise profiles](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/data/noiseprofiles.json#L3550)
+**S.** The release's noise-profile dataset contains Nikon **Z 6** and Fujifilm **X100VI** entries. That is useful evidence for Luxforge's camera research, but it establishes only the presence of profile data at this revision. It does not verify RAW decoding for the owner's exact recording modes, profile accuracy across all settings, or performance on the M4. [Camera noise profiles](https://github.com/darktable-org/darktable/blob/03179f8e080aa9cedebfe14b098b7ba88940a292/data/noiseprofiles.json#L3550)
 
 ## What to benchmark before proposing a new decoder
 
-**P.** Preserve Lightwell's existing requirement to benchmark established libraries first. Split the work into file reading/unpacking, black/white normalization, demosaic, color conversion, denoise and final rendering. An end-to-end export time cannot identify which component is slow.
+**P.** Preserve Luxforge's existing requirement to benchmark established libraries first. Split the work into file reading/unpacking, black/white normalization, demosaic, color conversion, denoise and final rendering. An end-to-end export time cannot identify which component is slow.
 
 Use actual Nikon Z6 and X100VI fixtures with recorded bit depth, compression and capture settings. Check orientation, active sensor dimensions, black levels, saturated channels, color and corrupt/truncated-input recovery. Hash the original before and after. Record native M4 timings separately from portable functional checks. These are future experiments, not evidence that any new RAW dependency has been selected or qualified.

@@ -13,14 +13,14 @@ use crate::{
     smoke::Scenario,
     *,
 };
-use lightwell_core::{AssetId, CapabilitiesProofModule, EditorService, EntryId, ModuleRegistry};
-use lightwell_evidence::{self as script, CapabilityAction, CapabilitySection, CapabilityStep};
-use lightwell_testkit::ProofEndpoint;
+use luxforge_core::{AssetId, CapabilitiesProofModule, EditorService, EntryId, ModuleRegistry};
+use luxforge_evidence::{self as script, CapabilityAction, CapabilitySection, CapabilityStep};
+use luxforge_testkit::ProofEndpoint;
 use std::{sync::Arc, time::Duration};
 
-const MODULE: &str = "lightwell.capabilities";
+const MODULE: &str = "luxforge.capabilities";
 const TASK: &str = "generate-proof-tint";
-const TINT_EFFECT: &str = "lightwell.capabilities.tint";
+const TINT_EFFECT: &str = "luxforge.capabilities.tint";
 /// How long the endpoint holds the palette download and each generation, so a frame can be
 /// captured while the install or the task is still running. Well inside every transfer and adapter
 /// deadline.
@@ -63,19 +63,19 @@ pub fn plan(generate: &str, key: &str, wrong: &str) -> Plan {
         // and the panel is scrolled to its end, so the whole capability block is on screen.
         layout(
             "basic-collapsed",
-            script::Step::section("lightwell.basic", false),
+            script::Step::section("luxforge.basic", false),
         )
-        .collapsed("lightwell.basic"),
+        .collapsed("luxforge.basic"),
         layout(
             "transform-collapsed",
-            script::Step::section("lightwell.transform", false),
+            script::Step::section("luxforge.transform", false),
         )
-        .collapsed("lightwell.transform"),
+        .collapsed("luxforge.transform"),
         layout(
             "crop-collapsed",
-            script::Step::section("lightwell.crop", false),
+            script::Step::section("luxforge.crop", false),
         )
-        .collapsed("lightwell.crop"),
+        .collapsed("luxforge.crop"),
         layout("expanded", script::Step::section(MODULE, true)).expanded(MODULE),
         layout("scrolled", script::Step::tools_scroll(1.0)).expanded(MODULE),
         // Its settings: strength, a profile, the profile's endpoint and its key.
