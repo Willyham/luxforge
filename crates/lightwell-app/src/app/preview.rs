@@ -372,8 +372,7 @@ impl Editor {
                             angle: 0.0,
                         });
                     } else {
-                        self.set_crop_pending(None);
-                        self.draft_generation = None;
+                        self.drop_crop_stage();
                         self.status = "Could not show the crop's input stage".into();
                         self.settle_step(Settle::Draft);
                     }
@@ -704,12 +703,7 @@ impl Editor {
         detail: &str,
         generation: Option<u64>,
     ) {
-        let reapply = self.crop_pending().is_some_and(|pending| pending.reapply);
-        self.set_crop_pending(None);
-        self.draft_generation = None;
-        if !reapply {
-            self.end_draft();
-        }
+        let reapply = self.drop_crop_stage();
         self.status = status;
         self.event(
             "crop_draft_failed",

@@ -6,7 +6,7 @@
 //! same messages the runtime delivers. A gesture's `draft.set` is no task: the editor sends it and
 //! takes its answer up inside the update that produced the geometry.
 use super::{
-    Boot, Editor,
+    Editor,
     draft::Round,
     message::{
         ActionMessage, ControlMessage, DraftMessage, HistoryMessage, MaskMessage, MaskPointer,
@@ -15,11 +15,7 @@ use super::{
     tasks::{self, call},
     testing,
 };
-use crate::{
-    Config,
-    app::testing::descriptors,
-    mask_draft::{BRUSH, LINEAR, MaskDraft, MaskHandle, RADIAL},
-};
+use crate::mask_draft::{BRUSH, LINEAR, MaskDraft, MaskHandle, RADIAL};
 use iced::keyboard::{Key, Modifiers};
 use lightwell_core::{
     AssetId, ClientId, ComponentMode, MASK_MODE, MaskOverlayMode, OwnerHandle, POINTER_MODE,
@@ -27,18 +23,12 @@ use lightwell_core::{
 };
 use serde_json::{Value, json};
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
-
-fn fixture(path: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(path)
-}
 
 fn scratch(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -60,50 +50,13 @@ struct Masking {
 impl Masking {
     fn opened() -> Self {
         let catalog = scratch("catalog.sqlite");
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
-        let agent = owner.register();
-        let (queued, _) = call(
-            &owner,
-            agent,
-            "catalog.import",
-            json!({"path": fixture("fixtures/s0/orientation-1.jpg"), "mutation": crate::app::tasks::request()}),
-        )
-        .unwrap();
-        let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let (status, _) = call(&owner, agent, "job.status", json!({"job_id": job_id})).unwrap();
-            match status["status"].as_str() {
-                Some("ready") => break,
-                Some("queued" | "running") => {
-                    assert!(Instant::now() < deadline, "source preparation: {status}");
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                other => panic!("source preparation failed {other:?}: {status}"),
-            }
-        }
-        let (adopted, _) = call(&owner, agent, "job.adopt", json!({"job_id": job_id})).unwrap();
-        let asset =
-            AssetId::parse(adopted["asset"]["asset"]["id"].as_str().expect("an asset")).unwrap();
-        let (mut editor, _) = Editor::new(Boot {
-            owner: owner.clone(),
-            join,
-            live_server: None,
-            config: Config::default(),
-            client: None,
-            initial_import: None,
-            window: (1440.0, 900.0),
-        });
-        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
-        let mut masking = Self {
+        let (editor, asset, agent) = testing::real_photo(&catalog);
+        Self {
             editor,
             catalog,
             asset,
             agent,
-        };
-        masking.refresh();
-        assert!(masking.editor.editable(), "{}", masking.editor.status);
-        masking
+        }
     }
 
     fn owner(&self) -> OwnerHandle {
@@ -2443,9 +2396,8 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
         &masking.owner(),
         masking.editor.client,
         draft_id.clone(),
-        masking.asset.clone(),
         fields,
-        None,
+        Some((masking.asset.clone(), None)),
     );
     assert!(late_set.is_ok(), "the owner accepts the geometry");
     masking.draft(DraftMessage::Reapply);

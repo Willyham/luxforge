@@ -4,7 +4,6 @@
 use super::{
     Editor,
     message::{Message, SyncMessage},
-    preview::short,
     tasks::{
         self, PreviewPayload, Refresh, import_task, merge_current_entry, presets_task, state_task,
         sync_task,
@@ -12,7 +11,7 @@ use super::{
 };
 use crate::state::fields::{self, Fields};
 use iced::Task;
-use lightwell_core::{ClientSession, ErrorKind, HistoryRow, HistorySelection, ModuleDescriptor};
+use lightwell_core::{ClientSession, HistoryRow, HistorySelection, ModuleDescriptor};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::Ordering, time::Instant};
 
@@ -127,17 +126,6 @@ impl Editor {
                         // Recorded, so a refused request is visible in the evidence log even when
                         // a later frame's status line has replaced it.
                         self.event("command_failed", json!({ "error": error }));
-                        // A failed Apply keeps the draft; a stale revision makes it conflicted so
-                        // the user chooses Discard or Reapply rather than losing the composition.
-                        if self.crop_applying.take().is_some() {
-                            let conflict = error.starts_with(ErrorKind::Conflict.code());
-                            if conflict && let Some(draft) = self.crop_mut() {
-                                draft.mark_conflicted();
-                            }
-                            if conflict {
-                                self.crop_changed("crop_draft_conflicted");
-                            }
-                        }
                         if self.activity.pending {
                             let (code, message) =
                                 error.split_once(": ").unwrap_or(("internal", &error));
@@ -420,7 +408,6 @@ impl Editor {
         *self.masks = Some(refresh.masks);
         self.recipe_failed = false;
         let revision = refresh.state.revision;
-        let entry = refresh.state.current_entry.id.clone();
         if self.state.as_ref().map(|state| &state.asset.id) != Some(&refresh.state.asset.id) {
             self.capabilities_asset_changed(&refresh.state.asset.id);
         }
@@ -433,7 +420,6 @@ impl Editor {
         // or historical value of the module's one layer. This reads the values already fetched with
         // the recipe: no extra request, no render.
         self.seed_values();
-        self.settle_draft(revision, &entry);
         self.gesture_revision(revision);
     }
 
@@ -494,35 +480,6 @@ impl Editor {
         }
         self.modules = modules;
         self.seed_mask_fields();
-    }
-
-    /// A new authoritative revision arrived while a draft was open. The draft's own Apply ends it;
-    /// anything else, including this desktop's undo, redo and restore, marks it conflicted and keeps
-    /// it, because no history operation discards a draft implicitly.
-    pub(super) fn settle_draft(&mut self, revision: u64, entry: &lightwell_core::EntryId) {
-        let Some((base, conflicted, summary)) = self
-            .crop()
-            .map(|draft| (draft.base_revision, draft.conflicted, draft.summary()))
-        else {
-            return;
-        };
-        if let Some(request_id) = self.crop_applying.take() {
-            self.end_draft();
-            self.event(
-                "crop_draft_applied",
-                json!({"request_id":request_id,"entry_id":entry.as_str(),"revision":revision,"draft":summary}),
-            );
-            self.status = format!("Crop applied · entry {}", short(entry.as_str()));
-            return;
-        }
-        if base == revision || conflicted {
-            return;
-        }
-        if let Some(draft) = self.crop_mut() {
-            draft.mark_conflicted();
-        }
-        self.crop_changed("crop_draft_conflicted");
-        self.status = "Changed elsewhere: discard the crop draft or reapply it".into();
     }
 
     /// Every mutation, generated or not, takes the narrowest completion path: the command, one

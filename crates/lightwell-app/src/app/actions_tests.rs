@@ -40,8 +40,8 @@ fn copy_as_json_request_for_the_open_crop_draft_matches_its_own_apply() {
         height: 320,
         angle: 0.0,
     });
-    let (method, request, _) = editor
-        .crop_request()
+    let (method, request) = editor
+        .crop_copy_request()
         .expect("a request")
         .expect("a valid draft");
     assert_eq!(method, "edit.crop");
@@ -53,7 +53,7 @@ fn copy_as_json_request_for_the_open_crop_draft_matches_its_own_apply() {
     assert_eq!(editor.status, "Copied the edit.crop request");
 
     // With no draft open there is nothing to copy, and the status says so plainly.
-    editor.set_crop(None);
+    editor.gesture = None;
     let _ = editor.update(Message::Action(ActionMessage::CopyDraftRequest));
     assert_eq!(editor.status, "No crop draft to copy");
     finish(editor, catalog);

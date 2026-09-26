@@ -897,22 +897,19 @@ pub(crate) struct RecipeRead {
 
 /// The crop draft's only preview job: the stack truncated to the layers before the crop layer, which
 /// is exactly that layer's input stage. Starting a draft and reapplying it are the only two requests.
+/// A start's `draft.begin` is its own task, which cancels any draft the crop displaced first; this
+/// job reads the stored stack, not the session's draft, so it does not wait for either.
 ///
-/// A draft the crop displaced — an armed brush's — is cancelled first, in this same task, so the
-/// job is planned once the owner no longer holds it. The job names the entry it truncated, and the
-/// desktop opens the draft on it only while that entry is still the current one it holds.
+/// The job names the entry it truncated, and the desktop opens the draft on it only while that entry
+/// is still the current one it holds.
 pub(crate) fn crop_preview_task(
     owner: OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     layer_count: usize,
-    displaced: Option<DraftId>,
 ) -> Task<Message> {
     owner_task(
         move || {
-            if let Some(draft_id) = displaced {
-                let _ = call(&owner, client, "draft.cancel", json!({"draft_id":draft_id}));
-            }
             ready_preview_job(
                 &owner,
                 PreviewRequest::new(client, asset_id).layers(layer_count),
@@ -982,9 +979,11 @@ pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: MaskTa
     params
 }
 
-/// One `draft.set` and the one preview job for the settings it accepted, as a single round trip.
-/// The gesture's bound is one of these per tick, so pairing them here is what keeps a preview from
-/// being requested for settings the core never accepted.
+/// One `draft.set` and, for a gesture that previews its settings, the one preview job for the
+/// settings it accepted, as a single round trip. The gesture's bound is one of these per tick, so
+/// pairing them here is what keeps a preview from being requested for settings the core never
+/// accepted. `preview` names the asset and the proxy bounds of that job; the crop frame asks for
+/// none, because it is drawn over its input stage, which no drafted field changes.
 ///
 /// The job asks for the reduction too. The contract requires the counts and the overlays to
 /// describe the image currently presented, drafts included, and a drafted preview renders the whole
@@ -997,18 +996,17 @@ pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: MaskTa
 /// a whole display frame whenever a redraw is in flight, which during a drag is always. A gesture
 /// therefore pays the round trip where it is cheapest instead of waiting a frame for its result.
 ///
-/// Both drafting gestures send through here: a slider's and a mask shape's. The mask overlay's
-/// coverage grid is not asked for here, because [`crate::app::Editor::request_preview`] attaches
-/// it to every job it queues, this one included — one rule for every preview path, so the grid is
-/// requested once.
+/// Every drafting gesture sends through here: a slider's, a mask shape's and the crop frame's. The
+/// mask overlay's coverage grid is not asked for here, because
+/// [`crate::app::Editor::request_preview`] attaches it to every job it queues, this one included —
+/// one rule for every preview path, so the grid is requested once.
 pub(crate) fn draft_set_now(
     owner: &OwnerHandle,
     client: ClientId,
     draft_id: DraftId,
-    asset_id: AssetId,
     fields: Value,
-    proxy: Option<ProxyBounds>,
-) -> Result<(Draft, PreviewJob, RoundTrip), String> {
+    preview: Option<(AssetId, Option<ProxyBounds>)>,
+) -> Result<(Draft, Option<PreviewJob>, RoundTrip), String> {
     let queued = Instant::now();
     let started = queued;
     let (draft, _) = call(
@@ -1019,16 +1017,20 @@ pub(crate) fn draft_set_now(
     )?;
     let answered = Instant::now();
     let draft = parse::<Draft>(draft)?;
-    let job = plan_preview(
-        owner,
-        proxied(
-            PreviewRequest::new(client, asset_id)
-                .draft(draft_id)
-                .analyse(),
-            proxy,
-        ),
-    )
-    .map_err(|error| error.to_string())?;
+    let job = preview
+        .map(|(asset_id, proxy)| {
+            plan_preview(
+                owner,
+                proxied(
+                    PreviewRequest::new(client, asset_id)
+                        .draft(draft_id)
+                        .analyse(),
+                    proxy,
+                ),
+            )
+        })
+        .transpose()
+        .map_err(|error| error.to_string())?;
     let planned = Instant::now();
     Ok((
         draft,

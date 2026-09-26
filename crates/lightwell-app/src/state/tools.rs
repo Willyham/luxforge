@@ -907,13 +907,14 @@ fn contains_curve(controls: &[Control]) -> bool {
 /// crop and shows the same fields, so it follows those instead.
 fn draft_digest(frame: Option<&CropFrame<'_>>, inputs: &Inputs<'_>) -> String {
     let fields = format!(
-        "{}|{:?}|{}|{}|{}|{}",
+        "{}|{:?}|{}|{}|{}|{}|{}",
         inputs.crop_angle,
         inputs.editing,
         inputs.crop_custom.0,
         inputs.crop_custom.1,
         inputs.crop_guide,
         inputs.session.preview.can_edit(),
+        inputs.gesture_conflicted,
     );
     match inputs.draft {
         Some(draft) => format!("{}|{}|{fields}", draft.summary(), draft.preset),
@@ -1575,12 +1576,12 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
     };
     CropSectionModel {
         drafting: true,
-        conflicted: draft.conflicted,
+        conflicted: inputs.gesture_conflicted,
         presets: preset_chips(&presets, &draft.preset),
         lock_label: lock_label(draft.aspect.ratio().is_some()),
         locked: draft.aspect.ratio().is_some(),
         can_swap: enabled && draft.aspect.ratio().is_some(),
-        can_apply: enabled && !draft.conflicted,
+        can_apply: enabled && !inputs.gesture_conflicted,
         can_reapply: !inputs.busy,
         readout: readout(draft, frame.action),
         angle_rail: Some(AngleRailModel {

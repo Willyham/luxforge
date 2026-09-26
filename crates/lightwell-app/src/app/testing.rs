@@ -44,6 +44,67 @@ pub(crate) fn boot() -> (Editor, PathBuf) {
     (editor, catalog)
 }
 
+/// An editor with every built-in discovered and one real photograph open, imported by a second
+/// client of the same owner that stands in for an independent JSON client, and read back into the
+/// editor as a command's completion does. Returns the photograph and that client.
+pub(crate) fn real_photo(catalog: &std::path::Path) -> (Editor, AssetId, lightwell_core::ClientId) {
+    let (owner, join) = lightwell_core::OwnerHandle::start(catalog).unwrap();
+    let agent = owner.register();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/s0/orientation-1.jpg");
+    let call = |method: &str, params: Value| {
+        crate::app::tasks::call(&owner, agent, method, params)
+            .unwrap()
+            .0
+    };
+    let queued = call(
+        "catalog.import",
+        json!({"path": fixture, "mutation": crate::app::tasks::request()}),
+    );
+    let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let status = call("job.status", json!({"job_id": job_id}));
+        match status["status"].as_str() {
+            Some("ready") => break,
+            Some("queued" | "running") => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "source preparation: {status}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            other => panic!("source preparation failed {other:?}: {status}"),
+        }
+    }
+    let adopted = call("job.adopt", json!({"job_id": job_id}));
+    let asset =
+        AssetId::parse(adopted["asset"]["asset"]["id"].as_str().expect("an asset")).unwrap();
+    let (mut editor, _) = Editor::new(Boot {
+        owner: owner.clone(),
+        join,
+        live_server: None,
+        config: Config::default(),
+        client: None,
+        initial_import: None,
+        window: (1440.0, 900.0),
+    });
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    let refreshed = crate::app::tasks::refresh(
+        &owner,
+        editor.client,
+        asset.clone(),
+        crate::app::tasks::Scope::Open,
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+        refreshed,
+    )))));
+    assert!(editor.editable(), "{}", editor.status);
+    (editor, asset, agent)
+}
+
 pub(crate) fn finish(mut editor: Editor, catalog: PathBuf) {
     editor.owner.stop();
     editor.owner_join.take().unwrap().join().unwrap();
@@ -334,7 +395,7 @@ pub(crate) fn hold_slider(editor: &mut Editor, action: &str, parameter: &str) {
         .clone();
     let gesture = editor.next_gesture();
     let (draft, _) = CoreDraft::open(gesture, 0, None);
-    editor.gesture = Some(Gesture::Core(crate::app::gesture::CoreGesture {
+    editor.gesture = Some(Gesture::Core(Box::new(crate::app::gesture::CoreGesture {
         asset,
         draft,
         kind: Kind::Slider(crate::app::gesture::SliderGesture {
@@ -344,7 +405,7 @@ pub(crate) fn hold_slider(editor: &mut Editor, action: &str, parameter: &str) {
             target: Default::default(),
             unpreviewed: false,
         }),
-    }));
+    })));
 }
 
 /// The core draft of the open gesture, or of the discarded one still closing.
@@ -352,7 +413,6 @@ pub(crate) fn core_draft(editor: &Editor) -> Option<&CoreDraft> {
     match editor.gesture.as_ref()? {
         Gesture::Core(gesture) => Some(&gesture.draft),
         Gesture::Closing { draft, .. } => Some(draft),
-        Gesture::Crop(_) => None,
     }
 }
 
@@ -424,17 +484,8 @@ pub(crate) fn run_round(editor: &mut Editor) -> Option<Round> {
         Round::Begin => {
             let gesture = editor.core_gesture().expect("an open gesture");
             let asset = gesture.asset.clone();
-            let (action, target) = match &gesture.kind {
-                Kind::Slider(slider) => (slider.action.clone(), slider.target.clone()),
-                Kind::Mask(mask) => (
-                    mask.shape.method().expect("a method").to_owned(),
-                    lightwell_core::mask::commands::MaskTarget {
-                        mask: mask.shape.mask.clone(),
-                        component: mask.shape.component.clone(),
-                        ..Default::default()
-                    },
-                ),
-            };
+            let action = gesture.kind.action().expect("a method");
+            let target = gesture.kind.target();
             if let Ok((session, _)) =
                 crate::app::tasks::call(&owner, client, "session.state", json!({}))
                 && let Some(held) = session["draft"]["draft_id"].as_str()
@@ -503,18 +554,16 @@ pub(crate) fn run_round(editor: &mut Editor) -> Option<Round> {
 }
 
 /// An owner that accepts every `draft.set`: the next draft revision, the fields merged, and a
-/// preview job for the current entry. Tests without a real photograph answer through it.
+/// preview job for the current entry when the gesture previews its fields. Tests without a real
+/// photograph answer through it.
 pub(crate) fn accepted_set(
     editor: &Editor,
     draft_id: &DraftId,
     fields: &Value,
-) -> Result<(Draft, PreviewJob, RoundTrip), String> {
+) -> Result<(Draft, Option<PreviewJob>, RoundTrip), String> {
     let state = editor.state.as_ref().ok_or("no photograph is open")?;
     let gesture = editor.core_gesture().ok_or("no gesture is open")?;
-    let action = match &gesture.kind {
-        Kind::Slider(slider) => slider.action.clone(),
-        Kind::Mask(mask) => mask.shape.method().unwrap_or_default().to_owned(),
-    };
+    let action = gesture.kind.action().unwrap_or_default();
     let mut draft = editor
         .session
         .draft
@@ -531,7 +580,10 @@ pub(crate) fn accepted_set(
         draft.fields.extend(fields.clone());
     }
     let current = &state.current_entry;
-    let job = refresh_for(&state.asset.id, current, Vec::new(), &[current], false).job;
+    let job = gesture
+        .kind
+        .previews()
+        .then(|| refresh_for(&state.asset.id, current, Vec::new(), &[current], false).job);
     let now = std::time::Instant::now();
     Ok((
         draft,
@@ -588,6 +640,54 @@ pub(crate) fn begun(editor: &mut Editor, asset: &AssetId, action: &str, revision
         .get_or_insert_with(std::collections::VecDeque::new);
     let draft = lightwell_core::Draft::new(action, asset.clone(), revision);
     answer_begin(editor, draft);
+}
+
+/// Answer the crop gesture's `draft.begin`, if it has not answered, with a draft on the revision
+/// the desktop holds, and open its frame on `stage`: the draft a crop test drives, with every
+/// `draft.set` answered by [`accepted_set`].
+pub(crate) fn open_crop(editor: &mut Editor, stage: lightwell_core::CropStage) {
+    if core_draft(editor).is_some_and(|draft| draft.in_flight() == Some(Round::Begin)) {
+        let state = editor.state.as_ref().expect("a photograph");
+        let (asset, revision) = (state.asset.id.clone(), state.revision);
+        let action = editor
+            .crop_gesture()
+            .expect("a crop gesture")
+            .action
+            .clone();
+        begun(editor, &asset, &action, revision);
+    }
+    editor.open_draft(stage);
+}
+
+/// Put an open crop gesture with this frame and this stage on its way in the editor's one slot
+/// directly, its `draft.begin` answered, as a test that is about something else needs one there.
+pub(crate) fn hold_crop(
+    editor: &mut Editor,
+    frame: Option<crate::crop_draft::CropDraft>,
+    stage: Option<crate::app::crop::PendingStage>,
+) {
+    let asset = editor
+        .state
+        .as_ref()
+        .expect("a photograph")
+        .asset
+        .id
+        .clone();
+    let gesture = editor.next_gesture();
+    let (mut draft, _) = CoreDraft::open(gesture, 0, None);
+    let _ = draft.handle(crate::app::draft::Event::Begun {
+        answer: Ok(Draft::new("crop", asset.clone(), 0)),
+        seen: 0,
+    });
+    editor.gesture = Some(Gesture::Core(Box::new(crate::app::gesture::CoreGesture {
+        asset,
+        draft,
+        kind: Kind::Crop(crate::app::crop::CropGesture {
+            action: "crop".into(),
+            frame,
+            stage,
+        }),
+    })));
 }
 
 /// Every `draft.*` request this run logged, by event name.

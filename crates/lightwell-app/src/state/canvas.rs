@@ -281,7 +281,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
         ),
         Err(error) => error.detail.clone(),
     };
-    let apply_reason = if draft.conflicted {
+    let apply_reason = if inputs.gesture_conflicted {
         Some("Changed elsewhere: discard the draft or reapply it".into())
     } else if !inputs.session.preview.can_edit() {
         Some("Return to the current state to apply".into())
@@ -295,7 +295,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
         title,
         readout,
         can_apply: apply_reason.is_none(),
-        conflicted: draft.conflicted,
+        conflicted: inputs.gesture_conflicted,
         apply_reason,
     })
 }
@@ -344,7 +344,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
             ],
         });
     }
-    if inputs.draft.is_some_and(|draft| draft.conflicted) {
+    if inputs.draft.is_some() && inputs.gesture_conflicted {
         let revision = inputs.state.map(|state| state.revision);
         notices.push(Notice {
             tone: NoticeTone::Warning,

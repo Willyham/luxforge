@@ -1105,11 +1105,14 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
 
     // A gesture while the crop draft is open.
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    editor.open_draft(CropStage {
-        width: 480,
-        height: 320,
-        angle: 0.0,
-    });
+    crate::app::testing::open_crop(
+        &mut editor,
+        CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        },
+    );
     let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
         action: action.clone(),
         parameter: parameter.clone(),
@@ -1118,6 +1121,7 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
     assert!(editor.slider_gesture().is_none(), "{}", editor.status);
     assert!(editor.status.contains("crop draft"), "{}", editor.status);
     let _ = editor.update(Message::Crop(CropMessage::Cancel));
+    crate::app::testing::answer_cancel(&mut editor);
 
     // The crop mode and Compare while a gesture is open.
     editor.busy = false;

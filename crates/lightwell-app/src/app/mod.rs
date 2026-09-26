@@ -350,8 +350,6 @@ pub(crate) struct Editor {
     pub(crate) version_form_open: bool,
     /// The preview generation that belongs to the draft rather than to the displayed state.
     pub(crate) draft_generation: Option<u64>,
-    /// This desktop's own Apply is in flight, so the revision it produces is not a conflict.
-    pub(crate) crop_applying: Option<String>,
     pub(crate) crop_angle: String,
     /// The two extents the `custom` ratio preset reads.
     pub(crate) crop_custom: (String, String),
@@ -569,7 +567,6 @@ impl Editor {
             version_name: String::new(),
             version_form_open: false,
             draft_generation: None,
-            crop_applying: None,
             crop_angle: "0".into(),
             crop_custom: ("5".into(), "4".into()),
             crop_guide: false,
@@ -693,9 +690,10 @@ impl Editor {
         }
         self.present_mask_overlay();
         let rebase = self.rebase_armed_brush();
+        let abandoned = self.close_abandoned_crop();
         // A wake that arrived while a request was in flight is read once it has been answered.
         let synced = self.sync_when_wanted();
-        let task = self.sync_mode(Task::batch([task, sample, rebase, synced]));
+        let task = self.sync_mode(Task::batch([task, sample, rebase, abandoned, synced]));
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();

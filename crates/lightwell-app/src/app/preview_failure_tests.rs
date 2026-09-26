@@ -8,11 +8,14 @@
 //! a refused render does.
 use super::{
     Editor, ProxyFrame,
-    crop::PendingDraft,
+    crop::PendingStage,
     evidence::Settle,
     message::{CropMessage, Message, PreviewMessage, SyncMessage},
     tasks::SyncResult,
-    testing::{attach_log, crop_layer, entry, finish, logged, opened, refresh_for},
+    testing::{
+        attach_log, core_draft, crop_layer, entry, finish, hold_crop, logged, open_crop, opened,
+        refresh_for,
+    },
 };
 use crate::state::{canvas::PhotoView, histogram::HistogramStatus};
 use lightwell_core::{
@@ -333,7 +336,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
 fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
     let (mut editor, catalog, _, _) = opened_and_shown();
     let error = Error::new(ErrorKind::ResourceLimit, "linear output exceeds 512 MiB");
-    editor.set_crop_pending(Some(PendingDraft {
+    let starting = PendingStage {
         layer: None,
         layer_index: 0,
         ahead: lightwell_core::Orientation::NEUTRAL,
@@ -341,7 +344,8 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         base_revision: 4,
         reapply: false,
         queued: Vec::new(),
-    }));
+    };
+    hold_crop(&mut editor, None, Some(starting));
     editor.draft_generation = Some(99);
     editor.draft_preview_failed(&error);
     assert!(editor.crop_pending().is_none() && editor.draft_generation.is_none());
@@ -365,8 +369,7 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         height: 320,
         angle: 0.0,
     };
-    editor.set_crop(Some(crate::crop_draft::CropDraft::neutral(stage, 4, 0)));
-    editor.set_crop_pending(Some(PendingDraft {
+    let rebasing = PendingStage {
         layer: None,
         layer_index: 0,
         ahead: lightwell_core::Orientation::NEUTRAL,
@@ -374,7 +377,12 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         base_revision: 5,
         reapply: true,
         queued: Vec::new(),
-    }));
+    };
+    hold_crop(
+        &mut editor,
+        Some(crate::crop_draft::CropDraft::neutral(stage, 0)),
+        Some(rebasing),
+    );
     editor.draft_generation = Some(100);
     editor.draft_preview_failed(&error);
     assert!(
@@ -565,14 +573,17 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
         editor.presented_generation > 0 && !editor.preview_queue.is_busy()
     });
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    editor.open_draft(CropStage {
-        width: 480,
-        height: 320,
-        angle: 0.0,
-    });
+    open_crop(
+        &mut editor,
+        CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        },
+    );
     // The first commit makes the draft conflicted; its frame is still rendering.
     committed_elsewhere(&mut editor, &asset, 5, large());
-    assert!(editor.crop().expect("the draft is kept").conflicted);
+    assert!(core_draft(&editor).expect("the draft is kept").conflicted);
     let _ = editor.update(Message::Crop(CropMessage::Reapply));
     assert!(editor.crop_pending().expect("a pending rebase").reapply);
     let log = attach_log(&mut editor);
@@ -592,7 +603,8 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
         editor.crop_pending().is_none() && editor.draft_generation.is_none(),
         "the replaced reapply is still waiting"
     );
-    let draft = editor.crop().expect("the reapply kept its draft");
+    assert!(editor.crop().is_some(), "the reapply kept its draft");
+    let draft = core_draft(&editor).expect("the reapply kept its draft");
     assert!(draft.conflicted, "the kept draft is still conflicted");
     assert_eq!(draft.base_revision, 4);
 
@@ -603,7 +615,7 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
         editor.presenter.stage().is_none(),
         "the replaced job delivered a stage"
     );
-    assert!(editor.crop().expect("the draft is kept").conflicted);
+    assert!(core_draft(&editor).expect("the draft is kept").conflicted);
     let records = logged(&mut editor, &log);
     assert_eq!(
         events(&records, "crop_draft_failed"),

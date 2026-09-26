@@ -319,11 +319,14 @@ impl Editor {
             EvidenceMessage::Capture => {
                 let rows_shown = self.recipe_rows_shown();
                 let proxy_ready = self.capture_proxy_ready();
+                let closing = self.gesture_closing();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
                 // Wait for the backend, for tool discovery and for the preset library, so a frame
-                // always shows real controls and the library rather than their loading lines.
+                // always shows real controls and the library rather than their loading lines; and
+                // for a discarded draft to end at the owner, so the frame's session holds no draft
+                // and the next step may open one.
                 let overlay_wanted = evidence.capture_overlay;
                 // The screenshot reads back the frame drawn last, so it waits for a frame built
                 // after every update so far; the next frame tick tries again.
@@ -337,6 +340,7 @@ impl Editor {
                     || self.curve_sample_pending.is_some()
                     || !rows_shown
                     || !proxy_ready
+                    || closing
                 {
                     return Task::none();
                 }
@@ -1171,10 +1175,11 @@ impl Editor {
                 }
                 return task;
             }
+            // The committed pixels are the evidence, as they are for a slider's release.
             DraftStep::Apply => {
                 return match self.crop_apply() {
                     Ok(task) => {
-                        self.begin_request();
+                        self.await_step(Settle::Preview);
                         task
                     }
                     Err(reason) => self.fail_step(reason),

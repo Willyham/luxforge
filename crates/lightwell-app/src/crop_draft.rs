@@ -217,7 +217,9 @@ struct Gesture {
     point: (f64, f64),
 }
 
-/// The whole crop editor state between opening a draft and Apply or Cancel.
+/// The crop frame's geometry between opening a draft and Apply or Cancel. The draft's lifecycle —
+/// its revision, conflict and commit — is the core draft's ([`crate::app::crop::CropGesture`]);
+/// this is only what the frame editor draws and drags.
 #[derive(Clone, Debug)]
 pub(crate) struct CropDraft {
     /// The crop layer's input stage seen through the current draft angle.
@@ -230,8 +232,6 @@ pub(crate) struct CropDraft {
     pub(crate) aspect: Aspect,
     /// The declared `aspect` option the panel currently shows as chosen.
     pub(crate) preset: String,
-    /// The revision this draft was opened against; Apply expects it.
-    pub(crate) base_revision: u64,
     /// The existing crop layer being edited, or `None` when Apply will append one.
     pub(crate) layer: Option<LayerId>,
     /// How many layers precede the crop layer: the preview truncation that shows its input stage.
@@ -239,8 +239,6 @@ pub(crate) struct CropDraft {
     /// The orientation the layers ahead of the crop give its input stage, so a rebase across a
     /// turn or a reflection can carry the frame with the photograph.
     pub(crate) ahead: Orientation,
-    /// Something else changed the asset; Apply is refused until Discard or Reapply.
-    pub(crate) conflicted: bool,
     gesture: Option<Gesture>,
 }
 
@@ -254,7 +252,6 @@ impl CropDraft {
         payload: CropPayload,
         layer: LayerId,
         layer_index: usize,
-        base_revision: u64,
         presets: &[AspectPreset],
     ) -> Self {
         let stage = CropStage {
@@ -278,7 +275,7 @@ impl CropDraft {
                 height: payload.height * box_height,
             }),
         };
-        let mut draft = Self::seeded(stage, rect, Some(layer), layer_index, base_revision);
+        let mut draft = Self::seeded(stage, rect, Some(layer), layer_index);
         if !payload.is_neutral()
             && let Ok(output) = draft.output()
             && let Some((preset, ratio)) = committed_aspect(
@@ -294,7 +291,7 @@ impl CropDraft {
     }
 
     /// Start a draft on a stack without a crop layer: no straightening and the whole stage.
-    pub(crate) fn neutral(input: CropStage, base_revision: u64, layer_count: usize) -> Self {
+    pub(crate) fn neutral(input: CropStage, layer_count: usize) -> Self {
         let stage = CropStage {
             angle: 0.0,
             ..input
@@ -306,27 +303,19 @@ impl CropDraft {
             width: box_width,
             height: box_height,
         });
-        Self::seeded(stage, rect, None, layer_count, base_revision)
+        Self::seeded(stage, rect, None, layer_count)
     }
 
-    fn seeded(
-        stage: CropStage,
-        rect: BoxRect,
-        layer: Option<LayerId>,
-        layer_index: usize,
-        base_revision: u64,
-    ) -> Self {
+    fn seeded(stage: CropStage, rect: BoxRect, layer: Option<LayerId>, layer_index: usize) -> Self {
         Self {
             stage,
             rect,
             reference: (stage, rect),
             aspect: Aspect::Free,
             preset: FREE.into(),
-            base_revision,
             layer,
             layer_index,
             ahead: Orientation::NEUTRAL,
-            conflicted: false,
             gesture: None,
         }
     }
@@ -341,8 +330,8 @@ impl CropDraft {
         self.payload().output_rect(&self.stage)
     }
 
-    pub(crate) fn mark_conflicted(&mut self) {
-        self.conflicted = true;
+    /// End the frame gesture in progress without finishing it: the draft conflicted under it.
+    pub(crate) fn interrupt(&mut self) {
         self.gesture = None;
     }
 
@@ -523,7 +512,7 @@ impl CropDraft {
         self.remember();
     }
 
-    /// Point the draft at a new input stage and revision after something else committed: the angle
+    /// Point the draft at a new input stage after something else committed: the angle
     /// and the pixel extents are kept and the center keeps addressing the same input point, so a
     /// stage of a different size keeps the composition as far as it fits.
     ///
@@ -534,7 +523,6 @@ impl CropDraft {
     pub(crate) fn rebase(
         &mut self,
         input: CropStage,
-        base_revision: u64,
         layer: Option<LayerId>,
         layer_index: usize,
         ahead: Orientation,
@@ -563,14 +551,14 @@ impl CropDraft {
         self.stage = stage;
         self.rect = rect;
         self.reference = (stage, rect);
-        self.base_revision = base_revision;
         self.layer = layer;
         self.layer_index = layer_index;
-        self.conflicted = false;
         self.gesture = None;
     }
 
-    /// Correlated evidence: what the draft holds when a frame is captured or an event is logged.
+    /// Correlated evidence: what the frame holds when a frame is captured or an event is logged. The
+    /// core draft's revision and conflict state are added beside it
+    /// ([`crate::app::crop::CropGesture::summary`]).
     pub(crate) fn summary(&self) -> Value {
         let payload = self.payload();
         let output = self
@@ -580,7 +568,6 @@ impl CropDraft {
         json!({
             "layer": self.layer.as_ref().map(|id| id.as_str().to_owned()),
             "layer_index": self.layer_index,
-            "base_revision": self.base_revision,
             "input_stage": [self.stage.width, self.stage.height],
             "angle": self.stage.angle,
             "rect": [self.rect.x, self.rect.y, self.rect.width, self.rect.height],
@@ -588,7 +575,6 @@ impl CropDraft {
             "output": output,
             "preset": self.preset,
             "ratio": self.aspect.ratio(),
-            "conflicted": self.conflicted,
         })
     }
 
@@ -894,7 +880,6 @@ mod tests {
                 height,
                 angle: 0.0,
             },
-            3,
             2,
         );
         draft.set_angle(angle);
@@ -1011,10 +996,9 @@ mod tests {
                 height,
                 angle: 0.0,
             };
-            let neutral = CropDraft::neutral(input, 9, 4);
+            let neutral = CropDraft::neutral(input, 4);
             assert_eq!(neutral.stage.angle, 0.0);
             assert_eq!(neutral.layer_index, 4);
-            assert_eq!(neutral.base_revision, 9);
             assert!(neutral.layer.is_none());
             assert_eq!(neutral.aspect, Aspect::Free);
             assert_eq!(
@@ -1043,7 +1027,7 @@ mod tests {
             };
             let expected = payload.output_rect(&stage).expect("a covered payload");
             let layer = LayerId::new();
-            let draft = CropDraft::from_layer(input, payload, layer.clone(), 1, 12, &presets());
+            let draft = CropDraft::from_layer(input, payload, layer.clone(), 1, &presets());
             assert_eq!(draft.layer, Some(layer));
             assert_eq!(draft.layer_index, 1);
             assert_eq!(draft.stage.angle, 7.0);
@@ -1058,7 +1042,7 @@ mod tests {
             angle: 0.0,
             ..draft.stage
         };
-        CropDraft::from_layer(input, draft.payload(), LayerId::new(), 1, 12, &presets())
+        CropDraft::from_layer(input, draft.payload(), LayerId::new(), 1, &presets())
     }
 
     /// Every ratio a draft can choose, in either orientation and after a ratio-locked drag, reads
@@ -1152,7 +1136,7 @@ mod tests {
                 angle: 0.0,
             };
             let neutral =
-                CropDraft::from_layer(input, CropPayload::NEUTRAL, LayerId::new(), 0, 3, &presets);
+                CropDraft::from_layer(input, CropPayload::NEUTRAL, LayerId::new(), 0, &presets);
             assert_eq!(neutral.preset, "free");
             assert_eq!(neutral.aspect, Aspect::Free);
         }
@@ -1510,8 +1494,6 @@ mod tests {
     fn rebasing_keeps_the_angle_and_the_composition_on_a_new_stage() {
         let mut draft = draft(480, 320, 7.0);
         pull(&mut draft, Corner::TopLeft, (140.0, 90.0));
-        draft.mark_conflicted();
-        assert!(draft.conflicted);
         let before = draft.rect;
         let layer = LayerId::new();
         // The same stage keeps the rectangle exactly, including its own reference.
@@ -1521,13 +1503,10 @@ mod tests {
                 height: 320,
                 angle: 0.0,
             },
-            21,
             Some(layer.clone()),
             2,
             Orientation::NEUTRAL,
         );
-        assert!(!draft.conflicted);
-        assert_eq!(draft.base_revision, 21);
         assert_eq!(draft.layer, Some(layer));
         assert_eq!(draft.layer_index, 2);
         assert_eq!(draft.stage.angle, 7.0);
@@ -1542,7 +1521,6 @@ mod tests {
                 height: 160,
                 angle: 0.0,
             },
-            22,
             None,
             0,
             Orientation::NEUTRAL,
@@ -1562,7 +1540,6 @@ mod tests {
                 height: 640,
                 angle: 0.0,
             },
-            23,
             None,
             0,
             Orientation::NEUTRAL,
@@ -1588,19 +1565,16 @@ mod tests {
         pull(&mut draft, Corner::TopLeft, (140.0, 90.0));
         let (start_stage, start_rect) = (draft.stage, draft.rect);
         let right = Orientation::NEUTRAL.then(lightwell_core::Transform::RotateRight);
-        draft.mark_conflicted();
         draft.rebase(
             CropStage {
                 width: 320,
                 height: 480,
                 angle: 0.0,
             },
-            8,
             draft.layer.clone(),
             3,
             right,
         );
-        assert!(!draft.conflicted);
         assert_eq!(draft.ahead, right);
         assert_eq!((draft.stage.width, draft.stage.height), (320, 480));
         assert_eq!(draft.stage.angle, 7.0);
@@ -1618,7 +1592,6 @@ mod tests {
                 height: 480,
                 angle: 0.0,
             },
-            9,
             draft.layer.clone(),
             3,
             mirrored,
@@ -1635,7 +1608,6 @@ mod tests {
                 height: 320,
                 angle: 0.0,
             },
-            10,
             draft.layer.clone(),
             3,
             Orientation::NEUTRAL,
@@ -1665,10 +1637,8 @@ mod tests {
         assert_eq!(summary["angle"], json!(0.0));
         assert_eq!(summary["preset"], json!("3:2"));
         assert_eq!(summary["ratio"], json!(1.5));
-        assert_eq!(summary["conflicted"], json!(false));
         assert_eq!(summary["layer"], Value::Null);
         assert_eq!(summary["layer_index"], json!(2));
-        assert_eq!(summary["base_revision"], json!(3));
         let output = draft.output().expect("a valid draft");
         assert_eq!(summary["output"], json!([output.width, output.height]));
         assert_eq!(summary["payload"]["width"], json!(draft.payload().width));

@@ -58,8 +58,8 @@ impl Editor {
                     serde_json::to_string_pretty(&request).unwrap_or_default(),
                 );
             }
-            ActionMessage::CopyDraftRequest => match self.crop_request() {
-                Some(Ok((method, request, _))) => {
+            ActionMessage::CopyDraftRequest => match self.crop_copy_request() {
+                Some(Ok((method, request))) => {
                     self.status = format!("Copied the {method} request");
                     return iced::clipboard::write(
                         serde_json::to_string_pretty(&json!({

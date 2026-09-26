@@ -16,7 +16,7 @@ The [architecture](architecture.md), [history contract](../specs/edit-history.md
 
 - One catalog owner and command service for the desktop and external JSON clients.
 - Stable asset and layer identities, immutable complete recipe snapshots, attributed actions, monotonic revisions and request deduplication.
-- Per-client view and preview state, with owner-held core drafts for adjustment gestures. The crop editor has its own desktop-local draft with equivalent explicit conflict handling.
+- Per-client view and preview state, with owner-held core drafts for every gesture: adjustments, mask shapes and strokes, and the crop frame.
 - Field-patch actions for Basic adjustments; omitted fields are preserved.
 - Validated recipe transactions and a renderer that consumes snapshots from verified originals.
 - Bounded clients, events, requests and worker queues, including event-gap recovery by reading fresh state.

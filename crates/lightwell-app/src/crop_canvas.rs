@@ -296,7 +296,7 @@ mod tests {
         // Iced rotates about the bounds centre and reports the rotated bounding box, which is
         // exactly the geometry contract's box: place the unrotated stage on the box centre.
         for angle in [0.0, 7.0, -22.5, 45.0] {
-            let mut draft = CropDraft::neutral(stage(480, 320, 0.0), 0, 0);
+            let mut draft = CropDraft::neutral(stage(480, 320, 0.0), 0);
             draft.set_angle(angle);
             assert_eq!(draft.stage.angle, angle);
             let (box_width, box_height) = draft.stage.bounding_box();
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn the_frame_answers_pointers() {
         use canvas::Program;
-        let draft = CropDraft::neutral(stage(480, 320, 0.0), 0, 0);
+        let draft = CropDraft::neutral(stage(480, 320, 0.0), 0);
         let view = CanvasView::percent(100.0, 1.0).expect("a percent view");
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));

@@ -1,9 +1,9 @@
 //! The core draft lifecycle as one pure state machine.
 //!
-//! Every desktop gesture that drafts through the core — a slider, a mask shape or stroke — is one
-//! [`CoreDraft`]. It holds no owner handle and no framework type: it takes an [`Event`] (the gesture
-//! offered fields, an owner answer arrived, the pointer was released, Discard or Reapply was
-//! pressed, the asset moved) and answers with the one [`Step`] the driver must take next. The
+//! Every desktop gesture — a slider, a mask shape or stroke, the crop frame — is one [`CoreDraft`].
+//! It holds no owner handle and no framework type: it takes an [`Event`] (the gesture offered
+//! fields, an owner answer arrived, the pointer was released, Discard or Reapply was pressed, the
+//! asset moved) and answers with the one [`Step`] the driver must take next. The
 //! driver in [`crate::app::gesture`] runs the step against the owner and feeds the answer back, so
 //! every rule of the lifecycle lives here once:
 //!
@@ -188,6 +188,11 @@ impl CoreDraft {
         self.finish == Some(Finish::Cancel) && self.in_flight != Some(Round::Commit)
     }
 
+    /// The draft takes no more fields and no second release: it is closing, or its commit is out.
+    fn settled(&self) -> bool {
+        self.closing() || self.in_flight == Some(Round::Commit)
+    }
+
     /// Nothing is in flight and the core draft is open: the gesture could give its draft up now.
     pub(crate) fn idle(&self) -> bool {
         self.in_flight.is_none() && self.draft_id.is_some() && self.finish.is_none()
@@ -215,10 +220,8 @@ impl CoreDraft {
     /// Take one event and answer the step it calls for.
     pub(crate) fn handle(&mut self, event: Event) -> Step {
         match event {
+            Event::Offer(_) | Event::Release if self.settled() => Step::None,
             Event::Offer(fields) => {
-                if self.closing() || self.in_flight == Some(Round::Commit) {
-                    return Step::None;
-                }
                 self.pending = Some(fields);
                 self.advance()
             }
@@ -255,9 +258,6 @@ impl CoreDraft {
                 self.advance()
             }
             Event::Release => {
-                if self.closing() || self.in_flight == Some(Round::Commit) {
-                    return Step::None;
-                }
                 if self.in_flight.is_some() {
                     self.finish = Some(Finish::Commit);
                     return Step::None;
@@ -407,18 +407,22 @@ mod tests {
         json!({ "exposure": value })
     }
 
+    /// Answer `draft`'s begin with a draft on revision 4, the desktop having seen `seen`.
+    fn begin(draft: &mut CoreDraft, seen: u64) -> (Step, DraftId) {
+        let opened = answer(4);
+        let id = opened.draft_id.clone();
+        let step = draft.handle(Event::Begun {
+            answer: Ok(opened),
+            seen,
+        });
+        (step, id)
+    }
+
     /// A draft that has opened on revision 4, with its begin answered.
     fn begun() -> (CoreDraft, DraftId) {
         let mut draft = opened(None);
-        let opened = answer(4);
-        let id = opened.draft_id.clone();
-        assert_eq!(
-            draft.handle(Event::Begun {
-                answer: Ok(opened),
-                seen: 4
-            }),
-            Step::None
-        );
+        let (step, id) = begin(&mut draft, 4);
+        assert_eq!(step, Step::None);
         (draft, id)
     }
 
@@ -429,19 +433,22 @@ mod tests {
         set
     }
 
+    /// Offer `value` and answer the `draft.set` it sends, accepted at `revision`.
+    fn set(draft: &mut CoreDraft, value: f64, revision: u64) {
+        draft.handle(Event::Offer(fields(value)));
+        let set = accepted(draft, revision);
+        draft.handle(Event::Set(Ok(set)));
+    }
+
     #[test]
     fn offers_before_the_begin_answers_are_sent_once_newest_first() {
         let mut draft = opened(Some(fields(0.1)));
         assert_eq!(draft.in_flight(), Some(Round::Begin));
         assert_eq!(draft.handle(Event::Offer(fields(0.2))), Step::None);
         assert_eq!(draft.handle(Event::Offer(fields(0.3))), Step::None);
-        let opened = answer(4);
-        let id = opened.draft_id.clone();
+        let (step, id) = begin(&mut draft, 4);
         assert_eq!(
-            draft.handle(Event::Begun {
-                answer: Ok(opened),
-                seen: 4
-            }),
+            step,
             Step::Set {
                 draft_id: id,
                 fields: fields(0.3)
@@ -465,8 +472,8 @@ mod tests {
         assert!(!draft.frame_pending());
         draft.handle(Event::Offer(fields(0.2)));
         assert!(draft.frame_pending(), "the set is answered with a frame");
-        let set = accepted(&draft, 1);
-        draft.handle(Event::Set(Ok(set)));
+        let answered = accepted(&draft, 1);
+        draft.handle(Event::Set(Ok(answered)));
         assert!(!draft.frame_pending());
         draft.handle(Event::Revision(5));
         draft.handle(Event::Offer(fields(0.3)));
@@ -498,15 +505,8 @@ mod tests {
     fn a_release_before_the_begin_answers_commits_once_it_has() {
         let mut draft = opened(Some(fields(0.4)));
         assert_eq!(draft.handle(Event::Release), Step::None);
-        let opened = answer(4);
-        let id = opened.draft_id.clone();
-        assert!(matches!(
-            draft.handle(Event::Begun {
-                answer: Ok(opened),
-                seen: 4
-            }),
-            Step::Set { .. }
-        ));
+        let (step, id) = begin(&mut draft, 4);
+        assert!(matches!(step, Step::Set { .. }));
         let set = accepted(&draft, 1);
         assert_eq!(
             draft.handle(Event::Set(Ok(set))),
@@ -540,9 +540,7 @@ mod tests {
     #[test]
     fn a_conflicted_draft_refuses_release_and_reapply_resends_its_fields() {
         let (mut draft, id) = begun();
-        draft.handle(Event::Offer(fields(0.5)));
-        let set = accepted(&draft, 1);
-        draft.handle(Event::Set(Ok(set)));
+        set(&mut draft, 0.5, 1);
         assert_eq!(draft.handle(Event::Revision(4)), Step::None);
         assert_eq!(draft.handle(Event::Revision(5)), Step::Conflicted);
         assert_eq!(draft.handle(Event::Revision(6)), Step::None, "once");
@@ -571,9 +569,7 @@ mod tests {
     #[test]
     fn a_reapply_with_nothing_newer_resends_the_accepted_fields() {
         let (mut draft, id) = begun();
-        draft.handle(Event::Offer(fields(0.5)));
-        let set = accepted(&draft, 1);
-        draft.handle(Event::Set(Ok(set)));
+        set(&mut draft, 0.5, 1);
         draft.handle(Event::Revision(5));
         draft.handle(Event::Reapply);
         let mut rebased = answer(5);
@@ -619,14 +615,7 @@ mod tests {
     fn a_commit_that_lands_while_the_begin_is_in_flight_conflicts_the_draft() {
         let mut draft = opened(None);
         assert_eq!(draft.handle(Event::Revision(5)), Step::None, "no draft yet");
-        let opened = answer(4);
-        assert_eq!(
-            draft.handle(Event::Begun {
-                answer: Ok(opened),
-                seen: 5,
-            }),
-            Step::Conflicted
-        );
+        assert_eq!(begin(&mut draft, 5).0, Step::Conflicted);
         assert!(draft.conflicted, "the revision seen meanwhile is newer");
     }
 
@@ -646,13 +635,9 @@ mod tests {
         let mut draft = opened(Some(fields(0.1)));
         assert_eq!(draft.handle(Event::Cancel), Step::None);
         assert!(draft.closing(), "the slot is held until the begin answers");
-        let opened = answer(4);
-        let id = opened.draft_id.clone();
+        let (step, id) = begin(&mut draft, 4);
         assert_eq!(
-            draft.handle(Event::Begun {
-                answer: Ok(opened),
-                seen: 4
-            }),
+            step,
             Step::Cancel(id),
             "no field is sent to a discarded draft"
         );
@@ -674,7 +659,7 @@ mod tests {
 
     #[test]
     fn cancel_during_a_commit_lets_the_commit_decide() {
-        let (mut draft, id) = begun();
+        let (mut draft, _) = begun();
         draft.handle(Event::Release);
         assert_eq!(draft.handle(Event::Cancel), Step::None, "no racing cancel");
         assert!(!draft.closing(), "the commit is still the gesture's");
@@ -688,7 +673,6 @@ mod tests {
             Step::Cancel(refused.draft_id.clone().unwrap()),
             "a refused commit leaves a draft, which the Discard then cancels"
         );
-        let _ = id;
     }
 
     #[test]

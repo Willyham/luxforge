@@ -304,9 +304,13 @@ impl Editor {
     /// The crop draft as a captured frame reports it, so a rendered frame correlates with the
     /// rectangle, angle and output size that produced it.
     pub(super) fn crop_summary(&self) -> Value {
-        match self.crop() {
-            Some(draft) => {
-                let mut summary = draft.summary();
+        match self
+            .core_gesture()
+            .and_then(|gesture| Some((gesture.crop()?, &gesture.draft)))
+            .filter(|(crop, _)| crop.frame.is_some())
+        {
+            Some((crop, draft)) => {
+                let mut summary = crop.summary(draft);
                 if let Some(object) = summary.as_object_mut() {
                     object.insert("drafting".into(), Value::from(true));
                     object.insert("guide".into(), Value::from(self.crop_guide));

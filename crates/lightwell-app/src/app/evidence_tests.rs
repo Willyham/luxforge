@@ -87,7 +87,7 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
     );
 
     let (draft, _) = draft::CoreDraft::open(draft::GestureId(1), 4, None);
-    editor.gesture = Some(Gesture::Core(gesture::CoreGesture {
+    editor.gesture = Some(Gesture::Core(Box::new(gesture::CoreGesture {
         asset: editor.state.as_ref().expect("open state").asset.id.clone(),
         draft,
         kind: gesture::Kind::Slider(gesture::SliderGesture {
@@ -97,7 +97,7 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
             target: lightwell_core::mask::commands::MaskTarget::default(),
             unpreviewed: false,
         }),
-    }));
+    })));
     let _ = editor.refit_proxy();
     assert!(!editor.refit_pending, "the slider defers refit");
     assert!(
@@ -106,21 +106,24 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
     );
     editor.gesture = None;
 
-    editor.set_crop(Some(crate::crop_draft::CropDraft::neutral(
-        CropStage {
-            width: 4000,
-            height: 3000,
-            angle: 0.0,
-        },
-        4,
-        0,
-    )));
+    crate::app::testing::hold_crop(
+        &mut editor,
+        Some(crate::crop_draft::CropDraft::neutral(
+            CropStage {
+                width: 4000,
+                height: 3000,
+                angle: 0.0,
+            },
+            0,
+        )),
+        None,
+    );
     editor.refit_pending = true; // The queued refit was superseded by crop input-stage work.
     assert!(
         editor.capture_proxy_ready(),
         "the crop frame can be captured"
     );
-    editor.set_crop(None);
+    editor.gesture = None;
     assert!(
         !editor.capture_proxy_ready(),
         "a pending refit blocks ordinary captures"

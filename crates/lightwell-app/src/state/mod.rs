@@ -158,8 +158,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) expanded: &'a BTreeMap<String, bool>,
     /// The open slider gesture, when a drafting control is being moved.
     pub(crate) slider_draft: Option<SliderDrafting<'a>>,
-    /// The open slider or mask gesture's core draft is conflicted: something else committed since
-    /// it was based, and its commit waits for Discard or Reapply.
+    /// The open slider, mask or crop gesture's core draft is conflicted: something else committed
+    /// since it was based, and its commit waits for Discard or Reapply.
     pub(crate) gesture_conflicted: bool,
     /// Why a preset cannot be applied, and why the components gallery cannot open, while this
     /// client's one draft is held — the one refusal every such start answers to.
@@ -663,6 +663,8 @@ mod tests {
         dragging: Option<(String, String)>,
         expanded: BTreeMap<String, bool>,
         draft: Option<CropDraft>,
+        /// The open crop draft's core draft is conflicted.
+        crop_conflicted: bool,
         masks: Option<MaskListing>,
         selected_mask: Option<MaskId>,
         selected_component: Option<ComponentId>,
@@ -710,6 +712,7 @@ mod tests {
                 dragging: None,
                 expanded: BTreeMap::new(),
                 draft: None,
+                crop_conflicted: false,
                 masks: None,
                 selected_mask: None,
                 selected_component: None,
@@ -797,10 +800,11 @@ mod tests {
                         parameter,
                         conflicted: *conflicted,
                     }),
-                gesture_conflicted: self
-                    .slider_draft
-                    .as_ref()
-                    .is_some_and(|(_, _, conflicted)| *conflicted),
+                gesture_conflicted: self.crop_conflicted
+                    || self
+                        .slider_draft
+                        .as_ref()
+                        .is_some_and(|(_, _, conflicted)| *conflicted),
                 preset_refusal: (self.slider_draft.is_some() || self.draft.is_some())
                     .then(|| "Finish the open draft before applying a preset".to_owned()),
                 gallery_refusal: (self.slider_draft.is_some() || self.draft.is_some())
@@ -1117,8 +1121,7 @@ mod tests {
         let presets = crate::crop_draft::aspect_presets(
             &crate::state::testing::CROP_ASPECTS.map(String::from),
         );
-        let draft =
-            CropDraft::from_layer(stage, wide, lightwell_core::LayerId::new(), 0, 3, &presets);
+        let draft = CropDraft::from_layer(stage, wide, lightwell_core::LayerId::new(), 0, &presets);
         assert_eq!(draft.preset, "16:9");
 
         // Straightened to 2.4° at the stage's own ratio reads as Original, at 2.4° on the rail.
@@ -1212,7 +1215,6 @@ mod tests {
                 height: 320,
                 angle: 0.0,
             },
-            3,
             0,
         ));
         let workspace = scene.derive();
@@ -1223,7 +1225,7 @@ mod tests {
         assert_eq!(frame.presets.len(), 7, "the ratios are generated");
         assert!(workspace.canvas.notices.is_empty());
 
-        scene.draft.as_mut().expect("a draft").mark_conflicted();
+        scene.crop_conflicted = true;
         let workspace = scene.derive();
         let ControlModel::CropFrame(frame) = &section(&workspace, &crop.id).controls[0] else {
             panic!("the crop section is first in its module")
@@ -1270,7 +1272,6 @@ mod tests {
                 height: 320,
                 angle: 0.0,
             },
-            3,
             0,
         ));
         assert!(section(&scene.derive(), &crop.id).expanded);
@@ -2016,7 +2017,6 @@ mod tests {
                 height: 320,
                 angle: 0.0,
             },
-            3,
             0,
         ));
         let bar = scene.derive().canvas.draft_bar.expect("an open draft");
@@ -2024,7 +2024,7 @@ mod tests {
         assert_eq!(bar.readout, "480 × 320 px · 0°");
         assert!(bar.can_apply && bar.apply_reason.is_none());
 
-        scene.draft.as_mut().expect("a draft").mark_conflicted();
+        scene.crop_conflicted = true;
         let bar = scene.derive().canvas.draft_bar.expect("an open draft");
         assert!(!bar.can_apply && bar.conflicted);
         assert_eq!(
@@ -2138,16 +2138,15 @@ mod tests {
     fn the_conflict_notice_names_the_revision_that_arrived() {
         let crop = crop_descriptor();
         let mut scene = Scene::new(vec![crop]).opened(Vec::new());
-        let mut draft = CropDraft::neutral(
+        let draft = CropDraft::neutral(
             lightwell_core::CropStage {
                 width: 480,
                 height: 320,
                 angle: 0.0,
             },
-            2,
             0,
         );
-        draft.mark_conflicted();
+        scene.crop_conflicted = true;
         scene.draft = Some(draft);
         let notice = &scene.derive().canvas.notices[0];
         assert_eq!(notice.title, "Changed elsewhere");
@@ -2780,7 +2779,6 @@ mod tests {
                 height: 320,
                 angle: 0.0,
             },
-            3,
             0,
         ));
         assert_eq!(
