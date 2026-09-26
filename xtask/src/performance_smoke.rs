@@ -19,8 +19,10 @@
 //! they were, and the reopened frame proves that opening clears the window and reads at once.
 //! Everything compared is written to `app/performance-checks.json`.
 //!
-//! With `--source RAW` the heavy step is a RAW temperature commit instead, which redevelops the
-//! mosaic; that run is not part of `rendered`, because no RAW photograph is checked in.
+//! With `--source RAW` the heavy step is Presence Clarity and Texture together instead, because a
+//! RAW photograph of 24 to 40 MP renders Clarity alone, and redevelops for a temperature commit, in
+//! under the section's 0.5 s; that run is not part of `rendered`, because no RAW photograph is
+//! checked in.
 use crate::{
     scenario::{Checked, Plan, Run, Step, launch::Guard, plan::only},
     *,
@@ -45,12 +47,15 @@ const ASLEEP_WAIT_MS: u64 = 2_500;
 /// the owner's M4, too close to the section's 0.5 s threshold to be listed reliably; over a 3°
 /// straighten, whose interpolation it then renders through, it takes about 0.9 s.
 const ANGLE: f64 = 3.0;
-/// The heavy edit on the JPEG: full Presence Clarity, a spatial operation over the whole 60 MP
-/// frame at its exact phase. Texture or Dehaze beside it would run for seconds more, which is more
-/// than the scenario needs.
+/// The heavy edit's Clarity: full Presence Clarity, a spatial operation over the whole frame at its
+/// exact phase. On the 60 MP JPEG it is the whole edit: Texture or Dehaze beside it would run for
+/// seconds more, which is more than the scenario needs.
 const CLARITY: f64 = 100.0;
-/// The heavy edit on a RAW source: a temperature commit, which redevelops the retained mosaic.
-const KELVIN: f64 = 4200.0;
+/// Texture beside Clarity in the heavy edit on a RAW source. A RAW photograph has 24 to 40 MP, so
+/// Clarity alone renders in less than the section's 0.5 s threshold, and so does a temperature
+/// commit's redevelopment since RCD runs on the pool (about 80 ms on the Z6 and 330 ms on the
+/// X100VI); both together over the straighten render for about 0.8 s on the Z6.
+const TEXTURE: f64 = 100.0;
 /// The section's own display rules, restated here so the runner does not borrow them.
 const LONG_JOB_MS: u64 = 500;
 const RECENT_JOB_MS: u64 = 10_000;
@@ -83,10 +88,13 @@ fn is_raw(sources: &[PathBuf]) -> bool {
     })
 }
 
-/// The heavy step for this source: Presence Clarity on the JPEG, a temperature commit on a RAW.
+/// The heavy step for this source: Presence Clarity on the JPEG, Clarity and Texture on a RAW.
 fn heavy_step(raw: bool) -> script::Step {
     if raw {
-        script::Step::call("edit.set-raw-temperature", json!({"kelvin":KELVIN}))
+        script::Step::call(
+            "edit.set-presence",
+            json!({"clarity":CLARITY,"texture":TEXTURE}),
+        )
     } else {
         script::Step::call("edit.set-presence", json!({"clarity":CLARITY}))
     }
@@ -96,14 +104,15 @@ fn heavy_step(raw: bool) -> script::Step {
 /// nothing but the two edits commits anything. What the section shows, `verify` checks.
 pub fn plan(sources: &[PathBuf]) -> Plan {
     let raw = is_raw(sources);
-    let heavy = Step::new("heavy", heavy_step(raw)).commits(1);
-    // The JPEG's Clarity commit is labelled by the module; a RAW temperature's label is the
-    // photograph's own, so it is left to the commit count.
-    let heavy = if raw {
-        heavy
-    } else {
-        heavy.label(format!("Clarity +{CLARITY}"))
-    };
+    // Each heavy commit is labelled by the Presence module: one field by its name and amount, two
+    // by the module's title and their count.
+    let heavy = Step::new("heavy", heavy_step(raw))
+        .commits(1)
+        .label(if raw {
+            "Presence (2 fields)".to_owned()
+        } else {
+            format!("Clarity +{CLARITY}")
+        });
     Plan::new(vec![
         // The photograph opened with the section open and sampling, as every launch starts it.
         Step::opened("opened"),
@@ -368,6 +377,60 @@ fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
         }),
     };
     Ok((vec![row], Value::Null, Value::Null))
+}
+
+/// The recorded entry behind the "finished" frame's one job row, which must be the heavy edit's
+/// own render: a finished "Rendering preview" row whose entry began after every entry the frame
+/// before the heavy edit recorded. The section lists the newest long entry that ended in the last
+/// 10 s, so without the second condition a long job from before the edit, such as the open's
+/// "Preparing original" a few seconds earlier, would stand in for a heavy edit that ran short.
+fn heavy_work_listed(before: &Value, finished: &Value) -> Result<Value> {
+    let jobs = performance(finished)["jobs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure(
+        jobs.len() == 1
+            && jobs[0]["running"] == json!(false)
+            && jobs[0]["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.starts_with("Finished "))
+            && jobs[0]["label"] == json!("Rendering preview"),
+        format!("Step \"finished\": the heavy edit's work is not listed as finished: {jobs:?}"),
+    )?;
+    let listed = performance(finished)["activity"]["recent"]
+        .as_array()
+        .and_then(|recent| {
+            recent.iter().find(|job| {
+                job["duration_ms"]
+                    .as_u64()
+                    .is_some_and(|ms| ms >= LONG_JOB_MS)
+                    && job["ended_ms_ago"]
+                        .as_u64()
+                        .is_some_and(|ms| ms <= RECENT_JOB_MS)
+            })
+        })
+        .cloned()
+        .ok_or("Step \"finished\": no recorded activity.list entry gives the finished row")?;
+    let activity = &performance(before)["activity"];
+    let mut earlier = 0;
+    for list in ["active", "recent"] {
+        let jobs = activity[list]
+            .as_array()
+            .ok_or("The frame before the heavy edit recorded no activity.list")?;
+        earlier = jobs
+            .iter()
+            .filter_map(|job| job["id"].as_u64())
+            .fold(earlier, u64::max);
+    }
+    ensure(
+        listed["id"].as_u64().is_some_and(|id| id > earlier),
+        format!(
+            "Step \"finished\": the finished row is entry {}, which began before the heavy edit: the frame before it recorded entries up to {earlier}",
+            listed["id"]
+        ),
+    )?;
+    Ok(listed)
 }
 
 fn performance(frame: &Value) -> &Value {
@@ -710,37 +773,9 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         format!("GPU time decreased across frames: {gpu_times:?}"),
     )?;
 
-    // Finished: the heavy edit's long work is listed as finished — its render for Clarity, and
-    // whichever of the redevelopment and its render ended last for a RAW temperature.
-    let (heavy, finished) = (launch.at("heavy")?, launch.at("finished")?);
-    let jobs = performance(finished)["jobs"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let raw = heavy["step"]["request"]["api"]["method"] == json!("edit.set-raw-temperature");
-    ensure(
-        jobs.len() == 1
-            && jobs[0]["running"] == json!(false)
-            && jobs[0]["detail"]
-                .as_str()
-                .is_some_and(|detail| detail.starts_with("Finished "))
-            && (raw || jobs[0]["label"] == json!("Rendering preview")),
-        format!("Step \"finished\": the heavy edit's work is not listed as finished: {jobs:?}"),
-    )?;
-    let listed = performance(finished)["activity"]["recent"]
-        .as_array()
-        .and_then(|recent| {
-            recent.iter().find(|job| {
-                job["duration_ms"]
-                    .as_u64()
-                    .is_some_and(|ms| ms >= LONG_JOB_MS)
-                    && job["ended_ms_ago"]
-                        .as_u64()
-                        .is_some_and(|ms| ms <= RECENT_JOB_MS)
-            })
-        })
-        .cloned()
-        .unwrap_or(Value::Null);
+    // Finished: the heavy edit's own render is listed as finished, not a long job from before it.
+    let (straightened, heavy) = (launch.at("straightened")?, launch.at("heavy")?);
+    let listed = heavy_work_listed(straightened, launch.at("finished")?)?;
 
     // Collapsed, then asleep: nothing more is read or adopted.
     let (collapsed, asleep) = (launch.at("collapsed")?, launch.at("asleep")?);
@@ -860,19 +895,78 @@ mod tests {
     }
 
     /// The plan scripts one step per frame after the open, and its heavy step is Clarity on the
-    /// JPEG and a temperature commit on a RAW, over the straighten either way.
+    /// JPEG and Clarity with Texture on a RAW, over the straighten either way.
     #[test]
     fn the_plan_picks_the_heavy_step_by_its_source() {
-        let method = |plan: &Plan, step: &str| {
+        let call = |plan: &Plan, step: &str| {
             let at = plan.index(step).expect("a planned step");
-            plan.steps()[at].script().expect("a scripted step")["api"]["method"].clone()
+            plan.steps()[at].script().expect("a scripted step")["api"].clone()
         };
         let jpeg = plan(&[PathBuf::from("a/60mp.jpg")]);
         assert_eq!(jpeg.script().as_array().map(Vec::len), Some(jpeg.len() - 1));
-        assert_eq!(method(&jpeg, "straightened"), json!("edit.crop-fit"));
-        assert_eq!(method(&jpeg, "heavy"), json!("edit.set-presence"));
+        assert_eq!(
+            call(&jpeg, "straightened")["method"],
+            json!("edit.crop-fit")
+        );
+        assert_eq!(
+            call(&jpeg, "heavy"),
+            json!({"method":"edit.set-presence","params":{"clarity":100.0}})
+        );
         let raw = plan(&[PathBuf::from("a/x.RAF")]);
-        assert_eq!(method(&raw, "straightened"), json!("edit.crop-fit"));
-        assert_eq!(method(&raw, "heavy"), json!("edit.set-raw-temperature"));
+        assert_eq!(call(&raw, "straightened")["method"], json!("edit.crop-fit"));
+        assert_eq!(
+            call(&raw, "heavy"),
+            json!({"method":"edit.set-presence","params":{"clarity":100.0,"texture":100.0}})
+        );
+    }
+
+    /// A frame's recorded Performance state: the job rows it shows over the `activity.list` it read.
+    fn frame(active: Value, recent: Value, jobs: Value) -> Value {
+        json!({"state":{"performance":{
+            "activity": {"active": active, "recent": recent, "sequence": 1, "untracked": 0},
+            "jobs": jobs,
+        }}})
+    }
+
+    fn finished_row(label: &str) -> Value {
+        json!([{"label":label,"trailing":"0.8 s","detail":"Finished 2 s ago","running":false,"progress":null}])
+    }
+
+    /// The finished row must be the heavy edit's own render. A RAW whose heavy edit ran short once
+    /// passed on the open's "Preparing original", still inside the section's 10 s window, and then
+    /// failed once pooled RCD brought the preparation under 0.5 s; neither run listed the edit.
+    #[test]
+    fn the_finished_row_is_the_heavy_edits_own_render() {
+        let preparing = json!({"id":1,"kind":"source.prepare","label":"Preparing original","outcome":"completed","duration_ms":566,"ended_ms_ago":7162});
+        let before = frame(json!([]), json!([preparing.clone()]), json!([]));
+
+        // The heavy edit's render, begun after everything the frame before it recorded.
+        let render = json!({"id":5,"kind":"preview.render","label":"Rendering preview","phase":"exact","outcome":"completed","duration_ms":762,"ended_ms_ago":2061});
+        let finished = frame(
+            json!([]),
+            json!([render.clone(), preparing.clone()]),
+            finished_row("Rendering preview"),
+        );
+        assert_eq!(heavy_work_listed(&before, &finished).unwrap(), render);
+
+        // The heavy edit ran short: only the open's preparation is long, and it is not the edit's.
+        let stale = frame(
+            json!([]),
+            json!([preparing.clone()]),
+            finished_row("Preparing original"),
+        );
+        assert!(heavy_work_listed(&before, &stale).is_err());
+
+        // A render row that the frame before the edit already recorded is not the edit's either.
+        let earlier = frame(json!([]), json!([render.clone()]), json!([]));
+        assert!(heavy_work_listed(&earlier, &finished).is_err());
+
+        // Nothing long at all.
+        let idle = frame(
+            json!([]),
+            json!([]),
+            json!([{"label":"No background work","trailing":"","detail":null,"running":false,"progress":null}]),
+        );
+        assert!(heavy_work_listed(&before, &idle).is_err());
     }
 }

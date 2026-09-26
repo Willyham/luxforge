@@ -634,9 +634,11 @@ which needs no privileges for the same user; each expanded frame after the open 
 lie between the runner's last reading at or before the sample's wall-clock time and its first
 reading after it, within 8 MiB. While the editor idles the three agree to the byte. The readings are
 in `process-readings.json` beside `app/`, and `app/performance-checks.json` records every comparison
-and tolerance. With `--source RAW` the Clarity commit becomes a RAW temperature commit, which
-redevelops the mosaic, and the finished job is whichever of the redevelopment and its render ended
-last; that run is not part of `rendered`.
+and tolerance. The finished row must be the heavy commit's own render: its entry must have begun
+after every entry the frame before the commit recorded, so a long job from before it, such as the
+open's preparation, cannot stand in. With `--source RAW` the heavy commit is Clarity and Texture
+together, because a 24 to 40 MP RAW renders Clarity alone, and redevelops for a temperature
+commit, in under the section's 0.5 s; that run is not part of `rendered`.
 
 `zoom` is two launches, one over each of the generated `24mp.jpg` (6000 × 4000) and `60mp.jpg`
 (10000 × 6000), each writing its own `24mp/` or `60mp/` directory beside the scenario's `result.json`.
