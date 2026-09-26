@@ -70,8 +70,13 @@ pub(crate) struct MaskField {
     fine: Option<Arc<CompiledMask>>,
     /// `fine`'s bounds brought back to this stage, so a supersampled mask skips the same spans a
     /// point-sampled one does without ever under-covering: the doubled rectangle is conservative
-    /// for the doubled grid, and halving it outwards is conservative for this one.
+    /// for the doubled grid, and halving it outwards is conservative for this one. In the window's
+    /// coordinates when the field is [`Self::windowed`].
     bounds: Region,
+    /// The window of the compiled stage this field is read over, when a windowed proxy cut the
+    /// stage its layer receives: coordinates handed to [`Self::evaluate`] are the window's, and
+    /// the window's origin is added before the compiled field is asked. `None` everywhere else.
+    window: Option<Region>,
 }
 
 impl MaskField {
@@ -96,6 +101,7 @@ impl MaskField {
                 mask: Arc::new(compiled),
                 fine: None,
                 bounds,
+                window: None,
             });
         }
         // A doubled stage is where the subsample positions live. The clamp is arithmetic hygiene
@@ -107,6 +113,7 @@ impl MaskField {
                 mask: Arc::new(compiled),
                 fine: None,
                 bounds,
+                window: None,
             });
         };
         let fine = CompiledMask::new(mask, doubled, strokes)?;
@@ -115,7 +122,50 @@ impl MaskField {
             mask: Arc::new(compiled),
             fine: Some(Arc::new(fine)),
             bounds,
+            window: None,
         })
+    }
+
+    /// This field read over `window` of the stage it was compiled against, as that window's own
+    /// stage: a spatial operation of a windowed proxy runs over the window, and reads its mask at
+    /// the window's coordinates ([`crate::render`]'s proxy window). The compiled field, and so
+    /// every coverage value, is unchanged; only the coordinates it is asked at move, by an
+    /// integer. `window` must lie inside the compiled stage.
+    pub(crate) fn windowed(&self, window: Region) -> Self {
+        let origin = self.window.map_or((0, 0), |held| (held.x0, held.y0));
+        let placed = Region {
+            x0: origin.0 + window.x0,
+            y0: origin.1 + window.y0,
+            width: window.width,
+            height: window.height,
+        };
+        let bounds = self.bounds;
+        let (bounds_x0, bounds_y0) = (bounds.x0 + origin.0, bounds.y0 + origin.1);
+        let x0 = bounds_x0.max(placed.x0);
+        let y0 = bounds_y0.max(placed.y0);
+        let x1 = (bounds_x0 + bounds.width).min(placed.x1());
+        let y1 = (bounds_y0 + bounds.height).min(placed.y1());
+        let bounds = if bounds.is_empty() || x1 <= x0 || y1 <= y0 {
+            Region {
+                x0: 0,
+                y0: 0,
+                width: 0,
+                height: 0,
+            }
+        } else {
+            Region {
+                x0: x0 - placed.x0,
+                y0: y0 - placed.y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            }
+        };
+        Self {
+            mask: self.mask.clone(),
+            fine: self.fine.clone(),
+            bounds,
+            window: Some(placed),
+        }
     }
 
     /// The coverage this render applies at stage pixel `(x, y)`, for the pixel value `rgb` the
@@ -135,6 +185,10 @@ impl MaskField {
     /// they would answer at the pixel's centre.
     #[inline]
     pub(crate) fn evaluate(&self, x: u32, y: u32, rgb: [f32; 3]) -> f32 {
+        let (x, y) = match self.window {
+            Some(window) => (x + window.x0, y + window.y0),
+            None => (x, y),
+        };
         let Some(fine) = &self.fine else {
             return self.mask.evaluate(x, y, rgb);
         };
@@ -169,7 +223,13 @@ impl MaskField {
     /// The stage the mask was compiled against — the stage this field answers about, never the
     /// doubled one the supersample reads.
     pub(crate) fn stage(&self) -> Stage {
-        self.mask.stage()
+        match self.window {
+            Some(window) => Stage {
+                width: window.width,
+                height: window.height,
+            },
+            None => self.mask.stage(),
+        }
     }
 
     /// How many components the mask composes, which is the whole of its per-pixel cost.
@@ -188,6 +248,7 @@ impl MaskField {
     /// payloads report unequal — which is what the operation equality this feeds wants.
     pub(crate) fn same_as(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.mask, &other.mask)
+            && self.window == other.window
             && match (&self.fine, &other.fine) {
                 (None, None) => true,
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),

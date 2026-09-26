@@ -124,14 +124,51 @@ impl ProxyApproximation {
     }
 }
 
-/// The proxy source dimensions a job will render against, with the bounds they were derived from.
-/// The bounds are part of the plan because they are part of the cache identity: a resized window
-/// produces a different plan even when the rounded dimensions happen to agree.
+/// The proxy stage a job renders against, with the bounds it was derived from and the window of it
+/// the proxy source holds. The bounds are part of the plan because they are part of the cache
+/// identity: a resized window produces a different plan even when the rounded dimensions happen to
+/// agree. So is the window: a crop that reads another part of the stage misses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProxyPlan {
+    /// The whole proxy stage: the source scaled by the proxy scale, which every normalized payload,
+    /// mask and spatial radius of the stack is resolved against.
     pub width: u32,
     pub height: u32,
     pub bounds: ProxyBounds,
+    /// The rectangle of the whole proxy stage the proxy source holds, when the stack reads less
+    /// than all of it — a crop, and what each boundary before it needs around what it reads — or
+    /// `None` for the whole stage. A tight crop fits a small output into the bounds, which raises
+    /// the scale towards one, so without a window its proxy would approach the source's own size;
+    /// with one, the proxy source is the display-sized part the crop reads plus a stated margin
+    /// (instant previews, "Render what the display can show").
+    pub window: Option<ProxyWindow>,
+}
+
+/// A rectangle of the whole proxy stage, in its pixels: the part a windowed proxy source holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProxyWindow {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ProxyPlan {
+    /// The dimensions of the proxy source this plan builds: the window's, or the whole stage's.
+    pub fn source_dimensions(&self) -> (u32, u32) {
+        self.window.map_or((self.width, self.height), |window| {
+            (window.width, window.height)
+        })
+    }
+
+    /// The same plan over the whole proxy stage, with no window: the exact downscale a windowed
+    /// proxy is a part of, which the proofs render against.
+    pub fn whole(self) -> Self {
+        Self {
+            window: None,
+            ..self
+        }
+    }
 }
 
 /// What identifies a prepared source's pixels for cache purposes.
@@ -192,6 +229,7 @@ impl ProxyPlan {
             width,
             height,
             bounds,
+            window: None,
         })
     }
 }
@@ -263,7 +301,10 @@ impl PreviewSource {
         }
     }
 
-    /// Downscale this source to the plan's dimensions with a separable area average.
+    /// Downscale this source to the plan's dimensions with a separable area average, keeping only
+    /// the plan's window when it has one. A windowed proxy's pixels are the whole downscale's
+    /// pixels in that window, bit for bit: each is the same weights over the same source samples in
+    /// the same order, and only the source rows and columns the window covers are read.
     ///
     /// This is frame work: it runs on the caller's thread and puts its two passes on the shared
     /// Rayon pool above the one-megapixel threshold. Never call it on the catalog owner thread.
@@ -271,13 +312,9 @@ impl PreviewSource {
         let (source_width, source_height) = self.dimensions();
         check_plan(plan, source_width, source_height)?;
         match self {
-            Self::Jpeg(image) => Ok(PreviewSource::Jpeg(downscale_jpeg(
-                image,
-                plan.width,
-                plan.height,
-            )?)),
+            Self::Jpeg(image) => Ok(PreviewSource::Jpeg(downscale_jpeg(image, plan)?)),
             Self::Raw { image, settings } => Ok(PreviewSource::Raw {
-                image: downscale_linear(image, plan.width, plan.height)?,
+                image: downscale_linear(image, plan)?,
                 settings: *settings,
             }),
         }
@@ -296,7 +333,28 @@ fn check_plan(plan: ProxyPlan, source_width: u32, source_height: u32) -> Result<
             plan.width, plan.height
         )));
     }
+    if let Some(window) = plan.window
+        && (window.width == 0
+            || window.height == 0
+            || u64::from(window.x) + u64::from(window.width) > u64::from(plan.width)
+            || u64::from(window.y) + u64::from(window.height) > u64::from(plan.height))
+    {
+        return Err(Error::validation(format!(
+            "a proxy window {}x{} at ({}, {}) lies outside its {}x{} proxy stage",
+            window.width, window.height, window.x, window.y, plan.width, plan.height
+        )));
+    }
     Ok(())
+}
+
+/// The window a plan builds, as a rectangle of its proxy stage: the plan's own, or the whole stage.
+fn window_of(plan: ProxyPlan) -> ProxyWindow {
+    plan.window.unwrap_or(ProxyWindow {
+        x: 0,
+        y: 0,
+        width: plan.width,
+        height: plan.height,
+    })
 }
 
 /// The element count of a float buffer of `width × height × 3`, refused when it would exceed the
@@ -367,6 +425,7 @@ impl Coverage {
         )
     }
 
+    #[cfg(test)]
     fn len(&self) -> usize {
         self.first.len()
     }
@@ -382,12 +441,17 @@ impl Coverage {
 /// table, a RAW value read through its view — and in how the output is stored, which each caller
 /// does in the closure it hands [`Self::row`]; the arithmetic is this one implementation.
 ///
-/// Allocations: the intermediate of `width × source_height × 3` f32, bounded by the 512 MiB frame
-/// limit. Every source pixel is read exactly once, so no per-row scratch exists at all.
+/// Allocations: the intermediate of `window width × source rows the window reads × 3` f32, bounded
+/// by the 512 MiB frame limit. Every source pixel the window reads is read exactly once, so no
+/// per-row scratch exists at all.
 struct BoxDownscale {
     vertical: Coverage,
-    /// The intermediate rows: `width × 3` values per source row.
+    /// The intermediate rows: `width × 3` values per source row the window reads, from source row
+    /// `first_row` on.
     rows: Vec<f32>,
+    first_row: u32,
+    /// The window's first output row, which output row `0` of [`Self::row`] is.
+    window_y: u32,
     stride: usize,
     parallel: bool,
 }
@@ -400,19 +464,31 @@ impl BoxDownscale {
     fn new<Read: Fn(u32) -> [f32; 3]>(
         source_width: u32,
         source_height: u32,
-        width: u32,
-        height: u32,
+        plan: ProxyPlan,
         row: impl Fn(u32) -> Read + Sync,
     ) -> Result<Self, Error> {
-        let intermediate_len = float_values(width, source_height, "proxy downscale intermediate")?;
-        let horizontal = Coverage::new(source_width, width);
-        let vertical = Coverage::new(source_height, height);
-        let parallel = u64::from(source_width) * u64::from(source_height) >= PARALLEL_PROXY_PIXELS;
-        let stride = width as usize * 3;
+        let window = window_of(plan);
+        let horizontal = Coverage::new(source_width, plan.width);
+        let vertical = Coverage::new(source_height, plan.height);
+        // The source rows the window's output rows average, and nothing else.
+        let first_row = vertical.span(window.y as usize).0;
+        let (last_first, last_weights) = vertical.span((window.y + window.height - 1) as usize);
+        let end_row = last_first + last_weights.len() as u32;
+        let source_rows = end_row - first_row;
+        let intermediate_len =
+            float_values(window.width, source_rows, "proxy downscale intermediate")?;
+        // The source pixels the window reads, which is the work: the whole source for a whole
+        // proxy, and about the window's share of it for a windowed one.
+        let (column_first, _) = horizontal.span(window.x as usize);
+        let (column_last, column_weights) = horizontal.span((window.x + window.width - 1) as usize);
+        let read_columns = column_last + column_weights.len() as u32 - column_first;
+        let parallel = u64::from(read_columns) * u64::from(source_rows) >= PARALLEL_PROXY_PIXELS;
+        let stride = window.width as usize * 3;
         let mut rows = vec![0f32; intermediate_len];
         let pass = |(y, out): (usize, &mut [f32])| {
-            let read = row(y as u32);
-            for index in 0..horizontal.len() {
+            let read = row(first_row + y as u32);
+            for column in 0..window.width as usize {
+                let index = window.x as usize + column;
                 let (first, weights) = horizontal.span(index);
                 let mut sum = [0f64; 3];
                 for (offset, weight) in weights.iter().enumerate() {
@@ -422,7 +498,7 @@ impl BoxDownscale {
                     }
                 }
                 for (channel, value) in sum.iter().enumerate() {
-                    out[index * 3 + channel] = *value as f32;
+                    out[column * 3 + channel] = *value as f32;
                 }
             }
         };
@@ -434,6 +510,8 @@ impl BoxDownscale {
         Ok(Self {
             vertical,
             rows,
+            first_row,
+            window_y: window.y,
             stride,
             parallel,
         })
@@ -444,8 +522,8 @@ impl BoxDownscale {
     /// its slice of the intermediate are resolved once per row, not once per pixel.
     #[inline]
     fn row(&self, y: usize, mut store: impl FnMut(usize, [f64; 3])) {
-        let (first, weights) = self.vertical.span(y);
-        let start = first as usize * self.stride;
+        let (first, weights) = self.vertical.span(self.window_y as usize + y);
+        let start = (first - self.first_row) as usize * self.stride;
         let rows = &self.rows[start..start + weights.len() * self.stride];
         for x in 0..self.stride / 3 {
             let mut sum = [0f64; 3];
@@ -464,7 +542,8 @@ impl BoxDownscale {
 /// boundary. A uniform region therefore comes out as exactly its own code, and the proxy of an
 /// identity stack agrees with the exact render's arithmetic everywhere it can. The output frame is
 /// written in place and returned as the proxy's pixels, with no copy.
-fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<SourceImage, Error> {
+fn downscale_jpeg(source: &SourceImage, plan: ProxyPlan) -> Result<SourceImage, Error> {
+    let (width, height) = plan.source_dimensions();
     let source_len = Raster::expected_len(source.width, source.height)?;
     if source.rgba.len() != source_len {
         return Err(Error::validation(
@@ -473,7 +552,7 @@ fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<Sourc
     }
     let output_len = Raster::expected_len(width, height)?;
     let source_stride = source.width as usize * 4;
-    let downscale = BoxDownscale::new(source.width, source.height, width, height, |y| {
+    let downscale = BoxDownscale::new(source.width, source.height, plan, |y| {
         let start = y as usize * source_stride;
         let bytes = &source.rgba[start..start + source_stride];
         move |x| {
@@ -527,13 +606,14 @@ type PlanarRow<'a> = (usize, ((&'a mut [f32], &'a mut [f32]), &'a mut [f32]));
 /// crop and orientation of the input view are resolved by the averaging itself, so the proxy is
 /// upright content with nothing left to map. Values stay unbounded linear f32, so no clipping or
 /// transfer function is introduced anywhere on this path.
-fn downscale_linear(image: &LinearImage, width: u32, height: u32) -> Result<LinearImage, Error> {
+fn downscale_linear(image: &LinearImage, plan: ProxyPlan) -> Result<LinearImage, Error> {
+    let (width, height) = plan.source_dimensions();
     let reader = image.reader();
     let (source_width, source_height) = reader.dimensions();
     let plane_values = float_values(width, height, "proxy linear source")?;
     let plane_len = plane_values / 3;
     // Inside the view by construction: the coverage never leaves the source.
-    let downscale = BoxDownscale::new(source_width, source_height, width, height, |y| {
+    let downscale = BoxDownscale::new(source_width, source_height, plan, |y| {
         let reader = &reader;
         move |x| reader.pixel(x, y).unwrap_or([0.0; 3])
     })?;
@@ -695,6 +775,7 @@ mod tests {
                 width: bounds.0,
                 height: bounds.1,
             },
+            window: None,
         }
     }
 
@@ -1719,5 +1800,100 @@ mod tests {
         assert!(source.proxy(plan(9, 3, (9, 3))).is_err());
         assert!(source.proxy(plan(4, 7, (4, 7))).is_err());
         assert!(source.proxy(plan(8, 6, (8, 6))).is_ok(), "1:1 is allowed");
+        // A window must lie inside the proxy stage and hold a pixel.
+        let windowed = |x, y, width, height| ProxyPlan {
+            window: Some(ProxyWindow {
+                x,
+                y,
+                width,
+                height,
+            }),
+            ..plan(4, 3, (4, 3))
+        };
+        assert!(source.proxy(windowed(1, 1, 3, 2)).is_ok());
+        assert!(source.proxy(windowed(2, 1, 3, 2)).is_err());
+        assert!(source.proxy(windowed(0, 2, 4, 2)).is_err());
+        assert!(source.proxy(windowed(0, 0, 0, 2)).is_err());
+    }
+
+    /// A windowed proxy source is the whole downscale's pixels in its window, bit for bit, at
+    /// fractional scales and for both source kinds: the same weights over the same source samples,
+    /// reading only the source rows and columns the window covers.
+    #[test]
+    fn a_windowed_proxy_is_the_whole_downscale_in_its_window() {
+        let (width, height) = (53u32, 41u32);
+        let codes: Vec<[u8; 3]> = (0..width * height)
+            .map(|index| {
+                [
+                    (index * 37 % 251) as u8,
+                    (index * 11 % 239) as u8,
+                    (index * 5 % 241) as u8,
+                ]
+            })
+            .collect();
+        let floats: Vec<[f32; 3]> = codes
+            .iter()
+            .map(|code| code.map(|value| f32::from(value) / 97.0 - 0.3))
+            .collect();
+        let sources = [
+            jpeg_source(width, height, &codes),
+            PreviewSource::Raw {
+                image: raw_source(width, height, &floats)
+                    .with_view([2, 1, 49, 38], 6)
+                    .expect("a view"),
+                settings: LinearSettings::default(),
+            },
+        ];
+        for source in &sources {
+            let (source_width, source_height) = source.dimensions();
+            let whole_plan = plan(source_width * 3 / 7, source_height * 5 / 9, (1, 1));
+            let whole = source.proxy(whole_plan).expect("the whole downscale");
+            for (x, y, w, h) in [
+                (0, 0, 1, 1),
+                (3, 2, 7, 5),
+                (whole_plan.width - 4, whole_plan.height - 3, 4, 3),
+                (0, 0, whole_plan.width, whole_plan.height),
+            ] {
+                let windowed_plan = ProxyPlan {
+                    window: Some(ProxyWindow {
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                    }),
+                    ..whole_plan
+                };
+                let windowed = source.proxy(windowed_plan).expect("a windowed proxy");
+                assert_eq!(windowed.dimensions(), (w, h));
+                for row in 0..h {
+                    for column in 0..w {
+                        match (&windowed, &whole) {
+                            (PreviewSource::Jpeg(part), PreviewSource::Jpeg(all)) => {
+                                let at = ((row * w + column) * 4) as usize;
+                                let from =
+                                    (((y + row) * whole_plan.width + x + column) * 4) as usize;
+                                assert_eq!(
+                                    part.rgba[at..at + 4],
+                                    all.rgba[from..from + 4],
+                                    "({column}, {row}) of {w}x{h} at ({x}, {y})"
+                                );
+                            }
+                            (
+                                PreviewSource::Raw { image: part, .. },
+                                PreviewSource::Raw { image: all, .. },
+                            ) => {
+                                let actual = part.pixel(column, row).unwrap();
+                                let expected = all.pixel(x + column, y + row).unwrap();
+                                assert!(
+                                    actual.map(f32::to_bits) == expected.map(f32::to_bits),
+                                    "({column}, {row}) of {w}x{h} at ({x}, {y})"
+                                );
+                            }
+                            _ => unreachable!("a proxy keeps its source kind"),
+                        }
+                    }
+                }
+            }
+        }
     }
 }

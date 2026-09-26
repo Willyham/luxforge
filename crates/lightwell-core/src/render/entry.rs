@@ -16,10 +16,13 @@ use super::{
     rasterize,
     spatial::PRODUCTION_TILE,
     transform_of,
+    window::WindowPlan,
 };
 use crate::{
-    Error, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan, Recipe, SnapshotId,
-    SourceImage, mask_field::MaskSampling,
+    Error, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan, ProxyWindow, Recipe,
+    SnapshotId, SourceImage,
+    mask_field::MaskSampling,
+    modules::{Global, Region},
 };
 use std::borrow::Cow;
 
@@ -290,6 +293,115 @@ impl<'a> Render<'a> {
         ProxyPlan::fit(self.source.dimensions(), self.stage(), bounds)
     }
 
+    /// `plan`, fitted from this render's output stage ([`Self::proxy_plan`]), with the window of
+    /// its proxy stage that `recipe` reads, when it reads less than all of it: what a crop reads
+    /// through every boundary before it, plus the margins each boundary needs
+    /// ([`super::window`]). The plan comes back unchanged — a whole-stage proxy, which is always a
+    /// correct answer — when the stack reads the whole stage, cannot be cut, or does not compile
+    /// at the proxy stage into the segments it compiles to here. Compiles the stack once at the
+    /// proxy stage, `O(layers)`, and reads no pixel.
+    pub fn proxy_window(
+        &self,
+        registry: &ModuleRegistry,
+        recipe: &Recipe,
+        plan: ProxyPlan,
+    ) -> ProxyPlan {
+        let Ok(compiled) = registry.compile_sampled(
+            plan.width,
+            plan.height,
+            recipe,
+            RenderPhase::Proxy.sampling(),
+        ) else {
+            return plan;
+        };
+        if !same_segments(&compiled, &self.compiled) {
+            return plan;
+        }
+        match WindowPlan::of(&compiled, (plan.width, plan.height)) {
+            Some(windows) => ProxyPlan {
+                window: Some(ProxyWindow {
+                    x: windows.source.x0,
+                    y: windows.source.y0,
+                    width: windows.source.width,
+                    height: windows.source.height,
+                }),
+                ..plan
+            },
+            None => plan.whole(),
+        }
+    }
+
+    /// The proxy phase of this render's stack: `recipe` compiled at `plan`'s proxy stage against
+    /// `source`, the proxy source `plan` built, under `cancel`. Without a window this is
+    /// [`render`] at the proxy phase. With one, the compilation against the whole proxy stage is
+    /// cut to the window ([`super::window`]), and a spatial operation whose stage the window cuts
+    /// is handed the global estimates this render — the exact phase of the same job — resolves for
+    /// it, which the store then holds for the exact frame. `O(layers)` and no pixel, besides the
+    /// exact stage's one reduction per estimate the store does not hold.
+    pub fn render_proxy<'s>(
+        &self,
+        registry: &ModuleRegistry,
+        source: RenderSource<'s>,
+        recipe: &Recipe,
+        plan: ProxyPlan,
+        cancel: &Cancel,
+        context: &'s RenderContext,
+    ) -> Result<Render<'s>, Error> {
+        let options = RenderOptions::proxy(cancel);
+        let Some(window) = plan.window else {
+            return render(registry, source, recipe, options, context);
+        };
+        match source {
+            RenderSource::Byte(image) => check_source(image)?,
+            RenderSource::Linear { settings, .. } => {
+                settings.multiplier()?;
+            }
+        }
+        if source.dimensions() != (window.width, window.height) {
+            return Err(Error::internal(format!(
+                "a proxy window of {}x{} was handed a {}x{} source",
+                window.width,
+                window.height,
+                source.dimensions().0,
+                source.dimensions().1
+            )));
+        }
+        #[cfg(test)]
+        context.note_compile();
+        let compiled =
+            registry.compile_sampled(plan.width, plan.height, recipe, options.phase.sampling())?;
+        let placed = Region {
+            x0: window.x,
+            y0: window.y,
+            width: window.width,
+            height: window.height,
+        };
+        let windows = WindowPlan::of(&compiled, (plan.width, plan.height))
+            .filter(|windows| windows.source == placed && same_segments(&compiled, &self.compiled))
+            .ok_or_else(|| {
+                Error::internal("a proxy window no longer matches the stack it was planned for")
+            })?;
+        let compiled = windows.apply(compiled, (plan.width, plan.height), |index| {
+            self.spatial_globals(index)
+        })?;
+        Render::compiled(source, compiled, options, context)
+    }
+
+    /// The global estimates the spatial operation entering segment `index` reads, resolved as a
+    /// frame of this render resolves them: from the store, or from one reduction of that
+    /// operation's whole input stage, which the store then keeps for the frame. A point
+    /// evaluation, so no frame is materialized for it.
+    pub(crate) fn spatial_globals(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
+        match self.source {
+            RenderSource::Byte(image) => self
+                .evaluation(Byte(image), SpatialMode::Point)?
+                .globals_of(index),
+            RenderSource::Linear { image, settings } => self
+                .evaluation(Linear::new(image, settings)?, SpatialMode::Point)?
+                .globals_of(index),
+        }
+    }
+
     /// The source this render reads.
     pub(crate) fn source(&self) -> RenderSource<'a> {
         self.source
@@ -340,6 +452,31 @@ impl<'a> Render<'a> {
             })
             .collect()
     }
+}
+
+/// Whether two compilations of one stack at two stages have the same segments with the same kinds
+/// of entry, which is what lets a windowed proxy ask the exact compilation for the estimates of
+/// the spatial operation at the same index.
+fn same_segments(left: &Compiled, right: &Compiled) -> bool {
+    left.segments.len() == right.segments.len()
+        && left
+            .segments
+            .iter()
+            .zip(&right.segments)
+            .all(|(left, right)| {
+                matches!(
+                    (&left.entry, &right.entry),
+                    (None, None)
+                        | (
+                            Some(super::Entry::Resample(_)),
+                            Some(super::Entry::Resample(_))
+                        )
+                        | (
+                            Some(super::Entry::Spatial { .. }),
+                            Some(super::Entry::Spatial { .. })
+                        )
+                )
+            })
 }
 
 /// The input of one layer of `recipe` as a point query over the stage that layer receives: the

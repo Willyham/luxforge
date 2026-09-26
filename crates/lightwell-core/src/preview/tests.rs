@@ -497,9 +497,14 @@ fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
     assert_eq!(exact.generation, generation);
     assert_eq!(proxy.phase(), PreviewPhase::Proxy);
     assert_eq!(exact.phase(), PreviewPhase::Exact);
-    assert_eq!(
-        proxy.proxy().map(|proxy| proxy.dimensions),
-        Some((plan.width, plan.height))
+    // The fitted crop reads all but the proxy stage's corners, so the source holds the window of
+    // the proxy stage those taps reach: never more than the whole proxy stage.
+    let (width, height) = proxy.proxy().expect("a proxy phase").dimensions;
+    assert!(
+        width <= plan.width && height <= plan.height,
+        "a {width}x{height} proxy source of a {}x{} proxy stage",
+        plan.width,
+        plan.height
     );
     assert_eq!(exact.proxy().map(|proxy| proxy.dimensions), None);
     assert_eq!(
@@ -1189,6 +1194,78 @@ fn two_jobs_at_the_same_bounds_build_the_proxy_once() {
         resized[0].proxy().is_some_and(|proxy| proxy.built),
         "a resized window rebuilds the proxy"
     );
+}
+
+/// A tight crop's proxy holds the window of the proxy stage the crop reads, and is keyed by it: a
+/// job that changes another layer under the same crop renders against the source already in hand,
+/// and a crop that moves builds the window it now reads. Every frame is the exact recipe over the
+/// exact downscale of the whole source, byte for byte.
+#[test]
+fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
+    let display = bounds(40, 30);
+    let layers = |exposure: f64, x: f64| {
+        vec![
+            Layer {
+                id: LayerId::new(),
+                effect_id: BASIC_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"exposure": exposure, "contrast": 15.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            },
+            Layer::crop(crate::CropPayload {
+                angle: 3.0,
+                x,
+                y: 0.45,
+                width: 0.2,
+                height: 0.2,
+            }),
+        ]
+    };
+    let mut queue = PreviewQueue::default();
+    let mut frame = |job: PreviewJob| {
+        let registry = job.registry.clone();
+        let source = job.source.clone();
+        let recipe = job.recipe.clone();
+        queue.request(job);
+        let results = drain_all(&mut queue);
+        let proxy = results[0].proxy().expect("a proxy phase");
+        let (built, dimensions) = (proxy.built, proxy.dimensions);
+        let plan = source
+            .proxy_plan(&registry, &recipe, display)
+            .unwrap()
+            .expect("a proxy is worthwhile");
+        let reference = source
+            .proxy(plan)
+            .unwrap()
+            .render_proxy_cancellable(&registry, SnapshotId::new(), &recipe, &Cancel::never())
+            .unwrap();
+        let raster = results[0].raster().expect("a proxy frame");
+        assert_eq!(
+            raster.rgba.as_ref(),
+            reference.rgba.as_ref(),
+            "the windowed proxy frame is the exact recipe over the exact downscale"
+        );
+        assert!(
+            u64::from(dimensions.0) * u64::from(dimensions.1)
+                < u64::from(plan.width) * u64::from(plan.height) / 4,
+            "a {dimensions:?} proxy source of a {}x{} proxy stage",
+            plan.width,
+            plan.height
+        );
+        (built, dimensions)
+    };
+
+    let (built, first) = frame(stacked(400, 300, layers(0.3, 0.55), Some(display)));
+    assert!(built, "the first job builds the window");
+    let (built, second) = frame(stacked(400, 300, layers(-0.6, 0.55), Some(display)));
+    assert!(
+        !built,
+        "an exposure change under the same crop hits the window"
+    );
+    assert_eq!(first, second);
+    let (built, _) = frame(stacked(400, 300, layers(-0.6, 0.25), Some(display)));
+    assert!(built, "a moved crop reads another window");
 }
 
 /// The waker is what replaces the preview poll timer: one call per result sent, on the worker

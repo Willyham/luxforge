@@ -30,9 +30,10 @@ enum ProxyStep {
 
 /// Whether this job has a proxy phase, and against which source.
 ///
-/// Cost is `O(layers)`: `proxy_eligible` reads stages and the plan reads the output stage of the
-/// job's exact compilation, which it does not repeat. Neither reads a pixel. It runs on the preview
-/// worker, as does building the proxy itself.
+/// Cost is `O(layers)`: `proxy_eligible` reads stages, the plan reads the output stage of the job's
+/// exact compilation, and the window compiles the stack once at the proxy stage to walk back what
+/// its output reads. None of them reads a pixel. It runs on the preview worker, as does building
+/// the proxy itself.
 fn plan_proxy(job: &PreviewJob, exact: &Result<Render<'_>, Error>) -> ProxyStep {
     let Some(bounds) = job.proxy else {
         return ProxyStep::Skipped;
@@ -50,7 +51,12 @@ fn plan_proxy(job: &PreviewJob, exact: &Result<Render<'_>, Error>) -> ProxyStep 
     match exact.as_ref().map(|exact| exact.proxy_plan(bounds)) {
         Ok(Some(plan)) => ProxyStep::Planned(ProxyKey {
             identity: job.source.identity(),
-            plan,
+            // A cropped stack's proxy holds only the window of the proxy stage its output reads,
+            // so its size follows the display bounds and not the crop's tightness.
+            plan: exact
+                .as_ref()
+                .map(|exact| exact.proxy_window(&job.registry, &job.recipe, plan))
+                .unwrap_or(plan),
         }),
         Ok(None) => ProxyStep::Declined(
             "the proxy scale is 1: the stage already fits the display bounds".into(),
@@ -152,20 +158,29 @@ pub(super) fn run(
             match built {
                 Err(error) => Some(error.detail),
                 Ok((source, fresh)) => {
-                    let dimensions = (key.plan.width, key.plan.height);
+                    // The source this frame is rendered against: the proxy stage's window when the
+                    // plan has one, and the whole proxy stage otherwise.
+                    let dimensions = source.dimensions();
                     // The proxy stage's one compilation: the frame and the reason it is
                     // approximate both come from it, so what is reported and what is drawn cannot
-                    // disagree.
-                    let rendered = render(
-                        &job.registry,
-                        source.input(),
-                        &job.recipe,
-                        RenderOptions::proxy(proxy_cancel),
-                        &job.context,
-                    )
-                    .and_then(|proxy| {
-                        Ok((proxy.frame(snapshot_id.clone())?, proxy.approximation()))
-                    });
+                    // disagree. A windowed one is cut from it, and asks the job's exact
+                    // compilation for any spatial estimate the window cannot reduce.
+                    let rendered = exact
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|exact| {
+                            exact.render_proxy(
+                                &job.registry,
+                                source.input(),
+                                &job.recipe,
+                                key.plan,
+                                proxy_cancel,
+                                &job.context,
+                            )
+                        })
+                        .and_then(|proxy| {
+                            Ok((proxy.frame(snapshot_id.clone())?, proxy.approximation()))
+                        });
                     // The proxy this job built belongs to the worker whether or not its frame is
                     // still wanted: the next job at the same bounds is a hit either way.
                     if fresh {

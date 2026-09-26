@@ -45,7 +45,9 @@ pub use model::*;
 pub use modules::*;
 pub use presets::*;
 pub use preview::*;
-pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
+pub use proxy::{
+    ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan, ProxyWindow,
+};
 pub use render::{
     Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Render, RenderContext,
     RenderOptions, RenderPhase, RenderSource, Sample, ScratchBudget, SpatialBudget, StageSize,

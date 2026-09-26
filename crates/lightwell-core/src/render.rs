@@ -24,6 +24,7 @@ mod entry;
 pub mod linear;
 mod pipeline;
 pub mod spatial;
+mod window;
 pub use context::{RenderContext, ScratchBudget, SpatialBudget};
 pub(crate) use entry::layer_input;
 pub use entry::{Render, RenderOptions, RenderPhase, RenderSource, render};
@@ -633,6 +634,23 @@ impl ExactGeometry {
         (input_x as u32, input_y as u32)
     }
 
+    /// The input-stage rectangle an output-stage rectangle reads: the exact inverse of
+    /// [`Self::map_region`], from the two opposite corners, since the mapping is a signed
+    /// permutation with an integer translation. `region` must lie inside the output stage.
+    pub(crate) fn unmap_region(self, region: Region) -> Region {
+        if region.is_empty() {
+            return region;
+        }
+        let (first_x, first_y) = self.unmap(region.x0, region.y0);
+        let (last_x, last_y) = self.unmap(region.x1() - 1, region.y1() - 1);
+        Region {
+            x0: first_x.min(last_x),
+            y0: first_y.min(last_y),
+            width: first_x.abs_diff(last_x) + 1,
+            height: first_y.abs_diff(last_y) + 1,
+        }
+    }
+
     fn is_identity(self, input_width: u32, input_height: u32) -> bool {
         self.output_width == input_width
             && self.output_height == input_height
@@ -653,6 +671,21 @@ impl Resample {
             m3 * center_x + m4 * center_y + m5,
         )
     }
+
+    /// [`Self::input_at`] in a frame that holds only a window of the resample's input stage, whose
+    /// top-left pixel is `origin` in that stage: the same coordinate, translated after the
+    /// resample's own arithmetic. An integer subtracted from a non-negative coordinate below 2^52
+    /// is exact in `f64`, so every tap of a windowed frame is the same pixel with the same weight
+    /// as in the whole one. `(0, 0)` is every exact render's origin, and changes nothing.
+    #[inline]
+    fn input_from(self, origin: (u32, u32), x: u32, y: u32) -> (f64, f64) {
+        let (u, v) = self.input_at(x, y);
+        if origin == (0, 0) {
+            (u, v)
+        } else {
+            (u - f64::from(origin.0), v - f64::from(origin.1))
+        }
+    }
 }
 
 /// The rows of a resample's input frame that its output can read, with a margin, so the pointwise
@@ -661,7 +694,11 @@ impl Resample {
 /// sample at each of them reads at most one neighbouring pixel in each direction, which the margin
 /// covers with a pixel to spare. Everything outside the band is discarded by the resample, so
 /// leaving it uncoloured changes no output byte.
-fn rows_read_by(resample: Resample, input_height: u32) -> std::ops::Range<usize> {
+fn rows_read_by(
+    resample: Resample,
+    origin: (u32, u32),
+    input_height: u32,
+) -> std::ops::Range<usize> {
     if resample.output_width == 0 || resample.output_height == 0 || input_height == 0 {
         return 0..0;
     }
@@ -669,7 +706,7 @@ fn rows_read_by(resample: Resample, input_height: u32) -> std::ops::Range<usize>
     let mut top = f64::INFINITY;
     let mut bottom = f64::NEG_INFINITY;
     for (x, y) in [(0, 0), (last_x, 0), (0, last_y), (last_x, last_y)] {
-        let (_, v) = resample.input_at(x, y);
+        let (_, v) = resample.input_from(origin, x, y);
         if !v.is_finite() {
             return 0..input_height as usize;
         }
@@ -689,6 +726,7 @@ fn resample_frame(
     input_width: u32,
     input_height: u32,
     resample: Resample,
+    origin: (u32, u32),
     cancel: &Cancel,
 ) -> Result<Arc<[u8]>, Error> {
     let width = resample.output_width;
@@ -708,7 +746,7 @@ fn resample_frame(
     let sample_row = |out_y: usize, row: &mut [u8]| -> Result<(), Error> {
         cancel.check()?;
         for out_x in 0..width {
-            let (u, v) = resample.input_at(out_x, out_y as u32);
+            let (u, v) = resample.input_from(origin, out_x, out_y as u32);
             let pixel = bilinear(u, v, input_width, input_height, fetch)?;
             let to = out_x as usize * 4;
             row[to..to + 4].copy_from_slice(&pixel);
@@ -742,6 +780,10 @@ pub(crate) enum Entry {
     Spatial {
         operation: SpatialOperation,
         prefix_hash: String,
+        /// The global estimates this operation is handed instead of reducing its own stage: set
+        /// only by a windowed proxy, whose stage is a window that cannot be reduced as a whole
+        /// ([`window`]). `None` everywhere else.
+        globals: Option<window::Globals>,
     },
 }
 
@@ -769,6 +811,12 @@ pub(crate) struct Segment {
     pub(crate) height: u32,
     pub(crate) has_pixels: bool,
     pub(crate) has_color: bool,
+    /// Whether a colour operation of this segment reads the coordinates it is handed, which only a
+    /// finish-stage layer's units do: such a segment's output is never cut by a proxy window.
+    pub(crate) positional: bool,
+    /// Where the frame this segment's resample entry reads lies in the stage the resample was
+    /// compiled against: `(0, 0)`, except behind a windowed proxy's cut ([`window`]).
+    pub(crate) entry_origin: (u32, u32),
 }
 
 impl Segment {
@@ -781,6 +829,8 @@ impl Segment {
             height,
             has_pixels: false,
             has_color: false,
+            positional: false,
+            entry_origin: (0, 0),
         }
     }
 
@@ -1420,7 +1470,7 @@ pub(crate) fn locate_dimensions(
             return walk(compiled, index - 1, input_x, input_y);
         };
         let previous = &compiled.segments[index - 1];
-        let (u, v) = resample.input_at(input_x, input_y);
+        let (u, v) = resample.input_from(segment.entry_origin, input_x, input_y);
         walk(
             compiled,
             index - 1,
@@ -1484,7 +1534,12 @@ pub(super) fn transform_of(
         // sampler reads; the forward direction is that map inverted. A spatial boundary is at the
         // dimensions of the stage it receives and moves no coordinate, so it contributes nothing.
         if let Some(resample) = segment.entry.as_ref().and_then(Entry::resample) {
-            forward = forward.then(Affine(resample.inverse).invert()?);
+            // A windowed proxy's frame before the resample is a window of the stage the resample
+            // was compiled against, placed at `entry_origin` in it.
+            let (x, y) = segment.entry_origin;
+            forward = forward
+                .then(Affine([1.0, 0.0, f64::from(x), 0.0, 1.0, f64::from(y)]))
+                .then(Affine(resample.inverse).invert()?);
         }
         forward = forward.then(Affine::from_exact(segment.geometry));
     }
@@ -1531,12 +1586,18 @@ pub(super) fn rasterize(
         if let Some(entry) = &segment.entry {
             let input = frame.as_deref().unwrap_or(source.rgba.as_ref());
             let next = match entry {
-                Entry::Resample(resample) => {
-                    resample_frame(input, width, height, *resample, cancel)?
-                }
+                Entry::Resample(resample) => resample_frame(
+                    input,
+                    width,
+                    height,
+                    *resample,
+                    segment.entry_origin,
+                    cancel,
+                )?,
                 Entry::Spatial {
                     operation,
                     prefix_hash,
+                    globals: handed,
                 } => {
                     let stage = Stage { width, height };
                     let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
@@ -1551,15 +1612,16 @@ pub(super) fn rasterize(
                     spatial_output::<Byte>(
                         stage,
                         operation,
-                        || {
-                            resolve_globals(
+                        || match handed {
+                            Some(globals) => Ok(globals.as_ref().clone()),
+                            None => resolve_globals(
                                 context.estimates(),
                                 operation,
                                 stage,
                                 domain.fingerprint(),
                                 &domain.estimate_prefix(prefix_hash),
                                 || build_reduction(stage, read),
-                            )
+                            ),
                         },
                         tile,
                         cancel,
@@ -1638,7 +1700,9 @@ fn band(compiled: &Compiled, index: usize) -> std::ops::Range<usize> {
         .get(index + 1)
         .and_then(|next| next.entry.as_ref())
     {
-        Some(Entry::Resample(resample)) => rows_read_by(*resample, height),
+        Some(Entry::Resample(resample)) => {
+            rows_read_by(*resample, compiled.segments[index + 1].entry_origin, height)
+        }
         Some(Entry::Spatial { .. }) | None => 0..height as usize,
     }
 }
@@ -2095,7 +2159,7 @@ mod tests {
         let Some(Entry::Resample(resample)) = compiled.segments[1].entry else {
             panic!("a rotated crop resamples");
         };
-        let band = rows_read_by(resample, compiled.segments[0].height);
+        let band = rows_read_by(resample, (0, 0), compiled.segments[0].height);
         assert!(
             band.start > 0 && band.end < compiled.segments[0].height as usize,
             "the band {band:?} should exclude rows of the {} high stage",

@@ -240,6 +240,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             let Some(Entry::Spatial {
                 operation,
                 prefix_hash,
+                globals,
             }) = &evaluation.compiled.segments[index].entry
             else {
                 continue;
@@ -248,7 +249,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             let planes = Arc::new(spatial_output::<D>(
                 stage,
                 operation,
-                || evaluation.spatial_globals(index, operation, stage, prefix_hash),
+                || evaluation.spatial_globals(index, operation, stage, prefix_hash, globals),
                 evaluation.tile,
                 cancel,
                 evaluation.context,
@@ -291,6 +292,24 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// The output stage.
     pub(crate) fn stage(&self) -> Stage {
         self.compiled.stage()
+    }
+
+    /// The global estimates the spatial operation entering segment `index` reads, from the store or
+    /// from one reduction of its input stage, exactly as a frame of this compilation would resolve
+    /// them; the store then holds them for that frame. Empty when segment `index` does not enter
+    /// through a spatial operation.
+    pub(crate) fn globals_of(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
+        match &self.compiled.segments[index].entry {
+            Some(Entry::Spatial {
+                operation,
+                prefix_hash,
+                globals,
+            }) => {
+                let stage = self.spatial_stage(index);
+                self.spatial_globals(index, operation, stage, prefix_hash, globals)
+            }
+            _ => Ok(Vec::new()),
+        }
     }
 
     /// One output pixel, `None` when the coordinate lies outside the output stage.
@@ -344,6 +363,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             Some(Entry::Spatial {
                 operation,
                 prefix_hash,
+                globals,
             }) => match &self.frame {
                 Some(frame) if frame.index == index => Ok(D::frame_pixel(
                     &frame.planes,
@@ -351,11 +371,12 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                     x,
                     y,
                 )),
-                _ => self.spatial_pixel(index, operation, prefix_hash, x, y),
+                _ => self.spatial_pixel(index, operation, prefix_hash, globals, x, y),
             },
             Some(Entry::Resample(resample)) => {
                 let previous = &self.compiled.segments[index - 1];
-                let (u, v) = resample.input_at(x, y);
+                let origin = self.compiled.segments[index].entry_origin;
+                let (u, v) = resample.input_from(origin, x, y);
                 D::blend(u, v, previous.width, previous.height, |x, y| {
                     self.pixel_in(index - 1, x, y)?
                         .ok_or_else(|| Error::render("a resample tap was outside its stage"))
@@ -493,7 +514,11 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         operation: &SpatialOperation,
         stage: Stage,
         prefix_hash: &str,
+        handed: &Option<super::window::Globals>,
     ) -> Result<Vec<Option<Global>>, Error> {
+        if let Some(globals) = handed {
+            return Ok(globals.as_ref().clone());
+        }
         let read = |x: u32, y: u32| self.spatial_read(index, x, y);
         resolve_globals(
             self.context.estimates(),
@@ -526,6 +551,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         index: usize,
         operation: &SpatialOperation,
         prefix_hash: &str,
+        handed: &Option<super::window::Globals>,
         x: u32,
         y: u32,
     ) -> Result<D::Pixel, Error> {
@@ -540,7 +566,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             stage,
             x,
             y,
-            || self.spatial_globals(index, operation, stage, prefix_hash),
+            || self.spatial_globals(index, operation, stage, prefix_hash, handed),
             |x, y| self.spatial_read(index, x, y),
         )?;
         // Alpha is never touched by a unit; it is the input frame's, exactly as the render copies
@@ -561,7 +587,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             Some(Entry::Spatial { .. }) => self.alpha_in(index - 1, x, y),
             Some(Entry::Resample(resample)) => {
                 let previous = &self.compiled.segments[index - 1];
-                let (u, v) = resample.input_at(x, y);
+                let (u, v) = resample.input_from(segment.entry_origin, x, y);
                 let taps = Taps::new(u, v, previous.width, previous.height);
                 let alpha: f64 = taps
                     .corners

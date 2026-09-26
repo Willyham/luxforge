@@ -779,11 +779,46 @@ trip synchronous, 30.2 / 58.7; with the surface primitive, the rows above.
 | Full Basic layer | 77.3 / 79.7 | 46.9 / 48.0 |
 | Proxy build (a cache miss: once per source, bounds and window size) | — | 21.2 / 25.7 |
 
-The proxy source for this stack is 4677 × 3118, larger than the 2879 × 1618 output it produces,
-because the 16:9 crop discards most of the rotated stage; the colour pass now covers only the band
-of rows the crop reads, which is what brought the full-Basic rows down from 162.5 and 99.8 ms in the
-first measurement of this plan. The full-Basic proxy render remains the largest per-input cost and
-is listed in the [performance rules](../engineering/performance-rules.md#known-remaining-costs).
+When these rows were taken the proxy source for this stack was the whole 4677 × 3118 proxy stage,
+larger than the 2879 × 1618 output it produces, because the 16:9 crop discards most of the rotated
+stage; the colour pass covers only the band of rows the crop reads, which is what brought the
+full-Basic rows down from 162.5 and 99.8 ms in the first measurement of this plan. A cropped
+stack's proxy source is now only the window of the proxy stage its crop reads (below), so these
+rows are an upper bound for the current build. The full-Basic proxy render remains the largest
+per-input cost and is listed in the
+[performance rules](../engineering/performance-rules.md#known-remaining-costs).
+
+#### A tight crop's windowed proxy
+
+A tight crop fits a small output into the bounds, which raises the proxy scale towards one; the
+proxy now holds only the window of that proxy stage the crop reads
+([instant previews](../design/instant-preview.md#render-what-the-display-can-show)). Measured on
+the X100VI with a 1801 × 1574 crop of its 7728 × 5152 stage, in the 1716 × 1576 bounds of a
+default hidden window, then Presence committed at Clarity 30, Dehaze 20, Texture 20 and then Clarity
+60: one evidence-script launch per run of each release binary from a background-only bundle with
+an isolated catalog, RSS sampled every 50 ms by an ad hoc script that is not a committed harness;
+times are from the run's own `script_step`, `preview_displayed` and `analysis_adopted` events. Native Apple M4 Pro, macOS 26.5.2, runs back to back and
+reversed (before, after, after, before), one-minute load average 23.5–28.2 throughout with other
+sessions building; single launches, not distributions. Application SHA-256 `a2f1d98d…` before and
+`ca82c5b9…` after.
+
+| Per run (before 1, before 2 · after 1, after 2) | Before | After |
+| --- | --- | --- |
+| Proxy source, crop alone | 7363 × 4909 | 1716 × 1500 |
+| Proxy source under Presence | 7363 × 4909 (414 MiB of planes) | 2437 × 2530 (71 MiB) |
+| Crop commit, request to first frame | 151, 134 ms | 43, 119 ms |
+| First Presence commit, request to proxy frame | 8961, 8338 ms | 1888, 2097 ms |
+| First Presence commit, request to settled report | 18203, 17147 ms | 11116, 11338 ms |
+| Clarity change, request to proxy frame | 8279, 7490 ms | 1289, 1229 ms |
+| Clarity change, request to settled report | 17462, 16065 ms | 11129, 10350 ms |
+| Sampled peak RSS | 2914, 2914 MiB | 2074, 2072 MiB |
+
+The proxy phase itself (`render_ms`) is 8.3–8.9 s before and 1.2–2.1 s after for the Presence
+commits; the first commit after includes the exact stage's one Dehaze reduction, which the proxy
+phase now prepares and the exact phase reads from the store. What remains of a commit is the exact
+phase: a Presence render over the whole 40 MP stage, which is unchanged and is the 100% view,
+histogram and export source. The figures filed with the bug (about 8.7 s per commit and 3.9 GiB
+peak) came from another journey; these runs compare one journey before and after, on one host.
 
 RAW, one functional trial per camera through `raw-editor` (the same 13-step journey as the RAW
 tables below, so these are single launches and not distributions): request to display of the

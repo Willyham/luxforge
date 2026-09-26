@@ -990,7 +990,7 @@ impl LinearRows<'_, '_, '_> {
             (x0 + columns - 1, y0 + rows - 1),
         ] {
             let (input_x, input_y) = self.segment.geometry.unmap(x, y);
-            let (u, v) = resample.input_at(input_x, input_y);
+            let (u, v) = resample.input_from(self.segment.entry_origin, input_x, input_y);
             for (axis, value) in [u, v].into_iter().enumerate() {
                 let index = (value - 0.5).floor();
                 if !index.is_finite() {
@@ -1054,7 +1054,7 @@ impl LinearRows<'_, '_, '_> {
             for y in y0..y0 + rows {
                 for x in x0..x0 + columns {
                     let (input_x, input_y) = self.segment.geometry.unmap(x, y);
-                    let (u, v) = resample.input_at(input_x, input_y);
+                    let (u, v) = resample.input_from(self.segment.entry_origin, input_x, input_y);
                     let pixel =
                         Linear::blend(u, v, stage.width, stage.height, |x, y| match held {
                             Some(region) if region.contains(x, y) => {
