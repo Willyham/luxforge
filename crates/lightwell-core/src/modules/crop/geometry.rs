@@ -5,7 +5,9 @@
 //! space has its origin at the top-left corner of the rotated bounding box, x to the right and y
 //! down, and a positive angle turns the image clockwise on screen. The formulas are the geometry
 //! contract in `docs/specs/single-image.md`.
-use crate::{Error, ErrorKind, Orientation};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{Error, Orientation};
 use serde::{Deserialize, Serialize};
 
 /// The most counter-clockwise straightening angle a crop payload may carry, in degrees.
@@ -26,10 +28,6 @@ const LIMIT_SLACK: f64 = COVERAGE_TOLERANCE / 1000.0;
 
 /// One ray in box space: where it starts and the direction it grows in.
 type Ray = ((f64, f64), (f64, f64));
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 /// The persisted crop payload: a straightening angle and the rectangle normalized to the rotated
 /// box, so the numbers do not depend on how the box was computed.
@@ -71,29 +69,31 @@ impl CropPayload {
             ("height", self.height),
         ] {
             if !value.is_finite() {
-                return Err(validation(format!("crop {name} must be a finite number")));
+                return Err(Error::validation(format!(
+                    "crop {name} must be a finite number"
+                )));
             }
         }
         if self.angle < MIN_ANGLE || self.angle > MAX_ANGLE {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "crop angle {} is outside {MIN_ANGLE} to {MAX_ANGLE} degrees",
                 self.angle
             )));
         }
         if self.x < -EPSILON || self.y < -EPSILON {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "crop origin ({}, {}) is outside the rotated box",
                 self.x, self.y
             )));
         }
         if self.width <= 0.0 || self.height <= 0.0 {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "crop extents ({} x {}) must be positive",
                 self.width, self.height
             )));
         }
         if self.x + self.width > 1.0 + EPSILON || self.y + self.height > 1.0 + EPSILON {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "crop rectangle ({}, {}, {} x {}) leaves the rotated box",
                 self.x, self.y, self.width, self.height
             )));
@@ -128,7 +128,7 @@ impl CropPayload {
                 .into_iter()
                 .fold(f64::NEG_INFINITY, f64::max);
             if outside > COVERAGE_TOLERANCE {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "crop {name} corner maps to ({u:.3}, {v:.3}), {outside:.3} px outside the {}x{} input stage",
                     stage.width, stage.height
                 )));

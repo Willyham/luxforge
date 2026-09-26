@@ -555,13 +555,13 @@ impl ToolModule for Composer {
         }))
     }
     fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
-        Err(Error::new(ErrorKind::Validation, "no effects"))
+        Err(Error::validation("no effects"))
     }
     fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
-        Err(Error::new(ErrorKind::Validation, "no effects"))
+        Err(Error::validation("no effects"))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
-        Err(Error::new(ErrorKind::Validation, "no effects"))
+        Err(Error::validation("no effects"))
     }
 }
 

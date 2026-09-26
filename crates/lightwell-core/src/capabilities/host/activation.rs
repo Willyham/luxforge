@@ -3,10 +3,10 @@
 //! what an active module loaded. See `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
 use super::{
     CapabilityHost, Requirement, announce_once, effective_values, registered, secret_fields,
-    setting_requirement, validation,
+    setting_requirement,
 };
 use crate::{
-    Availability, Error, ErrorKind, JobId, ModuleRegistry,
+    Availability, Error, JobId, ModuleRegistry,
     api::params::host_params,
     capabilities::{
         context::ModuleContext,
@@ -121,13 +121,13 @@ impl CapabilityHost {
         request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         if let Availability::Unavailable { reason } = &descriptor.availability {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "module {} is unavailable: {reason}",
                 descriptor.id
             )));
         }
         let declared = descriptor.activation.as_ref().ok_or_else(|| {
-            validation(format!("module {} declares no activation", descriptor.id))
+            Error::validation(format!("module {} declares no activation", descriptor.id))
         })?;
         let module_id = descriptor.id.as_str();
         if let Some(activation) = self.activations.get(module_id) {
@@ -196,10 +196,9 @@ impl CapabilityHost {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Err(Error::new(
-                ErrorKind::NotReady,
-                format!("module {module_id} is not ready to activate: {list}"),
-            )
+            return Err(Error::not_ready(format!(
+                "module {module_id} is not ready to activate: {list}"
+            ))
             .with_data(json!({"requirements": missing})));
         }
         let control = JobControl::new();
@@ -220,17 +219,13 @@ impl CapabilityHost {
             let control = control.clone();
             Box::new(move || {
                 let module = registry.capabilities(&module_id).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        format!("module {module_id} is not registered"),
-                    )
+                    Error::internal(format!("module {module_id} is not registered"))
                 })?;
                 let outcome = panic::catch_unwind(AssertUnwindSafe(|| module.activate(&context)))
                     .unwrap_or_else(|_| {
-                        Err(Error::new(
-                            ErrorKind::Internal,
-                            format!("the activation of module {module_id} stopped unexpectedly"),
-                        ))
+                        Err(Error::internal(format!(
+                            "the activation of module {module_id} stopped unexpectedly"
+                        )))
                     });
                 // An activation asked to stop as it finished counts as cancelled.
                 let outcome = match outcome {

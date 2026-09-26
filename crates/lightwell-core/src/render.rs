@@ -1,5 +1,7 @@
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind, Recipe, SnapshotId, SourceImage,
+    Error, Recipe, SnapshotId, SourceImage,
     colour::srgb::{
         decode_channel, decode_pixel, linear_to_srgb, quantize_channel, quantize_pixel,
     },
@@ -78,7 +80,7 @@ impl Cancel {
     #[inline]
     pub fn check(&self) -> Result<(), Error> {
         if self.is_cancelled() {
-            Err(Error::new(ErrorKind::Cancelled, CANCELLED))
+            Err(Error::cancelled(CANCELLED))
         } else {
             Ok(())
         }
@@ -308,7 +310,7 @@ fn apply_operation(
     for unit in operation.units() {
         unit.apply_row(y, x0, pixels);
         if !pixels.iter().flatten().all(|channel| channel.is_finite()) {
-            return Err(Error::new(ErrorKind::ResourceLimit, NON_FINITE_COLOR));
+            return Err(Error::resource_limit(NON_FINITE_COLOR));
         }
     }
     Ok(())
@@ -442,19 +444,12 @@ impl Raster {
         let pixels = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|n| n.checked_mul(4))
-            .ok_or_else(|| Error::new(ErrorKind::ResourceLimit, "image dimensions overflow"))?;
+            .ok_or_else(|| Error::resource_limit("image dimensions overflow"))?;
         if pixels > 512 * 1024 * 1024 {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                "evaluated image exceeds 512 MiB",
-            ));
+            return Err(Error::resource_limit("evaluated image exceeds 512 MiB"));
         }
-        usize::try_from(pixels).map_err(|_| {
-            Error::new(
-                ErrorKind::ResourceLimit,
-                "image allocation is not addressable",
-            )
-        })
+        usize::try_from(pixels)
+            .map_err(|_| Error::resource_limit("image allocation is not addressable"))
     }
 
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
@@ -703,7 +698,7 @@ fn resample_frame(
     let mut frame = zeroed_frame(Raster::expected_len(width, height)?);
     let output = frame_mut(&mut frame);
     let row_bytes = usize::try_from(u64::from(width) * 4)
-        .map_err(|_| Error::new(ErrorKind::ResourceLimit, "image row is not addressable"))?;
+        .map_err(|_| Error::resource_limit("image row is not addressable"))?;
     let fetch = |x: u32, y: u32| -> Result<[u8; 4], Error> {
         let offset = ((u64::from(y) * u64::from(input_width) + u64::from(x)) * 4) as usize;
         let pixel = &input[offset..offset + 4];
@@ -947,8 +942,7 @@ fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u8; 3])> {
 
 pub(super) fn check_source(source: &SourceImage) -> Result<(), Error> {
     if source.rgba.len() != Raster::expected_len(source.width, source.height)? {
-        return Err(Error::new(
-            ErrorKind::Validation,
+        return Err(Error::validation(
             "source pixel buffer has the wrong length",
         ));
     }
@@ -1078,8 +1072,7 @@ impl Affine {
             (m3 * m2 - m0 * m5) / determinant,
         ]);
         if determinant == 0.0 || !inverted.0.iter().all(|value| value.is_finite()) {
-            return Err(Error::new(
-                ErrorKind::Validation,
+            return Err(Error::validation(
                 "a geometry layer declares a mapping that cannot be inverted",
             ));
         }
@@ -1440,13 +1433,10 @@ pub(crate) fn locate_dimensions(
     let stage = compiled.stage();
     let (content_x, content_y) =
         walk(&compiled, compiled.segments.len() - 1, x, y).ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "point ({x}, {y}) is outside the {}x{} rendered image",
-                    stage.width, stage.height
-                ),
-            )
+            Error::validation(format!(
+                "point ({x}, {y}) is outside the {}x{} rendered image",
+                stage.width, stage.height
+            ))
         })?;
     Ok(ContentPoint {
         content_x,
@@ -2349,7 +2339,7 @@ mod tests {
             &self.0
         }
         fn parse(&self, _: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
-            Err(Error::new(ErrorKind::Internal, "no actions"))
+            Err(Error::internal("no actions"))
         }
         fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
             Ok(ActionPlan::NoOp)
@@ -2394,7 +2384,7 @@ mod tests {
                 }));
             }
             let crop: CropPayload = serde_json::from_value(payload.clone())
-                .map_err(|error| Error::new(ErrorKind::Validation, error.to_string()))?;
+                .map_err(|error| Error::validation(error.to_string()))?;
             let crop_stage = CropStage {
                 width: stage.width,
                 height: stage.height,
@@ -3886,7 +3876,7 @@ mod tests {
             &self.descriptor
         }
         fn parse(&self, _: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
-            Err(Error::new(ErrorKind::Internal, "no actions"))
+            Err(Error::internal("no actions"))
         }
         fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
             Ok(ActionPlan::NoOp)

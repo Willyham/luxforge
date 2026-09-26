@@ -25,7 +25,7 @@ use super::filters::{
     reduced_rect, upsample,
 };
 use crate::{
-    Error, ErrorKind,
+    Error,
     modules::{Global, Parallelism, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
 };
 use std::borrow::Cow;
@@ -185,8 +185,7 @@ impl SpatialUnit for Dehaze {
             .map(Global::values)
             .filter(|values| values.len() == 3);
         let Some(values) = values else {
-            return Err(Error::new(
-                ErrorKind::Internal,
+            return Err(Error::internal(
                 "dehaze was evaluated without its atmospheric light",
             ));
         };

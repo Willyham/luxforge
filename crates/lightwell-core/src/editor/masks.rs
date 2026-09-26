@@ -2,8 +2,10 @@ use super::{
     AssetRecord, EditorService, PixelInput,
     source::{Evaluated, validate_source_recipe},
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    AssetId, EntryId, Error, ErrorKind, MaskId, ModuleRegistry, Recipe,
+    AssetId, EntryId, Error, MaskId, ModuleRegistry, Recipe,
     mask::commands::{MaskCommand, MaskListing, MaskOutcome, MaskTarget},
 };
 use serde_json::{Map, Value};
@@ -55,8 +57,7 @@ impl EditorService {
     ) -> Result<Value, Error> {
         fn encode(value: Result<impl serde::Serialize, Error>) -> Result<Value, Error> {
             value.and_then(|value| {
-                serde_json::to_value(value)
-                    .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
+                serde_json::to_value(value).map_err(|error| Error::internal(error.to_string()))
             })
         }
         match query_id {
@@ -69,17 +70,13 @@ impl EditorService {
                         .and_then(Value::as_u64)
                         .and_then(|value| u32::try_from(value).ok())
                         .ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::Validation,
-                                format!("missing required parameter {name} for {query_id}"),
-                            )
+                            Error::validation(format!(
+                                "missing required parameter {name} for {query_id}"
+                            ))
                         })
                 };
                 let mask = target.mask.as_ref().ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Validation,
-                        format!("missing required parameter mask for {query_id}"),
-                    )
+                    Error::validation(format!("missing required parameter mask for {query_id}"))
                 })?;
                 encode(self.mask_input_sample(
                     asset_id,
@@ -89,10 +86,7 @@ impl EditorService {
                     coordinate("y")?,
                 ))
             }
-            other => Err(Error::new(
-                ErrorKind::Validation,
-                format!("unknown query {other}"),
-            )),
+            other => Err(Error::validation(format!("unknown query {other}"))),
         }
     }
 
@@ -131,14 +125,11 @@ impl EditorService {
                 (index >= 0.0 && index < f64::from(side)).then_some(index as u32)
             };
             let outside = || {
-                Error::new(
-                    ErrorKind::Validation,
-                    format!(
-                        "a stroke limited to a colour must begin inside the picture, and \
+                Error::validation(format!(
+                    "a stroke limited to a colour must begin inside the picture, and \
                          ({:.4}, {:.4}) is outside the {}x{} stage the masked layer receives",
-                        request.x, request.y, stage.width, stage.height
-                    ),
-                )
+                    request.x, request.y, stage.width, stage.height
+                ))
             };
             let x = pixel(request.x, stage.width).ok_or_else(outside)?;
             let y = pixel(request.y, stage.height).ok_or_else(outside)?;
@@ -193,20 +184,16 @@ impl EditorService {
         self.with_stage_context(asset, recipe, None, |context| {
             let stage = context.stage_before(layer)?;
             if x >= stage.width || y >= stage.height {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!(
-                        "outside the stage: ({x}, {y}) is not inside the {}x{} stage the masked \
+                return Err(Error::validation(format!(
+                    "outside the stage: ({x}, {y}) is not inside the {}x{} stage the masked \
                          layer receives",
-                        stage.width, stage.height
-                    ),
-                ));
+                    stage.width, stage.height
+                )));
             }
             let rgba = context.sample_before(layer, x, y)?.ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Validation,
-                    format!("outside the stage: ({x}, {y}) has no pixel to read"),
-                )
+                Error::validation(format!(
+                    "outside the stage: ({x}, {y}) has no pixel to read"
+                ))
             })?;
             let [r, g, b] = linear_triple(rgba);
             Ok(PixelInput {
@@ -270,10 +257,9 @@ pub(super) fn take_mask_target(
         return Ok(None);
     };
     if !registry.action_accepts_mask(action_id) {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            format!("action {action_id} does not accept a mask target"),
-        ));
+        return Err(Error::validation(format!(
+            "action {action_id} does not accept a mask target"
+        )));
     }
     // The generic check of the identity kind, the one every mask identity takes.
     crate::check_value(&mask_target_parameter(), &field)?;
@@ -298,12 +284,7 @@ pub(super) fn resolve_mask_target<'a>(
         .iter()
         .find(|mask| &mask.id == id)
         .map(Some)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!("unknown mask {id} for this asset"),
-            )
-        })
+        .ok_or_else(|| Error::validation(format!("unknown mask {id} for this asset")))
 }
 
 /// The stack as one target sees it: the layers of every maskable effect that belong to some *other*

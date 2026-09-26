@@ -1,14 +1,10 @@
 //! Which URLs an endpoint may name, before any address is resolved, and which addresses each class
 //! may connect to. Resolution and the address checks happen when a request connects, so a name
 //! cannot rebind between check and use.
-use crate::{Error, ErrorKind};
+use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use url::{Host, Url};
-
-fn refused(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 /// The two kinds of destination the host will contact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -39,32 +35,36 @@ impl Endpoint {
 /// `https`; userinfo, fragments and every other scheme are refused; a loopback host is the loopback
 /// class and anything else is remote, which requires `https`.
 pub fn parse_endpoint(text: &str, allowed: &[EndpointClass]) -> Result<Endpoint, Error> {
-    let url = Url::parse(text.trim()).map_err(|error| refused(format!("invalid URL: {error}")))?;
+    let url = Url::parse(text.trim())
+        .map_err(|error| Error::validation(format!("invalid URL: {error}")))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(refused(format!("scheme {} is not allowed", url.scheme())));
+        return Err(Error::validation(format!(
+            "scheme {} is not allowed",
+            url.scheme()
+        )));
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(refused("URLs with credentials are not allowed"));
+        return Err(Error::validation("URLs with credentials are not allowed"));
     }
     if url.fragment().is_some() {
-        return Err(refused("URLs with fragments are not allowed"));
+        return Err(Error::validation("URLs with fragments are not allowed"));
     }
     let loopback = match url.host() {
         Some(Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
         Some(Host::Ipv4(address)) => address.is_loopback(),
         Some(Host::Ipv6(address)) => address.is_loopback(),
-        None => return Err(refused("URL has no host")),
+        None => return Err(Error::validation("URL has no host")),
     };
     let class = if loopback {
         EndpointClass::Loopback
     } else {
         if url.scheme() != "https" {
-            return Err(refused("a remote endpoint must use https"));
+            return Err(Error::validation("a remote endpoint must use https"));
         }
         EndpointClass::Remote
     };
     if !allowed.contains(&class) {
-        return Err(refused(format!(
+        return Err(Error::validation(format!(
             "{} endpoints are not allowed here",
             class.label()
         )));

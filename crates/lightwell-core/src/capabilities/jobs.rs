@@ -180,7 +180,7 @@ impl JobControl {
             .expect("job cancel reason")
             .clone()
             .unwrap_or_else(|| "the job was cancelled".to_owned());
-        Error::new(ErrorKind::Cancelled, reason)
+        Error::cancelled(reason)
     }
 
     /// `Err(cancelled)` once the job has been asked to stop.
@@ -392,10 +392,10 @@ impl Jobs {
                 .count()
                 >= LANE_QUEUE
         {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!("the {} lane is full", lane.name()),
-            ));
+            return Err(Error::resource_limit(format!(
+                "the {} lane is full",
+                lane.name()
+            )));
         }
         let job_id = job.job_id;
         let record = JobRecord {
@@ -444,10 +444,7 @@ impl Jobs {
                 .name(format!("lightwell-{}-lane", state.lane.name()))
                 .spawn(move || lane_worker(receiver, deliver))
                 .map_err(|error| {
-                    Error::new(
-                        ErrorKind::ResourceLimit,
-                        format!("cannot start the {} lane: {error}", lane.name()),
-                    )
+                    Error::resource_limit(format!("cannot start the {} lane: {error}", lane.name()))
                 });
             match thread {
                 Ok(thread) => {
@@ -483,7 +480,7 @@ impl Jobs {
             .send(dispatch);
         if sent.is_err() {
             let job_id = state.running.take().expect("the job was just started");
-            self.fail(&job_id, Error::new(ErrorKind::Internal, "the lane stopped"));
+            self.fail(&job_id, Error::internal("the lane stopped"));
         }
         Ok(())
     }
@@ -721,12 +718,8 @@ fn lane_worker(receiver: Receiver<Dispatch>, deliver: Deliver) {
         let result = if control.is_cancelled() {
             Err(control.cancelled_error())
         } else {
-            panic::catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|_| {
-                Err(Error::new(
-                    ErrorKind::Internal,
-                    "the job stopped unexpectedly",
-                ))
-            })
+            panic::catch_unwind(AssertUnwindSafe(work))
+                .unwrap_or_else(|_| Err(Error::internal("the job stopped unexpectedly")))
         };
         deliver(job_id, result);
     }

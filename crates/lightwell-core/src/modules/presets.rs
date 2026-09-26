@@ -14,7 +14,9 @@ use super::{
     ModuleLayout, ParameterDescriptor, Processing, Stage, StageContext, ToolModule,
     descriptor::{PRESET_ID, PRESET_NAME, PRESET_SETTINGS},
 };
-use crate::{Error, ErrorKind};
+use crate::Error;
+#[cfg(test)]
+use crate::ErrorKind;
 use serde_json::{Map, Value};
 
 pub const APPLY_PRESET: &str = "apply-preset";
@@ -26,13 +28,9 @@ pub const MAX_PRESET_NAME: usize = 128;
 /// The longest library identity a request may carry, in characters.
 const MAX_PRESET_ID_LENGTH: usize = 96;
 
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
 /// The module declares no effect, so any payload handed to it is addressed to something else.
 fn no_effects(effect_id: &str) -> Error {
-    validation(format!(
+    Error::validation(format!(
         "the presets module declares no effects, so it has no {effect_id} layer"
     ))
 }
@@ -115,14 +113,14 @@ impl ToolModule for PresetsModule {
         parameters: &Map<String, Value>,
     ) -> Result<ActionInput, Error> {
         if action_id != APPLY_PRESET {
-            return Err(validation(format!("unknown action {action_id}")));
+            return Err(Error::validation(format!("unknown action {action_id}")));
         }
         let name = parameters
             .get(PRESET_NAME)
             .and_then(Value::as_str)
-            .ok_or_else(|| validation("preset name must be a string"))?;
+            .ok_or_else(|| Error::validation("preset name must be a string"))?;
         if name.trim().is_empty() {
-            return Err(validation("preset name must not be empty"));
+            return Err(Error::validation("preset name must not be empty"));
         }
         Ok(ActionInput {
             action_id: action_id.to_owned(),
@@ -139,15 +137,15 @@ impl ToolModule for PresetsModule {
             .parameters
             .get(PRESET_SETTINGS)
             .and_then(Value::as_object)
-            .ok_or_else(|| validation("preset settings must be an object"))?;
+            .ok_or_else(|| Error::validation("preset settings must be an object"))?;
         if settings.is_empty() {
-            return Err(validation("preset settings name no action"));
+            return Err(Error::validation("preset settings name no action"));
         }
         settings
             .iter()
             .map(|(action_id, fields)| {
                 let fields = fields.as_object().ok_or_else(|| {
-                    validation(format!(
+                    Error::validation(format!(
                         "preset settings for {action_id} must be an object of fields"
                     ))
                 })?;

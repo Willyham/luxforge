@@ -19,8 +19,10 @@
 //! camera's gains, and [`temperature_tint_from_gains`] answers which temperature and tint would
 //! reproduce them, for a client to show.
 
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind,
+    Error,
     colour::{
         cct::{self, planckian_locus_xy},
         mat3::{self, matvec_f64},
@@ -36,10 +38,6 @@ pub const TINT_DUV_UNIT: f64 = 1.0e-4;
 const PLANCK_DAYLIGHT_BLEND_START_K: f64 = 3_800.0;
 const PLANCK_DAYLIGHT_BLEND_END_K: f64 = 4_500.0;
 const MATRIX_DETERMINANT_RELATIVE_MIN: f64 = 1.0e-9;
-
-fn validation(message: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, message)
-}
 
 fn daylight_xy(temperature_kelvin: f64) -> [f64; 2] {
     // CIE daylight-locus x_D equations, split at 7000 K, followed by the standard
@@ -80,12 +78,16 @@ fn xy_to_uv(xy: [f64; 2]) -> Result<[f64; 2], Error> {
     let [x, y] = xy;
     let (uv, denominator) = cct::xy_to_uv(x, y);
     if !denominator.is_finite() || denominator.abs() < f64::EPSILON {
-        return Err(validation("white-balance xy to uv conversion is singular"));
+        return Err(Error::validation(
+            "white-balance xy to uv conversion is singular",
+        ));
     }
     if uv.iter().all(|value| value.is_finite()) {
         Ok(uv)
     } else {
-        Err(validation("white-balance uv conversion is non-finite"))
+        Err(Error::validation(
+            "white-balance uv conversion is non-finite",
+        ))
     }
 }
 
@@ -95,11 +97,13 @@ fn uv_to_xy(uv: [f64; 2]) -> Result<[f64; 2], Error> {
     let [u, v] = uv;
     let (xy, denominator) = cct::uv_to_xy(u, v);
     if !denominator.is_finite() || denominator.abs() < f64::EPSILON {
-        return Err(validation("white-balance uv to xy conversion is singular"));
+        return Err(Error::validation(
+            "white-balance uv to xy conversion is singular",
+        ));
     }
     let [x, y] = xy;
     if !xy.iter().all(|value| value.is_finite()) || x <= 0.0 || y <= 0.0 || x + y >= 1.0 {
-        return Err(validation(
+        return Err(Error::validation(
             "white-balance tint leaves the visible whitepoint domain",
         ));
     }
@@ -129,7 +133,9 @@ fn locus_frame(temperature_kelvin: f64) -> Result<LocusFrame, Error> {
     let tangent = [upper_uv[0] - lower_uv[0], upper_uv[1] - lower_uv[1]];
     let tangent_length = tangent[0].hypot(tangent[1]);
     if !tangent_length.is_finite() || tangent_length <= f64::EPSILON {
-        return Err(validation("white-balance locus tangent is degenerate"));
+        return Err(Error::validation(
+            "white-balance locus tangent is degenerate",
+        ));
     }
     let tangent = [tangent[0] / tangent_length, tangent[1] / tangent_length];
     // Along this locus temperature increases toward lower u and lower v. This normal points
@@ -163,7 +169,9 @@ fn camera_matrix(cam_xyz: [[f32; 3]; 4]) -> Result<[[f64; 3]; 3], Error> {
             *value = f64::from(cam_xyz[row][column]);
         }
         if !output.iter().all(|value| value.is_finite()) {
-            return Err(validation("camera XYZ matrix contains a non-finite value"));
+            return Err(Error::validation(
+                "camera XYZ matrix contains a non-finite value",
+            ));
         }
     }
 
@@ -172,7 +180,7 @@ fn camera_matrix(cam_xyz: [[f32; 3]; 4]) -> Result<[[f64; 3]; 3], Error> {
         .iter()
         .all(|norm| norm.is_finite() && *norm > f64::EPSILON)
     {
-        return Err(validation("camera XYZ matrix contains a zero row"));
+        return Err(Error::validation("camera XYZ matrix contains a zero row"));
     }
     let determinant = mat3::determinant(&matrix);
     let scale = norms[0] * norms[1] * norms[2];
@@ -180,7 +188,7 @@ fn camera_matrix(cam_xyz: [[f32; 3]; 4]) -> Result<[[f64; 3]; 3], Error> {
         || !scale.is_finite()
         || determinant.abs() <= scale * MATRIX_DETERMINANT_RELATIVE_MIN
     {
-        return Err(validation("camera XYZ matrix is degenerate"));
+        return Err(Error::validation("camera XYZ matrix is degenerate"));
     }
     Ok(matrix)
 }
@@ -202,7 +210,7 @@ pub fn gains_from_temperature_tint(
         .iter()
         .all(|value| value.is_finite() && *value > 0.0 && f64::from(*value) <= super::MAX_RAW_GAIN)
     {
-        return Err(validation(
+        return Err(Error::validation(
             "temperature/tint gains cannot be represented as f32",
         ));
     }
@@ -220,26 +228,26 @@ fn gains_f64(
     if !temperature_kelvin.is_finite()
         || !(MIN_TEMPERATURE_K..=MAX_TEMPERATURE_K).contains(&temperature_kelvin)
     {
-        return Err(validation(
+        return Err(Error::validation(
             "RAW temperature must be finite and 2000..=12000 K",
         ));
     }
     if !tint.is_finite() || !(MIN_TINT..=MAX_TINT).contains(&tint) {
-        return Err(validation(
+        return Err(Error::validation(
             "RAW tint must be finite and -100..=100 Lightwell units",
         ));
     }
     let [x, y] = tinted_whitepoint_xy(temperature_kelvin, tint)?;
     let xyz = [x / y, 1.0, (1.0 - x - y) / y];
     if !xyz.iter().all(|value| value.is_finite() && *value > 0.0) {
-        return Err(validation("RAW whitepoint XYZ is invalid"));
+        return Err(Error::validation("RAW whitepoint XYZ is invalid"));
     }
     let response = matvec_f64(matrix, xyz);
     if !response
         .iter()
         .all(|value| value.is_finite() && *value > 0.0)
     {
-        return Err(validation(
+        return Err(Error::validation(
             "camera matrix gives a non-positive white response",
         ));
     }
@@ -248,7 +256,7 @@ fn gains_f64(
         .iter()
         .all(|value| value.is_finite() && *value > 0.0 && *value <= super::MAX_RAW_GAIN)
     {
-        return Err(validation(
+        return Err(Error::validation(
             "temperature/tint gains exceed the finite 0..32 sensor range",
         ));
     }
@@ -329,11 +337,11 @@ fn temperature_tint_from_gains_f64(
     matrix: &[[f64; 3]; 3],
 ) -> Result<[f64; 2], Error> {
     if !gains.iter().all(|gain| gain.is_finite() && *gain > 0.0) {
-        return Err(validation("RAW gains must be finite and positive"));
+        return Err(Error::validation("RAW gains must be finite and positive"));
     }
     let (inverse, determinant) = mat3::inverse_and_determinant(matrix);
     if !determinant.is_finite() || !inverse.iter().flatten().all(|value| value.is_finite()) {
-        return Err(validation("camera XYZ matrix has no finite inverse"));
+        return Err(Error::validation("camera XYZ matrix has no finite inverse"));
     }
     let response = [gains[1] / gains[0], 1.0, gains[1] / gains[2]];
     let xyz = matvec_f64(&inverse, response);
@@ -344,7 +352,7 @@ fn temperature_tint_from_gains_f64(
         || !xy.iter().all(|value| value.is_finite() && *value > 0.0)
         || xy[0] + xy[1] >= 1.0
     {
-        return Err(validation(
+        return Err(Error::validation(
             "out-of-range: the gains describe no visible white",
         ));
     }
@@ -426,7 +434,7 @@ fn temperature_tint_from_gains_f64(
         }
     }
     if !best.tint.is_finite() || best.distance > INVERSE_TOLERANCE_UV {
-        return Err(validation(if at_low <= 0.0 {
+        return Err(Error::validation(if at_low <= 0.0 {
             "out-of-range: the gains need a temperature below 2000 K".to_owned()
         } else if at_high >= 0.0 {
             "out-of-range: the gains need a temperature above 12000 K".to_owned()

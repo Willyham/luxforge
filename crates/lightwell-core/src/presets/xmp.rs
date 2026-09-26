@@ -1,8 +1,10 @@
 //! Lightroom Classic XMP presets and photo sidecars: the Camera Raw settings of every top-level
 //! `rdf:Description`, matched by namespace URI whatever prefix the file binds to it.
 use super::value::{RawSetting, RawValue};
-use super::{duplicate_setting, not_a_preset, unsupported};
-use crate::{Error, ErrorKind};
+use super::{duplicate_setting, not_a_preset};
+use crate::Error;
+#[cfg(test)]
+use crate::ErrorKind;
 use roxmltree::{Document, Node, ParsingOptions};
 use std::collections::HashSet;
 
@@ -36,17 +38,14 @@ fn is(node: Node<'_, '_>, namespace: &str, name: &str) -> bool {
 
 fn xml_error(error: roxmltree::Error) -> Error {
     match error {
-        roxmltree::Error::DtdDetected => unsupported("an XMP preset may not contain a DTD"),
-        roxmltree::Error::NodesLimitReached => Error::new(
-            ErrorKind::ResourceLimit,
-            format!("the XMP holds more than {MAX_XMP_NODES} XML nodes"),
-        ),
-        other => unsupported(format!("malformed XMP: {other}")),
+        roxmltree::Error::DtdDetected => {
+            Error::unsupported_input("an XMP preset may not contain a DTD")
+        }
+        roxmltree::Error::NodesLimitReached => {
+            Error::resource_limit(format!("the XMP holds more than {MAX_XMP_NODES} XML nodes"))
+        }
+        other => Error::unsupported_input(format!("malformed XMP: {other}")),
     }
-}
-
-fn limit(detail: String) -> Error {
-    Error::new(ErrorKind::ResourceLimit, detail)
 }
 
 /// One start tag read to its closing `>` outside quoted values: where that `>` is, and how many
@@ -120,14 +119,14 @@ fn prescan(text: &str) -> Result<(), Error> {
             let (end, attributes, declared) = start_tag(rest);
             pairs = pairs.saturating_add(attributes * attributes.saturating_sub(1) / 2);
             if pairs > MAX_XMP_ATTRIBUTE_PAIRS {
-                return Err(limit(format!(
+                return Err(Error::resource_limit(format!(
                     "the XMP holds too many attributes per element: checking them would take \
                      more than {MAX_XMP_ATTRIBUTE_PAIRS} comparisons"
                 )));
             }
             namespaces += declared;
             if namespaces > MAX_XMP_NAMESPACES {
-                return Err(limit(format!(
+                return Err(Error::resource_limit(format!(
                     "the XMP declares more than {MAX_XMP_NAMESPACES} namespaces"
                 )));
             }
@@ -137,7 +136,7 @@ fn prescan(text: &str) -> Result<(), Error> {
             {
                 depth += 1;
                 if depth > MAX_XMP_DEPTH {
-                    return Err(limit(format!(
+                    return Err(Error::resource_limit(format!(
                         "the XMP nests elements deeper than {MAX_XMP_DEPTH} levels"
                     )));
                 }
@@ -194,7 +193,9 @@ pub(super) fn read(text: &str) -> Result<Vec<RawSetting>, Error> {
         }
     }
     if settings.is_empty() {
-        return Err(unsupported("the XMP holds no Camera Raw settings"));
+        return Err(Error::unsupported_input(
+            "the XMP holds no Camera Raw settings",
+        ));
     }
     let mut seen = HashSet::new();
     for setting in &settings {

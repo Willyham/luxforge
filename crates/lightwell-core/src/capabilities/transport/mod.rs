@@ -18,7 +18,7 @@ pub use policy::{Endpoint, EndpointClass, address_allowed, parse_endpoint};
 pub use rustls::pki_types::CertificateDer;
 pub use tls::TlsTrust;
 
-use crate::{Error, ErrorKind};
+use crate::Error;
 use rustls::ClientConfig;
 use std::{
     borrow::Cow,
@@ -34,10 +34,6 @@ use url::Url;
 pub const MAX_REDIRECTS: u8 = 3;
 /// Statuses that redirect a request. Other `3xx` statuses are returned as data.
 const REDIRECT_STATUSES: [u16; 5] = [301, 302, 303, 307, 308];
-
-fn refused(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 /// The methods the transport sends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,10 +205,10 @@ impl Transport {
             .iter()
             .any(Duration::is_zero)
         {
-            return Err(refused("request timeouts must be positive"));
+            return Err(Error::validation("request timeouts must be positive"));
         }
         if redirects.max > MAX_REDIRECTS {
-            return Err(refused(format!(
+            return Err(Error::validation(format!(
                 "a request follows at most {MAX_REDIRECTS} redirects"
             )));
         }
@@ -225,22 +221,21 @@ impl Transport {
                     .map(|url| url.origin())
                     .filter(url::Origin::is_tuple)
                     .map(|origin| origin.ascii_serialization())
-                    .ok_or_else(|| refused("a redirect origin is not a valid origin"))
+                    .ok_or_else(|| Error::validation("a redirect origin is not a valid origin"))
             })
             .collect::<Result<Vec<_>, _>>()?;
         exchange::check_headers(&request.headers)?;
         if request.method == Method::Get && !request.body.is_empty() {
-            return Err(refused("a GET request has no body"));
+            return Err(Error::validation("a GET request has no body"));
         }
         if request.body.len() as u64 > max_request_bytes {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!("the request body is larger than {max_request_bytes} bytes"),
-            ));
+            return Err(Error::resource_limit(format!(
+                "the request body is larger than {max_request_bytes} bytes"
+            )));
         }
         let deadline = Instant::now()
             .checked_add(total_timeout)
-            .ok_or_else(|| refused("the request timeout is too long"))?;
+            .ok_or_else(|| Error::validation("the request timeout is too long"))?;
 
         let mut method = request.method;
         let mut body = request.body.as_slice();
@@ -248,7 +243,7 @@ impl Transport {
         let mut followed = 0;
         loop {
             if cancel() {
-                return Err(exchange::cancelled());
+                return Err(Error::cancelled("the request was cancelled"));
             }
             let prepared = exchange::prepare(method, &endpoint.url, &headers, body.len())?;
             let server_name = match endpoint.url.scheme() {
@@ -308,13 +303,10 @@ fn slice(socket: &TcpStream, name: &str) -> Result<(), Error> {
         .and_then(|()| socket.set_read_timeout(Some(exchange::SLICE)))
         .and_then(|()| socket.set_write_timeout(Some(exchange::SLICE)))
         .map_err(|error| {
-            Error::new(
-                ErrorKind::FileAccess,
-                format!(
-                    "cannot configure the connection to {name}: {}",
-                    error.kind()
-                ),
-            )
+            Error::file_access(format!(
+                "cannot configure the connection to {name}: {}",
+                error.kind()
+            ))
         })
 }
 
@@ -329,30 +321,30 @@ fn redirect(
     origins: &[String],
 ) -> Result<Endpoint, Error> {
     if max == 0 {
-        return Err(refused("redirect refused"));
+        return Err(Error::validation("redirect refused"));
     }
     if followed >= max {
-        return Err(refused(format!(
+        return Err(Error::validation(format!(
             "redirect refused: more than {max} redirects"
         )));
     }
     let location = fields
         .iter()
         .find(|(name, _)| name == "location")
-        .ok_or_else(|| refused("redirect refused: it has no Location"))?;
+        .ok_or_else(|| Error::validation("redirect refused: it has no Location"))?;
     let mut url = from
         .url
         .join(&location.1)
-        .map_err(|_| refused("redirect refused: its Location is not a valid URL"))?;
+        .map_err(|_| Error::validation("redirect refused: its Location is not a valid URL"))?;
     url.set_fragment(None);
     let target = parse_endpoint(url.as_str(), &[from.class])
-        .map_err(|error| refused(format!("redirect refused: {}", error.detail)))?;
+        .map_err(|error| Error::validation(format!("redirect refused: {}", error.detail)))?;
     if from.url.scheme() == "https" && target.url.scheme() != "https" {
-        return Err(refused("redirect refused: it leaves https"));
+        return Err(Error::validation("redirect refused: it leaves https"));
     }
     let origin = target.origin();
     if !origins.contains(&origin) {
-        return Err(refused(format!(
+        return Err(Error::validation(format!(
             "redirect refused: {origin} is not an allowed origin"
         )));
     }

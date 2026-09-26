@@ -73,10 +73,10 @@ pub trait CapabilityModule: ToolModule {
         context: &ModuleContext,
     ) -> Result<Value, Error> {
         let _ = (task_id, parameters, context);
-        Err(Error::new(
-            crate::ErrorKind::Validation,
-            format!("module {} declares no tasks", self.descriptor().id),
-        ))
+        Err(Error::validation(format!(
+            "module {} declares no tasks",
+            self.descriptor().id
+        )))
     }
 }
 

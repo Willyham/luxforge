@@ -80,7 +80,7 @@ impl ToolModule for TestModule {
         Ok(format!("test layer of {effect_id}"))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
-        Err(Error::new(ErrorKind::Internal, "test module never renders"))
+        Err(Error::internal("test module never renders"))
     }
     /// A test writes any descriptor, capability declarations included, so the module offers
     /// the default hooks for whatever it declares.
@@ -208,21 +208,20 @@ impl ToolModule for PatchModule {
     }
     fn validate_payload(&self, _: &str, format: u32, payload: &Value) -> Result<(), Error> {
         if format != EFFECT_FORMAT {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unsupported effect format {format}"),
-            ));
+            return Err(Error::incompatible(format!(
+                "unsupported effect format {format}"
+            )));
         }
         let object = payload
             .as_object()
-            .ok_or_else(|| validation("patch payload must be an object"))?;
+            .ok_or_else(|| Error::validation("patch payload must be an object"))?;
         for (name, value) in object {
             if !["red", "green"].contains(&name.as_str())
                 || !value
                     .as_f64()
                     .is_some_and(|value| (0.0..=255.0).contains(&value))
             {
-                return Err(validation(format!("invalid patch field {name}")));
+                return Err(Error::validation(format!("invalid patch field {name}")));
             }
         }
         Ok(())

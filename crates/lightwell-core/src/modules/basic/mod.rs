@@ -29,7 +29,9 @@ use super::{
     ParameterDescriptor, PointwiseColor, Processing, Stage, StageContext,
     field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{EFFECT_FORMAT, Error};
 use colour::ColourAdjust;
 use exposure::Exposure;
 use serde_json::{Map, Value};
@@ -87,10 +89,6 @@ const NEUTRAL: f64 = 0.0;
 /// The one ambiguity message, shared by planning and by the host's whole-stack compile check.
 #[cfg(test)]
 pub(crate) const AMBIGUOUS: &str = "ambiguous Basic layers";
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 /// Temperature and Tint share a range, a step and a precision; only their name, label and the
 /// direction they describe differ.
@@ -311,13 +309,13 @@ impl FieldPatch for Basic {
         context: &StageContext<'_>,
     ) -> Result<Value, Error> {
         if query_id != NEUTRAL_SAMPLE {
-            return Err(validation(format!("unknown query {query_id}")));
+            return Err(Error::validation(format!("unknown query {query_id}")));
         }
         let coordinate = |name: &str| -> Result<i64, Error> {
             parameters
                 .get(name)
                 .and_then(Value::as_i64)
-                .ok_or_else(|| validation(format!("neutral sample needs an integer {name}")))
+                .ok_or_else(|| Error::validation(format!("neutral sample needs an integer {name}")))
         };
         let (centre_x, centre_y) = (coordinate("x")?, coordinate("y")?);
 
@@ -329,7 +327,7 @@ impl FieldPatch for Basic {
         };
         let stage = context.stage_before(index)?;
         let outside = || {
-            validation(format!(
+            Error::validation(format!(
                 "outside the stage: ({centre_x}, {centre_y}) is not inside the {}x{} stage this \
                  Basic layer receives",
                 stage.width, stage.height
@@ -359,10 +357,10 @@ impl FieldPatch for Basic {
             }
         }
 
-        let mean =
-            white_balance::average_patch(&pixels).map_err(|reason| validation(reason.message()))?;
-        let (temperature, tint) =
-            white_balance::neutral_settings(mean).map_err(|reason| validation(reason.message()))?;
+        let mean = white_balance::average_patch(&pixels)
+            .map_err(|reason| Error::validation(reason.message()))?;
+        let (temperature, tint) = white_balance::neutral_settings(mean)
+            .map_err(|reason| Error::validation(reason.message()))?;
         Ok(serde_json::json!({
             TEMPERATURE: temperature,
             TINT: tint,

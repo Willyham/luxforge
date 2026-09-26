@@ -39,7 +39,7 @@
 //! `2.220e-16` and not bit for bit, so each is used only where the study froze it.
 use super::{Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, range, smooth};
 use crate::{
-    Component, Error, ErrorKind,
+    Component, Error,
     modules::{Region, Stage},
     path::{Stroke, StrokeId, StrokeTable},
 };
@@ -86,24 +86,18 @@ pub struct BrushStrokes {
 pub(super) fn parse(component: &Component) -> Result<BrushStrokes, Error> {
     let brush: BrushStrokes =
         serde_json::from_value(component.payload.clone()).map_err(|error| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "component {} has an invalid {KIND} payload: {error}",
-                    component.name
-                ),
-            )
+            Error::validation(format!(
+                "component {} has an invalid {KIND} payload: {error}",
+                component.name
+            ))
         })?;
     if brush.strokes.len() > STROKES_PER_COMPONENT {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "component {} has {} strokes; the limit is {STROKES_PER_COMPONENT} strokes per \
+        return Err(Error::resource_limit(format!(
+            "component {} has {} strokes; the limit is {STROKES_PER_COMPONENT} strokes per \
                  brush component",
-                component.name,
-                brush.strokes.len()
-            ),
-        ));
+            component.name,
+            brush.strokes.len()
+        )));
     }
     Ok(brush)
 }
@@ -390,14 +384,11 @@ impl Index {
                 let cell = &mut self.cells[row * self.cols + col];
                 cell.push((stroke, segment_index));
                 if cell.len() > SEGMENTS_PER_PIXEL {
-                    return Err(Error::new(
-                        ErrorKind::ResourceLimit,
-                        format!(
-                            "mask {mask} component {component} puts more than \
+                    return Err(Error::resource_limit(format!(
+                        "mask {mask} component {component} puts more than \
                              {SEGMENTS_PER_PIXEL} stroke segments over one pixel; the limit is \
                              {SEGMENTS_PER_PIXEL} segments tested per pixel by a brush component"
-                        ),
-                    ));
+                    )));
                 }
             }
         }
@@ -498,13 +489,10 @@ impl Compiled {
             })?;
             let r = stroke.size();
             if !r.is_finite() || !(DISTANCE_MIN..=DISTANCE_MAX).contains(&r) {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!(
-                        "component {component} stroke {id} size must be a number within \
+                return Err(Error::validation(format!(
+                    "component {component} stroke {id} size must be a number within \
                          {DISTANCE_MIN:e}..={DISTANCE_MAX:.0} mask-space units"
-                    ),
-                ));
+                )));
             }
             let band = r * (stroke.feather() / 100.0);
             let amount = stroke.flow() / 100.0;

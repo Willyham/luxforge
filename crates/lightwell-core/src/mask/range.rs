@@ -32,7 +32,7 @@
 //! luminance and one colour space.
 use super::{Binding, ComponentField, Field, smooth};
 use crate::{
-    Component, Error, ErrorKind, ParameterDescriptor,
+    Component, Error, ParameterDescriptor,
     colour::{luma::rec709_f64, oklab::lab_f64, srgb},
     modules::{Region, Stage},
 };
@@ -198,22 +198,16 @@ fn feather(name: &str, required: bool, notes: &str) -> ParameterDescriptor {
 pub(super) fn parse_luminance(component: &Component) -> Result<LuminanceRange, Error> {
     let range: LuminanceRange =
         serde_json::from_value(component.payload.clone()).map_err(|error| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "component {} has an invalid {LUMINANCE_KIND} payload: {error}",
-                    component.name
-                ),
-            )
+            Error::validation(format!(
+                "component {} has an invalid {LUMINANCE_KIND} payload: {error}",
+                component.name
+            ))
         })?;
     let refuse = |field: &str, what: String| {
-        Err(Error::new(
-            ErrorKind::Validation,
-            format!(
-                "component {} {LUMINANCE_KIND} {field} {what}",
-                component.name
-            ),
-        ))
+        Err(Error::validation(format!(
+            "component {} {LUMINANCE_KIND} {field} {what}",
+            component.name
+        )))
     };
     for (field, value) in [("low", range.low), ("high", range.high)] {
         if !value.is_finite() || !(LEVEL_MIN..=LEVEL_MAX).contains(&value) {
@@ -420,19 +414,16 @@ pub(super) fn colour_sample_parameters() -> Vec<ParameterDescriptor> {
 pub(super) fn parse_colour(component: &Component) -> Result<ColourRange, Error> {
     let range: ColourRange =
         serde_json::from_value(component.payload.clone()).map_err(|error| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "component {} has an invalid {COLOUR_KIND} payload: {error}",
-                    component.name
-                ),
-            )
+            Error::validation(format!(
+                "component {} has an invalid {COLOUR_KIND} payload: {error}",
+                component.name
+            ))
         })?;
     let refuse = |field: &str, what: String| {
-        Err(Error::new(
-            ErrorKind::Validation,
-            format!("component {} {COLOUR_KIND} {field} {what}", component.name),
-        ))
+        Err(Error::validation(format!(
+            "component {} {COLOUR_KIND} {field} {what}",
+            component.name
+        )))
     };
     if !range.refine.is_finite() || !(REFINE_MIN..=REFINE_MAX).contains(&range.refine) {
         return refuse(
@@ -441,15 +432,12 @@ pub(super) fn parse_colour(component: &Component) -> Result<ColourRange, Error> 
         );
     }
     if range.samples.len() > MAX_SAMPLES {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "component {} has {} samples; the limit is {MAX_SAMPLES} samples per \
+        return Err(Error::resource_limit(format!(
+            "component {} has {} samples; the limit is {MAX_SAMPLES} samples per \
                  {COLOUR_KIND} component",
-                component.name,
-                range.samples.len()
-            ),
-        ));
+            component.name,
+            range.samples.len()
+        )));
     }
     for sample in &range.samples {
         for value in sample {

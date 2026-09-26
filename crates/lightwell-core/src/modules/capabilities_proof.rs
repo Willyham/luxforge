@@ -11,8 +11,10 @@ use super::{
     ActionInput, ActionPlan, CapabilityModule, ColorOperation, LayerUpdate, ModuleDescriptor,
     NewLayer, PointwiseColor, Processing, Stage, StageContext, ToolModule,
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    ArtifactId, EFFECT_FORMAT, Error, ErrorKind, ParameterDescriptor,
+    ArtifactId, EFFECT_FORMAT, Error, ParameterDescriptor,
     artifacts::{ArtifactMeta, PreparedArtifact},
     capabilities::{
         context::ModuleContext,
@@ -80,10 +82,6 @@ pub const fn palette_bytes(gains: [f32; 3]) -> [u8; 20] {
     bytes
 }
 
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -106,12 +104,12 @@ fn gains_at(bytes: &[u8], offset: usize) -> Option<[f32; 3]> {
 /// The palette's gains: exactly the magic and three finite, positive gains.
 fn parse_palette(bytes: &[u8]) -> Result<[f32; 3], Error> {
     if bytes.len() != PROOF_PALETTE.len() || bytes[..PALETTE_MAGIC.len()] != PALETTE_MAGIC {
-        return Err(validation(
+        return Err(Error::validation(
             "the proof palette does not start with its magic",
         ));
     }
     gains_at(bytes, PALETTE_MAGIC.len())
-        .ok_or_else(|| validation("the proof palette's gains are not finite and positive"))
+        .ok_or_else(|| Error::validation("the proof palette's gains are not finite and positive"))
 }
 
 /// Read an installed or staged palette, at most one byte more than its length.
@@ -123,17 +121,14 @@ fn read_palette(path: &Path) -> Result<[f32; 3], Error> {
                 .read_to_end(&mut bytes)
         })
         .map_err(|error| {
-            Error::new(
-                ErrorKind::FileAccess,
-                format!("cannot read the proof palette: {}", error.kind()),
-            )
+            Error::file_access(format!("cannot read the proof palette: {}", error.kind()))
         })?;
     parse_palette(&bytes)
 }
 
 /// The endpoint's answer, `{"rgb": [r, g, b]}` with three codes of 1 to 255 and nothing else.
 fn parse_answer(body: &[u8]) -> Result<[u8; 3], Error> {
-    let refused = || validation("the proof endpoint answered something other than a tint");
+    let refused = || Error::validation("the proof endpoint answered something other than a tint");
     let answer: Value = serde_json::from_slice(body).map_err(|_| refused())?;
     let object = answer
         .as_object()
@@ -333,24 +328,22 @@ impl CapabilitiesProofModule {
     /// A stored payload: `{}` for neutral, or `{"artifact": <id>}`.
     fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<Option<ArtifactId>, Error> {
         if effect_id != PROOF_EFFECT {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unavailable effect {effect_id}"),
-            ));
+            return Err(Error::incompatible(format!(
+                "unavailable effect {effect_id}"
+            )));
         }
         if format != EFFECT_FORMAT {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unsupported effect format {format}"),
-            ));
+            return Err(Error::incompatible(format!(
+                "unsupported effect format {format}"
+            )));
         }
         let object = payload
             .as_object()
-            .ok_or_else(|| validation("a proof tint payload is an object"))?;
+            .ok_or_else(|| Error::validation("a proof tint payload is an object"))?;
         match (object.len(), object.get("artifact")) {
             (0, _) => Ok(None),
             (1, Some(Value::String(id))) => ArtifactId::parse(id.as_str()).map(Some),
-            _ => Err(validation(
+            _ => Err(Error::validation(
                 "a proof tint payload is {} or {\"artifact\": <artifact id>}",
             )),
         }
@@ -397,7 +390,7 @@ impl ToolModule for CapabilitiesProofModule {
                 normalized
             }
             RESET_PROOF_TINT => Map::new(),
-            _ => return Err(validation(format!("unknown action {action_id}"))),
+            _ => return Err(Error::validation(format!("unknown action {action_id}"))),
         };
         Ok(ActionInput {
             action_id: action_id.into(),
@@ -434,7 +427,7 @@ impl ToolModule for CapabilitiesProofModule {
                 }
                 _ => ActionPlan::NoOp,
             }),
-            other => Err(validation(format!("unknown action {other}"))),
+            other => Err(Error::validation(format!("unknown action {other}"))),
         }
     }
 
@@ -478,7 +471,7 @@ impl ToolModule for CapabilitiesProofModule {
     ) -> Result<Processing, Error> {
         match Self::payload(effect_id, format, payload)? {
             None => Ok(Processing::Color(ColorOperation::neutral())),
-            Some(artifact) => Err(validation(format!(
+            Some(artifact) => Err(Error::validation(format!(
                 "a proof tint is evaluated with the bytes of artifact {artifact}"
             ))),
         }
@@ -502,32 +495,34 @@ impl CapabilityModule for CapabilitiesProofModule {
         artifacts: &[Arc<PreparedArtifact>],
     ) -> Result<Processing, Error> {
         let Some(named) = Self::payload(effect_id, format, payload)? else {
-            return Err(validation("a neutral proof tint references no artifact"));
+            return Err(Error::validation(
+                "a neutral proof tint references no artifact",
+            ));
         };
         let [artifact] = artifacts else {
-            return Err(validation("a proof tint binds exactly one artifact"));
+            return Err(Error::validation("a proof tint binds exactly one artifact"));
         };
         if artifact.id != named {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "a proof tint names {named} but binds {}",
                 artifact.id
             )));
         }
         if artifact.kind != PROOF_TINT_KIND {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "artifact {} is a {}, not a {PROOF_TINT_KIND}",
                 artifact.id, artifact.kind
             )));
         }
         if artifact.bytes.len() != TINT_BYTES {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "artifact {} holds {} bytes, not three gains",
                 artifact.id,
                 artifact.bytes.len()
             )));
         }
         let gains = gains_at(&artifact.bytes, 0).ok_or_else(|| {
-            validation(format!(
+            Error::validation(format!(
                 "artifact {} holds gains that are not finite and positive",
                 artifact.id
             ))
@@ -560,7 +555,7 @@ impl CapabilityModule for CapabilitiesProofModule {
 
     fn validate_resource(&self, resource_id: &str, path: &Path) -> Result<(), Error> {
         if resource_id != PROOF_RESOURCE {
-            return Err(validation(format!("unknown resource {resource_id}")));
+            return Err(Error::validation(format!("unknown resource {resource_id}")));
         }
         read_palette(path).map(|_| ())
     }
@@ -574,13 +569,10 @@ impl CapabilityModule for CapabilitiesProofModule {
         context: &ModuleContext,
     ) -> Result<Value, Error> {
         if task_id != PROOF_TASK {
-            return Err(validation(format!("unknown task {task_id}")));
+            return Err(Error::validation(format!("unknown task {task_id}")));
         }
         let palette = (*lock(&self.palette)).ok_or_else(|| {
-            Error::new(
-                ErrorKind::NotReady,
-                "the proof palette is not loaded; activate the module",
-            )
+            Error::not_ready("the proof palette is not loaded; activate the module")
         })?;
         context.progress(Some(0.2), "asking the proof endpoint");
         let rgb = parse_answer(&context.send("echo")?)?;
@@ -588,11 +580,13 @@ impl CapabilityModule for CapabilitiesProofModule {
         let strength = context
             .value("strength")
             .and_then(Value::as_f64)
-            .ok_or_else(|| Error::new(ErrorKind::NotReady, "setting strength has no value"))?
+            .ok_or_else(|| Error::not_ready("setting strength has no value"))?
             as f32;
         let gains = Self::gains(rgb, palette, strength);
         if !gains.iter().all(|gain| gain.is_finite() && *gain > 0.0) {
-            return Err(validation("the tint's gains are not finite and positive"));
+            return Err(Error::validation(
+                "the tint's gains are not finite and positive",
+            ));
         }
         context.progress(Some(0.8), "publishing the tint");
         let bytes: Vec<u8> = gains.iter().flat_map(|gain| gain.to_le_bytes()).collect();

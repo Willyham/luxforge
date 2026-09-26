@@ -27,9 +27,10 @@ pub use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};
 pub use report::{ImportReport, MappedSetting, ReportCounts, ReportedSetting};
 pub use xmp::{MAX_XMP_ATTRIBUTE_PAIRS, MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XMP_NODES};
 
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, ModuleRegistry, check_parameters,
-    valid_name,
+    Error, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, ModuleRegistry, check_parameters, valid_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -102,20 +103,12 @@ pub struct PresetExport {
     pub content: String,
 }
 
-fn unsupported(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::UnsupportedInput, detail)
-}
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
 fn not_a_preset() -> Error {
-    unsupported("not a Lightwell, Lightroom XMP or .lrtemplate preset")
+    Error::unsupported_input("not a Lightwell, Lightroom XMP or .lrtemplate preset")
 }
 
 fn duplicate_setting(name: &str) -> Error {
-    unsupported(format!("the preset sets {name} more than once"))
+    Error::unsupported_input(format!("the preset sets {name} more than once"))
 }
 
 /// Text trimmed, or `None` when nothing is left.
@@ -168,13 +161,10 @@ pub fn inspect_preset(
     registry: &ModuleRegistry,
 ) -> Result<ImportedPreset, Error> {
     if content.len() > MAX_PRESET_BYTES {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "a preset is at most {MAX_PRESET_BYTES} bytes; this one is {}",
-                content.len()
-            ),
-        ));
+        return Err(Error::resource_limit(format!(
+            "a preset is at most {MAX_PRESET_BYTES} bytes; this one is {}",
+            content.len()
+        )));
     }
     let body = content.strip_prefix('\u{feff}').unwrap_or(content);
     let body = body.trim_start_matches([' ', '\t', '\r', '\n']);
@@ -233,7 +223,7 @@ pub fn parse_preset(
 ) -> Result<ImportedPreset, Error> {
     let preset = inspect_preset(content, file_name, registry)?;
     if preset.settings.is_empty() {
-        return Err(unsupported(format!(
+        return Err(Error::unsupported_input(format!(
             "the preset has no setting Lightwell can apply ({})",
             preset.report.counts()
         )));
@@ -250,36 +240,38 @@ pub fn validate_settings(
     settings: &Map<String, Value>,
 ) -> Result<(), Error> {
     if settings.is_empty() || settings.len() > MAX_SETTINGS_ACTIONS {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "a settings set names 1 to {MAX_SETTINGS_ACTIONS} actions; this one names {}",
             settings.len()
         )));
     }
     for (action_id, fields) in settings {
         if !valid_name(action_id) {
-            return Err(validation(format!("invalid action identity {action_id}")));
+            return Err(Error::validation(format!(
+                "invalid action identity {action_id}"
+            )));
         }
         let Some(fields) = fields
             .as_object()
             .filter(|fields| !fields.is_empty() && fields.len() <= MAX_SETTINGS_FIELDS)
         else {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "the settings of {action_id} must be an object of 1 to {MAX_SETTINGS_FIELDS} fields"
             )));
         };
         let (module, action) = registry
             .action(action_id)
-            .ok_or_else(|| validation(format!("unknown action {action_id}")))?;
+            .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
         if !action.patch {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "{action_id} is not a field-patch action"
             )));
         }
         if !module.descriptor().is_available() {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unavailable module {}", module.descriptor().id),
-            ));
+            return Err(Error::incompatible(format!(
+                "unavailable module {}",
+                module.descriptor().id
+            )));
         }
         check_parameters(action, &Value::Object(fields.clone()))?;
     }

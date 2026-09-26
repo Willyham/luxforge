@@ -12,9 +12,11 @@
 //! no polling loop is involved.
 
 use super::{DOMAIN, Report, deserialize_domain, reduce_raster_cancellable};
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    AssetId, ClientId, DraftStamp, EntryId, Error, ErrorKind, HistoryEntry, JobId, JobStatus,
-    ModuleRegistry, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId,
+    AssetId, ClientId, DraftStamp, EntryId, Error, HistoryEntry, JobId, JobStatus, ModuleRegistry,
+    PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     latest::{Latest, Running, WAITING_RESULTS},
 };
@@ -110,10 +112,9 @@ impl AnalysisIdentity {
         stage: Option<(u32, u32)>,
     ) -> Result<Self, Error> {
         let canonical = serde_json::to_vec(recipe).map_err(|error| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("a recipe could not be serialized for hashing: {error}"),
-            )
+            Error::internal(format!(
+                "a recipe could not be serialized for hashing: {error}"
+            ))
         })?;
         let (width, height) = stage.unwrap_or((0, 0));
         Ok(Self {
@@ -666,10 +667,7 @@ impl AnalysisStore {
 }
 
 fn unknown_job(job_id: &JobId) -> Error {
-    Error::new(
-        ErrorKind::Validation,
-        format!("unknown analysis job {job_id} for this client"),
-    )
+    Error::validation(format!("unknown analysis job {job_id} for this client"))
 }
 
 #[cfg(test)]

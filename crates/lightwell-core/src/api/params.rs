@@ -9,7 +9,9 @@
 //!
 //! [`Mutation`]: crate::Mutation
 //! [`MutationRequest`]: crate::MutationRequest
-use crate::{Error, ErrorKind};
+use crate::Error;
+#[cfg(test)]
+use crate::ErrorKind;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
@@ -69,13 +71,10 @@ pub(crate) fn parse<T: DeserializeOwned>(params: &Value) -> Result<T, Error> {
         Value::Object(_) => T::deserialize(params),
         Value::Null => T::deserialize(&Value::Object(Map::new())),
         _ => {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "params must be a JSON object",
-            ));
+            return Err(Error::validation("params must be a JSON object"));
         }
     };
-    parsed.map_err(|error| Error::new(ErrorKind::Validation, error.to_string()))
+    parsed.map_err(|error| Error::validation(error.to_string()))
 }
 
 /// The parameters of a generated method (`edit.*`, `query.*`, `mask.*`, `task.*`) as an owned map:
@@ -85,10 +84,7 @@ pub(crate) fn generated(params: &Value) -> Result<Map<String, Value>, Error> {
     match params {
         Value::Object(object) => Ok(object.clone()),
         Value::Null => Ok(Map::new()),
-        _ => Err(Error::new(
-            ErrorKind::Validation,
-            "params must be a JSON object",
-        )),
+        _ => Err(Error::validation("params must be a JSON object")),
     }
 }
 
@@ -98,7 +94,7 @@ pub(crate) fn take<T: DeserializeOwned>(
     name: &str,
 ) -> Result<T, Error> {
     take_optional(parameters, name)?
-        .ok_or_else(|| Error::new(ErrorKind::Validation, format!("missing field `{name}`")))
+        .ok_or_else(|| Error::validation(format!("missing field `{name}`")))
 }
 
 /// Take one envelope field the request may omit. A command that requires it says so itself, so the
@@ -111,7 +107,7 @@ pub(crate) fn take_optional<T: DeserializeOwned>(
         .remove(name)
         .map(|field| {
             serde_json::from_value(field)
-                .map_err(|error| Error::new(ErrorKind::Validation, format!("{name}: {error}")))
+                .map_err(|error| Error::validation(format!("{name}: {error}")))
         })
         .transpose()
 }

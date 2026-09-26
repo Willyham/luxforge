@@ -1,9 +1,9 @@
 //! Admitting and compiling a stack against the registered providers: proxy eligibility, the layer
 //! and recipe checks every write passes, and the compile that folds a stack into rasterizing
 //! segments with each layer's mask and bound artifacts attached. `O(layers)`; reads no pixels.
-use super::{ModuleRegistry, validation};
+use super::ModuleRegistry;
 use crate::{
-    Error, ErrorKind, Layer, Mask, MaskId, Recipe,
+    Error, Layer, Mask, MaskId, Recipe,
     artifacts::ArtifactTable,
     mask_field::{MaskField, MaskSampling},
     modules::{
@@ -17,13 +17,10 @@ use crate::{
 use std::collections::HashSet;
 
 fn unavailable(effect_id: &str, layers: Vec<&str>) -> Error {
-    Error::new(
-        ErrorKind::Incompatible,
-        format!(
-            "unavailable effect {effect_id} (layers {})",
-            layers.join(", ")
-        ),
-    )
+    Error::incompatible(format!(
+        "unavailable effect {effect_id} (layers {})",
+        layers.join(", ")
+    ))
 }
 
 impl ModuleRegistry {
@@ -55,14 +52,14 @@ impl ModuleRegistry {
                     | EffectStage::Finish,
                 ) => {}
                 Some(EffectStage::Pixel) => {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "layer {index} is not proxy-eligible: effect {} is at the pixel stage, \
                          whose coordinates are content pixels and cannot be rescaled",
                         layer.effect_id
                     )));
                 }
                 None => {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "layer {index} is not proxy-eligible: no provider declares effect {}, so \
                          its stage is unknown",
                         layer.effect_id
@@ -131,7 +128,7 @@ impl ModuleRegistry {
             if let Some(stage @ (EffectStage::Geometry | EffectStage::Finish)) =
                 self.effect_stage(&layer.effect_id)
             {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "layer {} carries a mask, which a {} effect cannot: a mask is stored in \
                      content-stage coordinates",
                     layer.id,
@@ -156,17 +153,14 @@ impl ModuleRegistry {
         if layer.mask.is_none() {
             return Ok(());
         }
-        Err(Error::new(
-            ErrorKind::Incompatible,
-            format!(
-                "layer {} carries a mask on the {} effect {}, and this build evaluates a mask only \
+        Err(Error::incompatible(format!(
+            "layer {} carries a mask on the {} effect {}, and this build evaluates a mask only \
                  on a colour-stage or spatial-stage effect",
-                layer.id,
-                self.effect_stage(&layer.effect_id)
-                    .map_or("unknown", EffectStage::as_str),
-                layer.effect_id
-            ),
-        ))
+            layer.id,
+            self.effect_stage(&layer.effect_id)
+                .map_or("unknown", EffectStage::as_str),
+            layer.effect_id
+        )))
     }
 
     /// The compiled mask one layer is modulated by, against the stage that layer receives, or
@@ -191,13 +185,10 @@ impl ModuleRegistry {
             return Ok(None);
         };
         let mask = masks.iter().find(|mask| &mask.id == id).ok_or_else(|| {
-            Error::new(
-                ErrorKind::Incompatible,
-                format!(
-                    "layer {} names mask {id}, which this recipe does not hold",
-                    layer.id
-                ),
-            )
+            Error::incompatible(format!(
+                "layer {} names mask {id}, which this recipe does not hold",
+                layer.id
+            ))
         })?;
         Ok(Some(MaskField::compile(mask, stage, strokes, sampling)?))
     }
@@ -211,7 +202,7 @@ impl ModuleRegistry {
         if layer.artifacts.is_empty() || declared {
             Ok(())
         } else {
-            Err(validation(format!(
+            Err(Error::validation(format!(
                 "layer {} of effect {} references artifacts, which its effect does not declare",
                 layer.id, layer.effect_id
             )))
@@ -337,12 +328,14 @@ impl ModuleRegistry {
         for (index, layer) in layers.iter().enumerate() {
             match self.effect_stage(&layer.effect_id) {
                 Some(EffectStage::Source) if index != 0 => {
-                    return Err(validation("source-stage effect must be at index zero"));
+                    return Err(Error::validation(
+                        "source-stage effect must be at index zero",
+                    ));
                 }
                 Some(EffectStage::Finish) => finish_layer = finish_layer.or(Some(layer)),
                 Some(EffectStage::Geometry) => {
                     if let Some(finish) = finish_layer {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "finish layer precedes geometry (finish {}, geometry {})",
                             finish.id, layer.id
                         )));
@@ -351,7 +344,7 @@ impl ModuleRegistry {
                 _ => {}
             }
             if !layer_ids.insert(&layer.id) {
-                return Err(validation("duplicate layer identity"));
+                return Err(Error::validation("duplicate layer identity"));
             }
             let module = self
                 .provider(&layer.effect_id)
@@ -377,26 +370,20 @@ impl ModuleRegistry {
                     .iter()
                     .map(|id| {
                         artifacts.get(id).cloned().ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::SourceUnavailable,
-                                format!(
-                                    "artifact {id} of layer {} is not bound to this recipe",
-                                    layer.id
-                                ),
-                            )
+                            Error::source_unavailable(format!(
+                                "artifact {id} of layer {} is not bound to this recipe",
+                                layer.id
+                            ))
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
                 // Registration refused a module that declares an artifact effect without its
                 // capability hooks, so this is only a guard.
                 let capabilities = module.capabilities().ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        format!(
-                            "module {} compiles artifact layers without capability hooks",
-                            module.descriptor().id
-                        ),
-                    )
+                    Error::internal(format!(
+                        "module {} compiles artifact layers without capability hooks",
+                        module.descriptor().id
+                    ))
                 })?;
                 capabilities.compile_bound(
                     &layer.effect_id,
@@ -409,7 +396,7 @@ impl ModuleRegistry {
             match processing {
                 Processing::ExactGeometry(step) => {
                     if !step.reads_inside(segment.width, segment.height) {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "an exact mapping to {}x{} reads outside its {}x{} input stage",
                             step.output_width, step.output_height, segment.width, segment.height
                         )));
@@ -432,13 +419,13 @@ impl ModuleRegistry {
                 }
                 Processing::Color(operation) => {
                     if operation.len() > MAX_COLOR_UNITS {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "a colour operation declares {} units, more than the {MAX_COLOR_UNITS} the host evaluates",
                             operation.len()
                         )));
                     }
                     if !operation.is_finite() {
-                        return Err(validation(
+                        return Err(Error::validation(
                             "a colour operation declares a unit whose coefficients are not finite",
                         ));
                     }
@@ -479,14 +466,11 @@ impl ModuleRegistry {
                         Some(mask) => {
                             masked_spatial += 1;
                             if masked_spatial > MAX_MASKED_SPATIAL_LAYERS {
-                                return Err(Error::new(
-                                    ErrorKind::ResourceLimit,
-                                    format!(
-                                        "this recipe holds {masked_spatial} masked spatial layers, more than the \
+                                return Err(Error::resource_limit(format!(
+                                    "this recipe holds {masked_spatial} masked spatial layers, more than the \
                                          {MAX_MASKED_SPATIAL_LAYERS} the host evaluates: each one is a stage \
                                          boundary and therefore a sequential full frame"
-                                    ),
-                                ));
+                                )));
                             }
                             operation.with_mask(mask)
                         }
@@ -509,10 +493,12 @@ impl ModuleRegistry {
                 }
                 Processing::Resample(resample) => {
                     if resample.output_width == 0 || resample.output_height == 0 {
-                        return Err(validation("a resample declares an empty output stage"));
+                        return Err(Error::validation(
+                            "a resample declares an empty output stage",
+                        ));
                     }
                     if !resample.inverse.iter().all(|value| value.is_finite()) {
-                        return Err(validation(
+                        return Err(Error::validation(
                             "a resample declares a mapping that is not finite",
                         ));
                     }

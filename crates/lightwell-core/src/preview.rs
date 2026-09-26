@@ -61,8 +61,7 @@ impl ViewState {
         if let Zoom::Percent { value } = zoom
             && (!value.is_finite() || !(10.0..=1600.0).contains(&value))
         {
-            return Err(crate::Error::new(
-                crate::ErrorKind::Validation,
+            return Err(crate::Error::validation(
                 "zoom percent must be finite and within 10..=1600",
             ));
         }
@@ -71,10 +70,7 @@ impl ViewState {
     }
     pub fn pan_to(&mut self, x: f32, y: f32) -> Result<(), crate::Error> {
         if !x.is_finite() || !y.is_finite() {
-            return Err(crate::Error::new(
-                crate::ErrorKind::Validation,
-                "pan coordinates must be finite",
-            ));
+            return Err(crate::Error::validation("pan coordinates must be finite"));
         }
         self.pan_x = x;
         self.pan_y = y;

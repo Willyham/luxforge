@@ -4,7 +4,9 @@
 //! what a consent notice discloses is what leaves the machine. See
 //! `docs/design/module-capabilities.md#provider-adapters`.
 use super::descriptor::{DataClass, SAMPLE_GRID_SIDE};
-use crate::{Error, ErrorKind, editor::SamplePlan};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{Error, editor::SamplePlan};
 use std::{
     fmt::Write as _,
     sync::{Mutex, PoisonError},
@@ -28,13 +30,10 @@ pub const SAMPLE_GRID_BYTES: usize =
 /// before any pixel is read.
 pub fn sample_grid_body(samples: &[[u8; 3]]) -> Result<Vec<u8>, Error> {
     if samples.len() != SAMPLE_GRID_SAMPLES {
-        return Err(Error::new(
-            ErrorKind::Internal,
-            format!(
-                "a sample grid holds {SAMPLE_GRID_SAMPLES} samples, not {}",
-                samples.len()
-            ),
-        ));
+        return Err(Error::internal(format!(
+            "a sample grid holds {SAMPLE_GRID_SAMPLES} samples, not {}",
+            samples.len()
+        )));
     }
     let mut body = String::with_capacity(SAMPLE_GRID_BYTES);
     body.push_str(SAMPLE_GRID_PREFIX);

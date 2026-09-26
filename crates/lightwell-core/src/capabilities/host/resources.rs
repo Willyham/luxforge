@@ -2,7 +2,7 @@
 //! install or removal queued on the transfer lane after consent, the quota and the lane bound are
 //! checked. The transfer itself is `capabilities::resources`. See
 //! `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
-use super::{CapabilityHost, ModuleParams, RESOURCE_REMOVED, registered, validation};
+use super::{CapabilityHost, ModuleParams, RESOURCE_REMOVED, registered};
 use crate::{
     Error, JobId, ModuleDescriptor, ModuleRegistry,
     api::params::host_params,
@@ -169,7 +169,7 @@ impl CapabilityHost {
                         matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id } if *id == resource.id)
                     })
                     .ok_or_else(|| {
-                        validation(format!(
+                        Error::validation(format!(
                             "module {} declares no download-artifact capability for resource {}",
                             descriptor.id, resource.id
                         ))
@@ -196,7 +196,7 @@ impl CapabilityHost {
             InstallSource::File { path } => {
                 let is_file = std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file());
                 if !is_file {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "{} is not a readable file",
                         path.display()
                     )));
@@ -317,7 +317,7 @@ fn declared_resource<'a>(
     id: &str,
 ) -> Result<&'a ResourceDescriptor, Error> {
     descriptor.resource(id).ok_or_else(|| {
-        validation(format!(
+        Error::validation(format!(
             "module {} declares no resource {id}",
             descriptor.id
         ))

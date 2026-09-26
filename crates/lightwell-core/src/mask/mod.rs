@@ -39,8 +39,10 @@
 //! and no mask plane is ever allocated, at any size. That is the point-query rule
 //! (`docs/engineering/performance-rules.md`), not an optimization — a mask that could not be
 //! answered for one pixel in bounded time would make a sampled byte unable to equal a rendered one.
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Component, ComponentMode, Error, ErrorKind, Mask, ParameterDescriptor,
+    Component, ComponentMode, Error, Mask, ParameterDescriptor,
     modules::{Region, Stage},
     path::StrokeTable,
 };
@@ -489,13 +491,10 @@ impl CompiledMask {
     /// store's own message, before any pixel is read.
     pub fn new(mask: &Mask, stage: Stage, strokes: &StrokeTable) -> Result<Self, Error> {
         if stage.width == 0 || stage.height == 0 {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "mask {} cannot be compiled against an empty {}x{} stage",
-                    mask.name, stage.width, stage.height
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "mask {} cannot be compiled against an empty {}x{} stage",
+                mask.name, stage.width, stage.height
+            )));
         }
         let binding = Binding {
             stage,

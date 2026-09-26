@@ -4,8 +4,10 @@ use super::{
     masks::{recipe_for_target, resolve_mask_target, take_mask_target},
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    AssetId, Draft, EntryId, Error, ErrorKind, Layer, LayerId, LinearImage, LinearSettings, MaskId,
+    AssetId, Draft, EntryId, Error, Layer, LayerId, LinearImage, LinearSettings, MaskId,
     ModuleRegistry, Mutation, Recipe, ToolModule, Transform,
     mask::commands::{MaskOutcome, MaskTarget},
     modules::{
@@ -48,9 +50,9 @@ impl<'r> Prepared<'r> {
         action_id: &str,
         parameters: Value,
     ) -> Result<Self, Error> {
-        let action = registry.resolve_action(action_id).ok_or_else(|| {
-            Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
-        })?;
+        let action = registry
+            .resolve_action(action_id)
+            .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
         match action {
             ActionRef::Module(module, declared) => {
                 available(module)?;
@@ -292,9 +294,9 @@ impl EditorService {
         parameters: Value,
     ) -> Result<Value, Error> {
         let registry = self.registry.clone();
-        let query = registry.resolve_query(query_id).ok_or_else(|| {
-            Error::new(ErrorKind::Validation, format!("unknown query {query_id}"))
-        })?;
+        let query = registry
+            .resolve_query(query_id)
+            .ok_or_else(|| Error::validation(format!("unknown query {query_id}")))?;
         let checked = check_parameters(query.descriptor(), &parameters)?;
         // The host answers its own reads about its own objects, from the same entry.
         let QueryRef::Module(module, _) = query else {
@@ -329,10 +331,7 @@ impl EditorService {
         draft: &Draft,
     ) -> Result<(Recipe, EditorState), Error> {
         if &draft.asset_id != asset_id {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "draft belongs to another asset",
-            ));
+            return Err(Error::validation("draft belongs to another asset"));
         }
         let state = self.state(asset_id)?;
         let current = &state.current_entry.snapshot.recipe;
@@ -386,32 +385,27 @@ impl EditorService {
             plan => return self.apply_plan(recipe, plan, mask),
         };
         if mask.is_some() {
-            return Err(Error::new(
-                ErrorKind::Validation,
+            return Err(Error::validation(
                 "a composite action's steps address the global layer, so it takes no mask target",
             ));
         }
         if steps.len() > MAX_COMPOSE_STEPS {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "a composite action holds {} steps, more than {MAX_COMPOSE_STEPS}",
-                    steps.len()
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "a composite action holds {} steps, more than {MAX_COMPOSE_STEPS}",
+                steps.len()
+            )));
         }
         let registry = self.registry.clone();
         let mut resolved = recipe.clone();
         for step in steps {
             let action_id = step.action_id.as_str();
-            let (module, action) = registry.action(action_id).ok_or_else(|| {
-                Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
-            })?;
+            let (module, action) = registry
+                .action(action_id)
+                .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
             if !action.patch {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!("{action_id} is not a field-patch action"),
-                ));
+                return Err(Error::validation(format!(
+                    "{action_id} is not a field-patch action"
+                )));
             }
             let checked = check_parameters(action, &Value::Object(step.parameters))?;
             let input = module.parse(action_id, &checked)?;
@@ -450,10 +444,7 @@ impl EditorService {
             )?)),
             ActionPlan::Edits(edits) => {
                 if edits.is_empty() {
-                    return Err(Error::new(
-                        ErrorKind::Validation,
-                        "a plan of layer edits holds none",
-                    ));
+                    return Err(Error::validation("a plan of layer edits holds none"));
                 }
                 let mut stack = recipe.clone();
                 for edit in edits {
@@ -461,10 +452,7 @@ impl EditorService {
                 }
                 Ok(Some(stack))
             }
-            ActionPlan::Compose(_) => Err(Error::new(
-                ErrorKind::Validation,
-                "composite actions do not nest",
-            )),
+            ActionPlan::Compose(_) => Err(Error::validation("composite actions do not nest")),
         }
     }
 
@@ -506,10 +494,10 @@ fn available(module: &dyn ToolModule) -> Result<(), Error> {
     if descriptor.is_available() {
         return Ok(());
     }
-    Err(Error::new(
-        ErrorKind::Incompatible,
-        format!("unavailable module {}", descriptor.id),
-    ))
+    Err(Error::incompatible(format!(
+        "unavailable module {}",
+        descriptor.id
+    )))
 }
 
 /// The history label of a module edit: a masked edit always names its mask, where a `mask.*`
@@ -564,10 +552,7 @@ impl HostStage<'_> {
     /// `preparation-required`, because a sample is a number and is never approximated.
     fn linear(&self) -> Result<(&LinearImage, LinearSettings), Error> {
         let PreparedSource::Raw(raw) = self.source()? else {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                "JPEG source has no linear image",
-            ));
+            return Err(Error::incompatible("JPEG source has no linear image"));
         };
         let settings = match self.settings.get() {
             Some(settings) => *settings,
@@ -576,9 +561,10 @@ impl HostStage<'_> {
                 *self.settings.get_or_init(|| settings)
             }
         };
-        let linear = raw.linear.as_ref().ok_or_else(|| {
-            Error::new(ErrorKind::PreparationRequired, "RAW development required")
-        })?;
+        let linear = raw
+            .linear
+            .as_ref()
+            .ok_or_else(|| Error::preparation_required("RAW development required"))?;
         Ok((linear, settings))
     }
 
@@ -677,8 +663,7 @@ impl StageQuestions for HostStage<'_> {
     fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
         match self.source()? {
             PreparedSource::Raw(raw) => crate::source::neutral_at(raw, x, y),
-            PreparedSource::Jpeg(_) => Err(Error::new(
-                ErrorKind::Validation,
+            PreparedSource::Jpeg(_) => Err(Error::validation(
                 "RAW neutral picker requires a RAW original",
             )),
         }
@@ -705,12 +690,7 @@ pub(super) fn edited(
         registry
             .effect(effect_id)
             .map(|(_, effect)| effect.format)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Incompatible,
-                    format!("unavailable effect {effect_id}"),
-                )
-            })
+            .ok_or_else(|| Error::incompatible(format!("unavailable effect {effect_id}")))
     };
     match edit {
         LayerEdit::Commit(new) => {
@@ -736,10 +716,7 @@ pub(super) fn edited(
                 .iter()
                 .find(|layer| layer.id == update.id)
                 .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Validation,
-                        "plan updates a layer that is not in the stack",
-                    )
+                    Error::validation("plan updates a layer that is not in the stack")
                 })?;
             let layer = Layer {
                 effect_format: format(&existing.effect_id)?,
@@ -756,13 +733,10 @@ pub(super) fn edited(
 /// plans against the stage that position receives. A position past the end is a validation error.
 pub(crate) fn prefix(layers: &[Layer], index: usize) -> Result<&[Layer], Error> {
     layers.get(..index).ok_or_else(|| {
-        Error::new(
-            ErrorKind::Validation,
-            format!(
-                "layer index {index} is outside the {} layers of the stack",
-                layers.len()
-            ),
-        )
+        Error::validation(format!(
+            "layer index {index} is outside the {} layers of the stack",
+            layers.len()
+        ))
     })
 }
 

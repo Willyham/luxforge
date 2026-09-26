@@ -7,7 +7,9 @@ use super::{
     descriptor::{AdapterCost, AdapterDescriptor, CapabilityDescriptor, ResourceDescriptor},
     grants::{GrantKind, GrantScope},
 };
-use crate::{Error, ErrorKind, ModuleDescriptor};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{Error, ModuleDescriptor};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::Path;
@@ -120,7 +122,7 @@ pub fn consent_required(
             kind.name()
         )
     };
-    Error::new(ErrorKind::ConsentRequired, detail).with_data(json!({
+    Error::consent_required(detail).with_data(json!({
         "consent": {
             "module_id": module.id,
             "capability": capability.id,

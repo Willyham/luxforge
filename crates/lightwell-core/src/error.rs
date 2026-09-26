@@ -79,6 +79,72 @@ impl Error {
             preparation: None,
         }
     }
+    /// One constructor per [`ErrorKind`], named after the kind, for every call site that knows its
+    /// kind at compile time. `Error::new` stays for the few call sites where the kind is itself a
+    /// variable.
+    pub fn startup(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Startup, detail)
+    }
+    pub fn unsupported_input(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::UnsupportedInput, detail)
+    }
+    pub fn unsupported_color(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::UnsupportedColor, detail)
+    }
+    pub fn unsupported_profile(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::UnsupportedProfile, detail)
+    }
+    pub fn file_access(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::FileAccess, detail)
+    }
+    pub fn decode(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Decode, detail)
+    }
+    pub fn resource_limit(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::ResourceLimit, detail)
+    }
+    pub fn render(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Render, detail)
+    }
+    pub fn cancelled(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Cancelled, detail)
+    }
+    pub fn diagnostics(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Diagnostics, detail)
+    }
+    pub fn validation(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Validation, detail)
+    }
+    pub fn conflict(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Conflict, detail)
+    }
+    pub fn catalog(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Catalog, detail)
+    }
+    pub fn incompatible(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Incompatible, detail)
+    }
+    pub fn source_unavailable(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::SourceUnavailable, detail)
+    }
+    pub fn preparation_required(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::PreparationRequired, detail)
+    }
+    pub fn consent_required(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::ConsentRequired, detail)
+    }
+    pub fn forbidden(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Forbidden, detail)
+    }
+    pub fn not_ready(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::NotReady, detail)
+    }
+    pub fn protocol(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Protocol, detail)
+    }
+    pub fn internal(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Internal, detail)
+    }
     /// The same error carrying structured data for the client.
     pub fn with_data(mut self, data: serde_json::Value) -> Self {
         self.data = Some(Box::new(data));

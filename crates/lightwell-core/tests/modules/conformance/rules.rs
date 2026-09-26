@@ -40,10 +40,11 @@ impl Rules<'_> {
     /// Plan one request the way the host does: the generic parameter check, the module's parse,
     /// then its plan against `layers` for the global target.
     fn plan(&self, action: &str, parameters: Value, layers: &[Layer]) -> Result<ActionPlan, Error> {
-        let declared =
-            self.module.descriptor.action(action).ok_or_else(|| {
-                Error::new(ErrorKind::Validation, format!("{action} is undeclared"))
-            })?;
+        let declared = self
+            .module
+            .descriptor
+            .action(action)
+            .ok_or_else(|| Error::validation(format!("{action} is undeclared")))?;
         let checked = check_parameters(declared, &parameters)?;
         let input = self.provider.parse(action, &checked)?;
         let questions = Fixed(self.stage);

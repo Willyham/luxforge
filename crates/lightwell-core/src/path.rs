@@ -31,7 +31,7 @@
 //! *draw* the recipe — rendering, sampling, and the export that will compile the same way — refuses
 //! it by name. It is never resolved to an empty stroke, because an empty stroke is a picture that
 //! silently lost part of an edit.
-use crate::{Error, ErrorKind};
+use crate::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -133,8 +133,7 @@ impl StrokeId {
         {
             Ok(Self(value))
         } else {
-            Err(Error::new(
-                ErrorKind::Validation,
+            Err(Error::validation(
                 "invalid StrokeId: expected 32 lowercase hexadecimal characters",
             ))
         }
@@ -240,12 +239,9 @@ impl ColourLimit {
     /// rounded to the tenth its declared control moves in, and refused by name outside its range.
     pub fn sampled(seed: [u8; 3], refine: f64) -> Result<Self, Error> {
         if !refine.is_finite() || !(REFINE_MIN..=REFINE_MAX).contains(&refine) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "stroke colour refine must be a number within {REFINE_MIN:.0}..={REFINE_MAX:.0}"
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "stroke colour refine must be a number within {REFINE_MIN:.0}..={REFINE_MAX:.0}"
+            )));
         }
         Ok(Self {
             seed,
@@ -309,14 +305,11 @@ impl Stroke {
     ) -> Result<Self, Error> {
         let grid = decimate_to_grid(points)?;
         if grid.len() > POINTS_PER_STROKE {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "stroke has {} positions after decimation; the limit is {POINTS_PER_STROKE} \
+            return Err(Error::resource_limit(format!(
+                "stroke has {} positions after decimation; the limit is {POINTS_PER_STROKE} \
                      points per stroke",
-                    grid.len()
-                ),
-            ));
+                grid.len()
+            )));
         }
         for (field, value, min, max) in [
             ("size", size, SIZE_MIN, SIZE_MAX),
@@ -324,10 +317,9 @@ impl Stroke {
             ("flow", flow, 0.0, 100.0),
         ] {
             if !value.is_finite() || !(min..=max).contains(&value) {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!("stroke {field} must be a number within {min}..={max}"),
-                ));
+                return Err(Error::validation(format!(
+                    "stroke {field} must be a number within {min}..={max}"
+                )));
             }
         }
         Ok(Self {
@@ -406,18 +398,14 @@ impl Stroke {
     /// disagreeing with itself and not a request that could be corrected.
     pub fn from_stored(id: &StrokeId, stored: &[u8]) -> Result<Self, Error> {
         if &StrokeId::of(stored) != id {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("stored stroke {id} does not match its content address"),
-            ));
+            return Err(Error::incompatible(format!(
+                "stored stroke {id} does not match its content address"
+            )));
         }
         #[cfg(test)]
         crate::editor::read_counts::decoded();
         let stroke: Self = serde_json::from_slice(stored).map_err(|error| {
-            Error::new(
-                ErrorKind::Incompatible,
-                format!("stored stroke {id} is malformed: {error}"),
-            )
+            Error::incompatible(format!("stored stroke {id} is malformed: {error}"))
         })?;
         stroke.check_stored(id)?;
         Ok(stroke)
@@ -427,10 +415,9 @@ impl Stroke {
     /// correctly but hold an illegal number are still refused rather than evaluated.
     fn check_stored(&self, id: &StrokeId) -> Result<(), Error> {
         let bad = |what: &str| {
-            Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("stored stroke {id} has an invalid {what}"),
-            ))
+            Err(Error::incompatible(format!(
+                "stored stroke {id} has an invalid {what}"
+            )))
         };
         if self.points.is_empty() || self.points.len() > POINTS_PER_STROKE {
             return bad("point count");
@@ -495,22 +482,16 @@ pub fn decimate(points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, Error> {
 
 fn decimate_to_grid(points: &[[f64; 2]]) -> Result<Vec<[i32; 2]>, Error> {
     if points.is_empty() {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            "a path must hold at least one position",
-        ));
+        return Err(Error::validation("a path must hold at least one position"));
     }
     let mut snapped: Vec<[i32; 2]> = Vec::with_capacity(points.len());
     for (index, [x, y]) in points.iter().enumerate() {
         for (axis, value) in [("x", *x), ("y", *y)] {
             if !value.is_finite() || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&value) {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!(
-                        "path position {index} {axis} must be a number within \
+                return Err(Error::validation(format!(
+                    "path position {index} {axis} must be a number within \
                          {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
-                    ),
-                ));
+                )));
             }
         }
         let point = [quantize(*x), quantize(*y)];
@@ -716,18 +697,15 @@ impl StrokeTable {
             .and_then(|held| held.faults.get(id).copied())
             .unwrap_or(StrokeFault::Missing);
         let origin = self.origin();
-        Err(Error::new(
-            ErrorKind::Incompatible,
-            format!(
-                "stroke {id} of {} {}",
-                if origin.is_empty() {
-                    "this recipe"
-                } else {
-                    origin
-                },
-                fault.detail()
-            ),
-        ))
+        Err(Error::incompatible(format!(
+            "stroke {id} of {} {}",
+            if origin.is_empty() {
+                "this recipe"
+            } else {
+                origin
+            },
+            fault.detail()
+        )))
     }
 }
 
@@ -742,12 +720,9 @@ pub fn references(payload: &Value, what: &str) -> Result<Vec<StrokeId>, Error> {
         return Ok(Vec::new());
     };
     let malformed = || {
-        Error::new(
-            ErrorKind::Validation,
-            format!(
-                "{what} has a malformed {STROKES_FIELD} field: expected a list of stroke addresses"
-            ),
-        )
+        Error::validation(format!(
+            "{what} has a malformed {STROKES_FIELD} field: expected a list of stroke addresses"
+        ))
     };
     let listed = field.as_array().ok_or_else(malformed)?;
     listed

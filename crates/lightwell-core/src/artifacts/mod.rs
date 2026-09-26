@@ -15,7 +15,7 @@ pub(crate) use store::{
 #[cfg(test)]
 pub(crate) mod testing;
 
-use crate::{Error, ErrorKind, editor::SourceSignature, modules::valid_identity};
+use crate::{Error, editor::SourceSignature, modules::valid_identity};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -58,7 +58,7 @@ impl ArtifactId {
         if valid {
             Ok(Self(value))
         } else {
-            Err(Error::new(ErrorKind::Validation, "invalid ArtifactId"))
+            Err(Error::validation("invalid ArtifactId"))
         }
     }
 
@@ -115,28 +115,21 @@ impl ArtifactMeta {
                 byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'.'
             });
         if !kind_valid {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "artifact kind must be 1..={MAX_META_TEXT} lowercase letters, digits, - or ."
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "artifact kind must be 1..={MAX_META_TEXT} lowercase letters, digits, - or ."
+            )));
         }
         if self.width == Some(0) || self.height == Some(0) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "artifact dimensions must be positive",
-            ));
+            return Err(Error::validation("artifact dimensions must be positive"));
         }
         if let Some(colour) = &self.colour
             && (colour.is_empty()
                 || colour.len() > MAX_META_TEXT
                 || !colour.bytes().all(|byte| byte.is_ascii_graphic()))
         {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("artifact colour must be 1..={MAX_META_TEXT} printable characters"),
-            ));
+            return Err(Error::validation(format!(
+                "artifact colour must be 1..={MAX_META_TEXT} printable characters"
+            )));
         }
         Ok(())
     }
@@ -161,25 +154,22 @@ impl ArtifactRecord {
     /// its metadata within bounds.
     pub(crate) fn validate(&self) -> Result<(), Error> {
         if self.id.sha256() != self.sha256 {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("artifact {} does not match its hash", self.id),
-            ));
+            return Err(Error::validation(format!(
+                "artifact {} does not match its hash",
+                self.id
+            )));
         }
         if self.bytes > MAX_ARTIFACT_BYTES {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "artifact {} holds {} bytes, more than {MAX_ARTIFACT_BYTES}",
-                    self.id, self.bytes
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "artifact {} holds {} bytes, more than {MAX_ARTIFACT_BYTES}",
+                self.id, self.bytes
+            )));
         }
         if !valid_identity(&self.module_id) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("invalid module identity {}", self.module_id),
-            ));
+            return Err(Error::validation(format!(
+                "invalid module identity {}",
+                self.module_id
+            )));
         }
         self.meta.validate()
     }

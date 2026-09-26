@@ -21,7 +21,7 @@
 //! budget, and the tile's input is pulled serially, as it was on the owner: pulled on the shared
 //! pool it would wait behind any render that holds the pool.
 use super::{ApiResponse, ClientId};
-use crate::{Error, ErrorKind, api::transport::MAX_CLIENTS};
+use crate::{Error, api::transport::MAX_CLIENTS};
 use serde_json::Value;
 use std::{
     collections::VecDeque,
@@ -116,13 +116,11 @@ impl PointWorker {
         let mut state = self.shared.lock();
         if state.queue.len() >= self.capacity {
             drop(state);
-            call.reply.answer(Err(Error::new(
-                ErrorKind::ResourceLimit,
+            call.reply.answer(Err(Error::resource_limit(
                 format!(
                     "{} point samples through a spatial layer are already waiting; retry after one is answered",
                     self.capacity
-                ),
-            )));
+                ))));
             return;
         }
         state.queue.push_back(call);
@@ -138,8 +136,7 @@ impl PointWorker {
                 // Without its thread nothing would ever answer these calls: refuse them now.
                 let waiting = std::mem::take(&mut self.shared.lock().queue);
                 for call in waiting {
-                    call.reply.answer(Err(Error::new(
-                        ErrorKind::Internal,
+                    call.reply.answer(Err(Error::internal(
                         "the point worker could not be started",
                     )));
                 }
@@ -227,12 +224,8 @@ fn run(shared: &Shared) {
             }
         }
         // A sample that panics answers `internal`, and the worker lives on for the next one.
-        let result = catch_unwind(AssertUnwindSafe(evaluate)).unwrap_or_else(|_| {
-            Err(Error::new(
-                ErrorKind::Internal,
-                "the point sample's evaluation panicked",
-            ))
-        });
+        let result = catch_unwind(AssertUnwindSafe(evaluate))
+            .unwrap_or_else(|_| Err(Error::internal("the point sample's evaluation panicked")));
         reply.answer(result);
     }
 }

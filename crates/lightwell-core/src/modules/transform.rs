@@ -9,7 +9,9 @@ use super::{
     EffectStage, ExactGeometry, LayerEdit, LayerUpdate, ModuleDescriptor, NewLayer,
     ParameterDescriptor, Processing, Stage, StageContext, ToolModule, crop::stored_payload,
 };
-use crate::{CROP_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer, Orientation, Transform};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{CROP_EFFECT, EFFECT_FORMAT, Error, Layer, Orientation, Transform};
 use serde_json::{Map, Value};
 
 /// The transform module's one geometry effect: the composed exact orientation of the stage ahead of
@@ -24,10 +26,6 @@ impl Layer {
     pub fn orientation(orientation: Orientation) -> Self {
         Self::new(ORIENTATION_EFFECT, orientation_value(orientation))
     }
-}
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
 }
 
 impl Transform {
@@ -240,31 +238,29 @@ parameters: vec![
 }
 
 fn transform_value(parameters: &Map<String, Value>) -> Result<Transform, Error> {
-    let value = parameters
-        .get("transform")
-        .ok_or_else(|| validation("missing required parameter transform for action transform"))?;
+    let value = parameters.get("transform").ok_or_else(|| {
+        Error::validation("missing required parameter transform for action transform")
+    })?;
     serde_json::from_value(value.clone())
-        .map_err(|error| validation(format!("invalid transform: {error}")))
+        .map_err(|error| Error::validation(format!("invalid transform: {error}")))
 }
 
 fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<Orientation, Error> {
     if effect_id != ORIENTATION_EFFECT {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
-            format!("unavailable effect {effect_id}"),
-        ));
+        return Err(Error::incompatible(format!(
+            "unavailable effect {effect_id}"
+        )));
     }
     if format != EFFECT_FORMAT {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
-            format!("unsupported effect format {format}"),
-        ));
+        return Err(Error::incompatible(format!(
+            "unsupported effect format {format}"
+        )));
     }
     let orientation: Orientation = serde_json::from_value(payload.clone())
-        .map_err(|error| validation(format!("invalid orientation payload: {error}")))?;
+        .map_err(|error| Error::validation(format!("invalid orientation payload: {error}")))?;
     // Only the four quarter turns exist; a larger count is a payload this module cannot mean.
     if orientation.turns > 3 {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "invalid orientation payload: turns {} is outside 0..3",
             orientation.turns
         )));
@@ -386,7 +382,7 @@ impl ToolModule for TransformModule {
         parameters: &Map<String, Value>,
     ) -> Result<ActionInput, Error> {
         if action_id != TRANSFORM_ACTION {
-            return Err(validation(format!("unknown action {action_id}")));
+            return Err(Error::validation(format!("unknown action {action_id}")));
         }
         let transform = transform_value(parameters)?;
         let mut stored = Map::new();

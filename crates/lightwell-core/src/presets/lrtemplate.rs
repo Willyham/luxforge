@@ -6,9 +6,10 @@
 //! `false`, `ZSTR "…"` localized strings and `--` comments. Anything else is `unsupported-input`
 //! naming the byte offset, and nothing is evaluated.
 use super::mapping::is_curve;
-use super::unsupported;
 use super::value::{RawSetting, RawValue};
-use crate::{Error, ErrorKind};
+use crate::Error;
+#[cfg(test)]
+use crate::ErrorKind;
 use std::collections::HashSet;
 
 /// The deepest table nesting accepted, counting the outer `s = { … }` table as the first level.
@@ -57,7 +58,7 @@ impl<'a> Parser<'a> {
     }
 
     fn error_at(&self, at: usize, detail: &str) -> Error {
-        unsupported(format!("malformed .lrtemplate: {detail} at byte {at}"))
+        Error::unsupported_input(format!("malformed .lrtemplate: {detail} at byte {at}"))
     }
 
     fn error(&self, detail: &str) -> Error {
@@ -65,10 +66,7 @@ impl<'a> Parser<'a> {
     }
 
     fn limit(&self, detail: String) -> Error {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            format!("{detail} at byte {}", self.at),
-        )
+        Error::resource_limit(format!("{detail} at byte {}", self.at))
     }
 
     /// The level of a long bracket `[`, `=`×level, `[` opening at the cursor, without moving.
@@ -432,22 +430,26 @@ pub(super) fn read(text: &str, start: usize) -> Result<Template, Error> {
     match get(&top, "type") {
         Some(Lua::Str(kind)) if kind == "Develop" => {}
         Some(Lua::Str(kind)) => {
-            return Err(unsupported(format!(
+            return Err(Error::unsupported_input(format!(
                 "a {kind} template is not a Develop preset"
             )));
         }
-        _ => return Err(unsupported("the template has no Develop type")),
+        _ => return Err(Error::unsupported_input("the template has no Develop type")),
     }
     let Some(Lua::Table(mut value)) = take(&mut top, "value") else {
-        return Err(unsupported("the template has no value table"));
+        return Err(Error::unsupported_input("the template has no value table"));
     };
     let Some(Lua::Table(entries)) = take(&mut value, "settings") else {
-        return Err(unsupported("the template has no value.settings table"));
+        return Err(Error::unsupported_input(
+            "the template has no value.settings table",
+        ));
     };
     let mut settings = Vec::with_capacity(entries.len());
     for (key, value) in entries {
         let Some(name) = key else {
-            return Err(unsupported("value.settings holds an entry without a name"));
+            return Err(Error::unsupported_input(
+                "value.settings holds an entry without a name",
+            ));
         };
         let value = raw(&name, value);
         settings.push(RawSetting { name, value });

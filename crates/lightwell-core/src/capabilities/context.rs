@@ -18,8 +18,10 @@ use super::{
     secrets::{SecretKey, SecretStore, SecretValue},
     transport::{Endpoint, Method, RedirectPolicy, SendOptions, TransportRequest},
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind,
+    Error,
     artifacts::{
         ArtifactId, ArtifactMeta, ArtifactRecord, ArtifactWriter, MAX_ARTIFACT_BYTES,
         PreparedArtifact,
@@ -216,20 +218,14 @@ impl ModuleContext {
         }) {
             SecretKey::new(&self.module_id, Some(&profile.id), setting_id)
         } else {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "module {} declares no secret setting {setting_id} for this job",
-                    self.module_id
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "module {} declares no secret setting {setting_id} for this job",
+                self.module_id
+            )));
         };
-        self.secrets.read(&key)?.ok_or_else(|| {
-            Error::new(
-                ErrorKind::NotReady,
-                format!("secret setting {setting_id} is not set"),
-            )
-        })
+        self.secrets
+            .read(&key)?
+            .ok_or_else(|| Error::not_ready(format!("secret setting {setting_id} is not set")))
     }
 
     /// Where an installed resource the job was given lives. Its bytes were checked against the
@@ -239,24 +235,18 @@ impl ModuleContext {
             .get(resource_id)
             .map(PathBuf::as_path)
             .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::NotReady,
-                    format!(
-                        "resource {resource_id} of module {} is not available to this job",
-                        self.module_id
-                    ),
-                )
+                Error::not_ready(format!(
+                    "resource {resource_id} of module {} is not available to this job",
+                    self.module_id
+                ))
             })
     }
 
     fn not_granted(&self, capability_id: &str) -> Error {
-        Error::new(
-            ErrorKind::Validation,
-            format!(
-                "module {} was not granted capability {capability_id} for this job",
-                self.module_id
-            ),
-        )
+        Error::validation(format!(
+            "module {} was not granted capability {capability_id} for this job",
+            self.module_id
+        ))
     }
 
     /// Send the data a granted `remote-image-request` capability discloses to the profile's
@@ -281,10 +271,7 @@ impl ModuleContext {
         )];
         if adapter.auth == AdapterAuth::Bearer {
             let field = granted.credential.as_deref().ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Internal,
-                    format!("adapter {} has no credential field", adapter.id),
-                )
+                Error::internal(format!("adapter {} has no credential field", adapter.id))
             })?;
             let secret = self.secret(field)?;
             headers.push((
@@ -324,10 +311,10 @@ impl ModuleContext {
         }
         let sent = sent?;
         if !(200..300).contains(&sent.status) {
-            return Err(Error::new(
-                ErrorKind::FileAccess,
-                format!("{} answered {}", adapter.id, sent.status),
-            ));
+            return Err(Error::file_access(format!(
+                "{} answered {}",
+                adapter.id, sent.status
+            )));
         }
         Ok(response)
     }
@@ -348,13 +335,10 @@ impl ModuleContext {
     pub fn publish_artifact(&self, bytes: &[u8], meta: ArtifactMeta) -> Result<ArtifactId, Error> {
         self.checkpoint()?;
         let writer = self.writer.as_ref().ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "this job of module {} publishes no artifacts",
-                    self.module_id
-                ),
-            )
+            Error::validation(format!(
+                "this job of module {} publishes no artifacts",
+                self.module_id
+            ))
         })?;
         {
             let published = lock(&self.outcome.published);
@@ -362,12 +346,9 @@ impl ModuleContext {
             if published.len() >= MAX_TASK_ARTIFACTS
                 || held.saturating_add(bytes.len() as u64) > MAX_TASK_ARTIFACT_BYTES
             {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "a task publishes at most {MAX_TASK_ARTIFACTS} artifacts of {MAX_TASK_ARTIFACT_BYTES} bytes together"
-                    ),
-                ));
+                return Err(Error::resource_limit(format!(
+                    "a task publishes at most {MAX_TASK_ARTIFACTS} artifacts of {MAX_TASK_ARTIFACT_BYTES} bytes together"
+                )));
             }
         }
         let (record, prepared) = writer.write(bytes, meta, &self.module_id)?;

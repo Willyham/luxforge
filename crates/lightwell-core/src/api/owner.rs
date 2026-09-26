@@ -6,9 +6,11 @@ use super::{
     methods::{self, Planned, Route},
     params::{Envelope, NoParams, host_params},
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
-    ErrorKind, HostConfig, JobId, JobStatus, MaskOverlayRequest, ModuleRegistry, Preparation,
+    HostConfig, JobId, JobStatus, MaskOverlayRequest, ModuleRegistry, Preparation,
     PreparationNeeds, PreviewJob, ProxyBounds,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
@@ -396,16 +398,10 @@ impl SourceJobs {
         match self.sender.try_send(task) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    "source preparation queue is full",
-                ));
+                return Err(Error::resource_limit("source preparation queue is full"));
             }
             Err(TrySendError::Disconnected(_)) => {
-                return Err(Error::new(
-                    ErrorKind::Protocol,
-                    "source preparation worker stopped",
-                ));
+                return Err(Error::protocol("source preparation worker stopped"));
             }
         }
         if shared {
@@ -460,8 +456,7 @@ impl SourceJobs {
                 .iter()
                 .any(|existing| Weak::ptr_eq(existing, &sensor))
         {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
+            return Err(Error::resource_limit(
                 "RAW mosaic queue is full; retry after the active development",
             ));
         }
@@ -513,9 +508,7 @@ impl SourceJobs {
             .jobs
             .get(id)
             .filter(|job| job.clients.contains(&client))
-            .ok_or_else(|| {
-                Error::new(ErrorKind::Validation, "unknown source job for this client")
-            })?;
+            .ok_or_else(|| Error::validation("unknown source job for this client"))?;
         Ok(match &job.state {
             SourceState::Queued => json!({"job_id":id,"status":JobStatus::Queued}),
             SourceState::Preparing => json!({"job_id":id,"status":JobStatus::Running}),
@@ -534,14 +527,12 @@ impl SourceJobs {
     /// Leave the job: the calling client will never read it again, whatever becomes of the work.
     /// The last client leaving stops the underlying task, if it has not already finished.
     fn cancel(&mut self, client: ClientId, id: &JobId) -> Result<Value, Error> {
-        let job = self.jobs.get_mut(id).ok_or_else(|| {
-            Error::new(ErrorKind::Validation, "unknown source job for this client")
-        })?;
+        let job = self
+            .jobs
+            .get_mut(id)
+            .ok_or_else(|| Error::validation("unknown source job for this client"))?;
         if !job.clients.remove(&client) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "unknown source job for this client",
-            ));
+            return Err(Error::validation("unknown source job for this client"));
         }
         if job.clients.is_empty() {
             job.cancelled.store(true, Ordering::Relaxed);
@@ -708,7 +699,7 @@ fn source_worker(
         if task.cancelled.load(Ordering::Relaxed) {
             let _ = owner.send(OwnerMessage::SourceComplete(
                 task.id,
-                Box::new(Err(Error::new(ErrorKind::Conflict, "source job cancelled"))),
+                Box::new(Err(Error::conflict("source job cancelled"))),
             ));
             continue;
         }
@@ -724,7 +715,7 @@ fn source_worker(
         if task.cancelled.load(Ordering::Relaxed) {
             let _ = owner.send(OwnerMessage::SourceComplete(
                 task.id,
-                Box::new(Err(Error::new(ErrorKind::Conflict, "source job cancelled"))),
+                Box::new(Err(Error::conflict("source job cancelled"))),
             ));
             continue;
         }
@@ -746,10 +737,7 @@ fn source_worker(
             )
             .and_then(|prepared| {
                 if Some(&prepared.signature) != task.key.signature.as_ref() {
-                    return Err(Error::new(
-                        ErrorKind::Conflict,
-                        "source changed after job was queued",
-                    ));
+                    return Err(Error::conflict("source changed after job was queued"));
                 }
                 if task
                     .key
@@ -757,8 +745,7 @@ fn source_worker(
                     .as_deref()
                     .is_some_and(|expected| expected != prepared.fingerprint)
                 {
-                    return Err(Error::new(
-                        ErrorKind::SourceUnavailable,
+                    return Err(Error::source_unavailable(
                         "original source fingerprint changed",
                     ));
                 }
@@ -1071,13 +1058,10 @@ impl OwnerHandle {
                 job: job.cloned(),
                 reply,
             })
-            .map_err(|_| Error::new(ErrorKind::Protocol, "catalog owner is unavailable"))?;
-        answer.recv().map_err(|_| {
-            Error::new(
-                ErrorKind::Protocol,
-                "catalog owner stopped before the source job ended",
-            )
-        })
+            .map_err(|_| Error::protocol("catalog owner is unavailable"))?;
+        answer
+            .recv()
+            .map_err(|_| Error::protocol("catalog owner stopped before the source job ended"))
     }
 
     /// Forget a client's session. Its committed edits and jobs are unaffected.
@@ -1093,13 +1077,10 @@ impl OwnerHandle {
                 request,
                 response: sender,
             }))
-            .map_err(|_| Error::new(ErrorKind::Protocol, "catalog owner is unavailable"))?;
-        receiver.recv().map_err(|_| {
-            Error::new(
-                ErrorKind::Protocol,
-                "catalog owner stopped before responding",
-            )
-        })
+            .map_err(|_| Error::protocol("catalog owner is unavailable"))?;
+        receiver
+            .recv()
+            .map_err(|_| Error::protocol("catalog owner stopped before responding"))
     }
 
     pub fn stop(&self) {
@@ -1112,10 +1093,10 @@ impl OwnerHandle {
         let (response, receiver) = sync_channel(1);
         self.sender
             .send(OwnerMessage::Preview { request, response })
-            .map_err(|_| Error::new(ErrorKind::Protocol, "catalog owner is unavailable"))?;
+            .map_err(|_| Error::protocol("catalog owner is unavailable"))?;
         receiver
             .recv()
-            .map_err(|_| Error::new(ErrorKind::Protocol, "catalog owner stopped before preview"))?
+            .map_err(|_| Error::protocol("catalog owner stopped before preview"))?
     }
 
     /// Hand the owner a report the caller's own preview worker produced for this identity. The next
@@ -1340,12 +1321,8 @@ impl Owner {
     }
 
     fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Planned, Error> {
-        let method = methods::find(&self.service, &request.method).ok_or_else(|| {
-            Error::new(
-                ErrorKind::Protocol,
-                format!("unknown method {}", request.method),
-            )
-        })?;
+        let method = methods::find(&self.service, &request.method)
+            .ok_or_else(|| Error::protocol(format!("unknown method {}", request.method)))?;
         // A retried mutation is answered from the request table, and its handler does not run
         // again, unless the catalog answers it: the service records an asset change's request
         // with the change. A settings write has a revision but no request log, so it is here too.
@@ -1460,8 +1437,7 @@ impl Owner {
             ),
         };
         if request.analyse && request.layer_count.is_some() {
-            return Err(Error::new(
-                ErrorKind::Validation,
+            return Err(Error::validation(
                 "a truncated preview renders a layer prefix its identity does not describe, so it cannot be analysed",
             ));
         }
@@ -1547,10 +1523,10 @@ impl Owner {
                 }
                 SourceResult::Collected(collected) => serde_json::to_value(collected)
                     .map(Completed::Value)
-                    .map_err(|error| Error::new(ErrorKind::Internal, error.to_string())),
+                    .map_err(|error| Error::internal(error.to_string())),
             })
         } else {
-            Err(Error::new(ErrorKind::Conflict, "source job cancelled"))
+            Err(Error::conflict("source job cancelled"))
         };
         // An import is announced when it commits an asset, under the request that asked for it.
         if matches!(outcome, Ok(Completed::Asset(_, true)))
@@ -1617,34 +1593,24 @@ pub(super) fn job_adopt(
     params: JobParams,
 ) -> Result<Value, Error> {
     if owner.latest_import.get(&call.client) != Some(&params.job_id) {
-        return Err(Error::new(
-            ErrorKind::Conflict,
-            "a newer import superseded this job",
-        ));
+        return Err(Error::conflict("a newer import superseded this job"));
     }
     let state = match owner.jobs.jobs.get(&params.job_id) {
         Some(job) if job.clients.contains(&call.client) => match &job.state {
             SourceState::Ready(state) => (**state).clone(),
             SourceState::Failed(error) => return Err(error.clone()),
             SourceState::Finished(_) => {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    "this source job is not an import",
-                ));
+                return Err(Error::validation("this source job is not an import"));
             }
             SourceState::Queued | SourceState::Preparing => {
-                return Err(Error::new(
-                    ErrorKind::PreparationRequired,
-                    "the import is still being prepared",
-                )
-                .with_preparation(Preparation::Queued(params.job_id.clone())));
+                return Err(
+                    Error::preparation_required("the import is still being prepared")
+                        .with_preparation(Preparation::Queued(params.job_id.clone())),
+                );
             }
         },
         _ => {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "unknown source job for this client",
-            ));
+            return Err(Error::validation("unknown source job for this client"));
         }
     };
     let session = owner.sessions.entry(call.client).or_default();
@@ -2251,10 +2217,7 @@ mod tests {
         assert_eq!(refusal.kind, ErrorKind::ResourceLimit);
         assert!(refusal.detail.starts_with("RAW mosaic queue is full"));
         drop(receiver.try_recv().unwrap());
-        jobs.complete(
-            &first,
-            SourceState::Failed(Error::new(ErrorKind::Conflict, "finished")),
-        );
+        jobs.complete(&first, SourceState::Failed(Error::conflict("finished")));
         assert!(jobs.enqueue_development(ClientId(3), b, Vec::new()).is_ok());
     }
 

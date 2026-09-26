@@ -1,4 +1,6 @@
-use crate::{ArtifactId, Error, ErrorKind, artifacts::MAX_LAYER_ARTIFACTS, modules::valid_name};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{ArtifactId, Error, artifacts::MAX_LAYER_ARTIFACTS, modules::valid_name};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -37,10 +39,7 @@ macro_rules! identifier {
                 if valid_id(&value, $prefix) {
                     Ok(Self(value))
                 } else {
-                    Err(Error::new(
-                        ErrorKind::Validation,
-                        concat!("invalid ", stringify!($name)),
-                    ))
+                    Err(Error::validation(concat!("invalid ", stringify!($name))))
                 }
             }
             pub fn as_str(&self) -> &str {
@@ -173,27 +172,21 @@ impl Layer {
     /// artifacts at all belong to the providing module, reached through [`crate::ModuleRegistry`].
     pub fn validate(&self) -> Result<(), Error> {
         if self.effect_id.is_empty() {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "layer has no effect identity",
-            ));
+            return Err(Error::validation("layer has no effect identity"));
         }
         if self.artifacts.len() > MAX_LAYER_ARTIFACTS {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "layer {} references {} artifacts, more than {MAX_LAYER_ARTIFACTS}",
-                    self.id,
-                    self.artifacts.len()
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "layer {} references {} artifacts, more than {MAX_LAYER_ARTIFACTS}",
+                self.id,
+                self.artifacts.len()
+            )));
         }
         let mut seen = HashSet::with_capacity(self.artifacts.len());
         if let Some(duplicate) = self.artifacts.iter().find(|id| !seen.insert(*id)) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("layer {} references artifact {duplicate} twice", self.id),
-            ));
+            return Err(Error::validation(format!(
+                "layer {} references artifact {duplicate} twice",
+                self.id
+            )));
         }
         Ok(())
     }
@@ -319,13 +312,10 @@ impl Component {
     pub fn validate(&self) -> Result<(), Error> {
         valid_display_name("component", &self.name)?;
         if !valid_name(&self.kind) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "component {} has an invalid kind {:?}",
-                    self.name, self.kind
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "component {} has an invalid kind {:?}",
+                self.name, self.kind
+            )));
         }
         Ok(())
     }
@@ -403,20 +393,17 @@ impl Mask {
     pub fn validate(&self) -> Result<(), Error> {
         valid_display_name("mask", &self.name)?;
         if !self.amount.is_finite() || !(0.0..=Self::FULL_AMOUNT).contains(&self.amount) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("mask {} amount must be a number within 0..=100", self.name),
-            ));
+            return Err(Error::validation(format!(
+                "mask {} amount must be a number within 0..=100",
+                self.name
+            )));
         }
         if self.components.len() > COMPONENTS_PER_MASK {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "mask {} has {} components; the limit is {COMPONENTS_PER_MASK} components per mask",
-                    self.name,
-                    self.components.len()
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "mask {} has {} components; the limit is {COMPONENTS_PER_MASK} components per mask",
+                self.name,
+                self.components.len()
+            )));
         }
         // Nothing precedes the first component, so it can only add to an empty coverage. A stored
         // mask that begins by subtracting or intersecting is refused as it stands, with the mode
@@ -429,19 +416,16 @@ impl Mask {
         for component in &self.components {
             component.validate()?;
             if !ids.insert(&component.id) {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!("duplicate component identity in mask {}", self.name),
-                ));
+                return Err(Error::validation(format!(
+                    "duplicate component identity in mask {}",
+                    self.name
+                )));
             }
             if !names.insert(&component.name) {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!(
-                        "duplicate component name {} in mask {}",
-                        component.name, self.name
-                    ),
-                ));
+                return Err(Error::validation(format!(
+                    "duplicate component name {} in mask {}",
+                    component.name, self.name
+                )));
             }
         }
         Ok(())
@@ -457,10 +441,9 @@ fn valid_display_name(what: &str, name: &str) -> Result<(), Error> {
         || name.chars().count() > MAX_MASK_NAME
         || name.chars().any(char::is_control)
     {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            format!("{what} name must contain 1..={MAX_MASK_NAME} printable characters"),
-        ));
+        return Err(Error::validation(format!(
+            "{what} name must contain 1..={MAX_MASK_NAME} printable characters"
+        )));
     }
     Ok(())
 }
@@ -532,18 +515,15 @@ impl Recipe {
     /// service.
     pub fn validate(&self) -> Result<(), Error> {
         if self.format != RECIPE_FORMAT {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unsupported recipe format {}", self.format),
-            ));
+            return Err(Error::incompatible(format!(
+                "unsupported recipe format {}",
+                self.format
+            )));
         }
         let mut ids = HashSet::with_capacity(self.layers.len());
         for layer in &self.layers {
             if !ids.insert(&layer.id) {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    "duplicate layer identity",
-                ));
+                return Err(Error::validation("duplicate layer identity"));
             }
             layer.validate()?;
             // A layer's mask must be in the same snapshot. A missing one is incompatible data, not
@@ -552,13 +532,10 @@ impl Recipe {
             if let Some(mask) = &layer.mask
                 && !self.masks.iter().any(|candidate| candidate.id == *mask)
             {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
-                    format!(
-                        "layer {} references mask {mask}, which this recipe does not carry",
-                        layer.id
-                    ),
-                ));
+                return Err(Error::incompatible(format!(
+                    "layer {} references mask {mask}, which this recipe does not carry",
+                    layer.id
+                )));
             }
         }
         Ok(())
@@ -636,14 +613,11 @@ impl Recipe {
                 }
             }
             if points > POINTS_PER_MASK {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "mask {} holds {points} stored path positions; the limit is \
+                return Err(Error::resource_limit(format!(
+                    "mask {} holds {points} stored path positions; the limit is \
                          {POINTS_PER_MASK} points per mask",
-                        mask.name
-                    ),
-                ));
+                    mask.name
+                )));
             }
         }
         Ok(())
@@ -657,34 +631,28 @@ impl Recipe {
             return Ok(());
         }
         if self.masks.len() > MASKS_PER_RECIPE {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "recipe has {} masks; the limit is {MASKS_PER_RECIPE} masks per recipe",
-                    self.masks.len()
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "recipe has {} masks; the limit is {MASKS_PER_RECIPE} masks per recipe",
+                self.masks.len()
+            )));
         }
         let mut ids = HashSet::with_capacity(self.masks.len());
         for mask in &self.masks {
             mask.validate()?;
             if !ids.insert(&mask.id) {
-                return Err(Error::new(ErrorKind::Validation, "duplicate mask identity"));
+                return Err(Error::validation("duplicate mask identity"));
             }
         }
         // Every history entry stores a complete stack, so the mask table's size is multiplied by
         // the number of entries a session writes. The bound fails explicitly instead of letting a
         // brush session grow the catalog without a stated limit.
         let bytes = serde_json::to_vec(&self.masks)
-            .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot measure masks: {e}")))?
+            .map_err(|e| Error::internal(format!("cannot measure masks: {e}")))?
             .len();
         if bytes > MASK_BYTES_PER_RECIPE {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "recipe masks serialize to {bytes} bytes; the limit is {MASK_BYTES_PER_RECIPE} serialized mask bytes per recipe"
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "recipe masks serialize to {bytes} bytes; the limit is {MASK_BYTES_PER_RECIPE} serialized mask bytes per recipe"
+            )));
         }
         Ok(())
     }
@@ -698,13 +666,10 @@ impl Recipe {
     pub fn with_layer_inserted(&self, index: usize, layer: Layer) -> Result<Self, Error> {
         layer.validate()?;
         if index > self.layers.len() {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "layer index {index} is outside the {} layers of the stack",
-                    self.layers.len()
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "layer index {index} is outside the {} layers of the stack",
+                self.layers.len()
+            )));
         }
         let mut next = self.clone();
         next.layers.insert(index, layer);
@@ -719,12 +684,7 @@ impl Recipe {
             .layers
             .iter()
             .position(|existing| existing.id == layer.id)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Validation,
-                    "plan updates a layer that is not in the stack",
-                )
-            })?;
+            .ok_or_else(|| Error::validation("plan updates a layer that is not in the stack"))?;
         let mut next = self.clone();
         next.layers[position] = layer;
         next.validate()?;
@@ -869,16 +829,12 @@ impl MutationRequest {
 /// The request identity and actor every mutation envelope carries: 1..128 bytes each.
 fn validate_request(request_id: &str, actor: &str) -> Result<(), Error> {
     if request_id.is_empty() || request_id.len() > 128 {
-        return Err(Error::new(
-            ErrorKind::Validation,
+        return Err(Error::validation(
             "request_id must contain 1..128 characters",
         ));
     }
     if actor.is_empty() || actor.len() > 128 {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            "actor must contain 1..128 characters",
-        ));
+        return Err(Error::validation("actor must contain 1..128 characters"));
     }
     Ok(())
 }

@@ -12,7 +12,7 @@ use super::{
     parse_preset, validate_settings,
 };
 use crate::{
-    AssetId, EditorService, EntryId, Error, ErrorKind, MAX_PRESET_NAME, MAX_SETTINGS_ACTIONS,
+    AssetId, EditorService, EntryId, Error, MAX_PRESET_NAME, MAX_SETTINGS_ACTIONS,
     MAX_SETTINGS_FIELDS, ModuleRegistry, MutationOutcome, PresetId,
     editor::{decode, encode, now_ms, write},
 };
@@ -145,19 +145,15 @@ fn columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<Columns> {
     })
 }
 
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
 fn unknown_preset(preset_id: &PresetId) -> Error {
-    validation(format!("unknown preset {preset_id}"))
+    Error::validation(format!("unknown preset {preset_id}"))
 }
 
 /// Trimmed text of 1 to `max` characters with no control character.
 fn printable(what: &str, value: &str, max: usize) -> Result<String, Error> {
     let value = value.trim();
     if value.is_empty() || value.chars().count() > max || value.chars().any(char::is_control) {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "preset {what} must contain 1..={max} printable characters"
         )));
     }
@@ -174,7 +170,7 @@ fn checked_group(group: &str) -> Result<String, Error> {
 
 fn checked_actor(actor: &str) -> Result<(), Error> {
     if actor.is_empty() || actor.len() > MAX_ACTOR {
-        return Err(validation("actor must contain 1..128 characters"));
+        return Err(Error::validation("actor must contain 1..128 characters"));
     }
     Ok(())
 }
@@ -230,10 +226,9 @@ fn load(
 fn ensure_room(tx: &Transaction<'_>) -> Result<(), Error> {
     let count: i64 = tx.query_row("SELECT COUNT(*) FROM presets", [], |row| row.get(0))?;
     if count >= MAX_PRESETS as i64 {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!("the preset library holds at most {MAX_PRESETS} presets; delete one first"),
-        ));
+        return Err(Error::resource_limit(format!(
+            "the preset library holds at most {MAX_PRESETS} presets; delete one first"
+        )));
     }
     Ok(())
 }
@@ -263,13 +258,10 @@ fn ensure_unique(
             continue;
         }
         if existing_group.to_lowercase() == group_key && existing_name.to_lowercase() == name_key {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                format!(
-                    "group {existing_group:?} already holds a preset named {existing_name:?}; \
+            return Err(Error::conflict(format!(
+                "group {existing_group:?} already holds a preset named {existing_name:?}; \
                      choose another name or group"
-                ),
-            ));
+            )));
         }
     }
     Ok(())
@@ -528,7 +520,7 @@ impl EditorService {
         fields: &Map<String, Value>,
     ) -> Result<Map<String, Value>, Error> {
         if fields.is_empty() || fields.len() > MAX_SETTINGS_ACTIONS {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "fields names 1 to {MAX_SETTINGS_ACTIONS} actions; this one names {}",
                 fields.len()
             )));
@@ -540,18 +532,18 @@ impl EditorService {
         for (action_id, wanted) in fields {
             let (module, action) = registry
                 .action(action_id)
-                .ok_or_else(|| validation(format!("unknown action {action_id}")))?;
+                .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))?;
             if !action.patch {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "{action_id} is not a field-patch action"
                 )));
             }
             let descriptor = module.descriptor();
             if !descriptor.is_available() {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
-                    format!("unavailable module {}", descriptor.id),
-                ));
+                return Err(Error::incompatible(format!(
+                    "unavailable module {}",
+                    descriptor.id
+                )));
             }
             let names: Vec<&str> = match wanted {
                 Value::Bool(true) => action
@@ -565,17 +557,17 @@ impl EditorService {
                         .iter()
                         .map(|name| {
                             let name = name.as_str().ok_or_else(|| {
-                                validation(format!(
+                                Error::validation(format!(
                                     "the fields of {action_id} must be parameter names"
                                 ))
                             })?;
                             if action.parameter(name).is_none() {
-                                return Err(validation(format!(
+                                return Err(Error::validation(format!(
                                     "unknown parameter {name} for action {action_id}"
                                 )));
                             }
                             if !seen.insert(name) {
-                                return Err(validation(format!(
+                                return Err(Error::validation(format!(
                                     "the fields of {action_id} name {name} twice"
                                 )));
                             }
@@ -584,7 +576,7 @@ impl EditorService {
                         .collect::<Result<_, Error>>()?
                 }
                 _ => {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "the fields of {action_id} must be true or an array of 1 to \
                          {MAX_SETTINGS_FIELDS} parameter names"
                     )));
@@ -597,7 +589,10 @@ impl EditorService {
             for effect in &descriptor.effects {
                 if let Some((_, layer)) = registry.own_layer(layers, &effect.id, None)? {
                     if owned.is_some() {
-                        return Err(validation(format!("ambiguous {} layers", descriptor.title)));
+                        return Err(Error::validation(format!(
+                            "ambiguous {} layers",
+                            descriptor.title
+                        )));
                     }
                     owned = Some(layer);
                 }
@@ -617,7 +612,7 @@ impl EditorService {
                     .get(name)
                     .or(parameter.default.as_ref())
                     .ok_or_else(|| {
-                        validation(format!(
+                        Error::validation(format!(
                             "parameter {name} of {action_id} has no default and the stack does \
                              not set it"
                         ))

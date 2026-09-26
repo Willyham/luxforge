@@ -29,9 +29,10 @@
 //! grid cell (proposal P16 of `docs/design/range-study.md`, decided by the owner on 2026-09-23). A
 //! caller with no operation to read one from says so instead, and the grid is refused by name.
 use super::overlay::{MAX_OVERLAY_CELLS, cell_pixel};
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Cancel, ComponentId, Error, ErrorKind, MaskId, StageTransform, mask::CompiledMask,
-    modules::Stage,
+    Cancel, ComponentId, Error, MaskId, StageTransform, mask::CompiledMask, modules::Stage,
 };
 use rayon::prelude::*;
 
@@ -219,33 +220,26 @@ pub fn coverage_grid(
         height: transform.content.height,
     };
     if output.width == 0 || output.height == 0 || cells_w == 0 || cells_h == 0 {
-        return Err(Error::new(
-            ErrorKind::Validation,
+        return Err(Error::validation(
             "a mask overlay needs a non-empty frame and a non-empty cell grid",
         ));
     }
     if cells_w > MAX_OVERLAY_CELLS || cells_h > MAX_OVERLAY_CELLS {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "a mask overlay of {cells_w}x{cells_h} cells exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows"
-            ),
-        ));
+        return Err(Error::resource_limit(format!(
+            "a mask overlay of {cells_w}x{cells_h} cells exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows"
+        )));
     }
     // The mask answers about the stage it was compiled against, and `transform` maps that same
     // stage onto the frame. Two different stages would be two different coverage fields, so the
     // mismatch is refused rather than resolved by scaling one of them.
     if mask.stage() != content {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            format!(
-                "the mask was compiled against a {}x{} stage and this frame's content stage is {}x{}",
-                mask.stage().width,
-                mask.stage().height,
-                content.width,
-                content.height
-            ),
-        ));
+        return Err(Error::validation(format!(
+            "the mask was compiled against a {}x{} stage and this frame's content stage is {}x{}",
+            mask.stage().width,
+            mask.stage().height,
+            content.width,
+            content.height
+        )));
     }
     if mask.bounds().is_empty() {
         return Ok(None);
@@ -259,13 +253,10 @@ pub fn coverage_grid(
         (false, _) => None,
         (true, MaskPixels::Input(input)) => Some(input),
         (true, MaskPixels::Unavailable(reason)) => {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "this mask has a component whose coverage depends on the pixel it reads, and \
+            return Err(Error::validation(format!(
+                "this mask has a component whose coverage depends on the pixel it reads, and \
                      {reason}; the 100% view is where such a selection can be read"
-                ),
-            ));
+            )));
         }
     };
     let count = (cells_w as usize) * (cells_h as usize);
@@ -364,10 +355,7 @@ mod tests {
 
     impl MaskInputPixel for Broken {
         fn linear(&self, _: u32, _: u32) -> Result<Option<[f64; 3]>, Error> {
-            Err(Error::new(
-                ErrorKind::Render,
-                "the prefix could not be read",
-            ))
+            Err(Error::render("the prefix could not be read"))
         }
     }
 

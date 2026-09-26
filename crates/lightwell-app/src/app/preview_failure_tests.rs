@@ -247,7 +247,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
 fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
     let (mut editor, catalog, _, current) = opened_and_shown();
     let presented = editor.presented_generation;
-    let error = Error::new(ErrorKind::ResourceLimit, "linear output exceeds 512 MiB");
+    let error = Error::resource_limit("linear output exceeds 512 MiB");
     editor.preview_failed(presented, false, &current.id, None, &error);
     editor.rederive();
     assert!(
@@ -335,7 +335,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
 #[test]
 fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
     let (mut editor, catalog, _, _) = opened_and_shown();
-    let error = Error::new(ErrorKind::ResourceLimit, "linear output exceeds 512 MiB");
+    let error = Error::resource_limit("linear output exceeds 512 MiB");
     let starting = PendingStage {
         layer: None,
         layer_index: 0,
@@ -400,7 +400,7 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
 fn a_scripted_step_waiting_for_a_preview_ends_on_its_failure() {
     let steps = json!([{"wait": {"ms": 1}}]).to_string();
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(&steps);
-    let error = Error::new(ErrorKind::ResourceLimit, "linear output exceeds 512 MiB");
+    let error = Error::resource_limit("linear output exceeds 512 MiB");
     let entry = EntryId::new();
     editor.preview_generation = 9;
     if let Some(evidence) = editor.evidence.as_mut() {

@@ -6,7 +6,7 @@
 //! stats (performance rule 5).
 use super::{EditorService, SourceSignature, source_signature, write};
 use crate::{
-    Error, ErrorKind, HistoryEntry, Recipe,
+    Error, HistoryEntry, Recipe,
     artifacts::{
         self, ArtifactId, ArtifactMeta, ArtifactRead, ArtifactRecord, ArtifactTable,
         ArtifactWriter, Collection, LiveArtifacts, MANIFEST, PREPARED_ARTIFACT_BYTES,
@@ -44,24 +44,22 @@ fn object_signature(root: &Path, id: &ArtifactId, bytes: u64) -> Result<SourceSi
     let metadata = match path.metadata() {
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => {
-            return Err(Error::new(
-                ErrorKind::FileAccess,
-                format!("cannot read artifact {id}: {}", error.kind()),
-            ));
+            return Err(Error::file_access(format!(
+                "cannot read artifact {id}: {}",
+                error.kind()
+            )));
         }
         Ok(metadata) => metadata.is_file().then_some(metadata),
     };
     let Some(metadata) = metadata else {
-        return Err(Error::new(
-            ErrorKind::SourceUnavailable,
-            format!("artifact {id} is missing"),
-        ));
+        return Err(Error::source_unavailable(format!(
+            "artifact {id} is missing"
+        )));
     };
     if metadata.len() != bytes {
-        return Err(Error::new(
-            ErrorKind::SourceUnavailable,
-            format!("artifact {id} is corrupt"),
-        ));
+        return Err(Error::source_unavailable(format!(
+            "artifact {id} is corrupt"
+        )));
     }
     Ok(source_signature(&path, &metadata))
 }
@@ -102,7 +100,7 @@ pub(super) fn recorded_artifacts(
     let ids = referenced(recipe);
     for id in &ids {
         let (bytes, _) = artifact_row(connection, id)?
-            .ok_or_else(|| Error::new(ErrorKind::Validation, format!("unknown artifact {id}")))?;
+            .ok_or_else(|| Error::validation(format!("unknown artifact {id}")))?;
         object_signature(root, id, bytes)?;
     }
     Ok(ids)
@@ -177,10 +175,10 @@ impl EditorService {
     ) -> Result<(), Error> {
         record.validate()?;
         if prepared.id != record.id || prepared.bytes.len() as u64 != record.bytes {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("the prepared bytes are not artifact {}", record.id),
-            ));
+            return Err(Error::validation(format!(
+                "the prepared bytes are not artifact {}",
+                record.id
+            )));
         }
         let signature = object_signature(&self.artifact_root, &record.id, record.bytes)?;
         write(&mut self.connection, |tx| {
@@ -240,10 +238,7 @@ impl EditorService {
             }
         }
         if !unprepared.is_empty() && !self.allow_sync_source {
-            return Err(Error::new(
-                ErrorKind::PreparationRequired,
-                "artifact preparation required",
-            ));
+            return Err(Error::preparation_required("artifact preparation required"));
         }
         let never = AtomicBool::new(false);
         for read in &unprepared {
@@ -348,22 +343,16 @@ impl EditorService {
         let mut rows = Vec::with_capacity(ids.len());
         for id in ids {
             let row = artifact_row(&self.connection, id)?.ok_or_else(|| {
-                Error::new(
-                    ErrorKind::SourceUnavailable,
-                    format!("artifact {id} is not in this catalog"),
-                )
+                Error::source_unavailable(format!("artifact {id} is not in this catalog"))
             })?;
             rows.push((id, row));
         }
         let total: u64 = rows.iter().map(|(_, (bytes, _))| bytes).sum();
         if total > PREPARED_ARTIFACT_BYTES || rows.len() > PREPARED_ARTIFACT_ENTRIES {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "the stack binds {} artifacts of {total} bytes, more than the {PREPARED_ARTIFACT_ENTRIES} artifacts or {PREPARED_ARTIFACT_BYTES} bytes that can be held ready",
-                    rows.len()
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "the stack binds {} artifacts of {total} bytes, more than the {PREPARED_ARTIFACT_ENTRIES} artifacts or {PREPARED_ARTIFACT_BYTES} bytes that can be held ready",
+                rows.len()
+            )));
         }
         self.check_root()?;
         let mut cache = self.prepared_artifacts.borrow_mut();
@@ -400,15 +389,13 @@ impl EditorService {
                 self.checked_manifest.replace(signature);
                 Ok(())
             }
-            RootState::Absent => Err(Error::new(
-                ErrorKind::SourceUnavailable,
-                format!("artifact directory {root} is missing; move it with the catalog"),
-            )),
-            RootState::Unmarked => Err(Error::new(
-                ErrorKind::SourceUnavailable,
-                format!("artifact directory {root} has no manifest"),
-            )),
-            RootState::Foreign(detail) => Err(Error::new(ErrorKind::Incompatible, detail)),
+            RootState::Absent => Err(Error::source_unavailable(format!(
+                "artifact directory {root} is missing; move it with the catalog"
+            ))),
+            RootState::Unmarked => Err(Error::source_unavailable(format!(
+                "artifact directory {root} has no manifest"
+            ))),
+            RootState::Foreign(detail) => Err(Error::incompatible(detail)),
         }
     }
 
@@ -467,7 +454,7 @@ impl EditorService {
                 },
             )
             .optional()?
-            .ok_or_else(|| Error::new(ErrorKind::Validation, format!("unknown artifact {id}")))?;
+            .ok_or_else(|| Error::validation(format!("unknown artifact {id}")))?;
         let references: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM artifact_refs WHERE artifact_id=?1",
             [id.as_str()],
@@ -478,8 +465,8 @@ impl EditorService {
             Ok(metadata) if metadata.is_file() => "wrong-length",
             _ => "missing",
         };
-        let mut value = serde_json::to_value(&record)
-            .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+        let mut value =
+            serde_json::to_value(&record).map_err(|error| Error::internal(error.to_string()))?;
         value["file"] = json!(file);
         value["references"] = json!(references);
         value["live"] = json!(self.live_artifacts.contains(id));

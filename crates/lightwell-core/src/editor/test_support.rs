@@ -6,9 +6,9 @@ use super::{
 };
 use crate::{
     ActionDescriptor, Availability, Component, ComponentMode, EFFECT_FORMAT, EffectDescriptor,
-    EffectStage, EntryId, Error, ErrorKind, ExactGeometry, HistoryEntry, LayerId, Mask,
-    ModuleDescriptor, ModuleRegistry, Mutation, ParameterDescriptor, Processing, Recipe, Snapshot,
-    SnapshotId, Stage, ToolModule,
+    EffectStage, EntryId, Error, ExactGeometry, HistoryEntry, LayerId, Mask, ModuleDescriptor,
+    ModuleRegistry, Mutation, ParameterDescriptor, Processing, Recipe, Snapshot, SnapshotId, Stage,
+    ToolModule,
     modules::{ActionInput, ActionPlan, LayerUpdate, NewLayer, StageContext},
 };
 use rusqlite::{Connection, params};
@@ -187,10 +187,9 @@ impl ShrinkModule {
                 .filter(|extent| (1..=16383).contains(extent))
                 .map(|extent| extent as u32)
                 .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Validation,
-                        format!("parameter {name} must be an integer within 1..=16383"),
-                    )
+                    Error::validation(format!(
+                        "parameter {name} must be an integer within 1..=16383"
+                    ))
                 })
         };
         Ok((read("width")?, read("height")?))
@@ -266,13 +265,10 @@ impl ToolModule for ShrinkModule {
     fn compile(&self, _: &str, _: u32, payload: &Value, stage: Stage) -> Result<Processing, Error> {
         let (width, height) = Self::extents(payload)?;
         if width > stage.width || height > stage.height {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "shrink {width}x{height} is larger than the {}x{} input stage",
-                    stage.width, stage.height
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "shrink {width}x{height} is larger than the {}x{} input stage",
+                stage.width, stage.height
+            )));
         }
         Ok(Processing::ExactGeometry(ExactGeometry {
             a: 1,

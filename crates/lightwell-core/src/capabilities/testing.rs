@@ -13,8 +13,8 @@ use super::{
 };
 use crate::{
     ActionDescriptor, ActionInput, ActionPlan, CapabilityModule, Control, EffectDescriptor,
-    EffectStage, Error, ErrorKind, ModuleDescriptor, ParameterDescriptor, Processing, Stage,
-    StageContext, ToolModule,
+    EffectStage, Error, ModuleDescriptor, ParameterDescriptor, Processing, Stage, StageContext,
+    ToolModule,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -312,7 +312,7 @@ impl LifecycleModule {
             let path = context.resource_path(resource)?;
             std::fs::File::open(path)
                 .and_then(|mut file| file.read_to_end(&mut loaded))
-                .map_err(|error| Error::new(ErrorKind::FileAccess, error.to_string()))?;
+                .map_err(|error| Error::file_access(error.to_string()))?;
         }
         *self.probe.loaded.lock().unwrap() = Some(loaded);
         if let Ok(secret) = context.secret("token") {
@@ -327,7 +327,7 @@ impl LifecycleModule {
         }
         context.checkpoint()?;
         if self.probe.fail.load(Ordering::SeqCst) {
-            return Err(Error::new(ErrorKind::Decode, "the palette is corrupt"));
+            return Err(Error::decode("the palette is corrupt"));
         }
         Ok(())
     }
@@ -353,10 +353,7 @@ impl ToolModule for LifecycleModule {
         Ok(format!("test layer of {effect_id}"))
     }
     fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
-        Err(Error::new(
-            ErrorKind::Internal,
-            "the lifecycle module never renders",
-        ))
+        Err(Error::internal("the lifecycle module never renders"))
     }
     fn capabilities(&self) -> Option<&dyn CapabilityModule> {
         Some(self)
@@ -377,10 +374,10 @@ impl CapabilityModule for LifecycleModule {
     }
     fn validate_resource(&self, resource_id: &str, path: &Path) -> Result<(), Error> {
         if self.probe.refuse.load(Ordering::SeqCst) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("{resource_id} at {} is not a palette", path.display()),
-            ));
+            return Err(Error::validation(format!(
+                "{resource_id} at {} is not a palette",
+                path.display()
+            )));
         }
         Ok(())
     }

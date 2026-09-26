@@ -6,7 +6,9 @@ use super::{
     descriptor::{CapabilityKind, DataClass},
     document::JsonDocument,
 };
-use crate::{AssetId, Error, ErrorKind};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{AssetId, Error};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -32,10 +34,6 @@ pub const LIST: &str = "module.permission.list";
 
 /// The longest revocation reason a client may give, in characters.
 pub const MAX_REASON: usize = 256;
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
@@ -111,8 +109,9 @@ impl GrantScope {
     /// `validation` error naming it.
     pub fn parse(kind: GrantKind, value: &Value) -> Result<Self, Error> {
         fn strict<T: DeserializeOwned>(kind: GrantKind, value: &Value) -> Result<T, Error> {
-            serde_json::from_value(value.clone())
-                .map_err(|error| validation(format!("a {} scope is invalid: {error}", kind.name())))
+            serde_json::from_value(value.clone()).map_err(|error| {
+                Error::validation(format!("a {} scope is invalid: {error}", kind.name()))
+            })
         }
         Ok(match kind {
             GrantKind::DownloadArtifact => Self::Download(strict(kind, value)?),
@@ -251,12 +250,9 @@ impl Document {
                 self.grants.remove(grant.1);
             }
             (None, None) => {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "{MAX_GRANT_RECORDS} live grants are recorded; revoke one before granting another"
-                    ),
-                ));
+                return Err(Error::resource_limit(format!(
+                    "{MAX_GRANT_RECORDS} live grants are recorded; revoke one before granting another"
+                )));
             }
         }
         Ok(())
@@ -422,7 +418,7 @@ impl GrantsStore {
                 .grants
                 .iter_mut()
                 .find(|grant| grant.grant_id == grant_id)
-                .ok_or_else(|| validation(format!("unknown grant {grant_id}")))?;
+                .ok_or_else(|| Error::validation(format!("unknown grant {grant_id}")))?;
             if !grant.is_live() {
                 return Ok((grant.clone(), false));
             }

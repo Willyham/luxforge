@@ -4,9 +4,9 @@
 //! of it that lists one proves the host refuses it.
 use super::{ArtifactMeta, PreparedArtifact};
 use crate::{
-    ActionInput, ActionPlan, CapabilityModule, ColorOperation, EFFECT_FORMAT, Error, ErrorKind,
-    LayerUpdate, ModuleDescriptor, ModuleRegistry, NewLayer, PointwiseColor, Processing, Stage,
-    StageContext, ToolModule,
+    ActionInput, ActionPlan, CapabilityModule, ColorOperation, EFFECT_FORMAT, Error, LayerUpdate,
+    ModuleDescriptor, ModuleRegistry, NewLayer, PointwiseColor, Processing, Stage, StageContext,
+    ToolModule,
 };
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -144,7 +144,7 @@ impl ToolModule for TintModule {
         if format == EFFECT_FORMAT && payload.as_object().is_some_and(Map::is_empty) {
             Ok(())
         } else {
-            Err(Error::new(ErrorKind::Validation, "a tint payload is {}"))
+            Err(Error::validation("a tint payload is {}"))
         }
     }
     fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
@@ -156,8 +156,7 @@ impl ToolModule for TintModule {
     }
     fn compile(&self, effect_id: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
         if effect_id == TINT_EFFECT {
-            Err(Error::new(
-                ErrorKind::Validation,
+            Err(Error::validation(
                 "a tint layer is evaluated with its gains artifact",
             ))
         } else {
@@ -179,16 +178,13 @@ impl CapabilityModule for TintModule {
         artifacts: &[Arc<PreparedArtifact>],
     ) -> Result<Processing, Error> {
         let [artifact] = artifacts else {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "a tint layer binds exactly one artifact",
-            ));
+            return Err(Error::validation("a tint layer binds exactly one artifact"));
         };
         if artifact.bytes.len() != 12 {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("artifact {} does not hold three gains", artifact.id),
-            ));
+            return Err(Error::validation(format!(
+                "artifact {} does not hold three gains",
+                artifact.id
+            )));
         }
         let gain = |index: usize| {
             let bytes = &artifact.bytes[index * 4..index * 4 + 4];

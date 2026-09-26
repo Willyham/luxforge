@@ -1,7 +1,9 @@
 //! Plain-data module descriptors: one serializable source for API discovery, generated controls
 //! and every validation limit a module declares.
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind,
+    Error,
     capabilities::{
         descriptor::{
             ActivationDescriptor, CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor,
@@ -31,10 +33,6 @@ pub const MAX_SETTINGS_FIELDS: usize = 64;
 pub(crate) const PRESET_SETTINGS: &str = "settings";
 pub(crate) const PRESET_NAME: &str = "name";
 pub(crate) const PRESET_ID: &str = "preset-id";
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
@@ -1081,7 +1079,7 @@ impl ModuleDescriptor {
         }
         crate::capabilities::descriptor::check_raw(value)?;
         let descriptor: Self = serde_json::from_value(value.clone())
-            .map_err(|error| validation(format!("invalid module descriptor: {error}")))?;
+            .map_err(|error| Error::validation(format!("invalid module descriptor: {error}")))?;
         descriptor.validate()?;
         Ok(descriptor)
     }
@@ -1122,18 +1120,27 @@ impl ModuleDescriptor {
     /// Reject every descriptor a client could not render or validate against.
     pub fn validate(&self) -> Result<(), Error> {
         if !valid_identity(&self.id) {
-            return Err(validation(format!("invalid module identity {}", self.id)));
+            return Err(Error::validation(format!(
+                "invalid module identity {}",
+                self.id
+            )));
         }
         if self.title.trim().is_empty() {
-            return Err(validation(format!("module {} has no title", self.id)));
+            return Err(Error::validation(format!(
+                "module {} has no title",
+                self.id
+            )));
         }
         let mut effects = HashSet::with_capacity(self.effects.len());
         for effect in &self.effects {
             if !valid_identity(&effect.id) {
-                return Err(validation(format!("invalid effect identity {}", effect.id)));
+                return Err(Error::validation(format!(
+                    "invalid effect identity {}",
+                    effect.id
+                )));
             }
             if !effects.insert(effect.id.as_str()) {
-                return Err(validation(format!("duplicate effect {}", effect.id)));
+                return Err(Error::validation(format!("duplicate effect {}", effect.id)));
             }
             // A mask is stored in content-stage coordinates, so an effect whose input is not that
             // content stage has nothing to read one in: a geometry effect changes the stage and a
@@ -1141,7 +1148,7 @@ impl ModuleDescriptor {
             if effect.maskable
                 && matches!(effect.stage, EffectStage::Geometry | EffectStage::Finish)
             {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "effect {} declares maskable at the {} stage, which a mask stored in \
                      content-stage coordinates cannot reach",
                     effect.id,
@@ -1170,7 +1177,7 @@ impl ModuleDescriptor {
             matches!(control, Control::Picker { .. })
         });
         if pickers > 1 {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "module {} declares {pickers} picker controls; a module declares at most one",
                 self.id
             )));
@@ -1181,7 +1188,7 @@ impl ModuleDescriptor {
             matches!(control, Control::Presets { .. })
         });
         if presets > 1 {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "module {} declares {presets} presets controls; a module declares at most one",
                 self.id
             )));
@@ -1193,7 +1200,7 @@ impl ModuleDescriptor {
                 .iter()
                 .all(|control| matches!(control, Control::Group { .. }));
             if self.controls.len() < 2 || !all_groups {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "module {} declares layout: tabs but needs at least two top-level groups",
                     self.id
                 )));
@@ -1214,7 +1221,7 @@ impl ModuleDescriptor {
                 for name in [x, y] {
                     let parameter = self.declared_parameter(declared, name)?;
                     if !matches!(parameter.kind, ParameterKind::Integer { .. }) {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "canvas parameter {name} of action {action} is not an integer"
                         )));
                     }
@@ -1227,7 +1234,7 @@ impl ModuleDescriptor {
                         .iter()
                         .find(|parameter| parameter.name != *x && parameter.name != *y)
                 {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "canvas action {action} commits on a pick but declares parameter {}",
                         other.name
                     )));
@@ -1249,7 +1256,7 @@ impl ModuleDescriptor {
                 for name in [x, y] {
                     let parameter = self.declared_parameter(declared, name)?;
                     if !matches!(parameter.kind, ParameterKind::Integer { .. }) {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "canvas parameter {name} of query {query} is not an integer"
                         )));
                     }
@@ -1276,7 +1283,7 @@ impl ModuleDescriptor {
                 let fit = self.declared_action(fit_action)?;
                 let chosen = self.declared_parameter(fit, aspect)?;
                 if !matches!(chosen.kind, ParameterKind::Enum { .. }) {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "canvas parameter {aspect} of action {fit_action} is not an enum"
                     )));
                 }
@@ -1292,7 +1299,7 @@ impl ModuleDescriptor {
     /// uppercase ASCII letter so a keymap can hold it without parsing.
     fn check_canvas_mode(&self, title: &str, shortcut: Option<&str>) -> Result<(), Error> {
         if title.trim().is_empty() {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "module {} declares a canvas interaction without a title",
                 self.id
             )));
@@ -1301,7 +1308,7 @@ impl ModuleDescriptor {
             Some(letter)
                 if letter.len() != 1 || !letter.starts_with(|c: char| c.is_ascii_uppercase()) =>
             {
-                Err(validation(format!(
+                Err(Error::validation(format!(
                     "canvas shortcut {letter} of module {} must be one uppercase ASCII letter",
                     self.id
                 )))
@@ -1316,7 +1323,7 @@ impl ModuleDescriptor {
         if pickers == 1 {
             return Ok(());
         }
-        Err(validation(format!(
+        Err(Error::validation(format!(
             "module {} declares a pick canvas but no picker control",
             self.id
         )))
@@ -1340,7 +1347,7 @@ impl ModuleDescriptor {
         if matches!(parameter.kind, ParameterKind::Number { .. }) {
             Ok(())
         } else {
-            Err(validation(format!(
+            Err(Error::validation(format!(
                 "canvas parameter {name} of action {} is not a number",
                 action.id
             )))
@@ -1349,7 +1356,7 @@ impl ModuleDescriptor {
 
     fn declared_action(&self, id: &str) -> Result<&ActionDescriptor, Error> {
         self.action(id).ok_or_else(|| {
-            validation(format!(
+            Error::validation(format!(
                 "module {} references undeclared action {id}",
                 self.id
             ))
@@ -1358,7 +1365,7 @@ impl ModuleDescriptor {
 
     fn declared_query(&self, id: &str) -> Result<&ActionDescriptor, Error> {
         self.query(id).ok_or_else(|| {
-            validation(format!(
+            Error::validation(format!(
                 "module {} references undeclared query {id}",
                 self.id
             ))
@@ -1370,14 +1377,14 @@ impl ModuleDescriptor {
         action: &'a ActionDescriptor,
         name: &str,
     ) -> Result<&'a ParameterDescriptor, Error> {
-        action
-            .parameter(name)
-            .ok_or_else(|| validation(format!("action {} has no parameter {name}", action.id)))
+        action.parameter(name).ok_or_else(|| {
+            Error::validation(format!("action {} has no parameter {name}", action.id))
+        })
     }
 
     fn check_control(&self, control: &Control, depth: usize) -> Result<(), Error> {
         if depth > MAX_CONTROL_DEPTH {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "module {} nests controls deeper than {MAX_CONTROL_DEPTH} levels",
                 self.id
             )));
@@ -1390,7 +1397,7 @@ impl ModuleDescriptor {
                 ..
             } => {
                 if label.trim().is_empty() {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "module {} has an unlabelled group",
                         self.id
                     )));
@@ -1414,19 +1421,19 @@ impl ModuleDescriptor {
                     declared.kind,
                     ParameterKind::Integer { .. } | ParameterKind::Number { .. }
                 ) {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "number control for {parameter} of action {action} is not an integer or a number"
                     )));
                 }
                 if rail.is_some() && !matches!(declared.kind, ParameterKind::Number { .. }) {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "number control for {parameter} of action {action} declares a rail hint on a non-number parameter"
                     )));
                 }
                 if let Some(RailDecoration::Gradient { stops }) = rail
                     && !(2..=8).contains(&stops.len())
                 {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "number control for {parameter} of action {action} needs 2..=8 gradient stops"
                     )));
                 }
@@ -1436,7 +1443,7 @@ impl ModuleDescriptor {
             } => {
                 let declared = self.declared_parameter(self.declared_action(action)?, parameter)?;
                 if !matches!(declared.kind, ParameterKind::Boolean) {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "toggle control for {parameter} of action {action} is not a boolean"
                     )));
                 }
@@ -1446,7 +1453,7 @@ impl ModuleDescriptor {
             } => {
                 let declared = self.declared_parameter(self.declared_action(action)?, parameter)?;
                 if !matches!(declared.kind, ParameterKind::Enum { .. }) {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "choice control for {parameter} of action {action} is not an enum"
                     )));
                 }
@@ -1457,7 +1464,7 @@ impl ModuleDescriptor {
                 let declared = self.declared_action(action)?;
                 let declared = self.declared_parameter(declared, parameter)?;
                 if !matches!(declared.kind, ParameterKind::Color) {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "color control for {parameter} of action {action} is not a color"
                     )));
                 }
@@ -1471,7 +1478,7 @@ impl ModuleDescriptor {
                 self.declared_action(action)?;
                 let query = self.declared_query(sample_query)?;
                 if channels.is_empty() || channels.len() > 8 {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "curve control of action {action} needs 1..=8 channels"
                     )));
                 }
@@ -1481,23 +1488,23 @@ impl ModuleDescriptor {
                     let declared =
                         self.declared_parameter(self.declared_action(action)?, parameter)?;
                     if !matches!(declared.kind, ParameterKind::Curve { .. }) {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "curve control for {parameter} of action {action} is not a curve"
                         )));
                     }
                     let query_parameter = self.declared_parameter(query, parameter)?;
                     if query_parameter.kind != declared.kind {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "curve control for {parameter} of action {action} has a mismatched sample query {sample_query}"
                         )));
                     }
                     if query_parameter.required || query_parameter.default.is_some() {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "curve control for {parameter} of action {action} needs an optional sample query field without a default"
                         )));
                     }
                     if channel.label.trim().is_empty() || !seen.insert(parameter) {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "curve control for {parameter} of action {action} needs distinct labelled channels"
                         )));
                     }
@@ -1507,7 +1514,7 @@ impl ModuleDescriptor {
                     .iter()
                     .any(|parameter| parameter.required && !seen.contains(&parameter.name))
                 {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "curve control of action {action} has sample query {sample_query} with unrelated required parameters"
                     )));
                 }
@@ -1520,7 +1527,7 @@ impl ModuleDescriptor {
             } => {
                 let declared = self.declared_action(action)?;
                 if declared.patch && preset.len() != 1 {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "action control for patch action {action} needs exactly one preset field"
                     )));
                 }
@@ -1530,7 +1537,7 @@ impl ModuleDescriptor {
                 if let Some(icon) = icon
                     && !valid_name(icon)
                 {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "action control {action} has invalid icon name {icon}"
                     )));
                 }
@@ -1540,7 +1547,7 @@ impl ModuleDescriptor {
             // a pick and a picker cannot stand for it.
             Control::Picker { label } => {
                 if label.trim().is_empty() {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "module {} has an unlabelled picker",
                         self.id
                     )));
@@ -1549,7 +1556,7 @@ impl ModuleDescriptor {
                     Some(CanvasInteraction::PointPick { .. })
                     | Some(CanvasInteraction::SampleApply { .. }) => {}
                     Some(CanvasInteraction::CropFrame { .. }) | None => {
-                        return Err(validation(format!(
+                        return Err(Error::validation(format!(
                             "module {} declares a picker control without a point-pick or sample-apply canvas",
                             self.id
                         )));
@@ -1558,13 +1565,13 @@ impl ModuleDescriptor {
             }
             Control::Task { task, label } => {
                 if label.trim().is_empty() {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "task control for {task} of module {} has no label",
                         self.id
                     )));
                 }
                 if self.task(task).is_none() {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "task control of module {} names undeclared task {task}",
                         self.id
                     )));
@@ -1584,14 +1591,14 @@ impl ModuleDescriptor {
     fn check_presets_action(&self, action: &ActionDescriptor) -> Result<(), Error> {
         let id = &action.id;
         if action.patch {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "presets control action {id} is a field patch, so it cannot require its settings and name"
             )));
         }
         let required = |name: &str, kind: &str, matches: fn(&ParameterKind) -> bool| {
             let parameter = self.declared_parameter(action, name)?;
             if !matches(&parameter.kind) || !parameter.required || parameter.default.is_some() {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "presets control action {id} needs a required {kind} parameter {name}"
                 )));
             }
@@ -1606,14 +1613,14 @@ impl ModuleDescriptor {
         if let Some(parameter) = action.parameter(PRESET_ID)
             && (!matches!(parameter.kind, ParameterKind::String { .. }) || parameter.required)
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "presets control action {id} may declare only an optional string parameter {PRESET_ID}"
             )));
         }
         if let Some(extra) = action.parameters.iter().find(|parameter| {
             ![PRESET_SETTINGS, PRESET_NAME, PRESET_ID].contains(&&*parameter.name)
         }) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "presets control action {id} declares parameter {} beyond {PRESET_SETTINGS}, {PRESET_NAME} and {PRESET_ID}",
                 extra.name
             )));
@@ -1656,7 +1663,7 @@ fn check_raw_control_hints(control: &Value) -> Result<(), Error> {
             .get("parameter")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "{kind} control for {parameter} of action {action} declares a rail hint on a non-number control"
         )));
     }
@@ -1672,16 +1679,22 @@ fn check_declared<'a>(
     seen: &mut HashSet<&'a str>,
 ) -> Result<(), Error> {
     if !valid_name(&declared.id) {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "invalid {kind} identity {}",
             declared.id
         )));
     }
     if !seen.insert(declared.id.as_str()) {
-        return Err(validation(format!("duplicate {kind} {}", declared.id)));
+        return Err(Error::validation(format!(
+            "duplicate {kind} {}",
+            declared.id
+        )));
     }
     if declared.title.trim().is_empty() {
-        return Err(validation(format!("{kind} {} has no title", declared.id)));
+        return Err(Error::validation(format!(
+            "{kind} {} has no title",
+            declared.id
+        )));
     }
     check_parameter_declarations(kind, &declared.id, &declared.parameters)?;
     check_summary(declared)
@@ -1697,19 +1710,19 @@ pub(crate) fn check_parameter_declarations(
     let mut parameters = HashSet::with_capacity(declared.len());
     for parameter in declared {
         if !valid_name(&parameter.name) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "invalid parameter name {} of {kind} {id}",
                 parameter.name
             )));
         }
         if !parameters.insert(parameter.name.as_str()) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "duplicate parameter {} of {kind} {id}",
                 parameter.name
             )));
         }
         if parameter.kind.setting_only() {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {} of {kind} {id} declares kind {}, which only a module setting declares",
                 parameter.name,
                 parameter.kind.name()
@@ -1718,7 +1731,7 @@ pub(crate) fn check_parameter_declarations(
         // An identity names one of the host's own objects, which only the host's commands address;
         // a module edits through the host's `mask` target and never names a mask itself.
         if parameter.kind.host_only() {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {} of {kind} {id} declares kind {}, which only a host command declares",
                 parameter.name,
                 parameter.kind.name()
@@ -1734,20 +1747,20 @@ pub(crate) fn check_parameter_declarations(
 pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), Error> {
     match &parameter.kind {
         ParameterKind::Integer { min, max } if min > max => {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {} declares an empty range {min}..={max}",
                 parameter.name
             )));
         }
         ParameterKind::Number { min, max } if !min.is_finite() || !max.is_finite() || min > max => {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {} declares an empty range {min}..={max}",
                 parameter.name
             )));
         }
         ParameterKind::Enum { options } => {
             if options.is_empty() {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {} declares no options",
                     parameter.name
                 )));
@@ -1757,7 +1770,7 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
                 .iter()
                 .find(|option| option.is_empty() || !seen.insert(option.as_str()))
             {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {} declares an empty or duplicate option {option:?}",
                     parameter.name
                 )));
@@ -1766,7 +1779,7 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
         ParameterKind::String { max_length }
             if *max_length == 0 || *max_length > MAX_STRING_LENGTH =>
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {} declares a max_length {max_length} outside 1..={MAX_STRING_LENGTH}",
                 parameter.name
             )));
@@ -1778,7 +1791,7 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
             || *points_max > crate::path::POINTS_PER_STROKE
             || points_min > points_max =>
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {} declares invalid path point bounds; 1..={} is the limit",
                 parameter.name,
                 crate::path::POINTS_PER_STROKE
@@ -1791,7 +1804,7 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
             ..
         } => {
             if *points_min < 2 || *points_max > 32 || points_min > points_max {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {} declares invalid curve point bounds",
                     parameter.name
                 )));
@@ -1804,7 +1817,7 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
                         .any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
                     || xs.windows(2).any(|pair| pair[0] >= pair[1]))
             {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {} declares invalid fixed_x curve points",
                     parameter.name
                 )));
@@ -1813,21 +1826,21 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
         ParameterKind::Secret { max_length }
             if *max_length == 0 || *max_length > MAX_SECRET_LENGTH =>
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {} declares a max_length {max_length} outside 1..={MAX_SECRET_LENGTH}",
                 parameter.name
             )));
         }
         ParameterKind::Endpoint { classes } => {
             if classes.is_empty() {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "endpoint parameter {} declares no class",
                     parameter.name
                 )));
             }
             let mut seen = HashSet::with_capacity(classes.len());
             if !classes.iter().all(|class| seen.insert(class)) {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "endpoint parameter {} declares a class twice",
                     parameter.name
                 )));
@@ -1842,11 +1855,11 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
     match parameter.kind {
         // A secret is never plain data, and a destination is a person's choice, never a
         // module's.
-        ParameterKind::Secret { .. } => Err(validation(format!(
+        ParameterKind::Secret { .. } => Err(Error::validation(format!(
             "secret parameter {} declares a default; a secret never has one",
             parameter.name
         ))),
-        ParameterKind::Endpoint { .. } => Err(validation(format!(
+        ParameterKind::Endpoint { .. } => Err(Error::validation(format!(
             "endpoint parameter {} declares a default; a destination is the person's choice",
             parameter.name
         ))),
@@ -1867,7 +1880,7 @@ fn check_hints(parameter: &ParameterDescriptor) -> Result<(), Error> {
         ParameterKind::Integer { .. } | ParameterKind::Number { .. } | ParameterKind::Curve { .. }
     ) && (parameter.step.is_some() || parameter.precision.is_some())
     {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "parameter {name} declares a step or precision but is not numeric or a curve"
         )));
     }
@@ -1881,7 +1894,7 @@ fn check_hints(parameter: &ParameterDescriptor) -> Result<(), Error> {
             .iter()
             .any(Option::is_some)
     {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "parameter {name} declares numeric hints but is not a number"
         )));
     }
@@ -1889,7 +1902,7 @@ fn check_hints(parameter: &ParameterDescriptor) -> Result<(), Error> {
         && !matches!(parameter.kind, ParameterKind::Curve { .. })
         && parameter.fine_step.is_some()
     {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "parameter {name} declares a fine step but is not numeric or a curve"
         )));
     }
@@ -1902,21 +1915,21 @@ fn check_hints(parameter: &ParameterDescriptor) -> Result<(), Error> {
             || soft_max > max
             || (min < max && soft_min >= soft_max)
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {name} declares a soft range outside {min}..={max}"
             )));
         }
         if let Some(fine_step) = parameter.fine_step
             && (!fine_step.is_finite() || fine_step <= 0.0)
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {name} declares a fine step that is not finite and positive"
             )));
         }
         if let Some(zero) = parameter.zero
             && (!zero.is_finite() || zero < min || zero > max)
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {name} declares a zero outside {min}..={max}"
             )));
         }
@@ -1924,21 +1937,21 @@ fn check_hints(parameter: &ParameterDescriptor) -> Result<(), Error> {
     if let Some(fine_step) = parameter.fine_step
         && (!fine_step.is_finite() || fine_step <= 0.0)
     {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "parameter {name} declares a fine step that is not finite and positive"
         )));
     }
     if let Some(step) = parameter.step
         && (!step.is_finite() || step <= 0.0)
     {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "parameter {name} declares a step that is not finite and positive"
         )));
     }
     if let Some(precision) = parameter.precision
         && precision > MAX_PRECISION
     {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "parameter {name} declares a precision above {MAX_PRECISION}"
         )));
     }
@@ -1952,7 +1965,7 @@ fn check_summary(action: &ActionDescriptor) -> Result<(), Error> {
         return Ok(());
     };
     let unbalanced = || {
-        validation(format!(
+        Error::validation(format!(
             "summary of action {} has unbalanced braces",
             action.id
         ))
@@ -1970,7 +1983,7 @@ fn check_summary(action: &ActionDescriptor) -> Result<(), Error> {
             return Err(unbalanced());
         }
         if action.parameter(name).is_none() {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "summary of action {} names undeclared parameter {name}",
                 action.id
             )));
@@ -2061,9 +2074,9 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
         ParameterKind::Integer { min, max } => {
             let number = value
                 .as_i64()
-                .ok_or_else(|| validation(format!("parameter {name} must be an integer")))?;
+                .ok_or_else(|| Error::validation(format!("parameter {name} must be an integer")))?;
             if number < *min || number > *max {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must be an integer within {min}..={max}"
                 )));
             }
@@ -2074,9 +2087,9 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
             let number = value
                 .as_f64()
                 .filter(|number| number.is_finite())
-                .ok_or_else(|| validation(format!("parameter {name} must be a number")))?;
+                .ok_or_else(|| Error::validation(format!("parameter {name} must be a number")))?;
             if number < *min || number > *max {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must be a number within {min}..={max}"
                 )));
             }
@@ -2084,9 +2097,9 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
         ParameterKind::Enum { options } => {
             let text = value
                 .as_str()
-                .ok_or_else(|| validation(format!("parameter {name} must be a string")))?;
+                .ok_or_else(|| Error::validation(format!("parameter {name} must be a string")))?;
             if !options.iter().any(|option| option == text) {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must be one of {}",
                     options.join(", ")
                 )));
@@ -2100,14 +2113,16 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                         .all(|channel| channel.as_u64().is_some_and(|channel| channel <= 255))
             });
             if !valid {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must be three sRGB channels 0..=255"
                 )));
             }
         }
         ParameterKind::Boolean => {
             if !value.is_boolean() {
-                return Err(validation(format!("parameter {name} must be a boolean")));
+                return Err(Error::validation(format!(
+                    "parameter {name} must be a boolean"
+                )));
             }
         }
         ParameterKind::Points {
@@ -2116,35 +2131,34 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
         } => {
             use crate::path::{COORDINATE_MAX, COORDINATE_MIN};
             let Some(points) = value.as_array() else {
-                return Err(validation(format!("parameter {name} must be a path")));
+                return Err(Error::validation(format!(
+                    "parameter {name} must be a path"
+                )));
             };
             // The count is refused as a resource limit when it is over the bound and as a
             // validation error when it is under one, because the two are different facts: a path
             // longer than a build will store names the limit it exceeded, and a path too short to
             // be a gesture is a malformed request.
             if points.len() > *points_max {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "parameter {name} has {} positions; the limit is {points_max} points per \
+                return Err(Error::resource_limit(format!(
+                    "parameter {name} has {} positions; the limit is {points_max} points per \
                          stroke",
-                        points.len()
-                    ),
-                ));
+                    points.len()
+                )));
             }
             if points.len() < *points_min {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must hold at least {points_min} positions"
                 )));
             }
             for (index, point) in points.iter().enumerate() {
                 let Some(pair) = point.as_array().filter(|pair| pair.len() == 2) else {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "parameter {name} has a malformed position {index}"
                     )));
                 };
                 let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) else {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "parameter {name} has a malformed position {index}"
                     )));
                 };
@@ -2153,7 +2167,7 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                     || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&x)
                     || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&y)
                 {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "parameter {name} position {index} must hold two numbers within \
                          {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
                     )));
@@ -2165,7 +2179,7 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 .as_str()
                 .is_some_and(|text| crate::ArtifactId::parse(text).is_ok());
             if !valid {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must be an artifact identity"
                 )));
             }
@@ -2177,7 +2191,7 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
             fixed_x,
         } => {
             let Some(points) = value.as_array() else {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must be a curve point list"
                 )));
             };
@@ -2185,19 +2199,19 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 || points.len() > *points_max
                 || fixed_x.as_ref().is_some_and(|xs| xs.len() != points.len())
             {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} has an invalid curve point count"
                 )));
             }
             let mut previous = None;
             for (index, point) in points.iter().enumerate() {
                 let Some(pair) = point.as_array().filter(|pair| pair.len() == 2) else {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "parameter {name} has a malformed curve point {index}"
                     )));
                 };
                 let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) else {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "parameter {name} has a malformed curve point {index}"
                     )));
                 };
@@ -2208,7 +2222,7 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                     || previous.is_some_and(|(px, py)| x <= px || (*monotone && y < py))
                     || fixed_x.as_ref().is_some_and(|xs| x != xs[index])
                 {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "parameter {name} has an invalid curve point {index}"
                     )));
                 }
@@ -2218,15 +2232,15 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
         ParameterKind::String { max_length } => {
             let text = value
                 .as_str()
-                .ok_or_else(|| validation(format!("parameter {name} must be a string")))?;
+                .ok_or_else(|| Error::validation(format!("parameter {name} must be a string")))?;
             // Characters, not bytes: the bound is what a person reads and types.
             if text.chars().count() > *max_length {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must be at most {max_length} characters"
                 )));
             }
             if text.chars().any(char::is_control) {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must not contain control characters"
                 )));
             }
@@ -2237,23 +2251,24 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 .as_str()
                 .filter(|text| text.len() <= MAX_ENDPOINT_BYTES)
                 .ok_or_else(|| {
-                    validation(format!(
+                    Error::validation(format!(
                         "parameter {name} must be a string of at most {MAX_ENDPOINT_BYTES} bytes"
                     ))
                 })?;
-            parse_endpoint(text, classes)
-                .map_err(|error| validation(format!("parameter {name}: {}", error.detail)))?;
+            parse_endpoint(text, classes).map_err(|error| {
+                Error::validation(format!("parameter {name}: {}", error.detail))
+            })?;
         }
         // The one request that carries a secret's value is `module.settings.set-secret`, which
         // hands it to the secret store without it ever being a JSON value here.
         ParameterKind::Secret { .. } => {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {name} is a secret, which is never a plain value"
             )));
         }
         ParameterKind::Identity { of } => {
             if !value.as_str().is_some_and(|text| of.accepts(text)) {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "parameter {name} must be a {} identity",
                     of.as_str()
                 )));
@@ -2270,15 +2285,15 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
 fn check_settings(name: &str, value: &Value) -> Result<(), Error> {
     let actions = value
         .as_object()
-        .ok_or_else(|| validation(format!("parameter {name} must be a settings object")))?;
+        .ok_or_else(|| Error::validation(format!("parameter {name} must be a settings object")))?;
     if actions.is_empty() || actions.len() > MAX_SETTINGS_ACTIONS {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "parameter {name} must name 1..={MAX_SETTINGS_ACTIONS} actions"
         )));
     }
     for (action, fields) in actions {
         if !valid_name(action) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {name} names invalid action identity {action}"
             )));
         }
@@ -2286,17 +2301,17 @@ fn check_settings(name: &str, value: &Value) -> Result<(), Error> {
             .as_object()
             .filter(|fields| !fields.is_empty())
             .ok_or_else(|| {
-                validation(format!(
+                Error::validation(format!(
                     "parameter {name} must give action {action} a non-empty object of fields"
                 ))
             })?;
         if fields.len() > MAX_SETTINGS_FIELDS {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {name} gives action {action} more than {MAX_SETTINGS_FIELDS} fields"
             )));
         }
         if let Some(field) = fields.keys().find(|field| !valid_name(field)) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter {name} gives action {action} invalid field name {field}"
             )));
         }
@@ -2340,14 +2355,14 @@ pub(crate) fn check_declared_values(
         Value::Object(object) => object,
         Value::Null => &empty,
         _ => {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameters of {what} {id} must be a JSON object"
             )));
         }
     };
     for name in object.keys() {
         if declared(name).is_none() {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "unknown parameter {name} for {what} {id}"
             )));
         }
@@ -2365,7 +2380,7 @@ pub(crate) fn check_declared_values(
                 && parameter.kind.is_identity()
                 && !object.contains_key(&parameter.name)
         }) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "missing required parameter {} for {what} {id}",
                 missing.name
             )));
@@ -2382,7 +2397,7 @@ pub(crate) fn check_declared_values(
                 checked.insert(parameter.name.clone(), default.clone());
             }
             (None, None) if parameter.required => {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "missing required parameter {} for {what} {id}",
                     parameter.name
                 )));

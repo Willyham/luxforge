@@ -12,8 +12,10 @@
 //! is frame work, bounded by the same 512 MiB frame limit as a rendered raster and parallelized on
 //! the shared Rayon pool above the same one-megapixel threshold as every other pass.
 
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind, LinearImage, PreviewSource, Raster, SourceImage,
+    Error, LinearImage, PreviewSource, Raster, SourceImage,
     colour::srgb::{decode_pixel, quantize_channel},
     render::{frame_mut, zeroed_frame},
 };
@@ -282,16 +284,14 @@ impl PreviewSource {
     }
 }
 
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
 fn check_plan(plan: ProxyPlan, source_width: u32, source_height: u32) -> Result<(), Error> {
     if plan.width == 0 || plan.height == 0 {
-        return Err(validation("a proxy plan's dimensions must be nonzero"));
+        return Err(Error::validation(
+            "a proxy plan's dimensions must be nonzero",
+        ));
     }
     if plan.width > source_width || plan.height > source_height {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "a proxy plan never upscales: {}x{} from a {source_width}x{source_height} source",
             plan.width, plan.height
         )));
@@ -306,32 +306,14 @@ fn float_values(width: u32, height: u32, what: &str) -> Result<usize, Error> {
     let values = u64::from(width)
         .checked_mul(u64::from(height))
         .and_then(|pixels| pixels.checked_mul(3))
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::ResourceLimit,
-                format!("{what} dimensions overflow"),
-            )
-        })?;
+        .ok_or_else(|| Error::resource_limit(format!("{what} dimensions overflow")))?;
     let bytes = values
         .checked_mul(std::mem::size_of::<f32>() as u64)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::ResourceLimit,
-                format!("{what} byte length overflow"),
-            )
-        })?;
+        .ok_or_else(|| Error::resource_limit(format!("{what} byte length overflow")))?;
     if bytes > FRAME_LIMIT_BYTES {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!("{what} exceeds 512 MiB"),
-        ));
+        return Err(Error::resource_limit(format!("{what} exceeds 512 MiB")));
     }
-    usize::try_from(values).map_err(|_| {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            format!("{what} is not addressable"),
-        )
-    })
+    usize::try_from(values).map_err(|_| Error::resource_limit(format!("{what} is not addressable")))
 }
 
 /// The source samples that one output sample averages along one axis, with the fractional coverage
@@ -477,7 +459,7 @@ impl BoxDownscale {
 fn downscale_jpeg(source: &SourceImage, width: u32, height: u32) -> Result<SourceImage, Error> {
     let source_len = Raster::expected_len(source.width, source.height)?;
     if source.rgba.len() != source_len {
-        return Err(validation(
+        return Err(Error::validation(
             "source buffer length does not match its dimensions",
         ));
     }

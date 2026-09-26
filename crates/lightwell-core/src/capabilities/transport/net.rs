@@ -2,7 +2,7 @@
 //! belong to the endpoint's class and connects only to an address it checked, so no second lookup
 //! can rebind the name between the check and the connection.
 use super::policy::{Endpoint, address_allowed};
-use crate::{Error, ErrorKind};
+use crate::Error;
 use std::{
     io,
     net::{SocketAddr, TcpStream, ToSocketAddrs},
@@ -42,10 +42,7 @@ impl Connect for SystemConnector {
 }
 
 fn timed_out(name: &str) -> Error {
-    Error::new(
-        ErrorKind::FileAccess,
-        format!("connecting to {name} timed out"),
-    )
+    Error::file_access(format!("connecting to {name} timed out"))
 }
 
 /// Resolve `endpoint` once, check every address against its class and connect to the first
@@ -61,24 +58,20 @@ pub(super) fn connect(
     let url = &endpoint.url;
     let port = url
         .port_or_known_default()
-        .ok_or_else(|| Error::new(ErrorKind::Validation, "URL has no port"))?;
+        .ok_or_else(|| Error::validation("URL has no port"))?;
     let name = url.host_str().unwrap_or_default();
     let addresses = match url.host() {
         Some(Host::Domain(domain)) => resolver.resolve(domain, port).map_err(|error| {
-            Error::new(
-                ErrorKind::FileAccess,
-                format!("cannot resolve {name}: {}", error.kind()),
-            )
+            Error::file_access(format!("cannot resolve {name}: {}", error.kind()))
         })?,
         Some(Host::Ipv4(address)) => vec![SocketAddr::new(address.into(), port)],
         Some(Host::Ipv6(address)) => vec![SocketAddr::new(address.into(), port)],
-        None => return Err(Error::new(ErrorKind::Validation, "URL has no host")),
+        None => return Err(Error::validation("URL has no host")),
     };
     if addresses.is_empty() {
-        return Err(Error::new(
-            ErrorKind::FileAccess,
-            format!("{name} did not resolve to any address"),
-        ));
+        return Err(Error::file_access(format!(
+            "{name} did not resolve to any address"
+        )));
     }
     if let Some(address) = addresses
         .iter()
@@ -86,15 +79,12 @@ pub(super) fn connect(
         .find(|&address| !address_allowed(address, endpoint.class))
     {
         let class = endpoint.class.label();
-        return Err(Error::new(
-            ErrorKind::Validation,
-            match url.host() {
-                Some(Host::Domain(_)) => {
-                    format!("{name} resolved to {address}, which is not a {class} address")
-                }
-                _ => format!("{address} is not a {class} address"),
-            },
-        ));
+        return Err(Error::validation(match url.host() {
+            Some(Host::Domain(_)) => {
+                format!("{name} resolved to {address}, which is not a {class} address")
+            }
+            _ => format!("{address} is not a {class} address"),
+        }));
     }
     let mut last = io::ErrorKind::NotConnected;
     for address in addresses {
@@ -110,9 +100,6 @@ pub(super) fn connect(
     Err(if last == io::ErrorKind::TimedOut {
         timed_out(name)
     } else {
-        Error::new(
-            ErrorKind::FileAccess,
-            format!("cannot connect to {name}: {last}"),
-        )
+        Error::file_access(format!("cannot connect to {name}: {last}"))
     })
 }

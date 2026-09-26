@@ -10,8 +10,10 @@ use super::{
     Cancel, ColorRun, Compiled, Entry, Evaluation, PixelDomain, Raster, RenderContext, RowScratch,
     Segment, SegmentRows, SpatialMode, Taps, apply_units, segment_pass, spatial,
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind, SnapshotId,
+    Error, SnapshotId,
     colour::{mat3, srgb},
     modules::{Parallelism, Region, Resample, Stage},
 };
@@ -25,103 +27,65 @@ const MAX_RESAMPLES: usize = 1;
 
 fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
     if width == 0 || height == 0 {
-        return Err(Error::new(
-            ErrorKind::Validation,
+        return Err(Error::validation(
             "linear source dimensions must be nonzero",
         ));
     }
     if width > MAX_SIDE || height > MAX_SIDE {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
+        return Err(Error::resource_limit(
             "linear source side exceeds 16384 pixels",
         ));
     }
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::ResourceLimit,
-                "linear source dimensions overflow",
-            )
-        })?;
+        .ok_or_else(|| Error::resource_limit("linear source dimensions overflow"))?;
     if pixels > MAX_PIXELS {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
+        return Err(Error::resource_limit(
             "linear source exceeds 128 megapixels",
         ));
     }
-    let values = pixels.checked_mul(3).ok_or_else(|| {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            "linear source plane length overflow",
-        )
-    })?;
+    let values = pixels
+        .checked_mul(3)
+        .ok_or_else(|| Error::resource_limit("linear source plane length overflow"))?;
     let bytes = values
         .checked_mul(u64::from(std::mem::size_of::<f32>() as u32))
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::ResourceLimit,
-                "linear source byte length overflow",
-            )
-        })?;
+        .ok_or_else(|| Error::resource_limit("linear source byte length overflow"))?;
     if bytes > MAX_SOURCE_BYTES {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            "linear RGB source exceeds 1.5 GiB",
-        ));
+        return Err(Error::resource_limit("linear RGB source exceeds 1.5 GiB"));
     }
     let values = usize::try_from(values)
-        .map_err(|_| Error::new(ErrorKind::ResourceLimit, "linear source is not addressable"))?;
-    let plane_len = usize::try_from(pixels).map_err(|_| {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            "linear source plane is not addressable",
-        )
-    })?;
+        .map_err(|_| Error::resource_limit("linear source is not addressable"))?;
+    let plane_len = usize::try_from(pixels)
+        .map_err(|_| Error::resource_limit("linear source plane is not addressable"))?;
     Ok((values, plane_len))
 }
 
 pub(super) fn output_len(width: u32, height: u32) -> Result<usize, Error> {
     if width == 0 || height == 0 {
-        return Err(Error::new(
-            ErrorKind::Validation,
+        return Err(Error::validation(
             "linear output dimensions must be nonzero",
         ));
     }
     if width > MAX_SIDE || height > MAX_SIDE {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
+        return Err(Error::resource_limit(
             "linear output side exceeds 16384 pixels",
         ));
     }
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::ResourceLimit,
-                "linear output dimensions overflow",
-            )
-        })?;
+        .ok_or_else(|| Error::resource_limit("linear output dimensions overflow"))?;
     if pixels > lightwell_raw::MAX_PIXELS as u64 {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
+        return Err(Error::resource_limit(
             "linear output exceeds 128 megapixels",
         ));
     }
-    let bytes = pixels.checked_mul(4).ok_or_else(|| {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            "linear output byte length overflow",
-        )
-    })?;
+    let bytes = pixels
+        .checked_mul(4)
+        .ok_or_else(|| Error::resource_limit("linear output byte length overflow"))?;
     if bytes > MAX_RGBA_BYTES {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            "linear output exceeds 512 MiB",
-        ));
+        return Err(Error::resource_limit("linear output exceeds 512 MiB"));
     }
-    usize::try_from(bytes)
-        .map_err(|_| Error::new(ErrorKind::ResourceLimit, "linear output is not addressable"))
+    usize::try_from(bytes).map_err(|_| Error::resource_limit("linear output is not addressable"))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,26 +194,21 @@ impl LinearImage {
     ) -> Result<Self, Error> {
         let (expected, _) = layout(width, height)?;
         if planes.len() != expected {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("linear source needs {expected} planar values"),
-            ));
+            return Err(Error::validation(format!(
+                "linear source needs {expected} planar values"
+            )));
         }
         let capacity_bytes = u64::try_from(planes.capacity())
             .ok()
             .and_then(|capacity| capacity.checked_mul(u64::from(std::mem::size_of::<f32>() as u32)))
-            .ok_or_else(|| {
-                Error::new(ErrorKind::ResourceLimit, "linear source capacity overflows")
-            })?;
+            .ok_or_else(|| Error::resource_limit("linear source capacity overflows"))?;
         if capacity_bytes > MAX_SOURCE_BYTES {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
+            return Err(Error::resource_limit(
                 "linear RGB source capacity exceeds 1.5 GiB",
             ));
         }
         if !already_finite && planes.iter().any(|value| !value.is_finite()) {
-            return Err(Error::new(
-                ErrorKind::Validation,
+            return Err(Error::validation(
                 "linear source contains a non-finite value",
             ));
         }
@@ -277,22 +236,18 @@ impl LinearImage {
     pub fn with_view(&self, crop: [u32; 4], orientation: u8) -> Result<Self, Error> {
         let [x, y, width, height] = crop;
         if !(1..=8).contains(&orientation) {
-            return Err(Error::new(
-                ErrorKind::Validation,
+            return Err(Error::validation(
                 "linear source orientation must be EXIF 1 through 8",
             ));
         }
-        let right = x.checked_add(width).ok_or_else(|| {
-            Error::new(ErrorKind::ResourceLimit, "linear crop exceeds dimensions")
-        })?;
-        let bottom = y.checked_add(height).ok_or_else(|| {
-            Error::new(ErrorKind::ResourceLimit, "linear crop exceeds dimensions")
-        })?;
+        let right = x
+            .checked_add(width)
+            .ok_or_else(|| Error::resource_limit("linear crop exceeds dimensions"))?;
+        let bottom = y
+            .checked_add(height)
+            .ok_or_else(|| Error::resource_limit("linear crop exceeds dimensions"))?;
         if width == 0 || height == 0 || right > self.base_width || bottom > self.base_height {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "linear crop lies outside source planes",
-            ));
+            return Err(Error::validation("linear crop lies outside source planes"));
         }
         let view = View {
             x,
@@ -391,19 +346,15 @@ impl LinearImage {
     #[inline(always)]
     fn pixel_f64(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
         let pixel = self.pixel(x, y).ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!("linear source coordinate ({x}, {y}) is outside the view"),
-            )
+            Error::validation(format!(
+                "linear source coordinate ({x}, {y}) is outside the view"
+            ))
         })?;
         let pixel = pixel.map(f64::from);
         if pixel.iter().all(|value| value.is_finite()) {
             Ok(pixel)
         } else {
-            Err(Error::new(
-                ErrorKind::Render,
-                "linear source produced a non-finite pixel",
-            ))
+            Err(Error::render("linear source produced a non-finite pixel"))
         }
     }
 }
@@ -523,8 +474,7 @@ impl WhiteBalanceApproximation {
         for (channel, value) in ratio.iter_mut().enumerate() {
             let (from, to) = (f64::from(developed[channel]), f64::from(target[channel]));
             if !(from.is_finite() && to.is_finite() && from > 0.0 && to > 0.0) {
-                return Err(Error::new(
-                    ErrorKind::Validation,
+                return Err(Error::validation(
                     "white-balance gains must be finite and positive",
                 ));
             }
@@ -546,8 +496,7 @@ impl WhiteBalanceApproximation {
         if matrix.iter().flatten().all(|value| value.is_finite()) {
             Ok(Self { matrix })
         } else {
-            Err(Error::new(
-                ErrorKind::Validation,
+            Err(Error::validation(
                 "a white-balance approximation must be finite",
             ))
         }
@@ -577,8 +526,7 @@ impl WhiteBalanceApproximation {
 impl LinearSettings {
     pub(super) fn multiplier(self) -> Result<f64, Error> {
         if !self.exposure_ev.is_finite() || !(-5.0..=5.0).contains(&self.exposure_ev) {
-            return Err(Error::new(
-                ErrorKind::Validation,
+            return Err(Error::validation(
                 "linear exposure must be finite and between -5 and +5 EV",
             ));
         }
@@ -586,10 +534,7 @@ impl LinearSettings {
         if multiplier.is_finite() {
             Ok(multiplier)
         } else {
-            Err(Error::new(
-                ErrorKind::Render,
-                "linear exposure multiplier overflow",
-            ))
+            Err(Error::render("linear exposure multiplier overflow"))
         }
     }
 }
@@ -601,8 +546,7 @@ fn decode_rgb(value: [u8; 3]) -> [f64; 3] {
 
 fn terminal_srgb(linear: f64) -> Result<u8, Error> {
     if !linear.is_finite() {
-        return Err(Error::new(
-            ErrorKind::Render,
+        return Err(Error::render(
             "linear evaluation produced a non-finite value",
         ));
     }
@@ -623,10 +567,7 @@ fn terminal_srgb(linear: f64) -> Result<u8, Error> {
     let encoded = srgb::encode(linear);
     let rounded = (encoded * 255.0).round();
     if !rounded.is_finite() || !(0.0..=255.0).contains(&rounded) {
-        return Err(Error::new(
-            ErrorKind::Render,
-            "terminal sRGB conversion overflow",
-        ));
+        return Err(Error::render("terminal sRGB conversion overflow"));
     }
     Ok(rounded as u8)
 }
@@ -639,8 +580,7 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
         .filter(|segment| matches!(segment.entry.as_ref().map(Entry::resample), Some(Some(_))))
         .count();
     if resamples > MAX_RESAMPLES {
-        return Err(Error::new(
-            ErrorKind::Validation,
+        return Err(Error::validation(
             "linear evaluation supports at most one resample stage",
         ));
     }
@@ -686,10 +626,7 @@ impl<'a> Linear<'a> {
         if output.iter().all(|value| value.is_finite()) {
             Ok(output)
         } else {
-            Err(Error::new(
-                ErrorKind::Render,
-                "linear exposure produced a non-finite value",
-            ))
+            Err(Error::render("linear exposure produced a non-finite value"))
         }
     }
 }
@@ -799,8 +736,7 @@ impl PixelDomain for Linear<'_> {
         if pixel.iter().all(|value| value.is_finite()) {
             Ok(pixel)
         } else {
-            Err(Error::new(
-                ErrorKind::Render,
+            Err(Error::render(
                 "linear evaluation produced a non-finite pixel",
             ))
         }
@@ -815,8 +751,7 @@ impl PixelDomain for Linear<'_> {
         mut fetch: impl FnMut(u32, u32) -> Result<[f64; 3], Error>,
     ) -> Result<[f64; 3], Error> {
         if !u.is_finite() || !v.is_finite() || width == 0 || height == 0 {
-            return Err(Error::new(
-                ErrorKind::Render,
+            return Err(Error::render(
                 "linear resample has invalid coordinates or dimensions",
             ));
         }
@@ -838,10 +773,7 @@ impl PixelDomain for Linear<'_> {
         if output.iter().all(|value: &f64| value.is_finite()) {
             Ok(output)
         } else {
-            Err(Error::new(
-                ErrorKind::Render,
-                "linear resample produced a non-finite value",
-            ))
+            Err(Error::render("linear resample produced a non-finite value"))
         }
     }
 
@@ -1007,12 +939,9 @@ impl LinearRows<'_, '_, '_> {
         reader: &'r ViewReader<'_>,
         y: u32,
     ) -> Result<impl ExactSizeIterator<Item = [f32; 3]> + 'r, Error> {
-        reader.row(y).ok_or_else(|| {
-            Error::new(
-                ErrorKind::Render,
-                "linear output coordinate was outside stage",
-            )
-        })
+        reader
+            .row(y)
+            .ok_or_else(|| Error::render("linear output coordinate was outside stage"))
     }
 
     /// The segment's entry value under output pixel `(x, y)`, through its exact geometry.
@@ -1109,7 +1038,7 @@ impl LinearRows<'_, '_, '_> {
             width: previous.width,
             height: previous.height,
         };
-        let outside = || Error::new(ErrorKind::Render, "a resample tap was outside its stage");
+        let outside = || Error::render("a resample tap was outside its stage");
         let LinearScratch {
             rows: values,
             block,
@@ -1309,9 +1238,7 @@ mod tests {
             for (x, pixel_bytes) in row.chunks_exact_mut(4).enumerate() {
                 let pixel = evaluation
                     .pixel(x as u32, row_index as u32)?
-                    .ok_or_else(|| {
-                        Error::new(ErrorKind::Render, "reference pixel outside stage")
-                    })?;
+                    .ok_or_else(|| Error::render("reference pixel outside stage"))?;
                 pixel_bytes.copy_from_slice(&terminal_pixel(pixel)?);
             }
             Ok(())

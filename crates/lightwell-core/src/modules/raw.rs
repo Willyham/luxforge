@@ -5,7 +5,7 @@ use super::{
     EffectDescriptor, EffectStage, ExactGeometry, LayerUpdate, ModuleDescriptor,
     ParameterDescriptor, Processing, ResetAction, Stage, StageContext, ToolModule,
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId};
+use crate::{EFFECT_FORMAT, Error, Layer, LayerId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -30,17 +30,10 @@ const MAX_EXPOSURE_EV: f64 = 5.0;
 const CUSTOM_START_KELVIN: f64 = 6504.0;
 const CUSTOM_START_TINT: f64 = 0.0;
 
-fn validation(message: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, message)
-}
-
 /// Refuse anything but the RAW development's own effect and format.
 fn raw_effect(effect_id: &str, format: u32) -> Result<(), Error> {
     if effect_id != RAW_EFFECT || format != EFFECT_FORMAT {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
-            "invalid RAW source layer",
-        ));
+        return Err(Error::incompatible("invalid RAW source layer"));
     }
     Ok(())
 }
@@ -101,7 +94,7 @@ impl RawPayload {
         if !self.exposure_ev.is_finite()
             || !(MIN_EXPOSURE_EV..=MAX_EXPOSURE_EV).contains(&self.exposure_ev)
         {
-            return Err(validation("RAW exposure must be -5..=+5 EV"));
+            return Err(Error::validation("RAW exposure must be -5..=+5 EV"));
         }
         if self.gains[1] != 1.0
             || self.as_shot_gains[1] != 1.0
@@ -111,7 +104,7 @@ impl RawPayload {
                 .chain(self.as_shot_gains.iter())
                 .any(|g| !g.is_finite() || *g <= 0.0 || f64::from(*g) > MAX_RAW_GAIN)
         {
-            return Err(validation(
+            return Err(Error::validation(
                 "RAW gains must be finite, positive, <=32, and green-normalized",
             ));
         }
@@ -121,7 +114,7 @@ impl RawPayload {
             .flatten()
             .any(|value| !value.is_finite())
         {
-            return Err(validation("RAW camera calibration must be finite"));
+            return Err(Error::validation("RAW camera calibration must be finite"));
         }
         match (self.temperature_kelvin, self.tint) {
             (None, None) => {}
@@ -134,12 +127,16 @@ impl RawPayload {
                     .zip(resolved)
                     .any(|(actual, expected)| (actual - expected).abs() > 1e-5)
                 {
-                    return Err(validation(
+                    return Err(Error::validation(
                         "RAW custom temperature/tint disagree with sensor gains",
                     ));
                 }
             }
-            _ => return Err(validation("RAW custom temperature and tint must be paired")),
+            _ => {
+                return Err(Error::validation(
+                    "RAW custom temperature and tint must be paired",
+                ));
+            }
         }
         Ok(())
     }
@@ -154,7 +151,7 @@ impl RawPayload {
     pub fn from_value(effect_id: &str, format: u32, payload: &Value) -> Result<Self, Error> {
         raw_effect(effect_id, format)?;
         let payload = Self::deserialize(payload)
-            .map_err(|e| validation(format!("invalid RAW payload: {e}")))?;
+            .map_err(|e| Error::validation(format!("invalid RAW payload: {e}")))?;
         payload.validate()?;
         Ok(payload)
     }
@@ -406,7 +403,7 @@ impl ToolModule for RawModule {
         ]
         .contains(&action_id)
         {
-            return Err(validation(format!("unknown RAW action {action_id}")));
+            return Err(Error::validation(format!("unknown RAW action {action_id}")));
         }
         Ok(ActionInput {
             action_id: action_id.into(),
@@ -418,7 +415,7 @@ impl ToolModule for RawModule {
             .layers
             .first()
             .filter(|layer| layer.effect_id == RAW_EFFECT)
-            .ok_or_else(|| validation("RAW controls require a RAW original"))?;
+            .ok_or_else(|| Error::validation("RAW controls require a RAW original"))?;
         let stored = RawPayload::from_layer(layer)?;
         let mut payload = stored.clone();
         match input.action_id.as_str() {
@@ -427,7 +424,7 @@ impl ToolModule for RawModule {
                     .parameters
                     .get("ev")
                     .and_then(Value::as_f64)
-                    .ok_or_else(|| validation("missing EV"))?
+                    .ok_or_else(|| Error::validation("missing EV"))?
             }
             SET_RED | SET_BLUE => {
                 if payload.wb_mode == WhiteBalanceMode::AsShot {
@@ -437,7 +434,8 @@ impl ToolModule for RawModule {
                     .parameters
                     .get("gain")
                     .and_then(Value::as_f64)
-                    .ok_or_else(|| validation("missing gain"))? as f32;
+                    .ok_or_else(|| Error::validation("missing gain"))?
+                    as f32;
                 payload.gains[if input.action_id == SET_RED { 0 } else { 2 }] = gain;
                 payload.wb_mode = WhiteBalanceMode::Custom;
                 payload.temperature_kelvin = None;
@@ -452,7 +450,7 @@ impl ToolModule for RawModule {
                         .parameters
                         .get("kelvin")
                         .and_then(Value::as_f64)
-                        .ok_or_else(|| validation("missing Kelvin"))?
+                        .ok_or_else(|| Error::validation("missing Kelvin"))?
                 } else {
                     kelvin_in_force
                 };
@@ -461,7 +459,7 @@ impl ToolModule for RawModule {
                         .parameters
                         .get("tint")
                         .and_then(Value::as_f64)
-                        .ok_or_else(|| validation("missing tint"))?
+                        .ok_or_else(|| Error::validation("missing tint"))?
                 } else {
                     tint_in_force
                 };
@@ -477,13 +475,13 @@ impl ToolModule for RawModule {
                     .get("x")
                     .and_then(Value::as_u64)
                     .and_then(|x| u32::try_from(x).ok())
-                    .ok_or_else(|| validation("missing neutral x"))?;
+                    .ok_or_else(|| Error::validation("missing neutral x"))?;
                 let y = input
                     .parameters
                     .get("y")
                     .and_then(Value::as_u64)
                     .and_then(|y| u32::try_from(y).ok())
-                    .ok_or_else(|| validation("missing neutral y"))?;
+                    .ok_or_else(|| Error::validation("missing neutral y"))?;
                 payload.gains = stage.sensor_neutral(x, y)?;
                 payload.temperature_kelvin = None;
                 payload.tint = None;
@@ -491,7 +489,7 @@ impl ToolModule for RawModule {
             }
             AS_SHOT => payload.wb_mode = WhiteBalanceMode::AsShot,
             RESET => payload = RawPayload::for_as_shot(payload.as_shot_gains, payload.cam_xyz)?,
-            _ => return Err(validation("unknown RAW action")),
+            _ => return Err(Error::validation("unknown RAW action")),
         }
         payload.validate()?;
         if payload == stored {
@@ -591,7 +589,7 @@ mod tests {
                 payload: next.payload,
                 ..layer.clone()
             }),
-            _ => Err(validation("expected RAW update")),
+            _ => Err(Error::validation("expected RAW update")),
         }
     }
 

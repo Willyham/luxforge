@@ -315,7 +315,7 @@ pub mod oklab {
 /// Small 3×3 linear algebra: the matrix-vector product and the signed cube root at both working
 /// precisions, the matrix product, and the adjugate inverse and determinant.
 pub mod mat3 {
-    use crate::{Error, ErrorKind};
+    use crate::Error;
 
     type Mat3 = [[f64; 3]; 3];
 
@@ -410,8 +410,7 @@ pub mod mat3 {
     /// spelling rather than change a zero's sign in the approximation's matrix.
     pub(crate) fn hadamard_checked_inverse(matrix: Mat3) -> Result<Mat3, Error> {
         let singular = || {
-            Error::new(
-                ErrorKind::UnsupportedColor,
+            Error::unsupported_color(
                 "the camera matrix is singular, so no white-balance approximation exists",
             )
         };

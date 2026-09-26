@@ -16,7 +16,7 @@ use super::{
     Binding, ComponentField, DISTANCE_MAX, DISTANCE_MIN, Field, parameters::position, smooth,
 };
 use crate::{
-    Component, Error, ErrorKind, ParameterDescriptor,
+    Component, Error, ParameterDescriptor,
     modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
@@ -92,13 +92,10 @@ pub(super) fn parameters(required: bool) -> Vec<ParameterDescriptor> {
 pub(super) fn parse(component: &Component) -> Result<LinearGradient, Error> {
     let gradient: LinearGradient =
         serde_json::from_value(component.payload.clone()).map_err(|error| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "component {} has an invalid {KIND} payload: {error}",
-                    component.name
-                ),
-            )
+            Error::validation(format!(
+                "component {} has an invalid {KIND} payload: {error}",
+                component.name
+            ))
         })?;
     for (field, value) in [
         ("x0", gradient.x0),
@@ -107,13 +104,10 @@ pub(super) fn parse(component: &Component) -> Result<LinearGradient, Error> {
         ("y1", gradient.y1),
     ] {
         if !value.is_finite() || !(POSITION_MIN..=POSITION_MAX).contains(&value) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "component {} {KIND} {field} must be a number within {POSITION_MIN:.0}..={POSITION_MAX:.0}",
-                    component.name
-                ),
-            ));
+            return Err(Error::validation(format!(
+                "component {} {KIND} {field} must be a number within {POSITION_MIN:.0}..={POSITION_MAX:.0}",
+                component.name
+            )));
         }
     }
     Ok(gradient)
@@ -151,14 +145,11 @@ impl Compiled {
         let dv = v1 - v0;
         let l2 = du * du + dv * dv;
         if !(DISTANCE_MIN * DISTANCE_MIN..=DISTANCE_MAX * DISTANCE_MAX).contains(&l2) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "component {name} {KIND} axis length must be within {DISTANCE_MIN:e}..={DISTANCE_MAX:.0} \
+            return Err(Error::validation(format!(
+                "component {name} {KIND} axis length must be within {DISTANCE_MIN:e}..={DISTANCE_MAX:.0} \
                      mask-space units on a {}x{} stage",
-                    stage.width, stage.height
-                ),
-            ));
+                stage.width, stage.height
+            )));
         }
         Ok(Self {
             u0,

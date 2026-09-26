@@ -12,7 +12,7 @@ pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
 
 pub use transport::{LocalServer, LocalSessionInfo, serve_json_lines, serve_json_lines_with};
 
-use crate::{Draft, DraftId, Error, ErrorKind, PreviewSession};
+use crate::{Draft, DraftId, Error, PreviewSession};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -61,11 +61,7 @@ impl ApiResponse {
                 result: Some(result),
                 error: None,
             },
-            Err(error) => Self::failure(
-                id,
-                sequence,
-                Error::new(ErrorKind::Internal, error.to_string()),
-            ),
+            Err(error) => Self::failure(id, sequence, Error::internal(error.to_string())),
         }
     }
     pub(super) fn failure(id: String, sequence: u64, error: Error) -> Self {
@@ -278,11 +274,6 @@ impl ClientSession {
         self.draft
             .as_ref()
             .filter(|draft| &draft.draft_id == draft_id)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Validation,
-                    format!("unknown draft {draft_id} for this client"),
-                )
-            })
+            .ok_or_else(|| Error::validation(format!("unknown draft {draft_id} for this client")))
     }
 }

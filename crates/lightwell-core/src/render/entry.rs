@@ -18,8 +18,8 @@ use super::{
     transform_of,
 };
 use crate::{
-    Error, ErrorKind, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan, Recipe,
-    SnapshotId, SourceImage, mask_field::MaskSampling,
+    Error, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan, Recipe, SnapshotId,
+    SourceImage, mask_field::MaskSampling,
 };
 use std::borrow::Cow;
 
@@ -331,7 +331,7 @@ impl<'a> Render<'a> {
         let (width, height) = self.stage();
         domain.check_output(width, height)?;
         let evaluation = self.evaluation(domain, D::GRID)?;
-        let outside = || Error::new(ErrorKind::Internal, "a grid centre lies outside the stage");
+        let outside = || Error::internal("a grid centre lies outside the stage");
         grid_centres(side, width, height)
             .into_iter()
             .map(|(x, y)| {
@@ -375,13 +375,10 @@ pub(crate) fn layer_input<'a>(
         &recipe.artifacts,
     )?;
     if compiled.evaluates_spatial() {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "a spatial layer before the masked one means reading the pixel it receives \
+        return Err(Error::resource_limit(format!(
+            "a spatial layer before the masked one means reading the pixel it receives \
                  evaluates a {PRODUCTION_TILE} px tile per grid cell"
-            ),
-        ));
+        )));
     }
     match source {
         RenderSource::Byte(image) => {

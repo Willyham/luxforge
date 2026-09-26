@@ -39,7 +39,7 @@ use super::{
     },
 };
 use crate::{
-    Error, ErrorKind,
+    Error,
     modules::{Global, Parallelism, Region, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
@@ -357,9 +357,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 let previous = &self.compiled.segments[index - 1];
                 let (u, v) = resample.input_at(x, y);
                 D::blend(u, v, previous.width, previous.height, |x, y| {
-                    self.pixel_in(index - 1, x, y)?.ok_or_else(|| {
-                        Error::new(ErrorKind::Render, "a resample tap was outside its stage")
-                    })
+                    self.pixel_in(index - 1, x, y)?
+                        .ok_or_else(|| Error::render("a resample tap was outside its stage"))
                 })
             }
         }
@@ -377,12 +376,9 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// One pixel of the stage spatial segment `index` reads: the previous segment's output, pulled
     /// through [`Self::pixel_in`], which already applies every replacement and colour run.
     fn spatial_read(&self, index: usize, x: u32, y: u32) -> Result<[f32; 3], Error> {
-        let pixel = self.pixel_in(index - 1, x, y)?.ok_or_else(|| {
-            Error::new(
-                ErrorKind::Render,
-                "a spatial read was outside its input stage",
-            )
-        })?;
+        let pixel = self
+            .pixel_in(index - 1, x, y)?
+            .ok_or_else(|| Error::render("a spatial read was outside its input stage"))?;
         Ok(D::spatial_input(pixel))
     }
 
@@ -402,7 +398,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         out.clear();
         let segment = &self.compiled.segments[index];
         let batched = segment.has_color && !segment.has_pixels;
-        let outside = || Error::new(ErrorKind::Render, "a region read was outside its stage");
+        let outside = || Error::render("a region read was outside its stage");
         for y in region.y0..region.y1() {
             let start = out.len();
             for x in region.x0..region.x1() {

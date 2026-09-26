@@ -25,15 +25,13 @@ use super::{
     PixelModule, PresenceModule, PresetsModule, Processing, RawModule, Stage, ToolModule,
     TransformModule, VignetteModule,
 };
-use crate::{Error, ErrorKind};
+use crate::Error;
+#[cfg(test)]
+use crate::ErrorKind;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 /// The linked built-in providers, in the order a registry lists them: presets first, because the
 /// module owns no layer and its section leads the tools panel, then pixel, RAW, Basic, presence,
@@ -227,7 +225,7 @@ impl ModuleRegistry {
             if crate::mask::commands::find(&declared.id).is_some()
                 || crate::mask::commands::find_query(&declared.id).is_some()
             {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "{} declares {}, which is a host mask command",
                     descriptor.id, declared.id
                 )));
@@ -237,18 +235,21 @@ impl ModuleRegistry {
         if module.capabilities().is_none()
             && let Some(declared) = super::capability::needs_capabilities(descriptor)
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "{} declares {declared}, which needs the module's capability hooks, and it \
                  provides none",
                 descriptor.id
             )));
         }
         if self.module_ids.contains(&descriptor.id) {
-            return Err(validation(format!("duplicate module {}", descriptor.id)));
+            return Err(Error::validation(format!(
+                "duplicate module {}",
+                descriptor.id
+            )));
         }
         for effect in &descriptor.effects {
             if let Some((existing, _)) = self.effects.get(&effect.id) {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "effect {} is already provided by {}",
                     effect.id,
                     self.modules[*existing].descriptor().id
@@ -257,7 +258,7 @@ impl ModuleRegistry {
         }
         for action in &descriptor.actions {
             if let Some((existing, _)) = self.actions.get(&action.id) {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "action {} is already provided by {}",
                     action.id,
                     self.modules[*existing].descriptor().id
@@ -266,7 +267,7 @@ impl ModuleRegistry {
         }
         for query in &descriptor.queries {
             if let Some((existing, _)) = self.queries.get(&query.id) {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "query {} is already provided by {}",
                     query.id,
                     self.modules[*existing].descriptor().id
@@ -275,7 +276,7 @@ impl ModuleRegistry {
         }
         for task in &descriptor.tasks {
             if let Some((existing, _)) = self.tasks.get(&task.id) {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "task {} of module {} is already provided by {}",
                     task.id,
                     descriptor.id,
@@ -290,7 +291,7 @@ impl ModuleRegistry {
         if let Some(letter) = shortcut
             && let Some(existing) = self.shortcuts.get(letter)
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "canvas shortcut {letter} is already claimed by {}",
                 self.modules[*existing].descriptor().id
             )));

@@ -189,8 +189,7 @@ pub trait StageQuestions {
     /// sensor, so the default, for a stack without one, refuses.
     fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
         let _ = (x, y);
-        Err(Error::new(
-            crate::ErrorKind::Validation,
+        Err(Error::validation(
             "RAW neutral picker requires a RAW original",
         ))
     }
@@ -313,10 +312,7 @@ impl StageQuestions for FixedStage {
     fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
         match self.neutral {
             Some(neutral) => Ok(neutral),
-            None => Err(Error::new(
-                crate::ErrorKind::Validation,
-                format!("no RAW sensor at ({x}, {y})"),
-            )),
+            None => Err(Error::validation(format!("no RAW sensor at ({x}, {y})"))),
         }
     }
 }
@@ -381,13 +377,10 @@ pub trait ToolModule: Send + Sync {
         context: &StageContext<'_>,
     ) -> Result<Value, Error> {
         let _ = (parameters, context);
-        Err(Error::new(
-            crate::ErrorKind::Validation,
-            format!(
-                "module {} declares no queries, so it cannot answer {query_id}",
-                self.descriptor().id
-            ),
-        ))
+        Err(Error::validation(format!(
+            "module {} declares no queries, so it cannot answer {query_id}",
+            self.descriptor().id
+        )))
     }
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(

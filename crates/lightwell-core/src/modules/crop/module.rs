@@ -4,8 +4,10 @@
 //! layers before it, and commits a payload that [`CropPayload::output_rect`] has accepted. Planning
 //! is pure geometry over one immutable stage: it never rasterizes and never samples a pixel.
 use super::geometry::{BoxRect, CropPayload, CropStage, MAX_ANGLE, MIN_ANGLE};
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    EFFECT_FORMAT, Error, ErrorKind, Layer,
+    EFFECT_FORMAT, Error, Layer,
     modules::{
         ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction,
         EffectDescriptor, EffectStage, ExactGeometry, LayerUpdate, ModuleDescriptor, NewLayer,
@@ -53,10 +55,6 @@ const PRESETS: [(&str, f64); 4] = [
 /// keep the quotient finite and usable.
 const MIN_ASPECT_SIDE: f64 = 0.001;
 const MAX_ASPECT_SIDE: f64 = 100_000.0;
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 fn aspect_options() -> Vec<String> {
     let mut options = vec![FREE.to_owned(), ORIGINAL.to_owned()];
@@ -212,13 +210,13 @@ fn optional_number(parameters: &Map<String, Value>, name: &str) -> Result<Option
             .as_f64()
             .filter(|number| number.is_finite())
             .map(Some)
-            .ok_or_else(|| validation(format!("parameter {name} must be a number"))),
+            .ok_or_else(|| Error::validation(format!("parameter {name} must be a number"))),
     }
 }
 
 fn bounded(name: &str, value: f64, min: f64, max: f64) -> Result<f64, Error> {
     if value < min || value > max {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "parameter {name} must be a number within {min}..={max}"
         )));
     }
@@ -231,7 +229,7 @@ fn required_number(
     action: &str,
 ) -> Result<f64, Error> {
     optional_number(parameters, name)?.ok_or_else(|| {
-        validation(format!(
+        Error::validation(format!(
             "missing required parameter {name} for action {action}"
         ))
     })
@@ -273,7 +271,7 @@ impl FitRequest {
             None | Some(Value::Null) => FREE.to_owned(),
             Some(value) => value
                 .as_str()
-                .ok_or_else(|| validation("parameter aspect must be a string"))?
+                .ok_or_else(|| Error::validation("parameter aspect must be a string"))?
                 .to_owned(),
         };
         let known = aspect == FREE
@@ -281,7 +279,7 @@ impl FitRequest {
             || aspect == CUSTOM
             || PRESETS.iter().any(|(name, _)| *name == aspect);
         if !known {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "parameter aspect must be one of {}",
                 aspect_options().join(", ")
             )));
@@ -294,13 +292,13 @@ impl FitRequest {
                 bounded("aspect-height", height, MIN_ASPECT_SIDE, MAX_ASPECT_SIDE)?,
             )),
             (true, _, _) => {
-                return Err(validation(
+                return Err(Error::validation(
                     "action crop-fit needs both aspect-width and aspect-height when aspect is custom",
                 ));
             }
             (false, None, None) => None,
             (false, _, _) => {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "action crop-fit accepts aspect-width and aspect-height only when aspect is custom, not with aspect {aspect}"
                 )));
             }
@@ -321,7 +319,7 @@ impl FitRequest {
                 bounded("center-y", y, 0.0, 1.0)?,
             )),
             _ => {
-                return Err(validation(
+                return Err(Error::validation(
                     "action crop-fit needs both center-x and center-y or neither",
                 ));
             }
@@ -365,7 +363,7 @@ impl FitRequest {
             ORIGINAL => Ok(stage_ratio),
             CUSTOM => {
                 let (width, height) = self.custom.ok_or_else(|| {
-                    validation("aspect custom has no aspect-width and aspect-height")
+                    Error::validation("aspect custom has no aspect-width and aspect-height")
                 })?;
                 Ok(width / height)
             }
@@ -373,7 +371,7 @@ impl FitRequest {
                 .iter()
                 .find(|(preset, _)| *preset == name)
                 .map(|(_, ratio)| *ratio)
-                .ok_or_else(|| validation(format!("unknown aspect {name}"))),
+                .ok_or_else(|| Error::validation(format!("unknown aspect {name}"))),
         }
     }
 }
@@ -398,19 +396,17 @@ fn box_rect(payload: &CropPayload, stage: &CropStage) -> BoxRect {
 
 fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<CropPayload, Error> {
     if effect_id != CROP_EFFECT {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
-            format!("unavailable effect {effect_id}"),
-        ));
+        return Err(Error::incompatible(format!(
+            "unavailable effect {effect_id}"
+        )));
     }
     if format != EFFECT_FORMAT {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
-            format!("unsupported effect format {format}"),
-        ));
+        return Err(Error::incompatible(format!(
+            "unsupported effect format {format}"
+        )));
     }
     serde_json::from_value(payload.clone())
-        .map_err(|error| validation(format!("invalid crop payload: {error}")))
+        .map_err(|error| Error::validation(format!("invalid crop payload: {error}")))
 }
 
 /// A stored crop layer's payload, checked against its effect and format exactly as the crop module
@@ -464,7 +460,7 @@ impl ToolModule for CropModule {
             }
             CROP_FIT_ACTION => FitRequest::parse(parameters)?.parameters(),
             CROP_RESET_ACTION => Map::new(),
-            _ => return Err(validation(format!("unknown action {action_id}"))),
+            _ => return Err(Error::validation(format!("unknown action {action_id}"))),
         };
         Ok(ActionInput {
             action_id: action_id.to_owned(),
@@ -524,7 +520,7 @@ impl ToolModule for CropModule {
                 ))),
                 None => Ok(ActionPlan::NoOp),
             },
-            action_id => Err(validation(format!("unknown action {action_id}"))),
+            action_id => Err(Error::validation(format!("unknown action {action_id}"))),
         }
     }
 

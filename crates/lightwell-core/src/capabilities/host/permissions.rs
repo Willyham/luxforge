@@ -3,10 +3,10 @@
 //! `docs/design/module-capabilities.md#capability-and-consent-contract`.
 use super::{
     CapabilityHost, announce_once, asset_exists, encode, profile_origin, registered,
-    resources::download_scope, validation,
+    resources::download_scope,
 };
 use crate::{
-    ClientAuthority, EditorService, Error, ErrorKind, JobId, ModuleDescriptor, ModuleRegistry,
+    ClientAuthority, EditorService, Error, JobId, ModuleDescriptor, ModuleRegistry,
     api::params::host_params,
     capabilities::{
         descriptor::{CapabilityDescriptor, CapabilityKind},
@@ -63,8 +63,7 @@ impl CapabilityHost {
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
         if authority != ClientAuthority::Permissions {
-            return Err(Error::new(
-                ErrorKind::Forbidden,
+            return Err(Error::forbidden(
                 "granting a permission needs permission authority",
             ));
         }
@@ -100,13 +99,13 @@ impl CapabilityHost {
         match (&capability.kind, scope) {
             (CapabilityKind::DownloadArtifact { resource }, GrantScope::Download(scope)) => {
                 let declared = descriptor.resource(resource).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        format!("capability {} names an undeclared resource", capability.id),
-                    )
+                    Error::internal(format!(
+                        "capability {} names an undeclared resource",
+                        capability.id
+                    ))
                 })?;
                 if *scope != download_scope(declared)? {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "the scope must name resource {resource} version {} from the origin of its pinned URL",
                         declared.version
                     )));
@@ -114,27 +113,27 @@ impl CapabilityHost {
             }
             (CapabilityKind::RemoteImageRequest { adapter, data }, GrantScope::Remote(scope)) => {
                 if scope.adapter != *adapter || scope.data != *data {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "capability {} sends {} through adapter {adapter}",
                         capability.id,
                         data.name()
                     )));
                 }
                 let read = self.settings()?.read(descriptor, self.secrets())?;
-                let profile = read
-                    .profile(&scope.profile_id)
-                    .ok_or_else(|| validation(format!("unknown profile {}", scope.profile_id)))?;
+                let profile = read.profile(&scope.profile_id).ok_or_else(|| {
+                    Error::validation(format!("unknown profile {}", scope.profile_id))
+                })?;
                 if profile.adapter != *adapter {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "profile {} uses adapter {}, not {adapter}",
                         profile.id, profile.adapter
                     )));
                 }
                 let origin = profile_origin(descriptor, &profile.fields).ok_or_else(|| {
-                    validation(format!("profile {} has no valid endpoint", profile.id))
+                    Error::validation(format!("profile {} has no valid endpoint", profile.id))
                 })?;
                 if origin != scope.origin {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "profile {} sends to {origin}, not {}",
                         profile.id, scope.origin
                     )));
@@ -142,8 +141,7 @@ impl CapabilityHost {
                 asset_exists(service, &scope.asset_id)?;
             }
             _ => {
-                return Err(Error::new(
-                    ErrorKind::Internal,
+                return Err(Error::internal(
                     "a scope was parsed as another capability kind",
                 ));
             }
@@ -185,7 +183,7 @@ impl CapabilityHost {
         request.mutation.validate()?;
         let reason = request.reason.unwrap_or_else(|| "revoked".to_owned());
         if reason.trim().is_empty() || reason.chars().count() > MAX_REASON {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "a revocation reason is 1..={MAX_REASON} characters"
             )));
         }
@@ -235,7 +233,7 @@ fn declared_capability<'a>(
     id: &str,
 ) -> Result<&'a CapabilityDescriptor, Error> {
     descriptor.capability(id).ok_or_else(|| {
-        validation(format!(
+        Error::validation(format!(
             "module {} declares no capability {id}",
             descriptor.id
         ))

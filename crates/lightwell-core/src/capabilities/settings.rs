@@ -11,7 +11,9 @@ use super::{
     secrets::{SecretKey, SecretStore, SecretValue},
     transport::parse_endpoint,
 };
-use crate::{Error, ErrorKind, ModuleDescriptor, Mutation, ParameterKind, check_value};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{Error, ModuleDescriptor, Mutation, ParameterKind, check_value};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
@@ -37,10 +39,6 @@ pub const CLEAR_SECRET: &str = "module.settings.clear-secret";
 pub const RESET: &str = "module.settings.reset";
 pub const CREATE_PROFILE: &str = "module.profile.create";
 pub const REMOVE_PROFILE: &str = "module.profile.remove";
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 /// `{format: 1, modules: {<module_id>: <entry>}}`. Entries stay raw JSON until a module is
 /// operated on, so an entry of a module that is not registered is written back exactly as read.
@@ -303,7 +301,7 @@ fn declared(descriptor: &ModuleDescriptor) -> Result<&SettingsDescriptor, Error>
     descriptor
         .settings
         .as_ref()
-        .ok_or_else(|| validation(format!("module {} declares no settings", descriptor.id)))
+        .ok_or_else(|| Error::validation(format!("module {} declares no settings", descriptor.id)))
 }
 
 fn declared_profiles<'a>(
@@ -313,7 +311,7 @@ fn declared_profiles<'a>(
     settings
         .profiles
         .as_ref()
-        .ok_or_else(|| validation(format!("module {} declares no profiles", descriptor.id)))
+        .ok_or_else(|| Error::validation(format!("module {} declares no profiles", descriptor.id)))
 }
 
 /// The fields of one scope: the module's own, or its profiles'.
@@ -334,7 +332,7 @@ fn field<'a>(
     id: &str,
 ) -> Result<&'a SettingDescriptor, Error> {
     fields.iter().find(|field| field.id() == id).ok_or_else(|| {
-        validation(match profile_id {
+        Error::validation(match profile_id {
             None => format!("unknown setting {id}"),
             Some(profile) => format!("unknown setting {id} of profile {profile}"),
         })
@@ -346,7 +344,7 @@ fn field<'a>(
 /// what is used.
 fn normalize(field: &SettingDescriptor, value: &Value) -> Result<Value, Error> {
     match field.kind() {
-        ParameterKind::Secret { .. } => Err(validation(format!(
+        ParameterKind::Secret { .. } => Err(Error::validation(format!(
             "setting {} is a secret; set it with module.settings.set-secret",
             field.id()
         ))),
@@ -580,9 +578,9 @@ fn stored_profile<'a>(
         .profiles
         .iter_mut()
         .find(|profile| profile.id == profile_id)
-        .ok_or_else(|| validation(format!("unknown profile {profile_id}")))?;
+        .ok_or_else(|| Error::validation(format!("unknown profile {profile_id}")))?;
     if profiles.adapter(&profile.adapter).is_none() {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "profile {profile_id} names adapter {}, which the module no longer declares; remove the profile",
             profile.adapter
         )));
@@ -687,13 +685,13 @@ impl SettingsStore {
             setting,
         )?;
         let ParameterKind::Secret { max_length } = *field.kind() else {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "setting {setting} is not a secret; set it with module.settings.set"
             )));
         };
         let length = value.chars();
         if length == 0 || length > max_length {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "secret {setting} must be 1..={max_length} characters; clear it with module.settings.clear-secret"
             )));
         }
@@ -725,7 +723,9 @@ impl SettingsStore {
             setting,
         )?;
         if !field.is_secret() {
-            return Err(validation(format!("setting {setting} is not a secret")));
+            return Err(Error::validation(format!(
+                "setting {setting} is not a secret"
+            )));
         }
         self.transact(descriptor, mutation, false, |entry| {
             if let Some(profile_id) = profile_id {
@@ -804,26 +804,23 @@ impl SettingsStore {
         let settings = declared(descriptor)?;
         let profiles = declared_profiles(descriptor, settings)?;
         if profiles.adapter(adapter).is_none() {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "module {} declares no adapter {adapter}",
                 descriptor.id
             )));
         }
         let trimmed = label.trim();
         if trimmed.is_empty() || trimmed.chars().count() > MAX_PROFILE_LABEL {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "a profile label is 1..={MAX_PROFILE_LABEL} characters"
             )));
         }
         self.transact(descriptor, mutation, false, |entry| {
             if entry.profiles.len() >= usize::from(profiles.max) {
-                return Err(Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "module {} already holds its maximum of {} profiles",
-                        descriptor.id, profiles.max
-                    ),
-                ));
+                return Err(Error::resource_limit(format!(
+                    "module {} already holds its maximum of {} profiles",
+                    descriptor.id, profiles.max
+                )));
             }
             let profile = StoredProfile {
                 id: format!("profile-{}", uuid::Uuid::new_v4().simple()),
@@ -860,7 +857,7 @@ impl SettingsStore {
                 .profiles
                 .iter()
                 .position(|profile| profile.id == profile_id)
-                .ok_or_else(|| validation(format!("unknown profile {profile_id}")))?;
+                .ok_or_else(|| Error::validation(format!("unknown profile {profile_id}")))?;
             let mut applied = Applied::new(Some(profile_id));
             applied.outcome = WriteOutcome::Committed;
             for field in &profiles.fields {
@@ -908,19 +905,16 @@ impl SettingsStore {
             if let Some(reason) = &incompatible
                 && !reset
             {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
-                    format!("module {}: {reason}", descriptor.id),
-                ));
+                return Err(Error::incompatible(format!(
+                    "module {}: {reason}",
+                    descriptor.id
+                )));
             }
             if entry.revision != mutation.expected_revision {
-                return Err(Error::new(
-                    ErrorKind::Conflict,
-                    format!(
-                        "stale settings revision {}; the current revision of module {} is {}",
-                        mutation.expected_revision, descriptor.id, entry.revision
-                    ),
-                ));
+                return Err(Error::conflict(format!(
+                    "stale settings revision {}; the current revision of module {} is {}",
+                    mutation.expected_revision, descriptor.id, entry.revision
+                )));
             }
             let mut applied = apply(&mut entry)?;
             // Clearing an entry this build cannot use is itself the change a reset makes.
@@ -933,7 +927,7 @@ impl SettingsStore {
                 document.modules.insert(
                     descriptor.id.clone(),
                     serde_json::to_value(&entry)
-                        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?,
+                        .map_err(|error| Error::internal(error.to_string()))?,
                 );
             }
             Ok(SettingsWrite {
@@ -1786,10 +1780,9 @@ mod tests {
     #[test]
     fn a_failing_secret_store_is_not_ready_and_nothing_is_kept_in_plain_text() {
         let fixture = Fixture::new("locked");
-        fixture.secrets.fail_with(Some(Error::new(
-            ErrorKind::NotReady,
-            "the macOS Keychain is locked",
-        )));
+        fixture
+            .secrets
+            .fail_with(Some(Error::not_ready("the macOS Keychain is locked")));
         let error = fixture
             .store
             .set_secret(

@@ -22,7 +22,9 @@ pub use overlay::{
     MAX_OVERLAY_CELLS, OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay,
 };
 
-use crate::{Cancel, Error, ErrorKind, Raster};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{Cancel, Error, Raster};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -333,24 +335,17 @@ fn reduce_with_threshold(
     cancel.check()?;
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
-        .ok_or_else(|| Error::new(ErrorKind::ResourceLimit, "image dimensions overflow"))?;
+        .ok_or_else(|| Error::resource_limit("image dimensions overflow"))?;
     let byte_len = pixels
         .checked_mul(4)
-        .ok_or_else(|| Error::new(ErrorKind::ResourceLimit, "image dimensions overflow"))?;
-    let byte_len = usize::try_from(byte_len).map_err(|_| {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            "image allocation is not addressable",
-        )
-    })?;
+        .ok_or_else(|| Error::resource_limit("image dimensions overflow"))?;
+    let byte_len = usize::try_from(byte_len)
+        .map_err(|_| Error::resource_limit("image allocation is not addressable"))?;
     if rgba.len() != byte_len {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            format!(
-                "pixel buffer holds {} bytes, expected {byte_len} for a {width}x{height} image",
-                rgba.len()
-            ),
-        ));
+        return Err(Error::validation(format!(
+            "pixel buffer holds {} bytes, expected {byte_len} for a {width}x{height} image",
+            rgba.len()
+        )));
     }
     let bins = if pixels >= threshold {
         reduce_parallel(rgba, cancel)?

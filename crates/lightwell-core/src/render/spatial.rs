@@ -9,8 +9,10 @@
 
 pub(crate) use super::Cancel;
 use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind,
+    Error,
     mask_field::{MaskField, MaskSampling},
     modules::{
         ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
@@ -69,24 +71,20 @@ impl SpatialPlan {
         if let Some(mask) = operation.mask()
             && mask.stage() != stage
         {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                format!(
-                    "a spatial mask compiled against {}x{} reached a {}x{} stage",
-                    mask.stage().width,
-                    mask.stage().height,
-                    stage.width,
-                    stage.height
-                ),
-            ));
+            return Err(Error::internal(format!(
+                "a spatial mask compiled against {}x{} reached a {}x{} stage",
+                mask.stage().width,
+                mask.stage().height,
+                stage.width,
+                stage.height
+            )));
         }
         let halos = operation.halos(stage);
         let summed_halo = operation.summed_halo(stage);
         if summed_halo > MAX_SPATIAL_HALO {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!("spatial halo {summed_halo} px exceeds the {MAX_SPATIAL_HALO} px bound"),
-            ));
+            return Err(Error::resource_limit(format!(
+                "spatial halo {summed_halo} px exceeds the {MAX_SPATIAL_HALO} px bound"
+            )));
         }
         let tile = tile.max(1);
         let working_set = worst_case_working_set(operation, stage, &halos, summed_halo, tile);
@@ -342,7 +340,7 @@ pub(crate) fn run_tile(
             Parallelism::Serial => next.iter().all(|value| value.is_finite()),
         };
         if !finite {
-            return Err(Error::new(ErrorKind::ResourceLimit, NON_FINITE_SPATIAL));
+            return Err(Error::resource_limit(NON_FINITE_SPATIAL));
         }
         values = next;
     }
@@ -1020,12 +1018,9 @@ fn reduction_blocks(stage: Stage) -> Result<(u32, Vec<[f32; 3]>), Error> {
     let (width, height) = Reduction::dimensions(stage, ESTIMATE_REDUCTION);
     let pixels = u64::from(width) * u64::from(height);
     if pixels > MAX_REDUCTION_PIXELS {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "a spatial reduction of {pixels} pixels exceeds the {MAX_REDUCTION_PIXELS} pixel bound"
-            ),
-        ));
+        return Err(Error::resource_limit(format!(
+            "a spatial reduction of {pixels} pixels exceeds the {MAX_REDUCTION_PIXELS} pixel bound"
+        )));
     }
     Ok((width, vec![[0.0_f32; 3]; pixels as usize]))
 }
@@ -1084,10 +1079,9 @@ pub(crate) fn prefix_hash(
     // Without an upstream mask, both sampling modes read identical input pixels.
     let thin = !upstream_masks.is_empty() && sampling == MaskSampling::ThinFeature;
     let canonical = serde_json::to_vec(&(layers, upstream_masks, thin)).map_err(|error| {
-        Error::new(
-            ErrorKind::Internal,
-            format!("a layer prefix could not be serialized for hashing: {error}"),
-        )
+        Error::internal(format!(
+            "a layer prefix could not be serialized for hashing: {error}"
+        ))
     })?;
     Ok(format!("{:x}", Sha256::digest(&canonical)))
 }
@@ -1465,7 +1459,7 @@ pub(crate) mod tests {
             &self.0
         }
         fn parse(&self, _: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
-            Err(Error::new(ErrorKind::Internal, "no actions"))
+            Err(Error::internal("no actions"))
         }
         fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
             Ok(ActionPlan::NoOp)

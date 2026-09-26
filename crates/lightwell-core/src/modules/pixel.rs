@@ -6,7 +6,7 @@ use super::{
     EffectDescriptor, EffectStage, MAX_COORDINATE, ModuleDescriptor, NewLayer, ParameterDescriptor,
     Processing, Stage, StageContext, ToolModule,
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, PixelReplace};
+use crate::{EFFECT_FORMAT, Error, Layer, PixelReplace};
 use serde_json::{Map, Value, json};
 
 /// The pixel module's one effect: one replaced 8-bit sRGB pixel of the content stage.
@@ -24,10 +24,6 @@ fn pixel_payload(x: u32, y: u32, rgb: [u8; 3]) -> Value {
 }
 
 pub(super) const SET_PIXEL: &str = "set-pixel";
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 #[derive(Debug)]
 pub struct PixelModule {
@@ -115,7 +111,7 @@ fn coordinate_value(parameters: &Map<String, Value>, name: &str) -> Result<u32, 
         .filter(|value| (0..=MAX_COORDINATE).contains(value))
         .map(|value| value as u32)
         .ok_or_else(|| {
-            validation(format!(
+            Error::validation(format!(
                 "parameter {name} must be an integer within 0..={MAX_COORDINATE}"
             ))
         })
@@ -126,34 +122,30 @@ fn color_value(parameters: &Map<String, Value>) -> Result<[u8; 3], Error> {
         .get("rgb")
         .and_then(Value::as_array)
         .filter(|channels| channels.len() == 3)
-        .ok_or_else(|| validation("parameter rgb must be three sRGB channels 0..=255"))?;
+        .ok_or_else(|| Error::validation("parameter rgb must be three sRGB channels 0..=255"))?;
     let mut rgb = [0u8; 3];
     for (slot, channel) in rgb.iter_mut().zip(channels) {
-        *slot = u8::try_from(
-            channel
-                .as_u64()
-                .ok_or_else(|| validation("parameter rgb must be three sRGB channels 0..=255"))?,
-        )
-        .map_err(|_| validation("parameter rgb must be three sRGB channels 0..=255"))?;
+        *slot = u8::try_from(channel.as_u64().ok_or_else(|| {
+            Error::validation("parameter rgb must be three sRGB channels 0..=255")
+        })?)
+        .map_err(|_| Error::validation("parameter rgb must be three sRGB channels 0..=255"))?;
     }
     Ok(rgb)
 }
 
 fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<PixelReplace, Error> {
     if effect_id != PIXEL_EFFECT {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
-            format!("unavailable effect {effect_id}"),
-        ));
+        return Err(Error::incompatible(format!(
+            "unavailable effect {effect_id}"
+        )));
     }
     if format != EFFECT_FORMAT {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
-            format!("unsupported effect format {format}"),
-        ));
+        return Err(Error::incompatible(format!(
+            "unsupported effect format {format}"
+        )));
     }
     serde_json::from_value(payload.clone())
-        .map_err(|error| validation(format!("invalid pixel payload: {error}")))
+        .map_err(|error| Error::validation(format!("invalid pixel payload: {error}")))
 }
 
 impl ToolModule for PixelModule {
@@ -167,7 +159,7 @@ impl ToolModule for PixelModule {
         parameters: &Map<String, Value>,
     ) -> Result<ActionInput, Error> {
         if action_id != SET_PIXEL {
-            return Err(validation(format!("unknown action {action_id}")));
+            return Err(Error::validation(format!("unknown action {action_id}")));
         }
         let x = coordinate_value(parameters, "x")?;
         let y = coordinate_value(parameters, "y")?;
@@ -192,7 +184,7 @@ impl ToolModule for PixelModule {
         let index = stage.insertion_index_for(PIXEL_EFFECT);
         let content = stage.stage_before(index)?;
         let outside = || {
-            validation(format!(
+            Error::validation(format!(
                 "pixel ({x}, {y}) is outside the {}x{} content stage",
                 content.width, content.height
             ))
@@ -231,7 +223,7 @@ impl ToolModule for PixelModule {
     ) -> Result<Processing, Error> {
         let pixel = payload(effect_id, format, value)?;
         if pixel.x >= stage.width || pixel.y >= stage.height {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "pixel ({}, {}) is outside {}x{} input stage",
                 pixel.x, pixel.y, stage.width, stage.height
             )));

@@ -3,10 +3,11 @@ use super::{
     PixelSample, SamplePlan,
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    AssetId, ContentPoint, Draft, EntryId, Error, ErrorKind, HistoryEntry, PreviewJob,
-    PreviewSource, ProxyBounds, Raster, Recipe, Render, RenderContext, RenderOptions, SnapshotId,
-    StageTransform,
+    AssetId, ContentPoint, Draft, EntryId, Error, HistoryEntry, PreviewJob, PreviewSource,
+    ProxyBounds, Raster, Recipe, Render, RenderContext, RenderOptions, SnapshotId, StageTransform,
     analysis::AnalysisIdentity,
     render::{Compiled, locate_dimensions, stage_transform},
     source::PreparedSource,
@@ -34,8 +35,7 @@ impl EditorService {
     ) -> Result<PreviewJob, Error> {
         let state = self.state(asset_id)?;
         if draft.is_some() && entry_id.is_some_and(|entry_id| entry_id != &state.current_entry.id) {
-            return Err(Error::new(
-                ErrorKind::Validation,
+            return Err(Error::validation(
                 "a draft previews the current entry, not a historical one",
             ));
         }
@@ -53,10 +53,9 @@ impl EditorService {
         };
         let layers = recipe.layers.len();
         if let Some(count) = layer_count.filter(|count| *count > layers) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("preview layer count {count} exceeds the {layers} layers of this entry"),
-            ));
+            return Err(Error::validation(format!(
+                "preview layer count {count} exceeds the {layers} layers of this entry"
+            )));
         }
         // A draft's effective recipe decides the RAW development settings too, so a drafted
         // exposure previews the value the gesture holds rather than the committed one. A drafted
@@ -184,9 +183,9 @@ impl EditorService {
             PreparedSource::Raw(raw) => {
                 let settings = raw_settings(&raw, recipe, mode)?;
                 Ok(PreviewSource::Raw {
-                    image: raw.linear.ok_or_else(|| {
-                        Error::new(ErrorKind::PreparationRequired, "RAW development required")
-                    })?,
+                    image: raw
+                        .linear
+                        .ok_or_else(|| Error::preparation_required("RAW development required"))?,
                     settings,
                 })
             }
@@ -512,13 +511,10 @@ impl PointPlan {
             Render::compiled(source.input(), compiled, RenderOptions::default(), &context)?
                 .sample(x, y)?;
         let rgba = sampled.rgba.ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "sample ({x}, {y}) is outside the {}x{} rendered image",
-                    sampled.width, sampled.height
-                ),
-            )
+            Error::validation(format!(
+                "sample ({x}, {y}) is outside the {}x{} rendered image",
+                sampled.width, sampled.height
+            ))
         })?;
         Ok(PixelSample {
             entry_id,

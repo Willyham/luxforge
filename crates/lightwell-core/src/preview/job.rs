@@ -2,9 +2,8 @@
 //! frame.
 
 use crate::{
-    Component, ComponentId, ComponentMode, Error, ErrorKind, HistoryEntry, LinearImage,
-    LinearSettings, Mask, MaskId, ModuleRegistry, ProxyBounds, Recipe, RenderContext, RenderSource,
-    SourceImage,
+    Component, ComponentId, ComponentMode, Error, HistoryEntry, LinearImage, LinearSettings, Mask,
+    MaskId, ModuleRegistry, ProxyBounds, Recipe, RenderContext, RenderSource, SourceImage,
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS},
 };
 #[cfg(doc)]
@@ -177,36 +176,29 @@ impl PreviewJob {
             .iter()
             .find(|mask| mask.id == request.mask)
             .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Validation,
-                    format!(
-                        "mask {} is not in the stack this preview renders",
-                        request.mask
-                    ),
-                )
+                Error::validation(format!(
+                    "mask {} is not in the stack this preview renders",
+                    request.mask
+                ))
             })?;
         if let Some(component) = &request.component
             && !mask.components.iter().any(|held| &held.id == component)
         {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("mask {} holds no component {component}", mask.name),
-            ));
+            return Err(Error::validation(format!(
+                "mask {} holds no component {component}",
+                mask.name
+            )));
         }
         if request.cells_w == 0 || request.cells_h == 0 {
-            return Err(Error::new(
-                ErrorKind::Validation,
+            return Err(Error::validation(
                 "a mask overlay needs a non-empty cell grid",
             ));
         }
         if request.cells_w > MAX_OVERLAY_CELLS || request.cells_h > MAX_OVERLAY_CELLS {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "a mask overlay of {}x{} cells exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows",
-                    request.cells_w, request.cells_h
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "a mask overlay of {}x{} cells exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows",
+                request.cells_w, request.cells_h
+            )));
         }
         self.mask_overlay = Some(request);
         Ok(self)

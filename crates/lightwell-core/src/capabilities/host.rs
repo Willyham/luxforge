@@ -23,8 +23,8 @@ use super::{
     transport::{Endpoint, TransportConfig, parse_endpoint},
 };
 use crate::{
-    AssetId, EditorService, Error, ErrorKind, JobId, ModuleDescriptor, ModuleRegistry,
-    ParameterKind, activity::ActivityBoard, api::params::host_params,
+    AssetId, EditorService, Error, JobId, ModuleDescriptor, ModuleRegistry, ParameterKind,
+    activity::ActivityBoard, api::params::host_params,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -100,12 +100,8 @@ impl std::fmt::Debug for HostConfig {
     }
 }
 
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
 fn encode(value: impl serde::Serialize) -> Result<Value, Error> {
-    serde_json::to_value(value).map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
+    serde_json::to_value(value).map_err(|error| Error::internal(error.to_string()))
 }
 
 /// Announce `origin` once, however many changes a request made.
@@ -290,10 +286,7 @@ impl CapabilityHost {
     }
 
     fn not_configured() -> Error {
-        Error::new(
-            ErrorKind::NotReady,
-            "no application data directory is configured",
-        )
+        Error::not_ready("no application data directory is configured")
     }
 
     fn settings(&self) -> Result<&SettingsStore, Error> {
@@ -642,8 +635,7 @@ impl CapabilityHost {
             .read(&request.job_id)
             .ok_or_else(|| unknown_job(&request.job_id))?;
         if record.kind == JobKind::Deactivate && !record.status.is_finished() {
-            return Err(Error::new(
-                ErrorKind::Conflict,
+            return Err(Error::conflict(
                 "a deactivation releases what the module holds and cannot be cancelled",
             ));
         }
@@ -846,11 +838,11 @@ fn asset_exists(service: &EditorService, asset_id: &AssetId) -> Result<(), Error
     service
         .state(asset_id)
         .map(|_| ())
-        .map_err(|_| validation(format!("asset {asset_id} is not in this catalog")))
+        .map_err(|_| Error::validation(format!("asset {asset_id} is not in this catalog")))
 }
 
 fn unknown_job(job_id: &JobId) -> Error {
-    validation(format!("unknown capability job {job_id}"))
+    Error::validation(format!("unknown capability job {job_id}"))
 }
 
 /// Any registered module.
@@ -858,14 +850,16 @@ fn registered<'a>(registry: &'a ModuleRegistry, id: &str) -> Result<&'a ModuleDe
     registry
         .module(id)
         .map(|module| module.descriptor())
-        .ok_or_else(|| validation(format!("unknown module {id}")))
+        .ok_or_else(|| Error::validation(format!("unknown module {id}")))
 }
 
 /// The registered module a settings method names, which must declare settings.
 fn module<'a>(registry: &'a ModuleRegistry, id: &str) -> Result<&'a ModuleDescriptor, Error> {
     let descriptor = registered(registry, id)?;
     if descriptor.settings.is_none() {
-        return Err(validation(format!("module {id} declares no settings")));
+        return Err(Error::validation(format!(
+            "module {id} declares no settings"
+        )));
     }
     Ok(descriptor)
 }
@@ -1330,10 +1324,9 @@ mod tests {
             ]
         );
         // A locked store fails the secret write with not-ready and nothing is kept in plain text.
-        fixture.secrets.fail_with(Some(Error::new(
-            ErrorKind::NotReady,
-            "the macOS Keychain is locked",
-        )));
+        fixture
+            .secrets
+            .fail_with(Some(Error::not_ready("the macOS Keychain is locked")));
         let (code, message) = failure(
             &owner,
             client,

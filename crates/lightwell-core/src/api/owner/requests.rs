@@ -13,7 +13,9 @@
 //! already done, fails visibly on the uniqueness it would break, or, for a settings write, which
 //! sets values rather than changing them, conflicts on the revision it was made against. So the
 //! table lives with the owner, holds only successful answers, and is bounded.
-use crate::{Error, ErrorKind, Mutation, MutationRequest, capabilities::redact::redacted};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{Error, Mutation, MutationRequest, capabilities::redact::redacted};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -84,8 +86,7 @@ impl RequestTable {
             return Ok(None);
         };
         if first.key.input != key.input {
-            return Err(Error::new(
-                ErrorKind::Conflict,
+            return Err(Error::conflict(
                 "request_id was already used with different input",
             ));
         }

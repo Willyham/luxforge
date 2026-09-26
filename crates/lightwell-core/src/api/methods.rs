@@ -12,8 +12,10 @@ use super::{
     owner::{self, Call, Owner},
     params::{self, Envelope, HostParams, NoParams, ParamSchema, host_params, parse},
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    ActionRef, ArtifactId, AssetId, ComponentId, DraftId, EditorService, EntryId, Error, ErrorKind,
+    ActionRef, ArtifactId, AssetId, ComponentId, DraftId, EditorService, EntryId, Error,
     HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome, ParameterDescriptor,
     PixelSample, PresetId, Zoom, capabilities::host::TASK_PREFIX, editor::PointPlan,
     mask::commands::MaskTarget, path,
@@ -657,10 +659,7 @@ impl Method {
 }
 
 fn owner_answered(name: &str) -> Error {
-    Error::new(
-        ErrorKind::Internal,
-        format!("{name} is answered by the catalog owner"),
-    )
+    Error::internal(format!("{name} is answered by the catalog owner"))
 }
 
 /// Task method names are generated in a third namespace: task `generate-proof-tint` is
@@ -1480,36 +1479,30 @@ fn workspace_set(
     if let Some(mode) = &p.mode {
         let modes = canvas_modes(service.registry());
         if !modes.iter().any(|accepted| accepted == mode) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("mode must be one of {}", modes.join(", ")),
-            ));
+            return Err(Error::validation(format!(
+                "mode must be one of {}",
+                modes.join(", ")
+            )));
         }
     }
     let mask_overlay = match &p.mask_overlay {
         None => None,
         Some(value) => Some(MaskOverlayMode::parse(value).ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "mask_overlay must be one of {}",
-                    MaskOverlayMode::ALL.map(MaskOverlayMode::as_str).join(", ")
-                ),
-            )
+            Error::validation(format!(
+                "mask_overlay must be one of {}",
+                MaskOverlayMode::ALL.map(MaskOverlayMode::as_str).join(", ")
+            ))
         })?),
     };
     let mask_overlay_colour = match &p.mask_overlay_colour {
         None => None,
         Some(value) => Some(MaskOverlayColour::parse(value).ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "mask_overlay_colour must be one of {}",
-                    MaskOverlayColour::ALL
-                        .map(MaskOverlayColour::as_str)
-                        .join(", ")
-                ),
-            )
+            Error::validation(format!(
+                "mask_overlay_colour must be one of {}",
+                MaskOverlayColour::ALL
+                    .map(MaskOverlayColour::as_str)
+                    .join(", ")
+            ))
         })?),
     };
     if let Some(mode) = p.mode {
@@ -1619,7 +1612,7 @@ fn draft_action<'a>(service: &'a EditorService, action_id: &str) -> Result<Actio
     service
         .registry()
         .resolve_action(action_id)
-        .ok_or_else(|| Error::new(ErrorKind::Validation, format!("unknown action {action_id}")))
+        .ok_or_else(|| Error::validation(format!("unknown action {action_id}")))
 }
 
 fn draft_begin(
@@ -1628,17 +1621,13 @@ fn draft_begin(
     p: DraftBegin,
 ) -> Result<Value, Error> {
     if let Some(draft) = &session.draft {
-        return Err(Error::new(
-            ErrorKind::Conflict,
-            format!(
-                "this client already holds draft {} of action {}",
-                draft.draft_id, draft.action
-            ),
-        ));
+        return Err(Error::conflict(format!(
+            "this client already holds draft {} of action {}",
+            draft.draft_id, draft.action
+        )));
     }
     if !session.preview.can_edit() {
-        return Err(Error::new(
-            ErrorKind::Validation,
+        return Err(Error::validation(
             "return to current before drafting an edit",
         ));
     }
@@ -1666,39 +1655,36 @@ fn draft_begin(
                 .keys()
                 .find(|field| command.action.parameter(field).is_none())
             {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!("unknown parameter {field} for action {}", p.action),
-                ));
+                return Err(Error::validation(format!(
+                    "unknown parameter {field} for action {}",
+                    p.action
+                )));
             }
             if let Some(missing) = command.action.parameters.iter().find(|parameter| {
                 parameter.required
                     && parameter.kind.is_identity()
                     && !named.contains_key(&parameter.name)
             }) {
-                return Err(Error::new(
-                    ErrorKind::Validation,
-                    format!(
-                        "missing required parameter {} for action {}",
-                        missing.name, p.action
-                    ),
-                ));
+                return Err(Error::validation(format!(
+                    "missing required parameter {} for action {}",
+                    missing.name, p.action
+                )));
             }
             Some(target)
         }
         ActionRef::Module(..) if target == MaskTarget::default() => None,
         ActionRef::Module(..) if target.component.is_some() => {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("action {} takes no mask component", p.action),
-            ));
+            return Err(Error::validation(format!(
+                "action {} takes no mask component",
+                p.action
+            )));
         }
         ActionRef::Module(..) if service.registry().action_accepts_mask(&p.action) => Some(target),
         ActionRef::Module(..) => {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("action {} does not accept a mask target", p.action),
-            ));
+            return Err(Error::validation(format!(
+                "action {} does not accept a mask target",
+                p.action
+            )));
         }
     };
     let revision = service.revision(&p.asset_id)?;
@@ -1752,19 +1738,15 @@ fn draft_commit(
     refresh_conflict(service, session)?;
     let draft = session.held_draft(&p.draft_id)?;
     if draft.conflicted {
-        return Err(Error::new(
-            ErrorKind::Conflict,
+        return Err(Error::conflict(
             "the asset changed under this draft; discard it or reapply it",
         ));
     }
     if p.mutation.expected_revision != draft.base_revision {
-        return Err(Error::new(
-            ErrorKind::Conflict,
-            format!(
-                "stale revision {}; this draft is based on revision {}",
-                p.mutation.expected_revision, draft.base_revision
-            ),
-        ));
+        return Err(Error::conflict(format!(
+            "stale revision {}; this draft is based on revision {}",
+            p.mutation.expected_revision, draft.base_revision
+        )));
     }
     let asset_id = draft.asset_id.clone();
     let action = draft.action.clone();
@@ -1867,15 +1849,14 @@ fn require_current(session: &ClientSession) -> Result<(), Error> {
     if session.preview.can_edit() {
         Ok(())
     } else {
-        Err(Error::new(
-            ErrorKind::Conflict,
+        Err(Error::conflict(
             "return to current or restore the selected history entry before editing",
         ))
     }
 }
 
 pub(super) fn value(value: impl Serialize) -> Result<Value, Error> {
-    serde_json::to_value(value).map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
+    serde_json::to_value(value).map_err(|error| Error::internal(error.to_string()))
 }
 
 #[cfg(test)]
@@ -1914,10 +1895,7 @@ mod tests {
                 );
                 resolved.serve(service, session, &params)
             }
-            None => Err(Error::new(
-                ErrorKind::Protocol,
-                format!("unknown method {method}"),
-            )),
+            None => Err(Error::protocol(format!("unknown method {method}"))),
         };
         match result {
             Ok(result) => ApiResponse::success(method.into(), 0, result),
@@ -2712,7 +2690,7 @@ mod tests {
             Ok("Angle".into())
         }
         fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
-            Err(Error::new(ErrorKind::Internal, "test module never renders"))
+            Err(Error::internal("test module never renders"))
         }
     }
 

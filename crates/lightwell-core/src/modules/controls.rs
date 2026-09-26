@@ -4,7 +4,7 @@ use super::{
     ActionInput, ActionPlan, ColorOperation, LayerUpdate, ModuleDescriptor, NewLayer, Processing,
     Stage, StageContext, ToolModule, check_parameters,
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind};
+use crate::{EFFECT_FORMAT, Error};
 use serde_json::{Map, Value, json};
 
 pub const CONTROLS_EFFECT: &str = "lightwell.controls.identity";
@@ -12,10 +12,6 @@ pub const SET_CONTROLS: &str = "set-controls";
 pub const RESET_CONTROLS: &str = "reset-controls";
 pub const SAMPLE_CONTROLS_CURVE: &str = "sample-controls-curve";
 const SAMPLE_SEGMENTS: usize = 256;
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 #[derive(Debug)]
 pub struct ControlsModule {
@@ -100,16 +96,14 @@ impl ControlsModule {
         value: &Value,
     ) -> Result<Map<String, Value>, Error> {
         if effect_id != CONTROLS_EFFECT {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unavailable effect {effect_id}"),
-            ));
+            return Err(Error::incompatible(format!(
+                "unavailable effect {effect_id}"
+            )));
         }
         if format != EFFECT_FORMAT {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unsupported effect format {format}"),
-            ));
+            return Err(Error::incompatible(format!(
+                "unsupported effect format {format}"
+            )));
         }
         let fields = check_parameters(self.action(), value)?;
         if let Some((name, _)) = fields.iter().find(|(name, value)| {
@@ -118,7 +112,7 @@ impl ControlsModule {
                 .and_then(|parameter| parameter.default.as_ref())
                 == Some(*value)
         }) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "controls payload stores default field {name}"
             )));
         }
@@ -137,12 +131,12 @@ impl ToolModule for ControlsModule {
         parameters: &Map<String, Value>,
     ) -> Result<ActionInput, Error> {
         if action_id != SET_CONTROLS && action_id != RESET_CONTROLS {
-            return Err(validation(format!("unknown action {action_id}")));
+            return Err(Error::validation(format!("unknown action {action_id}")));
         }
         let declared = self.descriptor.action(action_id).expect("static action");
         let checked = check_parameters(declared, &Value::Object(parameters.clone()))?;
         if action_id == SET_CONTROLS && checked.len() != 1 {
-            return Err(validation("set-controls requires exactly one field"));
+            return Err(Error::validation("set-controls requires exactly one field"));
         }
         Ok(ActionInput {
             action_id: action_id.into(),
@@ -152,7 +146,10 @@ impl ToolModule for ControlsModule {
 
     fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
         if input.action_id != SET_CONTROLS && input.action_id != RESET_CONTROLS {
-            return Err(validation(format!("unknown action {}", input.action_id)));
+            return Err(Error::validation(format!(
+                "unknown action {}",
+                input.action_id
+            )));
         }
         let declared = self
             .descriptor
@@ -160,7 +157,7 @@ impl ToolModule for ControlsModule {
             .expect("static action");
         let patch = check_parameters(declared, &Value::Object(input.parameters.clone()))?;
         if input.action_id == SET_CONTROLS && patch.len() != 1 {
-            return Err(validation("set-controls requires exactly one field"));
+            return Err(Error::validation("set-controls requires exactly one field"));
         }
         let old = context.own_layer(CONTROLS_EFFECT)?.map(|(_, layer)| layer);
         let mut merged = match old {
@@ -230,12 +227,12 @@ impl ToolModule for ControlsModule {
         _: &StageContext<'_>,
     ) -> Result<Value, Error> {
         if query_id != SAMPLE_CONTROLS_CURVE {
-            return Err(validation(format!("unknown query {query_id}")));
+            return Err(Error::validation(format!("unknown query {query_id}")));
         }
         let declared = self.descriptor.query(query_id).expect("static query");
         let checked = check_parameters(declared, &Value::Object(parameters.clone()))?;
         let Some((_, value)) = checked.iter().next().filter(|_| checked.len() == 1) else {
-            return Err(validation(
+            return Err(Error::validation(
                 "sample-controls-curve requires exactly one channel parameter",
             ));
         };

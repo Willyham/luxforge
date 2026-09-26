@@ -33,7 +33,7 @@
 //! debug build and is caught by the slice bounds otherwise.
 
 use crate::{
-    Error, ErrorKind,
+    Error,
     colour::{luma, srgb},
     modules::{Parallelism, Stage},
 };
@@ -214,10 +214,6 @@ pub(super) fn full_rect(rect: Rect, reduction: i64) -> Rect {
 // Scratch planes.
 // ---------------------------------------------------------------------------------------------
 
-fn internal(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Internal, detail)
-}
-
 /// A bump allocator over the scratch the host reserved for this tile. A unit takes its planes from
 /// it in a fixed order, and [`Scratch::branch`] hands a nested allocator the memory that is still
 /// free, so two sequential steps reuse the same bytes instead of each declaring their own.
@@ -239,7 +235,7 @@ impl<'a> Scratch<'a> {
         let free = std::mem::take(&mut self.free);
         if free.len() < len {
             self.free = free;
-            return Err(internal(format!(
+            return Err(Error::internal(format!(
                 "a presence unit asked for {len} scratch values with {} left of what it declared",
                 self.free.len()
             )));
@@ -331,7 +327,7 @@ impl<'a> PlaneMut<'a> {
         let geometry = Geometry::new(geometry.width, geometry.height, rect);
         let len = rect.pixels();
         if buffer.len() < len {
-            return Err(internal(format!(
+            return Err(Error::internal(format!(
                 "a presence plane of {len} values does not fit the {} values declared for it",
                 buffer.len()
             )));

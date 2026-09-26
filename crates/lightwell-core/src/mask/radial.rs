@@ -38,7 +38,7 @@ use super::{
     smooth,
 };
 use crate::{
-    Component, Error, ErrorKind, ParameterDescriptor,
+    Component, Error, ParameterDescriptor,
     modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
@@ -129,19 +129,16 @@ pub(super) fn parameters(required: bool) -> Vec<ParameterDescriptor> {
 pub(super) fn parse(component: &Component) -> Result<RadialGradient, Error> {
     let radial: RadialGradient =
         serde_json::from_value(component.payload.clone()).map_err(|error| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "component {} has an invalid {KIND} payload: {error}",
-                    component.name
-                ),
-            )
+            Error::validation(format!(
+                "component {} has an invalid {KIND} payload: {error}",
+                component.name
+            ))
         })?;
     let refuse = |field: &str, what: String| {
-        Err(Error::new(
-            ErrorKind::Validation,
-            format!("component {} {KIND} {field} {what}", component.name),
-        ))
+        Err(Error::validation(format!(
+            "component {} {KIND} {field} {what}",
+            component.name
+        )))
     };
     for (field, value) in [("x", radial.x), ("y", radial.y)] {
         if !value.is_finite() || !(POSITION_MIN..=POSITION_MAX).contains(&value) {

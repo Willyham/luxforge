@@ -1,7 +1,7 @@
 //! Where a committed layer joins a stack, by its effect's declared stage and order and, for a
 //! masked layer, its mask's index; and the one layer of an effect a target owns. `O(layers)`
 //! descriptor lookups; nothing here reads pixels.
-use super::{ModuleRegistry, validation};
+use super::ModuleRegistry;
 use crate::{
     Error, Layer, Mask, MaskId,
     modules::{EffectStage, ModuleDescriptor},
@@ -170,7 +170,7 @@ impl ModuleRegistry {
         let title = self
             .effect(effect_id)
             .map_or(effect_id, |(module, _)| module.descriptor().title.as_str());
-        validation(format!("ambiguous {title} layers"))
+        Error::validation(format!("ambiguous {title} layers"))
     }
 
     /// Where a committed layer of this stage and order joins a stack:

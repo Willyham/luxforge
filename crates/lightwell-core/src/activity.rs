@@ -755,11 +755,11 @@ mod tests {
     fn a_result_maps_to_its_outcome() {
         assert_eq!(Outcome::of(&Ok::<(), Error>(())), Outcome::Completed);
         assert_eq!(
-            Outcome::of(&Err::<(), _>(Error::new(ErrorKind::Cancelled, "stopped"))),
+            Outcome::of(&Err::<(), _>(Error::cancelled("stopped"))),
             Outcome::Cancelled
         );
         assert_eq!(
-            Outcome::of(&Err::<(), _>(Error::new(ErrorKind::Internal, "broke"))),
+            Outcome::of(&Err::<(), _>(Error::internal("broke"))),
             Outcome::Failed
         );
     }

@@ -2,8 +2,7 @@
 //! it commits or cancels. A draft writes nothing, emits no event and appears in no history; its
 //! effective recipe is computed on demand from the current snapshot and never persisted.
 use crate::{
-    AssetId, DraftId, Error, ErrorKind, ParameterDescriptor, check_value,
-    mask::commands::MaskTarget,
+    AssetId, DraftId, Error, ParameterDescriptor, check_value, mask::commands::MaskTarget,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -62,10 +61,10 @@ impl Draft {
                 .iter()
                 .find(|parameter| &parameter.name == name)
                 .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Validation,
-                        format!("unknown parameter {name} for action {}", self.action),
-                    )
+                    Error::validation(format!(
+                        "unknown parameter {name} for action {}",
+                        self.action
+                    ))
                 })?;
             check_value(declared, value)?;
         }

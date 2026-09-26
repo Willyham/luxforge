@@ -29,38 +29,34 @@ pub struct SourceImage {
     pub orientation: u8,
 }
 
-fn decode_error(detail: &str) -> Error {
-    Error::new(ErrorKind::Decode, detail)
-}
-
 // Walk JPEG header segments without decoding or allocating from declared dimensions.
 fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
     if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
-        return Err(decode_error("missing JPEG SOI/EOI"));
+        return Err(Error::decode("missing JPEG SOI/EOI"));
     }
     let mut i = 2;
     while i + 4 <= bytes.len() {
         if bytes[i] != 0xff {
-            return Err(decode_error("JPEG marker"));
+            return Err(Error::decode("JPEG marker"));
         }
         while i < bytes.len() && bytes[i] == 0xff {
             i += 1;
         }
-        let marker = *bytes.get(i).ok_or_else(|| decode_error("marker"))?;
+        let marker = *bytes.get(i).ok_or_else(|| Error::decode("marker"))?;
         i += 1;
         if marker == 0xda || marker == 0xd9 {
             break;
         }
         let size = bytes
             .get(i..i + 2)
-            .ok_or_else(|| decode_error("segment length"))?;
+            .ok_or_else(|| Error::decode("segment length"))?;
         let size = u16::from_be_bytes([size[0], size[1]]) as usize;
         if size < 2 || i + size > bytes.len() {
-            return Err(decode_error("segment bounds"));
+            return Err(Error::decode("segment bounds"));
         }
         if [0xc0, 0xc1, 0xc2].contains(&marker) {
             if size < 8 || bytes[i + 2] != 8 {
-                return Err(Error::new(ErrorKind::UnsupportedColor, "JPEG precision"));
+                return Err(Error::unsupported_color("JPEG precision"));
             }
             let h = u16::from_be_bytes([bytes[i + 3], bytes[i + 4]]) as u32;
             let w = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
@@ -68,18 +64,15 @@ fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
         }
         i += size;
     }
-    Err(Error::new(ErrorKind::UnsupportedInput, "JPEG frame type"))
+    Err(Error::unsupported_input("JPEG frame type"))
 }
 
 /// Hash and decode one bounded snapshot read from an already opened handle. The magic bytes pick
 /// the limit: a JPEG original is bounded by [`MAX_JPEG_BYTES`], anything else by RAW's own bound.
 pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
-    let file_error = |e: std::io::Error| Error::new(ErrorKind::FileAccess, e.kind().to_string());
+    let file_error = |e: std::io::Error| Error::file_access(e.kind().to_string());
     if !file.metadata().map_err(file_error)?.is_file() {
-        return Err(Error::new(
-            ErrorKind::UnsupportedInput,
-            "expected a regular file",
-        ));
+        return Err(Error::unsupported_input("expected a regular file"));
     }
     let mut magic = [0_u8; 2];
     let _ = file.read(&mut magic).map_err(file_error)?;
@@ -90,14 +83,14 @@ pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
         lightwell_raw::MAX_SOURCE_BYTES
     };
     if file.metadata().map_err(file_error)?.len() > limit as u64 {
-        return Err(Error::new(ErrorKind::ResourceLimit, "encoded bytes"));
+        return Err(Error::resource_limit("encoded bytes"));
     }
     let mut bytes = Vec::new();
     file.take(limit.saturating_add(1) as u64)
         .read_to_end(&mut bytes)
         .map_err(file_error)?;
     if bytes.len() > limit {
-        return Err(Error::new(ErrorKind::ResourceLimit, "encoded bytes"));
+        return Err(Error::resource_limit("encoded bytes"));
     }
     Ok(bytes)
 }
@@ -111,13 +104,10 @@ struct Decoded {
 fn decode_upright(bytes: Vec<u8>) -> Result<Decoded, Error> {
     let (w, h, components) = header(&bytes)?;
     if w == 0 || h == 0 || w > 16384 || h > 16384 || u64::from(w) * u64::from(h) > 64_000_000 {
-        return Err(Error::new(ErrorKind::ResourceLimit, "dimensions"));
+        return Err(Error::resource_limit("dimensions"));
     }
     if ![1, 3].contains(&components) {
-        return Err(Error::new(
-            ErrorKind::UnsupportedColor,
-            "only RGB/greyscale",
-        ));
+        return Err(Error::unsupported_color("only RGB/greyscale"));
     }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Jpeg);
     let mut limits = Limits::default();
@@ -127,18 +117,18 @@ fn decode_upright(bytes: Vec<u8>) -> Result<Decoded, Error> {
     reader.limits(limits);
     let mut decoder = reader
         .into_decoder()
-        .map_err(|_| decode_error("decoder header"))?;
+        .map_err(|_| Error::decode("decoder header"))?;
     if let Some(profile) = decoder
         .icc_profile()
-        .map_err(|_| Error::new(ErrorKind::UnsupportedProfile, "unreadable ICC"))?
+        .map_err(|_| Error::unsupported_profile("unreadable ICC"))?
     {
         crate::profile::check(&profile, components)?;
     }
     let orientation = decoder
         .orientation()
-        .map_err(|_| decode_error("orientation"))?;
+        .map_err(|_| Error::decode("orientation"))?;
     let mut upright =
-        image::DynamicImage::from_decoder(decoder).map_err(|_| decode_error("decode"))?;
+        image::DynamicImage::from_decoder(decoder).map_err(|_| Error::decode("decode"))?;
     upright.apply_orientation(orientation);
     Ok(Decoded {
         upright,
@@ -169,14 +159,13 @@ fn write_rgba(upright: &image::DynamicImage, out: &mut [u8]) -> Result<(), Error
             }
             Ok(())
         }
-        _ => Err(decode_error("unexpected decoded color type")),
+        _ => Err(Error::decode("unexpected decoded color type")),
     }
 }
 
 /// Decode the complete upright source once for non-destructive recipe evaluation.
 pub fn open_source(path: &Path) -> Result<SourceImage, Error> {
-    let mut file =
-        File::open(path).map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+    let mut file = File::open(path).map_err(|e| Error::file_access(e.kind().to_string()))?;
     open_source_file(&mut file)
 }
 
@@ -227,13 +216,12 @@ fn convert_camera_planes(
     let matrix = matrix.map(|row| [row[0], row[1], row[2]]);
     let convert = |red: &mut [f32], green: &mut [f32], blue: &mut [f32]| {
         if cancel.load(Ordering::Relaxed) {
-            return Err(Error::new(ErrorKind::Conflict, "RAW development cancelled"));
+            return Err(Error::conflict("RAW development cancelled"));
         }
         for i in 0..red.len() {
             let [r, g, b] = matvec_f32(&matrix, [red[i], green[i], blue[i]]);
             if !r.is_finite() || !g.is_finite() || !b.is_finite() {
-                return Err(Error::new(
-                    ErrorKind::UnsupportedColor,
+                return Err(Error::unsupported_color(
                     "RAW color conversion produced a non-finite value",
                 ));
             }
@@ -260,7 +248,7 @@ fn convert_camera_planes(
     // A cancellation in the final short chunk must never publish these partially converted
     // planes. Rayon has joined every chunk before this check or before returning an error.
     if cancel.load(Ordering::Relaxed) {
-        return Err(Error::new(ErrorKind::Conflict, "RAW development cancelled"));
+        return Err(Error::conflict("RAW development cancelled"));
     }
     Ok(())
 }
@@ -291,12 +279,10 @@ impl RawPreparation {
         // Both sides are typed first, so catalog JSON's shortest f32 decimals compare at the
         // native precision, exactly as they do when the owner adopts the completed source.
         let value = |metadata: &RawMetadata| {
-            serde_json::to_value(metadata)
-                .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
+            serde_json::to_value(metadata).map_err(|error| Error::internal(error.to_string()))
         };
         if value(&self.metadata)? != value(metadata)? {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
+            return Err(Error::incompatible(
                 "original source interpretation changed",
             ));
         }

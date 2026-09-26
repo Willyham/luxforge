@@ -62,7 +62,7 @@ pub(crate) fn write<T>(
 }
 
 pub(super) fn json_error(context: &str, error: impl std::fmt::Display) -> Error {
-    Error::new(ErrorKind::Incompatible, format!("{context}: {error}"))
+    Error::incompatible(format!("{context}: {error}"))
 }
 
 pub(crate) fn encode<T: Serialize>(value: &T) -> Result<String, Error> {
@@ -91,8 +91,7 @@ impl EditorService {
                     row.get(0)
                 })?;
             if occupied {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
+                return Err(Error::incompatible(
                     "unmarked catalog is not empty; choose a new catalog path",
                 ));
             }
@@ -224,10 +223,7 @@ pub(super) fn insert_request(
         ],
     )?;
     if inserted == 0 {
-        return Err(Error::new(
-            ErrorKind::Conflict,
-            "request was committed concurrently",
-        ));
+        return Err(Error::conflict("request was committed concurrently"));
     }
     Ok(())
 }
@@ -306,7 +302,7 @@ fn store_strokes(tx: &Transaction<'_>, recipe: &Recipe) -> Result<(), Error> {
             continue;
         };
         let text = String::from_utf8(stroke.canonical())
-            .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot store stroke: {e}")))?;
+            .map_err(|e| Error::internal(format!("cannot store stroke: {e}")))?;
         statement.execute(params![id.as_str(), text])?;
     }
     Ok(())
@@ -358,7 +354,7 @@ pub(super) fn next_sequence(connection: &Connection, asset_id: &AssetId) -> Resu
         [asset_id.as_str()],
         |row| row.get(0),
     )?;
-    u64::try_from(sequence).map_err(|_| Error::new(ErrorKind::Catalog, "invalid history sequence"))
+    u64::try_from(sequence).map_err(|_| Error::catalog("invalid history sequence"))
 }
 
 /// One asset row, with its source interpretation still the text the catalog holds.
@@ -419,7 +415,7 @@ pub(super) fn head_from(connection: &Connection, asset_id: &AssetId) -> Result<H
             asset_row,
         )
         .optional()?
-        .ok_or_else(|| Error::new(ErrorKind::Validation, "unknown asset"))?
+        .ok_or_else(|| Error::validation("unknown asset"))?
         .into_record()?;
     let (current, revision, redo): (String, i64, String) = connection.query_row(
         "SELECT current_entry_id,revision,redo_json FROM asset_state WHERE asset_id=?1",
@@ -444,7 +440,7 @@ pub(super) fn stored_revision(connection: &Connection, asset_id: &AssetId) -> Re
         )
         .optional()?
         .map(|revision| revision as u64)
-        .ok_or_else(|| Error::new(ErrorKind::Validation, "unknown asset"))
+        .ok_or_else(|| Error::validation("unknown asset"))
 }
 
 pub(super) fn entry_from(
@@ -459,12 +455,7 @@ pub(super) fn entry_from(
             |row| row.get(0),
         )
         .optional()?
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                "history entry does not belong to this asset",
-            )
-        })?;
+        .ok_or_else(|| Error::validation("history entry does not belong to this asset"))?;
     let mut entry: HistoryEntry = decode("invalid history entry", json)?;
     // One lookup per referenced stroke, here and nowhere else: every path that evaluates an entry —
     // state, preview, undo, redo, Restore, export — reads it through this function, once, and then

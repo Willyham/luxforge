@@ -1,7 +1,7 @@
 //! TLS for `https` endpoints: rustls with the ring provider, TLS 1.3 and 1.2, SNI from the URL's
 //! host, and either the operating system's verifier or an explicit set of roots.
 use super::policy::Endpoint;
-use crate::{Error, ErrorKind};
+use crate::Error;
 use rustls::{
     ClientConfig, ClientConnection, RootCertStore, StreamOwned,
     pki_types::{CertificateDer, ServerName},
@@ -23,10 +23,7 @@ pub enum TlsTrust {
 }
 
 fn setup_failed(error: rustls::Error) -> Error {
-    Error::new(
-        ErrorKind::FileAccess,
-        format!("cannot configure TLS: {error}"),
-    )
+    Error::file_access(format!("cannot configure TLS: {error}"))
 }
 
 /// The client configuration every `https` request of one transport shares.
@@ -55,15 +52,11 @@ pub(super) fn client_config(trust: &TlsTrust) -> Result<Arc<ClientConfig>, Error
 /// The name the server's certificate must match, and the SNI for a domain: `endpoint`'s host.
 pub(super) fn server_name(endpoint: &Endpoint) -> Result<ServerName<'static>, Error> {
     Ok(match endpoint.url.host() {
-        Some(Host::Domain(name)) => ServerName::try_from(name.to_owned()).map_err(|_| {
-            Error::new(
-                ErrorKind::Validation,
-                format!("{name} is not a valid TLS server name"),
-            )
-        })?,
+        Some(Host::Domain(name)) => ServerName::try_from(name.to_owned())
+            .map_err(|_| Error::validation(format!("{name} is not a valid TLS server name")))?,
         Some(Host::Ipv4(address)) => ServerName::from(IpAddr::V4(address)),
         Some(Host::Ipv6(address)) => ServerName::from(IpAddr::V6(address)),
-        None => return Err(Error::new(ErrorKind::Validation, "URL has no host")),
+        None => return Err(Error::validation("URL has no host")),
     })
 }
 

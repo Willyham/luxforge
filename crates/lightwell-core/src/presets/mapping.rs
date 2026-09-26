@@ -7,11 +7,10 @@
 //! why equal values do not mean equal pixels.
 //! A value that does not parse or lies outside the control's hard range is refused, never clamped.
 use super::report::{ImportReport, MappedSetting, ReportedSetting};
-use super::unsupported;
 use super::value::{
     RawSetting, RawValue, boolean, identity_curve, json_number, number, report_text,
 };
-use crate::{Error, ErrorKind};
+use crate::Error;
 use crate::{ModuleRegistry, ParameterKind, check_value};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -1235,7 +1234,9 @@ pub(super) fn map(
     if let Some(kind) = by_name.get("PresetType")
         && kind.text().map(str::trim) != Some("Normal")
     {
-        return Err(unsupported("Lightroom profiles are not presets"));
+        return Err(Error::unsupported_input(
+            "Lightroom profiles are not presets",
+        ));
     }
     let era = era(&by_name);
     let switches: HashMap<Panel, Switch> = PANELS
@@ -1369,10 +1370,9 @@ pub(super) fn map(
     }
     if !out.is_empty() {
         super::validate_settings(registry, &out).map_err(|error| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("the importer produced an invalid settings set: {error}"),
-            )
+            Error::internal(format!(
+                "the importer produced an invalid settings set: {error}"
+            ))
         })?;
     }
     Ok(Mapped {

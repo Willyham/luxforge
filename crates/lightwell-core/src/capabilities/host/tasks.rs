@@ -9,11 +9,10 @@
 //! `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
 use super::{
     ActivationState, CapabilityHost, Requirement, asset_exists, effective_values, profile_endpoint,
-    secret_fields, validation,
+    secret_fields,
 };
 use crate::{
-    AssetId, Availability, EditorService, Error, ErrorKind, JobId, ModuleDescriptor,
-    MutationRequest,
+    AssetId, Availability, EditorService, Error, JobId, ModuleDescriptor, MutationRequest,
     api::params,
     capabilities::{
         consent::{consent_required, remote_disclosure},
@@ -61,10 +60,10 @@ fn adapter<'a>(descriptor: &'a ModuleDescriptor, id: &str) -> Result<&'a Adapter
         .and_then(|settings| settings.profiles.as_ref())
         .and_then(|profiles| profiles.adapter(id))
         .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("adapter {id} of module {} is not declared", descriptor.id),
-            )
+            Error::internal(format!(
+                "adapter {id} of module {} is not declared",
+                descriptor.id
+            ))
         })
 }
 
@@ -136,14 +135,13 @@ impl CapabilityHost {
         let registry = service.registry();
         let (module, task) = registry
             .task(task_id)
-            .ok_or_else(|| validation(format!("unknown task {task_id}")))?;
+            .ok_or_else(|| Error::validation(format!("unknown task {task_id}")))?;
         let descriptor = module.descriptor();
         let module_id = descriptor.id.as_str();
         if let Availability::Unavailable { reason } = &descriptor.availability {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unavailable module {module_id} cannot run task {task_id}: {reason}"),
-            ));
+            return Err(Error::incompatible(format!(
+                "unavailable module {module_id} cannot run task {task_id}: {reason}"
+            )));
         }
         let mut parameters = params::generated(request)?;
         params::take::<MutationRequest>(&mut parameters, "mutation")?.validate()?;
@@ -173,13 +171,12 @@ impl CapabilityHost {
             (Some(profile_id), Some(settings)) => Some(
                 settings
                     .profile(profile_id)
-                    .ok_or_else(|| validation(format!("unknown profile {profile_id}")))?,
+                    .ok_or_else(|| Error::validation(format!("unknown profile {profile_id}")))?,
             ),
             (Some(_), None) => {
-                return Err(Error::new(
-                    ErrorKind::Internal,
-                    format!("task {task_id} takes a profile but its module declares none"),
-                ));
+                return Err(Error::internal(format!(
+                    "task {task_id} takes a profile but its module declares none"
+                )));
             }
             (None, _) => None,
         };
@@ -188,10 +185,7 @@ impl CapabilityHost {
             .iter()
             .map(|id| {
                 descriptor.capability(id).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        format!("task {task_id} uses undeclared capability {id}"),
-                    )
+                    Error::internal(format!("task {task_id} uses undeclared capability {id}"))
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -200,7 +194,7 @@ impl CapabilityHost {
                 if let CapabilityKind::RemoteImageRequest { adapter, .. } = &capability.kind
                     && profile.adapter != *adapter
                 {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "profile {} uses adapter {}, not {adapter}",
                         profile.id, profile.adapter
                     )));
@@ -269,11 +263,10 @@ impl CapabilityHost {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Err(Error::new(
-                ErrorKind::NotReady,
-                format!("task {task_id} is not ready: {list}"),
-            )
-            .with_data(json!({"requirements": missing})));
+            return Err(
+                Error::not_ready(format!("task {task_id} is not ready: {list}"))
+                    .with_data(json!({"requirements": missing})),
+            );
         }
 
         // A live grant for every gated capability, in the order the task declares them.
@@ -282,14 +275,16 @@ impl CapabilityHost {
             let (scope, endpoint) = match &capability.kind {
                 CapabilityKind::RemoteImageRequest { adapter, data } => {
                     let (Some(profile), Some(asset_id)) = (profile, &asset_id) else {
-                        return Err(Error::new(
-                            ErrorKind::Internal,
-                            format!("task {task_id} sends without an asset and a profile"),
-                        ));
+                        return Err(Error::internal(format!(
+                            "task {task_id} sends without an asset and a profile"
+                        )));
                     };
                     let endpoint =
                         profile_endpoint(descriptor, &profile.fields).ok_or_else(|| {
-                            validation(format!("profile {} has no valid endpoint", profile.id))
+                            Error::validation(format!(
+                                "profile {} has no valid endpoint",
+                                profile.id
+                            ))
                         })?;
                     let scope = GrantScope::Remote(RemoteScope {
                         profile_id: profile.id.clone(),
@@ -312,10 +307,7 @@ impl CapabilityHost {
                         scope,
                     ),
                     GrantScope::Download(_) => {
-                        return Err(Error::new(
-                            ErrorKind::Internal,
-                            "a task never asks for a download grant",
-                        ));
+                        return Err(Error::internal("a task never asks for a download grant"));
                     }
                 };
                 return Err(consent_required(
@@ -385,10 +377,7 @@ impl CapabilityHost {
                     )
                 }
                 _ => {
-                    return Err(Error::new(
-                        ErrorKind::Internal,
-                        "a granted scope has no request to send",
-                    ));
+                    return Err(Error::internal("a granted scope has no request to send"));
                 }
             };
         }
@@ -399,10 +388,7 @@ impl CapabilityHost {
             let outcome = run.outcome.clone();
             Box::new(move || {
                 let module = registry.capabilities(&module_id).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        format!("module {module_id} is not registered"),
-                    )
+                    Error::internal(format!("module {module_id} is not registered"))
                 })?;
                 let result = module.run_task(&task_id, &checked, &context)?;
                 // A task asked to stop as it finished counts as cancelled: what it published is

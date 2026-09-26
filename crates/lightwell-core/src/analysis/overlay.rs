@@ -7,7 +7,9 @@
 //! blurred thumbnail, and a cell grid equal to the image is one to one.
 
 use super::{Clip, PARALLEL_REDUCE_PIXELS, clip_class};
-use crate::{Error, ErrorKind};
+use crate::Error;
+#[cfg(test)]
+use crate::ErrorKind;
 use rayon::prelude::*;
 
 /// No channel of any source pixel in this cell sits at an output endpoint.
@@ -55,34 +57,23 @@ pub fn overlay(
     cells_h: u32,
 ) -> Result<Vec<u8>, Error> {
     if width == 0 || height == 0 || cells_w == 0 || cells_h == 0 {
-        return Err(Error::new(
-            ErrorKind::Validation,
+        return Err(Error::validation(
             "an overlay needs a non-empty image and a non-empty cell grid",
         ));
     }
     if cells_w > MAX_OVERLAY_CELLS || cells_h > MAX_OVERLAY_CELLS {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "an overlay of {cells_w}x{cells_h} cells exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows"
-            ),
-        ));
+        return Err(Error::resource_limit(format!(
+            "an overlay of {cells_w}x{cells_h} cells exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows"
+        )));
     }
     let pixels = u64::from(width) * u64::from(height);
-    let expected = usize::try_from(pixels * 4).map_err(|_| {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            "image allocation is not addressable",
-        )
-    })?;
+    let expected = usize::try_from(pixels * 4)
+        .map_err(|_| Error::resource_limit("image allocation is not addressable"))?;
     if rgba.len() != expected {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            format!(
-                "pixel buffer holds {} bytes, expected {expected} for a {width}x{height} image",
-                rgba.len()
-            ),
-        ));
+        return Err(Error::validation(format!(
+            "pixel buffer holds {} bytes, expected {expected} for a {width}x{height} image",
+            rgba.len()
+        )));
     }
     let cells = (cells_w as usize) * (cells_h as usize);
     let row_bytes = (width as usize) * 4;

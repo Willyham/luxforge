@@ -6,7 +6,9 @@
 //! halo bookkeeping, the scratch, the scheduling, the global estimate and the point-sample path.
 //! Nothing here reads a frame or allocates one; the execution side lives in
 //! [`crate::render`](crate::render).
-use crate::{Error, ErrorKind, mask_field::MaskField, modules::Stage};
+#[cfg(test)]
+use crate::ErrorKind;
+use crate::{Error, mask_field::MaskField, modules::Stage};
 use std::{borrow::Cow, sync::Arc};
 
 /// The side of one output tile the host streams. The stage is covered by tiles of this size
@@ -178,16 +180,12 @@ impl Reduction {
         let (width, height) = Self::dimensions(stage, factor);
         let pixels = u64::from(width) * u64::from(height);
         if pixels > MAX_REDUCTION_PIXELS {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "a spatial reduction of {pixels} pixels exceeds the {MAX_REDUCTION_PIXELS} pixel bound"
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "a spatial reduction of {pixels} pixels exceeds the {MAX_REDUCTION_PIXELS} pixel bound"
+            )));
         }
         if values.len() as u64 != pixels * 3 {
-            return Err(Error::new(
-                ErrorKind::Internal,
+            return Err(Error::internal(
                 "a spatial reduction needs three complete planes",
             ));
         }
@@ -254,17 +252,13 @@ impl Global {
     pub fn new(values: impl Into<Arc<[f64]>>) -> Result<Self, Error> {
         let values = values.into();
         if values.len() > MAX_GLOBAL_VALUES {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "a spatial global estimate of {} values exceeds the {MAX_GLOBAL_BYTES} byte bound",
-                    values.len()
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "a spatial global estimate of {} values exceeds the {MAX_GLOBAL_BYTES} byte bound",
+                values.len()
+            )));
         }
         if !values.iter().all(|value| value.is_finite()) {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
+            return Err(Error::resource_limit(
                 "a spatial global estimate holds a value that is not finite",
             ));
         }
@@ -458,22 +452,16 @@ pub enum Parallelism {
 
 fn check_planes(stage: Stage, region: Region, len: usize) -> Result<(), Error> {
     if region.x1() > stage.width || region.y1() > stage.height {
-        return Err(Error::new(
-            ErrorKind::Internal,
-            format!(
-                "a spatial rectangle {region:?} lies outside its {}x{} stage",
-                stage.width, stage.height
-            ),
-        ));
+        return Err(Error::internal(format!(
+            "a spatial rectangle {region:?} lies outside its {}x{} stage",
+            stage.width, stage.height
+        )));
     }
     if len as u64 != region.pixels() * 3 {
-        return Err(Error::new(
-            ErrorKind::Internal,
-            format!(
-                "a spatial rectangle {region:?} needs {} planar values, not {len}",
-                region.pixels() * 3
-            ),
-        ));
+        return Err(Error::internal(format!(
+            "a spatial rectangle {region:?} needs {} planar values, not {len}",
+            region.pixels() * 3
+        )));
     }
     Ok(())
 }
@@ -631,17 +619,13 @@ impl SpatialOperation {
     /// handed rather than trusting the constructor a module used.
     pub fn validate(&self) -> Result<(), Error> {
         if self.units.len() > MAX_SPATIAL_UNITS {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "a spatial operation declares {} units, more than the {MAX_SPATIAL_UNITS} the host evaluates",
-                    self.units.len()
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "a spatial operation declares {} units, more than the {MAX_SPATIAL_UNITS} the host evaluates",
+                self.units.len()
+            )));
         }
         if !self.is_finite() {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
+            return Err(Error::resource_limit(
                 "a spatial operation declares a unit whose coefficients are not finite",
             ));
         }

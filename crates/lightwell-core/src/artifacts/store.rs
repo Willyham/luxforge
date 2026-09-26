@@ -6,8 +6,10 @@ use super::{
     ArtifactId, ArtifactMeta, ArtifactRecord, LiveArtifacts, MAX_ARTIFACT_BYTES, PreparedArtifact,
     lock,
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind, atomic_file,
+    Error, atomic_file,
     editor::{SourceSignature, source_signature},
     modules::valid_identity,
 };
@@ -50,10 +52,7 @@ struct Manifest {
 }
 
 fn access(context: &str, error: &io::Error) -> Error {
-    Error::new(
-        ErrorKind::FileAccess,
-        format!("{context}: {}", error.kind()),
-    )
+    Error::file_access(format!("{context}: {}", error.kind()))
 }
 
 fn now_ms() -> i64 {
@@ -76,7 +75,7 @@ fn read_chunk(file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
 
 fn cancelled(cancel: &AtomicBool) -> Result<(), Error> {
     if cancel.load(Ordering::Relaxed) {
-        Err(Error::new(ErrorKind::Cancelled, "artifact job cancelled"))
+        Err(Error::cancelled("artifact job cancelled"))
     } else {
         Ok(())
     }
@@ -223,19 +222,15 @@ impl ArtifactWriter {
     ) -> Result<(ArtifactRecord, Arc<PreparedArtifact>), Error> {
         let length = bytes.len() as u64;
         if length > MAX_ARTIFACT_BYTES {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "an artifact of {length} bytes exceeds the {MAX_ARTIFACT_BYTES}-byte limit"
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "an artifact of {length} bytes exceeds the {MAX_ARTIFACT_BYTES}-byte limit"
+            )));
         }
         meta.validate()?;
         if !valid_identity(module_id) {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("invalid module identity {module_id}"),
-            ));
+            return Err(Error::validation(format!(
+                "invalid module identity {module_id}"
+            )));
         }
         let sha256 = format!("{:x}", Sha256::digest(bytes));
         let id = ArtifactId::for_hash(&sha256)?;
@@ -277,7 +272,7 @@ impl ArtifactWriter {
     fn prepare_root(&self) -> Result<(), Error> {
         match root_state(&self.root, &self.catalog_id)? {
             RootState::Ready => {}
-            RootState::Foreign(detail) => return Err(Error::new(ErrorKind::Incompatible, detail)),
+            RootState::Foreign(detail) => return Err(Error::incompatible(detail)),
             RootState::Absent | RootState::Unmarked => self.claim()?,
         }
         for directory in [OBJECTS, TEMPORARY] {
@@ -299,19 +294,16 @@ impl ArtifactWriter {
             Err(error) => return Err(access("cannot read artifact directory", &error)),
         };
         if occupied {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!(
-                    "artifact directory {} holds objects but no manifest",
-                    self.root.display()
-                ),
-            ));
+            return Err(Error::incompatible(format!(
+                "artifact directory {} holds objects but no manifest",
+                self.root.display()
+            )));
         }
         let manifest = serde_json::to_vec(&Manifest {
             format: MANIFEST_FORMAT,
             catalog_id: self.catalog_id.clone(),
         })
-        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+        .map_err(|error| Error::internal(error.to_string()))?;
         let staged = self.stage(&manifest)?;
         atomic_file::publish(&staged, &self.root.join(MANIFEST)).map_err(|error| {
             let _ = fs::remove_file(&staged);
@@ -357,23 +349,12 @@ pub(crate) fn read_verified(
     cancel: &AtomicBool,
 ) -> Result<VerifiedArtifact, Error> {
     let id = &read.id;
-    let missing = || {
-        Error::new(
-            ErrorKind::SourceUnavailable,
-            format!("artifact {id} is missing"),
-        )
-    };
-    let corrupt = || {
-        Error::new(
-            ErrorKind::SourceUnavailable,
-            format!("artifact {id} is corrupt"),
-        )
-    };
+    let missing = || Error::source_unavailable(format!("artifact {id} is missing"));
+    let corrupt = || Error::source_unavailable(format!("artifact {id} is corrupt"));
     if read.bytes > MAX_ARTIFACT_BYTES {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!("artifact {id} holds more than {MAX_ARTIFACT_BYTES} bytes"),
-        ));
+        return Err(Error::resource_limit(format!(
+            "artifact {id} holds more than {MAX_ARTIFACT_BYTES} bytes"
+        )));
     }
     cancelled(cancel)?;
     let path = object_path(&read.root, id);
@@ -389,10 +370,9 @@ pub(crate) fn read_verified(
     let path_before = stat(path.metadata())?;
     let signature = source_signature(&path, &handle_before);
     if signature != source_signature(&path, &path_before) {
-        return Err(Error::new(
-            ErrorKind::Conflict,
-            format!("artifact {id} changed before preparation"),
-        ));
+        return Err(Error::conflict(format!(
+            "artifact {id} changed before preparation"
+        )));
     }
     if !handle_before.is_file() {
         return Err(missing());
@@ -412,10 +392,9 @@ pub(crate) fn read_verified(
     if signature != source_signature(&path, &stat(file.metadata())?)
         || signature != source_signature(&path, &stat(path.metadata())?)
     {
-        return Err(Error::new(
-            ErrorKind::Conflict,
-            format!("artifact {id} changed during preparation"),
-        ));
+        return Err(Error::conflict(format!(
+            "artifact {id} changed during preparation"
+        )));
     }
     Ok(VerifiedArtifact {
         artifact: Arc::new(PreparedArtifact::new(
@@ -464,13 +443,10 @@ pub(crate) fn collect_files(
         RootState::Absent => return Ok(collected),
         RootState::Ready => {}
         RootState::Unmarked | RootState::Foreign(_) => {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!(
-                    "artifact directory {} is not this catalog's; nothing was removed",
-                    root.display()
-                ),
-            ));
+            return Err(Error::incompatible(format!(
+                "artifact directory {} is not this catalog's; nothing was removed",
+                root.display()
+            )));
         }
     }
     let listing = |directory: &Path| match fs::read_dir(directory) {

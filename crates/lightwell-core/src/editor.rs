@@ -6,8 +6,10 @@
 //! and samples; `plan` action planning and drafts; `masks` the `mask.*` commands and mask targets;
 //! `describe` the read-only views; `entries` the cache of hydrated entries and asset heads those
 //! reads are answered from; and `artifact_store` derived artifacts.
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    AssetId, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, HistoryRow, LayerId, MaskId,
+    AssetId, Draft, DraftId, EntryId, Error, HistoryEntry, HistoryRow, LayerId, MaskId,
     ModuleRegistry, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId,
     analysis::AnalysisIdentity,
     artifacts::{ArtifactId, LiveArtifacts, PreparedArtifacts},
@@ -440,10 +442,7 @@ impl EditorService {
     pub fn open_with(path: &Path, registry: Arc<ModuleRegistry>) -> Result<Self, Error> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|e| {
-                Error::new(
-                    ErrorKind::Catalog,
-                    format!("cannot create catalog directory: {}", e.kind()),
-                )
+                Error::catalog(format!("cannot create catalog directory: {}", e.kind()))
             })?;
         }
         let mut connection = Connection::open(path)?;
@@ -460,12 +459,9 @@ impl EditorService {
             0 => Self::create_schema(&mut connection)?,
             CATALOG_FORMAT => {}
             other => {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
-                    format!(
-                        "catalog format {other} is not supported; expected {CATALOG_FORMAT}; choose a new catalog path"
-                    ),
-                ));
+                return Err(Error::incompatible(format!(
+                    "catalog format {other} is not supported; expected {CATALOG_FORMAT}; choose a new catalog path"
+                )));
             }
         }
         let catalog_id: Option<String> = connection
@@ -476,10 +472,7 @@ impl EditorService {
             )
             .optional()?;
         let catalog_id = catalog_id.ok_or_else(|| {
-            Error::new(
-                ErrorKind::Incompatible,
-                "catalog has no identity; choose a new catalog path",
-            )
+            Error::incompatible("catalog has no identity; choose a new catalog path")
         })?;
         // The root follows the catalog file, so moving both together keeps it valid.
         let artifact_root = default_artifact_root(path);

@@ -35,10 +35,12 @@ use super::{
     declared_geometry_kinds, knows_component_kind, sampling_kinds,
 };
 use super::{SAMPLES_FIELD, rules};
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
     ActionDescriptor, CanvasInteraction, ChoiceStyle, Component, ComponentId, ComponentMode,
-    Control, Error, ErrorKind, Layer, LayerId, Mask, MaskId, ModuleDescriptor, ModuleRegistry,
-    NumberStyle, ParameterDescriptor, Recipe,
+    Control, Error, Layer, LayerId, Mask, MaskId, ModuleDescriptor, ModuleRegistry, NumberStyle,
+    ParameterDescriptor, Recipe,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
     path::{self, POINTS_PER_STROKE, SIZE_MAX, Stroke, StrokeId},
 };
@@ -143,10 +145,6 @@ pub struct SampleMethod {
 pub struct GeometryMethod {
     pub op: GeometryOp,
     pub kind: &'static str,
-}
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
 }
 
 /// A component kind this build cannot evaluate: the host's one spelling of that refusal.
@@ -625,10 +623,9 @@ pub(crate) fn plan(
                 }
                 "mask.rename" => {
                     let index = mask_index(&next, required_mask(target)?)?;
-                    let name = target
-                        .name
-                        .clone()
-                        .ok_or_else(|| validation("missing required field name for mask.rename"))?;
+                    let name = target.name.clone().ok_or_else(|| {
+                        Error::validation("missing required field name for mask.rename")
+                    })?;
                     let previous = std::mem::replace(&mut next.masks[index].name, name.clone());
                     next.masks[index].validate()?;
                     let id = next.masks[index].id.clone();
@@ -820,7 +817,7 @@ pub(crate) fn plan(
                     )
                 }
                 other => {
-                    return Err(validation(format!("{other} changes no mask")));
+                    return Err(Error::validation(format!("{other} changes no mask")));
                 }
             },
         };
@@ -929,13 +926,13 @@ fn plan_geometry(
                 // A kind whose geometry is drawn has no patch method to point at, so the refusal
                 // says what is true of it rather than naming a command that does not exist.
                 if component_geometry_is_drawn(&component.kind) {
-                    return Err(validation(format!(
+                    return Err(Error::validation(format!(
                         "component {} is a {} component, whose geometry is drawn rather than \
                          patched",
                         component.name, component.kind
                     )));
                 }
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "component {} is a {} component; patch it with mask.set-{}",
                     component.name, component.kind, component.kind
                 )));
@@ -987,7 +984,7 @@ fn plan_add_stroke(
             number(parameters, "colour_refine")?,
         )?),
         (true, None) => {
-            return Err(validation(
+            return Err(Error::validation(
                 "a stroke limited to a colour needs the pixel the masked operation receives, and \
                  none was read",
             ));
@@ -999,7 +996,7 @@ fn plan_add_stroke(
     // refusal names the command that does change one.
     let declared_mode = || -> Result<(), Error> {
         if parameters.contains_key("mode") {
-            return Err(validation(
+            return Err(Error::validation(
                 "a stroke appended to an existing component takes no mode; change a component's \
                  mode with mask.set-component-mode",
             ));
@@ -1085,7 +1082,7 @@ fn plan_delete_stroke(next: &mut Recipe, target: &MaskTarget) -> Result<Planned,
     let wanted = target
         .stroke
         .as_ref()
-        .ok_or_else(|| validation("missing required field stroke"))?
+        .ok_or_else(|| Error::validation("missing required field stroke"))?
         .clone();
     let (mask_index, index) = component_at(next, target)?;
     let mask = &mut next.masks[mask_index];
@@ -1097,7 +1094,7 @@ fn plan_delete_stroke(next: &mut Recipe, target: &MaskTarget) -> Result<Planned,
         &format!("component {} of mask {mask_name}", component.name),
     )?;
     let Some(at) = held.iter().position(|held| held == &wanted) else {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "component {} holds no stroke {wanted}",
             component.name
         )));
@@ -1125,7 +1122,7 @@ fn strokes_reach(component: &Component) -> Result<(), Error> {
         return Err(unknown_kind(&component.kind));
     }
     if component.kind != BRUSH {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "component {} is a {} component, whose geometry is declared rather than drawn; patch it \
              with mask.set-{}",
             component.name, component.kind, component.kind
@@ -1210,7 +1207,7 @@ pub(crate) fn colour_limit_request(
     let [x, y] = stroke
         .points()
         .next()
-        .ok_or_else(|| validation("a stroke has no position to read a colour at"))?;
+        .ok_or_else(|| Error::validation("a stroke has no position to read a colour at"))?;
     Ok(Some(LimitRequest {
         layer,
         x,
@@ -1240,12 +1237,12 @@ fn points(parameters: &Map<String, Value>, name: &str) -> Result<Vec<[f64; 2]>, 
     let listed = parameters
         .get(name)
         .and_then(Value::as_array)
-        .ok_or_else(|| validation(format!("missing required parameter {name}")))?;
+        .ok_or_else(|| Error::validation(format!("missing required parameter {name}")))?;
     listed
         .iter()
         .map(|point| {
             let pair = point.as_array().ok_or_else(|| {
-                validation(format!(
+                Error::validation(format!(
                     "parameter {name} must be a list of [x, y] positions"
                 ))
             })?;
@@ -1254,7 +1251,7 @@ fn points(parameters: &Map<String, Value>, name: &str) -> Result<Vec<[f64; 2]>, 
                 pair.get(1).and_then(Value::as_f64),
             ) {
                 (Some(x), Some(y)) if pair.len() == 2 => Ok([x, y]),
-                _ => Err(validation(format!(
+                _ => Err(Error::validation(format!(
                     "parameter {name} must be a list of [x, y] positions"
                 ))),
             }
@@ -1293,7 +1290,7 @@ fn plan_sample(
         return Err(unknown_kind(&component.kind));
     }
     if component.kind != kind {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "component {} is a {} component and holds no sampled colours of a {kind}",
             component.name, component.kind
         )));
@@ -1319,7 +1316,7 @@ fn plan_sample(
                             .get(&declared.name)
                             .map(canonical)
                             .ok_or_else(|| {
-                                validation(format!(
+                                Error::validation(format!(
                                     "missing required parameter {} for a {kind} sample",
                                     declared.name
                                 ))
@@ -1418,7 +1415,7 @@ fn required_mask(target: &MaskTarget) -> Result<&MaskId, Error> {
     target
         .mask
         .as_ref()
-        .ok_or_else(|| validation("missing required field mask"))
+        .ok_or_else(|| Error::validation("missing required field mask"))
 }
 
 fn mask_index(recipe: &Recipe, id: &MaskId) -> Result<usize, Error> {
@@ -1426,7 +1423,7 @@ fn mask_index(recipe: &Recipe, id: &MaskId) -> Result<usize, Error> {
         .masks
         .iter()
         .position(|mask| &mask.id == id)
-        .ok_or_else(|| validation(format!("unknown mask {id}")))
+        .ok_or_else(|| Error::validation(format!("unknown mask {id}")))
 }
 
 /// The mask and the component one component command addresses.
@@ -1435,13 +1432,13 @@ fn component_at(recipe: &Recipe, target: &MaskTarget) -> Result<(usize, usize), 
     let id = target
         .component
         .as_ref()
-        .ok_or_else(|| validation("missing required field component"))?;
+        .ok_or_else(|| Error::validation("missing required field component"))?;
     let index = recipe.masks[mask]
         .components
         .iter()
         .position(|component| &component.id == id)
         .ok_or_else(|| {
-            validation(format!(
+            Error::validation(format!(
                 "mask {} has no component {id}",
                 recipe.masks[mask].name
             ))
@@ -1470,7 +1467,7 @@ fn geometry_payload(kind: &str, parameters: &Map<String, Value>) -> Result<Value
     let mut payload = Map::new();
     for field in &fields {
         let value = parameters.get(field).ok_or_else(|| {
-            validation(format!(
+            Error::validation(format!(
                 "missing required parameter {field} for a {kind} component"
             ))
         })?;
@@ -1498,21 +1495,21 @@ fn enumeration<'a>(parameters: &'a Map<String, Value>, name: &str) -> Result<&'a
     parameters
         .get(name)
         .and_then(Value::as_str)
-        .ok_or_else(|| validation(format!("missing required parameter {name}")))
+        .ok_or_else(|| Error::validation(format!("missing required parameter {name}")))
 }
 
 fn number(parameters: &Map<String, Value>, name: &str) -> Result<f64, Error> {
     parameters
         .get(name)
         .and_then(Value::as_f64)
-        .ok_or_else(|| validation(format!("missing required parameter {name}")))
+        .ok_or_else(|| Error::validation(format!("missing required parameter {name}")))
 }
 
 fn boolean(parameters: &Map<String, Value>, name: &str) -> Result<bool, Error> {
     parameters
         .get(name)
         .and_then(Value::as_bool)
-        .ok_or_else(|| validation(format!("missing required parameter {name}")))
+        .ok_or_else(|| Error::validation(format!("missing required parameter {name}")))
 }
 
 fn mode(parameters: &Map<String, Value>) -> Result<ComponentMode, Error> {
@@ -1535,7 +1532,7 @@ fn requested_index(parameters: &Map<String, Value>, name: &str) -> Result<u64, E
     parameters
         .get(name)
         .and_then(Value::as_u64)
-        .ok_or_else(|| validation(format!("missing required parameter {name}")))
+        .ok_or_else(|| Error::validation(format!("missing required parameter {name}")))
 }
 
 fn modes() -> Vec<String> {

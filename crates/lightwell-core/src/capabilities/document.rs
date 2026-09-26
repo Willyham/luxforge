@@ -5,7 +5,7 @@
 //! not the current shape, is refused with `incompatible` and never rewritten. A change is one
 //! locked read-modify-write through the shared durable write, so a failure at any point leaves the
 //! previous file. See `docs/design/module-capabilities.md#settings-store`.
-use crate::{Error, ErrorKind, atomic_file};
+use crate::{Error, atomic_file};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -94,13 +94,10 @@ impl<T: Serialize + DeserializeOwned> JsonDocument<T> {
     }
 
     fn incompatible(&self, reason: impl std::fmt::Display) -> Error {
-        Error::new(
-            ErrorKind::Incompatible,
-            format!(
-                "{}: {reason}; the file is kept unchanged",
-                self.path().display()
-            ),
-        )
+        Error::incompatible(format!(
+            "{}: {reason}; the file is kept unchanged",
+            self.path().display()
+        ))
     }
 
     /// The document, or `None` when the file does not exist. It is read without the lock, which the
@@ -140,20 +137,17 @@ impl<T: Serialize + DeserializeOwned> JsonDocument<T> {
             format: self.format,
             document,
         })
-        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
+        .map_err(|error| Error::internal(error.to_string()))
     }
 
     fn save(&self, bytes: &[u8]) -> Result<(), Error> {
         if bytes.len() as u64 > self.max_bytes {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "{} would be {} bytes; the file is at most {}",
-                    self.name(),
-                    bytes.len(),
-                    self.max_bytes
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "{} would be {} bytes; the file is at most {}",
+                self.name(),
+                bytes.len(),
+                self.max_bytes
+            )));
         }
         atomic_file::replace(&self.path(), bytes)
     }

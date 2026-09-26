@@ -22,16 +22,8 @@ use super::{
     EffectDescriptor, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer, ParameterDescriptor,
     Processing, RailDecoration, ResetAction, Stage, StageContext, ToolModule,
 };
-use crate::{Error, ErrorKind};
+use crate::Error;
 use serde_json::{Map, Number, Value};
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
-fn incompatible(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Incompatible, detail)
-}
 
 /// A finite f64 as a JSON number. Every value written here is finite, so the fallback is never
 /// reached in practice and never panics if it is.
@@ -292,7 +284,7 @@ pub trait FieldPatch: Send + Sync + 'static {
         context: &StageContext<'_>,
     ) -> Result<Value, Error> {
         let _ = (parameters, context);
-        Err(validation(format!("unknown query {query_id}")))
+        Err(Error::validation(format!("unknown query {query_id}")))
     }
 }
 
@@ -345,27 +337,31 @@ impl<M: FieldPatch> FieldPatchModule<M> {
         let spec = &self.spec;
         let noun = spec.noun;
         if effect_id != spec.effect.id {
-            return Err(incompatible(format!("unavailable effect {effect_id}")));
+            return Err(Error::incompatible(format!(
+                "unavailable effect {effect_id}"
+            )));
         }
         if format != spec.effect.format {
-            return Err(incompatible(format!("unsupported effect format {format}")));
+            return Err(Error::incompatible(format!(
+                "unsupported effect format {format}"
+            )));
         }
         let object = payload
             .as_object()
-            .ok_or_else(|| validation(format!("{noun} payload must be a JSON object")))?;
+            .ok_or_else(|| Error::validation(format!("{noun} payload must be a JSON object")))?;
         for (name, value) in object {
             let field = spec
                 .field(name)
-                .ok_or_else(|| validation(format!("unknown {noun} field {name}")))?;
+                .ok_or_else(|| Error::validation(format!("unknown {noun} field {name}")))?;
             let number = value
                 .as_f64()
                 .filter(|number| number.is_finite())
                 .ok_or_else(|| {
-                    validation(format!("{noun} field {name} must be a finite number"))
+                    Error::validation(format!("{noun} field {name} must be a finite number"))
                 })?;
             let (min, max) = (field.min, field.max);
             if number < min || number > max {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "{noun} field {name} must be a number within {min}..={max}"
                 )));
             }
@@ -436,7 +432,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         } else if action_id == self.spec.reset.id {
             Map::new()
         } else {
-            return Err(validation(format!("unknown action {action_id}")));
+            return Err(Error::validation(format!("unknown action {action_id}")));
         };
         Ok(ActionInput {
             action_id: action_id.to_owned(),
@@ -463,7 +459,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
             for (slot, field) in merged.iter_mut().zip(&spec.fields) {
                 if let Some(value) = input.parameters.get(field.name) {
                     *slot = value.as_f64().ok_or_else(|| {
-                        validation(format!(
+                        Error::validation(format!(
                             "{} field {} must be a number",
                             spec.noun, field.name
                         ))
@@ -474,7 +470,10 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         } else if input.action_id == spec.reset.id {
             spec.defaults()
         } else {
-            return Err(validation(format!("unknown action {}", input.action_id)));
+            return Err(Error::validation(format!(
+                "unknown action {}",
+                input.action_id
+            )));
         };
         match existing {
             // Canonical comparison, so writing a field's default on a layer that stores no key at
@@ -590,7 +589,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         context: &StageContext<'_>,
     ) -> Result<Value, Error> {
         if self.spec.queries.is_empty() {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "module {} declares no queries, so it cannot answer {query_id}",
                 self.spec.id
             )));

@@ -4,7 +4,7 @@
 //! renamed over the target, and the directory is synced so the rename itself is durable; a failure
 //! at any point leaves the previous file. Writers that share a file serialize on an OS advisory
 //! lock beside it, and a read is bounded.
-use crate::{Error, ErrorKind};
+use crate::Error;
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
@@ -16,9 +16,9 @@ use std::{
 pub(crate) fn file_error(path: &Path, error: io::Error) -> Error {
     match error.kind() {
         io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => {
-            Error::new(ErrorKind::ResourceLimit, "disk full")
+            Error::resource_limit("disk full")
         }
-        kind => Error::new(ErrorKind::FileAccess, format!("{}: {kind}", path.display())),
+        kind => Error::file_access(format!("{}: {kind}", path.display())),
     }
 }
 
@@ -51,13 +51,10 @@ pub(crate) fn read(path: &Path, max_bytes: u64) -> Result<Option<Vec<u8>>, Error
         .read_to_end(&mut bytes)
         .map_err(|error| file_error(path, error))?;
     if bytes.len() as u64 > max_bytes {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "{} is larger than {max_bytes} bytes; the file is kept unchanged",
-                path.display()
-            ),
-        ));
+        return Err(Error::resource_limit(format!(
+            "{} is larger than {max_bytes} bytes; the file is kept unchanged",
+            path.display()
+        )));
     }
     Ok(Some(bytes))
 }

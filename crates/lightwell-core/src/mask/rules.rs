@@ -9,7 +9,7 @@
 //! sends the command anyway gets exactly the sentence the panel showed. None of them reads a pixel, a
 //! recipe or the catalog; each is `O(1)` or `O(components)`.
 use crate::{
-    ComponentMode, Error, ErrorKind,
+    ComponentMode, Error,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
 };
 
@@ -24,38 +24,28 @@ pub const MODES: [ComponentMode; 3] = [
 /// The composition's one structural rule, as the host words it wherever it states it.
 pub const FIRST_COMPONENT_IS_ADD: &str = "the first component of a mask is always add";
 
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
 /// A declared mode token as the mode it names.
 pub fn mode(token: &str) -> Result<ComponentMode, Error> {
     MODES
         .into_iter()
         .find(|mode| mode.as_str() == token)
-        .ok_or_else(|| validation(format!("unknown component mode {token}")))
+        .ok_or_else(|| Error::validation(format!("unknown component mode {token}")))
 }
 
 /// A component kind this build cannot evaluate. `Incompatible` and not `Validation`: the stored
 /// stack is well formed and this build simply cannot draw part of it, so the component is kept byte
 /// for byte and every edit to it is refused in these words.
 pub fn unknown_kind(kind: &str) -> Error {
-    Error::new(
-        ErrorKind::Incompatible,
-        format!("unknown mask component {kind}"),
-    )
+    Error::incompatible(format!("unknown mask component {kind}"))
 }
 
 /// Room for one more mask in a recipe that holds `masks` of them: what `mask.create-<kind>`,
 /// `mask.duplicate` and a stroke that draws a new mask refuse with at the limit.
 pub fn room_for_mask(masks: usize) -> Result<(), Error> {
     if masks >= MASKS_PER_RECIPE {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "recipe already has {MASKS_PER_RECIPE} masks; the limit is {MASKS_PER_RECIPE} masks per recipe"
-            ),
-        ));
+        return Err(Error::resource_limit(format!(
+            "recipe already has {MASKS_PER_RECIPE} masks; the limit is {MASKS_PER_RECIPE} masks per recipe"
+        )));
     }
     Ok(())
 }
@@ -64,12 +54,9 @@ pub fn room_for_mask(masks: usize) -> Result<(), Error> {
 /// `mask.add-<kind>` and a stroke that puts a new brush on a mask refuse with at the limit.
 pub fn room_for_component(mask: &str, components: usize) -> Result<(), Error> {
     if components >= COMPONENTS_PER_MASK {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "mask {mask} has {COMPONENTS_PER_MASK} components; the limit is {COMPONENTS_PER_MASK} components per mask"
-            ),
-        ));
+        return Err(Error::resource_limit(format!(
+            "mask {mask} has {COMPONENTS_PER_MASK} components; the limit is {COMPONENTS_PER_MASK} components per mask"
+        )));
     }
     Ok(())
 }
@@ -89,7 +76,7 @@ pub fn may_lead(mode: ComponentMode) -> bool {
 /// structural check.
 pub fn leading(mask: &str, mode: ComponentMode) -> Result<(), Error> {
     if !may_lead(mode) {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "mask {mask} begins with a {} component; {FIRST_COMPONENT_IS_ADD}",
             mode.as_str()
         )));
@@ -101,7 +88,7 @@ pub fn leading(mask: &str, mode: ComponentMode) -> Result<(), Error> {
 pub fn position(index: u64, len: usize, what: &str) -> Result<usize, Error> {
     let index = usize::try_from(index).unwrap_or(usize::MAX);
     if index >= len {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "index {index} is outside the {len} {what} of this stack"
         )));
     }
@@ -135,7 +122,7 @@ pub fn reorder_component(
 /// command, so its last component is removed by deleting the mask, which says what it removed.
 pub fn delete_component(mask: &str, components: usize) -> Result<(), Error> {
     if components == 1 {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "mask {mask} has one component; delete the mask rather than its last component"
         )));
     }
@@ -147,7 +134,7 @@ pub fn delete_component(mask: &str, components: usize) -> Result<(), Error> {
 /// component — the same rule, and the same wording, that keeps a mask from existing empty.
 pub fn delete_stroke(stroke: &str, component: &str, strokes: usize) -> Result<(), Error> {
     if strokes == 1 {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "stroke {stroke} is the only stroke of {component}; delete the component instead"
         )));
     }
@@ -163,13 +150,10 @@ pub fn room_for_sample(
     limit: usize,
 ) -> Result<(), Error> {
     if held >= limit {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "component {component} already holds {limit} sampled colours; the limit is \
+        return Err(Error::resource_limit(format!(
+            "component {component} already holds {limit} sampled colours; the limit is \
                  {limit} per {kind} component"
-            ),
-        ));
+        )));
     }
     Ok(())
 }
@@ -179,7 +163,7 @@ pub fn room_for_sample(
 /// is refused by name rather than answered from the source or the finished frame.
 pub fn bound_layer(mask: &str, bound: bool) -> Result<(), Error> {
     if !bound {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "no layer is bound to mask {mask}, and reading the pixel an operation receives \
              needs an operation; apply an adjustment through {mask} first"
         )));
@@ -190,7 +174,7 @@ pub fn bound_layer(mask: &str, bound: bool) -> Result<(), Error> {
 /// A stroke that draws a new mask cannot be held to a colour: a new mask is bound to no layer yet,
 /// so there is no operation whose input the limit could read.
 pub fn limit_on_new_mask() -> Error {
-    validation(
+    Error::validation(
         "a stroke that draws a new mask cannot be limited to a colour: the limit reads the pixel \
          the operation the mask modulates receives, and a new mask is bound to no layer yet. \
          Paint the mask, apply an adjustment through it, then limit the strokes after that",

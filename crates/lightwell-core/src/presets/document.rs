@@ -4,9 +4,9 @@ use super::report::{ImportReport, MappedSetting};
 use super::value::bounded;
 use super::{
     FORMAT_LIGHTWELL, ImportedPreset, PRESET_DOCUMENT_FORMAT, PRESET_DOCUMENT_VERSION,
-    PresetOrigin, file_stem, not_a_preset, preset_name, trimmed, unsupported, validate_settings,
+    PresetOrigin, file_stem, not_a_preset, preset_name, trimmed, validate_settings,
 };
-use crate::{Error, ErrorKind, ModuleRegistry};
+use crate::{Error, ModuleRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -36,12 +36,9 @@ struct Written<'a> {
 fn json_error(error: serde_json::Error) -> Error {
     // serde_json refuses nesting past 128 levels with this message and no category of its own.
     if error.to_string().starts_with("recursion limit exceeded") {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            "the JSON nests deeper than 128 levels",
-        )
+        Error::resource_limit("the JSON nests deeper than 128 levels")
     } else {
-        unsupported(format!("malformed JSON: {error}"))
+        Error::unsupported_input(format!("malformed JSON: {error}"))
     }
 }
 
@@ -59,15 +56,20 @@ pub(super) fn read(
     match value.get("version") {
         Some(version) if version.as_u64() == Some(PRESET_DOCUMENT_VERSION) => {}
         Some(version) => {
-            return Err(unsupported(format!(
+            return Err(Error::unsupported_input(format!(
                 "Lightwell preset document version {version} is not supported; this build reads \
                  version {PRESET_DOCUMENT_VERSION}"
             )));
         }
-        None => return Err(unsupported("the Lightwell preset document has no version")),
+        None => {
+            return Err(Error::unsupported_input(
+                "the Lightwell preset document has no version",
+            ));
+        }
     }
-    let document: Document = serde_json::from_value(value)
-        .map_err(|error| unsupported(format!("malformed Lightwell preset document: {error}")))?;
+    let document: Document = serde_json::from_value(value).map_err(|error| {
+        Error::unsupported_input(format!("malformed Lightwell preset document: {error}"))
+    })?;
     validate_settings(registry, &document.settings)?;
     let mut mapped = Vec::new();
     for (action, fields) in &document.settings {

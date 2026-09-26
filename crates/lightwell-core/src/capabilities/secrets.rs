@@ -3,7 +3,9 @@
 //! reads the value, as a [`SecretValue`] that cannot be serialized, prints as redacted and is
 //! zeroed when dropped. A locked, missing or unsupported store fails with `not-ready` naming the
 //! store; there is no plaintext fallback. See `docs/design/module-capabilities.md#secrets-and-redaction`.
-use crate::{Error, ErrorKind};
+use crate::Error;
+#[cfg(test)]
+use crate::ErrorKind;
 use std::{
     collections::HashMap,
     sync::{
@@ -61,10 +63,7 @@ impl SecretValue {
         let bytes = Zeroizing::new(bytes);
         match std::str::from_utf8(&bytes) {
             Ok(text) => Ok(Self::new(text.to_owned())),
-            Err(_) => Err(Error::new(
-                ErrorKind::Validation,
-                "a stored secret is not UTF-8 text",
-            )),
+            Err(_) => Err(Error::validation("a stored secret is not UTF-8 text")),
         }
     }
 
@@ -128,7 +127,7 @@ impl UnavailableSecretStore {
     }
 
     fn refuse<T>(&self) -> Result<T, Error> {
-        Err(Error::new(ErrorKind::NotReady, self.reason.clone()))
+        Err(Error::not_ready(self.reason.clone()))
     }
 }
 
@@ -253,7 +252,7 @@ pub use keychain::KeychainSecretStore;
 #[cfg(target_os = "macos")]
 mod keychain {
     use super::{SECRET_SERVICE, SecretKey, SecretStore, SecretValue};
-    use crate::{Error, ErrorKind};
+    use crate::Error;
     use security_framework::{
         base::Error as KeychainError,
         item::{ItemClass, ItemSearchOptions, Limit},
@@ -317,7 +316,7 @@ mod keychain {
                         .unwrap_or_else(|| "unknown error".to_owned())
                 ),
             };
-            Error::new(ErrorKind::NotReady, format!("the macOS Keychain {reason}"))
+            Error::not_ready(format!("the macOS Keychain {reason}"))
         }
     }
 
@@ -410,7 +409,7 @@ mod tests {
         store.clear(&key(None)).unwrap();
         store.clear(&key(None)).unwrap();
         assert!(store.read(&key(None)).unwrap().is_none());
-        store.fail_with(Some(Error::new(ErrorKind::NotReady, "locked")));
+        store.fail_with(Some(Error::not_ready("locked")));
         let error = store.present(&key(None)).unwrap_err();
         assert_eq!(error.kind, ErrorKind::NotReady);
         store.fail_with(None);

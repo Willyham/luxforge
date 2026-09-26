@@ -22,7 +22,7 @@ use super::{
         TransportRequest, parse_endpoint,
     },
 };
-use crate::{Error, ErrorKind, JobId, ModuleRegistry, atomic_file};
+use crate::{Error, JobId, ModuleRegistry, atomic_file};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -58,10 +58,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_BASE: Duration = Duration::from_secs(120);
 const DOWNLOAD_MIN_RATE: u64 = 64 * 1024;
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 /// Where an installed resource came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,13 +251,10 @@ pub(crate) fn check_quota(
 ) -> Result<(), Error> {
     let used = store.used_bytes();
     if used.saturating_add(resource.bytes) > quota {
-        return Err(Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "installing {} ({} bytes) would exceed the resource quota: {used} of {quota} bytes are in use",
-                resource.id, resource.bytes
-            ),
-        ));
+        return Err(Error::resource_limit(format!(
+            "installing {} ({} bytes) would exceed the resource quota: {used} of {quota} bytes are in use",
+            resource.id, resource.bytes
+        )));
     }
     Ok(())
 }
@@ -393,12 +386,9 @@ impl Write for Staged {
 fn write_failure(path: &Path, kind: io::ErrorKind) -> Error {
     match kind {
         io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => {
-            Error::new(ErrorKind::ResourceLimit, "disk full")
+            Error::resource_limit("disk full")
         }
-        kind => Error::new(
-            ErrorKind::FileAccess,
-            format!("cannot write {}: {kind}", path.display()),
-        ),
+        kind => Error::file_access(format!("cannot write {}: {kind}", path.display())),
     }
 }
 
@@ -461,24 +451,22 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
     };
     job.control.checkpoint()?;
     if length != resource.bytes {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "{} is {length} bytes; it is pinned at {} bytes",
             resource.id, resource.bytes
         )));
     }
     if sha256 != resource.sha256 {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "{} does not match its pinned hash",
             resource.id
         )));
     }
     job.control.set_progress(Some(1.0), "checking the format");
-    let module = job.registry.capabilities(&job.module_id).ok_or_else(|| {
-        Error::new(
-            ErrorKind::Internal,
-            format!("module {} is not registered", job.module_id),
-        )
-    })?;
+    let module = job
+        .registry
+        .capabilities(&job.module_id)
+        .ok_or_else(|| Error::internal(format!("module {} is not registered", job.module_id)))?;
     module.validate_resource(&resource.id, &staged_path)?;
     job.control.checkpoint()?;
     check_quota(&job.store, resource, job.quota)?;
@@ -546,15 +534,12 @@ fn download(
         }
     };
     if response.status != 200 {
-        return Err(Error::new(
-            ErrorKind::FileAccess,
-            format!(
-                "{} answered HTTP {} for {}",
-                response.final_url.origin().ascii_serialization(),
-                response.status,
-                resource.id
-            ),
-        ));
+        return Err(Error::file_access(format!(
+            "{} answered HTTP {} for {}",
+            response.final_url.origin().ascii_serialization(),
+            response.status,
+            resource.id
+        )));
     }
     staged
         .finish()
@@ -570,14 +555,14 @@ fn copy_local(
     staged_path: &Path,
 ) -> Result<(u64, String), Error> {
     let unreadable = |error: io::Error| {
-        Error::new(
-            ErrorKind::FileAccess,
-            format!("cannot read {}: {}", path.display(), error.kind()),
-        )
+        Error::file_access(format!("cannot read {}: {}", path.display(), error.kind()))
     };
     let file = File::open(path).map_err(unreadable)?;
     if !file.metadata().map_err(unreadable)?.is_file() {
-        return Err(validation(format!("{} is not a file", path.display())));
+        return Err(Error::validation(format!(
+            "{} is not a file",
+            path.display()
+        )));
     }
     let total = job.resource.bytes;
     let mut reader = file.take(total.saturating_add(1));
@@ -591,14 +576,11 @@ fn copy_local(
             break;
         }
         if copied + read as u64 > total {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "{} is longer than the {total} bytes {} is pinned at",
-                    path.display(),
-                    job.resource.id
-                ),
-            ));
+            return Err(Error::resource_limit(format!(
+                "{} is longer than the {total} bytes {} is pinned at",
+                path.display(),
+                job.resource.id
+            )));
         }
         staged
             .write_all(&buffer[..read])

@@ -6,7 +6,7 @@
 //! framing it refuses rather than guesses. One request is sent with `Connection: close`; there are
 //! no cookies, no compression, no keep-alive and no proxies.
 use super::Method;
-use crate::{Error, ErrorKind};
+use crate::Error;
 use std::{
     io::{self, Read, Write},
     time::{Duration, Instant},
@@ -63,44 +63,39 @@ fn is_token(name: &[u8]) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(byte))
 }
 
-fn refused(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
-pub(super) fn cancelled() -> Error {
-    Error::new(ErrorKind::Cancelled, "the request was cancelled")
-}
-
 fn head_too_large() -> Error {
-    Error::new(
-        ErrorKind::ResourceLimit,
-        format!("the request head is larger than {MAX_REQUEST_HEAD_BYTES} bytes"),
-    )
+    Error::resource_limit(format!(
+        "the request head is larger than {MAX_REQUEST_HEAD_BYTES} bytes"
+    ))
 }
 
 /// Check the caller's headers. No refusal repeats a header's value.
 pub(super) fn check_headers(headers: &[(String, String)]) -> Result<(), Error> {
     if headers.len() > MAX_CALLER_HEADERS {
-        return Err(refused(format!(
+        return Err(Error::validation(format!(
             "a request has at most {MAX_CALLER_HEADERS} headers"
         )));
     }
     let mut bytes = 0;
     for (name, value) in headers {
         if !is_token(name.as_bytes()) {
-            return Err(refused("a request header name is not a valid token"));
+            return Err(Error::validation(
+                "a request header name is not a valid token",
+            ));
         }
         if HOST_HEADERS
             .iter()
             .any(|reserved| name.eq_ignore_ascii_case(reserved))
         {
-            return Err(refused(format!("a request may not set the {name} header")));
+            return Err(Error::validation(format!(
+                "a request may not set the {name} header"
+            )));
         }
         if value
             .bytes()
             .any(|byte| (byte < 0x20 && byte != b'\t') || byte == 0x7f)
         {
-            return Err(refused(format!(
+            return Err(Error::validation(format!(
                 "the value of request header {name} contains a control character"
             )));
         }
@@ -129,7 +124,7 @@ pub(super) fn prepare(
 ) -> Result<Prepared, Error> {
     let target: Uri = url[Position::BeforePath..Position::AfterQuery]
         .parse()
-        .map_err(|_| refused("the URL's path cannot be sent"))?;
+        .map_err(|_| Error::validation("the URL's path cannot be sent"))?;
     let mut host = url.host_str().unwrap_or_default().to_owned();
     if let Some(port) = url.port() {
         host = format!("{host}:{port}");
@@ -154,11 +149,12 @@ pub(super) fn prepare(
     for (name, value) in headers {
         request = request.header(name.as_str(), value.as_bytes());
     }
-    let unwritable =
-        |error: ureq_proto::Error| refused(format!("the request cannot be sent: {error}"));
+    let unwritable = |error: ureq_proto::Error| {
+        Error::validation(format!("the request cannot be sent: {error}"))
+    };
     let request = request
         .body(())
-        .map_err(|_| refused("the request cannot be sent: a header is not valid"))?;
+        .map_err(|_| Error::validation("the request cannot be sent: a header is not valid"))?;
     let mut call = Call::new(request).map_err(unwritable)?.proceed();
     let mut head = vec![0; MAX_REQUEST_HEAD_BYTES];
     let written = match call.write(&mut head) {
@@ -176,10 +172,10 @@ pub(super) fn prepare(
             // The body is written to the connection straight from the caller's buffer.
             call.consume_direct_write(body_len).map_err(unwritable)?;
             call.proceed()
-                .ok_or_else(|| refused("the request body does not match its length"))?
+                .ok_or_else(|| Error::validation("the request body does not match its length"))?
         }
         Some(SendRequestResult::Await100(_)) | None => {
-            return Err(refused("the request cannot be sent"));
+            return Err(Error::validation("the request cannot be sent"));
         }
     };
     Ok(Prepared { head, call })
@@ -249,10 +245,7 @@ impl<'a> Exchange<'a> {
     }
 
     fn malformed(&self, what: &str) -> Error {
-        Error::new(
-            ErrorKind::FileAccess,
-            format!("the response from {} {what}", self.pace.name),
-        )
+        Error::file_access(format!("the response from {} {what}", self.pace.name))
     }
 
     /// A response `ureq-proto` could not frame. Its messages name the fault, never a value.
@@ -264,23 +257,17 @@ impl<'a> Exchange<'a> {
     }
 
     fn too_many_fields(&self) -> Error {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "the response from {} has more than {MAX_FIELDS} header fields",
-                self.pace.name
-            ),
-        )
+        Error::resource_limit(format!(
+            "the response from {} has more than {MAX_FIELDS} header fields",
+            self.pace.name
+        ))
     }
 
     fn head_too_large(&self, what: &str) -> Error {
-        Error::new(
-            ErrorKind::ResourceLimit,
-            format!(
-                "the response {what} from {} is larger than {MAX_HEAD_BYTES} bytes",
-                self.pace.name
-            ),
-        )
+        Error::resource_limit(format!(
+            "the response {what} from {} is larger than {MAX_HEAD_BYTES} bytes",
+            self.pace.name
+        ))
     }
 
     fn ended(&self) -> Error {
@@ -291,23 +278,20 @@ impl<'a> Exchange<'a> {
         if error.kind() == io::ErrorKind::UnexpectedEof {
             return self.ended();
         }
-        Error::new(
-            ErrorKind::FileAccess,
-            format!("the request to {} failed: {error}", self.pace.name),
-        )
+        Error::file_access(format!("the request to {} failed: {error}", self.pace.name))
     }
 
     /// Fail if the caller cancelled or a deadline passed; called before every read and write.
     fn wait(&self) -> Result<(), Error> {
         if (self.pace.cancel)() {
-            return Err(cancelled());
+            return Err(Error::cancelled("the request was cancelled"));
         }
         let now = Instant::now();
         if now >= self.pace.deadline || now.duration_since(self.progressed) >= self.pace.idle {
-            return Err(Error::new(
-                ErrorKind::FileAccess,
-                format!("the request to {} timed out", self.pace.name),
-            ));
+            return Err(Error::file_access(format!(
+                "the request to {} timed out",
+                self.pace.name
+            )));
         }
         Ok(())
     }
@@ -495,10 +479,9 @@ impl<'a> Exchange<'a> {
         };
         let name = self.pace.name;
         let too_large = || {
-            Error::new(
-                ErrorKind::ResourceLimit,
-                format!("the response from {name} is larger than {limit} bytes"),
-            )
+            Error::resource_limit(format!(
+                "the response from {name} is larger than {limit} bytes"
+            ))
         };
         let mode = call.body_mode();
         let total = match mode {
@@ -524,10 +507,10 @@ impl<'a> Exchange<'a> {
                         return Err(too_large());
                     }
                     sink.write_all(&piece[..produced]).map_err(|error| {
-                        Error::new(
-                            ErrorKind::FileAccess,
-                            format!("cannot store the response from {name}: {}", error.kind()),
-                        )
+                        Error::file_access(format!(
+                            "cannot store the response from {name}: {}",
+                            error.kind()
+                        ))
                     })?;
                     received += produced as u64;
                     progress(received, total);

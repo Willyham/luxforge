@@ -8,9 +8,11 @@ use super::{
     masks::MASK_FIELD,
     source::{Evaluated, validate_source_recipe},
 };
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    AssetId, EntryId, Error, ErrorKind, HistoryEntry, HistoryRow, MaskId, Mutation, Recipe,
-    Snapshot, SnapshotId, modules::ActionInput,
+    AssetId, EntryId, Error, HistoryEntry, HistoryRow, MaskId, Mutation, Recipe, Snapshot,
+    SnapshotId, modules::ActionInput,
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
@@ -29,10 +31,9 @@ impl EditorService {
         limit: usize,
     ) -> Result<HistoryPage, Error> {
         if limit == 0 || limit > MAX_HISTORY_PAGE {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("history page limit must be 1..={MAX_HISTORY_PAGE}"),
-            ));
+            return Err(Error::validation(format!(
+                "history page limit must be 1..={MAX_HISTORY_PAGE}"
+            )));
         }
         let before = before_sequence
             .unwrap_or(i64::MAX as u64)
@@ -70,7 +71,7 @@ impl EditorService {
             entries.push(HistoryRow {
                 id: EntryId::parse(id)?,
                 sequence: u64::try_from(sequence)
-                    .map_err(|_| Error::new(ErrorKind::Catalog, "invalid history sequence"))?,
+                    .map_err(|_| Error::catalog("invalid history sequence"))?,
                 action_id,
                 label,
                 actor,
@@ -371,10 +372,9 @@ impl EditorService {
         limit: usize,
     ) -> Result<Lineage, Error> {
         if limit == 0 || limit > MAX_HISTORY_PAGE {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                format!("lineage limit must be 1..={MAX_HISTORY_PAGE}"),
-            ));
+            return Err(Error::validation(format!(
+                "lineage limit must be 1..={MAX_HISTORY_PAGE}"
+            )));
         }
         let mut next = Some(match from {
             Some(entry_id) => entry_id.clone(),
@@ -395,17 +395,15 @@ impl EditorService {
                 )
                 .optional()?
                 .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Validation,
-                        "history entry does not belong to this asset",
-                    )
+                    Error::validation(
+                        "history entry does not belong to this asset")
                 })?;
             let undo_parent = parent.map(EntryId::parse).transpose()?;
             next = undo_parent.clone();
             steps.push(LineageStep {
                 entry_id,
                 sequence: u64::try_from(sequence)
-                    .map_err(|_| Error::new(ErrorKind::Catalog, "invalid history sequence"))?,
+                    .map_err(|_| Error::catalog("invalid history sequence"))?,
                 action_id,
                 undo_parent,
             });
@@ -440,7 +438,7 @@ impl EditorService {
                 name,
                 entry_id: EntryId::parse(entry_id)?,
                 entry_sequence: u64::try_from(sequence)
-                    .map_err(|_| Error::new(ErrorKind::Catalog, "invalid history sequence"))?,
+                    .map_err(|_| Error::catalog("invalid history sequence"))?,
                 actor,
                 created_ms,
             });
@@ -459,10 +457,7 @@ impl EditorService {
     ) -> Result<VersionResult, Error> {
         let name = valid_version_name(name)?;
         if actor.is_empty() || actor.len() > 128 {
-            return Err(Error::new(
-                ErrorKind::Validation,
-                "actor must contain 1..128 characters",
-            ));
+            return Err(Error::validation("actor must contain 1..128 characters"));
         }
         let entry = match entry_id {
             Some(entry_id) => self.entry(asset_id, entry_id)?,
@@ -479,10 +474,10 @@ impl EditorService {
                     version: Some(existing),
                 });
             }
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                format!("version {:?} already names another entry", existing.name),
-            ));
+            return Err(Error::conflict(format!(
+                "version {:?} already names another entry",
+                existing.name
+            )));
         }
         let version = Version {
             asset_id: asset_id.clone(),
@@ -554,8 +549,7 @@ impl EditorService {
             return Ok(None);
         };
         if stored_hash != input_hash(input)? {
-            return Err(Error::new(
-                ErrorKind::Conflict,
+            return Err(Error::conflict(
                 "request_id was already used with different input",
             ));
         }
@@ -619,13 +613,10 @@ fn ensure_revision(state: &EditorState, expected: u64) -> Result<(), Error> {
     if state.revision == expected {
         Ok(())
     } else {
-        Err(Error::new(
-            ErrorKind::Conflict,
-            format!(
-                "stale revision {expected}; current revision is {}",
-                state.revision
-            ),
-        ))
+        Err(Error::conflict(format!(
+            "stale revision {expected}; current revision is {}",
+            state.revision
+        )))
     }
 }
 
@@ -661,10 +652,9 @@ fn valid_version_name(name: &str) -> Result<String, Error> {
         || name.chars().count() > MAX_VERSION_NAME
         || name.chars().any(char::is_control)
     {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            format!("version name must contain 1..={MAX_VERSION_NAME} printable characters"),
-        ));
+        return Err(Error::validation(format!(
+            "version name must contain 1..={MAX_VERSION_NAME} printable characters"
+        )));
     }
     Ok(name.to_string())
 }

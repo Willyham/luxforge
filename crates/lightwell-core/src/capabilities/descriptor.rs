@@ -9,8 +9,10 @@
 //! Flattening rules out `deny_unknown_fields` on those two types, so an unknown field there is
 //! ignored on read; every other capability type refuses unknown fields.
 use super::transport::{EndpointClass, parse_endpoint};
+#[cfg(test)]
+use crate::ErrorKind;
 use crate::{
-    Error, ErrorKind, ModuleDescriptor, ParameterDescriptor, ParameterKind,
+    Error, ModuleDescriptor, ParameterDescriptor, ParameterKind,
     modules::{check_declaration, check_parameter_declarations},
     valid_name,
 };
@@ -33,10 +35,6 @@ pub const MAX_ADAPTER_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_ADAPTER_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 /// A resource version names a directory under the resource root, so it is a short, plain name.
 const MAX_VERSION_LENGTH: usize = 64;
-
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
 
 /// A module's user-level settings: its own fields and, optionally, named provider profiles.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -326,19 +324,19 @@ pub(crate) fn check_raw(descriptor: &Value) -> Result<(), Error> {
         .flatten()
     {
         let Some(kind) = capability.get("kind").and_then(Value::as_str) else {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "capability {} declares no kind",
                 id(capability)
             )));
         };
         if UNIMPLEMENTED_CAPABILITY_KINDS.contains(&kind) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "capability kind {kind} is not implemented (capability {})",
                 id(capability)
             )));
         }
         if !CAPABILITY_KINDS.contains(&kind) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "capability {} declares unknown kind {kind}",
                 id(capability)
             )));
@@ -362,7 +360,7 @@ pub(crate) fn check_raw(descriptor: &Value) -> Result<(), Error> {
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
-            return Err(validation(format!("setting {name}: {error}")));
+            return Err(Error::validation(format!("setting {name}: {error}")));
         }
     }
     Ok(())
@@ -396,7 +394,7 @@ pub(crate) fn validate(module: &ModuleDescriptor) -> Result<(), Error> {
 
 fn validate_settings(module: &str, settings: &SettingsDescriptor) -> Result<(), Error> {
     if settings.schema == 0 {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "module {module} declares settings schema 0; a schema is at least 1"
         )));
     }
@@ -405,19 +403,19 @@ fn validate_settings(module: &str, settings: &SettingsDescriptor) -> Result<(), 
         return Ok(());
     };
     if profiles.label.trim().is_empty() {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "module {module} declares an unlabelled profile block"
         )));
     }
     if !(1..=MAX_PROFILES).contains(&profiles.max) {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "module {module} declares profiles max {}; max is 1..={MAX_PROFILES}",
             profiles.max
         )));
     }
     // A profile names one of these, so a block without one could never hold a profile.
     if profiles.adapters.is_empty() {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "module {module} declares a profile block with no adapters"
         )));
     }
@@ -427,7 +425,7 @@ fn validate_settings(module: &str, settings: &SettingsDescriptor) -> Result<(), 
     }
     validate_fields(module, "profile setting", &profiles.fields)?;
     if !profiles.fields.iter().any(SettingDescriptor::is_endpoint) {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "module {module} declares profile adapters but no endpoint profile field"
         )));
     }
@@ -443,7 +441,7 @@ fn validate_settings(module: &str, settings: &SettingsDescriptor) -> Result<(), 
         .find(|adapter| adapter.auth == AdapterAuth::Bearer)
         && secrets != 1
     {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "adapter {} authenticates with bearer but the profile fields declare {secrets} secret fields; exactly one holds the credential",
             adapter.id
         )));
@@ -453,7 +451,7 @@ fn validate_settings(module: &str, settings: &SettingsDescriptor) -> Result<(), 
 
 fn validate_fields(module: &str, what: &str, fields: &[SettingDescriptor]) -> Result<(), Error> {
     if fields.len() > MAX_SETTING_FIELDS {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "module {module} declares {} {what} fields; at most {MAX_SETTING_FIELDS}",
             fields.len()
         )));
@@ -462,12 +460,12 @@ fn validate_fields(module: &str, what: &str, fields: &[SettingDescriptor]) -> Re
     for field in fields {
         let id = field.id();
         if !valid_name(id) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "invalid {what} identity {id} of module {module}"
             )));
         }
         if !seen.insert(id) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "duplicate {what} {id} of module {module}"
             )));
         }
@@ -482,7 +480,7 @@ fn validate_fields(module: &str, what: &str, fields: &[SettingDescriptor]) -> Re
 fn validate_field(field: &SettingDescriptor) -> Result<(), Error> {
     let id = field.id();
     if field.label.trim().is_empty() {
-        return Err(validation(format!("setting {id} has no label")));
+        return Err(Error::validation(format!("setting {id} has no label")));
     }
     match field.kind() {
         ParameterKind::Boolean
@@ -493,7 +491,7 @@ fn validate_field(field: &SettingDescriptor) -> Result<(), Error> {
         | ParameterKind::Endpoint { .. }
         | ParameterKind::Secret { .. } => {}
         kind => {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "setting {id} declares kind {}, which a setting does not take",
                 kind.name()
             )));
@@ -508,20 +506,22 @@ fn validate_adapter<'a>(
 ) -> Result<(), Error> {
     let id = &adapter.id;
     if !valid_name(id) {
-        return Err(validation(format!("invalid adapter identity {id}")));
+        return Err(Error::validation(format!("invalid adapter identity {id}")));
     }
     if !seen.insert(id.as_str()) {
-        return Err(validation(format!("duplicate adapter {id}")));
+        return Err(Error::validation(format!("duplicate adapter {id}")));
     }
     if adapter.title.trim().is_empty() {
-        return Err(validation(format!("adapter {id} has no title")));
+        return Err(Error::validation(format!("adapter {id} has no title")));
     }
     if adapter.data.is_empty() {
-        return Err(validation(format!("adapter {id} declares no data class")));
+        return Err(Error::validation(format!(
+            "adapter {id} declares no data class"
+        )));
     }
     let mut classes = HashSet::with_capacity(adapter.data.len());
     if !adapter.data.iter().all(|class| classes.insert(*class)) {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "adapter {id} declares a data class twice"
         )));
     }
@@ -530,13 +530,13 @@ fn validate_adapter<'a>(
         ("max_response_bytes", adapter.max_response_bytes),
     ] {
         if !(1..=MAX_ADAPTER_BYTES).contains(&bytes) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "adapter {id} declares {name} {bytes}; it is 1..={MAX_ADAPTER_BYTES}"
             )));
         }
     }
     if !(1..=MAX_ADAPTER_TIMEOUT_MS).contains(&adapter.timeout_ms) {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "adapter {id} declares timeout_ms {}; it is 1..={MAX_ADAPTER_TIMEOUT_MS}",
             adapter.timeout_ms
         )));
@@ -546,7 +546,7 @@ fn validate_adapter<'a>(
         .as_ref()
         .is_some_and(|retention| retention.trim().is_empty())
     {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "adapter {id} declares an empty retention note"
         )));
     }
@@ -560,13 +560,17 @@ fn validate_capability<'a>(
 ) -> Result<(), Error> {
     let id = &capability.id;
     if !valid_name(id) {
-        return Err(validation(format!("invalid capability identity {id}")));
+        return Err(Error::validation(format!(
+            "invalid capability identity {id}"
+        )));
     }
     if !seen.insert(id.as_str()) {
-        return Err(validation(format!("duplicate capability {id}")));
+        return Err(Error::validation(format!("duplicate capability {id}")));
     }
     if capability.purpose.trim().is_empty() {
-        return Err(validation(format!("capability {id} declares no purpose")));
+        return Err(Error::validation(format!(
+            "capability {id} declares no purpose"
+        )));
     }
     let settings = module.settings.as_ref();
     match &capability.kind {
@@ -575,12 +579,12 @@ fn validate_capability<'a>(
                 .and_then(|settings| settings.profiles.as_ref())
                 .and_then(|profiles| profiles.adapter(adapter))
                 .ok_or_else(|| {
-                    validation(format!(
+                    Error::validation(format!(
                         "capability {id} names undeclared adapter {adapter}"
                     ))
                 })?;
             if !declared.data.contains(data) {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "capability {id} sends {} but adapter {adapter} does not declare it",
                     data.name()
                 )));
@@ -588,7 +592,7 @@ fn validate_capability<'a>(
         }
         CapabilityKind::DownloadArtifact { resource } => {
             if module.resource(resource).is_none() {
-                return Err(validation(format!(
+                return Err(Error::validation(format!(
                     "capability {id} names undeclared resource {resource}"
                 )));
             }
@@ -603,10 +607,10 @@ fn validate_resource<'a>(
 ) -> Result<(), Error> {
     let id = &resource.id;
     if !valid_name(id) {
-        return Err(validation(format!("invalid resource identity {id}")));
+        return Err(Error::validation(format!("invalid resource identity {id}")));
     }
     if !seen.insert(id.as_str()) {
-        return Err(validation(format!("duplicate resource {id}")));
+        return Err(Error::validation(format!("duplicate resource {id}")));
     }
     for (name, value) in [
         ("title", &resource.title),
@@ -615,7 +619,9 @@ fn validate_resource<'a>(
         ("provenance", &resource.provenance),
     ] {
         if value.trim().is_empty() {
-            return Err(validation(format!("resource {id} declares no {name}")));
+            return Err(Error::validation(format!(
+                "resource {id} declares no {name}"
+            )));
         }
     }
     let version = &resource.version;
@@ -626,7 +632,7 @@ fn validate_resource<'a>(
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
         && !version.starts_with('.');
     if !plain {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "resource {id} declares version {version:?}; a version is 1..={MAX_VERSION_LENGTH} ASCII letters, digits, '.', '-' or '_' and does not start with '.'"
         )));
     }
@@ -635,7 +641,7 @@ fn validate_resource<'a>(
         &[EndpointClass::Remote, EndpointClass::Loopback],
     )
     .map_err(|error| {
-        validation(format!(
+        Error::validation(format!(
             "resource {id} declares url {}: {}",
             resource.url, error.detail
         ))
@@ -646,20 +652,20 @@ fn validate_resource<'a>(
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
     if !hex {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "resource {id} declares sha256 {:?}; it is 64 lowercase hexadecimal digits",
             resource.sha256
         )));
     }
     if !(1..=MAX_RESOURCE_BYTES).contains(&resource.bytes) {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "resource {id} declares bytes {}; it is 1..={MAX_RESOURCE_BYTES}",
             resource.bytes
         )));
     }
     for origin in &resource.redirect_origins {
         if !https_origin(origin) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "resource {id} declares redirect origin {origin:?}; it must be an HTTPS origin written as https://host[:port]"
             )));
         }
@@ -687,13 +693,13 @@ fn validate_activation(
             .and_then(|settings| settings.field(setting))
             .is_none()
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "activation of module {} requires undeclared setting {setting}",
                 module.id
             )));
         }
         if !settings.insert(setting.as_str()) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "activation of module {} requires setting {setting} twice",
                 module.id
             )));
@@ -702,13 +708,13 @@ fn validate_activation(
     let mut resources = HashSet::with_capacity(activation.requires_resources.len());
     for resource in &activation.requires_resources {
         if module.resource(resource).is_none() {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "activation of module {} requires undeclared resource {resource}",
                 module.id
             )));
         }
         if !resources.insert(resource.as_str()) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "activation of module {} requires resource {resource} twice",
                 module.id
             )));
@@ -724,22 +730,22 @@ fn validate_task<'a>(
 ) -> Result<(), Error> {
     let id = &task.id;
     if !valid_name(id) {
-        return Err(validation(format!("invalid task identity {id}")));
+        return Err(Error::validation(format!("invalid task identity {id}")));
     }
     if !seen.insert(id.as_str()) {
-        return Err(validation(format!("duplicate task {id}")));
+        return Err(Error::validation(format!("duplicate task {id}")));
     }
     if task.title.trim().is_empty() {
-        return Err(validation(format!("task {id} has no title")));
+        return Err(Error::validation(format!("task {id} has no title")));
     }
     check_parameter_declarations("task", id, &task.parameters)?;
     let mut uses = HashSet::with_capacity(task.uses.len());
     for used in &task.uses {
-        let capability = module
-            .capability(used)
-            .ok_or_else(|| validation(format!("task {id} uses undeclared capability {used}")))?;
+        let capability = module.capability(used).ok_or_else(|| {
+            Error::validation(format!("task {id} uses undeclared capability {used}"))
+        })?;
         if !uses.insert(used.as_str()) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "task {id} uses capability {used} twice"
             )));
         }
@@ -748,7 +754,7 @@ fn validate_task<'a>(
         if matches!(capability.kind, CapabilityKind::RemoteImageRequest { .. })
             && !(task.asset && task.profile)
         {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "task {id} uses remote-image-request capability {used} without declaring asset and profile"
             )));
         }
@@ -760,28 +766,28 @@ fn validate_task<'a>(
             .and_then(|settings| settings.profiles.as_ref())
             .is_none()
     {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "task {id} takes a profile but module {} declares no profiles",
             module.id
         )));
     }
     if task.requires_active && module.activation.is_none() {
-        return Err(validation(format!(
+        return Err(Error::validation(format!(
             "task {id} requires activation but module {} declares none",
             module.id
         )));
     }
     if let Some(TaskApply { action, parameter }) = &task.apply {
         let declared = module.action(action).ok_or_else(|| {
-            validation(format!("task {id} applies with undeclared action {action}"))
+            Error::validation(format!("task {id} applies with undeclared action {action}"))
         })?;
         let declared = declared.parameter(parameter).ok_or_else(|| {
-            validation(format!(
+            Error::validation(format!(
                 "task {id} applies through undeclared parameter {parameter} of action {action}"
             ))
         })?;
         if !matches!(declared.kind, ParameterKind::Artifact) {
-            return Err(validation(format!(
+            return Err(Error::validation(format!(
                 "task {id} applies through parameter {parameter} of action {action}, which is not an artifact parameter"
             )));
         }

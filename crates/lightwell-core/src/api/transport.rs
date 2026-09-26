@@ -1,7 +1,7 @@
 //! Loopback JSON-lines transport: one line per request and response, a per-run token and a
 //! session file for discovery. The same framing serves stdin/stdout for headless use.
 use super::{ApiRequest, ApiResponse, ClientAuthority, ClientId, OwnerHandle, PROTOCOL};
-use crate::{Error, ErrorKind};
+use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::OpenOptions,
@@ -40,12 +40,12 @@ pub struct LocalServer {
 impl LocalServer {
     pub fn start(owner: OwnerHandle, session_file: &Path) -> Result<Self, Error> {
         let listener = TcpListener::bind(("127.0.0.1", 0))
-            .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))?;
+            .map_err(|error| Error::protocol(error.to_string()))?;
         let info = LocalSessionInfo {
             protocol: PROTOCOL.into(),
             address: listener
                 .local_addr()
-                .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))?,
+                .map_err(|error| Error::protocol(error.to_string()))?,
             token: uuid::Uuid::new_v4().simple().to_string(),
         };
         write_session_file(session_file, &info)?;
@@ -105,8 +105,7 @@ impl Drop for LocalServer {
 
 fn write_session_file(path: &Path, info: &LocalSessionInfo) -> Result<(), Error> {
     if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))?;
+        std::fs::create_dir_all(parent).map_err(|error| Error::protocol(error.to_string()))?;
     }
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
@@ -116,15 +115,11 @@ fn write_session_file(path: &Path, info: &LocalSessionInfo) -> Result<(), Error>
         options.mode(0o600);
     }
     let mut file = options.open(path).map_err(|error| {
-        Error::new(
-            ErrorKind::Protocol,
-            format!("cannot create live session file: {}", error.kind()),
-        )
+        Error::protocol(format!("cannot create live session file: {}", error.kind()))
     })?;
-    serde_json::to_writer(&mut file, info)
-        .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))?;
+    serde_json::to_writer(&mut file, info).map_err(|error| Error::protocol(error.to_string()))?;
     file.flush()
-        .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))
+        .map_err(|error| Error::protocol(error.to_string()))
 }
 
 /// Serve one edit client over JSON lines, such as `lightwell-json` on its standard streams.
@@ -151,7 +146,7 @@ pub fn serve_json_lines_with(
 fn serve_stream(stream: TcpStream, owner: &OwnerHandle, token: Option<&str>) -> Result<(), Error> {
     let writer = stream
         .try_clone()
-        .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))?;
+        .map_err(|error| Error::protocol(error.to_string()))?;
     serve(stream, writer, owner, token, ClientAuthority::Edit)
 }
 
@@ -185,7 +180,7 @@ fn serve(
             .by_ref()
             .take((MAX_REQUEST_BYTES + 1) as u64)
             .read_line(&mut line)
-            .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))?;
+            .map_err(|error| Error::protocol(error.to_string()))?;
         if bytes == 0 {
             return Ok(());
         }
@@ -193,7 +188,7 @@ fn serve(
             ApiResponse::failure(
                 "".into(),
                 0,
-                Error::new(ErrorKind::Protocol, "request exceeds JSON line limit"),
+                Error::protocol("request exceeds JSON line limit"),
             )
         } else {
             match serde_json::from_str::<ApiRequest>(&line) {
@@ -201,23 +196,21 @@ fn serve(
                     ApiResponse::failure(
                         request.id,
                         0,
-                        Error::new(ErrorKind::Protocol, "invalid live-session token"),
+                        Error::protocol("invalid live-session token"),
                     )
                 }
                 Ok(request) => owner.call(registration.client, request)?,
-                Err(error) => ApiResponse::failure(
-                    "".into(),
-                    0,
-                    Error::new(ErrorKind::Protocol, error.to_string()),
-                ),
+                Err(error) => {
+                    ApiResponse::failure("".into(), 0, Error::protocol(error.to_string()))
+                }
             }
         };
         serde_json::to_writer(&mut writer, &response)
-            .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))?;
+            .map_err(|error| Error::protocol(error.to_string()))?;
         writer
             .write_all(b"\n")
             .and_then(|_| writer.flush())
-            .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))?;
+            .map_err(|error| Error::protocol(error.to_string()))?;
         if bytes > MAX_REQUEST_BYTES {
             return Ok(());
         }

@@ -36,8 +36,7 @@ impl RawInterpretation {
     /// needs DNG corrections carries their record, and no other mode carries one.
     pub(crate) fn new(metadata: lightwell_raw::RawMetadata) -> Result<Self, Error> {
         if metadata.mode.requires_dng_corrections() != metadata.dng_corrections.is_some() {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
+            return Err(Error::incompatible(
                 "RAW correction record differs from mode",
             ));
         }
@@ -80,16 +79,12 @@ impl SourceKind {
 
 /// A source path in the one spelling every catalog lookup uses.
 fn canonical_source(path: &Path) -> Result<PathBuf, Error> {
-    path.canonicalize().map_err(|e| {
-        Error::new(
-            ErrorKind::FileAccess,
-            format!("cannot resolve source: {}", e.kind()),
-        )
-    })
+    path.canonicalize()
+        .map_err(|e| Error::file_access(format!("cannot resolve source: {}", e.kind())))
 }
 
 fn file_access(error: std::io::Error) -> Error {
-    Error::new(ErrorKind::FileAccess, error.kind().to_string())
+    Error::file_access(error.kind().to_string())
 }
 
 /// A source path's canonical spelling and its file's current signature.
@@ -103,16 +98,13 @@ fn located_signature(path: &Path) -> Result<(PathBuf, Metadata, SourceSignature)
 /// The signature an asset's original has now, refused when the file is gone or is no longer the
 /// file that was imported.
 fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
-    let metadata = asset.locator.metadata().map_err(|_| {
-        Error::new(
-            ErrorKind::SourceUnavailable,
-            "original source is unavailable",
-        )
-    })?;
+    let metadata = asset
+        .locator
+        .metadata()
+        .map_err(|_| Error::source_unavailable("original source is unavailable"))?;
     let signature = source_signature(&asset.locator, &metadata);
     if signature.file_identity != asset.file_identity || signature.byte_len != asset.byte_len {
-        return Err(Error::new(
-            ErrorKind::SourceUnavailable,
+        return Err(Error::source_unavailable(
             "original source fingerprint changed",
         ));
     }
@@ -145,8 +137,7 @@ impl FilePreparation {
 
     fn verify_fingerprint(&self, fingerprint: &str) -> Result<(), Error> {
         if self.fingerprint != fingerprint {
-            return Err(Error::new(
-                ErrorKind::SourceUnavailable,
+            return Err(Error::source_unavailable(
                 "original source fingerprint changed",
             ));
         }
@@ -163,10 +154,7 @@ impl EditorService {
     pub(crate) fn request_signature(path: &Path) -> Result<(PathBuf, SourceSignature), Error> {
         let (canonical, metadata, signature) = located_signature(path)?;
         if !metadata.is_file() {
-            return Err(Error::new(
-                ErrorKind::UnsupportedInput,
-                "expected a regular file",
-            ));
+            return Err(Error::unsupported_input("expected a regular file"));
         }
         Ok((canonical, signature))
     }
@@ -206,10 +194,7 @@ impl EditorService {
         let path_before = canonical.metadata().map_err(file_access)?;
         let signature = source_signature(&canonical, &handle_before);
         if signature != source_signature(&canonical, &path_before) {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                "source changed before preparation",
-            ));
+            return Err(Error::conflict("source changed before preparation"));
         }
         let bytes = read_bounded_file(&mut file)?;
         let (source, fingerprint) = if bytes.starts_with(&[0xff, 0xd8]) {
@@ -218,8 +203,7 @@ impl EditorService {
             if let Some(target) = target {
                 target.verify_fingerprint(&fingerprint)?;
                 if target.raw.is_some() {
-                    return Err(Error::new(
-                        ErrorKind::Incompatible,
+                    return Err(Error::incompatible(
                         "original source interpretation changed",
                     ));
                 }
@@ -230,8 +214,7 @@ impl EditorService {
             if let Some(target) = target {
                 target.verify_fingerprint(&fingerprint)?;
                 if target.raw.is_none() {
-                    return Err(Error::new(
-                        ErrorKind::Incompatible,
+                    return Err(Error::incompatible(
                         "original source interpretation changed",
                     ));
                 }
@@ -249,10 +232,7 @@ impl EditorService {
         if signature != source_signature(&canonical, &handle_after)
             || signature != source_signature(&canonical, &path_after)
         {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                "source changed during preparation",
-            ));
+            return Err(Error::conflict("source changed during preparation"));
         }
         Ok(PreparedFile {
             canonical,
@@ -295,8 +275,7 @@ impl EditorService {
         if state.asset.file_identity != signature.file_identity
             || state.asset.byte_len != signature.byte_len
         {
-            return Err(Error::new(
-                ErrorKind::SourceUnavailable,
+            return Err(Error::source_unavailable(
                 "original source fingerprint changed",
             ));
         }
@@ -447,15 +426,11 @@ impl EditorService {
                 .as_ref()
                 .is_none_or(|image| image.fingerprint() != request.fingerprint)
         {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                "RAW development identity changed",
-            ));
+            return Err(Error::conflict("RAW development identity changed"));
         }
         let current = Self::request_signature(&state.asset.locator)?.1;
         if current != request.signature {
-            return Err(Error::new(
-                ErrorKind::SourceUnavailable,
+            return Err(Error::source_unavailable(
                 "original source changed during RAW development",
             ));
         }
@@ -463,22 +438,17 @@ impl EditorService {
         let Some(cached) = cache.as_mut().filter(|cached| {
             cached.asset_id == request.asset_id && cached.signature == request.signature
         }) else {
-            return Err(Error::new(
-                ErrorKind::Conflict,
+            return Err(Error::conflict(
                 "RAW source cache was replaced during development",
             ));
         };
         let PreparedSource::Raw(previous) = &cached.source else {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
+            return Err(Error::incompatible(
                 "RAW development targeted a JPEG source",
             ));
         };
         if !Arc::ptr_eq(&previous.sensor, &request.sensor) {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                "RAW mosaic changed during development",
-            ));
+            return Err(Error::conflict("RAW mosaic changed during development"));
         }
         cached.source = PreparedSource::Raw(developed);
         Ok(state)
@@ -515,26 +485,21 @@ impl EditorService {
         } = prepared;
         let current = canonical
             .metadata()
-            .map_err(|e| Error::new(ErrorKind::SourceUnavailable, e.kind().to_string()))?;
+            .map_err(|e| Error::source_unavailable(e.kind().to_string()))?;
         if source_signature(&canonical, &current) != signature {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                "source changed before import completion",
-            ));
+            return Err(Error::conflict("source changed before import completion"));
         }
         let identity = signature.file_identity.clone();
         let canonical_text = canonical.to_string_lossy().into_owned();
         if let Some((existing, _)) = self.asset_for_source(&canonical, &identity)? {
             let state = self.state(&existing)?;
             if state.asset.fingerprint != fingerprint {
-                return Err(Error::new(
-                    ErrorKind::SourceUnavailable,
+                return Err(Error::source_unavailable(
                     "original source fingerprint changed",
                 ));
             }
             if state.asset.source != SourceKind::of(&source)? {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
+                return Err(Error::incompatible(
                     "original source interpretation changed",
                 ));
             }
@@ -588,12 +553,8 @@ impl EditorService {
         // An import is its own write, because it creates the asset a head would name, but it admits
         // its Original exactly as a commit admits the stack it writes.
         self.admit(&asset, &mut entry.snapshot.recipe)?;
-        let byte_len = i64::try_from(asset.byte_len).map_err(|_| {
-            Error::new(
-                ErrorKind::ResourceLimit,
-                "source length exceeds catalog range",
-            )
-        })?;
+        let byte_len = i64::try_from(asset.byte_len)
+            .map_err(|_| Error::resource_limit("source length exceeds catalog range"))?;
         let artifact_root = &self.artifact_root;
         write(&mut self.connection, |tx| {
             tx.execute(
@@ -643,8 +604,7 @@ impl EditorService {
             crate::source::MAX_JPEG_BYTES as u64
         };
         if signature.byte_len > max_source_bytes {
-            return Err(Error::new(
-                ErrorKind::SourceUnavailable,
+            return Err(Error::source_unavailable(
                 "original source fingerprint changed",
             ));
         }
@@ -655,15 +615,11 @@ impl EditorService {
             return Ok(cached.source.clone());
         }
         if !self.allow_sync_source {
-            return Err(Error::new(
-                ErrorKind::PreparationRequired,
-                "source preparation required",
-            ));
+            return Err(Error::preparation_required("source preparation required"));
         }
         let prepared = Self::prepare_file(&asset.locator)?;
         if prepared.signature != signature || prepared.fingerprint != asset.fingerprint {
-            return Err(Error::new(
-                ErrorKind::SourceUnavailable,
+            return Err(Error::source_unavailable(
                 "original source fingerprint changed",
             ));
         }
@@ -672,8 +628,7 @@ impl EditorService {
             (SourceKind::Raw { metadata }, PreparedSource::Raw(raw))
                 if **metadata == *raw.sensor.metadata() => {}
             _ => {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
+                return Err(Error::incompatible(
                     "original source interpretation changed",
                 ));
             }
@@ -698,8 +653,7 @@ pub(super) fn validate_source_recipe(
                 .iter()
                 .any(|layer| layer.effect_id == crate::RAW_EFFECT)
             {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
+                return Err(Error::incompatible(
                     "JPEG recipe contains a RAW source layer",
                 ));
             }
@@ -709,8 +663,7 @@ pub(super) fn validate_source_recipe(
             if payload.as_shot_gains != metadata.as_shot_gains
                 || payload.cam_xyz != metadata.cam_xyz
             {
-                return Err(Error::new(
-                    ErrorKind::Incompatible,
+                return Err(Error::incompatible(
                     "RAW source layer calibration differs from original",
                 ));
             }
@@ -776,7 +729,7 @@ fn resolve_raw_settings(
         crate::WhiteBalanceMode::AsShot => as_shot_gains,
         crate::WhiteBalanceMode::Custom => payload.gains,
     };
-    let required = |detail: String| Error::new(ErrorKind::PreparationRequired, detail);
+    let required = |detail: String| Error::preparation_required(detail);
     if !developed_present {
         return Err(required("RAW white balance development required".into()));
     }
@@ -856,8 +809,7 @@ fn development_gains(
 
 fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
     let Some(layer) = recipe.layers.first() else {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
+        return Err(Error::incompatible(
             "RAW recipe is missing its required source layer",
         ));
     };
@@ -868,8 +820,7 @@ fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
             .skip(1)
             .any(|layer| layer.effect_id == crate::RAW_EFFECT)
     {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
+        return Err(Error::incompatible(
             "RAW recipe needs exactly one source layer at index zero",
         ));
     }
