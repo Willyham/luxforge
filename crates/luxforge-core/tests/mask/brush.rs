@@ -1,4 +1,4 @@
-//! TASK-018: the brush component against the frozen study.
+//! The brush component against the frozen study.
 //!
 //! The mathematics is `docs/design/mask-study.md#the-brush` and the oracle is the independent `f64`
 //! reference at `crates/luxforge-reference/src/mask.rs`, which shares no code with production. What is asserted

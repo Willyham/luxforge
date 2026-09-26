@@ -15,9 +15,9 @@ tasks rather than to the files this one adds. **Not frozen here**, and named so 
 otherwise: the luminance and colour range metrics (their own study), the conservative bounds *pixel
 rectangle* and `min_feature_px`, the brush's grid index and its occupancy cap, and the masked colour
 and spatial blend itself. What is frozen is mask space, the legality of a stored distance, the
-component composition algebra, the linear and radial coverage fields, and — added by TASK-018 — the
+component composition algebra, the linear and radial coverage fields, and the
 brush's capsule profile, its per-stroke maximum, its accumulation rules and its mask-space support
-box. TASK-024 adds one block, [the colour constraint](#the-colour-constraint), which is where a
+box. One further block, [the colour constraint](#the-colour-constraint), is where a
 stroke's coverage meets the [range study](range-study.md)'s colour metric; that study named the
 constrained brush as not frozen by it, and this section freezes it.
 

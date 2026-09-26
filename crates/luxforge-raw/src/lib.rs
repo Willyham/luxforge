@@ -1374,8 +1374,7 @@ mod tests {
         );
     }
 
-    /// Known bug TASK-017 pins the current behaviour, not the documented
-    /// intent it replaced: the vendored RCD clamps its input with
+    /// This test pins the vendored RCD's current behaviour: it clamps its input with
     /// `LIM01(rawData / 65536)`, so a Bayer site's black-subtracted,
     /// white-normalised and gained value is clipped to [0, 65536/65535] of
     /// sensor white before the demosaic. Over-white and under-black latitude

@@ -878,10 +878,10 @@ fn the_value_based_grid_is_the_coverage_the_render_applies() {
 
 /// A mask a person **painted**, with one stroke limited to a colour, has a grid too.
 ///
-/// This is the half TASK-024 widened: a brush is a position-based kind whose *stroke* can read the
-/// pixel, so before P16 was built a mask a person had painted could lose its overlay where only a
-/// typed one could before. It is the same rule and the same implementation, which is why nothing here
-/// is a second code path — only a second kind of component reaching it.
+/// A brush is a position-based kind whose *stroke* can read the pixel, so before P16 was built a
+/// mask a person had painted could lose its overlay where only a typed one could before. It is the
+/// same rule and the same implementation, which is why nothing here is a second code path — only a
+/// second kind of component reaching it.
 #[test]
 fn a_painted_mask_with_a_limited_stroke_has_a_grid() {
     let f = Fixture::open("painted");

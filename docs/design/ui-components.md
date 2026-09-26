@@ -82,7 +82,7 @@ Icon buttons name an icon; they never embed one. `luxforge-ui` owns one `Icon` e
 
 ## Widget library
 
-Every widget is a function from a plain-data model and messages to an `Element`, holds no state and validates nothing, exactly as the existing thirteen do. The additions and changes, with what each takes:
+Every widget is a function from a plain-data model and messages to an `Element`, holds no state and validates nothing, exactly as every widget already delivered in [the Develop workspace's widget library](develop-workspace.md#architecture) does — the slider, section header, sub-group header, icon button, segmented control, chip, list row, notice card, floating bar, mode strip, inline menu, histogram plot and clipping triangle, the double-click wrapper and the photo surface. The additions and changes, with what each takes:
 
 | Widget | Model | What it emits |
 | --- | --- | --- |

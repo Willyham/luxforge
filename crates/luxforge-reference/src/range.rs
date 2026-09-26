@@ -1,5 +1,5 @@
-//! Independent f64 reference for the frozen range-selection mathematics
-//! (TASK-022): the luminance band and the Oklab colour range.
+//! Independent f64 reference for the frozen range-selection mathematics:
+//! the luminance band and the Oklab colour range.
 //!
 //! This module shares no code with production — there is no production range
 //! code yet, and when there is, this file is the oracle it cannot influence,

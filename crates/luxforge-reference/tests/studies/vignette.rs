@@ -1,6 +1,5 @@
-//! TASK-004: independent proofs for the frozen post-crop vignette mask and
-//! amount equations, and the oracle fixtures a later production implementation
-//! is checked against.
+//! Independent proofs for the frozen post-crop vignette mask and
+//! amount equations, and the oracle fixtures production is checked against.
 //!
 //! This study shares no code with `luxforge-core`'s production sources. The
 //! frozen equations live in `crates/luxforge-reference/src/vignette.rs`; the maths and every

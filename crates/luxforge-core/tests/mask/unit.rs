@@ -1,4 +1,4 @@
-//! TASK-004: the production compiled mask against the frozen `f64` reference.
+//! The production compiled mask against the frozen `f64` reference.
 //!
 //! `crates/luxforge-reference/src/mask.rs` shares no code with `luxforge-core`'s sources, and
 //! `docs/design/mask-study.md` freezes the mathematics both write. The bar here is **bit-identity**

@@ -1827,7 +1827,7 @@ mod tests {
     /// A field-patch layer returned to its neutral values stays in the stack but is not an edit, so
     /// its band has no dot; any field that changes the picture lights it. Neutrality is the core's
     /// answer on each `recipe.describe` row, which is what makes the vignette's rule (amount 0,
-    /// whatever its shape) come out right with no payload parsing here. (Known bug TASK-001.)
+    /// whatever its shape) come out right with no payload parsing here.
     #[test]
     fn a_field_patch_section_has_no_dot_once_its_layer_is_neutral() {
         let modules = descriptors();

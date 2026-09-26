@@ -33,7 +33,7 @@ fn linear_to_code(linear: f64) -> u8 {
     (255.0 * encoded + 0.5).floor().clamp(0.0, 255.0) as u8
 }
 
-/// The seven review points named in TASK-015: saturation at -100, -50, +50,
+/// The seven review points: saturation at -100, -50, +50,
 /// +100 (vibrance neutral) and vibrance at -100, +50, +100 (saturation
 /// neutral).
 fn review_points() -> Vec<(&'static str, f64, f64)> {
