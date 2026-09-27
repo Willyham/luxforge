@@ -81,6 +81,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `job-records` | A ring of finished job records, `VecDeque<JobId>`, outside the one job table (`jobs.rs`) | Core production code |
 | `job-table` | `Jobs::new` anywhere but once, in the catalog owner's launch (`api/owner.rs`) | Core production code |
 | `desktop-crop-rows` | `CROP_EFFECT`, `ORIENTATION_EFFECT`, `from_value::<CropPayload>` and `from_value::<Orientation>` anywhere in the desktop: it reads a crop, its stage and the orientation ahead of it from `recipe.describe` rows | Desktop production code (`crates/luxforge-app/src`) |
+| `render-limits-home` | The one-megapixel parallel threshold or the 512 MiB frame limit's literal assignment, `= 1_000_000;` or `= 512 * 1024 * 1024;`, outside `luxforge-raw/src/limits.rs` | `luxforge-core` and `luxforge-raw` production code |
 | `thread-spawn` | `thread::spawn`, `thread::Builder` and `thread::scope` outside the declared worker homes: the core's source worker and owner loop, point-query worker, API transport threads, the job table's lanes and latest-job worker; the desktop's diagnostics log writer; the widget crate's GPU retirement worker; the test kit's process and server threads; `verify`'s component pool | Production code under `crates/` and `xtask/` |
 | `no-pixel-image-handle` | `Handle::from_rgba`, which uploads a new texture each time it is made | `crates/` and `xtask/`, tests included |
 | `project-name` | The old working name | Every text file under `crates/` and `xtask/` |
