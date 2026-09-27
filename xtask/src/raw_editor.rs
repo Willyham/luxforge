@@ -1,284 +1,288 @@
-//! Reproducible full-editor RAW evidence. Every app run uses the background-only smoke launcher.
-use crate::*;
+//! The `raw-editor` smoke scenario: the authentic RAW editing journey over one supplied file, then
+//! a reopen. The edit launch sets Basic's exposure, the RAW channel gains, a custom temperature and
+//! tint, picks the sensor neutral at the source's manifest point, rotates, crops and undoes the
+//! crop, previews Original from history and returns to current, then views 100% and Fit. The
+//! reopen launch opens the same file through the edit launch's catalog and must show the committed
+//! current entry and the same picture.
+//!
+//! Every frame of both launches passes the plan's universal checks. The scenario's own are what the
+//! RAW manifest says about the source — its upright dimensions, orientation, camera and mode, and,
+//! where its camera profile declares DNG corrections, the sensor geometry and correction provenance
+//! the import recorded — and, over every frame, a ready render of the displayed entry whose RAW
+//! controls show the layer they mirror; the displayed recipe against history; and that each edit
+//! changes the photograph while the historical Original and the reopen show the same picture. The
+//! request-to-display times of one run are recorded as observations, not measured as a timing.
+//!
+//! No RAW photograph is checked in (see `fixtures/README.md`), so the row is outside the rendered
+//! tier: it takes the file from `--source` and the manifest that lists it, by its SHA-256, from
+//! `--manifest`. The run keeps a copy of the manifest, which a replay reads again.
+use crate::{
+    scenario::{Checked, Frame, Plan, Run, Step, pixels},
+    smoke::{self, Scenario},
+    *,
+};
 use luxforge_core::{EditorService, SourceKind};
 use luxforge_evidence::{self as script, PreviewStep, ViewStep};
-use serde::Deserialize;
-use std::time::{Duration, Instant};
+use raw::{EditorSource, Entry};
+use std::time::Duration;
 
-type PhotoSamples = Vec<[u8; 3]>;
-type VerifiedFrames = (Value, Vec<Value>, Vec<PhotoSamples>);
+pub const SCENARIO: &str = "raw-editor";
+/// The two launches: the scripted edit, and the reopen through its catalog.
+pub const EDIT: &str = "edit";
+pub const REOPEN: &str = "reopen";
+/// Each launch's process deadline: large RAWs and required DNG corrections redevelop the mosaic on
+/// several of the journey's steps.
+pub const DEADLINE: Duration = Duration::from_secs(70);
+pub const NOTE: &str = "The edit launch runs the journey over the supplied RAW file with its own catalog; the reopen launch opens the same file through that catalog (`edit/catalog.sqlite`). `manifest.json` is the RAW manifest the run was given, which lists the file by its SHA-256.";
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Manifest {
-    format: u32,
-    sources: Vec<Source>,
+/// The RAW development's effect, whose layer the displayed controls mirror.
+const RAW_EFFECT: &str = "luxforge.raw";
+
+/// The steps the checks read by name.
+mod names {
+    pub const OPENED: &str = "opened";
+    pub const EXPOSURE: &str = "exposure";
+    pub const RED_GAIN: &str = "red-gain";
+    pub const BLUE_GAIN: &str = "blue-gain";
+    pub const TEMPERATURE: &str = "temperature";
+    pub const TINT: &str = "tint";
+    pub const NEUTRAL: &str = "neutral-pick";
+    pub const ROTATE: &str = "rotate";
+    pub const CROP: &str = "crop";
+    pub const UNDO: &str = "undo";
+    pub const HISTORICAL: &str = "historical-original";
+    pub const CURRENT: &str = "current";
+    pub const ZOOM: &str = "zoom-100";
+    pub const FIT: &str = "fit";
+    pub const REOPENED: &str = "reopened";
 }
+use names::*;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Source {
-    id: String,
-    path: PathBuf,
-    sha256: String,
-    mode: String,
-    make: String,
-    model: String,
-    /// Full unpacked sensor dimensions, before default crop and orientation.
-    sensor_dimensions: Option<[u32; 2]>,
-    /// Absolute sensor-space rectangle [x, y, width, height].
-    active_area: Option<[u32; 4]>,
-    /// Absolute sensor-space rectangle [x, y, width, height].
-    default_crop: Option<[u32; 4]>,
-    source_dimensions: [u32; 2],
-    orientation: u8,
-    /// A fixture-verified unclipped, non-dark upright content point for the sensor picker.
-    neutral_point: [u32; 2],
-}
+/// The steps that commit, each of which must present a render before the next step starts.
+const MUTATIONS: [&str; 9] = [
+    EXPOSURE,
+    RED_GAIN,
+    BLUE_GAIN,
+    TEMPERATURE,
+    TINT,
+    NEUTRAL,
+    ROTATE,
+    CROP,
+    UNDO,
+];
 
-const JOURNEY_STEPS: usize = 13;
-const HISTORICAL_FRAME: usize = 10;
-const CURRENT_FRAME: usize = 11;
-const FINAL_FRAME: usize = 13;
-
-fn script(source: &Source) -> Value {
-    let [x, y] = source.neutral_point;
-    script::write(&[
-        script::Step::call("edit.set-basic", json!({"exposure":1.0})),
-        script::Step::call("edit.set-raw-red-gain", json!({"gain":3.0})),
-        script::Step::call("edit.set-raw-blue-gain", json!({"gain":0.9})),
-        script::Step::call("edit.set-raw", json!({"temperature":5500.0})),
-        script::Step::call("edit.set-raw", json!({"tint":10.0})),
-        script::Step::call("edit.pick-raw-neutral", json!({"x":x,"y":y})),
-        script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
-        script::Step::call("edit.crop-fit", json!({"aspect":"4:3","angle":0.0})),
-        script::Step::api("history.undo"),
-        script::Step::Preview(PreviewStep::Sequence(0)),
-        script::Step::Preview(PreviewStep::Current),
-        script::Step::View(ViewStep::Percent(100.0)),
-        script::Step::View(ViewStep::Fit),
+/// The edit launch's plan over a source whose neutral point is `[x, y]`.
+fn journey([x, y]: [u32; 2]) -> Plan {
+    // Each call commits one entry with its own label.
+    let call = |name: &str, method: &str, params: Value, label: &str| {
+        Step::new(name, script::Step::call(method, params))
+            .commits(1)
+            .label(label)
+    };
+    Plan::new(vec![
+        Step::opened(OPENED).label("Original"),
+        call(
+            EXPOSURE,
+            "edit.set-basic",
+            json!({"exposure":1.0}),
+            "Exposure +1.00 EV",
+        ),
+        call(
+            RED_GAIN,
+            "edit.set-raw-red-gain",
+            json!({"gain":3.0}),
+            "Red gain",
+        ),
+        call(
+            BLUE_GAIN,
+            "edit.set-raw-blue-gain",
+            json!({"gain":0.9}),
+            "Blue gain",
+        ),
+        call(
+            TEMPERATURE,
+            "edit.set-raw",
+            json!({"temperature":5500.0}),
+            "Temperature 5500 K",
+        ),
+        call(TINT, "edit.set-raw", json!({"tint":10.0}), "Tint +10"),
+        call(
+            NEUTRAL,
+            "edit.pick-raw-neutral",
+            json!({"x":x,"y":y}),
+            "White balance",
+        ),
+        call(
+            ROTATE,
+            "edit.transform",
+            json!({"transform":"rotate-right"}),
+            "Rotate right",
+        ),
+        call(
+            CROP,
+            "edit.crop-fit",
+            json!({"aspect":"4:3","angle":0.0}),
+            "Crop 4:3",
+        ),
+        // Undo is one more revision, back at the rotation's entry.
+        Step::new(UNDO, script::Step::api("history.undo"))
+            .commits(1)
+            .label("Rotate right"),
+        Step::new(HISTORICAL, PreviewStep::Sequence(0)).commits(0),
+        Step::new(CURRENT, PreviewStep::Current).commits(0),
+        Step::new(ZOOM, ViewStep::Percent(100.0)).commits(0),
+        Step::new(FIT, ViewStep::Fit).commits(0),
     ])
 }
 
-fn profile<'a>(catalog: &'a Value, source: &Source) -> Result<&'a Value> {
-    catalog["cameras"]
-        .as_array()
-        .and_then(|cameras| {
-            cameras.iter().find(|camera| {
-                camera["make"] == source.make
-                    && camera["model"] == source.model
-                    && camera["modes"]
-                        .as_array()
-                        .is_some_and(|modes| modes.iter().any(|mode| mode["id"] == source.mode))
-            })
-        })
+/// The neutral point the table's plan names, for `smoke --list`, the plan checks and the script
+/// dumps: a run plans over its own source's manifest point instead.
+const LISTED_POINT: [u32; 2] = [123, 456];
+
+/// The edit launch's plan as the table lists it.
+pub fn edit_plan(_: &[PathBuf]) -> Plan {
+    journey(LISTED_POINT)
+}
+
+/// The reopen launch: the open alone, at the undo's committed entry.
+pub fn reopen_plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![Step::opened(REOPENED).label("Rotate right")])
+}
+
+/// The row's own run: the table's two launches, the edit launch planned over its source's own
+/// manifest point.
+pub fn run(run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
+    smoke::launch_planned(run, scenario, sources, |run, sources| {
+        let (listed, _) = listed(run)?;
+        Ok(vec![journey(listed.neutral_point), reopen_plan(sources)])
+    })
+}
+
+/// The run's one source and its entry in the run's copy of the manifest: the entry with the
+/// source's own SHA-256, as the run hashed it.
+fn listed(run: &Run) -> Result<(EditorSource, PathBuf)> {
+    let [source] = run.sources() else {
+        return Err("The raw-editor scenario opens one RAW source".into());
+    };
+    let hashes = run
+        .recorded_value("fixture_hashes")
+        .as_object()
+        .ok_or("The run hashed no source")?;
+    let sha256 = hashes
+        .values()
+        .next()
+        .and_then(Value::as_str)
+        .ok_or("The run hashed no source")?;
+    let manifest = raw::manifest::<EditorSource>(&run.out().join(smoke::MANIFEST))?;
+    let entry = manifest
+        .sources
+        .into_iter()
+        .find(|entry| entry.sha256() == sha256)
         .ok_or_else(|| {
             format!(
-                "RAW mode {} is absent or mismatched in camera catalog",
-                source.mode
+                "The manifest lists no source with {}'s SHA-256 {sha256}",
+                source.display()
             )
-            .into()
-        })
+        })?;
+    Ok((entry, source.clone()))
 }
 
-fn validate_manifest(
-    manifest_path: &Path,
-    manifest: &Manifest,
-    catalog: &Value,
-) -> Result<Vec<PathBuf>> {
-    ensure(manifest.format == 1, "RAW editor manifest format must be 1")?;
+/// What the catalog records once both launches have run.
+struct Catalogued {
+    original: String,
+    current: String,
+    revision: u64,
+}
+
+fn is_sha256(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// The catalog holds the one source, at its own path, imported as the manifest says: its upright
+/// dimensions, orientation, camera and mode, decoded by LibRaw; where its camera profile declares
+/// DNG corrections, the manifest's sensor geometry and a correction provenance for every opcode
+/// applied, and otherwise none. Returns its Original entry, current entry and revision.
+fn catalog(path: &Path, entry: &EditorSource, source: &Path) -> Result<Catalogued> {
+    let service = EditorService::open(path)?;
+    let assets = service.assets()?;
+    ensure(assets.len() == 1, "RAW run imported unexpected asset count")?;
+    let asset = &assets[0];
+    ensure(asset.locator == source, "RAW catalog locator changed")?;
     ensure(
-        !manifest.sources.is_empty(),
-        "RAW editor manifest needs sources",
+        [asset.width, asset.height] == entry.source_dimensions,
+        "RAW catalog source dimensions differ from manifest",
     )?;
-    let base = manifest_path.parent().ok_or("Manifest has no directory")?;
-    let mut ids = std::collections::HashSet::new();
-    let mut paths = Vec::new();
-    for source in &manifest.sources {
-        ensure(
-            !source.id.is_empty()
-                && source
-                    .id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                && ids.insert(source.id.clone()),
-            "RAW source id must be unique ASCII letters, digits, hyphens or underscores",
-        )?;
-        ensure(
-            profile(catalog, source).is_ok(),
-            format!(
-                "RAW mode {} is absent or mismatched in camera catalog",
-                source.mode
-            ),
-        )?;
-        ensure(
-            source.sha256.len() == 64 && source.sha256.bytes().all(|b| b.is_ascii_hexdigit()),
-            format!("Invalid SHA-256 for {}", source.id),
-        )?;
-        ensure(
-            source.source_dimensions.iter().all(|side| *side > 0)
-                && (1..=8).contains(&source.orientation)
-                && source
-                    .neutral_point
-                    .iter()
-                    .zip(source.source_dimensions)
-                    .all(|(coordinate, side)| {
-                        *coordinate >= 6 && coordinate.checked_add(6).is_some_and(|end| end < side)
-                    }),
-            format!("Invalid geometry for {}", source.id),
-        )?;
-        if source.mode == "DjiAir2sDng16" {
-            let (Some(sensor), Some(active), Some(crop)) = (
-                source.sensor_dimensions,
-                source.active_area,
-                source.default_crop,
-            ) else {
-                return Err(format!(
-                    "DJI source {} needs sensor, active and crop geometry",
-                    source.id
-                )
-                .into());
-            };
-            ensure(
-                sensor.iter().all(|side| *side > 0)
-                    && [active, crop].into_iter().all(|rect| {
-                        rect[2] > 0
-                            && rect[3] > 0
-                            && rect[0]
-                                .checked_add(rect[2])
-                                .is_some_and(|end| end <= sensor[0])
-                            && rect[1]
-                                .checked_add(rect[3])
-                                .is_some_and(|end| end <= sensor[1])
-                    })
-                    && crop[0] >= active[0]
-                    && crop[1] >= active[1]
-                    && crop[0] + crop[2] <= active[0] + active[2]
-                    && crop[1] + crop[3] <= active[1] + active[3]
-                    && (if source.orientation >= 5 {
-                        [crop[3], crop[2]]
-                    } else {
-                        [crop[2], crop[3]]
-                    }) == source.source_dimensions,
-                format!("DJI source {} geometry is inconsistent", source.id),
-            )?;
-        }
-        let path = if source.path.is_absolute() {
-            source.path.clone()
-        } else {
-            base.join(&source.path)
-        }
-        .canonicalize()?;
-        ensure(
-            hash(&path)?.eq_ignore_ascii_case(&source.sha256),
-            format!("RAW source {} differs from manifest SHA-256", source.id),
-        )?;
-        paths.push(path);
-    }
-    Ok(paths)
-}
-
-fn run_app(
-    root: &Path,
-    binary: &Path,
-    evidence: &Path,
-    catalog: &Path,
-    source: &Path,
-    script_path: Option<&Path>,
-) -> Result<Value> {
-    let mut args = vec![
-        "--data-root".into(),
-        evidence.join("data").into_os_string(),
-        "--catalog".into(),
-        catalog.as_os_str().to_owned(),
-        "--evidence-dir".into(),
-        evidence.as_os_str().to_owned(),
-        "--open".into(),
-        source.as_os_str().to_owned(),
-    ];
-    if let Some(path) = script_path {
-        args.extend(["--evidence-script".into(), path.as_os_str().to_owned()]);
-    }
-    let log = evidence.with_extension("log");
-    let started = Instant::now();
-    let mut child = scenario::launch::spawn_editor(root, binary, &args, &log)?;
-    let watch = stats::Watch::new(root, child.child.id());
-    let mut rss = Vec::new();
-    let status = loop {
-        if let Some(status) = child.child.try_wait()? {
-            break status;
-        }
-        ensure(
-            started.elapsed() < Duration::from_secs(70),
-            "RAW editor app deadline exceeded",
-        )?;
-        if let Ok((_, sample)) = watch.usage() {
-            rss.push(json!([started.elapsed().as_secs_f64() * 1000.0, sample]));
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    let SourceKind::Raw { metadata } = &asset.source else {
+        return Err("RAW source was imported as JPEG".into());
+    };
+    let crop = &metadata.default_crop;
+    let upright = if entry.orientation >= 5 {
+        [crop.height, crop.width]
+    } else {
+        [crop.width, crop.height]
     };
     ensure(
-        status.success(),
-        format!("RAW editor exited {status}; see {}", log.display()),
+        metadata.mode == entry.mode
+            && metadata.make == entry.make
+            && metadata.model == entry.model
+            && metadata.exif_orientation == entry.orientation
+            && upright == entry.source_dimensions
+            && metadata.backend.contains("LibRaw"),
+        format!(
+            "RAW source metadata differs from manifest: {:?} {} {} orientation {} crop {upright:?} by {}",
+            metadata.mode,
+            metadata.make,
+            metadata.model,
+            metadata.exif_orientation,
+            metadata.backend
+        ),
     )?;
-    let peak = rss
-        .iter()
-        .filter_map(|pair| pair[1].as_f64())
-        .fold(0.0_f64, f64::max);
-    Ok(json!({
-        "elapsed_ms":started.elapsed().as_secs_f64()*1000.0,
-        "sampled_peak_rss_mib":peak,
-        "rss_samples":rss,
-        "exit_code":status.code(),
-        "log":log.file_name().and_then(|s|s.to_str()),
-    }))
-}
-
-fn photo_samples(path: &Path, frame: &Value) -> Result<Vec<[u8; 3]>> {
-    let image = image::open(path)?.to_rgb8();
-    let (width, height) = image.dimensions();
-    let columns = scenario::columns(frame)?.ok_or("Missing photo surface columns")?;
-    ensure(
-        columns[1] <= width && columns[0] < columns[1],
-        "Invalid photo surface",
-    )?;
-    let cx = (columns[0] + columns[1]) / 2;
-    let cy = height / 2;
-    let dx = (columns[1] - columns[0]) / 5;
-    let dy = height / 5;
-    let mut pixels = Vec::new();
-    for iy in 0..17 {
-        for ix in 0..17 {
-            let x = cx - dx + (2 * dx * ix) / 16;
-            let y = cy - dy + (2 * dy * iy) / 16;
-            pixels.push(image.get_pixel(x, y).0);
+    match (entry.dng_geometry(), &metadata.dng_corrections) {
+        (Some((sensor, active, crop)), Some(corrections)) if entry.dng() => {
+            let rect = |r: &luxforge_raw::RawRect| [r.x, r.y, r.width, r.height];
+            ensure(
+                [metadata.sensor_width, metadata.sensor_height] == sensor
+                    && rect(&metadata.active_area) == active
+                    && rect(&metadata.default_crop) == crop,
+                "DNG sensor, active area or default crop differs from manifest",
+            )?;
+            let calibration = &corrections.calibration;
+            ensure(
+                !corrections.applied.is_empty()
+                    && corrections
+                        .applied
+                        .iter()
+                        .all(|opcode| opcode.flags == 0 && is_sha256(&opcode.payload_sha256))
+                    && is_sha256(&calibration.color_matrix1_sha256)
+                    && is_sha256(&calibration.color_matrix2_sha256),
+                "DNG correction or calibration provenance is incomplete",
+            )?;
+        }
+        (_, None) if !entry.dng() => {}
+        _ => {
+            return Err(format!(
+                "The import's DNG corrections disagree with the camera profile for {:?}",
+                entry.mode
+            )
+            .into());
         }
     }
-    Ok(pixels)
+    let state = service.state(&asset.id)?;
+    let history = service.history(&asset.id, None, 32)?;
+    let original = history
+        .entries
+        .iter()
+        .find(|entry| entry.sequence == 0)
+        .ok_or("RAW Original history entry missing")?;
+    Ok(Catalogued {
+        original: original.id.as_str().to_owned(),
+        current: state.current_entry.id.as_str().to_owned(),
+        revision: state.revision,
+    })
 }
 
-fn pixel_difference(a: &[[u8; 3]], b: &[[u8; 3]]) -> Result<Value> {
-    ensure(a.len() == b.len(), "Photo sample layouts differ")?;
-    let mut changed = 0usize;
-    let mut any_changed = 0usize;
-    let mut absolute = 0u64;
-    for (left, right) in a.iter().zip(b) {
-        let distance: u64 = left
-            .iter()
-            .zip(right)
-            .map(|(x, y)| u64::from(x.abs_diff(*y)))
-            .sum();
-        changed += usize::from(distance > 3);
-        any_changed += usize::from(distance > 0);
-        absolute += distance;
-    }
-    Ok(
-        json!({"changed_samples":changed,"any_changed_samples":any_changed,"mean_absolute_channel_difference":absolute as f64/(a.len()*3) as f64}),
-    )
-}
-
-fn displayed_entry(frame: &Value) -> Result<&str> {
-    frame["state"]["stack"]["displayed"]["entry"]
+fn displayed_entry(frame: &Frame) -> Result<&str> {
+    frame.state()["stack"]["displayed"]["entry"]
         .as_str()
         .ok_or_else(|| "Captured frame lacks displayed entry identity".into())
 }
@@ -298,15 +302,24 @@ fn displayed_tolerance(action: &str, parameter: &str) -> Result<f64> {
     Ok(0.5 * 10f64.powi(-i32::from(precision)) + 1e-9)
 }
 
-fn verify_displayed_raw_controls(frame: &Value) -> Result {
-    let state = &frame["state"];
-    let displayed = &state["stack"]["displayed"];
-    let layers = displayed["layers"]
+/// The frame is a ready render of the entry it displays, and Basic's Exposure, Temperature and Tint
+/// show the displayed recipe: exposure from Basic's global layer, the rest from the RAW layer.
+fn ready_raw_frame(frame: &Frame) -> Result {
+    let state = frame.state();
+    ensure(
+        state["phase"] == "ready"
+            && state["displayed_generation"] == state["requested_generation"]
+            && state["render_error"].is_null()
+            && state["error_code"].is_null(),
+        "not a ready rendered RAW image",
+    )?;
+    displayed_entry(frame)?;
+    let layers = state["stack"]["displayed"]["layers"]
         .as_array()
         .ok_or("Displayed layers missing")?;
     let raw = layers
         .iter()
-        .find(|layer| layer["effect"] == "luxforge.raw")
+        .find(|layer| layer["effect"] == RAW_EFFECT)
         .ok_or("Displayed RAW layer missing")?;
     let payload: luxforge_core::RawPayload = serde_json::from_value(raw["payload"].clone())?;
     // Exposure is Basic's on every kind: the global Basic layer's, or its 0 EV default.
@@ -315,7 +328,6 @@ fn verify_displayed_raw_controls(frame: &Value) -> Result {
         .find(|layer| layer["effect"] == luxforge_core::BASIC_EFFECT && layer["mask"].is_null())
         .and_then(|layer| layer["payload"]["exposure"].as_f64())
         .unwrap_or(0.0);
-    let controls = &state["controls"];
     // The core's own answer for the displayed development: a custom temperature and tint, or
     // under As shot the temperature and tint whose gains are the camera's as-shot gains, which
     // the forward map must reproduce.
@@ -339,578 +351,234 @@ fn verify_displayed_raw_controls(frame: &Value) -> Result {
         ("set-raw", "temperature", kelvin),
         ("set-raw", "tint", tint),
     ] {
-        let key = format!("{action}.{parameter}");
-        let shown: f64 = controls[&key]
-            .as_str()
-            .ok_or("Displayed RAW control value missing")?
-            .parse()?;
+        let shown: f64 = frame.field(action, parameter)?.parse()?;
         ensure(
             (shown - expected).abs() <= displayed_tolerance(action, parameter)?,
-            format!("Displayed {key} control differs from displayed RAW layer"),
+            format!("Displayed {action}.{parameter} control differs from displayed RAW layer"),
         )?;
     }
     Ok(())
 }
 
-fn verify_frames(evidence: &Path, expected_frames: usize) -> Result<VerifiedFrames> {
-    let (app, events) = scenario::preamble(evidence, expected_frames)?;
-    ensure(app["had_input_errors"] == false, "RAW script input failed")?;
-    let frames = app["frames"].as_array().ok_or("Missing captured frames")?;
-    let mut pixels = Vec::new();
-    for (index, frame) in frames.iter().enumerate() {
-        let file = scenario::identity(evidence, &app, frame)?;
-        let state = &frame["state"];
-        ensure(
-            state["phase"] == "ready"
-                && state["displayed_generation"] == state["requested_generation"]
-                && state["render_error"].is_null()
-                && state["error_code"].is_null(),
-            format!("Frame {index} is not a ready rendered RAW image"),
-        )?;
-        let _ = displayed_entry(frame)?;
-        verify_displayed_raw_controls(frame)?;
-        pixels.push(photo_samples(&file, frame)?);
-    }
-    Ok((app, events, pixels))
+/// How far a mean channel of the photograph's centred window may move and still be the same
+/// picture, and how far it must move for an edit to have changed it, in 8-bit codes. The window
+/// holds hundreds of thousands of pixels: the same recipe rendered twice reads exactly equal, and
+/// the smallest edit here, a tint of +10, moves a channel by about 0.7 on the Z6.
+const SAME: f64 = 0.5;
+const CHANGED: f64 = 0.25;
+
+/// The largest move of any mean channel of the centred window between two frames.
+fn moved(before: &Frame, after: &Frame) -> Result<f64> {
+    let (a, b) = (pixels::window_rgb(before)?, pixels::window_rgb(after)?);
+    Ok(a.iter()
+        .zip(b)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f64::max))
 }
 
-fn event_times(events: &[Value]) -> Value {
-    let mut result = serde_json::Map::new();
+/// Each mutation's request-to-display time, and each other step's request-to-capture time, from
+/// the edit launch's log: one functional run's observations. Every mutation must present a render
+/// before the next step starts.
+fn step_times(edit: &Checked) -> Result<Vec<Value>> {
+    let starts: Vec<f64> = edit
+        .events
+        .iter()
+        .filter(|event| event["event"] == "script_step")
+        .map(|event| {
+            event["elapsed_ms"]
+                .as_f64()
+                .ok_or_else(|| "A script step lacks its elapsed time".into())
+        })
+        .collect::<Result<_>>()?;
+    // The frames after the open, in order, are the script's steps.
+    let steps = &edit.names()[1..];
+    ensure(
+        starts.len() == steps.len(),
+        "Script steps and frames differ",
+    )?;
+    let mut times = Vec::new();
+    for (index, (name, began)) in steps.iter().zip(&starts).enumerate() {
+        let ended = starts.get(index + 1).copied().unwrap_or(f64::INFINITY);
+        let first = |event_name: &str| {
+            edit.events
+                .iter()
+                .filter(|event| {
+                    event["elapsed_ms"]
+                        .as_f64()
+                        .is_some_and(|time| time >= *began && time < ended)
+                })
+                .find(|event| event["event"] == event_name)
+                .and_then(|event| event["elapsed_ms"].as_f64())
+        };
+        let captured = first("frame_captured")
+            .ok_or_else(|| format!("Step {name:?} has no correlated frame capture event"))?;
+        let displayed = first("preview_displayed").or_else(|| first("render_ready"));
+        ensure(
+            !MUTATIONS.contains(&name.as_str()) || displayed.is_some(),
+            format!("Step {name:?} has no correlated display event"),
+        )?;
+        times.push(json!({
+            "step":name,
+            "request_to_display_ms":displayed.map(|time| time - began),
+            "request_to_capture_ms":captured - began,
+        }));
+    }
+    Ok(times)
+}
+
+/// The open's decode, first presented raster and first capture, from a launch's log.
+fn open_times(launch: &Checked) -> Value {
+    let mut times = serde_json::Map::new();
     for name in ["decoded", "render_ready", "frame_captured"] {
-        if let Some(event) = events.iter().find(|event| event["event"] == name) {
-            result.insert(name.into(), event["elapsed_ms"].clone());
+        if let Some(event) = launch.events.iter().find(|event| event["event"] == name) {
+            times.insert(name.into(), event["elapsed_ms"].clone());
             if name == "decoded" {
-                result.insert(
+                times.insert(
                     "open_to_raster_ms".into(),
                     event["detail"]["open_to_raster_ms"].clone(),
                 );
             }
         }
     }
-    Value::Object(result)
+    Value::Object(times)
 }
 
-fn script_stage_times(events: &[Value]) -> Result<Vec<Value>> {
-    let starts: Vec<_> = events
-        .iter()
-        .filter(|event| event["event"] == "script_step")
-        .collect();
-    ensure(
-        starts.len() == JOURNEY_STEPS,
-        "RAW scripted event count differs from journey",
-    )?;
-    let mut result = Vec::new();
-    for (index, start) in starts.iter().enumerate() {
-        let began = start["elapsed_ms"]
-            .as_f64()
-            .ok_or("RAW script step lacks elapsed time")?;
-        let ended = starts
-            .get(index + 1)
-            .and_then(|event| event["elapsed_ms"].as_f64())
-            .unwrap_or(f64::INFINITY);
-        let in_step = |event: &&Value| {
-            event["elapsed_ms"]
-                .as_f64()
-                .is_some_and(|time| time >= began && time < ended)
-        };
-        let event = |name: &str| {
-            events
-                .iter()
-                .filter(&in_step)
-                .find(|event| event["event"] == name)
-        };
-        let captured = event("frame_captured")
-            .and_then(|event| event["elapsed_ms"].as_f64())
-            .ok_or("RAW script step has no correlated frame capture event")?;
-        let displayed = event("preview_displayed")
-            .or_else(|| event("render_ready"))
-            .and_then(|event| event["elapsed_ms"].as_f64());
-        ensure(
-            index >= 9 || displayed.is_some(),
-            "RAW mutation has no correlated display event",
-        )?;
-        let decoded =
-            event("decoded").and_then(|event| event["detail"]["open_to_raster_ms"].as_f64());
-        result.push(json!({
-            "step":index+1,
-            "request":start["detail"]["request"],
-            "request_to_display_ms":displayed.map(|time|time-began),
-            "request_to_capture_ms":captured-began,
-            "source_to_raster_ms":decoded,
-        }));
-    }
-    Ok(result)
-}
-
-fn verify_catalog(
-    catalog: &Path,
-    source: &Source,
-    path: &Path,
-    camera_profile: &Value,
-) -> Result<(String, String, u64)> {
-    let service = EditorService::open(catalog)?;
-    let assets = service.assets()?;
-    ensure(assets.len() == 1, "RAW run imported unexpected asset count")?;
-    let asset = &assets[0];
-    ensure(asset.locator == path, "RAW catalog locator changed")?;
-    ensure(
-        [asset.width, asset.height] == source.source_dimensions,
-        "RAW catalog source dimensions differ from manifest",
-    )?;
-    let SourceKind::Raw { metadata } = &asset.source else {
-        return Err("RAW source was imported as JPEG".into());
+/// The scenario's own checks over both launches once their plans have held.
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
+    let (entry, source) = listed(run)?;
+    let [edit, reopen] = launches else {
+        return Err(format!("Expected two launches, found {}", launches.len()).into());
     };
-    // Compared as the JSON object the catalog row and the API carry.
-    let metadata = &serde_json::to_value(metadata)?;
-    let crop = &metadata["default_crop"];
-    let crop_dimensions = if source.orientation >= 5 {
-        [crop["height"].as_u64(), crop["width"].as_u64()]
-    } else {
-        [crop["width"].as_u64(), crop["height"].as_u64()]
-    };
-    ensure(
-        metadata["mode"] == source.mode
-            && metadata["make"] == source.make
-            && metadata["model"] == source.model
-            && metadata["exif_orientation"] == source.orientation
-            && crop_dimensions == source.source_dimensions.map(|side| Some(u64::from(side)))
-            && metadata["backend"]
-                .as_str()
-                .is_some_and(|s| s.contains("LibRaw")),
-        format!("RAW source metadata differs from manifest: {metadata}"),
-    )?;
-    if camera_profile["dng"].is_object() {
-        let rect =
-            |name: &str| ["x", "y", "width", "height"].map(|field| metadata[name][field].as_u64());
-        ensure(
-            [
-                metadata["sensor_width"].as_u64(),
-                metadata["sensor_height"].as_u64(),
-            ] == source
-                .sensor_dimensions
-                .unwrap()
-                .map(|side| Some(u64::from(side)))
-                && rect("active_area")
-                    == source
-                        .active_area
-                        .unwrap()
-                        .map(|side| Some(u64::from(side)))
-                && rect("default_crop")
-                    == source
-                        .default_crop
-                        .unwrap()
-                        .map(|side| Some(u64::from(side))),
-            "DJI sensor, active area or default crop differs from manifest",
-        )?;
-        let correction = &metadata["dng_corrections"];
-        let applied = correction["applied"]
-            .as_array()
-            .ok_or("DNG correction provenance missing")?;
-        let required = camera_profile["dng"]["required_opcodes"]
-            .as_array()
-            .ok_or("DNG profile required opcodes missing")?;
-        ensure(
-            correction["interpretation"] == camera_profile["dng"]["interpretation"]
-                && applied.len() == required.len()
-                && applied.iter().zip(required).all(|(opcode, expected)| {
-                    opcode["id"] == expected["id"]
-                        && opcode["list"] == expected["list"]
-                        && opcode["version"] == expected["version"]
-                        && opcode["flags"] == expected["flags"]
-                        && opcode["flags"] == 0
-                        && opcode["payload_sha256"].as_str().is_some_and(|hash| {
-                            hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                        })
-                })
-                && correction["skipped_optional"].is_array(),
-            "DNG required correction order or provenance differs",
-        )?;
-        let calibration = &correction["calibration"];
-        ensure(
-            calibration["illuminants"] == camera_profile["dng"]["illuminants"]
-                && calibration["selected"] == camera_profile["dng"]["calibration_identity"]
-                && ["color_matrix1_sha256", "color_matrix2_sha256"]
-                    .into_iter()
-                    .all(|field| {
-                        calibration[field].as_str().is_some_and(|hash| {
-                            hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                        })
-                    }),
-            "DNG camera calibration provenance differs",
-        )?;
-    } else {
-        ensure(
-            metadata["dng_corrections"].is_null(),
-            "Non-DNG RAW unexpectedly has correction metadata",
-        )?;
+    for launch in launches {
+        for (name, frame) in launch.names().iter().zip(&launch.frames) {
+            ready_raw_frame(frame).map_err(|error| {
+                format!("{}: step {name:?}: {error}", launch.evidence.display())
+            })?;
+        }
     }
-    let state = service.state(&asset.id)?;
-    let history = service.history(&asset.id, None, 32)?;
-    let original = history
-        .entries
-        .iter()
-        .find(|entry| entry.sequence == 0)
-        .ok_or("RAW Original history entry missing")?;
-    Ok((
-        original.id.as_str().to_owned(),
-        state.current_entry.id.as_str().to_owned(),
-        state.revision,
-    ))
-}
+    let Catalogued {
+        original,
+        current,
+        revision,
+    } = catalog(
+        &run.out().join(EDIT).join("catalog.sqlite"),
+        &entry,
+        &source,
+    )?;
+    ensure(revision == 9, "RAW history did not retain nine mutations")?;
 
-fn verify_journey(
-    evidence: &Path,
-    source: &Source,
-    original: &str,
-    current: &str,
-) -> Result<Value> {
-    let (app, events, pixels) = verify_frames(evidence, JOURNEY_STEPS + 1)?;
-    let frames = app["frames"].as_array().ok_or("Missing frames")?;
-    let recorded = app["script"].as_array().ok_or("Missing RAW script")?;
-    let expected = script(source);
+    let opened = edit.at(OPENED)?;
     ensure(
-        recorded.len() == JOURNEY_STEPS,
-        "RAW journey step count changed",
-    )?;
-    for (index, step) in recorded.iter().enumerate() {
-        ensure(
-            step["status"] == "sent"
-                && step["request"] == expected[index]
-                && step["frame"] == frames[index + 1]["file"],
-            format!("RAW journey step {} was not captured", index + 1),
-        )?;
-    }
-    let initial = &frames[0]["state"];
-    ensure(
-        initial["source_dimensions"] == json!(source.source_dimensions)
-            && initial["orientation"] == source.orientation
-            && initial["stack"]["revision"] == 0
-            && displayed_entry(&frames[0])? == original,
+        opened.state()["source_dimensions"] == json!(entry.source_dimensions)
+            && opened.state()["orientation"] == entry.orientation
+            && opened.revision()? == 0
+            && displayed_entry(opened)? == original,
         "RAW Original dimensions/orientation/identity mismatch",
     )?;
-    for (index, revision) in (1..=9).enumerate() {
-        ensure(
-            frames[index + 1]["state"]["stack"]["revision"] == revision,
-            format!("RAW mutation {} did not commit", index + 1),
-        )?;
-    }
-    for (index, frame) in frames.iter().enumerate() {
-        if index == HISTORICAL_FRAME {
+    let historical = edit.index(HISTORICAL)?;
+    for (index, (name, frame)) in edit.names().iter().zip(&edit.frames).enumerate() {
+        let stack = &frame.state()["stack"];
+        if index == historical {
             ensure(
-                frame["state"]["stack"]["displayed"]["layers"]
-                    == initial["stack"]["displayed"]["layers"],
+                stack["displayed"]["layers"] == opened.state()["stack"]["displayed"]["layers"],
                 "Historical preview did not display Original RAW recipe",
             )?;
         } else {
             ensure(
-                displayed_entry(frame)? == frame["state"]["stack"]["entry"]
-                    && frame["state"]["stack"]["displayed"]["layers"]
-                        == frame["state"]["stack"]["layers"],
-                format!("Frame {index} displayed recipe differs from current recipe"),
+                displayed_entry(frame)? == stack["entry"]
+                    && stack["displayed"]["layers"] == stack["layers"],
+                format!("Step {name:?}'s displayed recipe differs from current recipe"),
             )?;
         }
     }
+    let preview = edit.at(HISTORICAL)?;
     ensure(
-        frames[HISTORICAL_FRAME]["state"]["selection"]["entry"] == original
-            && displayed_entry(&frames[HISTORICAL_FRAME])? == original
-            && frames[HISTORICAL_FRAME]["state"]["stack"]["entry"] == current,
+        preview.state()["selection"]["entry"] == original.as_str()
+            && displayed_entry(preview)? == original
+            && preview.entry()? == current,
         "Historical RAW preview did not display Original without changing current state",
     )?;
-    for frame in &frames[CURRENT_FRAME..=FINAL_FRAME] {
+    for name in [CURRENT, ZOOM, FIT] {
+        let frame = edit.at(name)?;
         ensure(
-            frame["state"]["selection"] == "current" && displayed_entry(frame)? == current,
-            "RAW preview did not return to committed current entry",
+            frame.state()["selection"] == "current" && displayed_entry(frame)? == current,
+            format!("Step {name:?} did not return to the committed current entry"),
         )?;
     }
-    let original_to_exposure = pixel_difference(&pixels[0], &pixels[1])?;
-    let exposure_to_red = pixel_difference(&pixels[1], &pixels[2])?;
-    let red_to_blue = pixel_difference(&pixels[2], &pixels[3])?;
-    let blue_to_temperature = pixel_difference(&pixels[3], &pixels[4])?;
-    let temperature_to_tint = pixel_difference(&pixels[4], &pixels[5])?;
-    let tint_to_picker = pixel_difference(&pixels[5], &pixels[6])?;
-    let original_history = pixel_difference(&pixels[0], &pixels[HISTORICAL_FRAME])?;
-    let step_times = script_stage_times(&events)?;
-    for (name, diff) in [
-        ("exposure", &original_to_exposure),
-        ("red WB", &exposure_to_red),
-        ("blue WB", &red_to_blue),
-        ("temperature", &blue_to_temperature),
-        ("neutral picker", &tint_to_picker),
-    ] {
-        ensure(
-            diff["changed_samples"].as_u64().unwrap_or(0) >= 8,
-            format!("{name} did not change sampled photo pixels"),
-        )?;
-    }
+    let reopened = reopen.at(REOPENED)?;
     ensure(
-        temperature_to_tint["any_changed_samples"]
-            .as_u64()
-            .unwrap_or(0)
-            >= 8
-            && temperature_to_tint["mean_absolute_channel_difference"]
-                .as_f64()
-                .unwrap_or(0.0)
-                > 0.1,
-        "tint did not change sampled photo pixels",
-    )?;
-    ensure(
-        original_history["any_changed_samples"]
-            .as_u64()
-            .unwrap_or(u64::MAX)
-            <= 3,
-        "Historical Original pixels differ from initial Original",
-    )?;
-    Ok(json!({
-        "status":"passed",
-        "run_id":app["run_id"],
-        "original_entry":original,
-        "current_entry":current,
-        "initial_events_ms":event_times(&events),
-        "step_timings_ms":step_times,
-        "pixel_checks":{"original_to_exposure":original_to_exposure,"exposure_to_red_wb":exposure_to_red,"red_to_blue_wb":red_to_blue,"blue_to_temperature":blue_to_temperature,"temperature_to_tint":temperature_to_tint,"tint_to_picker":tint_to_picker,"original_to_historical_original":original_history},
-        "capture_files":frames.iter().map(|frame|frame["file"].clone()).collect::<Vec<_>>(),
-    }))
-}
-
-fn one_trial(
-    root: &Path,
-    binary: &Path,
-    out: &Path,
-    source: &Source,
-    path: &Path,
-    camera_profile: &Value,
-) -> Result<Value> {
-    fs::create_dir_all(out)?;
-    let catalog = out.join("catalog.sqlite");
-    let script_path = out.join("script.json");
-    write_json(&script_path, &script(source))?;
-    let first = out.join("first");
-    let first_run = run_app(root, binary, &first, &catalog, path, Some(&script_path))?;
-    let (original, current, revision) = verify_catalog(&catalog, source, path, camera_profile)?;
-    ensure(revision == 9, "RAW history did not retain nine mutations")?;
-    let journey = verify_journey(&first, source, &original, &current)?;
-    let reopened = out.join("reopened");
-    let reopened_run = run_app(root, binary, &reopened, &catalog, path, None)?;
-    let (reopened_original, reopened_current, reopened_revision) =
-        verify_catalog(&catalog, source, path, camera_profile)?;
-    ensure(
-        reopened_original == original
-            && reopened_current == current
-            && reopened_revision == revision,
-        "RAW catalog reopen changed history identity",
-    )?;
-    let (reopened_app, reopened_events, reopened_pixels) = verify_frames(&reopened, 1)?;
-    let reopened_frame = &reopened_app["frames"][0];
-    ensure(
-        displayed_entry(reopened_frame)? == current
-            && reopened_frame["state"]["stack"]["revision"] == revision,
+        displayed_entry(reopened)? == current && reopened.revision()? == revision,
         "RAW reopen displayed a stale entry",
     )?;
-    let first_app = read_json(&first.join("result.json"))?;
-    let last_file = scenario::identity(&first, &first_app, &first_app["frames"][FINAL_FRAME])?;
-    let final_pixels = photo_samples(&last_file, &first_app["frames"][FINAL_FRAME])?;
-    let reopened_difference = pixel_difference(&final_pixels, &reopened_pixels[0])?;
-    ensure(
-        reopened_difference["any_changed_samples"]
-            .as_u64()
-            .unwrap_or(u64::MAX)
-            <= 3,
-        "RAW reopened photo differs from committed current photo",
-    )?;
-    ensure(
-        hash(path)?.eq_ignore_ascii_case(&source.sha256),
-        "RAW original changed during editor run",
-    )?;
-    Ok(json!({
-        "source_id":source.id,
-        "source_sha256":source.sha256,
-        "mode":source.mode,
-        "first_process":first_run,
-        "journey":journey,
-        "reopened_process":reopened_run,
-        "reopened_events_ms":event_times(&reopened_events),
-        "reopened_pixel_difference":reopened_difference,
-        "status":"passed",
-    }))
-}
 
-/// The one [`stats::Distribution`] shape every timing tool now writes, in place of this tool's own
-/// `n`/`first`/`p50`/`p95`/`max`.
-fn distribution(samples: &[f64]) -> Value {
-    stats::distribution_json(samples.to_vec())
-}
-
-fn source_statistics(runs: &[Value]) -> Value {
-    let field = |path: &[&str]| {
-        let values: Vec<_> = runs
-            .iter()
-            .filter_map(|run| path.iter().fold(run, |value, key| &value[*key]).as_f64())
-            .collect();
-        distribution(&values)
-    };
-    let step = |index: usize, field_name: &str| {
-        let values: Vec<_> = runs
-            .iter()
-            .filter_map(|run| run["journey"]["step_timings_ms"][index][field_name].as_f64())
-            .collect();
-        distribution(&values)
-    };
-    json!({
-        "first_open_to_raster_ms":field(&["journey","initial_events_ms","open_to_raster_ms"]),
-        "first_process_sampled_peak_rss_mib":field(&["first_process","sampled_peak_rss_mib"]),
-        "reopened_process_sampled_peak_rss_mib":field(&["reopened_process","sampled_peak_rss_mib"]),
-        "reopened_open_to_raster_ms":field(&["reopened_events_ms","open_to_raster_ms"]),
-        "exposure_request_to_display_ms":step(0,"request_to_display_ms"),
-        "red_wb_request_to_display_ms":step(1,"request_to_display_ms"),
-        "blue_wb_request_to_display_ms":step(2,"request_to_display_ms"),
-        "temperature_request_to_display_ms":step(3,"request_to_display_ms"),
-        "tint_request_to_display_ms":step(4,"request_to_display_ms"),
-        "neutral_picker_request_to_display_ms":step(5,"request_to_display_ms"),
-        "rotate_request_to_display_ms":step(6,"request_to_display_ms"),
-        "crop_request_to_display_ms":step(7,"request_to_display_ms"),
-        "undo_request_to_display_ms":step(8,"request_to_display_ms"),
-        "historical_request_to_capture_ms":step(9,"request_to_capture_ms"),
-        "return_current_request_to_capture_ms":step(10,"request_to_capture_ms"),
-        "zoom_100_request_to_capture_ms":step(11,"request_to_capture_ms"),
-    })
-}
-
-pub fn run(root: &Path, manifest_path: &Path, out: &Path, binary: &Path, samples: usize) -> Result {
-    ensure(
-        cfg!(target_os = "macos"),
-        "RAW editor RSS harness requires native macOS ps",
-    )?;
-    ensure(
-        (1..=100).contains(&samples),
-        "RAW editor samples must be 1..=100",
-    )?;
-    ensure(!out.exists(), "RAW editor output must be new")?;
-    let manifest: Manifest = serde_json::from_slice(&fs::read(manifest_path)?)?;
-    let catalog_value = read_json(&root.join("crates/luxforge-raw/data/cameras.json"))?;
-    let profiles: Vec<Value> = manifest
-        .sources
-        .iter()
-        .map(|source| profile(&catalog_value, source).cloned())
-        .collect::<Result<_>>()?;
-    let sources = validate_manifest(manifest_path, &manifest, &catalog_value)?;
-    ensure(
-        binary.is_file(),
-        format!("RAW editor binary missing: {}", binary.display()),
-    )?;
-    fs::create_dir_all(out)?;
-    fs::copy(manifest_path, out.join("manifest.json"))?;
-    let snapshot = out.join("luxforge-binary-snapshot");
-    fs::copy(binary, &snapshot)?;
-    let binary_hash = hash(&snapshot)?;
-    let mut report = json!({
-        "status":"in_progress",
-        "manifest_sha256":hash(manifest_path)?,
-        "binary_sha256":binary_hash,
-        "lock_sha256":hash(&root.join("Cargo.lock"))?,
-        "host":host(root)?,
-        "launch_mode":launch::MODE,
-        "samples_per_source":samples,
-        "method":"Each trial launches the editor twice with one isolated persistent catalog: a scripted RAW edit journey and a reopen. Native macOS release process RSS is sampled about every 50 ms. Filesystem cache is not purged, so first launch is app-cold only. GPU memory is not isolated from process RSS and is not measured separately. Sampled photo-pixel differences prove reevaluation, not color accuracy or camera-JPEG matching.",
-        "runs":[],
-    });
-    let checked = (|| -> Result {
-        for ((source, path), camera_profile) in manifest.sources.iter().zip(sources).zip(&profiles)
-        {
-            for index in 0..samples {
-                let trial = out.join(format!("{}-{index:02}", source.id));
-                let row = one_trial(root, &snapshot, &trial, source, &path, camera_profile)?;
-                report["runs"]
-                    .as_array_mut()
-                    .ok_or("Missing run array")?
-                    .push(row);
-                write_json(&out.join("result.json"), &report)?;
-            }
-        }
-        let runs = report["runs"].as_array().ok_or("Missing run array")?;
-        let mut by_source = serde_json::Map::new();
-        for source in &manifest.sources {
-            let selected: Vec<_> = runs
-                .iter()
-                .filter(|run| run["source_id"] == source.id)
-                .cloned()
-                .collect();
-            ensure(
-                selected.len() == samples,
-                format!("RAW source {} sample count differs", source.id),
-            )?;
-            by_source.insert(source.id.clone(), source_statistics(&selected));
-        }
-        report["statistics_by_source"] = Value::Object(by_source);
-        report["status"] = json!("passed");
-        Ok(())
-    })();
-    if let Err(error) = &checked {
-        report["status"] = json!("failed");
-        report["error"] = json!(error.to_string());
+    let mut readings = serde_json::Map::new();
+    for (what, before, after) in [
+        ("exposure", OPENED, EXPOSURE),
+        ("red gain", EXPOSURE, RED_GAIN),
+        ("blue gain", RED_GAIN, BLUE_GAIN),
+        ("temperature", BLUE_GAIN, TEMPERATURE),
+        ("tint", TEMPERATURE, TINT),
+        ("neutral pick", TINT, NEUTRAL),
+    ] {
+        let moved = moved(edit.at(before)?, edit.at(after)?)?;
+        pixels::compare(
+            &format!("The {what} edit's move of the photograph"),
+            moved,
+            0.0,
+            pixels::Tolerance::Above(CHANGED),
+        )?;
+        readings.insert(what.into(), json!(moved));
     }
-    write_json(&out.join("result.json"), &report)?;
-    checked
+    for (what, before, after) in [
+        ("historical Original", edit.at(OPENED)?, preview),
+        ("reopened current", edit.at(FIT)?, reopened),
+    ] {
+        let moved = moved(before, after)?;
+        pixels::compare(
+            &format!("The {what}'s move of the photograph"),
+            moved,
+            0.0,
+            pixels::Tolerance::Within(SAME),
+        )?;
+        readings.insert(what.into(), json!(moved));
+    }
+
+    write_json(
+        &run.out().join("raw-editor-checks.json"),
+        &json!({
+            "source":entry,
+            "original_entry":original,
+            "current_entry":current,
+            "revision":revision,
+            "window_channel_moves":readings,
+            "thresholds":{"changed":CHANGED,"same":SAME},
+            "observations":{
+                "note":"One functional run's times, not a distribution.",
+                "edit_open_ms":open_times(edit),
+                "reopen_open_ms":open_times(reopen),
+                "steps":step_times(edit)?,
+            },
+        }),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn catalog_modes_require_matching_camera_identity() {
-        let catalog: Value =
-            serde_json::from_str(include_str!("../../crates/luxforge-raw/data/cameras.json"))
-                .unwrap();
-        let source = Source {
-            id: "z6".into(),
-            path: PathBuf::from("z6.nef"),
-            sha256: "0".repeat(64),
-            mode: "NikonZ6Lossless14".into(),
-            make: "Nikon".into(),
-            model: "Z 6".into(),
-            sensor_dimensions: None,
-            active_area: None,
-            default_crop: None,
-            source_dimensions: [1, 1],
-            orientation: 1,
-            neutral_point: [0, 0],
-        };
-        assert!(profile(&catalog, &source).is_ok());
-        let mut wrong = source;
-        wrong.model = "other".into();
-        assert!(profile(&catalog, &wrong).is_err());
-    }
-    /// The journey's script, into `$SCRIPT_DUMP/raw-editor/`, beside the scenarios' own from
-    /// `smoke::tests::dump_scripts`: the proof that a change to how scripts are written leaves the
-    /// script this journey runs the same.
-    #[test]
-    #[ignore]
-    fn dump_script() {
-        let dir =
-            PathBuf::from(std::env::var("SCRIPT_DUMP").expect("SCRIPT_DUMP names a directory"))
-                .join("raw-editor");
-        fs::create_dir_all(&dir).unwrap();
-        let source = Source {
-            id: "z6".into(),
-            path: PathBuf::from("z6.nef"),
-            sha256: "0".repeat(64),
-            mode: "NikonZ6Lossless14".into(),
-            make: "Nikon".into(),
-            model: "Z 6".into(),
-            sensor_dimensions: None,
-            active_area: None,
-            default_crop: None,
-            source_dimensions: [1, 1],
-            orientation: 1,
-            neutral_point: [123, 456],
-        };
-        write_json(&dir.join("script.json"), &script(&source)).unwrap();
-    }
 
+    /// The journey's script is its steps in order, over the source's own neutral point.
     #[test]
-    fn statistics_use_nearest_rank() {
-        let values = [4.0, 1.0, 2.0, 3.0];
-        let result = distribution(&values);
-        assert_eq!(result["p50"], 2.0);
-        assert_eq!(result["p95"], 4.0);
+    fn the_journey_picks_the_sources_own_neutral_point() {
+        let plan = journey([1609, 2419]);
+        assert!(plan.validate().is_ok());
+        assert_eq!(plan.len(), 1 + MUTATIONS.len() + 4);
+        let script = plan.script();
+        assert_eq!(script.as_array().unwrap().len(), MUTATIONS.len() + 4);
+        assert_eq!(
+            script[5],
+            json!({"api":{"method":"edit.pick-raw-neutral","params":{"x":1609,"y":2419}}})
+        );
+        assert_eq!(plan.index(NEUTRAL), Some(6));
+        assert!(reopen_plan(&[]).validate().is_ok());
     }
 }

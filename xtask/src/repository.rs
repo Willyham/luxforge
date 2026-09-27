@@ -744,7 +744,6 @@ const SOURCE_RULES: &[SourceRule] = &[
     },
     // One way to launch the editor from the harness: the scenario library's `Launch` assembles
     // every argument list and `Run` makes every launch, so each is recorded and watched alike.
-    // `raw-editor` keeps its own launch until it becomes a scenario row.
     SourceRule {
         name: "editor-launch",
         tokens: &[
@@ -762,16 +761,28 @@ const SOURCE_RULES: &[SourceRule] = &[
         ],
         scope: &["xtask"],
         types: &["rs"],
-        allowed: &[
-            "xtask/src/scenario/launch.rs",
-            "xtask/src/launch.rs",
-            "xtask/src/raw_editor.rs",
-        ],
+        allowed: &["xtask/src/scenario/launch.rs", "xtask/src/launch.rs"],
         mode: Match::Whole,
         tests: false,
         once: false,
         reason: "the harness assembles editor arguments only in the scenario library's Launch and \
                  launches the editor only through its Run (xtask/src/scenario/launch.rs)",
+    },
+    // One RAW manifest reader: `raw::manifest` reads and checks every RAW manifest, for
+    // `raw-corpus`, `verify` and the `raw-editor` scenario alike. A reader elsewhere names the
+    // manifest's list untyped (`["sources"]`) or declares its fields again (`neutral_point:`,
+    // `source_url:`); code that uses a source `raw::manifest` read names neither.
+    SourceRule {
+        name: "raw-manifest-reader",
+        tokens: &["[\"sources\"]", "neutral_point:", "source_url:"],
+        scope: &["xtask"],
+        types: &["rs"],
+        allowed: &["xtask/src/raw.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "RAW manifests are read only through raw::manifest (xtask/src/raw.rs); read a \
+                 manifest's sources through it",
     },
     // One HTTP/1.1 implementation: the module transport runs on `ureq`'s agent, and only it names
     // the protocol crate under that agent or its head parser, so no second hand-written framing
@@ -2387,8 +2398,8 @@ mod tests {
     fn only_the_launch_envelope_assembles_editor_arguments() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        // The envelope, the hidden-window flag's home, `raw-editor` until it becomes a scenario
-        // row, test code, xtask's own flags and a longer name may.
+        // The envelope, the hidden-window flag's home, test code, xtask's own flags and a longer
+        // name may.
         write_all(
             root,
             &[
@@ -2401,10 +2412,6 @@ mod tests {
                     "pub fn editor_args(args: &[OsString]) {}\n",
                 ),
                 (
-                    "xtask/src/raw_editor.rs",
-                    "let child = spawn_editor(root, binary, &[\"--catalog\".into()], &log)?;\n",
-                ),
-                (
                     "xtask/src/verify.rs",
                     "let a = [\"--output\", \"--binary\"];\nlet b = \"--open-all\";\n\
                      #[cfg(test)]\nmod tests {\n    fn t() { let a = [\"--open\"]; }\n}\n",
@@ -2412,11 +2419,16 @@ mod tests {
             ],
         );
         assert_eq!(read(root, &["editor-launch"]).unwrap(), (1, 0));
-        // Anywhere else in the harness, each spelling is refused.
+        // Anywhere else in the harness, each spelling is refused: the RAW editor journey's own
+        // launch included, now that it is a scenario row.
         refuses_each(
             root,
             "editor-launch",
             &[
+                (
+                    "xtask/src/raw_editor.rs",
+                    "let child = spawn_editor(root, binary, &[\"--catalog\".into()], &log)?;\n",
+                ),
                 (
                     "xtask/src/editor_latency.rs",
                     "let args = vec![\"--evidence-dir\".into(), evidence.into()];\n",
@@ -2433,6 +2445,45 @@ mod tests {
                 ("xtask/src/tool.rs", "let args = editor_args(&args);\n"),
             ],
             "scenario library's Launch",
+        );
+    }
+
+    #[test]
+    fn only_raw_rs_reads_a_raw_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The one reader, a scenario using a source it read, and test code may.
+        write_all(
+            root,
+            &[
+                (
+                    "xtask/src/raw.rs",
+                    "    pub neutral_point: [u32; 2],\n    source_url: Option<String>,\n",
+                ),
+                (
+                    "xtask/src/raw_editor.rs",
+                    "let (listed, _) = listed(run)?;\njourney(listed.neutral_point)\n\
+                     #[cfg(test)]\nmod tests {\n    fn t() { let s = &m[\"sources\"]; }\n}\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, &["raw-manifest-reader"]).unwrap(), (1, 0));
+        // A second reader, typed or untyped, anywhere else in the harness is refused.
+        refuses_each(
+            root,
+            "raw-manifest-reader",
+            &[
+                (
+                    "xtask/src/verify.rs",
+                    "let sources = manifest[\"sources\"].as_array();\n",
+                ),
+                (
+                    "xtask/src/raw_editor.rs",
+                    "struct Source {\n    neutral_point: [u32; 2],\n}\n",
+                ),
+                ("xtask/src/corpus.rs", "    source_url: Option<String>,\n"),
+            ],
+            "raw::manifest",
         );
     }
 

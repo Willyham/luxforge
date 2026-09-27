@@ -46,7 +46,7 @@ Native M4 Pro, release builds, warm filesystem cache, synthetic fixtures. Diagno
 
 ### Sample counts for a p50/p95 claim
 
-Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), 30 trials per source for `raw-editor`, and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. The `measure` medians and p95 figures recorded below were taken with that tool's own interpolated median and its own uncapped `p95 = sorted[n·95/100]` index, before every timing tool shared one nearest-rank `Distribution` (`xtask/src/stats.rs`), so a `measure` figure taken after that change — most visibly its median at an even sample count, such as a 30-launch p95 claim — can read slightly differently from the same measurement recorded here.
+Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. The `measure` medians and p95 figures recorded below were taken with that tool's own interpolated median and its own uncapped `p95 = sorted[n·95/100]` index, before every timing tool shared one nearest-rank `Distribution` (`xtask/src/stats.rs`), so a `measure` figure taken after that change — most visibly its median at an even sample count, such as a 30-launch p95 claim — can read slightly differently from the same measurement recorded here.
 
 | Measurement | Result |
 | --- | --- |
@@ -1082,8 +1082,10 @@ statistical claim of zero regression.
 | 200 actions in one orientation layer | 10.33 / 10.81 | 10.52 / 11.80 | 23.45 / 25.16 | 22.14 / 23.35 |
 | Same stack plus 10° crop | 32.22 / 36.37 | 32.18 / 34.35 | 73.72 / 98.62 | 71.09 / 77.79 |
 
-Reproduce with `raw-editor --samples 30` and `editor-performance --samples 30`
-through xtask, using the manifest formats in [development](../engineering/development.md).
+Reproduce the JPEG rows with `editor-performance --samples 30` through xtask. The RAW rows were
+taken with a 30-trial RAW editor timing tool whose journey is now the `raw-editor` smoke scenario
+([development](../engineering/development.md#authentic-raw-evidence)), which records one functional
+run's request-to-display times per source; a new RAW distribution is 30 runs of it, not one.
 Local reports retain every trial, percentile input, source/binary hash and failure;
 private photographs and captures are not repository assets. These observations
 qualify the recorded files and host, not other camera modes or platforms.
@@ -1138,8 +1140,7 @@ on this shared host. No JPEG raster loop, allocation or desktop message changed.
 | 200 actions in one orientation layer | 12.09 / 13.71 | 13.88 / 19.21 | 10.51 / 11.49 | 26.48 / 32.65 | 22.01 / 23.56 |
 | Same stack plus 10° crop | 37.59 / 43.42 | 44.80 / 51.38 | 32.25 / 52.32 | 84.71 / 91.98 | 74.96 / 88.99 |
 
-The 60 MP current crop has a retained 129.46 ms maximum. Reproduce with
-`raw-editor --samples 30` and `editor-performance --samples 30` as above. Local
+The 60 MP current crop has a retained 129.46 ms maximum. Reproduce as above. Local
 reports under `artifacts/air2s-editor-30-01/` and `artifacts/air2s-jpeg-*/`
 retain every sample, source hash and correlated state; private originals and
 captures are excluded from source control. Single-trial Nikon/Fujifilm editor
