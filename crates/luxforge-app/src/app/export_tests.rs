@@ -65,7 +65,7 @@ fn export_refusal_and_the_menu_agree() {
         editor.gesture_refusal(gesture::Starting::Export)
     );
     start(&mut editor, false);
-    assert_eq!(editor.status, gesture::IN_FLIGHT);
+    assert_eq!(editor.status, crate::state::IN_FLIGHT);
     assert!(editor.export.run.is_none(), "nothing starts");
 
     editor.busy = false;

@@ -127,6 +127,42 @@ impl Stamps {
     }
 }
 
+/// Why a start that needs the editable state is refused with no photograph open.
+pub(crate) const NO_PHOTOGRAPH: &str = "No photograph is open";
+/// Why a start that needs the editable state is refused while a history entry is previewed.
+pub(crate) const NOT_CURRENT: &str = "Return to the current state before editing";
+/// Why a start that waits for requests is refused while one is in flight.
+pub(crate) const IN_FLIGHT: &str = "Waiting for the last request";
+
+/// The editable state, as one rule: a photograph is open ([`NO_PHOTOGRAPH`]) and the current state,
+/// not a previewed entry, is on screen ([`NOT_CURRENT`]). `None` is editable. The app's one start
+/// refusal (`Editor::gesture_refusal`) asks this for every start that takes its editable half, and
+/// [`edit_refusal`] adds the busy half for the models.
+pub(crate) fn editable_refusal(
+    state: Option<&EditorState>,
+    session: &ClientSession,
+) -> Option<&'static str> {
+    if state.is_none() {
+        return Some(NO_PHOTOGRAPH);
+    }
+    (!session.preview.can_edit()).then_some(NOT_CURRENT)
+}
+
+/// Why an edit cannot start now, in the words the status bar and a disabled section use: the
+/// editable state ([`editable_refusal`]), then no request in flight ([`IN_FLIGHT`]). `None` is
+/// editable. It is what the app refuses an edit with (a start taking the editable and busy halves)
+/// when no draft is open, computed once per derivation into [`Inputs::edit_refusal`] for every
+/// model that reads it.
+pub(crate) fn edit_refusal(
+    state: Option<&EditorState>,
+    session: &ClientSession,
+    busy: bool,
+) -> Option<String> {
+    editable_refusal(state, session)
+        .or(busy.then_some(IN_FLIGHT))
+        .map(str::to_owned)
+}
+
 /// Everything the models are derived from, borrowed for one derivation.
 pub(crate) struct Inputs<'a> {
     /// Whether the large inputs below may have changed since a section was last built.
@@ -174,6 +210,10 @@ pub(crate) struct Inputs<'a> {
     pub(crate) preset_refusal: Option<String>,
     pub(crate) gallery_refusal: Option<String>,
     pub(crate) history_refusal: Option<String>,
+    /// Why nothing can be edited now ([`edit_refusal`]), computed once per derivation: the title
+    /// bar's Undo and Redo, the canvas's modes and picks, every module section and the Masks panel
+    /// read this answer rather than a rule of their own.
+    pub(crate) edit_refusal: Option<String>,
     pub(crate) draft: Option<&'a CropDraft>,
     /// The masks of the displayed entry as `mask.list` last answered them.
     pub(crate) masks: Option<&'a MaskListing>,
@@ -383,6 +423,7 @@ impl Built {
             inputs.display_entry,
             state,
             (inputs.busy, inputs.version_form_open, inputs.version_name),
+            &inputs.history_refusal,
         ));
         let canvas = key((
             (stamps.modules, stamps.capabilities, stamps.menu, session),
@@ -878,6 +919,7 @@ mod tests {
                 history_refusal: (self.slider_draft.is_some() || self.draft.is_some()).then(|| {
                     "Finish the open draft before undoing, redoing or restoring".to_owned()
                 }),
+                edit_refusal: edit_refusal(self.state.as_ref(), &self.session, self.busy),
                 draft: self.draft.as_ref(),
                 masks: self.masks.as_ref(),
                 selected_mask: self.selected_mask.as_ref(),
@@ -1057,6 +1099,51 @@ mod tests {
         );
     }
 
+    /// Restore commits, so the panel offers it only where the app's history refusal would let it
+    /// run: never while a draft is held or a request is in flight. Return to current is a
+    /// selection, which a held draft does not refuse.
+    #[test]
+    fn restore_is_disabled_while_the_history_refusal_holds() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
+        let older = entry(&asset, 1, None);
+        scene.list(older.clone());
+        scene.display_entry = Some(older.id.clone());
+        scene.session.preview.selection = luxforge_core::HistorySelection::Entry(older.id);
+        let preview = |scene: &Scene| scene.derive().panel.preview.expect("preview controls");
+        assert_eq!(
+            preview(&scene),
+            panel::PreviewControls {
+                can_return: true,
+                can_restore: true
+            }
+        );
+        scene.slider_draft = Some(("fixture-set".into(), "amount".into(), false));
+        assert!(scene.inputs().history_refusal.is_some());
+        assert_eq!(
+            preview(&scene),
+            panel::PreviewControls {
+                can_return: true,
+                can_restore: false
+            },
+            "a held draft refuses Restore"
+        );
+        scene.slider_draft = None;
+        scene.busy = true;
+        let workspace = scene.derive();
+        assert_eq!(
+            workspace.panel.preview,
+            Some(panel::PreviewControls {
+                can_return: false,
+                can_restore: false
+            })
+        );
+        assert!(
+            !workspace.panel.can_select,
+            "no selection while a request is in flight"
+        );
+    }
+
     #[test]
     fn an_entry_off_the_lineage_is_marked_as_a_branch() {
         let mut scene = Scene::new(descriptors()).opened(Vec::new());
@@ -1089,7 +1176,7 @@ mod tests {
             section(&scene.derive(), &crop.id)
                 .disabled_reason
                 .as_deref(),
-            Some("Return to current to edit")
+            Some(NOT_CURRENT)
         );
         scene.session.preview.selection = luxforge_core::HistorySelection::Current;
         scene.busy = true;
@@ -2632,10 +2719,7 @@ mod tests {
         let workspace = scene.derive();
         let section = section(&workspace, &crop.id);
         assert!(!section.enabled);
-        assert_eq!(
-            section.disabled_reason.as_deref(),
-            Some("Return to current to edit")
-        );
+        assert_eq!(section.disabled_reason.as_deref(), Some(NOT_CURRENT));
         assert!(
             section.reset.is_some(),
             "a section that cannot edit keeps its reset, dimmed, so the header keeps its height"
@@ -3131,10 +3215,7 @@ mod tests {
         );
         scene.busy = false;
         scene.session.preview.selection = luxforge_core::HistorySelection::Entry(EntryId::new());
-        assert_eq!(
-            enabled(&scene),
-            (false, Some("Return to current to edit".into()))
-        );
+        assert_eq!(enabled(&scene), (false, Some(NOT_CURRENT.into())));
         scene.session.preview.selection = luxforge_core::HistorySelection::Current;
         scene.draft = Some(CropDraft::neutral(
             luxforge_core::CropStage {

@@ -119,7 +119,7 @@ fn identity(inputs: &Inputs<'_>) -> Option<String> {
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
-    let editable = inputs.state.is_some() && inputs.session.preview.can_edit() && !inputs.busy;
+    let editable = inputs.edit_refusal.is_none();
     // An open draft refuses Undo and Redo, so neither is offered while it is.
     let navigable = editable && inputs.history_refusal.is_none();
     let zoom = &inputs.session.preview.view.zoom;

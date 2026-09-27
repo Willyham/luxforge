@@ -1154,8 +1154,8 @@ mod tests {
     /// Every group reset a module's controls declare, in order.
     fn group_resets(controls: &[Control]) -> Vec<luxforge_core::ResetAction> {
         walk(controls)
-            .filter_map(|control| match classify(control) {
-                Rendered::Group { reset, .. } => reset.cloned(),
+            .filter_map(|control| match control {
+                Control::Group { reset, .. } => reset.clone(),
                 _ => None,
             })
             .collect()

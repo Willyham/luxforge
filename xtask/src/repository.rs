@@ -575,22 +575,41 @@ const SOURCE_RULES: &[SourceRule] = &[
                  constants",
     },
     // One start refusal: whether anything may start on the desktop is answered by
-    // `Editor::gesture_refusal` in app/gesture.rs, whose busy and editable halves are worded
-    // there once. A start site writes the reason it returns rather than a sentence of its own.
+    // `Editor::gesture_refusal` in app/gesture.rs, and its editable half is the view model's one
+    // editability rule (`state::editable_refusal`, and `state::edit_refusal` for the models). The
+    // busy and editable halves are worded once, as constants in state/mod.rs, and a start site or
+    // a model writes the reason it is given rather than a sentence of its own. The release
+    // refusal's "Return to the current state to apply" is another sentence and not matched.
     SourceRule {
         name: "desktop-start-refusal",
         tokens: &[
-            "\"Return to the current state",
+            "\"Return to the current state before",
             "\"Waiting for the last request",
         ],
-        scope: &["crates/luxforge-app/src/app"],
+        scope: &["crates/luxforge-app/src"],
         types: &["rs"],
-        allowed: &["crates/luxforge-app/src/app/gesture.rs"],
+        allowed: &["crates/luxforge-app/src/state/mod.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: true,
+        reason: "a start's refusal is worded once, as the constants beside state::edit_refusal in \
+                 crates/luxforge-app/src/state/mod.rs; Editor::gesture_refusal and the models ask \
+                 that rule and write the reason it returns",
+    },
+    // The tools panel model resolves each group's reset for the photo's source kind and the bound
+    // target, and the header shows it; `ResetGroup` runs what the section holds
+    // (`SectionModel::group_reset`) rather than resolving it a second time.
+    SourceRule {
+        name: "desktop-group-reset",
+        tokens: &["resolve_group_reset"],
+        scope: &["crates/luxforge-app/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-app/src/state/tools.rs"],
         mode: Match::Whole,
         tests: false,
         once: false,
-        reason: "a start's refusal is worded once, by Editor::gesture_refusal in \
-                 crates/luxforge-app/src/app/gesture.rs; a start site writes the reason it returns",
+        reason: "only the tools panel model (state/tools.rs) resolves a group's reset; read the \
+                 one the section resolved through SectionModel::group_reset",
     },
     // The one-megapixel parallel threshold and the 512 MiB frame limit every per-pixel pass picks
     // its path against are declared once, in luxforge-raw's limits module: luxforge-core depends on
@@ -2857,14 +2876,21 @@ mod tests {
     #[test]
     fn the_desktop_words_a_start_refusal_once() {
         let tmp = tempfile::tempdir().unwrap();
-        let app = tmp.path().join("crates/luxforge-app/src/app");
+        let src = tmp.path().join("crates/luxforge-app/src");
+        let app = src.join("app");
+        let state = src.join("state");
         fs::create_dir_all(&app).unwrap();
-        // The refusal's home words it; tests may assert the words.
+        fs::create_dir_all(&state).unwrap();
+        // The view model's editability rule words it, once; tests may assert the words.
         for (file, text) in [
             (
-                app.join("gesture.rs"),
+                state.join("mod.rs"),
                 "const NOT_CURRENT: &str = \"Return to the current state before editing\";\n\
-                 const IN_FLIGHT: &str = \"Waiting for the last request\";\n",
+                 const IN_FLIGHT: &str = \"Waiting for the last request\";\n\
+                 #[cfg(test)]\n\
+                 mod tests {\n\
+                     fn t() { assert_eq!(r, \"Waiting for the last request\"); }\n\
+                 }\n",
             ),
             (
                 app.join("slider_tests.rs"),
@@ -2874,29 +2900,52 @@ mod tests {
                 app.join("preset.rs"),
                 "let busy = \"Waiting for the last preset request\";\n",
             ),
+            (
+                app.join("release.rs"),
+                "Some(\"Return to the current state to apply\".into())\n",
+            ),
         ] {
             fs::write(file, text).unwrap();
         }
         assert_eq!(
             read(tmp.path(), &["desktop-start-refusal"]).unwrap(),
-            (1, 0)
+            (3, 0)
         );
-        for text in [
-            "self.status = \"Return to the current state before picking\".into();\n",
-            "self.busy.then(|| \"Waiting for the last request\".to_owned())\n",
+        // A start site, the refusal itself or a model wording its own is a second copy.
+        for (file, text) in [
+            (
+                app.join("pointer.rs"),
+                "self.status = \"Return to the current state before picking\".into();\n",
+            ),
+            (
+                app.join("gesture.rs"),
+                "const IN_FLIGHT: &str = \"Waiting for the last request\";\n",
+            ),
+            (
+                state.join("masks.rs"),
+                "(!enabled).then(|| \"Waiting for the last request\".to_owned())\n",
+            ),
         ] {
-            let file = app.join("pointer.rs");
             fs::write(&file, text).unwrap();
             let error = refusal(tmp.path(), &["desktop-start-refusal"], text);
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
-                error.contains("pointer.rs:1") && error.contains("worded once"),
+                error.contains(&format!("{name}:1")) && error.contains("worded once"),
                 "{error}"
             );
             fs::remove_file(&file).unwrap();
         }
+        // Its home words each case once.
+        let home = state.join("mod.rs");
+        let before = fs::read_to_string(&home).unwrap();
+        let twice = format!("{before}let again = \"Waiting for the last request\";\n");
+        fs::write(&home, &twice).unwrap();
+        let error = refusal(tmp.path(), &["desktop-start-refusal"], &twice);
+        assert!(error.contains("worded once"), "{error}");
+        fs::write(&home, before).unwrap();
         assert_eq!(
             read(tmp.path(), &["desktop-start-refusal"]).unwrap(),
-            (1, 0)
+            (3, 0)
         );
     }
 
@@ -2990,6 +3039,46 @@ mod tests {
             fs::remove_file(&file).unwrap();
         }
         assert_eq!(read(tmp.path(), &["declared-crop-angle"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn the_desktop_resolves_a_group_reset_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("crates/luxforge-app/src");
+        let state = src.join("state");
+        let app = src.join("app");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&app).unwrap();
+        // The tools panel model resolves it; a test file may resolve one to check it.
+        for (file, text) in [
+            (
+                state.join("tools.rs"),
+                "let reset = luxforge_core::resolve_group_reset(owner, group, kind, target);\n",
+            ),
+            (
+                app.join("controls_tests.rs"),
+                "luxforge_core::resolve_group_reset(&basic.id, control, kind, None)\n",
+            ),
+            (
+                app.join("controls.rs"),
+                "let reset = section.group_reset(&path).cloned();\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["desktop-group-reset"]).unwrap(), (1, 0));
+        // A second resolution in the app is refused.
+        let file = app.join("controls.rs");
+        let before = fs::read_to_string(&file).unwrap();
+        let text = "luxforge_core::resolve_group_reset(owner, at_path(controls, path)?, kind, t)\n";
+        fs::write(&file, text).unwrap();
+        let error = refusal(tmp.path(), &["desktop-group-reset"], text);
+        assert!(
+            error.contains("controls.rs:1") && error.contains("group's reset"),
+            "{error}"
+        );
+        fs::write(&file, before).unwrap();
+        assert_eq!(read(tmp.path(), &["desktop-group-reset"]).unwrap(), (1, 0));
     }
 
     #[test]

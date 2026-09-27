@@ -202,14 +202,17 @@ impl Editor {
                 }));
             }
             ControlMessage::ResetGroup { module_id, path } => {
-                // The reset the group's header shows: resolved for the photo and the target, so
-                // on a RAW photo's global target White balance's reset is the development's As
-                // shot.
-                let kind = tools::source_kind(self.state.as_ref());
-                let target = self.section_target().cloned();
-                let Some(reset) = tools::module_of(&self.modules, &module_id).and_then(|module| {
-                    group_reset(&module.id, &module.controls, &path, kind, target.as_ref())
-                }) else {
+                // The reset the group's header shows, exactly as the view model resolved it for
+                // the photo and the target: on a RAW photo's global target White balance's reset
+                // is the development's As shot.
+                let Some(reset) = self
+                    .workspace
+                    .tools
+                    .all()
+                    .find(|section| section.module_id == module_id)
+                    .and_then(|section| section.group_reset(&path))
+                    .cloned()
+                else {
                     self.status = format!("{module_id} declares no reset for that group");
                     return Task::none();
                 };
@@ -224,89 +227,51 @@ impl Editor {
 
     /// Ask for one missing displayed curve at a time. The query channel carries no timer and one
     /// in-flight request plus one replaceable pending request at most.
+    ///
+    /// Which curves are displayed is the derived tools panel's answer
+    /// ([`tools::SectionModel::shown_curves`]), so this runs after the screen is derived: a
+    /// section's collapse, its tabs, developer filtering, the photo's source kind and each
+    /// control's resolved variant are the rules the panel drew it by.
     pub(crate) fn request_visible_curve_samples(&mut self) -> Task<Message> {
         if self.curve_sample_in_flight || self.curve_sample_pending.is_some() {
             return Task::none();
         }
-        let mut declared: Vec<(String, Vec<String>)> = Vec::new();
-        let Some(entry) = self.displayed_entry() else {
+        let (Some(entry), Some(asset)) = (
+            self.displayed_entry(),
+            self.state.as_ref().map(|state| &state.asset.id),
+        ) else {
             return Task::none();
         };
-        for module in self.modules.iter().filter(|module| module.is_available()) {
-            if self.expanded.get(&module.id).copied() == Some(false) {
-                continue;
+        let wanted = self
+            .workspace
+            .tools
+            .all()
+            .flat_map(tools::SectionModel::shown_curves)
+            .find_map(|curve| {
+                let channel = curve.selected_channel;
+                let parameter = &curve.channels.get(channel)?.parameter;
+                let value = self.control_field_value(&curve.action, parameter)?;
+                let key = (curve.action.clone(), parameter.clone());
+                let sampled = self
+                    .controls_ui
+                    .curve_samples
+                    .get(&key)
+                    .is_some_and(|samples| {
+                        samples.source == value && samples.entry == entry && &samples.asset == asset
+                    });
+                let requested = self.curve_sample_requested_source.get(&key).is_some_and(
+                    |(requested_asset, requested_entry, points)| {
+                        requested_asset == asset && requested_entry == &entry && points == &value
+                    },
+                );
+                (!sampled && !requested).then_some((key, channel, value))
+            });
+        match wanted {
+            Some(((action, parameter), channel, value)) => {
+                self.request_curve_samples(&action, &parameter, channel, value)
             }
-            // A module's only group has no header and is always shown, whatever its declared or
-            // recorded disclosure, so its curves are visible whenever the section is.
-            let (controls, prefix) = match tools::headerless_group(module) {
-                Some(children) => (children, Some(0)),
-                None => (&module.controls[..], None),
-            };
-            let mut controls = walk(controls);
-            while let Some(control) = controls.next() {
-                match control {
-                    Control::Group { collapsed, .. } => {
-                        let path: Vec<usize> = prefix.into_iter().chain(controls.path()).collect();
-                        let key = tools::group_key(&module.id, &path);
-                        let expanded = self.controls_ui.group_expanded.get(&key).copied();
-                        if !expanded.unwrap_or(!collapsed) {
-                            controls.skip_children();
-                        }
-                    }
-                    Control::Curve {
-                        action, channels, ..
-                    } => declared.push((
-                        action.clone(),
-                        channels.iter().map(|c| c.parameter.clone()).collect(),
-                    )),
-                    _ => {}
-                }
-            }
+            None => Task::none(),
         }
-        for (action, channels) in declared {
-            let Some(first) = channels.first() else {
-                continue;
-            };
-            let channel = self
-                .controls_ui
-                .curve_channels
-                .get(&(action.clone(), first.clone()))
-                .copied()
-                .unwrap_or(0);
-            let Some(parameter) = channels.get(channel) else {
-                continue;
-            };
-            let Some(value) = self.control_field_value(&action, parameter) else {
-                continue;
-            };
-            if self
-                .controls_ui
-                .curve_samples
-                .get(&(action.clone(), parameter.clone()))
-                .is_some_and(|samples| {
-                    samples.source == value
-                        && samples.entry == entry
-                        && self
-                            .state
-                            .as_ref()
-                            .is_some_and(|state| samples.asset == state.asset.id)
-                })
-                || self
-                    .curve_sample_requested_source
-                    .get(&(action.clone(), parameter.clone()))
-                    .is_some_and(|(asset, requested_entry, points)| {
-                        self.state
-                            .as_ref()
-                            .is_some_and(|state| asset == &state.asset.id)
-                            && requested_entry == &entry
-                            && points == &value
-                    })
-            {
-                continue;
-            }
-            return self.request_curve_samples(&action, parameter, channel, value);
-        }
-        Task::none()
     }
     pub(crate) fn control_release(&mut self, action: String, parameter: String) -> Task<Message> {
         if let Some((drafting, field)) = self.drafting_control() {
@@ -1042,19 +1007,6 @@ pub(crate) fn initial_group_expanded(
         Control::Group { collapsed, .. } => Some(!collapsed),
         _ => None,
     }
-}
-
-/// The reset the group at `path` of `owner`'s controls runs on a photo of `kind` edited through
-/// `target`, through the core's one rule ([`luxforge_core::resolve_group_reset`]).
-pub(super) fn group_reset(
-    owner: &str,
-    controls: &[luxforge_core::Control],
-    path: &[usize],
-    kind: Option<luxforge_core::SourceTag>,
-    target: Option<&luxforge_core::MaskId>,
-) -> Option<luxforge_core::ResetAction> {
-    luxforge_core::resolve_group_reset(owner, at_path(controls, path)?, kind, target)
-        .map(|resolved| resolved.reset.clone())
 }
 
 #[cfg(test)]

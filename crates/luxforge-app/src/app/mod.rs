@@ -766,7 +766,6 @@ impl Editor {
             self.controls_ui.curve_samples.clear();
             self.curve_sample_requested_source.clear();
         }
-        let sample = self.request_visible_curve_samples();
         // Whatever route changed the zoom — the buttons, the field, a script or an API client's
         // `view.set` reaching us through an adopted session — is answered in one place.
         let zoomed = self.zoom_changed(&zoom);
@@ -786,7 +785,7 @@ impl Editor {
         let abandoned = self.close_abandoned_crop();
         // A wake that arrived while a request was in flight is read once it has been answered.
         let synced = self.sync_when_wanted();
-        let task = self.sync_mode(Task::batch([task, sample, rebase, abandoned, synced]));
+        let task = self.sync_mode(Task::batch([task, rebase, abandoned, synced]));
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
@@ -796,6 +795,8 @@ impl Editor {
         if loads.is_some() {
             self.rederive();
         }
+        // A curve is sampled once it is on screen, which the derived tools panel says.
+        let sample = self.request_visible_curve_samples();
         let mut timing = self.loop_timing.get();
         timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
         self.loop_timing.set(timing);
@@ -814,6 +815,7 @@ impl Editor {
             view_request,
             woken,
             loads.unwrap_or_else(Task::none),
+            sample,
         ])
     }
 
@@ -870,6 +872,9 @@ impl Editor {
             preset_refusal: self.gesture_refusal(Starting::Preset),
             gallery_refusal: self.gesture_refusal(Starting::Gallery),
             history_refusal: self.gesture_refusal(Starting::History),
+            // The one editability rule, computed once for every model that reads it; a start's
+            // editable half in `gesture_refusal` asks the same rule.
+            edit_refusal: state::edit_refusal(self.state.as_ref(), &self.session, self.busy),
             draft: self.crop(),
             masks: self.masks.as_ref(),
             selected_mask: self.selected_mask.as_ref(),

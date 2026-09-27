@@ -1,11 +1,12 @@
 //! The one refusal every start asks ([`Editor::gesture_refusal`]): which halves each start answers
 //! to, and that a refused start writes its reason to the status bar and sends nothing.
 use super::{
-    gesture::{IN_FLIGHT, NO_PHOTOGRAPH, NOT_CURRENT, Starting},
+    gesture::Starting,
     message::{CropMessage, PointerMessage},
     testing::{attach_log, boot, entry, finish, logged, open_crop, opened, picking, sample_mode},
     *,
 };
+use crate::state::{IN_FLIGHT, NO_PHOTOGRAPH, NOT_CURRENT};
 use luxforge_core::HistorySelection;
 use serde_json::Map;
 
