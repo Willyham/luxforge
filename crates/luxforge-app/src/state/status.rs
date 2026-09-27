@@ -164,6 +164,30 @@ pub(crate) fn showing(sequence: u64, label: &str) -> String {
 /// While Compare holds the Original on screen.
 pub(crate) const COMPARING: &str = "Comparing with the original";
 
+/// What the status bar says while a mask gesture is open in Mask mode: the mode, the mask, the
+/// component and how the gesture becomes history. A shape is one draft that Apply or Enter commits
+/// as one entry — a pointer release only lets go of the handle — while a brush commits every stroke
+/// on its own release. `painting` is `None` for a shape, and for a brush whether its stroke is down.
+pub(crate) fn mask_gesture(
+    names: &crate::state::canvas::GestureNames,
+    painting: Option<bool>,
+) -> String {
+    let (mask, component) = (&names.mask, &names.component);
+    match painting {
+        None => format!(
+            "Mask mode \u{b7} {mask} \u{b7} {component} draft \u{b7} Apply or Enter commits one entry"
+        ),
+        Some(true) => {
+            format!(
+                "Mask mode \u{b7} {mask} \u{b7} {component} painting \u{b7} each stroke is one entry"
+            )
+        }
+        Some(false) => format!(
+            "Mask mode \u{b7} {mask} \u{b7} {component} \u{b7} press to paint \u{b7} each stroke is one entry"
+        ),
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StatusBarModel {
     pub(crate) message: String,
@@ -420,5 +444,32 @@ mod tests {
             Happened::between(Some(&opened), &other, false),
             Some(Happened::Opened { .. })
         ));
+    }
+
+    /// A mask gesture's line names the mode, the mask and the component, and says how the gesture
+    /// becomes history: a shape on Apply or Enter, a brush one entry per stroke.
+    #[test]
+    fn a_mask_gestures_line_names_the_mask_and_how_it_commits() {
+        let names = crate::state::canvas::GestureNames {
+            mask: "Face".into(),
+            component: "Radial 1".into(),
+            mode: "Add",
+        };
+        assert_eq!(
+            mask_gesture(&names, None),
+            "Mask mode \u{b7} Face \u{b7} Radial 1 draft \u{b7} Apply or Enter commits one entry"
+        );
+        let brush = crate::state::canvas::GestureNames {
+            component: "Brush 1".into(),
+            ..names
+        };
+        assert_eq!(
+            mask_gesture(&brush, Some(true)),
+            "Mask mode \u{b7} Face \u{b7} Brush 1 painting \u{b7} each stroke is one entry"
+        );
+        assert_eq!(
+            mask_gesture(&brush, Some(false)),
+            "Mask mode \u{b7} Face \u{b7} Brush 1 \u{b7} press to paint \u{b7} each stroke is one entry"
+        );
     }
 }

@@ -1,11 +1,15 @@
 //! The canvas model: the photograph, the mode strip, the draft bar and the notices over it.
-use crate::state::{
-    Inputs,
-    number::number_text,
-    tools::{applies, canvas_pick, pick_reachable},
+use crate::{
+    mask_draft::{MaskDraft, MaskDraftOp},
+    state::{
+        Inputs,
+        number::{NumberSpec, number_text},
+        tools::{applies, canvas_pick, pick_reachable},
+    },
 };
 use luxforge_core::{
-    Availability, CanvasInteraction, ErrorKind, MASK_MODE, ModuleDescriptor, POINTER_MODE, Zoom,
+    Availability, CanvasInteraction, ComponentMode, ErrorKind, MASK_MODE, ModuleDescriptor,
+    POINTER_MODE, Zoom, mask::commands::MaskListing,
 };
 
 /// How the photograph is sized on the surface. The view never reads the session itself.
@@ -61,13 +65,83 @@ pub(crate) struct ModeEntry {
 /// one draft lifecycle's, whichever gesture is open, since a client holds only one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DraftBar {
+    /// The lead, in the accent: the crop mode's title, or the name of the mask a gesture edits.
     pub(crate) title: String,
+    /// What a mask gesture edits, after the lead: its component and that component's mode,
+    /// `Radial 1 · Add`. `None` for the crop, whose title already says what it edits.
+    pub(crate) subject: Option<String>,
+    /// The component kind the subject names, whose icon the view draws beside it.
+    pub(crate) kind: Option<&'static str>,
     /// One line of the draft's own numbers, e.g. `300 × 200 px · 0°`.
     pub(crate) readout: String,
     pub(crate) can_apply: bool,
     pub(crate) conflicted: bool,
     /// Why Apply is refused, when it is; the bar shows it in place of nothing.
     pub(crate) apply_reason: Option<String>,
+    /// The gesture commits each stroke on release, so the bar ends it with Done — put the brush
+    /// down — rather than with an Apply that would have nothing left to commit.
+    pub(crate) done: bool,
+}
+
+/// What an open mask gesture is about, in the words the draft bar and the status line both use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GestureNames {
+    /// The mask's name, or `New mask` while the gesture will create one: the host names a mask
+    /// when it is committed, not before.
+    pub(crate) mask: String,
+    /// The component's name, or its kind's title while the gesture will add one, for the same
+    /// reason: a component's ordinal is spent by the commit that makes it.
+    pub(crate) component: String,
+    /// The component's mode: the one the gesture will add it with, or the stored one it has.
+    pub(crate) mode: &'static str,
+}
+
+/// Name what the open gesture edits from the masks the listing holds. A mask or component the
+/// listing does not hold yet (a create in flight, a listing a step behind) is named by what the
+/// gesture will make rather than left blank.
+pub(crate) fn gesture_names(draft: &MaskDraft, listing: Option<&MaskListing>) -> GestureNames {
+    let report = draft.mask.as_ref().and_then(|id| {
+        listing.and_then(|listing| listing.masks.iter().find(|report| &report.id == id))
+    });
+    let component = draft.component.as_ref().and_then(|id| {
+        report.and_then(|report| {
+            report
+                .components
+                .iter()
+                .find(|component| &component.id == id)
+        })
+    });
+    let mode = match (draft.op, component) {
+        (MaskDraftOp::Add(mode), _) => mode,
+        (_, Some(component)) => component.mode,
+        // A mask's first component is always an add, which is what a create makes.
+        (MaskDraftOp::Create | MaskDraftOp::Set, None) => ComponentMode::Add,
+    };
+    GestureNames {
+        mask: match (&draft.mask, report) {
+            (_, Some(report)) => report.name.clone(),
+            (None, None) => MaskDraftOp::Create.label().to_owned(),
+            (Some(_), None) => "Mask".to_owned(),
+        },
+        component: component
+            .map(|component| component.name.clone())
+            .unwrap_or_else(|| luxforge_core::mask::kind_title(draft.kind())),
+        mode: MaskDraftOp::Add(mode).label(),
+    }
+}
+
+/// One declared number of an open mask gesture as its field shows it: to the precision the
+/// commit's own parameter declares, with a true minus sign.
+fn declared_number(method: Option<&str>, name: &str, value: f64) -> String {
+    let text = method
+        .and_then(luxforge_core::mask::commands::find)
+        .and_then(|command| command.action.parameter(name))
+        .and_then(NumberSpec::of)
+        .map_or_else(|| number_text(value), |spec| spec.format(value));
+    match text.strip_prefix('-') {
+        Some(magnitude) => format!("\u{2212}{magnitude}"),
+        None => text,
+    }
 }
 
 /// A notice's tone: whether it only says what happened, needs a decision, or reports a failure.
@@ -258,17 +332,11 @@ fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
 /// The bar over the open mask shape gesture or crop draft: its title, its own numbers, and whether
 /// Apply can run, which is the app's one release refusal and never a rule of the bar's own.
 fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
-    let (title, readout) = match (inputs.mask_draft, inputs.draft) {
-        (Some(draft), _) => (
-            format!("{} · {}", draft.op.label(), draft.kind()),
-            draft
-                .values()
-                .into_iter()
-                .map(|(name, value)| format!("{name} {value:.3}"))
-                .collect::<Vec<_>>()
-                .join(" · "),
-        ),
-        (None, Some(draft)) => (
+    if let Some(draft) = inputs.mask_draft {
+        return Some(mask_draft_bar(inputs, draft));
+    }
+    let (title, readout) = match inputs.draft {
+        Some(draft) => (
             inputs
                 .modules
                 .iter()
@@ -287,15 +355,37 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
                 Err(error) => error.detail.clone(),
             },
         ),
-        (None, None) => return None,
+        None => return None,
     };
     Some(DraftBar {
         title,
+        subject: None,
+        kind: None,
         readout,
         can_apply: inputs.apply_refusal.is_none(),
         conflicted: inputs.gesture_conflicted,
         apply_reason: inputs.apply_refusal.clone(),
+        done: false,
     })
+}
+
+/// The bar over an open mask gesture: the mask in the accent, the component and its mode beside its
+/// kind's icon, then the kind's own readout. A painted gesture ends with Done, because each stroke
+/// already committed on release; its Apply refusal is not stated, because it offers no Apply.
+fn mask_draft_bar(inputs: &Inputs<'_>, draft: &MaskDraft) -> DraftBar {
+    let names = gesture_names(draft, inputs.masks);
+    let method = draft.method();
+    let done = draft.paints();
+    DraftBar {
+        title: names.mask,
+        subject: Some(format!("{} \u{b7} {}", names.component, names.mode)),
+        kind: Some(draft.kind()),
+        readout: draft.readout(&mut |name, value| declared_number(method, name, value)),
+        can_apply: done || inputs.apply_refusal.is_none(),
+        conflicted: inputs.gesture_conflicted,
+        apply_reason: inputs.apply_refusal.clone().filter(|_| !done),
+        done,
+    }
 }
 
 /// The cards over the top of the canvas. Each one names its cause and carries only the actions the

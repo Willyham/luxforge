@@ -2313,6 +2313,8 @@ mod tests {
         assert_eq!(bar.title, "Crop");
         assert_eq!(bar.readout, "480 × 320 px · 0°");
         assert!(bar.can_apply && bar.apply_reason.is_none());
+        // The crop's title says what it edits, and it ends with Cancel and Apply.
+        assert_eq!((bar.subject, bar.kind, bar.done), (None, None, false));
 
         // The bar decides nothing itself: Apply reads the app's one release refusal, whatever it
         // is, conflicted or not.
@@ -2333,6 +2335,124 @@ mod tests {
             bar.apply_reason.as_deref(),
             Some("Waiting for the last request")
         );
+    }
+
+    /// One mask, `Face`, holding a radial `Radial 1` in subtract mode after an add, and a brush.
+    fn face() -> (MaskListing, MaskId, ComponentId, ComponentId) {
+        use luxforge_core::mask::commands::{ComponentReport, MaskReport};
+        let (mask, radial, brush) = (MaskId::new(), ComponentId::new(), ComponentId::new());
+        let component = |id: &ComponentId, index, name: &str, mode, kind: &str| ComponentReport {
+            id: id.clone(),
+            index,
+            name: name.into(),
+            mode,
+            invert: false,
+            kind: kind.into(),
+            payload: json!({}),
+            available: true,
+        };
+        let listing = MaskListing {
+            entry_id: EntryId::new(),
+            masks: vec![MaskReport {
+                id: mask.clone(),
+                index: 0,
+                name: "Face".into(),
+                amount: 100.0,
+                invert: false,
+                components: vec![
+                    component(
+                        &ComponentId::new(),
+                        0,
+                        "Linear 1",
+                        ComponentMode::Add,
+                        "linear",
+                    ),
+                    component(&radial, 1, "Radial 1", ComponentMode::Subtract, "radial"),
+                    component(&brush, 2, "Brush 1", ComponentMode::Add, "brush"),
+                ],
+                layers: Vec::new(),
+            }],
+        };
+        (listing, mask, radial, brush)
+    }
+
+    /// A mask gesture's bar leads with the mask, names the component and its mode beside its kind,
+    /// and reads out the kind's own numbers to their declared precision with a true minus sign.
+    #[test]
+    fn a_mask_gestures_bar_names_the_mask_the_component_and_its_mode() {
+        use crate::mask_draft::{BRUSH, LINEAR, MaskDraft, NEUTRAL_BRUSH, RADIAL};
+        let (listing, mask, radial, brush) = face();
+        let mut scene = Scene::new(Vec::new()).opened(Vec::new());
+        scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
+        scene.masks = Some(listing);
+        scene.selected_mask = Some(mask.clone());
+
+        // Adding a radial to Face: the component has no name until the commit spends its
+        // ordinal, so it is named by its kind.
+        let mut adding = MaskDraft::adding(mask.clone(), RADIAL, ComponentMode::Add, NEUTRAL_BRUSH)
+            .expect("a drawn kind");
+        for (name, value) in [
+            ("radius_x", 0.18),
+            ("radius_y", 0.24),
+            ("angle", -12.0),
+            ("feather", 60.0),
+        ] {
+            assert!(adding.set_field(name, value), "{name}");
+        }
+        scene.mask_draft = Some(adding);
+        let bar = scene.derive().canvas.draft_bar.expect("an open gesture");
+        assert_eq!(bar.title, "Face");
+        assert_eq!(bar.subject.as_deref(), Some("Radial · Add"));
+        assert_eq!(bar.kind, Some(RADIAL));
+        assert_eq!(
+            bar.readout,
+            "0.1800 × 0.2400 · \u{2212}12.00° · feather 60.0"
+        );
+        assert!(bar.can_apply && !bar.done);
+
+        // Editing the stored Radial 1 names it, with the mode it holds.
+        scene.mask_draft = Some(
+            MaskDraft::editing(
+                mask.clone(),
+                radial,
+                RADIAL,
+                &json!(crate::mask_draft::NEUTRAL_RADIAL),
+                NEUTRAL_BRUSH,
+            )
+            .expect("a drawn kind"),
+        );
+        let bar = scene.derive().canvas.draft_bar.expect("an open gesture");
+        assert_eq!(
+            (bar.title.as_str(), bar.subject.as_deref()),
+            ("Face", Some("Radial 1 · Subtract"))
+        );
+
+        // A new mask has no name until it is committed; a linear reads out its axis.
+        let mut creating = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH).expect("a drawn kind");
+        creating.sweep((0.1, 0.92), (0.14, 0.38));
+        creating.end();
+        scene.mask_draft = Some(creating);
+        let bar = scene.derive().canvas.draft_bar.expect("an open gesture");
+        assert_eq!(bar.title, "New mask");
+        assert_eq!(bar.subject.as_deref(), Some("Linear · Add"));
+        assert_eq!(bar.readout, "0.1000, 0.9200 → 0.1400, 0.3800");
+
+        // A brush ends with Done: each stroke committed on release, so the app's Apply refusal for
+        // an armed brush is not the bar's to state. Idle, it reads the brush the next stroke takes;
+        // with the stroke down, that it is painting.
+        scene.apply_refusal = Some("Paint a stroke on the photograph first".into());
+        let mut painting = MaskDraft::editing(mask, brush, BRUSH, &Value::Null, NEUTRAL_BRUSH)
+            .expect("a drawn kind");
+        scene.mask_draft = Some(painting.clone());
+        let bar = scene.derive().canvas.draft_bar.expect("an open gesture");
+        assert_eq!(bar.subject.as_deref(), Some("Brush 1 · Add"));
+        assert!(bar.done && bar.can_apply && bar.apply_reason.is_none());
+        assert!(bar.readout.starts_with("size "), "{}", bar.readout);
+        assert!(bar.readout.contains(" · feather "), "{}", bar.readout);
+        painting.paint_begin((0.5, 0.5));
+        scene.mask_draft = Some(painting);
+        let bar = scene.derive().canvas.draft_bar.expect("an open gesture");
+        assert_eq!(bar.readout, "painting");
     }
 
     #[test]

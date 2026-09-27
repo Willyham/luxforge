@@ -762,11 +762,27 @@ impl Editor {
 
     /// Which mask's coverage the next preview job should fill, and for which component. `None`
     /// leaves the frame without a grid, which is what every request outside Mask mode asks for.
+    /// It follows the overlay the canvas draws now, which an open shape gesture may show of its own
+    /// accord ([`Editor::effective_mask_overlay`]).
     pub(crate) fn mask_overlay_request(&self) -> Option<luxforge_core::MaskOverlayRequest> {
-        if self.session.workspace.mask_overlay == MaskOverlayMode::Off || !self.mask_mode_active() {
+        self.overlay_request(self.effective_mask_overlay(), self.overlay_gesture_mask())
+    }
+
+    /// The request the first frame after the open gesture ends will carry: the setting's own, with
+    /// nothing the gesture shows of its own accord. A scripted Apply or Cancel waits on that frame.
+    pub(crate) fn settled_mask_overlay_request(&self) -> Option<luxforge_core::MaskOverlayRequest> {
+        self.overlay_request(self.session.workspace.mask_overlay, None)
+    }
+
+    fn overlay_request(
+        &self,
+        mode: MaskOverlayMode,
+        gesture_mask: Option<&MaskId>,
+    ) -> Option<luxforge_core::MaskOverlayRequest> {
+        if mode == MaskOverlayMode::Off || !self.mask_mode_active() {
             return None;
         }
-        let mask = self.selected_mask.clone()?;
+        let mask = gesture_mask.or(self.selected_mask.as_ref())?.clone();
         if self.hidden_masks.contains(&mask) {
             return None;
         }
@@ -785,6 +801,80 @@ impl Editor {
             whole_cells_w,
             whole_cells_h,
         })
+    }
+
+    // ---- what the canvas shows while a gesture is open -----------------------------------------
+
+    /// The overlay the canvas draws now. It is the person's setting, except that while a shape
+    /// gesture is open on a mask that exists an overlay set to `off` shows the tint, so no handle is
+    /// ever dragged blind; the setting returns when the gesture ends. This is view state only: the
+    /// stored setting is not changed and nothing is sent. A setting that already shows the mask —
+    /// the tint, or either view on black — is kept, because it is already what the person chose to
+    /// see. A brush is not a shape: the path it paints is its own indicator. A gesture creating a
+    /// mask is not either, for now: the mask it draws has no identity until it is committed, so
+    /// there is no mask to ask a grid of.
+    pub(crate) fn effective_mask_overlay(&self) -> MaskOverlayMode {
+        if self.mask_overlay_forced() {
+            MaskOverlayMode::Tint
+        } else {
+            self.session.workspace.mask_overlay
+        }
+    }
+
+    /// The open gesture is showing the tint over a setting of `off`.
+    pub(crate) fn mask_overlay_forced(&self) -> bool {
+        self.session.workspace.mask_overlay == MaskOverlayMode::Off
+            && self.overlay_gesture_mask().is_some()
+    }
+
+    /// The mask an open shape gesture edits, when it edits one that exists.
+    fn overlay_gesture_mask(&self) -> Option<&MaskId> {
+        self.mask_gesture()
+            .map(|gesture| &gesture.shape)
+            .filter(|shape| !shape.paints())
+            .and_then(|shape| shape.mask.as_ref())
+    }
+
+    /// The overlay as a captured frame reports it: the setting, what the canvas draws, and whether
+    /// the open gesture is what made them differ.
+    pub(crate) fn mask_overlay_summary(&self) -> Value {
+        json!({
+            "setting": self.session.workspace.mask_overlay.as_str(),
+            "effective": self.effective_mask_overlay().as_str(),
+            "forced": self.mask_overlay_forced(),
+        })
+    }
+
+    /// A tint the gesture showed of its own accord was refused: the step waiting for its texture is
+    /// captured without it, and fails nothing.
+    fn overlay_forced_absent(&mut self) {
+        self.settle_step(Settle::MaskOverlay);
+        if let Some(evidence) = &mut self.evidence {
+            evidence.capture_overlay = false;
+        }
+    }
+
+    /// The status line for `shape` in Mask mode, naming its mask and component as the draft bar does.
+    fn mask_gesture_line(&self, shape: &MaskDraft) -> String {
+        let names = crate::state::canvas::gesture_names(shape, self.masks.as_ref());
+        crate::state::status::mask_gesture(
+            &names,
+            shape.brush().map(crate::mask_draft::BrushStroke::painting),
+        )
+    }
+
+    /// What the status line says as a frame lands while a mask gesture is open in Mask mode: the
+    /// gesture's own line for a shape, and for a brush while its stroke is down. Between strokes a
+    /// brush's frames are the strokes it committed, and the line says what they committed.
+    pub(crate) fn mask_gesture_status(&self) -> Option<String> {
+        if !self.mask_mode_active() {
+            return None;
+        }
+        let shape = &self.mask_gesture()?.shape;
+        if shape.brush().is_some_and(|stroke| !stroke.painting()) {
+            return None;
+        }
+        Some(self.mask_gesture_line(shape))
     }
 
     // ---- the shape gesture ---------------------------------------------------------------------
@@ -938,7 +1028,7 @@ impl Editor {
             "mask_draft_begin",
             json!({"method":method,"summary":shape.summary()}),
         );
-        self.status = format!("{}…", shape.op.label());
+        self.status = self.mask_gesture_line(&shape);
         // The mode follows the gesture however it was started, so the strip shows Mask selected.
         if !self.mask_mode_active() {
             self.mode_sync = Some(MASK_MODE.to_owned());
@@ -1238,16 +1328,15 @@ impl Editor {
             return;
         };
         let workspace = &self.session.workspace;
-        let Some(rgba) =
-            mask_overlay::paint(&grid, workspace.mask_overlay, workspace.mask_overlay_colour)
-        else {
+        let mode = self.effective_mask_overlay();
+        let Some(rgba) = mask_overlay::paint(&grid, mode, workspace.mask_overlay_colour) else {
             self.presenter.clear_coverage();
             return;
         };
         let (width, height) = (grid.cells_w, grid.cells_h);
         self.event(
             "mask_overlay",
-            json!({"generation":generation,"mask":grid.mask.as_str(),"component":grid.component.as_ref().map(luxforge_core::ComponentId::as_str),"cells":[width,height],"mode":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
+            json!({"generation":generation,"mask":grid.mask.as_str(),"component":grid.component.as_ref().map(luxforge_core::ComponentId::as_str),"cells":[width,height],"mode":mode.as_str(),"setting":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
         );
         let shown = match self
             .region_raster
@@ -1293,11 +1382,19 @@ impl Editor {
     pub(crate) fn mask_overlay_unavailable(&mut self, generation: u64, reason: &str) {
         self.mask_overlay_pending = None;
         self.presenter.clear_coverage();
+        let forced = self.mask_overlay_forced();
         self.event(
             "mask_overlay_absent",
-            json!({"generation":generation,"detail":reason}),
+            json!({"generation":generation,"detail":reason,"forced":forced}),
         );
-        self.mask_overlay_refused_step(reason);
+        // A tint the gesture showed of its own accord, over a setting of `off`, is not something
+        // the person or the script asked for, so its refusal fails nothing: the frame is captured
+        // as it is, without the tint, and the reason is in the log.
+        if forced {
+            self.overlay_forced_absent();
+        } else {
+            self.mask_overlay_refused_step(reason);
+        }
     }
 
     /// The mask overlay to draw over the photograph: the one on the presenter, when it belongs to
