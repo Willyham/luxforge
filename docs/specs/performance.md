@@ -1850,6 +1850,20 @@ measured. Startup attribution, GPU texture transfer, GPU
 execution and SIMD/assembly remain open; CPU RGBA publication already writes directly into the
 frame owner, and no additional savings are assigned to it.
 
+### JPEG export
+
+Release `luxforge-json` at `4bb339b`, native M4 Pro, 27 September 2026, warm file cache, driven over its line-delimited JSON by a throwaway script: `catalog.import`, the preparation job, one `edit.set-basic` committing `exposure: 0.3`, then five exports of that entry back to back, each timed from sending `export.jpeg` to `export.read` first answering `ready`, polled every 20 ms. Five samples give a median and a maximum, not a p95. One-minute load 3.9 to 5.2 at each start, with other sessions' recent work on the host (5- and 15-minute loads 9.0 to 9.8 and 16.6 to 17.2). No RAW export needed a preparation: the committed edit had already developed the entry's settings.
+
+| Source | Export wall p50 / max of 5 (ms) | Output | Dimensions | Process peak RSS, prepare only → prepare and one export |
+| --- | ---: | ---: | --- | ---: |
+| 24 MP JPEG (generated) | 158 / 176 | 688 KiB | 6000 × 4000 | 173 → 285 MiB (+112) |
+| 60 MP JPEG (generated) | 363 / 386 | 1.63 MiB | 10000 × 6000 | 416 → 661 MiB (+245) |
+| Nikon Z6 NEF | 220 / 230 | 2.21 MiB | 4024 × 6048 | 524 → 525 MiB (+1) |
+| Fujifilm X100VI RAF | 331 / 338 | 3.92 MiB | 7728 × 5152 | 889 → 897 MiB (+8) |
+| DJI Air 2S DNG | 243 / 251 | 6.08 MiB | 5464 × 3640 | 450 → 458 MiB (+8) |
+
+Encoding alone, measured separately with the pinned `image` encoder, is 119 ms at 24 MP and 293 ms at 60 MP ([export design](../design/export.md#proposals)), so it is most of an export's time. The peak figures are `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once, so each difference is how far one export raises the process's peak, not the export's own allocation: a JPEG export's exact frame lands above the decoded source's peak, while a RAW export's frame fits under the peak RAW development already reached.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
