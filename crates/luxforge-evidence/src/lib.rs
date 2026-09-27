@@ -23,6 +23,8 @@ pub const MAX_SCRIPT_STEPS: usize = 64;
 
 /// The longest one `wait` step may idle, so a script cannot spend its deadline doing nothing.
 pub const MAX_WAIT_MS: u64 = 10_000;
+/// The one named key a `key` step presses; every other is a single letter or digit.
+pub const KEY_ESCAPE: &str = "Escape";
 
 /// The longest gap a scripted double-click may leave between its release and its second press.
 /// Iced classifies two presses as a double-click only within 300 ms of each other, and the first
@@ -141,6 +143,11 @@ pub enum Step {
     Wait {
         ms: u64,
     },
+    /// One key pressed with no text field focused, answered by the desktop's own key table exactly
+    /// as the keyboard is: one letter or digit (`w`), or `Escape`.
+    Key {
+        key: String,
+    },
     /// Scroll the percent-zoom surface to a fraction of its scrollable range on each axis, as a
     /// pan does, and capture once the offset it reports has reached the owner's session.
     Pan {
@@ -242,6 +249,18 @@ impl Step {
             Self::Pan { x, y } => {
                 unit(f64::from(*x), "pan x")?;
                 unit(f64::from(*y), "pan y")
+            }
+            Self::Key { key } => {
+                let mut characters = key.chars();
+                let single = characters.next().is_some_and(char::is_alphanumeric)
+                    && characters.next().is_none();
+                if single || key == KEY_ESCAPE {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "key takes one letter or digit, or {KEY_ESCAPE}, not {key:?}"
+                    ))
+                }
             }
             Self::Capability(step) => step.validate(),
             Self::Mask(step) => step.validate(),

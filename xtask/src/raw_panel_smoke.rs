@@ -1,16 +1,19 @@
-//! The `raw-panel` smoke scenario: the RAW section as the tools panel draws it for a real RAW
-//! source, with Basic collapsed so the RAW section sits under the histogram; a Custom temperature
-//! drag left open, whose drafted frame approximates the white balance on the developed planes and
-//! is labelled so, then released, which redevelops the mosaic and lands the exact frame, at Fit
-//! and again at 100%. At 100%, a held-draft pause checks the exact visible-region refinement and
-//! captures full-detail approximate pixels for white-balance accuracy against the release.
-//! Both drags keep the tint in force (the first, from As shot, the camera's as-shot
-//! tint); and a double-click reset on each of the three sliders after the committed
-//! drag the first press makes: exposure back to 0 EV, and the custom temperature and tint back to
-//! As shot, whose fields then show the camera's as-shot equivalent. The RAW band carries no edited
-//! dot on the untouched photograph and again once the resets leave As shot at 0 EV; and a crop drafted on
-//! the RAW's whole input stage, straightened by 7°, applied at Fit, read at 100% and replaced through
-//! the API's `crop-fit`, each commit checked to be the picture on screen.
+//! The `raw-panel` smoke scenario: the Basic section as the tools panel draws it for a real RAW
+//! source, in place of a RAW section, which is never listed. Its White balance group is the RAW
+//! development's on the global target: a Temperature drag in kelvin left open, whose drafted frame
+//! approximates the white balance on the developed planes and is labelled so, then released,
+//! which redevelops the mosaic and lands the exact frame, at Fit and again at 100%. At 100%, a
+//! held-draft pause checks the exact visible-region refinement and captures full-detail
+//! approximate pixels for white-balance accuracy against the release. Both drags keep the tint in
+//! force (the first, from As shot, the camera's as-shot tint); and a double-click reset on
+//! Temperature, Tint and Exposure after the committed jump the first press makes: Temperature and
+//! Tint back to As shot, labelled `Reset White balance`, whose fields then show the camera's
+//! as-shot equivalent, and Exposure back to 0 EV. Basic's band carries no edited dot on the
+//! untouched photograph, one once a custom white balance is committed, and none again once the
+//! resets leave As shot at 0 EV; `W` enters the RAW development's sensor pick, which Basic's
+//! Neutral picker shows selected, and Escape leaves it; and a crop drafted on the RAW's whole
+//! input stage, straightened by 7°, applied at Fit, read at 100% and replaced through the API's
+//! `crop-fit`, each commit checked to be the picture on screen.
 //!
 //! No RAW photograph is checked in (see `fixtures/README.md`), so this scenario is outside the
 //! rendered tier of [`crate::smoke::SCENARIOS`] and takes its source from `--source`: an owner or raw.pixls.us file
@@ -24,17 +27,23 @@ use luxforge_core::CROP_EFFECT;
 use luxforge_evidence::{self as script, DoubleClickStep, DraftStep, SliderStep, ViewStep};
 
 pub const SCENARIO: &str = "raw-panel";
+/// The RAW development's module, whose section is never listed and whose sensor pick `W` enters,
+/// and its effect, whose layer the checks read.
 const RAW_MODULE: &str = "luxforge.raw";
 const RAW_EFFECT: &str = "luxforge.raw";
 const BASIC_MODULE: &str = "luxforge.basic";
-const SET_TEMPERATURE: &str = "set-raw-temperature";
+/// The action Basic's Temperature and Tint send on a RAW photo's global target, and its fields.
+const SET_RAW: &str = "set-raw";
+const TEMPERATURE: &str = "temperature";
+const TINT: &str = "tint";
 
 /// The steps the checks read by name, apart from the drags, double-clicks and readouts, whose
 /// tables carry their own. The plan and the checks share each name, so a misspelt one does not
 /// build: no RAW is checked in, so no recorded run would catch it.
 mod names {
     pub const OPENED: &str = "opened";
-    pub const BASIC_COLLAPSED: &str = "basic-collapsed";
+    pub const SENSOR_PICK: &str = "sensor-pick";
+    pub const PICK_LEFT: &str = "pick-left";
     pub const CROP_STARTED: &str = "crop-started";
     pub const CROP_STRAIGHTENED: &str = "crop-straightened";
     pub const CROP_APPLIED: &str = "crop-applied";
@@ -92,40 +101,32 @@ struct DoubleClick {
     shows: Option<&'static str>,
 }
 
-const AS_SHOT: &str = "use-as-shot-wb";
-const AS_SHOT_LABEL: &str = "As shot white balance";
+/// As shot: the reset the RAW variants of Temperature and Tint declare, and its history label.
+const AS_SHOT: &str = SET_RAW;
+const AS_SHOT_LABEL: &str = "Reset White balance";
 
-const DOUBLE_CLICKS: [DoubleClick; 4] = [
+const DOUBLE_CLICKS: [DoubleClick; 3] = [
+    // Temperature and Tint reset to the camera's own white balance, as Lightroom's Temp and Tint
+    // do.
     DoubleClick {
-        step: "raw-exposure-reset",
-        action: "set-raw-exposure",
-        parameter: "ev",
-        value: 0.35,
-        reset: "set-raw-exposure",
-        shows: Some("0.00"),
-    },
-    // Custom temperature and tint reset to the camera's own white balance, as Lightroom's Temp and
-    // Tint do.
-    DoubleClick {
-        step: "raw-temperature-reset",
-        action: "set-raw-temperature",
-        parameter: "kelvin",
+        step: "temperature-reset",
+        action: SET_RAW,
+        parameter: TEMPERATURE,
         value: 5000.0,
         reset: AS_SHOT,
         shows: None,
     },
     DoubleClick {
-        step: "raw-tint-reset",
-        action: "set-raw-tint",
-        parameter: "tint",
+        step: "tint-reset",
+        action: SET_RAW,
+        parameter: TINT,
         value: 12.0,
         reset: AS_SHOT,
         shows: None,
     },
-    // Basic's own Exposure on the same photograph, for comparison: its commit does not wait for a
-    // redevelopment.
+    // Exposure is Basic's on every kind: its commit does not wait for a redevelopment.
     DoubleClick {
-        step: "basic-exposure-reset",
+        step: "exposure-reset",
         action: "set-basic",
         parameter: "exposure",
         value: 0.4,
@@ -176,29 +177,20 @@ fn crop_steps() -> Vec<Step> {
 }
 
 /// Every frame, in order: the open, then one per step. The expectations here are what each step
-/// commits, what its fields and label show and that the RAW section is on screen; `verify` checks
-/// the rest.
+/// commits, what its fields and label show and that the Basic section is on screen; `verify`
+/// checks the rest.
 pub fn plan(_: &[PathBuf]) -> Plan {
-    let mut steps = vec![
-        Step::opened(names::OPENED),
-        // Collapse Basic, expanded by its own default, so the RAW section above it and the
-        // collapsed bands under it are on screen together.
-        Step::new(
-            names::BASIC_COLLAPSED,
-            script::Step::section(BASIC_MODULE, false),
-        )
-        .collapsed(BASIC_MODULE),
-    ];
+    let mut steps = vec![Step::opened(names::OPENED)];
     for drag in &DRAGS {
         if !drag.fit {
             // 100%, where a frame shows a stage pixel per display pixel and has no proxy.
             steps.push(Step::new("zoom-100", ViewStep::Percent(100.0)));
         }
-        // A Custom temperature drag left open. Its frame is the drafted value approximated on the
-        // planes developed at the committed white balance.
+        // A Temperature drag left open. Its frame is the drafted value approximated on the planes
+        // developed at the committed white balance.
         steps.push(Step::new(
             drag.drag,
-            SliderStep::new(SET_TEMPERATURE, "kelvin", [drag.kelvin]),
+            SliderStep::new(SET_RAW, TEMPERATURE, [drag.kelvin]),
         ));
         if let Some(quiet) = drag.quiet {
             // The shared 120 ms quiet policy must refine the held WB draft without a release.
@@ -209,7 +201,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         steps.push(
             Step::new(
                 drag.release,
-                SliderStep::new(SET_TEMPERATURE, "kelvin", [drag.kelvin]).release(),
+                SliderStep::new(SET_RAW, TEMPERATURE, [drag.kelvin]).release(),
             )
             .commits(1)
             .no_draft(),
@@ -219,7 +211,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             steps.push(Step::new("zoom-fit", ViewStep::Fit));
         }
     }
-    // A double-click on each RAW slider's rail, then on Basic's Exposure. The first press moves the
+    // A double-click on Temperature's, Tint's and Exposure's rails. The first press moves the
     // value, which commits on release; the second press resets the field: two entries.
     steps.extend(DOUBLE_CLICKS.iter().map(|click| {
         let step = Step::new(
@@ -237,14 +229,21 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             None => step.label(AS_SHOT_LABEL),
         }
     }));
+    // Basic's letter enters the RAW development's sensor pick on this photograph's global
+    // target; Escape leaves it for the pointer.
+    steps.push(Step::new(names::SENSOR_PICK, script::Step::key("w")));
+    steps.push(Step::new(
+        names::PICK_LEFT,
+        script::Step::key(script::KEY_ESCAPE),
+    ));
     // A straightened crop drafted, applied and inspected; see `crop_steps`.
     steps.extend(crop_steps());
-    // The tools panel lists the RAW section only for a RAW source, so its section expanded in every
-    // frame is the proof that the source opened as RAW.
+    // Basic's section, expanded in every frame; that its White balance fields are the RAW
+    // development's is `verify`'s proof that the source opened as RAW.
     Plan::new(
         steps
             .into_iter()
-            .map(|step| step.expanded(RAW_MODULE))
+            .map(|step| step.expanded(BASIC_MODULE))
             .collect(),
     )
 }
@@ -368,9 +367,9 @@ fn frame_before<'a>(launch: &'a Checked, step: &str) -> Result<&'a Frame> {
         .ok_or_else(|| format!("No frame comes before step {step:?}").into())
 }
 
-/// What each frame shows beyond its plan, once the plan has held: every frame ready, the drags'
-/// drafted and committed frames, each double-click's events and As shot fields, the RAW band's dot
-/// and the crop on screen.
+/// What each frame shows beyond its plan, once the plan has held: every frame ready with Basic's
+/// section and no RAW section, the drags' drafted and committed frames, each double-click's events
+/// and As shot fields, Basic's dot, the sensor pick `W` enters and the crop on screen.
 pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let mut checks = Vec::new();
@@ -380,6 +379,22 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             state["phase"] == "ready",
             format!("RAW panel step {step:?} is not ready: {}", state["phase"]),
         )?;
+        // One Basic section: the RAW development draws none, and Basic's Temperature and Tint are
+        // its fields, which exist only because the photograph is RAW.
+        ensure(
+            state["expanded"].get(RAW_MODULE).is_none(),
+            format!(
+                "RAW panel step {step:?} lists a RAW section: {}",
+                state["expanded"]
+            ),
+        )?;
+        for parameter in [TEMPERATURE, TINT] {
+            let field = format!("{SET_RAW}.{parameter}");
+            ensure(
+                state["controls"][&field].is_string(),
+                format!("RAW panel step {step:?} shows no {field}"),
+            )?;
+        }
         checks.push(json!({
             "step": step,
             "frame": frame["file"],
@@ -389,12 +404,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             "controls": state["controls"],
         }));
     }
-    // The plan holds Basic collapsed, which a section the frame does not list at all would pass;
-    // that the section is listed, and listed collapsed, is this check's.
-    ensure(
-        launch.at(names::BASIC_COLLAPSED)?.state()["expanded"][BASIC_MODULE] == json!(false),
-        "The Basic section is not listed collapsed once its step has collapsed it",
-    )?;
+    checks.push(white_balance_group(launch.at(names::OPENED)?)?);
     for drag in &DRAGS {
         checks.push(white_balance_drag(launch, drag)?);
     }
@@ -420,9 +430,15 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             ),
         )?;
         let sent = named("field_reset_sent");
+        let preset = if click.shows.is_none() {
+            json!({"white-balance": "as-shot"})
+        } else {
+            json!({ click.parameter: 0.0 })
+        };
         ensure(
             sent.len() == 1
                 && sent[0]["detail"]["action"] == click.reset
+                && sent[0]["detail"]["preset"] == preset
                 && sent[0]["detail"]["field"]
                     == json!({"action": click.action, "parameter": click.parameter})
                 && sent[0]["detail"]["revision"] == json!(before.revision()? + 1),
@@ -457,21 +473,22 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             "shown": shown,
         }));
     }
-    // The RAW development the resets leave, once the last RAW double-click has run: exposure back
-    // at 0 EV and the camera's own white balance, which is the Original's development, so the band
-    // carries no dot again.
+    // The RAW development the white-balance resets leave: the camera's own white balance, which
+    // is the Original's development.
     let last = DOUBLE_CLICKS
         .iter()
-        .rfind(|click| click.action.starts_with("set-raw-"))
-        .ok_or("No double-click resets a RAW field")?;
-    let reset = launch.at(last.step)?;
-    let raw = raw_payload(reset)?;
+        .rfind(|click| click.action == SET_RAW)
+        .ok_or("No double-click resets a RAW white-balance field")?;
+    let as_shot = launch.at(last.step)?;
+    let raw = raw_payload(as_shot)?;
     ensure(
-        raw["exposure_ev"] == json!(0.0) && raw["wb_mode"] == "as-shot",
-        format!("The RAW layer after the three resets is {raw}"),
+        raw["wb_mode"] == "as-shot",
+        format!("The RAW layer after the white-balance resets is {raw}"),
     )?;
-    // The band's dot: none on the untouched photograph, one once a drag has committed a custom
-    // white balance, and none again once the resets leave As shot at 0 EV.
+    let reset = launch.at(DOUBLE_CLICKS[DOUBLE_CLICKS.len() - 1].step)?;
+    // Basic's dot reads every layer its controls edit: none on the untouched photograph, one once
+    // a drag has committed a custom white balance to the RAW development, none again once As shot
+    // is back, and none once Exposure is back at 0 EV too.
     for (frame, dotted, when) in [
         (launch.at(names::OPENED)?, false, "untouched"),
         (
@@ -479,26 +496,90 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             true,
             "after a committed custom temperature",
         ),
+        (as_shot, false, "back at As shot"),
         (reset, false, "back at As shot and 0 EV"),
     ] {
         ensure(
-            frame["state"]["active"][RAW_MODULE] == json!(dotted),
+            frame["state"]["active"][BASIC_MODULE] == json!(dotted),
             format!(
-                "The RAW band's dot is {} {when}, not {dotted}",
-                frame["state"]["active"][RAW_MODULE]
+                "Basic's dot is {} {when}, not {dotted}",
+                frame["state"]["active"][BASIC_MODULE]
             ),
         )?;
         checks.push(
-            json!({"frame": frame["file"], "when": when, "raw_dot": dotted,
+            json!({"frame": frame["file"], "when": when, "basic_dot": dotted,
             "revision": frame["state"]["stack"]["revision"]}),
         );
     }
+    checks.push(sensor_pick(launch)?);
     checks.push(raw_crop(launch)?);
     write_json(
         &launch.evidence.join("raw-panel-checks.json"),
         &json!(checks),
     )?;
     Ok(())
+}
+
+/// Basic's White balance group on this RAW photograph's global target: the same four controls, in
+/// the same order and under the same labels as on a JPEG, each the RAW development's own —
+/// Temperature in kelvin and Tint over `set-raw`, the Neutral picker entering its sensor pick and
+/// As shot sending its As shot.
+fn white_balance_group(frame: &Value) -> Result<Value> {
+    let controls = frame["state"]["section_controls"][BASIC_MODULE]
+        .as_array()
+        .ok_or("The frame records no Basic section controls")?;
+    let start = controls
+        .iter()
+        .position(|control| control["kind"] == "group" && control["label"] == "White balance")
+        .ok_or("The Basic section draws no White balance group")?;
+    let group: Vec<&Value> = controls[start + 1..]
+        .iter()
+        .take_while(|control| control["kind"] != "group")
+        .collect();
+    let expected = [
+        json!({"kind": "number", "label": "Temperature", "action": SET_RAW,
+               "parameter": TEMPERATURE, "unit": "K"}),
+        json!({"kind": "number", "label": "Tint", "action": SET_RAW, "parameter": TINT,
+               "unit": null}),
+        json!({"kind": "picker", "label": "Neutral picker", "mode": RAW_MODULE}),
+        json!({"kind": "action", "label": "As shot", "action": SET_RAW}),
+    ];
+    ensure(
+        group.len() == expected.len() && group.iter().zip(&expected).all(|(a, b)| *a == b),
+        format!("The White balance group on a RAW photograph draws {group:?}"),
+    )?;
+    Ok(json!({"white_balance_group": group}))
+}
+
+/// `W` enters the RAW development's sensor pick: the canvas mode is that module's, and Basic's
+/// Neutral picker, which that pick provides on this photograph's global target, reads selected
+/// under its one letter. Escape returns to the pointer and deselects it.
+fn sensor_pick(launch: &Checked) -> Result<Value> {
+    let entered = &launch.at(names::SENSOR_PICK)?["state"];
+    let picker = &entered["pickers"][RAW_MODULE];
+    ensure(
+        entered["workspace"]["mode"] == RAW_MODULE
+            && picker["selected"] == json!(true)
+            && picker["label"] == "Neutral picker"
+            && picker["shortcut"] == "W",
+        format!(
+            "W did not enter the sensor pick: mode {}, pickers {}",
+            entered["workspace"]["mode"], entered["pickers"]
+        ),
+    )?;
+    let left = &launch.at(names::PICK_LEFT)?["state"];
+    ensure(
+        left["workspace"]["mode"] == luxforge_core::POINTER_MODE
+            && left["pickers"][RAW_MODULE]["selected"] == json!(false),
+        format!(
+            "Escape did not leave the sensor pick: mode {}",
+            left["workspace"]["mode"]
+        ),
+    )?;
+    Ok(json!({
+        "sensor_pick": {"mode": entered["workspace"]["mode"], "picker": picker,
+                        "left_for": left["workspace"]["mode"]}
+    }))
 }
 
 /// Under As shot, a frame's temperature and tint fields show the camera's as-shot equivalent: the
@@ -518,10 +599,7 @@ fn shows_as_shot_equivalent(frame: &Value, field: &str) -> Result<Value> {
     )?;
     let controls = &frame["state"]["controls"];
     let registry = luxforge_core::ModuleRegistry::builtin();
-    for (action, parameter, expected) in [
-        ("set-raw-temperature", "kelvin", kelvin),
-        ("set-raw-tint", "tint", tint),
-    ] {
+    for (action, parameter, expected) in [(SET_RAW, TEMPERATURE, kelvin), (SET_RAW, TINT, tint)] {
         let key = format!("{action}.{parameter}");
         let shown: f64 = controls[&key]
             .as_str()
@@ -540,8 +618,8 @@ fn shows_as_shot_equivalent(frame: &Value, field: &str) -> Result<Value> {
         )?;
     }
     Ok(json!({
-        "kelvin": controls["set-raw-temperature.kelvin"],
-        "tint": controls["set-raw-tint.tint"],
+        "kelvin": controls[format!("{SET_RAW}.{TEMPERATURE}")],
+        "tint": controls[format!("{SET_RAW}.{TINT}")],
         "as_shot_equivalent": [kelvin, tint],
         "as_shot_gains": payload.as_shot_gains,
     }))
@@ -956,8 +1034,8 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         ),
     )?;
     ensure(
-        state["draft"]["action"] == SET_TEMPERATURE
-            && state["draft"]["fields"]["kelvin"] == json!(kelvin)
+        state["draft"]["action"] == SET_RAW
+            && state["draft"]["fields"][TEMPERATURE] == json!(kelvin)
             && !state["displayed_draft_revision"].is_null(),
         format!(
             "The open drag's frame is not its drafted value: {}",
@@ -1137,7 +1215,7 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
             && paused["surface"]["raster"] == paused["preview_dimensions"];
         ensure(
             paused["draft"]["draft_id"] == state["draft"]["draft_id"]
-                && paused["draft"]["fields"]["kelvin"] == json!(kelvin)
+                && paused["draft"]["fields"][TEMPERATURE] == json!(kelvin)
                 && paused["displayed_draft_revision"] == state["displayed_draft_revision"]
                 && paused["stack"]["revision"] == state["stack"]["revision"]
                 && paused["stack"]["displayed"]["entry"] == state["stack"]["displayed"]["entry"]
@@ -1313,8 +1391,8 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
 
 /// A temperature drag keeps the tint in force, as Lightroom's Temp does: the committed payload's
 /// tint is the core's answer for the development before the drag — for the first drag, which starts
-/// from the untouched photograph, the camera's as-shot equivalent — and the Custom tint field reads
-/// the same before the drag, while it is open and once it is released.
+/// from the untouched photograph, the camera's as-shot equivalent — and the Tint field reads the
+/// same before the drag, while it is open and once it is released.
 fn keeps_the_tint_in_force(
     before: &Value,
     drafted: &Value,
@@ -1336,13 +1414,13 @@ fn keeps_the_tint_in_force(
         (committed - in_force).abs() <= 1e-9,
         format!("The temperature drag committed tint {committed}, not the {in_force} in force"),
     )?;
-    let field = "set-raw-tint.tint";
-    let shown = [before, drafted, released].map(|frame| frame["state"]["controls"][field].clone());
+    let field = format!("{SET_RAW}.{TINT}");
+    let shown = [before, drafted, released].map(|frame| frame["state"]["controls"][&field].clone());
     ensure(
         shown
             .iter()
             .all(|text| *text == shown[0] && text.is_string()),
-        format!("The Custom tint field moved during a temperature drag: {shown:?}"),
+        format!("The Tint field moved during a Temperature drag: {shown:?}"),
     )?;
     Ok(json!({
         "from": if prior.wb_mode == luxforge_core::WhiteBalanceMode::AsShot { "as-shot" } else { "custom" },
@@ -1394,13 +1472,13 @@ mod tests {
     /// Each drag stops on a declared temperature and releases that value; the 100% drag first
     /// pauses while still held so the verifier can check full-detail white-balance accuracy.
     #[test]
-    #[ignore = "TASK-006 desktop: the raw-panel scenario moves to Basic's RAW variants (set-raw)"]
     fn each_drag_is_a_declared_temperature_on_its_step_where_the_checks_look() {
         let registry = luxforge_core::ModuleRegistry::builtin();
-        let (_, action) = registry.action(SET_TEMPERATURE).expect("a declared action");
-        let parameter = action.parameter("kelvin").expect("a declared field");
+        let (_, action) = registry.action(SET_RAW).expect("a declared action");
+        let parameter = action.parameter(TEMPERATURE).expect("a declared field");
+        assert_eq!(parameter.unit.as_deref(), Some("K"));
         let luxforge_core::ParameterKind::Number { min, max } = parameter.kind else {
-            panic!("kelvin is a number");
+            panic!("temperature is a number");
         };
         let step = parameter.step.unwrap_or(1.0);
         let plan = plan(&[]);
@@ -1438,7 +1516,7 @@ mod tests {
     }
 
     /// One frame for the open and one per script step, each step named for what it scripts and
-    /// every frame held to the RAW section expanded; and the table's row runs this plan, outside
+    /// every frame held to Basic's section expanded; and the table's row runs this plan, outside
     /// `rendered`. No RAW run can be replayed, so this is what ties the names the checks read to
     /// the steps they mean.
     #[test]
@@ -1457,11 +1535,15 @@ mod tests {
         assert!(plan.steps().iter().all(|step| {
             step.expect()
                 .expanded
-                .contains(&(RAW_MODULE.to_owned(), true))
+                .contains(&(BASIC_MODULE.to_owned(), true))
         }));
         assert_eq!(
-            scripted(&plan, names::BASIC_COLLAPSED),
-            script::Step::section(BASIC_MODULE, false).to_value()
+            scripted(&plan, names::SENSOR_PICK),
+            script::Step::key("w").to_value()
+        );
+        assert_eq!(
+            scripted(&plan, names::PICK_LEFT),
+            script::Step::key(script::KEY_ESCAPE).to_value()
         );
         for click in &DOUBLE_CLICKS {
             assert_eq!(
@@ -1502,37 +1584,52 @@ mod tests {
         assert!(!row.rendered());
     }
 
-    /// The reset a number control declares for its own field, found the way `module.list` lists it.
+    /// The reset a number control declares for its own field — a control of the module, or a
+    /// variant another module's control carries — found the way `module.list` lists it.
     fn declared_reset(
         controls: &[luxforge_core::Control],
         action: &str,
         parameter: &str,
     ) -> Option<Option<luxforge_core::ResetAction>> {
-        controls.iter().find_map(|control| match control {
-            luxforge_core::Control::Group { controls, .. } => {
-                declared_reset(controls, action, parameter)
+        controls.iter().find_map(|control| {
+            match control {
+                luxforge_core::Control::Group { controls, .. } => {
+                    declared_reset(controls, action, parameter)
+                }
+                luxforge_core::Control::Number {
+                    action: declared,
+                    parameter: named,
+                    reset,
+                    ..
+                } if declared == action && named == parameter => Some(reset.clone()),
+                _ => None,
             }
-            luxforge_core::Control::Number {
-                action: declared,
-                parameter: named,
-                reset,
-                ..
-            } if declared == action && named == parameter => Some(reset.clone()),
-            _ => None,
+            .or_else(|| {
+                let variants: Vec<luxforge_core::Control> = control
+                    .variants()
+                    .iter()
+                    .filter_map(|variant| variant.control.as_deref().cloned())
+                    .collect();
+                declared_reset(&variants, action, parameter)
+            })
         })
     }
 
     /// Every double-click names a declared slider field whose one value is a whole request and
     /// lands its first press inside the declared range and off the default. It expects the reset
-    /// the control declares — As shot for the RAW temperature and tint — or, for a control that
-    /// declares none, its own action and the declared default back, formatted as the field shows
-    /// it.
+    /// the control declares — As shot for the RAW variants of Temperature and Tint — or, for a
+    /// control that declares none, its own action and the declared default back, formatted as the
+    /// field shows it.
     #[test]
-    #[ignore = "TASK-006 desktop: the raw-panel scenario moves to Basic's RAW variants (set-raw)"]
     fn every_double_click_is_a_declared_drafting_field_and_its_declared_reset() {
         let registry = luxforge_core::ModuleRegistry::builtin();
+        let every: Vec<luxforge_core::Control> = registry
+            .descriptors()
+            .into_iter()
+            .flat_map(|module| module.controls.clone())
+            .collect();
         for click in &DOUBLE_CLICKS {
-            let (module, action) = registry.action(click.action).expect("a declared action");
+            let (_, action) = registry.action(click.action).expect("a declared action");
             let parameter = action.parameter(click.parameter).expect("a declared field");
             assert!(
                 action.patch || action.parameters.len() == 1,
@@ -1545,13 +1642,15 @@ mod tests {
             assert!((min..=max).contains(&click.value));
             let default = parameter.default.as_ref().and_then(Value::as_f64).unwrap();
             assert_ne!(default, click.value, "the first press moves the value");
-            let reset =
-                declared_reset(&module.descriptor().controls, click.action, click.parameter)
-                    .expect("a number control of the field");
+            let reset = declared_reset(&every, click.action, click.parameter)
+                .expect("a number control of the field");
             match reset {
                 Some(reset) => {
                     assert_eq!(reset.action, click.reset, "{}", click.action);
-                    assert!(reset.preset.is_empty());
+                    assert_eq!(
+                        Value::Object(reset.preset),
+                        json!({"white-balance": "as-shot"})
+                    );
                     assert_eq!(click.shows, None);
                 }
                 None => {

@@ -605,6 +605,44 @@ impl Workspace {
         )
     }
 
+    /// Every section's controls in the order the panel draws them, each with its kind and label
+    /// and what it addresses: a slider's action, parameter and unit, a button's action and a
+    /// picker's mode. The correlated evidence state reads which controls a section shows, and
+    /// where a variant put another module's control in a declared control's place.
+    pub(crate) fn section_controls(&self) -> serde_json::Value {
+        use serde_json::json;
+        serde_json::Value::Object(
+            self.tools
+                .all()
+                .map(|section| {
+                    let controls = control_tree::walk(&section.controls)
+                        .filter_map(|control| match control {
+                            tools::ControlModel::Group(group) => {
+                                Some(json!({"kind": "group", "label": group.label}))
+                            }
+                            tools::ControlModel::Slider(slider) => Some(json!({
+                                "kind": "number", "label": slider.label,
+                                "action": slider.action, "parameter": slider.parameter,
+                                "unit": slider.unit,
+                            })),
+                            tools::ControlModel::Action(action) => Some(json!({
+                                "kind": "action", "label": action.label, "action": action.action,
+                            })),
+                            tools::ControlModel::Picker(picker) => Some(json!({
+                                "kind": "picker", "label": picker.label, "mode": picker.module_id,
+                            })),
+                            _ => None,
+                        })
+                        .collect();
+                    (
+                        section.module_id.clone(),
+                        serde_json::Value::Array(controls),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// Which sections' bands carry the edited dot, for the correlated evidence state.
     pub(crate) fn active(&self) -> serde_json::Value {
         serde_json::Value::Object(
@@ -1785,26 +1823,57 @@ mod tests {
         }
     }
 
-    /// Every RAW recipe holds its development layer from the Original on, so the RAW band's dot
-    /// asks the core whether that layer does anything: an untouched RAW, and one returned to As
-    /// shot at 0 EV whatever custom values its payload kept, has no dot; exposure, a custom
-    /// temperature and tint, a neutral pick and explicit gains each have one.
+    /// Every RAW recipe holds its development layer from the Original on, and on a RAW photo
+    /// Basic's White balance controls edit it, so Basic's dot and its White balance caption ask the
+    /// core whether that layer does anything: an untouched RAW, at As shot, has neither; a custom
+    /// temperature and tint and a neutral pick each light both. No RAW section is drawn at all.
     #[test]
-    fn the_raw_section_is_active_only_when_its_development_is_not_as_shot_at_zero_ev() {
+    fn basics_dot_follows_the_raw_development_its_white_balance_edits() {
         use crate::state::testing::{Z6_AS_SHOT, Z6_CAM_XYZ, raw_source};
         use luxforge_core::{RawPayload, WhiteBalanceMode};
-        let raw = descriptors()
-            .into_iter()
-            .find(|module| module.id == "luxforge.raw")
-            .expect("the registered RAW module");
-        let active = |payload: &RawPayload| {
-            let mut scene = Scene::new(vec![raw.clone()])
+        let modules = descriptors();
+        let basic = "luxforge.basic";
+        let derive = |payload: &RawPayload| {
+            let mut scene = Scene::new(modules.clone())
                 .opened(vec![payload.layer(luxforge_core::LayerId::new())]);
             scene.state.as_mut().expect("an asset").asset.source = raw_source();
-            section(&scene.derive(), &raw.id).active
+            scene.derive()
+        };
+        let white_balance = |workspace: &Workspace| {
+            section(workspace, basic)
+                .controls
+                .iter()
+                .find_map(|control| match control {
+                    ControlModel::Group(group) if group.label == "White balance" => group.state,
+                    _ => None,
+                })
+                .expect("the White balance group's caption")
         };
         let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
-        assert!(!active(&original), "an untouched RAW is not an edit");
+        let untouched = derive(&original);
+        assert!(
+            !section(&untouched, basic).active,
+            "an untouched RAW is not an edit"
+        );
+        assert_eq!(white_balance(&untouched), tools::GroupState::Original);
+        assert_eq!(
+            untouched.tools.all().count(),
+            modules
+                .iter()
+                .filter(|module| module.applies_to(luxforge_core::SourceTag::Raw))
+                .filter(|module| !module.developer && tools::draws_section(module))
+                .count(),
+            "a module with nothing of its own to draw has no section"
+        );
+        // Crop declares no controls but draws the host's crop frame; the RAW development draws
+        // nothing of its own.
+        let listed: Vec<&str> = untouched
+            .tools
+            .all()
+            .map(|section| section.module_id.as_str())
+            .collect();
+        assert!(listed.contains(&"luxforge.crop"), "{listed:?}");
+        assert!(!listed.contains(&"luxforge.raw"), "{listed:?}");
 
         let custom = RawPayload {
             wb_mode: WhiteBalanceMode::Custom,
@@ -1819,8 +1888,185 @@ mod tests {
             ..original.clone()
         };
         for (edit, payload) in [("custom white balance", &custom), ("neutral pick", &picked)] {
-            assert!(active(payload), "{edit} is an edit");
+            let workspace = derive(payload);
+            assert!(section(&workspace, basic).active, "{edit} is an edit");
+            assert_eq!(
+                white_balance(&workspace),
+                tools::GroupState::Custom,
+                "{edit}"
+            );
         }
+    }
+
+    /// Parity: a JPEG, a RAW photo's global target and a RAW photo's mask target derive Basic's
+    /// section with the same labels in the same order. Units and ranges differ only where a
+    /// variant declares them, and every control addresses exactly what the core's one resolver
+    /// answers for that photo and target: the action and parameter a slider edits, the action and
+    /// preset a button runs, the canvas a picker enters and the reset a group header runs. The
+    /// picker answers to the same letter on every kind, and so does the keyboard.
+    #[test]
+    fn a_jpeg_and_a_raw_photo_derive_one_basic_section() {
+        use luxforge_core::{Control, SourceTag, resolve_control, resolve_group_reset};
+        let modules = descriptors();
+        let basic = modules
+            .iter()
+            .find(|module| module.id == "luxforge.basic")
+            .expect("Basic")
+            .clone();
+        let mask = MaskId::new();
+        // (name, kind, the mask the sections are bound to)
+        let targets = [
+            ("JPEG", SourceTag::Jpeg, None),
+            ("RAW global", SourceTag::Raw, None),
+            ("RAW mask", SourceTag::Raw, Some(mask.clone())),
+        ];
+        let mut derived = Vec::new();
+        for (name, kind, target) in &targets {
+            let mut scene = Scene::new(modules.clone()).opened(Vec::new());
+            if *kind == SourceTag::Raw {
+                scene.state.as_mut().expect("an asset").asset.source =
+                    crate::state::testing::raw_source();
+            }
+            if let Some(mask) = target {
+                scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
+                scene.selected_mask = Some(mask.clone());
+            }
+            let workspace = scene.derive();
+            let shortcuts =
+                tools::mode_shortcuts(&scene.modules, scene.state.as_ref(), target.as_ref());
+            let section = section(&workspace, &basic.id).clone();
+            derived.push((*name, *kind, target.clone(), section, shortcuts));
+        }
+        // What one model shows and what it addresses.
+        let shown = |control: &ControlModel| -> (String, String) {
+            match control {
+                ControlModel::Group(group) => ("group".into(), group.label.clone()),
+                ControlModel::Slider(slider) => ("number".into(), slider.label.clone()),
+                ControlModel::Action(action) => ("action".into(), action.label.clone()),
+                ControlModel::Picker(picker) => ("picker".into(), picker.label.clone()),
+                other => panic!("Basic draws no {other:?}"),
+            }
+        };
+        let labels: Vec<Vec<(String, String)>> = derived
+            .iter()
+            .map(|(_, _, _, section, _)| {
+                crate::state::control_tree::walk(&section.controls)
+                    .map(shown)
+                    .collect()
+            })
+            .collect();
+        assert!(labels[0].iter().any(|(_, label)| label == "As shot"));
+        for (at, (name, ..)) in derived.iter().enumerate().skip(1) {
+            assert_eq!(
+                labels[at], labels[0],
+                "{name}: the same labels in the same order"
+            );
+        }
+
+        for (name, kind, target, section, shortcuts) in &derived {
+            let declared: Vec<&Control> =
+                crate::state::control_tree::walk(&basic.controls).collect();
+            let models: Vec<&ControlModel> =
+                crate::state::control_tree::walk(&section.controls).collect();
+            assert_eq!(declared.len(), models.len(), "{name}");
+            let mut variants = 0;
+            for (control, model) in declared.iter().zip(&models) {
+                let resolved = resolve_control(&basic.id, control, Some(*kind), target.as_ref());
+                variants += usize::from(resolved.variant);
+                let provider = modules
+                    .iter()
+                    .find(|module| module.id == resolved.module)
+                    .expect("the providing module");
+                match (resolved.control, model) {
+                    (
+                        Control::Number {
+                            action, parameter, ..
+                        },
+                        ControlModel::Slider(slider),
+                    ) => {
+                        assert_eq!(
+                            (slider.action.as_str(), slider.parameter.as_str()),
+                            (action.as_str(), parameter.as_str()),
+                            "{name}: {}",
+                            slider.label
+                        );
+                        // The unit and range are the providing action's own; they differ from
+                        // the base only where a variant provides the control.
+                        let declared = provider
+                            .action(action)
+                            .and_then(|action| action.parameter(parameter))
+                            .expect("the declared parameter");
+                        assert_eq!(slider.unit, declared.unit, "{name}: {}", slider.label);
+                        let base = match control {
+                            Control::Number {
+                                action, parameter, ..
+                            } => basic.action(action).unwrap().parameter(parameter).unwrap(),
+                            _ => unreachable!(),
+                        };
+                        if !resolved.variant {
+                            assert_eq!(slider.unit, base.unit, "{name}: {}", slider.label);
+                            assert_eq!(
+                                (slider.spec.min, slider.spec.max),
+                                crate::state::number::NumberSpec::of(base)
+                                    .map(|spec| (spec.min, spec.max))
+                                    .unwrap()
+                            );
+                        }
+                    }
+                    (Control::Action { action, preset, .. }, ControlModel::Action(model)) => {
+                        assert_eq!(
+                            (&model.action, &model.preset),
+                            (action, preset),
+                            "{name}: {}",
+                            model.label
+                        );
+                    }
+                    (Control::Picker { .. }, ControlModel::Picker(picker)) => {
+                        assert_eq!(picker.module_id, resolved.module, "{name}: the picker");
+                        // One letter, and the keyboard enters the mode the picker enters.
+                        assert_eq!(picker.shortcut.as_deref(), Some("W"), "{name}");
+                        assert!(
+                            shortcuts.contains(&('W', picker.module_id.clone())),
+                            "{name}: W enters {}: {shortcuts:?}",
+                            picker.module_id
+                        );
+                    }
+                    (Control::Group { .. }, ControlModel::Group(group)) => {
+                        let reset =
+                            resolve_group_reset(&basic.id, control, Some(*kind), target.as_ref())
+                                .map(|resolved| tools::ResetRef {
+                                    action: resolved.reset.action.clone(),
+                                    preset: resolved.reset.preset.clone(),
+                                });
+                        assert_eq!(group.reset, reset, "{name}: {}", group.label);
+                    }
+                    (control, model) => panic!("{name}: {control:?} drawn as {model:?}"),
+                }
+            }
+            // Only the RAW global target resolves any variant: White balance's four controls.
+            let expected = if *kind == SourceTag::Raw && target.is_none() {
+                4
+            } else {
+                0
+            };
+            assert_eq!(variants, expected, "{name}");
+        }
+
+        // What the variants change, read off the models: Temperature is in kelvin on RAW's
+        // global target alone.
+        let temperature = |at: usize| {
+            crate::state::control_tree::walk(&derived[at].3.controls)
+                .find_map(|control| match control {
+                    ControlModel::Slider(slider) if slider.label == "Temperature" => {
+                        Some((slider.action.clone(), slider.unit.clone()))
+                    }
+                    _ => None,
+                })
+                .expect("Temperature")
+        };
+        assert_eq!(temperature(0), ("set-basic".into(), None));
+        assert_eq!(temperature(1), ("set-raw".into(), Some("K".into())));
+        assert_eq!(temperature(2), ("set-basic".into(), None));
     }
 
     /// A field-patch layer returned to its neutral values stays in the stack but is not an edit, so
@@ -2975,14 +3221,18 @@ mod tests {
                 .iter()
                 .filter_map(|entry| owner(&entry.action))
                 .collect();
-            let shortcuts = tools::mode_shortcuts(&scene.modules, scene.state.as_ref());
+            let shortcuts = tools::mode_shortcuts(&scene.modules, scene.state.as_ref(), None);
+            let picks = tools::pick_modes(&scene.modules, scene.state.as_ref(), None);
             for module in &modules {
                 let applies = module.applies_to(kind);
                 let id = &module.id;
+                // A module that declares nothing to draw has no section anywhere: the RAW
+                // development's controls are Basic's variants.
                 assert_eq!(
                     sections.contains(&id.as_str()),
-                    applies,
-                    "{id} has a section on a {label} photo exactly when it applies"
+                    applies && tools::draws_section(module),
+                    "{id} has a section on a {label} photo exactly when it applies and declares \
+                     controls"
                 );
                 assert!(
                     applies || !listed.contains(id),
@@ -2999,17 +3249,19 @@ mod tests {
                     .and_then(|shortcut| shortcut.chars().next());
                 if let Some(letter) = letter.filter(|_| module.is_available()) {
                     assert_eq!(
-                        shortcuts.contains(&(letter, id.clone())),
+                        shortcuts.iter().any(|(bound, _)| *bound == letter),
                         applies,
                         "{id}'s shortcut on a {label} photo"
                     );
                 }
-                // The gate: a module's pick mode takes clicks only on a photo it applies to.
+                // The gate: a module's pick mode takes clicks only on a photo it applies to, and
+                // only while a resolved picker names it.
                 if tools::canvas_pick(&scene.modules, id).is_some() {
+                    assert!(!picks.contains(&id.as_str()) || applies);
                     scene.session.workspace.mode = id.clone();
                     assert_eq!(
                         scene.derive().canvas.picking,
-                        applies,
+                        picks.contains(&id.as_str()),
                         "{id}'s pick on a {label} photo"
                     );
                     scene.session.workspace.mode = POINTER_MODE.into();

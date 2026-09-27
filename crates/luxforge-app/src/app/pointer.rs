@@ -235,10 +235,17 @@ impl Editor {
                             return Task::none();
                         };
                         let asset = state.asset.id.clone();
-                        self.event(
-                            "canvas_pick",
-                            json!({"query":query,"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
-                        );
+                        // A pick bound to a mask asks about that mask's input, the stage before
+                        // its own layer, and its answer lands on that mask's layer: the query and
+                        // the action carry the same target, which `draft_target` reads.
+                        let mask = self.draft_target(&action).mask;
+                        let mut envelope = Map::new();
+                        let mut detail = json!({"query":query,"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y});
+                        if let Some(mask) = &mask {
+                            envelope.insert(luxforge_core::MASK_FIELD.into(), json!(mask.as_str()));
+                            detail[luxforge_core::MASK_FIELD] = json!(mask.as_str());
+                        }
+                        self.event("canvas_pick", detail);
                         self.status = format!("Sampling ({x}, {y})…");
                         return query_task(
                             self.owner.clone(),
@@ -248,7 +255,7 @@ impl Editor {
                             format!("query.{query}"),
                             action,
                             (x_parameter, y_parameter),
-                            Map::new(),
+                            envelope,
                             (x, y),
                         );
                     }

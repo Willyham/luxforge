@@ -1843,12 +1843,16 @@ impl Editor {
                     .map(|entry| (entry.sequence, entry.label.as_str())),
             );
         }
-        match (&self.happened, &self.state) {
+        let sentence = match (&self.happened, &self.state) {
             (Some(happened), _) => happened.sentence(),
             (None, Some(state)) => {
                 state::status::showing(state.current_entry.sequence, &state.current_entry.label)
             }
             (None, None) => String::new(),
+        };
+        match &self.skipped {
+            Some(skipped) => format!("{sentence} \u{b7} {skipped}"),
+            None => sentence,
         }
     }
 

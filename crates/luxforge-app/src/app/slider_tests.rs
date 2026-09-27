@@ -292,22 +292,30 @@ fn double_click_before_the_commit_answers(
 /// still answering when the second press arrives — for a RAW temperature or tint for as long as
 /// the mosaic takes to redevelop, a second or more — and a reset sent then names the revision
 /// that commit is replacing, which the core refuses as stale. The reset now waits for the
-/// commit's answer and is sent once, against the revision it produced. Basic's patch field and
-/// every RAW slider take the same path; what is sent is the field's own reset: As shot for the
-/// RAW temperature and tint, the declared default for RAW and Basic exposure.
+/// commit's answer and is sent once, against the revision it produced. Exposure and the RAW
+/// variants of Temperature and Tint take the same path; what is sent is the field's own reset: As
+/// shot for a RAW photo's Temperature and Tint, the declared default for Exposure.
 #[test]
 fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produced() {
-    // TASK-006 desktop: add the RAW variants' cases (`set-raw` temperature and tint, reset
-    // `set-raw {white-balance: as-shot}`) once Basic's section resolves them on a RAW photo.
-    let cases = [(
-        "set-basic",
-        "exposure",
-        0.4,
-        "set-basic",
-        json!({"exposure": 0.0}),
-    )];
+    let as_shot = json!({"white-balance": "as-shot"});
+    let cases = [
+        ("set-raw", "temperature", 5000.0, "set-raw", as_shot.clone()),
+        ("set-raw", "tint", 12.0, "set-raw", as_shot),
+        (
+            "set-basic",
+            "exposure",
+            0.4,
+            "set-basic",
+            json!({"exposure": 0.0}),
+        ),
+    ];
     for (action, parameter, value, reset, preset) in cases {
         let (mut editor, catalog, log, asset, _, _) = drafting();
+        // Basic's Temperature and Tint are the RAW development's on a RAW photo's global target.
+        if action != "set-basic" {
+            editor.state.as_mut().expect("an open asset").asset.source =
+                crate::state::testing::raw_source();
+        }
         let revision = editor.state.as_ref().expect("an open asset").revision;
         let committed =
             double_click_before_the_commit_answers(&mut editor, &asset, action, parameter, value);
@@ -346,16 +354,16 @@ fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produ
     }
 }
 
-/// A double-click on the RAW custom temperature or tint label, with nothing in flight, runs As
-/// shot at once — the very request an independent JSON client builds from the control's reset
-/// in `module.list` — and the field shows the authoritative value until the answer brings the
-/// as-shot equivalent, never the 6504 K and 0 nothing set. RAW exposure and Basic's own
-/// temperature, which declare no reset, still reset to their declared defaults.
+/// A double-click on Temperature or Tint of a RAW photo's global target, with nothing in flight,
+/// runs As shot at once — the very request an independent JSON client builds from the reset Basic's
+/// RAW variant declares in `module.list` — and the field shows the authoritative value until the
+/// answer brings the as-shot equivalent, never the 6504 K and 0 nothing set. Exposure and a JPEG's
+/// Temperature, which declare no reset, still reset to their declared defaults.
 #[test]
-#[ignore = "TASK-006 desktop: the RAW module draws no section; re-point at Basic's RAW variants (set-raw)"]
 fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
     let listed = serde_json::to_value(descriptors()).unwrap();
-    for (action, parameter) in [("set-raw-temperature", "kelvin"), ("set-raw-tint", "tint")] {
+    let as_shot = json!({"action": "set-raw", "preset": {"white-balance": "as-shot"}});
+    for (action, parameter) in [("set-raw", "temperature"), ("set-raw", "tint")] {
         let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
         let log = attach_log(&mut editor);
         let asset = editor.state.as_ref().expect("open").asset.id.clone();
@@ -373,20 +381,29 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
         let committed = editor.fields.get(action, parameter).map(str::to_owned);
         assert_eq!(
             committed.as_deref(),
-            Some(if parameter == "kelvin" { "5000" } else { "12" })
+            Some(if parameter == "temperature" {
+                "5000"
+            } else {
+                "12"
+            })
         );
 
-        // The JSON request a client builds from the control's declared reset.
+        // The JSON request a client builds from the reset the variant declares.
         let control = listed
             .as_array()
             .unwrap()
             .iter()
-            .flat_map(|module| module["controls"][0]["controls"].as_array().cloned())
+            .flat_map(|module| module["controls"].as_array().cloned())
             .flatten()
+            .flat_map(|group| group["controls"].as_array().cloned())
+            .flatten()
+            .flat_map(|control| control["variants"].as_array().cloned())
+            .flatten()
+            .map(|variant| variant["control"].clone())
             .find(|control| control["action"] == action && control["parameter"] == parameter)
-            .expect("the listed control");
+            .expect("the listed variant");
         let reset = &control["reset"];
-        assert_eq!(reset, &json!({"action": "use-as-shot-wb", "preset": {}}));
+        assert_eq!(reset, &as_shot);
         let mut params = json!({"asset_id": asset, "mutation": mutation(5)});
         params
             .as_object_mut()
@@ -407,7 +424,7 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
                 .request_for_preset(&sent, None, Some(&preset))
                 .map(without_request_id),
             Some(without_request_id(independent)),
-            "{action}: the desktop's reset request is the JSON client's"
+            "{parameter}: the desktop's reset request is the JSON client's"
         );
 
         // Typed but not committed, then double-clicked.
@@ -419,15 +436,15 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
         }));
         let records = logged(&mut editor, &log);
         let sent = draft_events(&records, "field_reset_sent");
-        assert_eq!(sent.len(), 1, "{action}: {records:?}");
-        assert_eq!(sent[0]["action"], json!("use-as-shot-wb"));
-        assert_eq!(sent[0]["preset"], json!({}));
-        assert_eq!(editor.status, "Running edit.use-as-shot-wb…");
+        assert_eq!(sent.len(), 1, "{parameter}: {records:?}");
+        assert_eq!(sent[0]["action"], as_shot["action"]);
+        assert_eq!(sent[0]["preset"], as_shot["preset"]);
+        assert_eq!(editor.status, "Running edit.set-raw…");
         assert!(editor.editing.is_none());
         assert_eq!(
             editor.fields.get(action, parameter).map(str::to_owned),
             committed,
-            "{action}: the field shows the committed value until the answer, not a default"
+            "{parameter}: the field shows the committed value until the answer, not a default"
         );
 
         // The answer: As shot, whose rows report the camera's equivalent.
@@ -437,15 +454,19 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
         )))));
         assert_eq!(
             editor.fields.get(action, parameter),
-            Some(if parameter == "kelvin" { "4861" } else { "-50" }),
-            "{action}: the as-shot equivalent"
+            Some(if parameter == "temperature" {
+                "4861"
+            } else {
+                "-50"
+            }),
+            "{parameter}: the as-shot equivalent"
         );
         finish(editor, catalog);
     }
 
-    // Exposure and Basic's temperature keep their declared defaults.
+    // Exposure and a JPEG's Temperature keep their declared defaults.
     for (action, parameter, preset) in [
-        ("set-raw-exposure", "ev", json!({"ev": 0.0})),
+        ("set-basic", "exposure", json!({"exposure": 0.0})),
         ("set-basic", "temperature", json!({"temperature": 0.0})),
     ] {
         let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
@@ -522,20 +543,22 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
 /// rather than the error code, and the gesture stays open and drained, so its release still
 /// commits.
 #[test]
-#[ignore = "TASK-006 desktop: the RAW module draws no section; re-point at Basic's RAW variants (set-raw)"]
 fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
     let (mut editor, catalog, log, asset, _, _) = drafting();
+    // A RAW photo's global target, where Basic's Temperature is the development's `set-raw`.
+    editor.state.as_mut().expect("an open asset").asset.source =
+        crate::state::testing::raw_source();
     let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
-        action: "set-raw-temperature".into(),
-        parameter: "kelvin".into(),
+        action: "set-raw".into(),
+        parameter: "temperature".into(),
         value: 5000.0,
     }));
     // The owner accepts the value, but its preview job answers preparation-required.
     editor.fake_sets = Some(["preparation-required: source-job-7".to_owned()].into());
-    begun(&mut editor, &asset, "set-raw-temperature", 4);
+    begun(&mut editor, &asset, "set-raw", 4);
     assert_eq!(
         editor.status,
-        "Custom temperature cannot be previewed until the RAW development is ready; it shows on release"
+        "Temperature cannot be previewed until the RAW development is ready; it shows on release"
     );
     assert!(
         editor
@@ -565,7 +588,7 @@ fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
 /// white balance under As shot would switch it to Custom.
 #[test]
 fn releasing_a_drafting_slider_that_never_moved_sends_nothing() {
-    for (action, parameter) in [("set-raw-temperature", "kelvin"), ("set-basic", "exposure")] {
+    for (action, parameter) in [("set-raw", "temperature"), ("set-basic", "exposure")] {
         let (mut editor, catalog, log, _, _, _) = drafting();
         let _ = editor.update(Message::Control(ControlMessage::Released {
             action: action.into(),

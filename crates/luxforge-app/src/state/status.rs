@@ -61,6 +61,8 @@ pub(crate) enum Happened {
     Redid { label: String, sequence: u64 },
     /// A historical preview returned to the current entry.
     Returned { label: String, sequence: u64 },
+    /// A composite action changed nothing, because nothing it holds applies to the photo.
+    NothingApplied,
 }
 
 impl Happened {
@@ -129,7 +131,18 @@ impl Happened {
             Self::Returned { label, sequence } => {
                 format!("Returned to entry {sequence} \u{b7} {label}")
             }
+            Self::NothingApplied => "Nothing applied".to_owned(),
         }
+    }
+}
+
+/// What the status bar adds when a composite action (a preset) left settings out because they do
+/// not apply to the photo: "1 setting does not apply to a RAW photo".
+pub(crate) fn skipped(count: usize, kind: luxforge_core::SourceTag) -> String {
+    let kind = kind.label();
+    match count {
+        1 => format!("1 setting does not apply to a {kind} photo"),
+        count => format!("{count} settings do not apply to a {kind} photo"),
     }
 }
 
@@ -253,6 +266,20 @@ mod tests {
             current_entry: current,
             redo: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_skip_is_counted_and_names_the_photos_kind() {
+        use luxforge_core::SourceTag;
+        assert_eq!(
+            skipped(1, SourceTag::Raw),
+            "1 setting does not apply to a RAW photo"
+        );
+        assert_eq!(
+            skipped(3, SourceTag::Jpeg),
+            "3 settings do not apply to a JPEG photo"
+        );
+        assert_eq!(Happened::NothingApplied.sentence(), "Nothing applied");
     }
 
     #[test]

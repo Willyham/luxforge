@@ -72,7 +72,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
         .filter(|module| crate::state::tools::applies(module, inputs.state))
         .cloned()
         .collect();
-    let mut raw = palette_entries(&applicable, inputs.developer);
+    let mut raw = palette_entries(&applicable, inputs.developer, inputs.state, inputs.target);
     raw.extend(crate::state::presets::palette_entries(inputs));
     raw.extend(host_entries(inputs));
     let entries: Vec<PaletteEntry> = filter(raw, inputs.palette_query)
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn every_module_offers_its_actions_its_own_reset_and_its_canvas_mode_in_registry_order() {
         let modules = descriptors();
-        let entries = palette_entries(&modules, false);
+        let entries = palette_entries(&modules, false, None, None);
         let rotate = entries
             .iter()
             .find(|(label, ..)| label == "Transforms · Rotate right")

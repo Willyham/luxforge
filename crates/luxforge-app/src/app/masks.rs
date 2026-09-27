@@ -46,12 +46,23 @@ impl Editor {
     /// delivered ones, and the target decides which layer of each maskable module their fields are
     /// seeded from and which layer their requests edit. One target is bound at a time, so a field
     /// always shows the layer the control in front of it would change.
+    ///
+    /// A module's pick entered from the Masks panel keeps that binding while its mode is on screen
+    /// ([`Editor::pick_on_mask`]): Basic's Neutral picker on a mask asks its query about that mask
+    /// and sets that mask's white balance.
     pub(crate) fn section_target(&self) -> Option<&MaskId> {
-        if self.mask_mode_active() {
+        if self.mask_mode_active() || (self.pick_on_mask && self.module_pick_active()) {
             self.selected_mask.as_ref()
         } else {
             None
         }
+    }
+
+    /// A module's own canvas pick is the mode on screen.
+    pub(crate) fn module_pick_active(&self) -> bool {
+        crate::state::tools::module_of(&self.modules, &self.session.workspace.mode).is_some()
+            && crate::state::tools::canvas_pick(&self.modules, &self.session.workspace.mode)
+                .is_some()
     }
 
     /// The host-owned target one generated control's gesture or request carries.
