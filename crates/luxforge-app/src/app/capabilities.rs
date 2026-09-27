@@ -30,9 +30,13 @@ use iced::{Subscription, Task};
 use luxforge_core::{
     AssetId, ClientId, ModuleDescriptor, OwnerHandle, ParameterKind,
     capabilities::{
-        descriptor::SettingDescriptor, grants::GrantList, host::Requirement, settings::SettingsRead,
+        descriptor::SettingDescriptor,
+        grants::{self, GrantList},
+        host::{self, Requirement, TASK_PREFIX},
+        resources,
+        settings::{self, SettingsRead},
     },
-    jobs::{JobRecord, JobStatus},
+    jobs::{JOB_CANCEL, JOB_READ, JobRecord, JobStatus},
     redact_params,
 };
 use serde_json::{Map, Value, json};
@@ -169,7 +173,7 @@ fn perform(
         Operation::Load => call(
             owner,
             client,
-            "module.settings.read",
+            settings::READ,
             json!({"module_id": module_id}),
             sent,
         )
@@ -186,7 +190,7 @@ fn perform(
         } => {
             let mut params = envelope(module_id, profile.as_ref(), *revision);
             params.insert("values".into(), json!({field.as_str(): value}));
-            write("module.settings.set", params, sent)
+            write(settings::SET, params, sent)
         }
         Operation::SetSecret {
             profile,
@@ -197,7 +201,7 @@ fn perform(
             let mut params = envelope(module_id, profile.as_ref(), *revision);
             params.insert("setting".into(), json!(field));
             params.insert("value".into(), json!(value.expose()));
-            write("module.settings.set-secret", params, sent)
+            write(settings::SET_SECRET, params, sent)
         }
         Operation::ClearSecret {
             profile,
@@ -206,7 +210,7 @@ fn perform(
         } => {
             let mut params = envelope(module_id, profile.as_ref(), *revision);
             params.insert("setting".into(), json!(field));
-            write("module.settings.clear-secret", params, sent)
+            write(settings::CLEAR_SECRET, params, sent)
         }
         Operation::CreateProfile {
             adapter,
@@ -216,48 +220,46 @@ fn perform(
             let mut params = envelope(module_id, None, *revision);
             params.insert("adapter".into(), json!(adapter));
             params.insert("label".into(), json!(label));
-            write("module.profile.create", params, sent)
+            write(settings::CREATE_PROFILE, params, sent)
         }
         Operation::RemoveProfile { profile, revision } => {
             let mut params = envelope(module_id, None, *revision);
             params.insert("profile_id".into(), json!(profile));
-            write("module.profile.remove", params, sent)
+            write(settings::REMOVE_PROFILE, params, sent)
         }
         Operation::Install { resource } => call(
             owner,
             client,
-            "module.resource.install",
+            resources::INSTALL,
             json!({"module_id": module_id, "resource_id": resource, "mutation": request()}),
             sent,
         ),
         Operation::Remove { resource } => call(
             owner,
             client,
-            "module.resource.remove",
+            resources::REMOVE,
             json!({"module_id": module_id, "resource_id": resource, "mutation": request()}),
             sent,
         ),
         Operation::Activate => call(
             owner,
             client,
-            "module.activate",
+            host::ACTIVATE,
             json!({"module_id": module_id, "mutation": request()}),
             sent,
         ),
         Operation::Deactivate => call(
             owner,
             client,
-            "module.deactivate",
+            host::DEACTIVATE,
             json!({"module_id": module_id, "mutation": request()}),
             sent,
         ),
-        Operation::Cancel { job } => {
-            call(owner, client, "job.cancel", json!({"job_id": job}), sent)
-        }
+        Operation::Cancel { job } => call(owner, client, JOB_CANCEL, json!({"job_id": job}), sent),
         Operation::Revoke { grant } => call(
             owner,
             client,
-            "module.permission.revoke",
+            grants::REVOKE,
             json!({"grant_id": grant, "mutation": request()}),
             sent,
         ),
@@ -275,7 +277,7 @@ fn perform(
             }
             // One press is one request: asking again after a preparation keeps its request_id.
             params.insert("mutation".into(), json!(request()));
-            let method = format!("task.{task}");
+            let method = format!("{TASK_PREFIX}{task}");
             let mut attempt = 0;
             loop {
                 match call(owner, client, &method, Value::Object(params.clone()), sent) {
@@ -290,7 +292,7 @@ fn perform(
                             .job_id
                             .clone()
                             .unwrap_or_else(|| error.message.clone());
-                        sent.push(json!({"method": "job.read", "params": {"job_id": job}}));
+                        sent.push(json!({"method": JOB_READ, "params": {"job_id": job}}));
                         if let Err(error) = tasks::wait_source_job(owner, client, &job) {
                             break Err(error);
                         }
@@ -312,12 +314,12 @@ fn perform(
                 "mutation": request(),
             });
             if !*allow {
-                return match call(owner, client, "module.permission.deny", answer, sent) {
+                return match call(owner, client, grants::DENY, answer, sent) {
                     Ok(answer) => Outcome::Done(answer),
                     Err(error) => Outcome::Failed(error),
                 };
             }
-            if let Err(error) = call(owner, client, "module.permission.grant", answer, sent) {
+            if let Err(error) = call(owner, client, grants::GRANT, answer, sent) {
                 return Outcome::Failed(error);
             }
             return match retry {
@@ -334,7 +336,7 @@ fn perform(
             if let Ok(read) = call(
                 owner,
                 client,
-                "module.settings.read",
+                settings::READ,
                 json!({"module_id": module_id}),
                 sent,
             ) {
@@ -375,7 +377,7 @@ pub(crate) fn run(
     };
     let job = match &outcome {
         Outcome::Done(answer) => answer["job_id"].as_str().and_then(|job| {
-            call(owner, client, "job.read", json!({"job_id": job}), &mut sent)
+            call(owner, client, JOB_READ, json!({"job_id": job}), &mut sent)
                 .ok()
                 .and_then(|record| parse::<JobRecord>(record).ok())
         }),
@@ -384,7 +386,7 @@ pub(crate) fn run(
     let status = call(
         owner,
         client,
-        "module.status",
+        host::STATUS,
         json!({"module_id": module_id}),
         &mut sent,
     )
@@ -394,7 +396,7 @@ pub(crate) fn run(
         call(
             owner,
             client,
-            "module.permission.list",
+            grants::LIST,
             json!({"module_id": module_id}),
             &mut sent,
         )
@@ -423,7 +425,7 @@ pub(crate) fn poll(
     let mut sent = Vec::new();
     jobs.into_iter()
         .map(|(module, job)| {
-            let record = call(owner, client, "job.read", json!({"job_id": job}), &mut sent)
+            let record = call(owner, client, JOB_READ, json!({"job_id": job}), &mut sent)
                 .map_err(|error| error.to_string())
                 .and_then(parse::<JobRecord>);
             (module, job, record)
@@ -859,7 +861,7 @@ impl Editor {
                             params.insert("profile_id".into(), json!(profile));
                         }
                         params.insert("mutation".into(), json!(request()));
-                        let method = format!("task.{task}");
+                        let method = format!("{TASK_PREFIX}{task}");
                         let params = redact_params(&method, &Value::Object(params));
                         self.status = format!("Copied the {method} request");
                         iced::clipboard::write(

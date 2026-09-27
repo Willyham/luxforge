@@ -115,7 +115,6 @@ impl CapabilityHost {
         request: ModuleChange,
         origin: &Origin,
     ) -> Result<Value, Error> {
-        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         if let Availability::Unavailable { reason } = &descriptor.availability {
             return Err(Error::validation(format!(
@@ -272,7 +271,6 @@ impl CapabilityHost {
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         let job = self.deactivate(jobs, registry, &descriptor.id, None, Some(origin), announce)?;
         let state = self

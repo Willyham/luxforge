@@ -20,7 +20,7 @@ use crate::{
     state::title,
 };
 use iced::{Subscription, Task};
-use luxforge_core::{AssetId, ClientId, EntryId, ErrorKind, OwnerHandle};
+use luxforge_core::{AssetId, ClientId, EntryId, ErrorKind, OwnerHandle, jobs::JOB_READ};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -516,7 +516,7 @@ pub(crate) fn read_now(
     client: ClientId,
     job_id: &str,
 ) -> Result<Value, String> {
-    call(owner, client, "job.read", json!({"job_id": job_id})).map(|(read, _)| read)
+    call(owner, client, JOB_READ, json!({"job_id": job_id})).map(|(read, _)| read)
 }
 
 fn read_task(owner: OwnerHandle, client: ClientId, job_id: String) -> Task<Message> {

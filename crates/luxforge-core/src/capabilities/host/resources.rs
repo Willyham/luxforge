@@ -136,7 +136,6 @@ impl CapabilityHost {
         request: InstallParams,
         origin: &Origin,
     ) -> Result<Value, Error> {
-        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         let resource = declared_resource(descriptor, &request.resource_id)?;
         let store = self.resources()?;
@@ -227,7 +226,6 @@ impl CapabilityHost {
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
         let resource = declared_resource(descriptor, &request.resource_id)?;
         let store = self.resources()?.clone();

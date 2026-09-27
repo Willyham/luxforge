@@ -4,7 +4,7 @@
 use super::{
     ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, Origin,
     announce_once,
-    methods::{self, Planned, Retries, Route},
+    methods::{self, Changed, Planned, Retries, Route},
     params::{NoParams, host_params},
 };
 #[cfg(test)]
@@ -42,7 +42,6 @@ use std::{thread, time::Duration};
 
 #[cfg(test)]
 mod artifact_tests;
-pub(super) mod capability;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
@@ -1349,6 +1348,13 @@ pub(super) struct Owner {
 }
 
 impl Owner {
+    /// A client's authority, part of its session and fixed when it registered.
+    pub(super) fn authority(&self, client: ClientId) -> ClientAuthority {
+        self.sessions
+            .get(&client)
+            .map_or(ClientAuthority::Edit, |session| session.authority)
+    }
+
     /// Answer one request: find its method, answer a retry from the request table when the method
     /// declares the owner answers its retries, otherwise call its handler, then record the events
     /// its changes announced. A sample through a spatial layer is only planned here: the point
@@ -1381,6 +1387,8 @@ impl Owner {
     fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Planned, Error> {
         let method = methods::find(&self.service, &request.method)
             .ok_or_else(|| Error::protocol(format!("unknown method {}", request.method)))?;
+        // Every mutation envelope is checked here, once, before any handler runs.
+        method.envelope().check(&request.params)?;
         // A retried mutation whose method declares the owner answers it is answered from the
         // request table, and its handler does not run again; the catalog answers the others.
         let key = match method.retries() {
@@ -1403,6 +1411,19 @@ impl Owner {
         }
         let result = match method.route() {
             Route::Owner(handler) => handler(self, &call).map(Planned::Value),
+            // A task queues a capability job and announces nothing: the task is announced when it
+            // succeeds. It samples its asset's current entry before it is queued, so an
+            // unprepared source or artifact is refused naming what it needs, as below.
+            Route::Task(task_id) => self
+                .host
+                .task(
+                    &mut self.jobs,
+                    &self.service,
+                    task_id,
+                    &request.params,
+                    &call.origin,
+                )
+                .map(Planned::Value),
             Route::Service => {
                 let session = self.sessions.entry(client).or_default();
                 // Read only for a method that can change something, so a read or a draft's
@@ -1411,25 +1432,20 @@ impl Owner {
                     .mutates()
                     .then(|| subject(session, &request.params))
                     .flatten();
-                let result = method.plan(&mut self.service, session, &request.params);
-                // A service answer says whether it changed anything: a no-op and a retry answered
-                // from a store's request log did not. A planned sample carries no envelope.
-                if let Ok(planned) = &result
-                    && methods::mutates(&method, planned.value())
-                {
-                    let origin = match subject {
-                        Some(asset_id) => call.origin.clone().changed(
-                            asset_id,
-                            planned
-                                .value()
-                                .and_then(|value| value.get("revision"))
-                                .and_then(Value::as_u64),
-                        ),
-                        None => call.origin.clone(),
-                    };
-                    announce_once(&mut self.announced, &origin);
-                }
-                result
+                // The handler reports what it changed: a no-op and a retry answered from a
+                // store's request log changed nothing, and an asset's change names its revision.
+                method
+                    .plan(&mut self.service, session, &request.params)
+                    .map(|(planned, changed)| {
+                        if let Changed::Something { revision } = changed {
+                            let origin = match subject {
+                                Some(asset_id) => call.origin.clone().changed(asset_id, revision),
+                                None => call.origin.clone(),
+                            };
+                            announce_once(&mut self.announced, &origin);
+                        }
+                        planned
+                    })
             }
         };
         // A stack whose source or artifacts are not prepared queues exactly what the refusal
@@ -1725,7 +1741,6 @@ pub(super) fn catalog_import(
     call: &Call<'_>,
     params: Import,
 ) -> Result<Value, Error> {
-    params.mutation.validate()?;
     let (id, status) = match owner.service.cached_import(&params.path)? {
         Some(state) => (
             owner.sources.ready(&mut owner.jobs, call.client, state)?,
@@ -1850,9 +1865,8 @@ pub(super) fn source_prepare(
 pub(super) fn artifact_collect(
     owner: &mut Owner,
     call: &Call<'_>,
-    params: Collect,
+    _: Collect,
 ) -> Result<Value, Error> {
-    params.mutation.validate()?;
     let collection = owner.service.plan_collection()?;
     let root = collection.root.clone();
     let id = owner.sources.enqueue_maintenance(
@@ -5127,6 +5141,81 @@ mod tests {
                 .expect("an unknown method is refused")
                 .code,
             "protocol"
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Every mutating method `schema.list` lists — the host's, a module action, a `mask.*` command
+    /// and a module's task — has its envelope checked once, by the dispatcher, before any handler
+    /// runs: a request identity or actor out of range is refused in the envelope's words although
+    /// every other field is missing, which the handler's own parse, or a permission grant's
+    /// authority check, would have refused first, and nothing is announced.
+    #[test]
+    fn every_mutating_method_has_its_envelope_checked_before_its_handler_runs() {
+        let catalog = temp("envelope.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(Arc::new(crate::CapabilitiesProofModule::new(
+                "http://127.0.0.1:9",
+            )))
+            .unwrap();
+        let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
+        let client = owner.register();
+        let schema = ok(&owner, client, "schema", "schema.list", json!({}));
+        let listed = schema["methods"].as_object().expect("the methods");
+        let (_, before) = events_after(&owner, client, 0);
+        let mut checked = Vec::new();
+        for (name, method) in listed {
+            let Some(envelope) = method.get("mutation").and_then(Value::as_str) else {
+                continue;
+            };
+            let sent = |request_id: &str, actor: &str| {
+                let mut mutation = json!({"request_id": request_id, "actor": actor});
+                if envelope == "revision" {
+                    mutation["expected_revision"] = json!(0);
+                }
+                json!({"mutation": mutation})
+            };
+            for (params, refusal) in [
+                (
+                    sent("", "test"),
+                    "request_id must contain 1..128 characters",
+                ),
+                (
+                    sent("request", &"a".repeat(129)),
+                    "actor must contain 1..128 characters",
+                ),
+            ] {
+                let error = failure(&owner, client, name, name, params);
+                assert_eq!(
+                    (error.code.as_str(), error.message.as_str()),
+                    ("validation", refusal),
+                    "{name}"
+                );
+            }
+            checked.push(name.as_str());
+        }
+        for family in ["edit.", "mask.", "task.", "module.", "preset.", "history."] {
+            assert!(
+                checked.iter().any(|name| name.starts_with(family)),
+                "a {family}* method is checked: {checked:?}"
+            );
+        }
+        for name in [
+            "catalog.import",
+            "artifact.collect",
+            "export.jpeg",
+            "draft.commit",
+        ] {
+            assert!(checked.contains(&name), "{name}");
+        }
+        assert_eq!(
+            events_after(&owner, client, 0).1,
+            before,
+            "nothing was announced"
         );
         owner.stop();
         join.join().unwrap();

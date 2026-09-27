@@ -470,6 +470,21 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "only the catalog owner (crates/luxforge-core/src/api/owner.rs) creates the job \
                  table, once",
     },
+    // One envelope check: the dispatcher checks every method's mutation envelope once, before any
+    // handler runs, so no handler, service or store checks its own.
+    SourceRule {
+        name: "one-envelope-check",
+        tokens: &["mutation.validate()"],
+        scope: &["crates/luxforge-core/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/api/params.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the dispatcher checks every mutation envelope once, before any handler runs \
+                 (Envelope::check in crates/luxforge-core/src/api/params.rs); a handler never \
+                 checks its own",
+    },
     // The desktop reads a committed crop, the stage it receives and the orientation ahead of it
     // from `recipe.describe` rows, and folds no geometry itself: its product code names neither
     // the crop nor the orientation effect and deserializes neither payload. Tests may, to check
@@ -2606,6 +2621,44 @@ mod tests {
             read(tmp.path(), &["job-records", "job-table"]).unwrap(),
             (3, 0)
         );
+    }
+
+    #[test]
+    fn only_the_dispatcher_checks_a_mutation_envelope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        fs::create_dir_all(core.join("api")).unwrap();
+        fs::create_dir_all(core.join("capabilities")).unwrap();
+        // The dispatcher checks both envelopes; a test may check one itself.
+        for (file, text) in [
+            (
+                core.join("api/params.rs"),
+                "Self::Revision => Mutation::deserialize(field).map(|mutation| mutation.validate()),\n\
+                 Self::Request => MutationRequest::deserialize(field).map(|mutation| mutation.validate()),\n",
+            ),
+            (
+                core.join("model.rs"),
+                "#[cfg(test)]\nmod tests {\n    fn t() { mutation.validate().unwrap(); }\n}\n",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["one-envelope-check"]).unwrap(), (1, 0));
+        // A handler, a service or a store that checks its own envelope is refused.
+        for file in [
+            core.join("api/methods.rs"),
+            core.join("capabilities/settings.rs"),
+        ] {
+            fs::write(&file, "    p.mutation.validate()?;\n").unwrap();
+            let error = refusal(
+                tmp.path(),
+                &["one-envelope-check"],
+                &file.display().to_string(),
+            );
+            assert!(error.contains("a handler never checks its own"), "{error}");
+            fs::remove_file(&file).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["one-envelope-check"]).unwrap(), (1, 0));
     }
 
     #[test]

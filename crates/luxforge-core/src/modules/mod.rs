@@ -44,7 +44,7 @@ pub use descriptor::{
 };
 pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
-    check_settings,
+    check_settings, check_target,
 };
 pub(crate) use descriptor::{not_applicable, summary_value, title_case};
 pub use mixer::{MIXER_EFFECT, MixerModule};
