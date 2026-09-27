@@ -132,6 +132,7 @@ fn two_colour_source() -> SourceImage {
         rgba: rgba.into(),
         fingerprint: "sha256:constrained-brush-fixture".into(),
         orientation: 1,
+        capture: Default::default(),
     }
 }
 

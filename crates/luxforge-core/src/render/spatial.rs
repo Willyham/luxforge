@@ -1888,6 +1888,7 @@ pub(crate) mod tests {
             rgba: bytes.into(),
             fingerprint: "sha256:blurred".into(),
             orientation: 1,
+            capture: Default::default(),
         };
         let reference = CropReference::new(&blurred_source, crop);
         let raster = render_tiled(

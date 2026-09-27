@@ -172,6 +172,7 @@ pub(crate) fn refresh_for(
                 rgba: vec![0, 0, 0, 255].into(),
                 fingerprint: "f".into(),
                 orientation: 1,
+                capture: Default::default(),
             }),
             recipe: current.snapshot.recipe.clone(),
             entry: current.clone(),
