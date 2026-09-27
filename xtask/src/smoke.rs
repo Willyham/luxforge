@@ -14,7 +14,11 @@ use crate::{
     viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
     zoom_smoke as zoom, *,
 };
-use std::{borrow::Borrow, process::ExitStatus, time::Duration};
+use std::{
+    borrow::Borrow,
+    process::ExitStatus,
+    time::{Duration, Instant},
+};
 
 /// The window the design's layout constants are written against.
 pub const PANELLED: [&str; 2] = ["1440", "900"];
@@ -34,8 +38,9 @@ pub enum Source {
     Supplied,
 }
 
-/// Waits for a launched editor in place of the ordinary wait, and returns what it recorded.
-pub type Watch = fn(&mut Guard, Duration) -> Result<(ExitStatus, Value)>;
+/// Waits for a launched editor in place of the ordinary wait, and returns what it recorded; see
+/// [`crate::scenario::launch::Watcher`].
+pub type Watch = fn(&mut Guard, Instant, Duration) -> Result<(Option<ExitStatus>, Value)>;
 
 /// One editor launch of a scenario.
 #[derive(Clone, Copy)]
@@ -773,7 +778,9 @@ pub fn launch_all(mut run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> R
                 let catalog = run.out().join(earlier).join("catalog.sqlite");
                 ensure(catalog.is_file(), format!("Launch {earlier} wrote no catalog"))?;
             }
-            let evidence = run.launch(launch_of(scenario, spec, &plan, &sources, run.out()))?;
+            let evidence = run
+                .launch(launch_of(scenario, spec, &plan, &sources, run.out()))?
+                .dir;
             checked.push(plan.check(&evidence)?);
         }
         (scenario.verify)(run, &checked)?;
@@ -819,7 +826,7 @@ fn launch_of(
         launch = launch.window(window);
     }
     if let Some((file, watch)) = spec.watch {
-        launch = launch.watch(file, Box::new(watch));
+        launch = launch.watch(Box::new(watch)).keep(file);
     }
     launch
 }

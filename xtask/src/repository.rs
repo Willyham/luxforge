@@ -539,6 +539,36 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: false,
         reason: "production threads start only in the declared worker homes",
     },
+    // One way to launch the editor from the harness: the scenario library's `Launch` assembles
+    // every argument list and `Run` makes every launch, so each is recorded and watched alike.
+    // `raw-editor` keeps its own launch until it becomes a scenario row.
+    SourceRule {
+        name: "editor-launch",
+        tokens: &[
+            "\"--evidence-dir\"",
+            "\"--evidence-script\"",
+            "\"--data-root\"",
+            "\"--catalog\"",
+            "\"--open\"",
+            "\"--developer\"",
+            "\"--disable-module\"",
+            "\"--proof-endpoint\"",
+            "\"--window-size\"",
+            "spawn_editor",
+            "editor_args",
+        ],
+        scope: &["xtask"],
+        types: &["rs"],
+        allowed: &[
+            "xtask/src/scenario/launch.rs",
+            "xtask/src/launch.rs",
+            "xtask/src/raw_editor.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        reason: "the harness assembles editor arguments only in the scenario library's Launch and \
+                 launches the editor only through its Run (xtask/src/scenario/launch.rs)",
+    },
     SourceRule {
         name: "no-pixel-image-handle",
         tokens: &["Handle::from_rgba"],
@@ -1817,6 +1847,59 @@ mod tests {
             );
             fs::remove_file(root.join(path)).unwrap();
         }
+    }
+
+    #[test]
+    fn only_the_launch_envelope_assembles_editor_arguments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The envelope, the hidden-window flag's home, `raw-editor` until it becomes a scenario
+        // row, test code, xtask's own flags and a longer name may.
+        write_all(
+            root,
+            &[
+                (
+                    "xtask/src/scenario/launch.rs",
+                    "args.extend([\"--evidence-dir\".into(), dir.into()]);\n",
+                ),
+                (
+                    "xtask/src/launch.rs",
+                    "pub fn editor_args(args: &[OsString]) {}\n",
+                ),
+                (
+                    "xtask/src/raw_editor.rs",
+                    "let child = spawn_editor(root, binary, &[\"--catalog\".into()], &log)?;\n",
+                ),
+                (
+                    "xtask/src/verify.rs",
+                    "let a = [\"--output\", \"--binary\"];\nlet b = \"--open-all\";\n\
+                     #[cfg(test)]\nmod tests {\n    fn t() { let a = [\"--open\"]; }\n}\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, &["editor-launch"]).unwrap(), (1, 0));
+        // Anywhere else in the harness, each spelling is refused.
+        refuses_each(
+            root,
+            "editor-launch",
+            &[
+                (
+                    "xtask/src/editor_latency.rs",
+                    "let args = vec![\"--evidence-dir\".into(), evidence.into()];\n",
+                ),
+                (
+                    "xtask/src/diagnostics.rs",
+                    "args.extend([\"--data-root\".into(), data.into()]);\n",
+                ),
+                ("xtask/src/smoke.rs", "args.push(\"--developer\".into());\n"),
+                (
+                    "xtask/src/measure.rs",
+                    "let child = scenario::launch::spawn_editor(root, bin, &args, &log)?;\n",
+                ),
+                ("xtask/src/tool.rs", "let args = editor_args(&args);\n"),
+            ],
+            "scenario library's Launch",
+        );
     }
 
     #[test]
