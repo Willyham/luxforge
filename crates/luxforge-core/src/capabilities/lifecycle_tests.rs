@@ -637,6 +637,10 @@ fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
     let again = owner.fail(INSTALL, install.clone());
     assert_eq!(again.code, "consent-required");
     assert_eq!(again.data.unwrap()["consent"]["denied"], json!(true));
+    assert_eq!(
+        owner.status(MODULE)["permissions"],
+        json!({"live": 0, "revoked": 0, "denials": 1})
+    );
     assert_eq!(server.hits(), 0, "nothing was downloaded without a grant");
     assert_eq!(owner.handle.capability_threads(), 0, "nothing was queued");
     owner.ok_as(
@@ -1059,8 +1063,13 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
     assert_eq!(status["settings"]["missing"], json!([]));
     assert_eq!(status["resources"][0]["state"], json!("installed"));
     assert_eq!(status["resources"][1]["state"], json!("not-installed"));
+    // Status counts the module's grants and denials; the records are read through the list.
     assert_eq!(
-        status["permissions"]["grants"][0]["grant_id"],
+        status["permissions"],
+        json!({"live": 1, "revoked": 0, "denials": 0})
+    );
+    assert_eq!(
+        owner.ok(LIST, json!({"module_id": MODULE}))["grants"][0]["grant_id"],
         grant["grant"]["grant_id"]
     );
     let jobs: Vec<&str> = status["jobs"]

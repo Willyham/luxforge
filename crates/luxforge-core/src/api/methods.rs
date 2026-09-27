@@ -345,7 +345,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.status",
         owner::capability::ModuleParams,
         owner::capability::module_status,
-        "{module_id, activation: {state, reason?, job_id?, error?}, settings: {state, revision, missing}, resources, permissions: {grants, denials}, jobs}; state is inactive, activating, active or failed; reads settings, stats installed markers and reads grants, and loads nothing"
+        "{module_id, activation: {state, reason?, job_id?, error?}, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs}; state is inactive, activating, active or failed; permissions counts the module's grants and denials, whose records module.permission.list returns; reads settings, stats installed markers and reads grants, and loads nothing"
     ),
     owner!(
         "module.resource.list",
