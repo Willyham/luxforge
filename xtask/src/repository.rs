@@ -526,6 +526,23 @@ const SOURCE_RULES: &[SourceRule] = &[
         reason: "the desktop reads the crop, its stage and the orientation ahead of it from \
                  recipe.describe rows, never from a payload",
     },
+    // The crop angle is one declared parameter drawn by the generic stepper, which reads its range,
+    // steps and default from the descriptor. Only the frame's own geometry (`crop_draft.rs`)
+    // clamps to the core's angle constants; a hand-built angle control that reached for them would
+    // be a second path.
+    SourceRule {
+        name: "declared-crop-angle",
+        tokens: &["MIN_ANGLE", "MAX_ANGLE"],
+        scope: &["crates/luxforge-app/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-app/src/crop_draft.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the desktop reads the crop angle's range and steps from its declared parameter \
+                 through NumberSpec; only the frame's geometry (crop_draft.rs) clamps to the core's \
+                 constants",
+    },
     // The one-megapixel parallel threshold and the 512 MiB frame limit every per-pixel pass picks
     // its path against are declared once, in luxforge-raw's limits module: luxforge-core depends on
     // luxforge-raw, not the reverse, so that module is the one home both crates can import from.
@@ -2772,6 +2789,60 @@ mod tests {
             fs::remove_file(&file).unwrap();
         }
         assert_eq!(read(tmp.path(), &["desktop-crop-rows"]).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn the_desktop_reads_the_crop_angle_from_its_declared_parameter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("crates/luxforge-app/src");
+        let state = src.join("state");
+        fs::create_dir_all(&state).unwrap();
+        // The frame's geometry clamps to the core's range; a test module and a test item may name
+        // it to check that clamp; a comment names nothing.
+        for (file, text) in [
+            (
+                src.join("crop_draft.rs"),
+                "self.stage.angle = degrees.clamp(MIN_ANGLE, MAX_ANGLE);
+"
+                .to_owned(),
+            ),
+            (
+                src.join("app_tests.rs"),
+                "assert_eq!(angle, MAX_ANGLE);
+"
+                .to_owned(),
+            ),
+            (
+                state.join("tools.rs"),
+                "// Not MIN_ANGLE: the declared range.
+#[cfg(test)]
+mod tests {
+                     fn t() { assert_eq!(spec.min, MIN_ANGLE); }
+}
+"
+                .to_owned(),
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["declared-crop-angle"]).unwrap(), (1, 0));
+        // An angle control that takes its rail from the core's constants is a second path.
+        for text in [
+            "let rail = AngleRailModel { min: MIN_ANGLE, max: MAX_ANGLE };
+",
+            "use luxforge_core::{CropStage, MAX_ANGLE};
+",
+        ] {
+            let file = state.join("crop_angle.rs");
+            fs::write(&file, text).unwrap();
+            let error = refusal(tmp.path(), &["declared-crop-angle"], text);
+            assert!(
+                error.contains("crop_angle.rs:1") && error.contains("declared parameter"),
+                "{error}"
+            );
+            fs::remove_file(&file).unwrap();
+        }
+        assert_eq!(read(tmp.path(), &["declared-crop-angle"]).unwrap(), (1, 0));
     }
 
     #[test]

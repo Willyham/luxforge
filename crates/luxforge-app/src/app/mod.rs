@@ -386,7 +386,6 @@ pub(crate) struct Editor {
     pub(crate) version_form_open: bool,
     /// The preview generation that belongs to the draft rather than to the displayed state.
     pub(crate) draft_generation: Option<u64>,
-    pub(crate) crop_angle: String,
     /// The two extents the `custom` ratio preset reads.
     pub(crate) crop_custom: (String, String),
     pub(crate) crop_guide: bool,
@@ -632,7 +631,6 @@ impl Editor {
             version_name: String::new(),
             version_form_open: false,
             draft_generation: None,
-            crop_angle: "0".into(),
             crop_custom: ("5".into(), "4".into()),
             crop_guide: false,
             crop_option: false,
@@ -886,7 +884,6 @@ impl Editor {
             // control in front of it would edit.
             target: self.section_target(),
             drafting: self.drafting(),
-            crop_angle: &self.crop_angle,
             crop_custom: (&self.crop_custom.0, &self.crop_custom.1),
             crop_guide: self.crop_guide,
             crop_option: self.crop_option,

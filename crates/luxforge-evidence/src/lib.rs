@@ -367,8 +367,11 @@ pub enum DraftStep {
     Start,
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Reapply,
+    /// An angle typed into the angle's box and submitted, as a press on the box, the text and
+    /// Enter send it.
     Angle(f64),
-    Nudge(f64),
+    /// One press of the angle's − (`-1`) or + (`1`) button, which steps it by its declared step.
+    Nudge(i8),
     /// A drag on the angle's rail through these fractions of its range, then its release, exactly
     /// as the rail publishes them.
     AngleRail(Vec<f64>),
@@ -402,6 +405,9 @@ impl DraftStep {
                     );
                 }
                 Ok(())
+            }
+            Self::Nudge(direction) if direction.abs() != 1 => {
+                Err("draft nudge takes -1 or 1, a press of the angle's − or + button".into())
             }
             Self::Preset(option) => text(option, "draft preset"),
             Self::Rect([_, _, width, height]) if *width <= 0.0 || *height <= 0.0 => Err(

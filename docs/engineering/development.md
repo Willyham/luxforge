@@ -83,6 +83,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `job-table` | `Jobs::new` anywhere but once, in the catalog owner's launch (`api/owner.rs`) | Core production code |
 | `one-envelope-check` | `mutation.validate()` outside the dispatcher's one envelope check (`Envelope::check` in `api/params.rs`), which checks every mutating method's envelope before any handler runs | Core production code |
 | `desktop-crop-rows` | `CROP_EFFECT`, `ORIENTATION_EFFECT`, `from_value::<CropPayload>` and `from_value::<Orientation>` anywhere in the desktop: it reads a crop, its stage and the orientation ahead of it from `recipe.describe` rows | Desktop production code (`crates/luxforge-app/src`) |
+| `declared-crop-angle` | `MIN_ANGLE` and `MAX_ANGLE` outside the frame's geometry (`crop_draft.rs`): the angle's control reads its range, steps and default from the declared parameter | Desktop production code (`crates/luxforge-app/src`) |
 | `render-limits-home` | The one-megapixel parallel threshold or the 512 MiB frame limit's literal assignment, `= 1_000_000;` or `= 512 * 1024 * 1024;`, outside `luxforge-raw/src/limits.rs` | `luxforge-core` and `luxforge-raw` production code |
 | `draft-preview-rule` | `RawSettingsMode::DraftPreview`, the drafted preview's approximate white balance, outside the one evaluation builder (`editor/evaluate.rs`) and the RAW settings resolver (`editor/source.rs`) | Core production code |
 | `thread-spawn` | `thread::spawn`, `thread::Builder` and `thread::scope` outside the declared worker homes: the core's source worker and owner loop, point-query worker, API transport threads, the job table's lanes and latest-job worker; the desktop's diagnostics log writer; the widget crate's GPU retirement worker; the test kit's process and server threads; `verify`'s component pool | Production code under `crates/` and `xtask/` |
@@ -582,8 +583,9 @@ Each step is an object with exactly one key.
   itself — the current state's revision and a fresh request id — and rejects a script that sets
   either, so any asset mutation works, `history.undo` included. Its frame is captured when the resulting preview
   reaches the GPU: the same `render_ready` correlation an `--open` uses.
-- `draft` drives the crop draft: `start`, `reapply`, `angle`, `nudge`, `preset` (a declared aspect
-  option, by name), `rect` (`[x, y, width, height]` in box pixels, applied as two corner gestures,
+- `draft` drives the crop draft: `start`, `reapply`, `angle` (typed into the angle's box and
+  submitted), `nudge` (`-1` or `1`: one press of the angle's − or + button), `angle_rail` (a drag
+  through rail fractions, then its release), `preset` (a declared aspect option, by name), `rect` (`[x, y, width, height]` in box pixels, applied as two corner gestures,
   top-left then bottom-right), `swap`, `lock`, `option`, `guide`, `apply`, `cancel`. `start` and
   `reapply` open or rebase the frame at once and wait for the crop layer's truncated input-stage
   preview under it (and a reapply for its `draft.reapply` too), `apply` waits for its committed

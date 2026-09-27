@@ -37,6 +37,14 @@ pub(crate) struct CurveSampleRequest {
 impl Editor {
     /// One generated-control or tools-panel section message.
     pub(super) fn control_update(&mut self, message: ControlMessage) -> Task<Message> {
+        // The crop frame's fields are the open frame's, not a request of their own: the crop
+        // driver turns what their control sends into a change of that frame.
+        if message
+            .field()
+            .is_some_and(|(action, _)| self.is_crop_action(action))
+        {
+            return self.crop_control(message);
+        }
         match message {
             ControlMessage::Field {
                 action,
@@ -144,7 +152,6 @@ impl Editor {
             ControlMessage::EditValue { action, parameter } => {
                 let id = fields::field_id(&action, &parameter, None);
                 self.editing = Some((action, parameter));
-                self.seed_idle_angle();
                 return operation::focus(iced::widget::Id::from(id));
             }
             ControlMessage::Submit { action, parameter } => {

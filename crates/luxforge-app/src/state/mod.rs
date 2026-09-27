@@ -201,7 +201,6 @@ pub(crate) struct Inputs<'a> {
     pub(crate) target: Option<&'a MaskId>,
     /// The draft's own input stage is on the GPU and the current state is shown.
     pub(crate) drafting: bool,
-    pub(crate) crop_angle: &'a str,
     pub(crate) crop_custom: (&'a str, &'a str),
     pub(crate) crop_guide: bool,
     pub(crate) crop_option: bool,
@@ -448,7 +447,7 @@ impl Built {
             (stamps.current_recipe, stamps.recipe, stamps.menu, session),
             (stamps.presets, stamps.preset_form, stamps.capabilities),
             (inputs.busy, inputs.developer, inputs.modules_ready),
-            (inputs.crop_angle, inputs.crop_custom, inputs.crop_guide),
+            (inputs.crop_custom, inputs.crop_guide),
             (inputs.editing, inputs.dragging),
             drafting_key(inputs.draft.is_some()),
             (&inputs.preset_refusal, inputs.slider_draft, inputs.target),
@@ -737,7 +736,6 @@ mod tests {
         status: String,
         busy: bool,
         developer: bool,
-        crop_angle: String,
         render_error: Option<luxforge_core::Error>,
         analysis: Option<histogram::Analysis>,
         analysis_updating: bool,
@@ -786,7 +784,6 @@ mod tests {
                 status: "ready".into(),
                 busy: false,
                 developer: false,
-                crop_angle: "0".into(),
                 render_error: None,
                 analysis: None,
                 analysis_updating: false,
@@ -898,7 +895,6 @@ mod tests {
                     .as_ref()
                     .filter(|_| crate::state::canvas::mask_workspace(&self.session.workspace.mode)),
                 drafting: self.draft.is_some(),
-                crop_angle: &self.crop_angle,
                 crop_custom: ("5", "4"),
                 crop_guide: false,
                 crop_option: false,
@@ -1181,17 +1177,18 @@ mod tests {
             assert_eq!(chosen(&model), ["Free"]);
             assert!(!model.locked && !model.can_swap);
             assert_eq!(model.lock_label, "Lock ratio");
-            assert_eq!(model.angle, "0");
+            let angle = model.angle.as_ref().expect("the angle's stepper");
             assert_eq!(
-                model.angle_rail,
-                Some(tools::AngleRailModel {
-                    min: -45.0,
-                    max: 45.0,
-                    value: 0.0,
-                    step: crate::crop_draft::ANGLE_RAIL_STEP,
-                    live: false,
-                })
+                angle.style,
+                tools::NumberControlStyle::Stepper { rail: true }
             );
+            assert_eq!(
+                (angle.display.as_str(), angle.unit.as_deref(), angle.value),
+                ("0.0", Some("\u{b0}"), 0.0)
+            );
+            assert_eq!((angle.spec.min, angle.spec.max), (-45.0, 45.0));
+            assert_eq!((angle.spec.step, angle.spec.fine_step), (0.5, 0.05));
+            assert!(!angle.dragging, "the rail rests while idle");
             assert!(model.readout.is_empty() && !model.can_apply);
             assert_eq!(model.presets.len(), 7, "every declared ratio is a chip");
         }
@@ -1219,8 +1216,8 @@ mod tests {
         );
         let model = idle(vec![crop_layer(straightened)]);
         assert_eq!(chosen(&model), ["Original"]);
-        assert_eq!(model.angle, "2.4");
-        assert_eq!(model.angle_rail.map(|rail| rail.value), Some(2.4));
+        let angle = model.angle.expect("the angle's stepper");
+        assert_eq!((angle.display.as_str(), angle.value), ("2.4", 2.4));
 
         // An off-centre rectangle no ratio produces reads as Free, at its own angle.
         let free = CropPayload {
@@ -1233,7 +1230,7 @@ mod tests {
         let model = idle(vec![crop_layer(free)]);
         assert_eq!(chosen(&model), ["Free"]);
         assert!(!model.locked);
-        assert_eq!(model.angle, "7");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "7.0");
 
         // Behind a quarter turn the crop's input stage is portrait. A 16:9 fitted there reads as
         // 16:9 only because the turn is read: on the unturned stage the same payload is 480 × 120.
@@ -1275,13 +1272,13 @@ mod tests {
         let model = crop_model(&scene.derive(), &crop.id);
         assert_eq!(chosen(&model), ["1:1"]);
         assert!(model.locked);
-        assert_eq!(model.angle, "3");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "3.0");
         // A row without a stage, which the core reports after a layer it cannot compile, reads as
         // Free at the crop's own angle rather than as a guess.
         row(&mut scene).input_stage = None;
         let model = crop_model(&scene.derive(), &crop.id);
         assert_eq!(chosen(&model), ["Free"]);
-        assert_eq!(model.angle, "3");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "3.0");
     }
 
     /// The idle controls read the displayed entry, not the current one, and a historical preview or
@@ -1322,11 +1319,11 @@ mod tests {
             ["Free"],
             "rows that describe another entry are not the displayed entry's crop"
         );
-        assert_eq!(model.angle, "0");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "0.0");
         scene.describe_displayed();
         let model = crop_model(&scene.derive(), &crop.id);
         assert_eq!(chosen(&model), ["Free"], "the displayed entry has no crop");
-        assert_eq!(model.angle, "0");
+        assert_eq!(model.angle.expect("the angle's stepper").display, "0.0");
     }
 
     #[test]
@@ -2721,7 +2718,7 @@ mod tests {
         );
         assert!(matches!(amount.rail, tools::RailStyle::Temperature));
         assert!(
-            matches!(controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper)
+            matches!(controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper { rail: false })
         );
         assert!(
             matches!(controls[2], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Field)

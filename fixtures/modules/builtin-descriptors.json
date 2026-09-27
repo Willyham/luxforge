@@ -3757,6 +3757,7 @@
             "parameters": [
               {
                 "default": 0.0,
+                "fine_step": 0.05,
                 "kind": "number",
                 "max": 45.0,
                 "min": -45.0,
@@ -3764,7 +3765,7 @@
                 "notes": "straightening angle, positive turns the image clockwise on screen",
                 "precision": null,
                 "required": false,
-                "step": null,
+                "step": 0.5,
                 "unit": "deg"
               },
               {
@@ -3869,6 +3870,7 @@
               },
               {
                 "default": 0.0,
+                "fine_step": 0.05,
                 "kind": "number",
                 "max": 45.0,
                 "min": -45.0,
@@ -3876,7 +3878,7 @@
                 "notes": "straightening angle, positive turns the image clockwise on screen",
                 "precision": null,
                 "required": false,
-                "step": null,
+                "step": 0.5,
                 "unit": "deg"
               },
               {
@@ -4155,6 +4157,7 @@
         "parameters": [
           {
             "default": 0.0,
+            "fine_step": 0.05,
             "kind": "number",
             "max": 45.0,
             "min": -45.0,
@@ -4162,7 +4165,7 @@
             "notes": "straightening angle, positive turns the image clockwise on screen",
             "precision": null,
             "required": false,
-            "step": null,
+            "step": 0.5,
             "unit": "deg"
           },
           {
@@ -4282,6 +4285,7 @@
           },
           {
             "default": 0.0,
+            "fine_step": 0.05,
             "kind": "number",
             "max": 45.0,
             "min": -45.0,
@@ -4289,7 +4293,7 @@
             "notes": "straightening angle, positive turns the image clockwise on screen",
             "precision": null,
             "required": false,
-            "step": null,
+            "step": 0.5,
             "unit": "deg"
           },
           {

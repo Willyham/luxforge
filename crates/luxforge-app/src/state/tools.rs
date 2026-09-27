@@ -11,7 +11,7 @@ use crate::{
             action_params, channel_text, field_id, labelled, parse_field, undeclared_label,
             unsupported_label,
         },
-        number::{NumberSpec, number_text},
+        number::NumberSpec,
         palette::PaletteAction,
         presets::{PresetsModel, presets_model},
     },
@@ -19,8 +19,8 @@ use crate::{
 use luxforge_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
     CropPayload, CropStage, CurveBackground, EditorState, EffectStage, EntryId, LayerDescription,
-    MAX_ANGLE, MIN_ANGLE, MaskId, ModuleDescriptor, NumberStyle, ParameterDescriptor,
-    ParameterKind, RailDecoration, RecipeDescription, ResetAction, SourceTag,
+    MaskId, ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind, RailDecoration,
+    RecipeDescription, ResetAction, SourceTag,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -68,7 +68,11 @@ pub(crate) struct CurveSamples {
 pub(crate) enum NumberControlStyle {
     Slider,
     Field,
-    Stepper,
+    /// The − and + buttons either side of the value box, or of a rail between them when `rail` is
+    /// set: the crop angle's, which a drag moves on the parameter's fine step.
+    Stepper {
+        rail: bool,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChoiceControlStyle {
@@ -446,18 +450,6 @@ pub(crate) struct PresetChip {
     pub(crate) chosen: bool,
 }
 
-/// The angle's rail while a crop draft is open: the angle's range, the draft's angle on it and
-/// the step a drag moves in. The rail's gesture is live for the whole draft, so its handle reads
-/// accent while the draft is open, as the crop reference draws it.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AngleRailModel {
-    pub(crate) min: f64,
-    pub(crate) max: f64,
-    pub(crate) value: f64,
-    pub(crate) step: f64,
-    pub(crate) live: bool,
-}
-
 /// The crop draft's own controls, rendered by the host for a declared crop-frame interaction.
 ///
 /// Idle, the same Ratio and Angle controls read the displayed entry's committed crop exactly as a
@@ -479,18 +471,12 @@ pub(crate) struct CropSectionModel {
     /// The ratio is locked: the lock reads selected.
     pub(crate) locked: bool,
     pub(crate) can_swap: bool,
-    pub(crate) angle: String,
-    pub(crate) angle_id: String,
-    /// The crop action and its angle parameter, which name the angle field for editing.
-    pub(crate) angle_action: String,
-    pub(crate) angle_parameter: String,
-    /// The angle's box is open for typing; otherwise it shows the angle with its unit.
-    pub(crate) angle_editing: bool,
-    /// The angle's rail: the draft's angle while drafting, the committed one while idle.
-    pub(crate) angle_rail: Option<AngleRailModel>,
+    /// The crop action's declared angle as the generic stepper with its rail: the draft's angle
+    /// while drafting, the committed one while idle, and the text as typed while its box is open.
+    /// The rail's gesture is live for the whole draft, so its handle reads accent while the draft
+    /// is open, as the crop reference draws it. `None` when the action declares no number angle.
+    pub(crate) angle: Option<SliderControl>,
     pub(crate) guide: bool,
-    /// How far one nudge button moves the angle, in degrees.
-    pub(crate) nudge: f64,
     /// The draft's own numbers, so what is on screen is observable without a debugger: each a
     /// name and its value.
     pub(crate) readout: Vec<(String, String)>,
@@ -945,8 +931,8 @@ fn contains_curve(controls: &[Control]) -> bool {
 /// crop and shows the same fields, so it follows those instead.
 fn draft_digest(frame: Option<&CropFrame<'_>>, inputs: &Inputs<'_>) -> String {
     let fields = format!(
-        "{}|{:?}|{}|{}|{}|{}|{}|{:?}",
-        inputs.crop_angle,
+        "{:?}|{:?}|{}|{}|{}|{}|{}|{:?}",
+        frame.and_then(|frame| inputs.fields.get(frame.action, frame.angle)),
         inputs.editing,
         inputs.crop_custom.0,
         inputs.crop_custom.1,
@@ -1066,7 +1052,7 @@ fn resolved_model(
                 slider.style = match style {
                     NumberStyle::Slider => NumberControlStyle::Slider,
                     NumberStyle::Field => NumberControlStyle::Field,
-                    NumberStyle::Stepper => NumberControlStyle::Stepper,
+                    NumberStyle::Stepper => NumberControlStyle::Stepper { rail: false },
                 };
                 slider.rail = match rail.unwrap_or(&RailDecoration::Plain) {
                     RailDecoration::Plain => RailStyle::Plain,
@@ -1462,7 +1448,7 @@ fn slider(
         id: field_id(action, parameter, None),
         // The value carries the unit, so the label does not repeat it.
         label: label.to_owned(),
-        unit: declared.unit.clone(),
+        unit: declared.unit.as_deref().map(unit_symbol),
         spec,
         style: NumberControlStyle::Slider,
         rail: RailStyle::Plain,
@@ -1483,6 +1469,15 @@ fn slider(
         invalid,
         default: crate::state::fields::seed_text(declared),
         reset: None,
+    }
+}
+
+/// A declared unit as a value shows it: `deg` is the degree sign, which sits against the number
+/// (`2.4°`); every other unit is shown as declared.
+fn unit_symbol(unit: &str) -> String {
+    match unit {
+        "deg" => "\u{b0}".to_owned(),
+        unit => unit.to_owned(),
     }
 }
 
@@ -1639,15 +1634,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
             field_id(frame.fit_action, "custom-width", None),
             field_id(frame.fit_action, "custom-height", None),
         ),
-        angle: inputs.crop_angle.to_owned(),
-        angle_id: field_id(frame.action, frame.angle, None),
-        angle_action: frame.action.to_owned(),
-        angle_parameter: frame.angle.to_owned(),
-        angle_editing: inputs
-            .editing
-            .is_some_and(|(action, parameter)| action == frame.action && parameter == frame.angle),
         guide: inputs.crop_guide,
-        nudge: crate::crop_draft::ANGLE_STEP,
         enabled,
         ..CropSectionModel::default()
     };
@@ -1655,6 +1642,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         // Idle, the box and the rail show the committed angle, and the box shows what is being
         // typed while it is open.
         let committed = committed_crop(frame, inputs);
+        let angle = angle_control(frame, inputs, committed.angle, false);
         let locked = committed.aspect.is_some();
         let chosen = committed
             .aspect
@@ -1664,18 +1652,7 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
             });
         return CropSectionModel {
             presets: preset_chips(&presets, chosen),
-            angle: if base.angle_editing {
-                base.angle.clone()
-            } else {
-                number_text(committed.angle)
-            },
-            angle_rail: Some(AngleRailModel {
-                min: MIN_ANGLE,
-                max: MAX_ANGLE,
-                value: committed.angle,
-                step: crate::crop_draft::ANGLE_RAIL_STEP,
-                live: false,
-            }),
+            angle,
             lock_label: lock_label(locked),
             locked,
             can_swap: enabled && locked,
@@ -1692,15 +1669,55 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         can_apply: inputs.apply_refusal.is_none(),
         can_reapply: !inputs.busy,
         readout: readout(draft, frame.action),
-        angle_rail: Some(AngleRailModel {
-            min: MIN_ANGLE,
-            max: MAX_ANGLE,
-            value: draft.stage.angle,
-            step: crate::crop_draft::ANGLE_RAIL_STEP,
-            live: true,
-        }),
+        angle: angle_control(frame, inputs, draft.stage.angle, true),
         ..base
     }
+}
+
+/// The crop angle as the generic stepper, with the rail between its buttons: `angle` on the rail
+/// and in the box, formatted as its parameter declares, and the text as typed while the box is
+/// open. The value never follows the typed text, so the rail stays on the frame's angle until a
+/// number is submitted. `live` marks the rail's gesture live: the draft is open.
+fn angle_control(
+    frame: &CropFrame<'_>,
+    inputs: &Inputs<'_>,
+    angle: f64,
+    live: bool,
+) -> Option<SliderControl> {
+    let declared = frame.module.action(frame.action)?.parameter(frame.angle)?;
+    let spec = NumberSpec::of(declared)?;
+    let typing = inputs
+        .editing
+        .is_some_and(|(action, parameter)| action == frame.action && parameter == frame.angle);
+    let text = if typing {
+        inputs
+            .fields
+            .get(frame.action, frame.angle)
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        spec.format(angle)
+    };
+    let invalid = if typing {
+        parse_field(declared, &text).err()
+    } else {
+        None
+    };
+    let mut control = slider(
+        frame.action,
+        frame.angle,
+        "",
+        declared,
+        spec,
+        &text,
+        invalid,
+        typing,
+        inputs,
+    );
+    control.value = angle;
+    control.style = NumberControlStyle::Stepper { rail: true };
+    control.dragging = live;
+    Some(control)
 }
 
 /// One chip per declared ratio preset, with `chosen` the option that reads selected.

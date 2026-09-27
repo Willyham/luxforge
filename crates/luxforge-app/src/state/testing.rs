@@ -132,13 +132,14 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
     let rectangle = ["x", "y", "width", "height"]
         .map(|name| number(name, 0.0, 1.0, true, None))
         .to_vec();
-    let mut crop = vec![number(
-        "angle",
-        MIN_ANGLE,
-        MAX_ANGLE,
-        false,
-        Some(json!(0.0)),
-    )];
+    // The angle as the crop module declares it: its unit and the steps its stepper moves by.
+    let angle = || {
+        number("angle", MIN_ANGLE, MAX_ANGLE, false, Some(json!(0.0)))
+            .unit("deg")
+            .step(0.5)
+            .fine_step(0.05)
+    };
+    let mut crop = vec![angle()];
     crop.extend(rectangle.clone());
     let mut fit = vec![
         ParameterDescriptor {
@@ -159,7 +160,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         },
         number("aspect-width", 1.0, 10000.0, false, None),
         number("aspect-height", 1.0, 10000.0, false, None),
-        number("angle", MIN_ANGLE, MAX_ANGLE, false, Some(json!(0.0))),
+        angle(),
     ];
     fit.push(number("center-x", 0.0, 1.0, false, None));
     fit.push(number("center-y", 0.0, 1.0, false, None));

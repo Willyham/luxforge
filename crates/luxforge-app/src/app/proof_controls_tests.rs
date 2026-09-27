@@ -354,7 +354,7 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
     let expected = BTreeSet::from([
         "number:Slider".into(),
         "number:Field".into(),
-        "number:Stepper".into(),
+        "number:Stepper { rail: false }".into(),
         "toggle".into(),
         "choice:Segmented".into(),
         "choice:Chips".into(),

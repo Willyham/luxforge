@@ -1458,28 +1458,19 @@ impl Editor {
                 return self.draft_message(DraftMessage::Commit);
             }
             DraftStep::Rect(rect) => return self.rect_step(*rect),
-            DraftStep::AngleRail(fractions) => {
-                if !drafting {
-                    return self.idle_step(
-                        fractions
-                            .iter()
-                            .map(|fraction| CropMessage::AngleRail(*fraction))
-                            .chain(std::iter::once(CropMessage::AngleRailReleased))
-                            .collect(),
-                    );
-                }
-                let mut tasks: Vec<Task<Message>> = fractions
-                    .iter()
-                    .map(|fraction| self.crop_update(CropMessage::AngleRail(*fraction)))
-                    .collect();
-                tasks.push(self.crop_update(CropMessage::AngleRailReleased));
-                self.capture_next_frame();
-                return Task::batch(tasks);
+            // The angle is the generic stepper of the crop action's declared angle, so its steps
+            // send what that widget sends: a drag's fractions and release, a button press, or a
+            // press on the box, the typed text and Enter.
+            DraftStep::AngleRail(_) | DraftStep::Angle(_) | DraftStep::Nudge(_) => {
+                let Some(frame) = crop_frame(&self.modules) else {
+                    return self.fail_step("no module declares a crop frame");
+                };
+                let (action, parameter) = (frame.action.to_owned(), frame.angle.to_owned());
+                let messages = angle_messages(&step, &action, &parameter);
+                return self.angle_step(drafting, messages);
             }
             DraftStep::Option(on) => CropMessage::Option(*on),
             DraftStep::Guide(on) => CropMessage::Guide(*on),
-            DraftStep::Angle(value) => CropMessage::AngleText(number_text(*value)),
-            DraftStep::Nudge(value) => CropMessage::NudgeAngle(*value),
             DraftStep::Swap => CropMessage::Swap,
             DraftStep::Lock => CropMessage::Lock,
             // Ending the draft returns the session to the pointer through one `workspace.set`,
@@ -1514,30 +1505,30 @@ impl Editor {
         if !drafting
             && matches!(
                 step,
-                DraftStep::Preset(_)
-                    | DraftStep::Lock
-                    | DraftStep::Swap
-                    | DraftStep::Nudge(_)
-                    | DraftStep::Angle(_)
-                    | DraftStep::Guide(true)
+                DraftStep::Preset(_) | DraftStep::Lock | DraftStep::Swap | DraftStep::Guide(true)
             )
         {
-            let mut messages = vec![message];
-            if matches!(step, DraftStep::Angle(_)) {
-                messages.push(CropMessage::SubmitAngle);
-            }
-            return self.idle_step(messages);
+            return self.idle_step(vec![Message::Crop(message)]);
         }
         let modifier = matches!(step, DraftStep::Option(_) | DraftStep::Guide(_));
         if !drafting && !modifier {
             return self.fail_step("no crop draft is open");
         }
-        // Setting the angle text does not change the draft; submitting it does, exactly as Enter in
-        // the field does.
-        let mut tasks = vec![self.crop_update(message)];
-        if matches!(step, DraftStep::Angle(_)) {
-            tasks.push(self.crop_update(CropMessage::SubmitAngle));
+        let task = self.crop_update(message);
+        self.capture_next_frame();
+        task
+    }
+
+    /// The angle stepper's messages for one step: on an open draft they change it and the frame
+    /// shows the change; from the idle section they open the draft as the stepper does.
+    fn angle_step(&mut self, drafting: bool, messages: Vec<Message>) -> Task<Message> {
+        if !drafting {
+            return self.idle_step(messages);
         }
+        let tasks: Vec<Task<Message>> = messages
+            .into_iter()
+            .map(|message| self.update(message))
+            .collect();
         self.capture_next_frame();
         Task::batch(tasks)
     }
@@ -1545,11 +1536,11 @@ impl Editor {
     /// One change from the idle crop section: the same messages its control sends, which open the
     /// draft seeded from the committed crop and apply the change to it at once. The frame is the
     /// opened draft over its input stage, so the step waits for that stage as a start does.
-    fn idle_step(&mut self, messages: Vec<CropMessage>) -> Task<Message> {
+    fn idle_step(&mut self, messages: Vec<Message>) -> Task<Message> {
         self.await_step(Settle::Draft);
         let tasks: Vec<Task<Message>> = messages
             .into_iter()
-            .map(|message| self.crop_update(message))
+            .map(|message| self.update(message))
             .collect();
         if self.crop().is_none() {
             return self.fail_step("the idle change could not open a draft");
@@ -3164,6 +3155,49 @@ pub(crate) fn envelope_free(method: &str) -> Option<HostStep> {
     }
 }
 
+/// What the crop angle's stepper sends for one scripted angle step, naming the crop action's
+/// declared `action` and `parameter`: a rail drag's fractions and its release, one press of the −
+/// or + button, or a press on the box, the angle typed into it and Enter.
+fn angle_messages(step: &DraftStep, action: &str, parameter: &str) -> Vec<Message> {
+    let (action, parameter) = (action.to_owned(), parameter.to_owned());
+    let messages = match step {
+        DraftStep::AngleRail(fractions) => fractions
+            .iter()
+            .map(|fraction| ControlMessage::Fraction {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                fraction: *fraction,
+            })
+            .chain(std::iter::once(ControlMessage::Released {
+                action: action.clone(),
+                parameter: parameter.clone(),
+            }))
+            .collect(),
+        DraftStep::Nudge(direction) => vec![ControlMessage::Step {
+            action,
+            parameter,
+            direction: *direction,
+        }],
+        DraftStep::Angle(value) => vec![
+            ControlMessage::EditValue {
+                action: action.clone(),
+                parameter: parameter.clone(),
+            },
+            ControlMessage::Field {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                text: number_text(*value),
+            },
+            ControlMessage::Submit {
+                action,
+                parameter: Some(parameter),
+            },
+        ],
+        _ => Vec::new(),
+    };
+    messages.into_iter().map(Message::Control).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3566,7 +3600,7 @@ mod tests {
     #[test]
     fn a_scripted_draft_change_records_its_step_and_arms_one_capture() {
         let (mut editor, catalog, _, _) = scripted(
-            r#"[{"draft":{"start":true}},{"draft":{"rect":[20,10,200,150]}},{"draft":{"angle":9.0}},{"draft":{"preset":"1:1"}},{"draft":{"cancel":true}}]"#,
+            r#"[{"draft":{"start":true}},{"draft":{"rect":[20,10,200,150]}},{"draft":{"angle":9.0}},{"draft":{"nudge":-1}},{"draft":{"preset":"1:1"}},{"draft":{"cancel":true}}]"#,
         );
         // Start opens the frame at once and waits for its input stage; nothing is captured until
         // the stage is under the frame.
@@ -3591,9 +3625,13 @@ mod tests {
             ),
             (3, &|editor: &Editor| {
                 assert_eq!(editor.crop().expect("a draft").stage.angle, 9.0);
-                assert_eq!(editor.crop_angle, "9");
+                assert_eq!(editor.snapshot()["crop"]["section"]["angle"], json!("9.0"));
             }),
+            // A press of the − button steps the angle by its declared step.
             (4, &|editor: &Editor| {
+                assert_eq!(editor.crop().expect("a draft").stage.angle, 8.5);
+            }),
+            (5, &|editor: &Editor| {
                 let draft = editor.crop().expect("a draft");
                 assert_eq!(draft.preset, "1:1");
                 assert!(
@@ -3602,7 +3640,7 @@ mod tests {
                     draft.rect
                 );
             }),
-            (5, &|editor: &Editor| assert!(editor.crop().is_none())),
+            (6, &|editor: &Editor| assert!(editor.crop().is_none())),
         ] {
             editor.evidence.as_mut().expect("evidence").capture_pending = false;
             let _ = editor.next_step();

@@ -431,8 +431,8 @@ impl Editor {
                     "chosen": model.presets.iter().find(|chip| chip.chosen).map(|chip| chip.label.clone()),
                     "locked": model.locked,
                     "can_swap": model.can_swap,
-                    "angle": model.angle,
-                    "rail": model.angle_rail.as_ref().map(|rail| rail.value),
+                    "angle": model.angle.as_ref().map(|angle| angle.edit.text(&angle.display).to_owned()),
+                    "rail": model.angle.as_ref().map(|angle| angle.value),
                     "guide": model.guide,
                 })
             })
