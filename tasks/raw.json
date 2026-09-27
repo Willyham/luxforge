@@ -823,13 +823,12 @@
     {
       "id": "TASK-013",
       "description": "Integrate RAW recipes with the separately delivered safe JPEG exporter.",
-      "status": "blocked",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "RAW qualification milestone on the roadmap, not a wave of the post-consolidation work.",
-        "Blocked until the JPEG export milestone on the roadmap delivers the shared snapshot-bound JPEG exporter; RAW recipes are meant to go through that same exporter once it exists.",
-        "The exporter's contract is recorded in docs/specs/single-image.md's Export section, but the exporter does not exist in this checkout yet.",
-        "This task adapts and verifies RAW input only; it does not authorize building a second exporter or implementing the separately scoped export feature, and neither the foundation nor the full-journey checkpoint depends on it."
+        "Delivered with the shared exporter (docs/design/export.md): RAW recipes render through the linear domain on the export lane; no second exporter.",
+        "Evidence: `a_raw_export_matches_the_exact_render` on the supplied NEF, RAF and DNG, byte-identical to the encoding of an independent exact render in both metadata modes, with independent EXIF inspection and the original unchanged; destination, retry and cancellation behavior is the shared exporter's."
       ],
       "context_links": [
         {
@@ -843,7 +842,7 @@
           "label": "Shared export contract",
           "target": "docs/specs/single-image.md",
           "relevance": "Separate required capability: safe snapshot-bound JPEG exporter with quality 90, sRGB and metadata policy.",
-          "locator": "Export (follow-up)"
+          "locator": "Export"
         },
         {
           "kind": "file",

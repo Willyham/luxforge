@@ -924,6 +924,7 @@ fn stopping_the_owner_cancels_a_running_export_and_leaves_no_file() {
 #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
 fn a_raw_export_matches_the_exact_render() {
     let raw = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("LUXFORGE_RAW_FIXTURE"));
+    let original = fs::read(&raw).unwrap();
     let mut harness = Harness::start("raw");
     let queued = harness.ok(
         "catalog.import",
@@ -955,6 +956,47 @@ fn a_raw_export_matches_the_exact_render() {
     harness.stop();
     let frame = reference(&harness.catalog, &asset, &entry);
     assert_encodes(&out.join("plain.jpg"), &frame, "the RAW export");
+    assert_eq!(
+        fs::read(&raw).unwrap(),
+        original,
+        "the RAW original is unchanged"
+    );
+    assert!(!has_app1(&fs::read(out.join("plain.jpg")).unwrap()));
+    // The kept file's tags, read by the independent parser: upright, the output's size, the
+    // camera's own fields, and nothing the export never carries.
+    let kept = fs::read(out.join("raw.jpg")).unwrap();
+    let exif = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(&kept))
+        .expect("the independent reader finds the EXIF segment");
+    let value = |tag: exif::Tag| {
+        exif.get_field(tag, exif::In::PRIMARY)
+            .map(|field| field.display_value().to_string())
+    };
+    assert_eq!(
+        value(exif::Tag::Orientation).as_deref(),
+        Some("row 0 at top and column 0 at left")
+    );
+    assert_eq!(
+        value(exif::Tag::PixelXDimension),
+        Some(frame.width.to_string())
+    );
+    assert_eq!(
+        value(exif::Tag::PixelYDimension),
+        Some(frame.height.to_string())
+    );
+    assert!(value(exif::Tag::Make).is_some() && value(exif::Tag::Model).is_some());
+    for tag in [
+        exif::Tag::MakerNote,
+        exif::Tag::BodySerialNumber,
+        exif::Tag::JPEGInterchangeFormat,
+        exif::Tag::CFAPattern,
+    ] {
+        assert_eq!(value(tag), None, "{tag} is not carried");
+    }
+    assert!(
+        exif.get_field(exif::Tag::ImageWidth, exif::In::THUMBNAIL)
+            .is_none()
+    );
     // The decoded error is the encoder's alone, which grows with a photograph's fine texture
     // and noise; it is reported, and the byte equality above is the proof.
     let (mean, max, far) = difference(&out.join("raw.jpg"), &frame);
