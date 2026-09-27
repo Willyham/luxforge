@@ -12,8 +12,8 @@
 //! same [`CapabilityHost`].
 use super::{
     descriptor::SettingDescriptor,
-    grants::{Grant, GrantKind, GrantScope, GrantsStore},
-    jobs::{Cancelled, Deliver, JobError, JobKind, JobRecord, JobStatus, Jobs, Origin},
+    grants::{Grant, GrantKind, GrantScope, GrantsStore, PermissionCounts},
+    jobs::{Cancelled, Deliver, JobError, JobKind, JobRecord, JobStatus, Jobs},
     resources::{DEFAULT_RESOURCE_QUOTA_BYTES, ResourceStore, SharedTransport},
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
     settings::{
@@ -24,7 +24,8 @@ use super::{
 };
 use crate::{
     AssetId, EditorService, Error, JobId, ModuleDescriptor, ModuleRegistry, ParameterKind,
-    activity::ActivityBoard, api::params::host_params,
+    activity::ActivityBoard,
+    api::{Origin, announce_once, params::host_params},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -102,13 +103,6 @@ impl std::fmt::Debug for HostConfig {
 
 fn encode(value: impl serde::Serialize) -> Result<Value, Error> {
     serde_json::to_value(value).map_err(|error| Error::internal(error.to_string()))
-}
-
-/// Announce `origin` once, however many changes a request made.
-pub(crate) fn announce_once(announce: &mut Vec<Origin>, origin: &Origin) {
-    if !announce.contains(origin) {
-        announce.push(origin.clone());
-    }
 }
 
 host_params! {
@@ -688,8 +682,9 @@ impl CapabilityHost {
 
     // Status.
 
-    /// `module.status`: activation, settings validity, resources, grants and this module's jobs.
-    /// A settings read, stats of installed markers and a grants file read; no hashing.
+    /// `module.status`: activation, settings validity, resources, grant and denial counts and this
+    /// module's jobs. A settings read, stats of installed markers and a grants file read; no
+    /// hashing. The grant and denial records are read through `module.permission.list`.
     pub(crate) fn status(
         &self,
         registry: &ModuleRegistry,
@@ -720,10 +715,14 @@ impl CapabilityHost {
         };
         let permissions = match self
             .grants()
-            .and_then(|grants| grants.list(Some(&descriptor.id)))
+            .and_then(|grants| grants.counts(&descriptor.id))
         {
-            Ok(list) => encode(list)?,
-            Err(error) => json!({"grants": [], "denials": [], "error": JobError::from(&error)}),
+            Ok(counts) => encode(counts)?,
+            Err(error) => {
+                let mut counts = encode(PermissionCounts::default())?;
+                counts["error"] = json!(JobError::from(&error));
+                counts
+            }
         };
         Ok(json!({
             "module_id": descriptor.id,

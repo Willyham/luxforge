@@ -126,7 +126,7 @@ impl FilePreparation {
             SourceKind::Jpeg => None,
             SourceKind::Raw { metadata } => Some(RawPreparation {
                 metadata: metadata.0.as_ref().clone(),
-                gains: development_gains(asset, recipe)?.expect("RAW has development gains"),
+                gains: raw_gains(metadata, recipe)?,
             }),
         };
         Ok(Self {
@@ -525,14 +525,12 @@ impl EditorService {
             source: source_kind,
         };
         let mut snapshot = Snapshot::original(asset.id.clone());
-        if matches!(asset.source, SourceKind::Raw { .. }) {
+        // A source with RAW metadata is exactly the source `SourceKind::of` reads as a RAW.
+        if let Some(metadata) = source.metadata() {
             snapshot = snapshot.with_layer_inserted(
                 0,
-                crate::RawPayload::for_as_shot(
-                    source.metadata().expect("RAW metadata").as_shot_gains,
-                    source.metadata().expect("RAW metadata").cam_xyz,
-                )?
-                .layer(LayerId::new()),
+                crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz)?
+                    .layer(LayerId::new()),
             )?;
         }
         let mut entry = HistoryEntry {
@@ -798,14 +796,19 @@ fn development_gains(
     asset: &AssetRecord,
     recipe: &crate::Recipe,
 ) -> Result<Option<[f32; 3]>, Error> {
-    let SourceKind::Raw { metadata } = &asset.source else {
-        return Ok(None);
-    };
+    match &asset.source {
+        SourceKind::Jpeg => Ok(None),
+        SourceKind::Raw { metadata } => raw_gains(metadata, recipe).map(Some),
+    }
+}
+
+/// The sensor gains a RAW stack develops at, read from its source layer.
+fn raw_gains(metadata: &RawInterpretation, recipe: &crate::Recipe) -> Result<[f32; 3], Error> {
     let payload = raw_payload(recipe)?;
-    Ok(Some(match payload.wb_mode {
+    Ok(match payload.wb_mode {
         crate::WhiteBalanceMode::AsShot => metadata.as_shot_gains,
         crate::WhiteBalanceMode::Custom => payload.gains,
-    }))
+    })
 }
 
 fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {

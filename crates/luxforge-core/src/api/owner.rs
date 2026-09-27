@@ -2,9 +2,10 @@
 //! loop finds each request's method in the one method table, calls its handler and records the
 //! events the call announced; the owner handlers the table names live here.
 use super::{
-    ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult,
-    methods::{self, Planned, Route},
-    params::{Envelope, NoParams, host_params},
+    ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, Origin,
+    announce_once,
+    methods::{self, Planned, Retries, Route},
+    params::{NoParams, host_params},
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -15,10 +16,7 @@ use crate::{
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
-    capabilities::{
-        host::{CapabilityHost, announce_once},
-        jobs::{Jobs, Origin},
-    },
+    capabilities::{host::CapabilityHost, jobs::Jobs},
     editor::{FilePreparation, PreparedFile, RawDevelopment, SourceSignature},
     source::{PlaneGate, RawPrepared},
 };
@@ -28,6 +26,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    ops::ControlFlow,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
         Arc, Weak,
@@ -121,6 +121,9 @@ enum OwnerMessage {
     /// How many planned samples wait behind the one the point worker is evaluating.
     #[cfg(test)]
     PointsWaiting(SyncSender<usize>),
+    /// Call this where the owner serves a message, or stop calling it.
+    #[cfg(test)]
+    Fault(Option<Fault>),
     /// Wake this client whenever another client's change lands in the event log.
     WatchEvents {
         client: ClientId,
@@ -141,11 +144,40 @@ enum OwnerMessage {
 /// log. It must only post a signal: the owner waits for it.
 pub type EventWake = Arc<dyn Fn() + Send + Sync>;
 
+/// What a test has the owner call, on its own thread, with what it is about to serve: a request's
+/// method just before its handler runs, or `source.complete` just before a finished source job's
+/// result is committed. A test that panics in it proves the owner contains the panic.
+#[cfg(test)]
+type Fault = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// One client blocked in [`OwnerHandle::wait_source`], answered by the completion it waits for.
 struct SourceWaiter {
     client: ClientId,
     job: Option<JobId>,
     reply: SyncSender<()>,
+}
+
+/// Whom one message owes an answer, kept aside before the owner serves it, so that a panic while
+/// serving it still answers: a call or a preview is answered `internal`, a wait is released, and a
+/// source job whose result was being committed fails `internal`.
+enum Owed {
+    Call(String, SyncSender<ApiResponse>),
+    Preview(SyncSender<Result<PreviewJob, Error>>),
+    Wait(SyncSender<()>),
+    Source(JobId),
+    Nobody,
+}
+
+impl Owed {
+    fn of(message: &OwnerMessage) -> Self {
+        match message {
+            OwnerMessage::Call(call) => Self::Call(call.request.id.clone(), call.response.clone()),
+            OwnerMessage::Preview { response, .. } => Self::Preview(response.clone()),
+            OwnerMessage::AwaitSource { reply, .. } => Self::Wait(reply.clone()),
+            OwnerMessage::SourceComplete(id, _) => Self::Source(id.clone()),
+            _ => Self::Nobody,
+        }
+    }
 }
 
 /// What one preview job should render. The client identity travels with it because a draft belongs
@@ -635,8 +667,8 @@ fn queue_preparation(
 }
 
 /// Where a test holds the source worker: after a task's activity has begun and before any of its
-/// work, so the test can read the task as running for as long as it needs to. Outside tests it is
-/// empty and holds nothing.
+/// work, so the test can read the task as running for as long as it needs to, or panic there as the
+/// task's work could. Outside tests it is empty and holds nothing.
 #[derive(Clone, Default)]
 struct SourceHold(#[cfg(test)] Option<Arc<dyn Fn() + Send + Sync>>);
 
@@ -699,6 +731,70 @@ fn read_artifacts(
         .collect()
 }
 
+/// One source task's work on the worker: decode the original and develop a RAW, read and verify
+/// artifacts, or remove a collection's files. A developed RAW's linear planes hold a lease on the
+/// worker's memory gate until they are released.
+fn run_source_task(
+    kind: SourceTaskKind,
+    key: &SourceFlightKey,
+    reads: &[ArtifactRead],
+    cancel: &AtomicBool,
+    gate: &Arc<PlaneGate>,
+) -> Result<SourceResult, Error> {
+    let mut result = match kind {
+        SourceTaskKind::File(target) => {
+            EditorService::prepare_file_cancel(&key.path, target.as_deref(), cancel).and_then(
+                |prepared| {
+                    if Some(&prepared.signature) != key.signature.as_ref() {
+                        return Err(Error::conflict("source changed after job was queued"));
+                    }
+                    if key
+                        .expected_fingerprint
+                        .as_deref()
+                        .is_some_and(|expected| expected != prepared.fingerprint)
+                    {
+                        return Err(Error::source_unavailable(
+                            "original source fingerprint changed",
+                        ));
+                    }
+                    let verified = read_artifacts(reads, cancel)?;
+                    Ok(SourceResult::File(prepared, verified))
+                },
+            )
+        }
+        SourceTaskKind::Develop(request) => RawPrepared::develop(
+            request.sensor.clone(),
+            request.capture.clone(),
+            request.fingerprint.clone(),
+            request.gains,
+            cancel,
+        )
+        .and_then(|developed| {
+            let verified = read_artifacts(reads, cancel)?;
+            Ok(SourceResult::Develop(request, developed, verified))
+        }),
+        SourceTaskKind::Artifacts(asset_id) => read_artifacts(reads, cancel)
+            .map(|verified| SourceResult::Artifacts(asset_id, verified)),
+        SourceTaskKind::Collect(collection) => {
+            artifacts::collect_files(&collection, cancel).map(SourceResult::Collected)
+        }
+    };
+    if let Ok(prepared) = &mut result {
+        let raw = match prepared {
+            SourceResult::File(file, _) => match &mut file.source {
+                crate::source::PreparedSource::Raw(raw) => Some(raw),
+                _ => None,
+            },
+            SourceResult::Develop(_, raw, _) => Some(raw),
+            SourceResult::Artifacts(..) | SourceResult::Collected(_) => None,
+        };
+        if let Some(linear) = raw.and_then(|raw| raw.linear.as_mut()) {
+            linear.hold(gate.lease());
+        }
+    }
+    result
+}
+
 fn source_worker(
     receiver: Receiver<SourceTask>,
     owner: SyncSender<OwnerMessage>,
@@ -739,60 +835,19 @@ fn source_worker(
         {
             break;
         }
-        hold.wait();
-        let mut result = match task.kind {
-            SourceTaskKind::File(target) => EditorService::prepare_file_cancel(
-                &task.key.path,
-                target.as_deref(),
+        // A task that panics fails `internal` like any other failed task, so its job, the clients
+        // waiting on it and the board agree, and the worker lives on for the next task.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            hold.wait();
+            run_source_task(
+                task.kind,
+                &task.key,
+                &task.artifacts,
                 &task.cancelled,
+                &gate,
             )
-            .and_then(|prepared| {
-                if Some(&prepared.signature) != task.key.signature.as_ref() {
-                    return Err(Error::conflict("source changed after job was queued"));
-                }
-                if task
-                    .key
-                    .expected_fingerprint
-                    .as_deref()
-                    .is_some_and(|expected| expected != prepared.fingerprint)
-                {
-                    return Err(Error::source_unavailable(
-                        "original source fingerprint changed",
-                    ));
-                }
-                let verified = read_artifacts(&task.artifacts, &task.cancelled)?;
-                Ok(SourceResult::File(prepared, verified))
-            }),
-            SourceTaskKind::Develop(request) => RawPrepared::develop(
-                request.sensor.clone(),
-                request.capture.clone(),
-                request.fingerprint.clone(),
-                request.gains,
-                &task.cancelled,
-            )
-            .and_then(|developed| {
-                let verified = read_artifacts(&task.artifacts, &task.cancelled)?;
-                Ok(SourceResult::Develop(request, developed, verified))
-            }),
-            SourceTaskKind::Artifacts(asset_id) => read_artifacts(&task.artifacts, &task.cancelled)
-                .map(|verified| SourceResult::Artifacts(asset_id, verified)),
-            SourceTaskKind::Collect(collection) => {
-                artifacts::collect_files(&collection, &task.cancelled).map(SourceResult::Collected)
-            }
-        };
-        if let Ok(prepared) = &mut result {
-            let raw = match prepared {
-                SourceResult::File(file, _) => match &mut file.source {
-                    crate::source::PreparedSource::Raw(raw) => Some(raw),
-                    _ => None,
-                },
-                SourceResult::Develop(_, raw, _) => Some(raw),
-                SourceResult::Artifacts(..) | SourceResult::Collected(_) => None,
-            };
-            if let Some(linear) = raw.and_then(|raw| raw.linear.as_mut()) {
-                linear.hold(gate.lease());
-            }
-        }
+        }))
+        .unwrap_or_else(|_| Err(Error::internal("the source job stopped unexpectedly")));
         // The activity ends before the owner learns the result, so a client that reads the job as
         // ready or failed never still finds it listed as running. A cancelled preparation fails
         // with a conflict rather than `Cancelled`, so the job's own flag says which it was.
@@ -1051,6 +1106,14 @@ impl OwnerHandle {
             .expect("the owner is running");
     }
 
+    /// Have the owner call `fault` with what it is about to serve ([`Fault`]), or stop calling it.
+    #[cfg(test)]
+    pub(crate) fn fault(&self, fault: Option<Fault>) {
+        self.sender
+            .send(OwnerMessage::Fault(fault))
+            .expect("the owner is running");
+    }
+
     /// How many planned samples wait behind the one the point worker is evaluating.
     #[cfg(test)]
     pub(crate) fn points_waiting(&self) -> usize {
@@ -1176,6 +1239,8 @@ fn owner_loop(
         watchers: HashMap::new(),
         notified: 0,
         source_waiters: Vec::new(),
+        #[cfg(test)]
+        fault: None,
     };
     while let Ok(message) = receiver.recv() {
         // The client whose request this message is: the events it records do not wake that client.
@@ -1183,60 +1248,74 @@ fn owner_loop(
             OwnerMessage::Call(call) => Some(call.client),
             _ => None,
         };
-        match message {
-            OwnerMessage::Stop => break,
-            OwnerMessage::Call(call) => owner.call(call),
-            #[cfg(test)]
-            OwnerMessage::HoldPoints(hold) => owner.points.hold(hold),
-            #[cfg(test)]
-            OwnerMessage::PointsWaiting(reply) => {
-                let _ = reply.send(owner.points.waiting());
-            }
-            OwnerMessage::Preview { request, response } => {
-                let _ = response.send(owner.preview(request));
-            }
-            OwnerMessage::Register { client, authority } => {
-                owner.sessions.entry(client).or_default().authority = authority;
-            }
-            OwnerMessage::CapabilityFinished { job_id, result } => {
-                owner
-                    .host
-                    .finished(&mut owner.service, &job_id, result, &mut owner.announced);
-                owner.record_announced();
-            }
-            #[cfg(test)]
-            OwnerMessage::CapabilityThreads(reply) => {
-                let _ = reply.send(owner.host.lanes_started());
-            }
-            OwnerMessage::ExportFinished { job_id, result } => {
-                export::finished(&mut owner, &job_id, result);
-                owner.record_announced();
-            }
-            #[cfg(test)]
-            OwnerMessage::HoldExports(hold) => owner.export_hold = hold,
-            OwnerMessage::WatchEvents { client, wake } => {
-                owner.watchers.insert(client, wake);
-            }
-            OwnerMessage::AwaitSource { client, job, reply } => {
-                owner.await_source(client, job, reply);
-            }
-            OwnerMessage::Disconnect(client) => owner.disconnect(client),
-            OwnerMessage::SourceStarted(id) => {
-                if let Some(job) = owner.jobs.jobs.get_mut(&id) {
-                    job.state = SourceState::Preparing;
+        // A panic while serving one message is contained: whoever the message owed an answer is
+        // answered `internal`, and the owner serves the next message. Every durable write is one
+        // transaction and the entry cache moves only after a commit, so nothing is left half done.
+        let owed = Owed::of(&message);
+        let served = catch_unwind(AssertUnwindSafe(|| {
+            match message {
+                OwnerMessage::Stop => return ControlFlow::Break(()),
+                OwnerMessage::Call(call) => owner.call(call),
+                #[cfg(test)]
+                OwnerMessage::HoldPoints(hold) => owner.points.hold(hold),
+                #[cfg(test)]
+                OwnerMessage::PointsWaiting(reply) => {
+                    let _ = reply.send(owner.points.waiting());
                 }
-            }
-            OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
-            OwnerMessage::AnalysisReady => {
-                while let Some(outcome) = owner.queue.poll() {
-                    if owner.analyses.awaits(&outcome.job_id) {
-                        owner.analyses.complete(&outcome.job_id, outcome.result);
+                #[cfg(test)]
+                OwnerMessage::Fault(fault) => owner.fault = fault,
+                OwnerMessage::Preview { request, response } => {
+                    let _ = response.send(owner.preview(request));
+                }
+                OwnerMessage::Register { client, authority } => {
+                    owner.sessions.entry(client).or_default().authority = authority;
+                }
+                OwnerMessage::CapabilityFinished { job_id, result } => {
+                    owner
+                        .host
+                        .finished(&mut owner.service, &job_id, result, &mut owner.announced);
+                    owner.record_announced();
+                }
+                #[cfg(test)]
+                OwnerMessage::CapabilityThreads(reply) => {
+                    let _ = reply.send(owner.host.lanes_started());
+                }
+                OwnerMessage::ExportFinished { job_id, result } => {
+                    export::finished(&mut owner, &job_id, result);
+                    owner.record_announced();
+                }
+                #[cfg(test)]
+                OwnerMessage::HoldExports(hold) => owner.export_hold = hold,
+                OwnerMessage::WatchEvents { client, wake } => {
+                    owner.watchers.insert(client, wake);
+                }
+                OwnerMessage::AwaitSource { client, job, reply } => {
+                    owner.await_source(client, job, reply);
+                }
+                OwnerMessage::Disconnect(client) => owner.disconnect(client),
+                OwnerMessage::SourceStarted(id) => {
+                    if let Some(job) = owner.jobs.jobs.get_mut(&id) {
+                        job.state = SourceState::Preparing;
                     }
                 }
+                OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
+                OwnerMessage::AnalysisReady => {
+                    while let Some(outcome) = owner.queue.poll() {
+                        if owner.analyses.awaits(&outcome.job_id) {
+                            owner.analyses.complete(&outcome.job_id, outcome.result);
+                        }
+                    }
+                }
+                OwnerMessage::AnalysisSubmitted { identity, report } => {
+                    owner.analyses.submit(*identity, *report);
+                }
             }
-            OwnerMessage::AnalysisSubmitted { identity, report } => {
-                owner.analyses.submit(*identity, *report);
-            }
+            ControlFlow::Continue(())
+        }));
+        match served {
+            Ok(ControlFlow::Break(())) => break,
+            Ok(ControlFlow::Continue(())) => {}
+            Err(_) => owner.contained(owed),
         }
         owner.notify_watchers(caller);
     }
@@ -1271,7 +1350,8 @@ struct EventLog {
 }
 
 impl EventLog {
-    /// Append one event for a committed change, dropping the oldest beyond the log's capacity.
+    /// Append one event for a committed change, naming what it changed, and drop the oldest beyond
+    /// the log's capacity.
     fn record(&mut self, origin: &Origin) {
         self.sequence = self.sequence.saturating_add(1);
         if self.events.len() == EVENT_CAPACITY {
@@ -1281,10 +1361,14 @@ impl EventLog {
             sequence: self.sequence,
             method: origin.method.clone(),
             request_id: origin.request_id.clone(),
+            asset_id: origin.asset_id.clone(),
+            revision: origin.revision,
         });
     }
 
-    /// The events after `after`, and whether the log no longer holds some of them.
+    /// The events after `after`, and whether the client may have missed some: the log no longer
+    /// holds them, or `after` is past the newest sequence, which a cursor kept from an earlier
+    /// owner process is, so none of this process's events can be told apart from ones it read.
     fn since(&self, after: u64) -> EventsResult {
         let oldest = self
             .events
@@ -1298,9 +1382,23 @@ impl EventLog {
                 .cloned()
                 .collect(),
             current_sequence: self.sequence,
-            gap: after.saturating_add(1) < oldest,
+            gap: after.saturating_add(1) < oldest || after > self.sequence,
         }
     }
+}
+
+/// The asset a service method's request changes, if it changes one: the asset its parameters name,
+/// or the asset of the draft it names, which only this client's own session can hold. Read before
+/// the method runs, because a commit ends the draft.
+fn subject(session: &ClientSession, params: &Value) -> Option<AssetId> {
+    if let Some(asset_id) = params.get("asset_id") {
+        return serde_json::from_value(asset_id.clone()).ok();
+    }
+    let draft_id: DraftId = serde_json::from_value(params.get("draft_id")?.clone()).ok()?;
+    session
+        .held_draft(&draft_id)
+        .ok()
+        .map(|draft| draft.asset_id.clone())
 }
 
 /// One request an owner handler answers.
@@ -1341,13 +1439,16 @@ pub(super) struct Owner {
     notified: u64,
     /// Clients blocked until a source job ends ([`OwnerHandle::wait_source`]).
     source_waiters: Vec<SourceWaiter>,
+    #[cfg(test)]
+    fault: Option<Fault>,
 }
 
 impl Owner {
-    /// Answer one request: find its method, answer a retried revision-less mutation from the request
-    /// table, otherwise call its handler, then record the events its changes announced. A sample
-    /// through a spatial layer is only planned here: the point worker evaluates it and answers on
-    /// the call's own channel, with the sequence the owner had now, while the owner moves on.
+    /// Answer one request: find its method, answer a retry from the request table when the method
+    /// declares the owner answers its retries, otherwise call its handler, then record the events
+    /// its changes announced. A sample through a spatial layer is only planned here: the point
+    /// worker evaluates it and answers on the call's own channel, with the sequence the owner had
+    /// now, while the owner moves on.
     fn call(&mut self, call: OwnerCall) {
         let OwnerCall {
             client,
@@ -1375,14 +1476,11 @@ impl Owner {
     fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Planned, Error> {
         let method = methods::find(&self.service, &request.method)
             .ok_or_else(|| Error::protocol(format!("unknown method {}", request.method)))?;
-        // A retried mutation is answered from the request table, and its handler does not run
-        // again, unless the catalog answers it: the service records an asset change's request
-        // with the change. A settings write has a revision but no request log, so it is here too.
-        let key = match (method.envelope(), method.route()) {
-            (Envelope::Request, _) | (Envelope::Revision, Route::Owner(_)) => {
-                RequestKey::of(&request.method, &request.params)
-            }
-            (Envelope::None, _) | (Envelope::Revision, Route::Service) => None,
+        // A retried mutation whose method declares the owner answers it is answered from the
+        // request table, and its handler does not run again; the catalog answers the others.
+        let key = match method.retries() {
+            Retries::Owner => RequestKey::of(&request.method, &request.params),
+            Retries::Catalog | Retries::None => None,
         };
         if let Some(key) = &key
             && let Some(first) = self.requests.answered(key)?
@@ -1394,18 +1492,37 @@ impl Owner {
             request,
             origin: Origin::new(&request.method, &request.id),
         };
+        #[cfg(test)]
+        if let Some(fault) = &self.fault {
+            fault(&request.method);
+        }
         let result = match method.route() {
             Route::Owner(handler) => handler(self, &call).map(Planned::Value),
             Route::Service => {
                 let session = self.sessions.entry(client).or_default();
+                // Read only for a method that can change something, so a read or a draft's
+                // `draft.set` pays nothing for it.
+                let subject = method
+                    .mutates()
+                    .then(|| subject(session, &request.params))
+                    .flatten();
                 let result = method.plan(&mut self.service, session, &request.params);
                 // A service answer says whether it changed anything: a no-op and a retry answered
                 // from a store's request log did not. A planned sample carries no envelope.
-                if result
-                    .as_ref()
-                    .is_ok_and(|planned| methods::mutates(&method, planned.value()))
+                if let Ok(planned) = &result
+                    && methods::mutates(&method, planned.value())
                 {
-                    announce_once(&mut self.announced, &call.origin);
+                    let origin = match subject {
+                        Some(asset_id) => call.origin.clone().changed(
+                            asset_id,
+                            planned
+                                .value()
+                                .and_then(|value| value.get("revision"))
+                                .and_then(Value::as_u64),
+                        ),
+                        None => call.origin.clone(),
+                    };
+                    announce_once(&mut self.announced, &origin);
                 }
                 result
             }
@@ -1466,6 +1583,34 @@ impl Owner {
                 true
             }
         });
+    }
+
+    /// Answer what a message that panicked owed. A change it committed before the panic is
+    /// durable, so its event is recorded. A caller reads one answer, so where the message already
+    /// answered, that answer stands; a source job it already settled keeps its state.
+    fn contained(&mut self, owed: Owed) {
+        self.record_announced();
+        let error = || Error::internal("the catalog owner failed while serving this message");
+        match owed {
+            Owed::Call(id, response) => {
+                let _ = response.try_send(ApiResponse::failure(id, self.log.sequence, error()));
+            }
+            Owed::Preview(response) => {
+                let _ = response.try_send(Err(error()));
+            }
+            Owed::Wait(reply) => {
+                let _ = reply.try_send(());
+            }
+            Owed::Source(id) => {
+                if self.jobs.jobs.get(&id).is_some_and(|job| {
+                    matches!(job.state, SourceState::Queued | SourceState::Preparing)
+                }) {
+                    self.jobs.complete(&id, SourceState::Failed(error()));
+                }
+                self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == &id));
+            }
+            Owed::Nobody => {}
+        }
     }
 
     /// Record every change the message just handled announced, once each.
@@ -1556,6 +1701,12 @@ impl Owner {
             .jobs
             .get(id)
             .is_some_and(|job| !job.clients.is_empty());
+        #[cfg(test)]
+        let result = result.inspect(|_| {
+            if let Some(fault) = &self.fault {
+                fault("source.complete");
+            }
+        });
         let service = &mut self.service;
         let outcome = if interested {
             result.and_then(|prepared| match prepared {
@@ -1580,15 +1731,19 @@ impl Owner {
         } else {
             Err(Error::conflict("source job cancelled"))
         };
-        // An import is announced when it commits an asset, under the request that asked for it.
-        if matches!(outcome, Ok(Completed::Asset(_, true)))
+        // An import is announced when it commits an asset, under the request that asked for it,
+        // naming the asset it created.
+        if let Ok(Completed::Asset(state, true)) = &outcome
             && let Some(request_id) = self
                 .jobs
                 .jobs
                 .get(id)
                 .and_then(|job| job.import_request_id.as_deref())
         {
-            self.log.record(&Origin::new("catalog.import", request_id));
+            self.log.record(
+                &Origin::new("catalog.import", request_id)
+                    .changed(state.asset.id.clone(), Some(state.revision)),
+            );
         }
         self.jobs.complete(
             id,
@@ -3798,6 +3953,193 @@ mod tests {
         std::fs::remove_file(photo).unwrap();
     }
 
+    /// Block in [`OwnerHandle::wait_source`] on a thread of its own, as the desktop's refresh and
+    /// import tasks do; the receiver yields its answer, so a test fails on a deadline rather than
+    /// hanging when nothing releases the wait.
+    fn waiting(
+        owner: &OwnerHandle,
+        client: ClientId,
+        job: Option<JobId>,
+    ) -> Receiver<Result<(), Error>> {
+        let (sender, receiver) = sync_channel(1);
+        let owner = owner.clone();
+        thread::spawn(move || {
+            let _ = sender.send(owner.wait_source(client, job.as_ref()));
+        });
+        receiver
+    }
+
+    /// A source task that panics fails `internal` like any other failed task: `job.status` reads
+    /// the job failed, the activity board records it failed, every client waiting on it is
+    /// released, and the worker runs the next source job. The panic comes from the worker's test
+    /// hold, inside the task, after its activity began and before its work.
+    #[test]
+    fn a_panicking_source_task_fails_internal_releases_its_waiters_and_the_worker_runs_on() {
+        let catalog = temp("source-panic.sqlite");
+        let photo = temp("source-panic.jpg");
+        let _ = std::fs::remove_file(&catalog);
+        std::fs::copy(fixture(), &photo).unwrap();
+        let gate = crate::modules::RenderGate::open_gate();
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let armed = Arc::new(AtomicBool::new(true));
+        let (hold, fault) = (gate.clone(), armed.clone());
+        let (owner, join) = OwnerHandle::start_observed(
+            &catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            board,
+            Some(Arc::new(move || {
+                hold.pass();
+                if fault.swap(false, Ordering::SeqCst) {
+                    panic!("a source task panicked");
+                }
+            })),
+        )
+        .unwrap();
+        let client = owner.register();
+        let other = owner.register();
+
+        // The task is held inside its work while two clients wait: one on the job, one on any.
+        gate.shut();
+        let queued = ok(
+            &owner,
+            client,
+            "import",
+            "catalog.import",
+            import_params(&photo),
+        );
+        let job_id = queued["job_id"].clone();
+        let job = JobId::parse(job_id.as_str().unwrap()).unwrap();
+        listed(&owner, client, |list| active_kind(list, "source.prepare"));
+        let waits = [
+            waiting(&owner, client, Some(job.clone())),
+            waiting(&owner, other, None),
+        ];
+        gate.open();
+        for wait in waits {
+            wait.recv_timeout(Duration::from_secs(20))
+                .expect("the wait is released")
+                .expect("the owner answered the wait");
+        }
+
+        // The job, the board and a wait that starts now agree: failed, internal.
+        let status = ok(
+            &owner,
+            client,
+            "status",
+            "job.status",
+            json!({"job_id": job_id}),
+        );
+        assert_eq!(status["status"], json!("failed"), "{status}");
+        assert_eq!(status["error"]["code"], json!("internal"), "{status}");
+        let list = ok(&owner, client, "list", "activity.list", json!({}));
+        assert_eq!(list["active"], json!([]), "{list}");
+        assert_eq!(list["recent"][0]["job_id"], job_id, "{list}");
+        assert_eq!(list["recent"][0]["outcome"], json!("failed"), "{list}");
+        owner
+            .wait_source(client, Some(&job))
+            .expect("a failed job is not waited for");
+
+        // The worker lives on: the next source job runs, and every other client is served.
+        let again = ok(
+            &owner,
+            client,
+            "again",
+            "catalog.import",
+            import_params(&photo),
+        );
+        assert_ne!(again["job_id"], job_id, "a new job");
+        assert_eq!(
+            wait_source(&owner, client, again["job_id"].as_str().unwrap())["status"],
+            json!("ready")
+        );
+        assert!(ok(&owner, other, "list", "catalog.list", json!({}))["assets"].is_array());
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+    }
+
+    /// A panic while the owner serves one message is contained. The request it was serving is
+    /// answered `internal`; a source job whose completion it was committing fails `internal`,
+    /// commits nothing and releases its waiters; and the owner goes on serving that client, every
+    /// other client and the next source job. The panic comes from the owner's test fault, where a
+    /// handler or a completion's commit runs.
+    #[test]
+    fn a_panic_while_the_owner_serves_a_message_answers_internal_and_the_owner_serves_on() {
+        let catalog = temp("owner-panic.sqlite");
+        let photo = temp("owner-panic.jpg");
+        let _ = std::fs::remove_file(&catalog);
+        std::fs::copy(fixture(), &photo).unwrap();
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let other = owner.register();
+        let panicking = |at: &'static str| -> Fault {
+            Arc::new(move |served: &str| {
+                if served == at {
+                    panic!("the owner panicked serving {served}");
+                }
+            })
+        };
+        let assets =
+            |client| ok(&owner, client, "list", "catalog.list", json!({}))["assets"].clone();
+
+        // A handler that panics answers its own request `internal`, and the owner serves on.
+        owner.fault(Some(panicking("catalog.list")));
+        let error = failure(&owner, client, "panics", "catalog.list", json!({}));
+        assert_eq!(error.code, "internal", "{}", error.message);
+        assert!(
+            ok(&owner, other, "state", "session.state", json!({}))["revision"].is_u64(),
+            "another client is served"
+        );
+        owner.fault(None);
+        assert_eq!(assets(client), json!([]), "and so is the same client");
+
+        // A completion that panics as it commits fails its job and releases its waiters.
+        owner.fault(Some(panicking("source.complete")));
+        let queued = ok(
+            &owner,
+            client,
+            "import",
+            "catalog.import",
+            import_params(&photo),
+        );
+        let job_id = queued["job_id"].clone();
+        let job = JobId::parse(job_id.as_str().unwrap()).unwrap();
+        waiting(&owner, client, Some(job))
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the wait is released")
+            .expect("the owner answered the wait");
+        let status = ok(
+            &owner,
+            client,
+            "status",
+            "job.status",
+            json!({"job_id": job_id}),
+        );
+        assert_eq!(status["status"], json!("failed"), "{status}");
+        assert_eq!(status["error"]["code"], json!("internal"), "{status}");
+        assert_eq!(assets(other), json!([]), "the failed commit added nothing");
+
+        // The next source job commits.
+        owner.fault(None);
+        let again = ok(
+            &owner,
+            client,
+            "again",
+            "catalog.import",
+            import_params(&photo),
+        );
+        assert_eq!(
+            wait_source(&owner, client, again["job_id"].as_str().unwrap())["status"],
+            json!("ready")
+        );
+        assert_eq!(assets(other).as_array().map(Vec::len), Some(1));
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+    }
+
     /// Clipping overlay settings are per-client session state, reported by `session.state` and set
     /// through `workspace.set`; they mutate nothing and emit no event. Discovery lists the three
     /// analysis methods, so an independent JSON client needs no GUI and no hand-written list.
@@ -3966,11 +4308,166 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// Every event names what it changed when the change has a subject: an import names the asset
+    /// it created and its revision, a commit, a navigation and a drafted commit name the asset and
+    /// the revision they left it at, and a version names its asset but no revision, because naming
+    /// an entry moves none. A change to the preset library names no asset. So a client with one
+    /// photograph open can tell another client's change to a second photograph from one to its
+    /// own, and a change it already holds from a newer one.
+    #[test]
+    fn events_name_the_asset_and_revision_they_changed() {
+        let catalog = temp("event-subjects.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let desktop = owner.register();
+        let agent = owner.register();
+        let first = import_asset(&owner, desktop, &fixture())["asset"]["id"].clone();
+        let second = import_asset(
+            &owner,
+            agent,
+            &luxforge_testkit::fixtures::fixture("s0/orientation-2.jpg"),
+        )["asset"]["id"]
+            .clone();
+        assert_ne!(first, second);
+        let subjects = |after: u64| -> Vec<(String, Value, Value)> {
+            ok(
+                &owner,
+                desktop,
+                "events",
+                "events.since",
+                json!({"after": after}),
+            )["events"]
+                .as_array()
+                .expect("the events")
+                .iter()
+                .map(|event| {
+                    (
+                        event["method"].as_str().unwrap().to_owned(),
+                        event.get("asset_id").cloned().unwrap_or(Value::Null),
+                        event.get("revision").cloned().unwrap_or(Value::Null),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(
+            subjects(0),
+            [
+                ("catalog.import".to_owned(), first.clone(), json!(0)),
+                ("catalog.import".to_owned(), second.clone(), json!(0)),
+            ],
+            "an import names the asset it created"
+        );
+        let (_, before) = events_after(&owner, desktop, 0);
+
+        pixel_edit(&owner, agent, &second, 0, "agent-edit", [1, 2, 3]);
+        let undo = |client: ClientId, asset: &Value, revision: u64, request: &str| {
+            ok(
+                &owner,
+                client,
+                request,
+                "history.undo",
+                json!({"asset_id": asset, "mutation": {"expected_revision": revision, "request_id": request, "actor": "test"}}),
+            )
+        };
+        undo(agent, &second, 1, "agent-undo");
+        let begun = ok(
+            &owner,
+            desktop,
+            "begin",
+            "draft.begin",
+            json!({"asset_id": first, "action": "set-basic"}),
+        );
+        ok(
+            &owner,
+            desktop,
+            "set",
+            "draft.set",
+            json!({"draft_id": begun["draft_id"], "fields": {"exposure": 0.5}}),
+        );
+        ok(
+            &owner,
+            desktop,
+            "commit",
+            "draft.commit",
+            json!({"draft_id": begun["draft_id"], "mutation": {"expected_revision": 0, "request_id": "drafted", "actor": "test"}}),
+        );
+        ok(
+            &owner,
+            agent,
+            "version",
+            "version.create",
+            json!({"asset_id": first, "name": "Kept", "mutation": envelope()}),
+        );
+        ok(
+            &owner,
+            agent,
+            "preset",
+            "preset.create",
+            json!({"name": "Bright", "settings": {"set-basic": {"exposure": 1.0}}, "mutation": envelope()}),
+        );
+        assert_eq!(
+            subjects(before),
+            [
+                ("edit.set-pixel".to_owned(), second.clone(), json!(1)),
+                ("history.undo".to_owned(), second.clone(), json!(2)),
+                ("draft.commit".to_owned(), first.clone(), json!(1)),
+                ("version.create".to_owned(), first.clone(), Value::Null),
+                ("preset.create".to_owned(), Value::Null, Value::Null),
+            ]
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A cursor past the log's newest sequence was read from another owner process, whose events
+    /// this log never held: the client is told it missed something rather than left waiting for
+    /// sequences this process has already used. A cursor at the newest sequence is simply caught
+    /// up, and one inside the log reads what follows it.
+    #[test]
+    fn events_since_reports_a_gap_for_a_cursor_beyond_the_log() {
+        let mut log = EventLog::default();
+        assert!(!log.since(0).gap, "an empty log and a fresh cursor");
+        assert!(log.since(1).gap, "a cursor ahead of an empty log");
+        for request in ["a", "b", "c"] {
+            log.record(&Origin::new("edit.set-pixel", request));
+        }
+        assert!(!log.since(0).gap && log.since(0).events.len() == 3);
+        assert!(!log.since(2).gap && log.since(2).events.len() == 1);
+        assert!(!log.since(3).gap, "caught up");
+        let ahead = log.since(7);
+        assert!(ahead.gap, "a cursor from an earlier owner process");
+        assert!(ahead.events.is_empty());
+        assert_eq!(ahead.current_sequence, 3);
+
+        // Through the method, as a JSON client reads it.
+        let catalog = temp("event-gap.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        import_asset(&owner, client, &fixture());
+        let read = |after: u64| {
+            ok(
+                &owner,
+                client,
+                "events",
+                "events.since",
+                json!({"after": after}),
+            )
+        };
+        assert_eq!(read(1)["gap"], json!(false));
+        assert_eq!(read(2)["gap"], json!(true));
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// Every method family that changes something without a revision takes the `{request_id,
     /// actor}` envelope, and a retry of it is answered from the owner's request table: the first
     /// answer comes back marked `deduplicated`, nothing changes again and no second event is
     /// recorded. The same `request_id` with other input is a conflict. A revisioned family,
-    /// history here, answers its retry from the catalog's own request table the same way.
+    /// history here, answers its retry from the catalog's own request table the same way, and
+    /// `draft.commit`, which ends its draft, from the owner's.
     #[test]
     fn a_retry_of_every_mutation_family_returns_the_first_answer_and_records_no_event() {
         let catalog = temp("retry-families.sqlite");
@@ -4176,6 +4673,48 @@ mod tests {
         assert_eq!(retry["deduplicated"], json!(true));
         assert_eq!(retry["current_entry_id"], first["current_entry_id"]);
         assert_eq!(events_after(&owner, client, 0).1, before + 1);
+
+        // draft: a commit ends the draft it names, so the owner's request table answers its retry.
+        let state = |owner: &OwnerHandle| {
+            ok(
+                owner,
+                client,
+                "state",
+                "asset.state",
+                json!({"asset_id": asset}),
+            )
+        };
+        let revision = state(&owner)["revision"].clone();
+        let begun = ok(
+            &owner,
+            client,
+            "begin",
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-basic"}),
+        );
+        let draft_id = begun["draft_id"].clone();
+        ok(
+            &owner,
+            client,
+            "set",
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"exposure": 0.5}}),
+        );
+        let commit = |draft_id: &Value| {
+            json!({
+                "draft_id": draft_id,
+                "mutation": {"expected_revision": revision, "request_id": "commit-1", "actor": "test"},
+            })
+        };
+        let (committed, _, announced) = twice("commit", "draft.commit", commit(&draft_id));
+        assert_eq!(
+            (committed["outcome"].clone(), announced),
+            (json!("applied"), 1)
+        );
+        let after = state(&owner);
+        assert_eq!(after["revision"], committed["revision"], "no second entry");
+        assert_eq!(after["current_entry"]["id"], committed["current_entry_id"]);
+        conflict("draft.commit", commit(&json!(crate::DraftId::new())));
 
         // The envelope is required and carries no revision here.
         for (method, params, expected) in [

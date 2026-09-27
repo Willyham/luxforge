@@ -161,10 +161,12 @@ pub(crate) struct Inputs<'a> {
     /// The open slider, mask or crop gesture's core draft is conflicted: something else committed
     /// since it was based, and its commit waits for Discard or Reapply.
     pub(crate) gesture_conflicted: bool,
-    /// Why a preset cannot be applied, and why the components gallery cannot open, while this
-    /// client's one draft is held — the one refusal every such start answers to.
+    /// Why a preset cannot be applied, why the components gallery cannot open, and why Undo, Redo
+    /// and Restore cannot run, while this client's one draft is held — the one refusal every such
+    /// start answers to.
     pub(crate) preset_refusal: Option<String>,
     pub(crate) gallery_refusal: Option<String>,
+    pub(crate) history_refusal: Option<String>,
     pub(crate) draft: Option<&'a CropDraft>,
     /// The masks of the displayed entry as `mask.list` last answered them.
     pub(crate) masks: Option<&'a MaskListing>,
@@ -361,7 +363,7 @@ impl Built {
                 matches!(inputs.menu, Some(MenuTarget::Export)),
             ),
             inputs.dimensions,
-            &inputs.gallery_refusal,
+            (&inputs.gallery_refusal, &inputs.history_refusal),
             session,
             state,
             (inputs.zoom, inputs.zoom_editing),
@@ -815,6 +817,9 @@ mod tests {
                     .then(|| "Finish the open draft before applying a preset".to_owned()),
                 gallery_refusal: (self.slider_draft.is_some() || self.draft.is_some())
                     .then(|| "Finish the open draft before opening Components".to_owned()),
+                history_refusal: (self.slider_draft.is_some() || self.draft.is_some()).then(|| {
+                    "Finish the open draft before undoing, redoing or restoring".to_owned()
+                }),
                 draft: self.draft.as_ref(),
                 masks: self.masks.as_ref(),
                 selected_mask: self.selected_mask.as_ref(),
@@ -1837,7 +1842,7 @@ mod tests {
     /// A field-patch layer returned to its neutral values stays in the stack but is not an edit, so
     /// its band has no dot; any field that changes the picture lights it. Neutrality is the core's
     /// answer on each `recipe.describe` row, which is what makes the vignette's rule (amount 0,
-    /// whatever its shape) come out right with no payload parsing here. (Known bug TASK-001.)
+    /// whatever its shape) come out right with no payload parsing here.
     #[test]
     fn a_field_patch_section_has_no_dot_once_its_layer_is_neutral() {
         let modules = descriptors();
@@ -2264,6 +2269,10 @@ mod tests {
         state.current_entry.undo_parent = Some(EntryId::new());
         let title = undone.derive().title;
         assert!(title.can_undo && title.can_redo);
+        // An open draft refuses both, so the title bar offers neither.
+        undone.slider_draft = Some(("set-basic".into(), "exposure".into(), false));
+        let title = undone.derive().title;
+        assert!(!title.can_undo && !title.can_redo);
         let mut inputs = scene.inputs();
         inputs.dimensions = None;
         let mut workspace = Workspace::default();

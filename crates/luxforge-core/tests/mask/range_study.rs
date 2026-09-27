@@ -1,4 +1,4 @@
-//! TASK-022: independent proofs for the frozen range-selection mathematics —
+//! Independent proofs for the frozen range-selection mathematics —
 //! the luminance band's axis, band and shoulders, and the Oklab colour range's
 //! metric, multi-sample combination and refine mapping.
 //!

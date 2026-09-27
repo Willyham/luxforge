@@ -34,6 +34,8 @@ These are the core principles that development follows.
 2. **Everything is programmable.** Every operation has a discoverable, schema-described equivalent through the same command service. A GUI gesture is never the only way in, and UI/API parity is tested, not assumed.
 3. **Fast, bounded and honest.** Responsiveness, bounded memory and image correctness are architectural requirements, measured on photo-sized inputs.
 4. **Small core, deliberate extension points.** The core owns transactions, history and shared invariants. Tools own their own validation, controls and processing.
+5. **Open source, first on the owner's Mac.** GPL-3.0-or-later project code and open-source dependencies, targeting an M4 MacBook Pro first while keeping Windows and Linux portable.
+6. **Prove it.** Claims about behavior come with evidence: exact-buffer tests, correlated state, logs and captures for UI, and recorded measurements with their scope.
 7. **Beautiful defaults, familiar feel.** A small, focused workspace that feels familiar if you've used Lightroom's Library and Develop.
 
 ## What it does today
@@ -105,6 +107,8 @@ Luxforge is written in Rust with a deliberately small core. The core owns the ca
 | `luxforge-raw` | RAW decoding and development |
 | `luxforge-ui` | The widget library (built on [iced](https://iced.rs)), with no dependency on the core |
 | `luxforge-app` | The desktop app and the headless `luxforge-json` binary |
+| `luxforge-evidence` | The evidence script's step types, shared by the desktop and `xtask` so a scripted run and a hand-written one read the same shape |
+| `luxforge-reference` | Independent f64 references (colour, mask, mixer, Presence, range, tone, vignette, white balance) that production is tested against; depends on no workspace crate |
 | `luxforge-testkit` | Fixtures shared by the tests and `xtask`, such as the loopback test server; never shipped |
 | `xtask` | Every build, check, evidence and packaging command |
 

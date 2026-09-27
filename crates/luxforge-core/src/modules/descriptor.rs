@@ -1824,13 +1824,13 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
             points_min,
             points_max,
         } if *points_min < 1
-            || *points_max > crate::path::POINTS_PER_STROKE
+            || *points_max > crate::path::POSTED_POINTS_PER_STROKE
             || points_min > points_max =>
         {
             return Err(Error::validation(format!(
                 "parameter {} declares invalid path point bounds; 1..={} is the limit",
                 parameter.name,
-                crate::path::POINTS_PER_STROKE
+                crate::path::POSTED_POINTS_PER_STROKE
             )));
         }
         ParameterKind::Curve {
@@ -2177,8 +2177,8 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
             // be a gesture is a malformed request.
             if points.len() > *points_max {
                 return Err(Error::resource_limit(format!(
-                    "parameter {name} has {} positions; the limit is {points_max} points per \
-                         stroke",
+                    "parameter {name} has {} positions; the limit is {points_max} positions \
+                         posted per path",
                     points.len()
                 )));
             }
@@ -2660,7 +2660,7 @@ mod tests {
 
     #[test]
     fn a_points_parameter_is_declared_within_the_host_path_bound() {
-        let limit = crate::path::POINTS_PER_STROKE;
+        let limit = crate::path::POSTED_POINTS_PER_STROKE;
         points_module(1, limit)
             .validate()
             .expect("the whole bound is declarable");

@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Refuse a brush stroke that would push any grid cell over the 64-segment occupancy cap at the moment it is painted, and add a core test that measures maximum cell occupancy from a realistic scrub.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. The owner made the occupancy cap's future conditional on a measurement that was never taken, and this is the largest correctness risk found in masking.",
@@ -96,7 +96,7 @@
     {
       "id": "TASK-002",
       "description": "Decimate a captured stroke with a tolerance relative to its brush radius, sized from the scrub measurement, so ordinary painting stays under the 64-segment occupancy cap.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -177,7 +177,7 @@
     {
       "id": "TASK-003",
       "description": "Apply the 1,024-position stroke limit after decimation as the design states, and declare one legal stroke-radius range read alike by capture, storage and compile.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. Two contract mismatches in the path primitives are cheap, verified defects, independent of the occupancy work above.",
@@ -574,7 +574,7 @@
     {
       "id": "TASK-008",
       "description": "Let each mask kind validate its parameters against its own declared ranges instead of hand-checking them again, and share one bounds-to-region helper between brush and radial.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],

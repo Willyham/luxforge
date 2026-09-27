@@ -64,7 +64,7 @@ fn job(color: u8, analyse: bool) -> PreviewJob {
             capture: Default::default(),
         }),
         registry: Arc::new(ModuleRegistry::builtin()),
-        context: crate::render::testing::context().clone(),
+        context: RenderContext::new(),
         recipe,
         layer_count: None,
         draft_revision: None,
@@ -390,7 +390,7 @@ fn stacked_with_masks(
     PreviewJob {
         source,
         registry: Arc::new(ModuleRegistry::builtin()),
-        context: crate::render::testing::context().clone(),
+        context: RenderContext::new(),
         recipe,
         layer_count: None,
         draft_revision: None,
@@ -1965,13 +1965,13 @@ fn the_cost_of_a_coverage_grid() {
                     cells_w,
                     cells_h,
                 };
-                let context = crate::render::testing::context();
+                let context = RenderContext::new();
                 let frame = crate::render(
                     &registry,
                     &source,
                     &recipe,
                     RenderOptions::default(),
-                    context,
+                    &context,
                 )
                 .expect("the stack compiles");
                 let started = Instant::now();
@@ -1981,7 +1981,7 @@ fn the_cost_of_a_coverage_grid() {
                     &recipe,
                     &request,
                     &Cancel::never(),
-                    crate::render::testing::context(),
+                    &context,
                 );
                 let elapsed = started.elapsed();
                 let cells = u64::from(cells_w) * u64::from(cells_h);
@@ -2016,8 +2016,6 @@ fn the_cost_of_a_coverage_grid() {
 #[test]
 fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
     use crate::{LinearImage, LinearSettings, PRESENCE_EFFECT};
-    let _guard = crate::render::spatial::tests::spatial_guard();
-    crate::render::testing::clear_estimates();
     // More than one 512 px tile each way, so the spatial pass runs in batches.
     let (width, height) = (1100_u32, 700_u32);
     let planes: Vec<f32> = (0..3 * width * height)
@@ -2081,7 +2079,10 @@ fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held(
         .render(&registry, snapshot, &recipe)
         .expect("the proxy renders with the target free");
 
-    let budget = crate::render::testing::context().spatial();
+    // The job renders through its own context; holding that context's whole target stands in for
+    // the other evaluation.
+    let context = job.context.clone();
+    let budget = context.spatial();
     let held = budget.reserve(budget.target(), 1);
     let mut queue = PreviewQueue::default();
     let generation = queue.request(job);

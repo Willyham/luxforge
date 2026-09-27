@@ -74,12 +74,43 @@ pub(super) struct MethodSpec {
     pub params: &'static ParamSchema,
     pub notes: &'static str,
     pub handler: Handler,
+    /// Who answers a retry of this method. A mutating entry names it after its notes, as
+    /// `retries: Catalog` or `retries: Owner`; an entry that names none changes nothing.
+    pub retries: Retries,
+}
+
+/// Who answers a retried mutation, the same `request_id` with the same input, so that resending a
+/// request whose answer was lost never changes anything twice. Each method declares it, and the
+/// catalog owner reads nothing else to decide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Retries {
+    /// Nobody: the method changes nothing, so a repeat simply runs again.
+    None,
+    /// The catalog, from the request log it writes in the same transaction as an asset's change.
+    /// The handler runs again and the catalog answers before it plans anything, durably across a
+    /// restart.
+    Catalog,
+    /// The catalog owner's request table: a retry gets the first answer and the handler does not
+    /// run. For a change with no request log of its own, and for one whose handler ends the state
+    /// its request names, as `draft.commit` ends its draft, so a retry could not reach the
+    /// catalog's log.
+    Owner,
+}
+
+/// The retry route a table entry declares: [`Retries::None`] when it names none.
+macro_rules! retries {
+    () => {
+        Retries::None
+    };
+    ($retries:ident) => {
+        Retries::$retries
+    };
 }
 
 /// One service method: its handler takes the struct its schema was generated from, parsed from the
 /// request by the one parse function, so the two cannot differ.
 macro_rules! service {
-    ($name:literal, $params:ty, $handler:path, $notes:expr $(,)?) => {
+    ($name:literal, $params:ty, $handler:path, $notes:expr $(, retries: $retries:ident)? $(,)?) => {
         MethodSpec {
             name: $name,
             params: &<$params as HostParams>::SCHEMA,
@@ -87,6 +118,7 @@ macro_rules! service {
             handler: Handler::Service(|service, session, request| {
                 $handler(service, session, parse::<$params>(request)?)
             }),
+            retries: retries!($($retries)?),
         }
     };
 }
@@ -101,13 +133,14 @@ macro_rules! planned {
             handler: Handler::Planned(|service, session, request| {
                 $handler(service, session, parse::<$params>(request)?)
             }),
+            retries: Retries::None,
         }
     };
 }
 
 /// One owner method, parsed the same way.
 macro_rules! owner {
-    ($name:literal, $params:ty, $handler:path, $notes:expr $(,)?) => {
+    ($name:literal, $params:ty, $handler:path, $notes:expr $(, retries: $retries:ident)? $(,)?) => {
         MethodSpec {
             name: $name,
             params: &<$params as HostParams>::SCHEMA,
@@ -115,6 +148,7 @@ macro_rules! owner {
             handler: Handler::Owner(|owner, call| {
                 $handler(owner, call, parse::<$params>(&call.request.params)?)
             }),
+            retries: retries!($($retries)?),
         }
     };
 }
@@ -130,7 +164,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "catalog.import",
         owner::Import,
         owner::catalog_import,
-        "queues bounded source preparation; returns a job to inspect with job.status; commits only on verified success, which emits the event"
+        "queues bounded source preparation; returns a job to inspect with job.status; commits only on verified success, which emits the event",
+        retries: Owner,
     ),
     owner!(
         "job.status",
@@ -225,37 +260,43 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.settings.set",
         owner::capability::SetParams,
         owner::capability::settings_set,
-        "validates the named non-secret fields against their declared parameters (a module's settings.fields and settings.profiles.fields are parameter descriptors, checked exactly as an action's are) and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, invalidates_activation, settings}"
+        "validates the named non-secret fields against their declared parameters (a module's settings.fields and settings.profiles.fields are parameter descriptors, checked exactly as an action's are) and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, invalidates_activation, settings}",
+        retries: Owner,
     ),
     owner!(
         "module.settings.set-secret",
         owner::capability::SetSecretParams,
         owner::capability::settings_set_secret,
-        "stores one secret field's value in the secure store and never echoes it; a retry is matched by the setting alone; not-ready names a locked or unavailable store and nothing is kept in plain text"
+        "stores one secret field's value in the secure store and never echoes it; a retry is matched by the setting alone; not-ready names a locked or unavailable store and nothing is kept in plain text",
+        retries: Owner,
     ),
     owner!(
         "module.settings.clear-secret",
         owner::capability::ClearSecretParams,
         owner::capability::settings_clear_secret,
-        "removes only that secret from the secure store; an absent secret is a no-op"
+        "removes only that secret from the secure store; an absent secret is a no-op",
+        retries: Owner,
     ),
     owner!(
         "module.settings.reset",
         owner::capability::ResetParams,
         owner::capability::settings_reset,
-        "deletes the module's stored values and profiles and clears their secrets; the one write an incompatible entry accepts; the revision keeps counting"
+        "deletes the module's stored values and profiles and clears their secrets; the one write an incompatible entry accepts; the revision keeps counting",
+        retries: Owner,
     ),
     owner!(
         "module.profile.create",
         owner::capability::CreateProfileParams,
         owner::capability::profile_create,
-        "a new empty provider profile of a declared adapter with a host-generated profile-<uuid> identity, at most the module's declared maximum; returns it as profile"
+        "a new empty provider profile of a declared adapter with a host-generated profile-<uuid> identity, at most the module's declared maximum; returns it as profile",
+        retries: Owner,
     ),
     owner!(
         "module.profile.remove",
         owner::capability::RemoveProfileParams,
         owner::capability::profile_remove,
-        "clears the profile's secrets and removes it and its values, revokes the profile's grants and returns the removed profile"
+        "clears the profile's secrets and removes it and its values, revokes the profile's grants and returns the removed profile",
+        retries: Owner,
     ),
     // Permissions, activation, resources and capability jobs are answered by the catalog owner
     // too: grants live beside the settings, and the jobs, lanes and activation state live there.
@@ -263,19 +304,22 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.permission.grant",
         owner::capability::GrantParams,
         owner::capability::permission_grant,
-        "grants one exact scope of a declared capability; only a client with permission authority may, otherwise forbidden; scope is {resource, version, origin} for download-artifact (the declared version from the origin of its pinned URL) or {profile_id, adapter, origin, data, asset_id} for remote-image-request (an existing profile of that adapter whose endpoint has that origin, the capability's data class and an asset of this catalog); clears a matching denial; a scope that already has a live grant returns it as a no-op; returns {grant, outcome, deduplicated}"
+        "grants one exact scope of a declared capability; only a client with permission authority may, otherwise forbidden; scope is {resource, version, origin} for download-artifact (the declared version from the origin of its pinned URL) or {profile_id, adapter, origin, data, asset_id} for remote-image-request (an existing profile of that adapter whose endpoint has that origin, the capability's data class and an asset of this catalog); clears a matching denial; a scope that already has a live grant returns it as a no-op; returns {grant, outcome, deduplicated}",
+        retries: Owner,
     ),
     owner!(
         "module.permission.deny",
         owner::capability::DenyParams,
         owner::capability::permission_deny,
-        "records that the person did not allow one exact scope; the next consent-required for it reports denied: true; any client may; returns {denial, deduplicated}"
+        "records that the person did not allow one exact scope; the next consent-required for it reports denied: true; any client may; returns {denial, deduplicated}",
+        retries: Owner,
     ),
     owner!(
         "module.permission.revoke",
         owner::capability::RevokeParams,
         owner::capability::permission_revoke,
-        "marks the grant revoked and cancels the queued and running jobs that depend on it with cancelled: permission revoked; never touches recipes, history or artifacts; any client may; returns {grant, outcome, cancelled_jobs, deduplicated}"
+        "marks the grant revoked and cancels the queued and running jobs that depend on it with cancelled: permission revoked; never touches recipes, history or artifacts; any client may; returns {grant, outcome, cancelled_jobs, deduplicated}",
+        retries: Owner,
     ),
     owner!(
         "module.permission.list",
@@ -287,19 +331,21 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.activate",
         owner::capability::ModuleChange,
         owner::capability::module_activate,
-        "checks the module's declared required settings and resources and fails with not-ready and data.requirements [{kind, id, state}] listing every missing one before anything is queued; otherwise queues its activation on the module lane, or joins the one queued or running; returns {module_id, activation, job_id?, status?, deduplicated}; an active module answers activation: active with no job"
+        "checks the module's declared required settings and resources and fails with not-ready and data.requirements [{kind, id, state}] listing every missing one before anything is queued; otherwise queues its activation on the module lane, or joins the one queued or running; returns {module_id, activation, job_id?, status?, deduplicated}; an active module answers activation: active with no job",
+        retries: Owner,
     ),
     owner!(
         "module.deactivate",
         owner::capability::ModuleChange,
         owner::capability::module_deactivate,
-        "supersedes a queued activation, cancels a running one, or marks an active module inactive and queues the release of what it loaded after the module lane's earlier work; never deletes a resource or an edit; returns {module_id, activation, job_id?, status?, deduplicated}"
+        "supersedes a queued activation, cancels a running one, or marks an active module inactive and queues the release of what it loaded after the module lane's earlier work; never deletes a resource or an edit; returns {module_id, activation, job_id?, status?, deduplicated}",
+        retries: Owner,
     ),
     owner!(
         "module.status",
         owner::capability::ModuleParams,
         owner::capability::module_status,
-        "{module_id, activation: {state, reason?, job_id?, error?}, settings: {state, revision, missing}, resources, permissions: {grants, denials}, jobs}; state is inactive, activating, active or failed; reads settings, stats installed markers and reads grants, and loads nothing"
+        "{module_id, activation: {state, reason?, job_id?, error?}, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs}; state is inactive, activating, active or failed; permissions counts the module's grants and denials, whose records module.permission.list returns; reads settings, stats installed markers and reads grants, and loads nothing"
     ),
     owner!(
         "module.resource.list",
@@ -311,13 +357,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.resource.install",
         owner::capability::InstallParams,
         owner::capability::resource_install,
-        "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?, deduplicated}"
+        "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
+        retries: Owner,
     ),
     owner!(
         "module.resource.remove",
         owner::capability::ResourceParams,
         owner::capability::resource_remove,
-        "queues a transfer-lane job that deletes the installed version; a module that requires it and is active or activating is deactivated first; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?, deduplicated}"
+        "queues a transfer-lane job that deletes the installed version; a module that requires it and is active or activating is deactivated first; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
+        retries: Owner,
     ),
     owner!(
         "module.job.read",
@@ -329,37 +377,43 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.job.cancel",
         owner::capability::JobCancelParams,
         owner::capability::job_cancel,
-        "removes a queued job as cancelled, or asks a running one to stop at its next checkpoint; a finished job is returned unchanged; a deactivation cannot be cancelled; any client may; returns the job with deduplicated"
+        "removes a queued job as cancelled, or asks a running one to stop at its next checkpoint; a finished job is returned unchanged; a deactivation cannot be cancelled; any client may; returns the job with deduplicated",
+        retries: Owner,
     ),
     service!(
         "history.undo",
         Navigate,
         history_undo,
-        "moves current to its undo parent without adding an entry"
+        "moves current to its undo parent without adding an entry",
+        retries: Catalog,
     ),
     service!(
         "history.redo",
         Navigate,
         history_redo,
-        "follows the persisted redo path"
+        "follows the persisted redo path",
+        retries: Catalog,
     ),
     service!(
         "history.restore",
         Restore,
         history_restore,
-        "appends a restore action copying the entry's stack and returns the session to current"
+        "appends a restore action copying the entry's stack and returns the session to current",
+        retries: Catalog,
     ),
     service!(
         "version.create",
         VersionCreate,
         version_create,
-        "names a retained entry; unique per asset ignoring case; no-op when the name already names that entry; records mutation.actor"
+        "names a retained entry; unique per asset ignoring case; no-op when the name already names that entry; records mutation.actor",
+        retries: Owner,
     ),
     service!(
         "version.delete",
         VersionDelete,
         version_delete,
-        "removes the name only; the entry stays in history; no-op when absent"
+        "removes the name only; the entry stays in history; no-op when absent",
+        retries: Owner,
     ),
     service!(
         "version.list",
@@ -385,7 +439,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "preset.create",
         PresetCreate,
         preset_create,
-        "{preset, deduplicated}: stores a settings set as a Luxforge preset with origin {kind: luxforge}, report null and mutation.actor as its actor; name is 1..128 and group 1..64 printable characters after trimming, the (group, name) pair is unique ignoring case (a duplicate is a conflict) and the library holds at most 1000 presets (resource-limit); every action and field is checked against the registry"
+        "{preset, deduplicated}: stores a settings set as a Luxforge preset with origin {kind: luxforge}, report null and mutation.actor as its actor; name is 1..128 and group 1..64 printable characters after trimming, the (group, name) pair is unique ignoring case (a duplicate is a conflict) and the library holds at most 1000 presets (resource-limit); every action and field is checked against the registry",
+        retries: Owner,
     ),
     service!(
         "preset.capture",
@@ -397,13 +452,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "preset.update",
         PresetUpdate,
         preset_update,
-        "{outcome, preset, deduplicated}: applied when the name, group or settings change, recording mutation.actor and updated_ms; no-op, with nothing written, when they do not; a rename onto another preset's (group, name) pair is a conflict; origin and report are kept"
+        "{outcome, preset, deduplicated}: applied when the name, group or settings change, recording mutation.actor and updated_ms; no-op, with nothing written, when they do not; a rename onto another preset's (group, name) pair is a conflict; origin and report are kept",
+        retries: Owner,
     ),
     service!(
         "preset.delete",
         PresetDelete,
         preset_delete,
-        "{outcome, deleted, deduplicated}: applied and true when the preset existed, no-op and false when it is absent; history entries that applied it are unchanged"
+        "{outcome, deleted, deduplicated}: applied and true when the preset existed, no-op and false when it is absent; history entries that applied it are unchanged",
+        retries: Owner,
     ),
     service!(
         "preset.export",
@@ -421,7 +478,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "preset.import",
         PresetImport,
         preset_import,
-        "{preset, report, deduplicated}: reads the text of a Luxforge preset document, a Lightroom XMP preset or a .lrtemplate, at most 1 MiB, and stores its mapped settings with the text kept verbatim and mutation.actor as its actor; the library's name, uniqueness and size rules apply as for preset.create; a file that maps nothing is unsupported-input with the report counts, and a refused import stores nothing"
+        "{preset, report, deduplicated}: reads the text of a Luxforge preset document, a Lightroom XMP preset or a .lrtemplate, at most 1 MiB, and stores its mapped settings with the text kept verbatim and mutation.actor as its actor; the library's name, uniqueness and size rules apply as for preset.create; a file that maps nothing is unsupported-input with the report counts, and a refused import stores nothing",
+        retries: Owner,
     ),
     service!(
         "preview.select",
@@ -487,7 +545,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "draft.commit",
         DraftCommit,
         draft_commit,
-        "runs the draft's action with its accumulated fields and ends the draft; a conflicted draft or a mismatched expected_revision is refused and the draft is kept"
+        "runs the draft's action with its accumulated fields and ends the draft; a conflicted draft or a mismatched expected_revision is refused and the draft is kept",
+        retries: Owner,
     ),
     service!(
         "draft.reapply",
@@ -552,7 +611,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "export.jpeg",
         owner::export::ExportJpeg,
         owner::export::jpeg,
-        "writes one saved entry's exact render, the current entry unless entry_id names another, to a new baseline quality-90 sRGB JPEG at destination: an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists (conflict otherwise, and nothing is ever replaced); keep_metadata writes the original's supported EXIF fields, otherwise the file carries none; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond) and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, keep_metadata, deduplicated}; an unprepared source is preparation-required with its job; a finished export records an event"
+        "writes one saved entry's exact render, the current entry unless entry_id names another, to a new baseline quality-90 sRGB JPEG at destination: an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists (conflict otherwise, and nothing is ever replaced); keep_metadata writes the original's supported EXIF fields, otherwise the file carries none; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond) and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, keep_metadata, deduplicated}; an unprepared source is preparation-required with its job; a finished export records an event",
+        retries: Owner,
     ),
     owner!(
         "export.read",
@@ -584,7 +644,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "artifact.collect",
         owner::Collect,
         owner::artifact_collect,
-        "removes the rows of artifacts no entry references and no task of this process published, then queues a source job that removes their files, object files without a row and staged files older than an hour; nothing an entry references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary}"
+        "removes the rows of artifacts no entry references and no task of this process published, then queues a source job that removes their files, object files without a row and staged files older than an hour; nothing an entry references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary}",
+        retries: Owner,
     ),
 ];
 
@@ -627,6 +688,18 @@ impl Method {
 
     pub(super) fn mutates(&self) -> bool {
         self.envelope() != Envelope::None
+    }
+
+    /// Who answers a retry of the method: what a host method's entry declares. An action — a
+    /// module's or a mask command — changes an asset, whose catalog request log answers it; a task
+    /// queues a job, which the owner's request table answers.
+    pub(super) fn retries(&self) -> Retries {
+        match self {
+            Self::Host(spec) => spec.retries,
+            Self::Action(_) => Retries::Catalog,
+            Self::Task => Retries::Owner,
+            Self::Query(_) => Retries::None,
+        }
     }
 
     pub(super) fn route(&self) -> Route {
@@ -902,10 +975,12 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             "coordinates": "A points parameter carries an ordered list of [x, y] positions in the content stage's normalized coordinates, in drawn order, where 1.0 is the stage's height on both axes, so a shape is the shape it looks like at any aspect ratio. Positions are not sorted and may repeat or reverse: a path is a path and not a function.",
             "range": [path::COORDINATE_MIN, path::COORDINATE_MAX],
             "stored_steps_per_unit": path::COORDINATE_STEPS_PER_UNIT,
-            "decimation_tolerance": path::DECIMATION_TOLERANCE,
-            "stored_deviation": path::STORED_DEVIATION,
+            "decimation_tolerance_of_radius": path::DECIMATION_TOLERANCE_OF_RADIUS,
+            "decimation_tolerance_min": path::DECIMATION_TOLERANCE_MIN,
+            "grid_rounding": path::GRID_ROUNDING,
+            "posted_points_per_stroke": path::POSTED_POINTS_PER_STROKE,
             "points_per_stroke": path::POINTS_PER_STROKE,
-            "notes": "A posted path is snapped to a grid of stored_steps_per_unit steps per unit and decimated on that grid at decimation_tolerance, so a stored position is at most stored_deviation from the position that was posted and the same posted path always produces the same stored stroke. Decimation is idempotent: a desktop decimates before it posts, and a path posted undecimated arrives at the same stored bytes. A stroke is stored once under the hash of its contents and an entry's recipe references it by that hash, so a payload's strokes field holds addresses and never positions.",
+            "notes": "A posted path is snapped to a grid of stored_steps_per_unit steps per unit and decimated on that grid at a tolerance relative to the radius it is drawn with: decimation_tolerance_of_radius times the radius as stored on the same grid, and never less than decimation_tolerance_min. A stored position is therefore at most that tolerance plus grid_rounding from the position that was posted, and at one radius the same posted path always produces the same stored stroke. Decimation is idempotent: a desktop decimates at its radius before it posts, and a path posted undecimated arrives at the same stored bytes. A posted path holds at most posted_points_per_stroke positions, checked before decimation, and the stroke it decimates to at most points_per_stroke, checked after. A stroke is stored once under the hash of its contents and an entry's recipe references it by that hash, so a payload's strokes field holds addresses and never positions.",
         },
         // The one path bound that is the mask's own rather than the host path primitive's, so the
         // `paths` block above says nothing about masks and this one says what a mask adds. The mask
@@ -2338,6 +2413,11 @@ mod tests {
                 mutates(&spec, Some(&json!({"outcome": "applied"}))),
                 spec.mutates()
             );
+            assert_eq!(
+                spec.retries() != Retries::None,
+                spec.mutates(),
+                "{name}: every mutating method, and only one, declares who answers its retry"
+            );
             assert!(!listed[name]["notes"].as_str().unwrap().is_empty());
         }
         assert!(find(&service, "edit.missing").is_none());
@@ -3209,12 +3289,19 @@ mod tests {
             json!([path::COORDINATE_MIN, path::COORDINATE_MAX])
         );
         assert_eq!(paths["stored_steps_per_unit"], json!(16384.0));
+        assert_eq!(paths["decimation_tolerance_of_radius"], json!(0.04));
         assert_eq!(
-            paths["decimation_tolerance"],
-            json!(path::DECIMATION_TOLERANCE)
+            paths["decimation_tolerance_min"],
+            json!(2.0 / 16384.0),
+            "two grid steps"
         );
-        assert_eq!(paths["stored_deviation"], json!(path::STORED_DEVIATION));
+        assert_eq!(paths["grid_rounding"], json!(path::GRID_ROUNDING));
         assert_eq!(paths["points_per_stroke"], json!(1024));
+        assert_eq!(
+            paths["posted_points_per_stroke"],
+            json!(16 * 1024),
+            "a raw path is bounded before decimation, and more generously than the stroke after it"
+        );
         for text in [&paths["coordinates"], &paths["notes"]] {
             let text = text.as_str().expect("prose a client can read");
             assert!(!text.to_lowercase().contains("mask"), "{text}");

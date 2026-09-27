@@ -1,4 +1,4 @@
-//! Independent f64 reference for the frozen global Tone algorithm (TASK-011).
+//! Independent f64 reference for the frozen global Tone algorithm.
 //!
 //! This module shares no code with production. It exists so a later production
 //! implementation of the `luxforge.basic.adjust` tone unit has an oracle it
@@ -98,7 +98,7 @@ pub fn luminance(rgb: [f64; 3]) -> f64 {
 /// and continuous (though not C1 at the breakpoint) on the whole real line.
 /// This is the "working tone domain" the curve stages below operate in.
 ///
-/// `pub` (not private) so the vignette reference (TASK-004) can reuse the same
+/// `pub` (not private) so the vignette reference can reuse the same
 /// analytically-continued sRGB OETF for its positive-amount mapping instead of
 /// duplicating it; see `docs/design/presence-mixer-vignette.md`'s "Vignette:
 /// one positional unit" and `crates/luxforge-reference/src/vignette.rs`.

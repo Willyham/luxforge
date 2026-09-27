@@ -1,5 +1,5 @@
 //! The Basic module's Tone unit: Contrast, Highlights, Shadows, Whites and Blacks, composed as one
-//! frozen global luminance curve (`docs/design/basic-tone.md`, TASK-011/TASK-012). This file is the
+//! frozen global luminance curve (`docs/design/basic-tone.md`). This file is the
 //! `f32` production transcription of that document and of the independent `f64` reference at
 //! `crates/luxforge-reference/src/tone.rs`; the three must be read together, and every
 //! constant here is named identically to the constant of the same name there.

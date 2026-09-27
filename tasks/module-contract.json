@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Replace the preset importer's false \"Luxforge has no masks\" message and correct the presets design doc's stale masking and catalog-format passages.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. Masking is delivered, so telling an importing user Luxforge has no masks is a false statement about current behavior, not a scope note.",

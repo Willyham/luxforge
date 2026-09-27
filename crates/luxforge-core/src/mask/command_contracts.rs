@@ -1778,12 +1778,12 @@ fn a_decimated_path_and_the_path_it_came_from_are_the_same_stored_stroke() {
     let dir = temp("decimation");
     let source = dir.join("orientation-1.jpg");
     std::fs::copy(fixture(), &source).unwrap();
-    // A path a pointer produces: many positions along a straight run, which two grid steps of
-    // tolerance reduce to its two ends.
+    // A path a pointer produces: many positions along a straight run, which decimation at the
+    // stroke's own radius reduces to its two ends.
     let captured: Vec<[f64; 2]> = (0..=64)
         .map(|step| [0.2 + f64::from(step) * 0.005, 0.3])
         .collect();
-    let decimated = crate::path::decimate(&captured).unwrap();
+    let decimated = crate::path::decimate(&captured, 0.1).unwrap();
     assert_eq!(decimated.len(), 2, "a straight run keeps its ends");
     let address = |path: &[[f64; 2]], request: &str| -> String {
         let mut driver = Direct::open(&dir.join(format!("{request}.sqlite")), &source);

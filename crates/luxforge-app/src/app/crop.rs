@@ -86,6 +86,7 @@ fn changes_draft(message: &CropMessage) -> bool {
             | CropMessage::Lock
             | CropMessage::Swap
             | CropMessage::NudgeAngle(_)
+            | CropMessage::ResetAngle
             | CropMessage::AngleRail(_)
             | CropMessage::AngleRailReleased
             | CropMessage::SubmitAngle
@@ -251,6 +252,12 @@ impl Editor {
             CropMessage::NudgeAngle(step) => {
                 if let Some(draft) = self.crop_mut() {
                     draft.nudge_angle(step);
+                }
+                return self.crop_changed("crop_draft_changed");
+            }
+            CropMessage::ResetAngle => {
+                if let Some(draft) = self.crop_mut() {
+                    draft.set_angle(0.0);
                 }
                 return self.crop_changed("crop_draft_changed");
             }
@@ -481,8 +488,12 @@ impl Editor {
         }
         let mut task = Task::none();
         if self.crop_pending().is_none() {
-            // A release with no drag ahead of it has nothing to finish.
-            if matches!(changes[0], CropMessage::AngleRailReleased) {
+            // A release with no drag ahead of it has nothing to finish, and a reset of a committed
+            // angle that is already 0 changes nothing.
+            if matches!(changes[0], CropMessage::AngleRailReleased)
+                || (matches!(changes[0], CropMessage::ResetAngle)
+                    && self.committed_crop_angle() == 0.0)
+            {
                 return task;
             }
             // A start another gesture refuses says so and queues nothing.
@@ -504,6 +515,7 @@ impl Editor {
         let prospective = match &change {
             CropMessage::AngleRail(fraction) => Some(rail_angle(*fraction)),
             CropMessage::NudgeAngle(step) => Some(angle + step),
+            CropMessage::ResetAngle => Some(0.0),
             CropMessage::AngleText(text) => text.trim().parse::<f64>().ok(),
             _ => None,
         }
@@ -833,6 +845,71 @@ mod tests {
             .collect();
         assert_eq!(changes.len(), 1, "one draft change, at the release");
         assert_eq!(changes[0]["detail"]["angle"], json!(2.4));
+        finish(editor, catalog);
+    }
+
+    /// A double-click on the angle's rail puts the angle back to 0 and sends it, as a nudge sends
+    /// its angle: the frame, the angle's box and the client's core draft all read 0, and exactly
+    /// one draft change is logged and set on the core draft. Nothing commits.
+    #[test]
+    fn a_double_click_on_the_angle_rail_resets_the_angle_as_one_change() {
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-crop-reset-{}-{}.sqlite",
+            std::process::id(),
+            crate::app::tasks::REQUEST_NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let (mut editor, _, _) = crate::app::testing::real_photo(&catalog);
+        let (owner, client) = (editor.owner.clone(), editor.client);
+        let draft = || {
+            crate::app::tasks::call(&owner, client, "session.state", json!({}))
+                .expect("a session")
+                .0["draft"]
+                .clone()
+        };
+        let (width, height) = {
+            let asset = &editor.state.as_ref().expect("a photograph").asset;
+            (asset.width, asset.height)
+        };
+        let revision = editor.state.as_ref().expect("a photograph").revision;
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        assert_eq!(
+            crate::app::testing::run_round(&mut editor),
+            Some(Round::Begin)
+        );
+        editor.open_draft(CropStage {
+            width,
+            height,
+            angle: 0.0,
+        });
+        let _ = editor.update(Message::Crop(CropMessage::NudgeAngle(ANGLE_STEP)));
+        assert_eq!(editor.crop().expect("a frame").stage.angle, ANGLE_STEP);
+        let before = draft();
+        assert_eq!(before["fields"]["angle"], json!(ANGLE_STEP));
+
+        let log = crate::app::testing::attach_log(&mut editor);
+        let _ = editor.update(crate::view::tools_panel::angle_reset());
+        assert_eq!(editor.crop().expect("still drafting").stage.angle, 0.0);
+        assert_eq!(editor.crop_angle, "0");
+        let after = draft();
+        assert_eq!(after["fields"]["angle"], json!(0.0));
+        assert_eq!(
+            after["draft_revision"].as_u64(),
+            before["draft_revision"]
+                .as_u64()
+                .map(|revision| revision + 1),
+            "one change reached the core draft"
+        );
+        let changes: Vec<Value> = crate::app::testing::logged(&mut editor, &log)
+            .into_iter()
+            .filter(|record| record["event"] == "crop_draft_changed")
+            .collect();
+        assert_eq!(changes.len(), 1, "one draft change");
+        assert_eq!(changes[0]["detail"]["angle"], json!(0.0));
+        assert_eq!(
+            editor.state.as_ref().expect("a photograph").revision,
+            revision,
+            "nothing committed"
+        );
         finish(editor, catalog);
     }
 

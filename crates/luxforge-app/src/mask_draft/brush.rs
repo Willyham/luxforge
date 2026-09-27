@@ -179,11 +179,11 @@ impl BrushStroke {
         self.painting
     }
 
-    /// The path this stroke posts: decimated by the host's own contract, on its grid, at its
-    /// tolerance. Deterministic, so the same captured path is always the same stored stroke and
-    /// therefore the same content address.
+    /// The path this stroke posts: decimated by the host's own contract, on its grid, at the
+    /// tolerance this stroke's own size takes. Deterministic, so the same captured path at the same
+    /// size is always the same stored stroke and therefore the same content address.
     pub(crate) fn points(&self) -> Vec<[f64; 2]> {
-        luxforge_core::path::decimate(&self.path).unwrap_or_default()
+        luxforge_core::path::decimate(&self.path, self.brush.size).unwrap_or_default()
     }
 
     /// Something was drawn. An empty stroke commits nothing: a click that painted no position is not

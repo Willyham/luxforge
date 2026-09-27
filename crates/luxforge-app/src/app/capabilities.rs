@@ -2,8 +2,10 @@
 //! on the consent notice becomes one [`Operation`], and one owner round trip runs it off the update
 //! loop through the same methods the JSON API dispatches: the `module.*` methods, `task.<id>` and
 //! `module.permission.*`. Every round trip ends with one `module.status` read of that module alone,
-//! which is the narrowest completion path that keeps the section honest; settings writes answer
-//! with the fresh settings themselves, so they need no second read.
+//! which is the narrowest completion path that keeps the section honest, and, only while the
+//! module's permissions list is open, one `module.permission.list` read for its rows: the status
+//! carries the counts the permissions line shows, not the records. Settings writes answer with the
+//! fresh settings themselves, so they need no second read.
 //!
 //! Jobs are followed by a poll that exists only while a job the desktop tracks is queued or running
 //! (see [`Editor::capability_poll_subscription`]). A `consent-required` answer opens the consent
@@ -29,6 +31,7 @@ use luxforge_core::{
     AssetId, ClientId, ModuleDescriptor, OwnerHandle, ParameterKind,
     capabilities::{
         descriptor::SettingDescriptor,
+        grants::GrantList,
         host::Requirement,
         jobs::{JobRecord, JobStatus},
         settings::SettingsRead,
@@ -82,6 +85,8 @@ pub(crate) struct Answer {
     pub(crate) outcome: Outcome,
     pub(crate) settings: Option<SettingsRead>,
     pub(crate) status: Option<Result<ModuleStatus, String>>,
+    /// The module's grants and denials, read when its permissions list was open.
+    pub(crate) permissions: Option<Result<GrantList, String>>,
     /// The job the operation started, read once after it was queued.
     pub(crate) job: Option<JobRecord>,
     /// Every request sent, redacted, for the event log.
@@ -348,12 +353,14 @@ fn perform(
     }
 }
 
-/// One whole round trip: the operation, one read of a job it started, and the module's status.
+/// One whole round trip: the operation, one read of a job it started, the module's status and,
+/// when `list` says its permissions list is open, its grants and denials.
 pub(crate) fn run(
     owner: &OwnerHandle,
     client: ClientId,
     module_id: String,
     op: Operation,
+    list: bool,
 ) -> Answer {
     let mut sent = Vec::new();
     let mut settings = None;
@@ -396,6 +403,17 @@ pub(crate) fn run(
     )
     .map_err(|error| error.to_string())
     .and_then(parse::<ModuleStatus>);
+    let permissions = list.then(|| {
+        call(
+            owner,
+            client,
+            "module.permission.list",
+            json!({"module_id": module_id}),
+            &mut sent,
+        )
+        .map_err(|error| error.to_string())
+        .and_then(parse::<GrantList>)
+    });
     Answer {
         module_id,
         op: routed,
@@ -403,6 +421,7 @@ pub(crate) fn run(
         outcome,
         settings,
         status: Some(status),
+        permissions,
         job,
         sent,
     }
@@ -432,9 +451,12 @@ pub(crate) fn poll(
 }
 
 impl Editor {
-    /// Start one owner round trip for a module. Nothing runs on the update loop but this.
+    /// Start one owner round trip for a module. Nothing runs on the update loop but this. It reads
+    /// the permissions list too while that list is open.
     pub(crate) fn capability_op(&mut self, module_id: &str, op: Operation) -> Task<Message> {
-        self.capabilities.touch(module_id).pending += 1;
+        let state = self.capabilities.touch(module_id);
+        state.pending += 1;
+        let list = state.permissions_open;
         #[cfg(test)]
         self.capability_started
             .push((module_id.to_owned(), op.clone()));
@@ -442,7 +464,7 @@ impl Editor {
         let client = self.client;
         let module = module_id.to_owned();
         owner_task(
-            move || run(&owner, client, module, op),
+            move || run(&owner, client, module, op, list),
             |answer| Message::Capability(CapabilityMessage::Answered(Box::new(answer))),
         )
     }
@@ -591,6 +613,12 @@ impl Editor {
             CapabilityMessage::TogglePermissions(module_id) => {
                 let state = self.capabilities.touch(&module_id);
                 state.permissions_open = !state.permissions_open;
+                if !state.permissions_open {
+                    state.permission_list = None;
+                    return Task::none();
+                }
+                // Opening reads the rows; the status the line shows is read with them.
+                return self.capability_op(&module_id, Operation::Refresh);
             }
             CapabilityMessage::FieldText {
                 module_id,
@@ -969,6 +997,7 @@ impl Editor {
             outcome,
             settings,
             status,
+            permissions,
             job,
             sent,
         } = answer;
@@ -1007,6 +1036,12 @@ impl Editor {
             Some(Err(error)) if matches!(op, Operation::Load) => state.load_error = Some(error),
             Some(Err(error)) => state.message = Some(error),
             None => {}
+        }
+        // A list read for a list closed since is dropped.
+        match permissions {
+            Some(Ok(list)) if state.permissions_open => state.permission_list = Some(list),
+            Some(Err(error)) if state.permissions_open => state.message = Some(error),
+            _ => {}
         }
         // A declined consent ends the run it was asked for.
         if let Some((false, declined)) = &consent
@@ -1424,21 +1459,16 @@ impl Editor {
                     .ok_or_else(|| format!("{module} has no live job to cancel"))?;
                 vec![CapabilityMessage::Cancel { module_id, job }]
             }
+            CapabilityAction::Permissions => {
+                vec![CapabilityMessage::TogglePermissions(module_id)]
+            }
             CapabilityAction::Revoke(index) => {
-                // The permissions list is opened first, exactly as a person would to reach Revoke.
-                if !self
-                    .capabilities
-                    .modules
-                    .get(module)
-                    .is_some_and(|state| state.permissions_open)
-                {
-                    let _ = self
-                        .capability_update(CapabilityMessage::TogglePermissions(module_id.clone()));
+                // Revoke is pressed on a row of the open list, as a person reaches it.
+                let state = self.capabilities.modules.get(module);
+                if state.is_none_or(|state| state.permission_list.is_none()) {
+                    return Err(format!("{module}'s permissions list is not open"));
                 }
-                let grant = self
-                    .capabilities
-                    .modules
-                    .get(module)
+                let grant = state
                     .and_then(|state| state.grants().get(index).map(|grant| (*grant).clone()))
                     .ok_or_else(|| format!("{module} has no grant {index}"))?;
                 if !grant.is_live() {

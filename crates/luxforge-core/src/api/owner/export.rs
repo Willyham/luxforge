@@ -8,12 +8,10 @@ use super::{Call, Owner};
 use crate::{
     AssetId, EntryId, Error, JobId, JobStatus, RenderOptions,
     activity::ActivitySpec,
+    api::announce_once,
     api::params::host_params,
-    capabilities::{
-        host::announce_once,
-        jobs::{
-            Admission, Cancelled, EXPORT_SUBJECT, JobControl, JobKind, JobRecord, NewJob, Work,
-        },
+    capabilities::jobs::{
+        Admission, Cancelled, EXPORT_SUBJECT, JobControl, JobKind, JobRecord, NewJob, Work,
     },
     editor::ExportPlan,
     export::{

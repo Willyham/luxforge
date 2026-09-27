@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Give every core unit test that renders its own RenderContext, deleting the shared static test context, its guards and its idle polls.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 1, fix. A render context per test removes the mechanism behind a class of load-dependent test failures, before the harness states the rule that depends on it.",
