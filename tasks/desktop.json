@@ -277,7 +277,7 @@
     {
       "id": "TASK-005",
       "description": "Put the crop fully on the one draft driver: the shared commit, cancel and reapply messages, one refusal behind Apply, one conflict notice, a frame opened from the recipe rows with no change queue, and the crop's values and geometry taken from the core.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -377,7 +377,7 @@
     {
       "id": "TASK-006",
       "description": "Declare the crop angle's step and fine step on its parameter and render it as the generic stepper control, deleting the crop's own angle model, messages and constants.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],
@@ -467,7 +467,7 @@
     {
       "id": "TASK-007",
       "description": "Answer \"may this start\" with one refusal function for every start site, and always write its reason to the status bar.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],
@@ -660,7 +660,7 @@
     {
       "id": "TASK-009",
       "description": "Run `draft.begin`, `draft.cancel` and `draft.reapply` synchronously on the desktop thread, like `draft.set`, keeping only `draft.commit` as an owner task.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],
@@ -815,7 +815,7 @@
     {
       "id": "TASK-011",
       "description": "Show a crop draft's input stage at Fit from a proxy phase, with the exact stage only at a percentage zoom.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],
@@ -891,7 +891,7 @@
     {
       "id": "TASK-012",
       "description": "Measure what deriving every workspace region on every message costs, and remove the per-region keys if it stays under about 0.2 ms; otherwise key only the heavy region, on one value.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],

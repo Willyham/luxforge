@@ -164,7 +164,7 @@
     {
       "id": "TASK-003",
       "description": "Collect unreferenced derived artifacts once when a catalog opens, on the source worker, instead of only through an explicit call nothing makes today.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. The recipe-carried artifact table itself is already correct and complete; what is missing is ever running the collection that depends on it.",
@@ -231,7 +231,7 @@
     {
       "id": "TASK-004",
       "description": "Spike `ureq`'s own agent behind the address policy and prove that cancelling a stalled request by shutting its socket down works through rustls.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. The owner's 2026-09-24 decision to move the transport onto a well-known HTTP client did not land in substance: the change kept a hand-written resolver, socket, TLS session, read/write loop and framing, and only handed request-head writing and response parsing to `ureq-proto`, so the client shrank from 1,098 to 1,079 lines while gaining four packages.",
@@ -308,13 +308,14 @@
     {
       "id": "TASK-005",
       "description": "Run the module transport on `ureq`'s agent behind the unchanged address policy, deleting the hand-written exchange loop, and pin `idna_adapter` so endpoint parsing adds no Unicode data stack.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004"
       ],
       "extra_context": [
-        "Wave 2, finish the consolidation. This lands the 2026-09-24 decision once TASK-004's spike confirms cancellation and TLS behavior hold.",
-        "Today's client is `capabilities/transport/exchange.rs` (550 lines), `mod.rs` (352), `net.rs` (105) and `tls.rs` (72) — its own resolution, socket, rustls session, a read/write loop that wakes every 100 ms so cancellation can be checked between reads, buffering, interim-response skipping, redirects and framing stricter than `ureq-proto`'s own. Replace it with one `ureq::Agent` per request built from the spiked policy resolver and a `TcpTransport` connector that registers the cloned socket with the job's `JobControl` so `cancel()` shuts it down, paired with a `RustlsConnector` on the `ring` provider, no proxy, no pool, a 64 KiB head limit and identity encoding; keep the existing redirect check and loop over at most three redirects; stream the body through `limit(max)` and report progress from that loop instead of per chunk.",
+        "Wave 2, finish the consolidation. This lands the 2026-09-24 decision; the spike (`capabilities/transport/ureq_spike.rs`, recorded in docs/design/module-capabilities.md's Transport section) confirmed resolve-once policy, prompt socket-shutdown cancellation and the TLS behaviour on `ureq` 3.4.2's agent.",
+        "Today's client is `capabilities/transport/exchange.rs` (550 lines), `mod.rs` (352), `net.rs` (105) and `tls.rs` (72) — its own resolution, socket, rustls session, a read/write loop that wakes every 100 ms so cancellation can be checked between reads, buffering, interim-response skipping, redirects and framing stricter than `ureq-proto`'s own. Replace it with one `ureq::Agent` per request (`Agent::with_parts`) built as the spike built it: the policy `Resolver` over `Resolve`, a policy `Connector` over `Connect` with Luxforge's own socket transport (ureq 3.4.2's `TcpTransport` is not exported) that registers a cloned socket with the job's `JobControl` so `cancel()` shuts it down, and Luxforge's own TLS transport on `tls::client_config`, never ureq's `RustlsConnector`, whose body handler takes rustls' `UnexpectedEof` on a connection closed without `close_notify` as the end of a close-delimited body and so accepts a truncated TLS body. No proxy, no pool, statuses as data, `max_redirects(0)`, a 64 KiB head limit and identity encoding; keep the existing redirect check and loop over at most three redirects; stream the body through `limit(max)` and report progress from that loop instead of per chunk.",
+        "A cancel overrides a success: a shut-down plain socket reads as the end of a close-delimited body, so the transport checks the job's cancel before reporting a body complete, as the spike's `spike_cancelling_a_stalled_close_delimited_body_is_not_taken_for_its_end` proves. `ureq`'s timeouts are per phase, not today's idle timeout between reads, so the socket transport applies the idle read timeout itself; and the response framing today's exchange refuses but `ureq-proto` accepts (a bare LF, the header field cap) is either kept by the transport or its loss is recorded in the Transport section. The spike module and its dev-dependency go when this lands; its tests become the transport's.",
         "Keep `policy.rs` unchanged, and keep the transport's structured error kinds (`validation`, `resource-limit`, `read-error`, `cancelled`) exactly as they are; only message wording may change.",
         "`idna_adapter` is pinned at 1.2.2 today through `url = \"=2.5.8\"`, used only by `capabilities/descriptor.rs` and the transport. Pinning `idna_adapter = \"=1.0.0\"` drops its ICU4X back end: a non-ASCII endpoint host is refused by name while punycode keeps working. `ureq` needs its own address parsing regardless, so this is independent cleanup riding along with the transport change, not a consequence of it.",
         "Add a `check-repository` boundary rule (`xtask/src/repository.rs`'s forbidden-token table) that refuses `ureq_proto::` and `httparse::` outside `capabilities/transport/`, so a second hand-written HTTP framing implementation can never reappear elsewhere. No render or export path is touched; only the transport's tests, the capability proof's network calls and the capabilities smoke exercise this code."
@@ -361,8 +362,9 @@
         }
       ],
       "acceptance_criteria": [
-        "`exchange.rs` and most of `mod.rs` and `tls.rs` are gone; the client shrinks by roughly 800 lines.",
+        "`exchange.rs` and most of `mod.rs` are gone and the spike module is deleted; `tls.rs` keeps only `client_config` and `server_name` for Luxforge's own TLS transport; the client shrinks by roughly 700 lines.",
         "The ported policy, redirect, bounds, deadline, TLS-roots and cancel tests pass, and cancelling a stalled request is prompt rather than bounded by a 100 ms slice.",
+        "A TLS body closed without `close_notify` is refused, a cancel during a close-delimited body is `cancelled` rather than a complete body, and a stalled read is ended by the idle read timeout.",
         "A non-ASCII endpoint host is refused by name; a punycode host still resolves.",
         "A check-repository rule fails the build if `ureq_proto` or `httparse` is used outside `capabilities/transport/`.",
         "docs/design/module-capabilities.md's Transport section describes the ureq-based transport, and the resulting package count and executable size are noted for the record."

@@ -164,7 +164,7 @@
     {
       "id": "TASK-003",
       "description": "Resolve \"is this a presettable action\" and its settings-set shape through one registry method used by the preset library, capture, apply, the Lightroom mapping and composite plans.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation.",
@@ -241,7 +241,7 @@
     {
       "id": "TASK-004",
       "description": "Generalize the field-patch module's Field and Values to any declared parameter kind, and turn the developer controls proof into a field-patch spec so every field-patch module shares one semantics.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 2, finish the consolidation. Tone Curve, the next planned module, needs this to be a spec rather than a third hand-written module.",
@@ -320,7 +320,7 @@
     {
       "id": "TASK-005",
       "description": "Add a validating Spec constructor for field-patch modules, check group membership at build time, and replace the four hard-coded built-in-module lists with one committed descriptor snapshot.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004"
       ],
