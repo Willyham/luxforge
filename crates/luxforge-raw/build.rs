@@ -24,10 +24,10 @@ fn add_cpp_tree(build: &mut cc::Build, root: &Path, extension: &str) {
             } else if path.extension().is_some_and(|ext| ext == extension)
                 && path
                     .file_name()
-                    .is_none_or(|name| name != "postprocessing_ph.cpp")
+                    .is_none_or(|name| name != "postprocessing_ph.cpp" && name != "write_ph.cpp")
             {
-                // Upstream supplies this alternative stub file for builds without
-                // postprocessing. Do not link it alongside the real implementations.
+                // Upstream supplies alternative stubs for builds without postprocessing or
+                // output writing. Do not link them alongside the real implementations.
                 sources.push(path);
             }
         }
