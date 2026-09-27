@@ -115,10 +115,11 @@ pub fn plan(generate: &str, key: &str, wrong: &str) -> Plan {
         Step::new("applied", step(CapabilityAction::Apply))
             .commits(1)
             .label("Apply proof tint"),
-        // A wrong key makes the endpoint refuse, and the failure is shown; then the photo-data
-        // grant is revoked.
+        // A wrong key makes the endpoint refuse, and the failure is shown; then the permissions
+        // list is opened and the photo-data grant is revoked.
         secret("wrong-key", wrong),
         gesture("refused-task", CapabilityAction::Task(TASK.into())),
+        gesture("permissions", CapabilityAction::Permissions),
         gesture("revoked", CapabilityAction::Revoke(1)),
     ])
 }
@@ -485,6 +486,18 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         tint_layers(refused).len() == 1,
         "A failed task changed the recipe",
     )?;
+    // Opening the permissions list reads its rows: both grants, live, as the status counts them.
+    let opened = &capability(at("permissions")?)["permissions"];
+    ensure(
+        opened["open"] == true
+            && opened["listed"] == true
+            && opened["live"] == 2
+            && opened["revoked"] == 0
+            && opened["grants"].as_array().is_some_and(|grants| {
+                grants.len() == 2 && grants.iter().all(|grant| grant["revoked"].is_null())
+            }),
+        format!("The permissions list did not open on both live grants: {opened}"),
+    )?;
     // The photo-data grant revoked, in the open permissions list.
     let permissions = &capability(at("revoked")?)["permissions"];
     let revoked: Vec<&Value> = permissions["grants"]
@@ -495,6 +508,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .collect();
     ensure(
         permissions["open"] == true
+            && permissions["live"] == 1
+            && permissions["revoked"] == 1
             && revoked.len() == 1
             && revoked[0]["kind"] == "remote-image-request",
         format!("The remote grant is not listed revoked: {permissions}"),

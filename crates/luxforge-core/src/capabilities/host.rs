@@ -12,7 +12,7 @@
 //! same [`CapabilityHost`].
 use super::{
     descriptor::SettingDescriptor,
-    grants::{Grant, GrantKind, GrantScope, GrantsStore},
+    grants::{Grant, GrantKind, GrantScope, GrantsStore, PermissionCounts},
     jobs::{Cancelled, Deliver, JobError, JobKind, JobRecord, JobStatus, Jobs},
     resources::{DEFAULT_RESOURCE_QUOTA_BYTES, ResourceStore, SharedTransport},
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
@@ -682,8 +682,9 @@ impl CapabilityHost {
 
     // Status.
 
-    /// `module.status`: activation, settings validity, resources, grants and this module's jobs.
-    /// A settings read, stats of installed markers and a grants file read; no hashing.
+    /// `module.status`: activation, settings validity, resources, grant and denial counts and this
+    /// module's jobs. A settings read, stats of installed markers and a grants file read; no
+    /// hashing. The grant and denial records are read through `module.permission.list`.
     pub(crate) fn status(
         &self,
         registry: &ModuleRegistry,
@@ -714,10 +715,14 @@ impl CapabilityHost {
         };
         let permissions = match self
             .grants()
-            .and_then(|grants| grants.list(Some(&descriptor.id)))
+            .and_then(|grants| grants.counts(&descriptor.id))
         {
-            Ok(list) => encode(list)?,
-            Err(error) => json!({"grants": [], "denials": [], "error": JobError::from(&error)}),
+            Ok(counts) => encode(counts)?,
+            Err(error) => {
+                let mut counts = encode(PermissionCounts::default())?;
+                counts["error"] = json!(JobError::from(&error));
+                counts
+            }
         };
         Ok(json!({
             "module_id": descriptor.id,

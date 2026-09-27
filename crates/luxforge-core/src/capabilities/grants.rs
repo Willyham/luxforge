@@ -19,7 +19,8 @@ use std::{
 /// The only grants file format this build reads or writes.
 pub const GRANTS_FORMAT: u32 = 1;
 /// Grants and denials together, revoked grants included. A new record beyond this prunes the
-/// oldest revoked grant or denial; when every record is a live grant, it is refused.
+/// oldest revoked grant or denial; when every record is a live grant, it evicts the oldest live
+/// remote-image grant, and when every record is a live download grant, it is refused.
 pub const MAX_GRANT_RECORDS: usize = 1024;
 /// The largest grants file, read or written. A record is well under 1 KiB.
 pub const MAX_GRANTS_BYTES: u64 = 2 * 1024 * 1024;
@@ -184,6 +185,16 @@ pub struct GrantList {
     pub denials: Vec<Denial>,
 }
 
+/// `module.status`'s `permissions`: how many of a module's grants are live and revoked, and how
+/// many denials are recorded. It does not grow with the records, which are read through
+/// `module.permission.list`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionCounts {
+    pub live: usize,
+    pub revoked: usize,
+    pub denials: usize,
+}
+
 /// `{format: 1, grants: [...], denials: [...]}`.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -222,7 +233,9 @@ impl Document {
     }
 
     /// Make room for one more record by removing the oldest revoked grant or denial, by the time it
-    /// stopped applying; refuse when every record is a live grant.
+    /// stopped applying. When every record is a live grant, the oldest live `remote-image-request`
+    /// grant is evicted, so its scope is asked for again; a `download-artifact` grant is never
+    /// evicted, and a file of live download grants alone refuses.
     fn make_room(&mut self) -> Result<(), Error> {
         if self.records() < MAX_GRANT_RECORDS {
             return Ok(());
@@ -250,9 +263,19 @@ impl Document {
                 self.grants.remove(grant.1);
             }
             (None, None) => {
-                return Err(Error::resource_limit(format!(
-                    "{MAX_GRANT_RECORDS} live grants are recorded; revoke one before granting another"
-                )));
+                let remote = self
+                    .grants
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, grant)| grant.kind == GrantKind::RemoteImageRequest)
+                    .map(|(index, grant)| (grant.created_ms, index))
+                    .min()
+                    .ok_or_else(|| {
+                        Error::resource_limit(format!(
+                            "{MAX_GRANT_RECORDS} live grants are recorded; revoke one before granting another"
+                        ))
+                    })?;
+                self.grants.remove(remote.1);
             }
         }
         Ok(())
@@ -313,6 +336,29 @@ impl GrantsStore {
                 .filter(|denial| wanted(&denial.module_id))
                 .collect(),
         })
+    }
+
+    /// How many of one module's grants are live and revoked, and how many denials it has.
+    pub fn counts(&self, module_id: &str) -> Result<PermissionCounts, Error> {
+        let document = self.load()?;
+        let mut counts = PermissionCounts::default();
+        for grant in document
+            .grants
+            .iter()
+            .filter(|grant| grant.module_id == module_id)
+        {
+            if grant.is_live() {
+                counts.live += 1;
+            } else {
+                counts.revoked += 1;
+            }
+        }
+        counts.denials = document
+            .denials
+            .iter()
+            .filter(|denial| denial.module_id == module_id)
+            .count();
+        Ok(counts)
     }
 
     /// The live grant covering exactly this scope, and whether a denial of it is recorded.
@@ -638,11 +684,24 @@ mod tests {
         document.grants = (0..MAX_GRANT_RECORDS).map(live).collect();
         fs::create_dir_all(fixture.root.join("modules")).unwrap();
         fixture.store.document.write(&document).unwrap();
+        let full = fs::read(fixture.file()).unwrap();
+        // A file of live download grants has no remote-image grant to evict: it refuses.
         let error = fixture
             .store
             .grant(new_grant(download_scope("/new"), "new"))
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert_eq!(
+            error.detail,
+            format!(
+                "{MAX_GRANT_RECORDS} live grants are recorded; revoke one before granting another"
+            )
+        );
+        assert_eq!(
+            fs::read(fixture.file()).unwrap(),
+            full,
+            "nothing was written"
+        );
         let error = fixture
             .store
             .deny(MODULE, "download", download_scope("/new"), "edit")
@@ -670,6 +729,106 @@ mod tests {
         assert_eq!(grants.len(), MAX_GRANT_RECORDS);
         assert!(grants.iter().all(|grant| grant.grant_id != "grant-20"));
         assert!(grants.iter().any(|grant| grant.grant_id == "grant-10"));
+    }
+
+    #[test]
+    fn at_the_bound_the_oldest_live_remote_grant_is_evicted_and_never_a_download() {
+        let fixture = Fixture::new("grants-evict");
+        let half = MAX_GRANT_RECORDS / 2;
+        // The download grants are the oldest records, so age alone would take one of them.
+        let download = |index: usize| Grant {
+            grant_id: format!("download-{index}"),
+            module_id: MODULE.into(),
+            capability: "download".into(),
+            kind: GrantKind::DownloadArtifact,
+            scope: download_scope(&format!("/{index}")),
+            actor: "permissions".into(),
+            request_id: format!("download-request-{index}"),
+            created_ms: index as u64,
+            revoked: None,
+        };
+        let remote_scope = || {
+            GrantScope::Remote(RemoteScope {
+                profile_id: "profile".into(),
+                adapter: "adapter".into(),
+                origin: "https://example.com".into(),
+                data: DataClass::SampleGrid8,
+                asset_id: AssetId::new(),
+            })
+        };
+        // The remote grants are listed newest first, so the oldest is the last one listed.
+        let remote = |index: usize| Grant {
+            grant_id: format!("remote-{index}"),
+            module_id: MODULE.into(),
+            capability: "send".into(),
+            kind: GrantKind::RemoteImageRequest,
+            scope: remote_scope(),
+            actor: "permissions".into(),
+            request_id: format!("remote-request-{index}"),
+            created_ms: 10_000 - index as u64,
+            revoked: None,
+        };
+        let document = Document {
+            grants: (0..half)
+                .map(download)
+                .chain((0..MAX_GRANT_RECORDS - half).map(remote))
+                .collect(),
+            denials: Vec::new(),
+        };
+        let downloads: Vec<Grant> = document.grants[..half].to_vec();
+        fs::create_dir_all(fixture.root.join("modules")).unwrap();
+        fixture.store.document.write(&document).unwrap();
+        let oldest = format!("remote-{}", MAX_GRANT_RECORDS - half - 1);
+        let next = format!("remote-{}", MAX_GRANT_RECORDS - half - 2);
+        let granted = fixture
+            .store
+            .grant(NewGrant {
+                capability: "send",
+                ..new_grant(remote_scope(), "new-remote")
+            })
+            .unwrap();
+        let grants = fixture.store.list(None).unwrap().grants;
+        assert_eq!(grants.len(), MAX_GRANT_RECORDS);
+        assert!(grants.iter().all(|grant| grant.grant_id != oldest));
+        assert!(grants.iter().any(|grant| grant.grant_id == next));
+        assert!(grants.contains(&granted.grant));
+        assert_eq!(
+            grants
+                .iter()
+                .filter(|grant| grant.kind == GrantKind::DownloadArtifact)
+                .cloned()
+                .collect::<Vec<_>>(),
+            downloads,
+            "every download grant is untouched"
+        );
+        // A new download grant takes the next oldest remote grant's place, not a download's.
+        fixture
+            .store
+            .grant(new_grant(download_scope("/new"), "new-download"))
+            .unwrap();
+        let grants = fixture.store.list(None).unwrap().grants;
+        assert_eq!(grants.len(), MAX_GRANT_RECORDS);
+        assert!(grants.iter().all(|grant| grant.grant_id != next));
+        assert_eq!(
+            grants
+                .iter()
+                .filter(|grant| grant.kind == GrantKind::DownloadArtifact)
+                .count(),
+            half + 1
+        );
+        // The evicted scope is asked for again: it has no live grant and no denial.
+        let evicted = document
+            .grants
+            .iter()
+            .find(|grant| grant.grant_id == oldest)
+            .unwrap();
+        assert_eq!(
+            fixture
+                .store
+                .consent(MODULE, "send", &evicted.scope)
+                .unwrap(),
+            (None, false)
+        );
     }
 
     #[test]
