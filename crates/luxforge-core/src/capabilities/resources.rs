@@ -492,7 +492,7 @@ fn download(
                 max: super::transport::MAX_REDIRECTS,
                 origins: &resource.redirect_origins,
             },
-            cancel: &|| control.is_cancelled(),
+            control,
             progress: &mut progress,
         },
         &mut staged,

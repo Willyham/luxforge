@@ -298,7 +298,7 @@ impl ModuleContext {
                     read_timeout: timeout,
                     total_timeout: timeout,
                     redirects: RedirectPolicy::default(),
-                    cancel: &|| control.is_cancelled(),
+                    control,
                     progress: &mut |_, _| {},
                 },
                 &mut response,

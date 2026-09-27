@@ -7,6 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+idna_adapter.workspace = true
 luxforge-jpeg = { path = "../luxforge-jpeg" }
 luxforge-process = { path = "../luxforge-process" }
 luxforge-raw = { path = "../luxforge-raw" }
@@ -19,6 +20,7 @@ rustls-platform-verifier.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+ureq.workspace = true
 ureq-proto.workspace = true
 url.workspace = true
 uuid.workspace = true
@@ -37,7 +39,6 @@ kamadak-exif.workspace = true
 luxforge-raw = { path = "../luxforge-raw", features = ["performance-diagnostics"] }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testkit = { path = "../luxforge-testkit" }
-ureq.workspace = true
 
 [lints]
 workspace = true

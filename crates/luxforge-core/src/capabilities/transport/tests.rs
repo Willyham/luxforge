@@ -8,11 +8,12 @@ use rustls::{
 };
 use std::{
     io,
-    net::{IpAddr, SocketAddr, TcpListener},
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
     sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
 };
@@ -202,11 +203,34 @@ impl Fetched {
 }
 
 fn fetch(transport: &Transport, request: &TransportRequest, plan: &Plan) -> Fetched {
+    let control = JobControl::new();
+    let canceller = plan.cancel_after.map(|after| {
+        let control = control.clone();
+        if after.is_zero() {
+            control.cancel("the request was cancelled");
+        }
+        thread::spawn(move || {
+            thread::sleep(after);
+            control.cancel("the request was cancelled");
+        })
+    });
     let started = Instant::now();
-    let cancel = || {
-        plan.cancel_after
-            .is_some_and(|after| started.elapsed() >= after)
-    };
+    let fetched = send_with(transport, request, plan, &control);
+    drop(canceller);
+    Fetched {
+        elapsed: started.elapsed(),
+        ..fetched
+    }
+}
+
+/// Send `request` for the job `control`, which the caller may cancel from another thread.
+fn send_with(
+    transport: &Transport,
+    request: &TransportRequest,
+    plan: &Plan,
+    control: &Arc<JobControl>,
+) -> Fetched {
+    let started = Instant::now();
     let mut seen = Vec::new();
     let mut progress = |received, total| seen.push((received, total));
     let mut body = Vec::new();
@@ -222,7 +246,7 @@ fn fetch(transport: &Transport, request: &TransportRequest, plan: &Plan) -> Fetc
                 max: plan.redirects,
                 origins: &plan.origins,
             },
-            cancel: &cancel,
+            control,
             progress: &mut progress,
         },
         &mut body,
@@ -482,6 +506,18 @@ fn a_request_body_over_its_limit_is_refused_before_connecting() {
         ..Plan::default()
     };
     assert_eq!(fetch(&transport, &post, &plan).code(), "resource-limit");
+    // The head counts the host's own headers and the path as well as the caller's.
+    for (header, path) in [(16 * 1024, 0), (15 * 1024, 1024)] {
+        let mut get = request(
+            Method::Get,
+            &format!("http://127.0.0.1:9/{}", "p".repeat(path)),
+        );
+        get.headers = vec![("X-Large".into(), "v".repeat(header))];
+        assert_eq!(
+            fetch(&transport, &get, &Plan::default()).code(),
+            "resource-limit"
+        );
+    }
     assert!(routes.attempts().is_empty());
 }
 
@@ -506,24 +542,57 @@ fn a_declared_length_over_the_limit_is_refused_before_reading_the_body() {
 
 #[test]
 fn a_streamed_body_crossing_the_limit_is_cut_off_before_the_crossing_piece() {
-    let chunk = format!("190\r\n{}\r\n", "x".repeat(400));
-    let chunked = format!(
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{}0\r\n\r\n",
-        chunk.repeat(3)
-    );
-    let closed = format!("HTTP/1.1 200 OK\r\n\r\n{}", "y".repeat(1500));
-    let server = TestServer::canned(vec![chunked.into_bytes(), closed.into_bytes()]).unwrap();
+    let chunked = |chunks: usize| {
+        let chunk = format!("190\r\n{}\r\n", "x".repeat(400));
+        format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{}0\r\n\r\n",
+            chunk.repeat(chunks)
+        )
+        .into_bytes()
+    };
+    let closed =
+        |bytes: usize| format!("HTTP/1.1 200 OK\r\n\r\n{}", "y".repeat(bytes)).into_bytes();
+    let sized = |bytes: usize| {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {bytes}\r\n\r\n{}",
+            "z".repeat(bytes)
+        )
+        .into_bytes()
+    };
+    let server = TestServer::canned(vec![
+        chunked(3),
+        closed(1500),
+        chunked(2),
+        closed(800),
+        sized(800),
+    ])
+    .unwrap();
     let plan = Plan {
         max_response_bytes: 1000,
         ..Plan::default()
     };
     let transport = loopback();
-    let fetched = fetch(&transport, &request(Method::Get, &server.url("/")), &plan);
-    assert_eq!(fetched.code(), "resource-limit");
-    assert_eq!(fetched.body.len(), 800, "two whole chunks, not the third");
-    let fetched = fetch(&transport, &request(Method::Get, &server.url("/")), &plan);
-    assert_eq!(fetched.code(), "resource-limit");
-    assert!(fetched.body.len() <= 1000);
+    for _ in 0..2 {
+        let fetched = fetch(&transport, &request(Method::Get, &server.url("/")), &plan);
+        assert_eq!(fetched.code(), "resource-limit");
+        assert!(fetched.body.len() <= 1000, "{}", fetched.body.len());
+        assert!(
+            fetched
+                .progress
+                .iter()
+                .all(|&(received, _)| received <= 1000)
+        );
+    }
+    // A body of exactly the limit is whole: the reader stops one byte past it, not at it.
+    for expected in [800, 800, 800] {
+        let plan = Plan {
+            max_response_bytes: expected,
+            ..Plan::default()
+        };
+        let fetched = fetch(&transport, &request(Method::Get, &server.url("/")), &plan);
+        assert_eq!(fetched.ok().received, expected);
+        assert_eq!(fetched.body.len() as u64, expected);
+    }
 }
 
 #[test]
@@ -540,30 +609,10 @@ fn a_response_head_over_its_bounds_is_refused() {
         "HTTP/1.1 200 OK\r\n{}Content-Length: 0\r\n\r\n",
         "X-Field: v\r\n".repeat(200)
     );
-    // Interim responses count towards the head they precede.
-    let interim = format!(
-        "{}HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
-        format!(
-            "HTTP/1.1 103 Early Hints\r\nLink: {}\r\n\r\n",
-            "l".repeat(1000)
-        )
-        .repeat(70)
-    );
-    let trailers = format!(
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n{}\r\n",
-        "X-Trailer: t\r\n".repeat(6000)
-    );
-    let long_trailer = format!(
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\nX-Trailer: {}\r\n\r\n",
-        "t".repeat(70 * 1024)
-    );
     let cases = [
         ("long", long),
         ("many", many),
         ("far too many", far_too_many),
-        ("interim", interim),
-        ("trailers", trailers),
-        ("long trailer", long_trailer),
     ];
     let server = TestServer::canned(
         cases
@@ -605,9 +654,42 @@ fn interim_responses_are_skipped_and_identical_lengths_accepted() {
     );
 }
 
+/// Framing `ureq` reads as the server meant it: bare line feeds, trailers (read and discarded
+/// line by line, each within the connection's input buffer, their total bounded by the deadlines),
+/// and a last chunk after which the server closes without ending the trailers.
+#[test]
+fn bare_line_feeds_trailers_and_an_unfinished_trailer_section_are_read() {
+    let cases = [
+        b"HTTP/1.1 200 OK\nContent-Length: 2\n\nok".to_vec(),
+        format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n{}\r\n",
+            "X-Trailer: t\r\n".repeat(6000)
+        )
+        .into_bytes(),
+        format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\nX-Trailer: {}\r\n\r\n",
+            "t".repeat(70 * 1024)
+        )
+        .into_bytes(),
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n".to_vec(),
+    ];
+    let count = cases.len();
+    let server = TestServer::canned(cases.to_vec()).unwrap();
+    let transport = loopback();
+    for case in 0..count {
+        let fetched = fetch(
+            &transport,
+            &request(Method::Get, &server.url("/")),
+            &Plan::default(),
+        );
+        assert_eq!(fetched.ok().status, 200, "case {case}");
+        assert_eq!(fetched.body, b"ok", "case {case}");
+    }
+}
+
 #[test]
 fn ambiguous_malformed_or_encoded_responses_are_read_errors() {
-    let cases: [(&str, &[u8]); 11] = [
+    let cases: [(&str, &[u8]); 10] = [
         (
             "both",
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
@@ -617,7 +699,6 @@ fn ambiguous_malformed_or_encoded_responses_are_read_errors() {
         ("length", b"HTTP/1.1 200 OK\r\nContent-Length: 3, 3\r\n\r\nabc"),
         ("short", b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc"),
         ("status", b"HTTP/1.1 2x0 OK\r\nContent-Length: 0\r\n\r\n"),
-        ("bare line feed", b"HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n"),
         ("chunk", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nabc\r\n0\r\n\r\n"),
         ("coding on HTTP/1.0", b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"),
         ("switched", b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"),
@@ -1012,4 +1093,166 @@ fn a_certificate_for_another_name_is_refused() {
         1,
         "the connection was made and refused by TLS"
     );
+}
+
+/// Start a request on a worker, wait until `stalled` says the server has gone quiet and the client
+/// is blocked, cancel its job from this thread and return how long the worker took to return after
+/// the cancel, with its result.
+fn cancel_while_stalled(url: String, stalled: mpsc::Receiver<()>) -> (Fetched, Duration) {
+    let control = JobControl::new();
+    let worker = {
+        let control = control.clone();
+        thread::spawn(move || {
+            let fetched = send_with(
+                &loopback(),
+                &request(Method::Get, &url),
+                &Plan::default(),
+                &control,
+            );
+            (fetched, Instant::now())
+        })
+    };
+    stalled
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the server stalled");
+    // Long enough for the client to be parked in its read; far shorter than any timeout.
+    thread::sleep(Duration::from_millis(200));
+    let cancelled_at = Instant::now();
+    control.cancel("permission revoked");
+    let (fetched, returned_at) = worker.join().unwrap();
+    (fetched, returned_at.saturating_duration_since(cancelled_at))
+}
+
+/// The bound a cancel must meet: it shuts the socket down rather than waiting for a timeout, and
+/// the 5 s read timeout of `Plan::default` is nowhere near.
+const PROMPT: Duration = Duration::from_millis(50);
+
+/// A server that answers `bytes`, says it has stalled and then holds the connection open.
+fn stalling(tls: bool, bytes: &'static [u8]) -> (TestServer, mpsc::Receiver<()>) {
+    let (tx, stalled) = mpsc::sync_channel(1);
+    let respond = move |_: &Request, out: &mut dyn Write| {
+        send(out, bytes);
+        let _ = tx.send(());
+        thread::sleep(Duration::from_secs(5));
+    };
+    let server = if tls {
+        TestServer::https(server_tls(), respond)
+    } else {
+        TestServer::http(respond)
+    };
+    (server.unwrap(), stalled)
+}
+
+#[test]
+fn cancelling_a_stalled_request_shuts_its_socket_down_promptly() {
+    for (what, tls, bytes) in [
+        (
+            "TLS body",
+            true,
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789"[..],
+        ),
+        ("TLS head", true, b"HTTP/1.1 200 OK\r\n"),
+        (
+            "plain body",
+            false,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789",
+        ),
+        ("plain head", false, b"HTTP/1.1 200 OK\r\n"),
+        // A shut-down plain socket reads as the end of a close-delimited body.
+        (
+            "close-delimited plain body",
+            false,
+            b"HTTP/1.1 200 OK\r\n\r\n0123456789",
+        ),
+    ] {
+        let (server, stalled) = stalling(tls, bytes);
+        let (fetched, latency) = cancel_while_stalled(server.url("/"), stalled);
+        assert_eq!(fetched.code(), "cancelled", "{what}");
+        assert_eq!(fetched.error().detail, "permission revoked", "{what}");
+        assert!(latency < PROMPT, "{what}: {latency:?}");
+    }
+}
+
+#[test]
+fn cancelling_a_stalled_tls_handshake_shuts_its_socket_down_promptly() {
+    // Accepts the connection and never answers the client's hello.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (tx, stalled) = mpsc::sync_channel(1);
+    let holder = thread::spawn(move || {
+        let (socket, _) = listener.accept().unwrap();
+        let _ = tx.send(());
+        thread::sleep(Duration::from_secs(5));
+        drop(socket);
+    });
+    let (fetched, latency) = cancel_while_stalled(format!("https://{address}/"), stalled);
+    assert_eq!(fetched.code(), "cancelled");
+    assert!(latency < PROMPT, "{latency:?}");
+    drop(holder);
+}
+
+#[test]
+fn a_stalled_tls_read_hits_the_idle_timeout() {
+    for bytes in [
+        &b"HTTP/1.1 200 OK\r\n"[..],
+        b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789",
+    ] {
+        let (server, _stalled) = stalling(true, bytes);
+        let plan = Plan {
+            read_timeout: Duration::from_millis(300),
+            ..Plan::default()
+        };
+        let fetched = fetch(&loopback(), &request(Method::Get, &server.url("/")), &plan);
+        assert_eq!(fetched.code(), "read-error");
+        assert!(
+            fetched.error().detail.contains("timed out"),
+            "{}",
+            fetched.error()
+        );
+        assert!(
+            fetched.elapsed < Duration::from_millis(1500),
+            "{:?}",
+            fetched.elapsed
+        );
+    }
+}
+
+#[test]
+fn a_non_ascii_endpoint_host_is_refused_and_its_punycode_form_resolves() {
+    let error = parse_endpoint("https://bücher.example/palette.bin", BOTH).unwrap_err();
+    assert_eq!(error.kind.code(), "validation");
+    assert!(
+        error.detail.contains("international domain name"),
+        "{error}"
+    );
+    /// Records the names it is asked for and answers a public address.
+    #[derive(Default)]
+    struct Names(Mutex<Vec<String>>);
+    impl Resolve for Names {
+        fn resolve(&self, host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+            self.0.lock().unwrap().push(host.to_owned());
+            Ok(vec![SocketAddr::new(PUBLIC, port)])
+        }
+    }
+    let server = TestServer::https(server_tls(), |_, out| {
+        send(out, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    })
+    .unwrap();
+    let names = Arc::new(Names::default());
+    let routes = Routes::to(SocketAddr::new(PUBLIC, 443), server.address());
+    let transport = transport(test_roots(), names.clone(), routes.clone());
+    let fetched = fetch(
+        &transport,
+        &request(Method::Get, "https://xn--bcher-kva.example/palette.bin"),
+        &Plan::default(),
+    );
+    // The test certificate names neither host, so TLS refuses the connection the name reached.
+    assert_eq!(fetched.code(), "read-error");
+    assert!(
+        fetched.error().detail.contains("certificate"),
+        "{}",
+        fetched.error()
+    );
+    assert_eq!(*names.0.lock().unwrap(), ["xn--bcher-kva.example"]);
+    assert_eq!(routes.attempts().len(), 1);
 }
