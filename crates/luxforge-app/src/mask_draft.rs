@@ -118,7 +118,7 @@ mod linear;
 mod radial;
 
 pub(crate) use brush::{Brush, BrushStroke, NEUTRAL_BRUSH};
-pub(crate) use editor::{DrawnShape, MaskHandle, Pen, drawable, paintable, painted_kind};
+pub(crate) use editor::{DrawnShape, Grip, MaskHandle, Pen, drawable, paintable, painted_kind};
 #[cfg(test)]
 pub(crate) use {linear::NEUTRAL, radial::NEUTRAL_RADIAL};
 
@@ -328,6 +328,12 @@ impl MaskDraft {
     /// The gesture's declared number fields, in the order its command declares them.
     pub(crate) fn values(&self) -> Vec<(&'static str, f64)> {
         self.shape.values()
+    }
+
+    /// The draft bar's one line of this gesture's numbers, each written by `number` as its declared
+    /// field shows it. What the line says is the drawn kind's own.
+    pub(crate) fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
+        self.shape.readout(number)
     }
 
     /// A pointer is down: a handle is being dragged, or a stroke is being painted.

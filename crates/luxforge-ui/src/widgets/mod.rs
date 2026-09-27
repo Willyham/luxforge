@@ -55,7 +55,7 @@ pub use curve_editor::{
 };
 pub use disclosure_heading::disclosure_heading;
 pub use double_click::double_click;
-pub use floating_bar::{DraftBarModel, draft_bar, floating_bar};
+pub use floating_bar::{DraftBarModel, DraftFinish, DraftSubject, draft_bar, floating_bar};
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
     BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle, histogram,

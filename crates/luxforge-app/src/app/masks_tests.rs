@@ -3175,3 +3175,213 @@ fn agent_commits(masking: &mut Masking) {
     .unwrap();
     masking.refresh();
 }
+
+/// The overlay the editor would draw now, as a captured frame reports it.
+fn overlay_state(masking: &Masking) -> (String, String, bool) {
+    let summary = masking.editor.mask_overlay_summary();
+    (
+        summary["setting"].as_str().unwrap_or_default().to_owned(),
+        summary["effective"].as_str().unwrap_or_default().to_owned(),
+        summary["forced"].as_bool().unwrap_or_default(),
+    )
+}
+
+/// While a shape gesture is open on a mask the tint is shown whatever the overlay setting, so no
+/// handle is dragged blind, and the setting returns when the gesture ends — after Apply and after
+/// Cancel alike. It is view state only: the stored setting never moves and no `workspace.set` is
+/// sent. A brush is not forced, and neither is a create, which has no mask to ask a grid of yet.
+#[test]
+fn a_shape_gesture_shows_the_tint_whatever_the_setting_and_the_setting_returns() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    assert_eq!(
+        masking.editor.session.workspace.mask_overlay,
+        MaskOverlayMode::Off
+    );
+    let off = |masking: &Masking| {
+        assert_eq!(
+            overlay_state(masking),
+            ("off".into(), "off".into(), false),
+            "the overlay follows the setting"
+        );
+        assert!(masking.editor.mask_overlay_request().is_none());
+    };
+
+    // A create has no mask yet: nothing to tint.
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    off(&masking);
+    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    masking.apply();
+    let mask = masking.listing().masks[0].id.clone();
+    off(&masking);
+
+    // Adding a radial to it: the tint, of that mask, over a setting that still says off.
+    for end in [DraftMessage::Commit, DraftMessage::Cancel] {
+        masking.message(MaskMessage::Add(RADIAL.to_owned()));
+        masking.open_gesture();
+        assert_eq!(
+            overlay_state(&masking),
+            ("off".into(), "tint".into(), true),
+            "{end:?}: a shape gesture shows the tint"
+        );
+        let request = masking
+            .editor
+            .mask_overlay_request()
+            .expect("the drafted frame asks for the gesture's mask");
+        assert_eq!(request.mask, mask);
+        assert_eq!(
+            masking.editor.settled_mask_overlay_request(),
+            None,
+            "the frame after the gesture carries what the setting asks"
+        );
+        masking.sweep((0.3, 0.3), (0.6, 0.6));
+        assert!(
+            masking.editor.mask_overlay_forced(),
+            "{end:?}: through the drag"
+        );
+        // The captured state reports the two apart.
+        let state = masking.editor.snapshot();
+        assert_eq!(state["mask_overlay"]["effective"], json!("tint"));
+        assert_eq!(state["workspace"]["mask_overlay"], json!("off"));
+        match end {
+            DraftMessage::Commit => masking.apply(),
+            _ => {
+                masking.draft(DraftMessage::Cancel);
+                assert!(
+                    !masking.editor.mask_overlay_forced(),
+                    "at once, not on the answer"
+                );
+                assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Cancel));
+            }
+        }
+        assert!(masking.editor.mask_shape().is_none());
+        off(&masking);
+        assert_eq!(
+            masking.editor.session.workspace.mask_overlay,
+            MaskOverlayMode::Off,
+            "{end:?}: the setting itself never moved"
+        );
+    }
+
+    // A setting that already shows the mask is what the person chose to see, and is kept.
+    masking.editor.session.workspace.mask_overlay = MaskOverlayMode::MaskOnBlack;
+    masking.message(MaskMessage::Add(RADIAL.to_owned()));
+    masking.open_gesture();
+    assert_eq!(
+        overlay_state(&masking),
+        ("mask-on-black".into(), "mask-on-black".into(), false)
+    );
+    masking.draft(DraftMessage::Cancel);
+    assert_eq!(testing::run_round(&mut masking.editor), Some(Round::Cancel));
+    masking.editor.session.workspace.mask_overlay = MaskOverlayMode::Off;
+
+    // A brush paints its own indicator: armed or painting, the setting stands.
+    masking.message(MaskMessage::Paint(PaintTarget::NewBrush));
+    masking.open_gesture();
+    off(&masking);
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.4,
+        y: 0.4,
+    }));
+    off(&masking);
+}
+
+/// While a mask gesture is open in Mask mode the status line names the mode, the mask, the
+/// component and how the gesture becomes history, and the mode strip keeps Mask selected.
+#[test]
+fn a_mask_gestures_status_line_names_it_and_the_strip_keeps_mask_selected() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let mask_selected = |masking: &Masking| {
+        masking
+            .editor
+            .workspace
+            .canvas
+            .modes
+            .iter()
+            .find(|mode| mode.id == MASK_MODE)
+            .is_some_and(|mode| mode.selected)
+    };
+
+    masking.message(MaskMessage::Add(RADIAL.to_owned()));
+    let line = "Mask mode · Mask 1 · Radial draft · Apply or Enter commits one entry";
+    assert_eq!(masking.editor.status, line);
+    masking.open_gesture();
+    masking.sweep((0.3, 0.3), (0.6, 0.6));
+    assert_eq!(
+        masking.editor.mask_gesture_status().as_deref(),
+        Some(line),
+        "every drafted frame says the same"
+    );
+    assert!(mask_selected(&masking));
+    masking.apply();
+    assert_eq!(masking.editor.mask_gesture_status(), None);
+    assert!(mask_selected(&masking), "the mode outlives the gesture");
+
+    // A brush: armed, its line says how to start; a drafted frame mid-stroke says it is painting;
+    // between strokes the frames are committed strokes, which say what they committed.
+    masking.message(MaskMessage::Paint(PaintTarget::NewBrush));
+    assert_eq!(
+        masking.editor.status,
+        "Mask mode · Mask 1 · Brush · press to paint · each stroke is one entry"
+    );
+    masking.open_gesture();
+    assert_eq!(masking.editor.mask_gesture_status(), None);
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.4,
+        y: 0.4,
+    }));
+    assert_eq!(
+        masking.editor.mask_gesture_status().as_deref(),
+        Some("Mask mode · Mask 1 · Brush painting · each stroke is one entry")
+    );
+    assert!(mask_selected(&masking));
+}
+
+/// Escape puts an armed brush down first, and only the next Escape leaves Mask mode.
+#[test]
+fn escape_puts_an_armed_brush_down_then_leaves_mask_mode() {
+    use iced::keyboard::key::Named;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.message(MaskMessage::Paint(PaintTarget::NewBrush));
+    masking.open_gesture();
+    assert!(masking.editor.armed_brush());
+    let escape = |masking: &Masking| {
+        let event = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: Key::Named(Named::Escape),
+            modified_key: Key::Named(Named::Escape),
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        super::keymap::keymap(
+            &event,
+            iced::event::Status::Ignored,
+            &masking.editor.key_context(),
+        )
+    };
+    let first = escape(&masking).expect("Escape is mapped");
+    assert!(
+        matches!(first, Message::Draft(DraftMessage::Cancel)),
+        "the first Escape puts the brush down: {first:?}"
+    );
+    let _ = masking.editor.update(first);
+    assert!(masking.editor.mask_shape().is_none());
+    assert!(
+        masking.editor.mask_mode_active(),
+        "and leaves the mode alone"
+    );
+    let second = escape(&masking).expect("Escape is mapped");
+    assert!(
+        matches!(&second, Message::View(ViewMessage::SetMode(mode)) if mode == POINTER_MODE),
+        "the second Escape leaves Mask mode: {second:?}"
+    );
+}

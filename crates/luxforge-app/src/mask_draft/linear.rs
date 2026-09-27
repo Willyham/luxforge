@@ -81,6 +81,19 @@ impl ShapeEditor for LinearEditor {
         ]
     }
 
+    /// `x0, y0 → x1, y1`: the axis from the end at coverage 0 to the end at coverage 1, which is
+    /// the whole of a linear gradient.
+    fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
+        let linear = self.shape;
+        format!(
+            "{}, {} \u{2192} {}, {}",
+            number("x0", linear.x0),
+            number("y0", linear.y0),
+            number("x1", linear.x1),
+            number("y1", linear.y1),
+        )
+    }
+
     /// The range checked here is the kind's own, which is the range the host's parser enforces: a
     /// position. A number field may legally produce a degenerate axis; the legality rule keeps the
     /// shape committable, exactly as it does for a drag.
