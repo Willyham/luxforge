@@ -673,7 +673,7 @@
     {
       "id": "TASK-010",
       "description": "Express `raw-editor`'s edit-and-reopen journey as a smoke scenario row on the plan library, with one RAW manifest reader shared by the row, `raw-corpus` and `verify`, in place of the tool's own launch, frame verifier and pixel sampler.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-008"
       ],
