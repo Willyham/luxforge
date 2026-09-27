@@ -47,7 +47,7 @@ fn alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
         let filter = format!("PID eq {pid}");
-        return match Command::new("tasklist")
+        match Command::new("tasklist")
             .args(["/FI", &filter, "/FO", "CSV", "/NH"])
             .output()
         {
@@ -59,7 +59,7 @@ fn alive(pid: u32) -> bool {
                 })
             }
             Ok(_) | Err(_) => true,
-        };
+        }
     }
 
     #[cfg(not(windows))]
