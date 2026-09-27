@@ -226,6 +226,9 @@ struct SourceRule {
     /// a module declared under `#[cfg(test)]` (with everything below its directory) is skipped,
     /// and each other file is read through [`production_lines`], which also skips comment lines.
     tests: bool,
+    /// Whether the allowed paths may hold each token on one line only: an expression written
+    /// once in its home, so a second copy beside the first is refused as one elsewhere is.
+    once: bool,
     /// Why the rule holds, printed with each refusal.
     reason: &'static str,
 }
@@ -267,6 +270,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[],
         mode: Match::Prefix,
         tests: true,
+        once: false,
         reason: "the view model reaches neither Iced nor the update layer (`app/`) above it",
     },
     SourceRule {
@@ -277,6 +281,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[],
         mode: Match::Prefix,
         tests: true,
+        once: false,
         reason: "the view reads the view model, never authoritative state or the owner",
     },
     SourceRule {
@@ -287,6 +292,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[],
         mode: Match::Prefix,
         tests: true,
+        once: false,
         reason: "the widget crate (luxforge-ui) never reaches the core",
     },
     // One JPEG codec path: in shipped code only `luxforge-jpeg` names `mozjpeg` (and
@@ -300,6 +306,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &["crates/luxforge-jpeg"],
         mode: Match::Prefix,
         tests: false,
+        once: false,
         reason: "only the JPEG codec crate (crates/luxforge-jpeg) may name mozjpeg",
     },
     SourceRule {
@@ -317,6 +324,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[],
         mode: Match::Prefix,
         tests: false,
+        once: false,
         reason: "shipped code decodes JPEG only through crates/luxforge-jpeg, never through image",
     },
     // The RAW development's identity belongs to the RAW module alone: every other surface decides
@@ -331,6 +339,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &["crates/luxforge-core/src/modules/raw"],
         mode: Match::Whole,
         tests: false,
+        once: false,
         reason: "only the RAW module (crates/luxforge-core/src/modules/raw*) and tests may name \
                  its identity; decide applicability from the declared sources",
     },
@@ -344,6 +353,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &["crates/luxforge-core/src/modules/registry/lookups.rs"],
         mode: Match::Whole,
         tests: false,
+        once: false,
         reason: "only ModuleRegistry::patch_action decides whether an action is presettable; \
                  resolve it there",
     },
@@ -381,8 +391,38 @@ const SOURCE_RULES: &[SourceRule] = &[
         ],
         mode: Match::Whole,
         tests: false,
+        once: false,
         reason: "only the mask kind table, a kind's own file and the desktop's drawn-kind table and \
                  editors may name a component kind; ask the kind table instead",
+    },
+    // One pixel-domain pipeline: the tap index of a resample coordinate, `(value - 0.5).floor()`,
+    // is what every read rectangle computes, and keying the estimate store by the domain's prefix
+    // is what every spatial-entry orchestration does, so each is written once in its home. The
+    // trait's `fn estimate_prefix` declaration and the windowed proxy's own halo and tile rule
+    // (`WindowPlan::of_rect`) are not copies.
+    SourceRule {
+        name: "one-read-rectangle",
+        tokens: &["- 0.5).floor()"],
+        scope: &["crates/luxforge-core/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/render.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: true,
+        reason: "a resample's read rectangle is written once, as Resample::reads in render.rs; \
+                 read it through that",
+    },
+    SourceRule {
+        name: "one-spatial-entry",
+        tokens: &[".estimate_prefix("],
+        scope: &["crates/luxforge-core/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/render/pipeline.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: true,
+        reason: "a spatial entry's estimates are written once, as SpatialEntry::globals in \
+                 render/pipeline.rs; resolve them through that",
     },
     // Production threads start only in the declared worker homes, each a bounded, owned worker.
     SourceRule {
@@ -411,6 +451,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         ],
         mode: Match::Whole,
         tests: false,
+        once: false,
         reason: "production threads start only in the declared worker homes",
     },
     SourceRule {
@@ -421,6 +462,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[],
         mode: Match::Whole,
         tests: true,
+        once: false,
         reason: "an image handle made from pixels uploads a new texture each time it is made; the \
                  photo surface owns the photograph's GPU uploads",
     },
@@ -432,6 +474,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[],
         mode: Match::Prefix,
         tests: true,
+        once: false,
         reason: "the project is Luxforge; its old working name does not come back",
     },
 ];
@@ -903,13 +946,15 @@ impl SourceRule {
             }
         }
         let mut read = 0;
+        let mut homes: BTreeMap<&str, usize> = BTreeMap::new();
         for path in &paths {
             let test_only = !self.tests
                 && (test_file(Path::new(path))
                     || test_modules
                         .iter()
                         .any(|(file, dir)| path == file || path.starts_with(dir.as_str())));
-            if test_only || permitted(path, self.allowed) {
+            let home = permitted(path, self.allowed);
+            if test_only || (home && !self.once) {
                 continue;
             }
             let text = tree.text(path)?;
@@ -921,6 +966,11 @@ impl SourceRule {
             for (number, line) in lines {
                 for token in self.tokens {
                     if holds_token(line, token, self.mode) {
+                        let seen = homes.entry(token).or_default();
+                        if home && *seen == 0 {
+                            *seen += 1;
+                            continue;
+                        }
                         refusals.push(format!(
                             "{path}:{number}: {} (source rule `{}` found `{token}`; a deliberate \
                              new home is a change to that row of SOURCE_RULES in {RULES_FILE}, \
@@ -1045,68 +1095,6 @@ fn rules(root: &Path) -> Result<Applied> {
     Ok(applied)
 }
 
-/// One pixel-domain pipeline: (scope `crates/luxforge-core/src`; allowed: one product line, in the
-/// token's home; match: whole token; tests not covered; reason: the rectangle a resample reads is
-/// `Resample::reads` in `render.rs`, and a spatial entry's estimates are resolved by
-/// `SpatialEntry::globals` in `render/pipeline.rs`, so a second copy of either fails). The tap
-/// index of a resample coordinate, `(value - 0.5).floor()`, is what every read rectangle computes;
-/// keying the estimate store by the domain's prefix is what every spatial-entry orchestration does.
-const ONE_PIPELINE: [(&str, &str); 2] = [
-    ("- 0.5).floor()", "render.rs"),
-    (".estimate_prefix(", "render/pipeline.rs"),
-];
-
-/// The core crate's sources, which [`ONE_PIPELINE`] covers.
-const CORE_SOURCE: &str = "crates/luxforge-core/src";
-
-/// Fail on a product line of the core crate that holds a [`ONE_PIPELINE`] token outside its home,
-/// or on a second such line in its home, naming the file, the line and the token; answer how many
-/// product files were read.
-fn one_pipeline(root: &Path) -> Result<usize> {
-    let core = root.join(CORE_SOURCE);
-    let sources: Vec<PathBuf> = files(&core)?
-        .into_iter()
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
-        .collect();
-    let texts = sources
-        .iter()
-        .map(fs::read_to_string)
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
-    let mut test_only = BTreeSet::new();
-    for (path, (_, modules)) in sources.iter().zip(&scanned) {
-        for name in modules {
-            test_only.extend(module_files(path, name));
-        }
-    }
-    let mut homes = [0; ONE_PIPELINE.len()];
-    let mut checked = 0;
-    for (path, (lines, _)) in sources.iter().zip(&scanned) {
-        if test_file(path) || test_only.contains(path) {
-            continue;
-        }
-        for (number, line) in lines {
-            for ((token, home), seen) in ONE_PIPELINE.iter().zip(&mut homes) {
-                if !holds_whole_token(line, token) {
-                    continue;
-                }
-                *seen += 1;
-                ensure(
-                    *path == core.join(home) && *seen == 1,
-                    format!(
-                        "{}:{number}: {token} is written once, in {CORE_SOURCE}/{home}; read a \
-                         resample's rectangle through Resample::reads and a spatial entry's \
-                         estimates through SpatialEntry::globals",
-                        path.display()
-                    ),
-                )?;
-            }
-        }
-        checked += 1;
-    }
-    Ok(checked)
-}
-
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -1173,10 +1161,6 @@ pub fn check(root: &Path) -> Result {
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
-    );
-    println!(
-        "PASS one resample read rectangle and one spatial-entry orchestration ({} product files)",
-        one_pipeline(root)?
     );
     Ok(())
 }
@@ -1607,7 +1591,10 @@ mod tests {
         ] {
             fs::write(file, text).unwrap();
         }
-        assert_eq!(one_pipeline(tmp.path()).unwrap(), 4);
+        assert_eq!(
+            read(tmp.path(), &["one-read-rectangle", "one-spatial-entry"]).unwrap(),
+            (4, 0)
+        );
         // The copies this rule replaced, brought back: the proxy window's and the linear tap
         // block's read rectangles, the byte band's second one beside `Resample::reads`, and the
         // byte driver's inline estimate resolution.
@@ -1625,13 +1612,14 @@ mod tests {
         ] {
             let clean = fs::read_to_string(&file).ok();
             fs::write(&file, format!("{}{text}", clean.as_deref().unwrap_or(""))).unwrap();
-            let error = one_pipeline(tmp.path())
-                .err()
-                .unwrap_or_else(|| panic!("{text} in {} was accepted", file.display()))
-                .to_string();
+            let error = refusal(
+                tmp.path(),
+                &["one-read-rectangle", "one-spatial-entry"],
+                text,
+            );
             let name = file.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
-                error.contains(&format!("{name}:")) && error.contains("is written once"),
+                error.contains(&format!("{name}:")) && error.contains("written once"),
                 "{error}"
             );
             match clean {
@@ -1639,7 +1627,10 @@ mod tests {
                 None => fs::remove_file(&file).unwrap(),
             }
         }
-        assert_eq!(one_pipeline(tmp.path()).unwrap(), 4);
+        assert_eq!(
+            read(tmp.path(), &["one-read-rectangle", "one-spatial-entry"]).unwrap(),
+            (4, 0)
+        );
     }
 
     #[test]
