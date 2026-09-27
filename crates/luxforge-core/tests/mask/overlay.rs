@@ -53,7 +53,7 @@ impl Fixture {
                 &owner,
                 client,
                 "status",
-                "job.status",
+                "job.read",
                 json!({"job_id": job_id}),
             );
             match status["status"].as_str() {

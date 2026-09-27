@@ -1,19 +1,19 @@
 //! The capability host the catalog owner holds: where settings, grants and resources live, which
-//! secret store holds credentials, the capability worker's lanes and jobs, each module's
-//! activation, and the operations the owner-answered `module.*` methods call over all of them. The
+//! secret store holds credentials, each module's activation, and the operations the
+//! owner-answered `module.*` methods call over all of them and over the capability jobs in the
+//! owner's one job table (`crate::jobs`), which each operation that touches jobs is handed. The
 //! method table in `api::methods` names each method, parses its parameters, declared beside the
 //! operation, and calls one of these operations; nothing here dispatches by method name. Every call
 //! is a short file, stat or secret-store attribute call; nothing hashes, downloads, loads module
 //! state or reads a secret's data on the owner. That work is queued on a lane, whose result comes
 //! back into the owner's channel. See `docs/design/module-capabilities.md`.
 //!
-//! This file holds the host itself, the settings methods, the capability jobs and `module.status`;
+//! This file holds the host itself, the settings methods, capability job cancels and `module.status`;
 //! [`activation`], [`permissions`], [`resources`] and [`tasks`] hold the other methods over the
 //! same [`CapabilityHost`].
 use super::{
     descriptor::SettingDescriptor,
     grants::{Grant, GrantKind, GrantScope, GrantsStore, PermissionCounts},
-    jobs::{Cancelled, Deliver, JobError, JobKind, JobRecord, JobStatus, Jobs},
     resources::{DEFAULT_RESOURCE_QUOTA_BYTES, ResourceStore, SharedTransport},
     secrets::{SecretStore, SecretValue, UnavailableSecretStore},
     settings::{
@@ -24,8 +24,8 @@ use super::{
 };
 use crate::{
     AssetId, EditorService, Error, JobId, ModuleDescriptor, ModuleRegistry, ParameterKind,
-    activity::ActivityBoard,
     api::{Origin, announce_once, params::host_params},
+    jobs::{CANCELLED, Cancelled, JobError, JobKind, JobRecord, JobStatus, Jobs},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -165,21 +165,6 @@ host_params! {
     }
 }
 
-host_params! {
-    /// `module.job.read`.
-    pub(crate) struct JobParams {
-        job_id: JobId,
-    }
-}
-
-host_params! {
-    /// `module.job.cancel`.
-    pub(crate) struct JobCancelParams {
-        job_id: JobId,
-        mutation: MutationRequest,
-    }
-}
-
 /// The `value` of a `set-secret` request, moved straight into a [`SecretValue`]. A malformed one is
 /// refused without echoing it, which serde's own message for a wrong type would do.
 pub(crate) struct SecretParam(SecretValue);
@@ -248,31 +233,27 @@ pub struct Requirement {
     pub state: String,
 }
 
-/// The owner's capability state: the configuration, the stores over its directories, the lanes
-/// and their jobs, each module's activation and what each live task reports back.
+/// The owner's capability state: the configuration, the stores over its directories, each
+/// module's activation and what each live task reports back. Its jobs are records in the owner's
+/// one job table, run on that table's `transfer` and `module` lanes.
 pub(crate) struct CapabilityHost {
     config: HostConfig,
     settings: Option<SettingsStore>,
     grants: Option<GrantsStore>,
     resources: Option<ResourceStore>,
     transport: Arc<SharedTransport>,
-    jobs: Jobs,
     activations: HashMap<String, Activation>,
     /// Queued and running tasks, at most one lane's worth.
     tasks: HashMap<JobId, tasks::TaskRun>,
 }
 
 impl CapabilityHost {
-    /// `deliver` posts a finished job into the owner's channel; it is called on a lane thread.
-    /// `board` is the owner's activity board, which every capability job publishes to while it
-    /// runs, beside source preparation and analysis.
-    pub(crate) fn new(config: HostConfig, deliver: Deliver, board: Arc<ActivityBoard>) -> Self {
+    pub(crate) fn new(config: HostConfig) -> Self {
         Self {
             settings: config.config_dir.clone().map(SettingsStore::new),
             grants: config.config_dir.clone().map(GrantsStore::new),
             resources: config.resource_dir.clone().map(ResourceStore::new),
             transport: Arc::new(SharedTransport::new(config.transport.clone())),
-            jobs: Jobs::new(deliver, board),
             activations: HashMap::new(),
             tasks: HashMap::new(),
             config,
@@ -299,31 +280,26 @@ impl CapabilityHost {
         self.config.secrets.as_ref()
     }
 
-    /// How many capability lane threads have started. Discovery, reads and a reopen start none.
-    #[cfg(test)]
-    pub(crate) fn lanes_started(&self) -> usize {
-        self.jobs.lanes_started()
-    }
-
     /// A lane finished a job: record it, update the module it belongs to, and announce what
     /// changed under the request that started it. A task's artifacts are recorded in the catalog
     /// first, so a client that reads it succeeded can apply them. A failed install, removal or
     /// task changes nothing a client shows, so it announces nothing.
     pub(crate) fn finished(
         &mut self,
+        jobs: &mut Jobs,
         service: &mut EditorService,
         job_id: &JobId,
         result: Result<Value, Error>,
         announce: &mut Vec<Origin>,
     ) {
-        let result = self.task_result(service, job_id, result);
-        let Some(done) = self.jobs.complete(job_id, result) else {
+        let result = self.task_result(jobs, service, job_id, result);
+        let Some(done) = jobs.complete(job_id, result) else {
             return;
         };
-        let module_id = done.record.module_id.clone();
+        let module_id = done.record.module().to_owned();
         match done.record.kind {
             JobKind::Activate => {
-                let changed = self.activation_finished(service.registry(), &done.record);
+                let changed = self.activation_finished(jobs, service.registry(), &done.record);
                 if changed && let Some(origin) = &done.origin {
                     announce_once(announce, origin);
                 }
@@ -335,7 +311,7 @@ impl CapabilityHost {
                     activation.job = None;
                 }
             }
-            JobKind::Install | JobKind::Remove | JobKind::Task | JobKind::Export => {
+            _ => {
                 if done.record.status == JobStatus::Ready
                     && let Some(origin) = &done.origin
                 {
@@ -343,11 +319,6 @@ impl CapabilityHost {
                 }
             }
         }
-    }
-
-    /// Stop the lanes: running jobs are asked to stop and their threads are joined.
-    pub(crate) fn shutdown(&mut self) {
-        self.jobs.shutdown();
     }
 
     // Settings.
@@ -365,6 +336,7 @@ impl CapabilityHost {
     /// `module.settings.set`.
     pub(crate) fn settings_set(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: SetParams,
         origin: &Origin,
@@ -377,12 +349,13 @@ impl CapabilityHost {
             &request.values,
             &request.mutation,
         )?;
-        self.settings_written(registry, descriptor, SET, write, origin, announce)
+        self.settings_written(jobs, registry, descriptor, SET, write, origin, announce)
     }
 
     /// `module.settings.set-secret`: the value was moved into a [`SecretValue`] as it was parsed.
     pub(crate) fn settings_set_secret(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: SetSecretParams,
         origin: &Origin,
@@ -397,12 +370,15 @@ impl CapabilityHost {
             &request.value.0,
             &request.mutation,
         )?;
-        self.settings_written(registry, descriptor, SET_SECRET, write, origin, announce)
+        self.settings_written(
+            jobs, registry, descriptor, SET_SECRET, write, origin, announce,
+        )
     }
 
     /// `module.settings.clear-secret`.
     pub(crate) fn settings_clear_secret(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: ClearSecretParams,
         origin: &Origin,
@@ -416,12 +392,21 @@ impl CapabilityHost {
             &request.setting,
             &request.mutation,
         )?;
-        self.settings_written(registry, descriptor, CLEAR_SECRET, write, origin, announce)
+        self.settings_written(
+            jobs,
+            registry,
+            descriptor,
+            CLEAR_SECRET,
+            write,
+            origin,
+            announce,
+        )
     }
 
     /// `module.settings.reset`.
     pub(crate) fn settings_reset(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: ResetParams,
         origin: &Origin,
@@ -431,12 +416,13 @@ impl CapabilityHost {
         let write = self
             .settings()?
             .reset(descriptor, self.secrets(), &request.mutation)?;
-        self.settings_written(registry, descriptor, RESET, write, origin, announce)
+        self.settings_written(jobs, registry, descriptor, RESET, write, origin, announce)
     }
 
     /// `module.profile.create`.
     pub(crate) fn profile_create(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: CreateProfileParams,
         origin: &Origin,
@@ -450,6 +436,7 @@ impl CapabilityHost {
             &request.mutation,
         )?;
         self.settings_written(
+            jobs,
             registry,
             descriptor,
             CREATE_PROFILE,
@@ -462,6 +449,7 @@ impl CapabilityHost {
     /// `module.profile.remove`.
     pub(crate) fn profile_remove(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: RemoveProfileParams,
         origin: &Origin,
@@ -475,6 +463,7 @@ impl CapabilityHost {
             &request.mutation,
         )?;
         self.settings_written(
+            jobs,
             registry,
             descriptor,
             REMOVE_PROFILE,
@@ -487,8 +476,10 @@ impl CapabilityHost {
     /// Every settings write: apply what a committed one implies for grants and activation, and
     /// answer with its result and the module's settings as they read now. Neither holds a secret. A
     /// retry never gets here: the owner's request table answers it with the first answer.
+    #[allow(clippy::too_many_arguments)]
     fn settings_written(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         descriptor: &ModuleDescriptor,
         method: &str,
@@ -503,7 +494,8 @@ impl CapabilityHost {
             // reported beside the result rather than as the write's failure. Nothing it leaves
             // behind can be used: a grant names its exact path or endpoint origin, which the
             // settings no longer hold.
-            match self.after_settings_write(registry, descriptor, method, &write, origin, announce)
+            match self
+                .after_settings_write(jobs, registry, descriptor, method, &write, origin, announce)
             {
                 Ok(revoked) if revoked.is_empty() => {}
                 Ok(revoked) => {
@@ -528,8 +520,10 @@ impl CapabilityHost {
     /// removed are revoked, and the jobs running under them are cancelled: a profile's remote
     /// grants when its endpoint changes or it is removed, and a reset's remote grants. Download
     /// grants name a pinned resource, not a setting, and survive a reset.
+    #[allow(clippy::too_many_arguments)]
     fn after_settings_write(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         descriptor: &ModuleDescriptor,
         method: &str,
@@ -541,6 +535,7 @@ impl CapabilityHost {
         let result = &write.result;
         if result.invalidates_activation {
             self.deactivate(
+                jobs,
                 registry,
                 module_id,
                 Some(SETTINGS_CHANGED.to_owned()),
@@ -599,44 +594,34 @@ impl CapabilityHost {
             _ => {}
         }
         for grant in &revoked {
-            self.cancel_dependents_of(&grant.grant_id, origin, announce);
+            self.cancel_dependents_of(jobs, &grant.grant_id, origin, announce);
         }
         Ok(revoked)
     }
 
     // Jobs.
 
-    /// `module.job.read`.
-    pub(crate) fn job_read(&self, request: JobParams) -> Result<Value, Error> {
-        encode(
-            self.jobs
-                .read(&request.job_id)
-                .ok_or_else(|| unknown_job(&request.job_id))?,
-        )
-    }
-
-    /// `module.job.cancel`: any client may, since a capability job belongs to its module. A
-    /// deactivation releases what a module holds and is never cancelled.
-    pub(crate) fn job_cancel(
+    /// `job.cancel` of a capability job: any client may, since a capability job belongs to its
+    /// module, and the job stops for everyone. A deactivation releases what a module holds and is
+    /// never cancelled. A waiting job's removal is the job's own outcome, announced under the
+    /// request that started it.
+    pub(crate) fn cancel(
         &mut self,
-        request: JobCancelParams,
-        origin: &Origin,
+        jobs: &mut Jobs,
+        job_id: &JobId,
         announce: &mut Vec<Origin>,
-    ) -> Result<Value, Error> {
-        request.mutation.validate()?;
-        let record = self
-            .jobs
-            .read(&request.job_id)
-            .ok_or_else(|| unknown_job(&request.job_id))?;
+    ) -> Result<(), Error> {
+        let record = jobs
+            .read(job_id)
+            .ok_or_else(|| Error::validation(format!("unknown job {job_id}")))?;
         if record.kind == JobKind::Deactivate && !record.status.is_finished() {
             return Err(Error::conflict(
                 "a deactivation releases what the module holds and cannot be cancelled",
             ));
         }
-        let record = self
-            .cancel_job(&request.job_id, "the job was cancelled", origin, announce)
-            .unwrap_or(record);
-        encode(record)
+        let origin = jobs.origin(job_id).cloned();
+        self.cancel_job(jobs, job_id, CANCELLED, origin.as_ref(), announce);
+        Ok(())
     }
 
     /// Cancel one job and apply what that means for its module: a waiting activation leaves the
@@ -645,30 +630,33 @@ impl CapabilityHost {
     /// it finishes.
     fn cancel_job(
         &mut self,
+        jobs: &mut Jobs,
         job_id: &JobId,
         reason: &str,
-        origin: &Origin,
+        origin: Option<&Origin>,
         announce: &mut Vec<Origin>,
     ) -> Option<JobRecord> {
-        match self.jobs.cancel(job_id, reason)? {
+        match jobs.cancel(job_id, reason)? {
             Cancelled::Removed(record) => {
                 // A task removed before it ran never reports back.
                 if record.kind == JobKind::Task {
                     self.forget_task(&record.job_id);
                 }
                 if record.kind == JobKind::Activate
-                    && let Some(activation) = self.activations.get_mut(&record.module_id)
+                    && let Some(activation) = self.activations.get_mut(record.module())
                     && activation.job.as_ref() == Some(&record.job_id)
                 {
                     activation.job = None;
                     activation.set_inactive(None);
                 }
-                announce_once(announce, origin);
+                if let Some(origin) = origin {
+                    announce_once(announce, origin);
+                }
                 Some(record)
             }
             Cancelled::Requested(record) => {
                 if record.kind == JobKind::Activate
-                    && let Some(activation) = self.activations.get_mut(&record.module_id)
+                    && let Some(activation) = self.activations.get_mut(record.module())
                     && activation.job.as_ref() == Some(&record.job_id)
                     && activation.pending.is_none()
                 {
@@ -687,6 +675,7 @@ impl CapabilityHost {
     /// hashing. The grant and denial records are read through `module.permission.list`.
     pub(crate) fn status(
         &self,
+        jobs: &Jobs,
         registry: &ModuleRegistry,
         request: ModuleParams,
     ) -> Result<Value, Error> {
@@ -728,9 +717,9 @@ impl CapabilityHost {
             "module_id": descriptor.id,
             "activation": activation,
             "settings": settings,
-            "resources": self.resource_rows(descriptor),
+            "resources": self.resource_rows(jobs, descriptor),
             "permissions": permissions,
-            "jobs": self.jobs.of_module(&descriptor.id),
+            "jobs": jobs.of_module(&descriptor.id),
         }))
     }
 }
@@ -840,10 +829,6 @@ fn asset_exists(service: &EditorService, asset_id: &AssetId) -> Result<(), Error
         .map_err(|_| Error::validation(format!("asset {asset_id} is not in this catalog")))
 }
 
-fn unknown_job(job_id: &JobId) -> Error {
-    Error::validation(format!("unknown capability job {job_id}"))
-}
-
 /// Any registered module.
 fn registered<'a>(registry: &'a ModuleRegistry, id: &str) -> Result<&'a ModuleDescriptor, Error> {
     registry
@@ -870,12 +855,12 @@ mod tests {
         ApiRequest, ApiResponse, ClientId, OwnerHandle,
         capabilities::{
             grants::{DENY, GRANT, LIST, REVOKE},
-            jobs::{JOB_CANCEL, JOB_READ},
             resources::{INSTALL, REMOVE, RESOURCE_LIST},
             secrets::{MemorySecretStore, SecretKey},
             settings::READ,
             testing::{ADAPTER, MODULE, TASK, capability_descriptor, temp},
         },
+        jobs::{JOB_CANCEL, JOB_READ},
         modules::TestModule,
         redact_request,
     };

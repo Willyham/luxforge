@@ -16,13 +16,12 @@ use super::{
     descriptor::ResourceDescriptor,
     document::JsonDocument,
     grants::now_ms,
-    jobs::JobControl,
     transport::{
         EndpointClass, Method, RedirectPolicy, SendOptions, Transport, TransportConfig,
         TransportRequest, parse_endpoint,
     },
 };
-use crate::{Error, JobId, ModuleRegistry, atomic_file};
+use crate::{Error, JobId, ModuleRegistry, atomic_file, jobs::JobControl};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -150,7 +149,7 @@ pub struct ResourceRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<JobId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<super::jobs::JobError>,
+    pub error: Option<crate::jobs::JobError>,
 }
 
 /// The resource root and the paths under it. Holds no state: every question is answered from the

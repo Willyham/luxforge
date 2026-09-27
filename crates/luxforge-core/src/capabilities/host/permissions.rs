@@ -10,9 +10,9 @@ use crate::{
     capabilities::{
         descriptor::{CapabilityDescriptor, CapabilityKind},
         grants::{GrantKind, GrantScope, MAX_REASON, NewGrant},
-        jobs::PERMISSION_REVOKED,
         settings::WriteOutcome,
     },
+    jobs::{Jobs, PERMISSION_REVOKED},
 };
 use serde_json::{Value, json};
 
@@ -175,6 +175,7 @@ impl CapabilityHost {
     /// Any client may. Recipes, history and accepted artifacts are never touched.
     pub(crate) fn revoke(
         &mut self,
+        jobs: &mut Jobs,
         request: RevokeParams,
         origin: &Origin,
         announce: &mut Vec<Origin>,
@@ -189,7 +190,7 @@ impl CapabilityHost {
         let (grant, changed) = self.grants()?.revoke(&request.grant_id, &reason)?;
         let cancelled = if changed {
             announce_once(announce, origin);
-            self.cancel_dependents_of(&grant.grant_id, origin, announce)
+            self.cancel_dependents_of(jobs, &grant.grant_id, origin, announce)
         } else {
             Vec::new()
         };
@@ -215,13 +216,14 @@ impl CapabilityHost {
     /// Cancel the live jobs running under this grant, as `permission revoked`.
     pub(super) fn cancel_dependents_of(
         &mut self,
+        jobs: &mut Jobs,
         grant_id: &str,
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Vec<JobId> {
-        let dependents = self.jobs.depending_on(grant_id);
+        let dependents = jobs.depending_on(grant_id);
         for job_id in &dependents {
-            self.cancel_job(job_id, PERMISSION_REVOKED, origin, announce);
+            self.cancel_job(jobs, job_id, PERMISSION_REVOKED, Some(origin), announce);
         }
         dependents
     }

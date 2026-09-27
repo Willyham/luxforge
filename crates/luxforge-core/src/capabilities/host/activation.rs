@@ -7,12 +7,10 @@ use super::{
 use crate::{
     Availability, Error, JobId, ModuleRegistry,
     api::{Origin, announce_once, params::host_params},
-    capabilities::{
-        context::ModuleContext,
-        jobs::{
-            Admission, Cancelled, JobControl, JobError, JobKind, JobRecord, JobStatus, NewJob, Work,
-        },
-        resources::ResourceState,
+    capabilities::{context::ModuleContext, resources::ResourceState},
+    jobs::{
+        Admission, Cancelled, JobControl, JobError, JobKind, JobRecord, JobStatus, Jobs, NewJob,
+        Work,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -112,6 +110,7 @@ impl CapabilityHost {
     /// lane, or join the one already queued or running. An active module answers at once.
     pub(crate) fn activate(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: ModuleChange,
         origin: &Origin,
@@ -134,7 +133,7 @@ impl CapabilityHost {
                     return Ok(activation_answer(module_id, ActivationState::Active, None));
                 }
                 ActivationState::Activating if activation.pending.is_none() => {
-                    let job = activation.job.as_ref().and_then(|job| self.jobs.read(job));
+                    let job = activation.job.as_ref().and_then(|job| jobs.read(job));
                     return Ok(activation_answer(
                         module_id,
                         ActivationState::Activating,
@@ -169,7 +168,7 @@ impl CapabilityHost {
                 });
             }
         }
-        let rows = self.resource_rows(descriptor);
+        let rows = self.resource_rows(jobs, descriptor);
         for id in &declared.requires_resources {
             let state = rows
                 .iter()
@@ -236,12 +235,13 @@ impl CapabilityHost {
                 outcome.map(|()| json!({"activation": ActivationState::Active.name()}))
             })
         };
-        let job = self.jobs.submit(
+        let job = jobs.submit(
             NewJob {
                 job_id: JobId::new(),
                 kind: JobKind::Activate,
-                module_id: module_id.to_owned(),
+                module_id: Some(module_id.to_owned()),
                 resource_id: None,
+                asset_id: None,
                 origin: Some(origin.clone()),
                 grants: Vec::new(),
                 admission: Admission::Bounded,
@@ -266,6 +266,7 @@ impl CapabilityHost {
     /// `module.deactivate`: a client's explicit deactivation, which records no reason.
     pub(crate) fn deactivate_request(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         request: ModuleChange,
         origin: &Origin,
@@ -273,7 +274,7 @@ impl CapabilityHost {
     ) -> Result<Value, Error> {
         request.mutation.validate()?;
         let descriptor = registered(registry, &request.module_id)?;
-        let job = self.deactivate(registry, &descriptor.id, None, Some(origin), announce)?;
+        let job = self.deactivate(jobs, registry, &descriptor.id, None, Some(origin), announce)?;
         let state = self
             .activations
             .get(&descriptor.id)
@@ -287,6 +288,7 @@ impl CapabilityHost {
     /// queued before it. Nothing is deleted. Returns the job the change concerns.
     pub(super) fn deactivate(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         module_id: &str,
         reason: Option<String>,
@@ -313,7 +315,7 @@ impl CapabilityHost {
                     .job
                     .clone()
                     .expect("an activating module has its job");
-                if let Some(record) = self.jobs.supersede(&job_id) {
+                if let Some(record) = jobs.supersede(&job_id) {
                     let activation = self.activation(module_id);
                     activation.job = None;
                     activation.set_inactive(reason);
@@ -321,7 +323,7 @@ impl CapabilityHost {
                     return Ok(Some(record));
                 }
                 let cancel = reason.as_deref().unwrap_or("the module was deactivated");
-                let record = match self.jobs.cancel(&job_id, cancel) {
+                let record = match jobs.cancel(&job_id, cancel) {
                     Some(Cancelled::Requested(record) | Cancelled::Finished(record)) => record,
                     Some(Cancelled::Removed(record)) => record,
                     None => return Ok(None),
@@ -330,7 +332,7 @@ impl CapabilityHost {
                 Ok(Some(record))
             }
             ActivationState::Active => {
-                let record = self.release(registry, module_id, reason, origin.cloned())?;
+                let record = self.release(jobs, registry, module_id, reason, origin.cloned())?;
                 announced(announce);
                 Ok(Some(record))
             }
@@ -345,6 +347,7 @@ impl CapabilityHost {
     /// module inactive.
     fn release(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         module_id: &str,
         reason: Option<String>,
@@ -358,12 +361,13 @@ impl CapabilityHost {
             }
             Ok(json!({"activation": ActivationState::Inactive.name()}))
         });
-        let record = self.jobs.submit(
+        let record = jobs.submit(
             NewJob {
                 job_id: JobId::new(),
                 kind: JobKind::Deactivate,
-                module_id: module_id.to_owned(),
+                module_id: Some(module_id.to_owned()),
                 resource_id: None,
+                asset_id: None,
                 origin,
                 grants: Vec::new(),
                 admission: Admission::Always,
@@ -382,10 +386,11 @@ impl CapabilityHost {
     /// An activation job finished. Returns whether the module's state changed.
     pub(super) fn activation_finished(
         &mut self,
+        jobs: &mut Jobs,
         registry: &Arc<ModuleRegistry>,
         record: &JobRecord,
     ) -> bool {
-        let Some(activation) = self.activations.get_mut(&record.module_id) else {
+        let Some(activation) = self.activations.get_mut(record.module()) else {
             return false;
         };
         if activation.job.as_ref() != Some(&record.job_id) {
@@ -403,10 +408,10 @@ impl CapabilityHost {
             (JobStatus::Ready, Some(reason)) => {
                 let origin = None;
                 if self
-                    .release(registry, &record.module_id, reason.clone(), origin)
+                    .release(jobs, registry, record.module(), reason.clone(), origin)
                     .is_err()
                 {
-                    self.activation(&record.module_id).set_inactive(reason);
+                    self.activation(record.module()).set_inactive(reason);
                 }
             }
             (JobStatus::Failed, None) => {

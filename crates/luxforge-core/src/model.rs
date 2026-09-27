@@ -80,18 +80,17 @@ identifier!(PresetId, "preset-");
 identifier!(MaskId, "mask-");
 identifier!(ComponentId, "component-");
 
-/// The lifecycle every job in Luxforge moves through — source, analysis and capability jobs alike
-/// — and the one `status` key their API answers carry (`job.status`, `analysis.request`,
-/// `analysis.read` and `module.job.read`). Not every kind reaches every value:
+/// The lifecycle every job in Luxforge moves through — source, analysis, capability and export jobs
+/// alike, all records of the one job table (`crate::jobs`) — and the one `status` key `job.read`
+/// and `analysis.request` answer with. Not every kind reaches every value:
 ///
-/// - **Source jobs** (`crates/luxforge-core/src/api/owner.rs`): `queued`, `running`, `ready`,
-///   `failed`, `cancelled`. Never `superseded`: a second request for the same work joins the job
-///   already in flight rather than displacing it.
-/// - **Analysis jobs** (`crates/luxforge-core/src/analysis/jobs.rs`): all six. The worker runs one
-///   active job with one replaceable pending job; a fresh request beyond those two displaces the
-///   pending one, which reads `superseded`.
-/// - **Capability jobs** (`crates/luxforge-core/src/capabilities/jobs.rs`): all six. A queued
-///   activation a deactivation replaces reads `superseded`; nothing else does.
+/// - **Source jobs**: `queued`, `running`, `ready`, `failed`, `cancelled`. Never `superseded`: a
+///   second request for the same work joins the job already in flight rather than displacing it.
+/// - **Analysis jobs**: all six. The worker runs one active job with one replaceable pending job;
+///   a fresh request beyond those two displaces the pending one, which reads `superseded`.
+/// - **Capability jobs**: all six. A queued activation a deactivation replaces reads `superseded`;
+///   nothing else does.
+/// - **Export jobs**: every value but `superseded`: the export lane never replaces a job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum JobStatus {

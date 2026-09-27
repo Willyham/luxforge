@@ -23,7 +23,7 @@ use crate::{
 };
 use luxforge_core::{
     ClientSession, ContentPoint, Draft, DraftId, EntryId, HistoryPage, ModuleDescriptor,
-    PresetSummary, PreviewJob, StageTransform, Version, capabilities::jobs::JobRecord,
+    PresetSummary, PreviewJob, StageTransform, Version, jobs::JobRecord,
 };
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value};
@@ -458,7 +458,7 @@ pub(crate) enum CapabilityMessage {
     Answered(Box<Answer>),
     /// Read the tracked live jobs again; produced only while one is queued or running.
     Poll,
-    /// What `module.job.read` answered for each polled job, by module and job.
+    /// What `job.read` answered for each polled job, by module and job.
     Polled(Vec<(String, String, Result<JobRecord, String>)>),
 }
 
@@ -814,7 +814,7 @@ pub(crate) enum ExportMessage {
     Queued(Result<Value, CallError>),
     /// Read the running job again; produced only while one is queued or running.
     Poll,
-    /// `export.read` answered for the job it names.
+    /// `job.read` answered for the job it names.
     Read {
         job_id: String,
         result: Result<Value, String>,

@@ -158,7 +158,7 @@
         {
           "kind": "file",
           "label": "Event origin",
-          "target": "crates/luxforge-core/src/capabilities/jobs.rs",
+          "target": "crates/luxforge-core/src/jobs.rs",
           "relevance": "`Origin`, the event-origin type to extend with an asset id and revision, and to move into `api`."
         },
         {
@@ -235,7 +235,7 @@
         {
           "kind": "file",
           "label": "Capability jobs",
-          "target": "crates/luxforge-core/src/capabilities/jobs.rs",
+          "target": "crates/luxforge-core/src/jobs.rs",
           "relevance": "The lane runner, `JobControl`, ring buffer and export lane this task promotes into the shared job table."
         },
         {

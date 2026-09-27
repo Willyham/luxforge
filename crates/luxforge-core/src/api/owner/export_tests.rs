@@ -104,13 +104,13 @@ impl Harness {
         let job = queued["job_id"].clone();
         let status = self.settle_source(&job);
         assert_eq!(status["status"], "ready", "{status}");
-        status["asset"].clone()
+        status["result"].clone()
     }
 
     fn settle_source(&self, job: &Value) -> Value {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let status = self.ok("job.status", json!({"job_id": job}));
+            let status = self.ok("job.read", json!({"job_id": job}));
             if !matches!(status["status"].as_str(), Some("queued" | "running")) {
                 return status;
             }
@@ -142,7 +142,7 @@ impl Harness {
     fn settle(&self, job: &Value) -> Value {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let read = self.ok("export.read", json!({"job_id": job}));
+            let read = self.ok("job.read", json!({"job_id": job}));
             if !matches!(read["status"].as_str(), Some("queued" | "running")) {
                 return read;
             }
@@ -565,7 +565,7 @@ fn keep_metadata_writes_one_exif_segment_and_the_default_writes_none() {
     );
     let status = harness.settle_source(&queued["job_id"]);
     assert_eq!(status["status"], "ready", "{status}");
-    let asset = status["asset"]["asset"]["id"].clone();
+    let asset = status["result"]["asset"]["id"].clone();
     let out = destinations(&harness);
     let stripped =
         harness.export(json!({"asset_id": asset, "destination": out.join("stripped.jpg")}));
@@ -673,13 +673,13 @@ fn refusals_are_answered_at_once_and_write_nothing() {
     assert_eq!(unknown_plan.code, unknown_entry.code);
     assert_eq!(
         harness
-            .refused("export.read", json!({"job_id": JobId::new()}))
+            .refused("job.read", json!({"job_id": JobId::new()}))
             .code,
         "validation"
     );
     assert_eq!(
         harness
-            .refused("export.cancel", json!({"job_id": JobId::new()}))
+            .refused("job.cancel", json!({"job_id": JobId::new()}))
             .code,
         "validation"
     );
@@ -794,11 +794,11 @@ fn a_cancelled_export_leaves_no_file_and_no_temporary_file() {
             .result
             .unwrap_or_else(|| panic!("any client may {method}"))
     };
-    let removed = as_other("export.cancel", &queued["job_id"]);
+    let removed = as_other("job.cancel", &queued["job_id"]);
     assert_eq!(removed["status"], "cancelled");
     assert_eq!(removed["error"]["code"], "cancelled");
     assert_eq!(removed["error"]["message"], "the export was cancelled");
-    let requested = as_other("export.cancel", &running["job_id"]);
+    let requested = as_other("job.cancel", &running["job_id"]);
     assert_eq!(requested["status"], "running", "it stops at its next block");
     release.send(()).unwrap();
     let stopped = harness.settle(&running["job_id"]);
@@ -807,7 +807,7 @@ fn a_cancelled_export_leaves_no_file_and_no_temporary_file() {
     assert!(stopped.get("result").is_none());
     assert!(listing(&out).is_empty(), "{:?}", listing(&out));
     assert_eq!(
-        as_other("export.read", &queued["job_id"])["status"],
+        as_other("job.read", &queued["job_id"])["status"],
         "cancelled",
         "a cancelled queued job never ran"
     );
@@ -815,10 +815,7 @@ fn a_cancelled_export_leaves_no_file_and_no_temporary_file() {
     harness.owner.hold_exports(None);
     let done = harness.export(json!({"asset_id": asset, "destination": out.join("done.jpg")}));
     assert_eq!(harness.settle(&done["job_id"])["status"], "ready");
-    assert_eq!(
-        as_other("export.cancel", &done["job_id"])["status"],
-        "ready"
-    );
+    assert_eq!(as_other("job.cancel", &done["job_id"])["status"], "ready");
     assert_eq!(listing(&out), ["done.jpg"]);
     let activity = harness.ok("activity.list", json!({}));
     let outcome = |job: &Value| {
@@ -877,7 +874,7 @@ fn the_export_lane_holds_four_refuses_the_sixth_and_outlives_its_client() {
                     reader,
                     ApiRequest {
                         id: "read".into(),
-                        method: "export.read".into(),
+                        method: "job.read".into(),
                         params: json!({"job_id": job["job_id"]}),
                         token: None,
                     },
@@ -932,7 +929,7 @@ fn a_raw_export_matches_the_exact_render() {
     );
     let status = harness.settle_source(&queued["job_id"]);
     assert_eq!(status["status"], "ready", "{status}");
-    let asset = status["asset"]["asset"]["id"].clone();
+    let asset = status["result"]["asset"]["id"].clone();
     let entry = harness.expose(&asset, 0.4);
     let out = destinations(&harness);
     let params = with_envelope(json!({

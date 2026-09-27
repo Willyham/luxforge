@@ -271,7 +271,7 @@
         {
           "kind": "file",
           "label": "Capability jobs",
-          "target": "crates/luxforge-core/src/capabilities/jobs.rs",
+          "target": "crates/luxforge-core/src/jobs.rs",
           "locator": "JobControl",
           "relevance": "Already Arc-shared; the spike's cancel handle is built from it."
         },

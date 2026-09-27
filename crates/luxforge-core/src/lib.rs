@@ -15,6 +15,7 @@ mod editor;
 mod error;
 /// JPEG export: capture metadata, the encoder and a publish that never replaces a file.
 pub mod export;
+pub mod jobs;
 /// One persistent worker that runs the newest job, behind the preview, the analysis and the
 /// desktop's clipping overlay.
 pub mod latest;

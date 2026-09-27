@@ -45,9 +45,9 @@ impl Journey for JsonProcess {
             json!({"path": path, "mutation": request()}),
         )["job_id"]
             .clone();
-        let status = self.settle("job.status", &job, JOB_TIMEOUT);
+        let status = self.settle("job.read", &job, JOB_TIMEOUT);
         assert_eq!(status["status"], "ready", "{status}");
-        status["asset"]["asset"].clone()
+        status["result"]["asset"].clone()
     }
 
     fn state(&mut self, asset: &Value) -> Value {

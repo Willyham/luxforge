@@ -1,10 +1,11 @@
-//! Analysis job identity, the owner-held result store and the bounded analysis worker.
+//! Analysis job identity and the bounded analysis worker.
 //!
 //! The reducer in the parent module is a pure function over a rendered raster. This module is what
 //! turns it into a service: an identity that says exactly which evaluated image a report belongs
-//! to, a bounded store the catalog owner keeps, and one worker with a single active job and a
-//! single replaceable pending job, as the integration contract's "Analysis jobs and identity"
-//! requires (`docs/design/basic-and-histogram.md`).
+//! to, and one worker with a single active job and a single replaceable pending job, as the
+//! integration contract's "Analysis jobs and identity" requires
+//! (`docs/design/basic-and-histogram.md`). The jobs' records, who wants them and the kept reports
+//! live in the catalog owner's one job table (`crate::jobs`).
 //!
 //! Nothing here runs on the catalog owner thread except bookkeeping: building a job costs a state
 //! read, a cached source verification and an `O(layers)` plan and compile. The render and the
@@ -15,26 +16,14 @@ use super::{DOMAIN, Report, deserialize_domain, reduce_raster_cancellable};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    AssetId, ClientId, DraftStamp, EntryId, Error, HistoryEntry, JobId, JobStatus, ModuleRegistry,
-    PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId,
+    AssetId, DraftStamp, EntryId, Error, HistoryEntry, JobId, ModuleRegistry, PreviewSource,
+    Recipe, RenderContext, RenderOptions, SnapshotId,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     latest::{Latest, Running, WAITING_RESULTS},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
-    sync::Arc,
-};
-
-/// How many completed reports the owner keeps. The shared API and jobs contract caps live reports
-/// at the eight live clients; the oldest is evicted first.
-pub const MAX_READY_REPORTS: usize = 8;
-
-/// How many job records the owner keeps at all, including the finished ones a client may still
-/// read as `superseded` or `cancelled`. Finished records are evicted oldest first; a pending job is
-/// never evicted, because a worker still refers to it.
-pub const MAX_JOB_RECORDS: usize = 32;
+use std::{collections::VecDeque, sync::Arc};
 
 /// Which evaluated image one report describes. Two requests with equal identities describe byte for
 /// byte the same rendered output, so they share one job and one cached report; a request whose
@@ -333,343 +322,6 @@ fn analyse(
     Some(AnalysisOutcome { job_id, result })
 }
 
-#[derive(Debug)]
-enum JobState {
-    Pending,
-    /// Boxed: a `Report` is about 6 KiB, and the job table must not carry that inline per record.
-    Ready(Box<Report>),
-    Failed(Error),
-    Superseded,
-    Cancelled,
-}
-
-impl JobState {
-    /// The shared [`JobStatus`] this record reads as. `Pending` alone cannot say whether the job
-    /// still waits in the worker's one replaceable slot or the worker has taken it, so it asks
-    /// `queue`: a pending record the slot does not hold is running, or its outcome is on its way
-    /// to the owner.
-    fn status(&self, job_id: &JobId, queue: &AnalysisQueue) -> JobStatus {
-        match self {
-            Self::Pending if queue.is_pending(job_id) => JobStatus::Queued,
-            Self::Pending => JobStatus::Running,
-            Self::Ready(_) => JobStatus::Ready,
-            Self::Failed(_) => JobStatus::Failed,
-            Self::Superseded => JobStatus::Superseded,
-            Self::Cancelled => JobStatus::Cancelled,
-        }
-    }
-    fn is_finished(&self) -> bool {
-        !matches!(self, Self::Pending)
-    }
-}
-
-#[derive(Debug)]
-struct JobRecord {
-    identity: AnalysisIdentity,
-    /// Every client that has ever requested this job. It decides who may read or cancel it, so a
-    /// client that cancelled still reads the `cancelled` outcome it asked for.
-    requesters: BTreeSet<ClientId>,
-    /// The clients that still want the work. When this empties, the job is cancelled.
-    interested: BTreeSet<ClientId>,
-    state: JobState,
-}
-
-/// What one client reads back about a job.
-#[derive(Debug)]
-pub struct AnalysisRead<'a> {
-    pub status: JobStatus,
-    pub identity: &'a AnalysisIdentity,
-    /// Only ever `Some` for [`JobStatus::Ready`].
-    pub report: Option<&'a Report>,
-    /// Only ever `Some` for [`JobStatus::Failed`].
-    pub error: Option<&'a Error>,
-}
-
-/// What the owner must do after a client released its interest in a job.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Release {
-    /// Other clients still want it, or it had already finished: leave the work alone.
-    Kept,
-    /// Nobody is interested any more: drop it from the queue, or discard its result on arrival.
-    Cancelled,
-}
-
-/// The catalog owner's bounded analysis bookkeeping: which identities have jobs, who is interested
-/// in each, and the small ring of completed reports. It holds no pixels beyond the reports and
-/// never touches a source or a frame.
-#[derive(Debug, Default)]
-pub struct AnalysisStore {
-    jobs: HashMap<JobId, JobRecord>,
-    /// Only pending, ready and failed jobs are indexed here, so a superseded or cancelled identity
-    /// can be requested again and gets fresh work.
-    by_identity: HashMap<AnalysisIdentity, JobId>,
-    /// Job ids oldest first, which is the eviction order for both bounds.
-    order: VecDeque<JobId>,
-}
-
-impl AnalysisStore {
-    /// Join or open the job for this identity. Returns its id and whether the caller must schedule
-    /// new work for it.
-    pub fn request(&mut self, identity: AnalysisIdentity, client: ClientId) -> (JobId, bool) {
-        if let Some(job_id) = self.by_identity.get(&identity).cloned()
-            && let Some(record) = self.jobs.get_mut(&job_id)
-        {
-            record.requesters.insert(client);
-            // A finished job needs no worker, so joining it never revives interest in work.
-            if !record.state.is_finished() {
-                record.interested.insert(client);
-            }
-            return (job_id, false);
-        }
-        let job_id = JobId::new();
-        self.insert(
-            job_id.clone(),
-            JobRecord {
-                identity,
-                requesters: BTreeSet::from([client]),
-                interested: BTreeSet::from([client]),
-                state: JobState::Pending,
-            },
-        );
-        (job_id, true)
-    }
-
-    /// Record a report the desktop's preview worker already produced for this identity, so the next
-    /// `analysis.request` for it is a cache hit and no second render happens.
-    pub fn submit(&mut self, identity: AnalysisIdentity, report: Report) {
-        if let Some(job_id) = self.by_identity.get(&identity).cloned()
-            && let Some(record) = self.jobs.get_mut(&job_id)
-        {
-            // A job that is already running keeps its own outcome; a stored report is not replaced.
-            if record.state.is_finished() {
-                return;
-            }
-            record.state = JobState::Ready(Box::new(report));
-            record.interested.clear();
-            self.trim();
-            return;
-        }
-        self.insert(
-            JobId::new(),
-            JobRecord {
-                identity,
-                requesters: BTreeSet::new(),
-                interested: BTreeSet::new(),
-                state: JobState::Ready(Box::new(report)),
-            },
-        );
-    }
-
-    /// Store the worker's outcome. A job nobody is waiting for any more keeps its `cancelled`
-    /// outcome and the result is discarded.
-    pub fn complete(&mut self, job_id: &JobId, result: Result<Report, Error>) {
-        let Some(record) = self.jobs.get_mut(job_id) else {
-            return;
-        };
-        if record.state.is_finished() {
-            return;
-        }
-        record.state = match result {
-            Ok(report) => JobState::Ready(Box::new(report)),
-            Err(error) => JobState::Failed(error),
-        };
-        record.interested.clear();
-        self.trim();
-    }
-
-    /// Record a job that failed before it could be scheduled at all: the effective recipe resolved
-    /// but has no output stage the host can evaluate.
-    pub fn fail(&mut self, job_id: &JobId, error: Error) {
-        if let Some(record) = self.jobs.get_mut(job_id)
-            && !record.state.is_finished()
-        {
-            record.state = JobState::Failed(error);
-            record.interested.clear();
-        }
-        self.trim();
-    }
-
-    /// A newer request took the single pending slot from this one.
-    pub fn supersede(&mut self, job_id: &JobId) {
-        self.finish(job_id, JobState::Superseded);
-    }
-
-    /// Nobody is interested any more.
-    pub fn cancel(&mut self, job_id: &JobId) {
-        self.finish(job_id, JobState::Cancelled);
-    }
-
-    fn finish(&mut self, job_id: &JobId, state: JobState) {
-        let identity = match self.jobs.get_mut(job_id) {
-            Some(record) if !record.state.is_finished() => {
-                record.state = state;
-                record.interested.clear();
-                Some(record.identity.clone())
-            }
-            _ => return,
-        };
-        // A superseded or cancelled identity is re-requestable: it must not answer a later request
-        // from the index.
-        if let Some(identity) = identity
-            && self.by_identity.get(&identity) == Some(job_id)
-        {
-            self.by_identity.remove(&identity);
-        }
-        self.trim();
-    }
-
-    /// Whether the worker's result for this job should still be stored.
-    pub fn awaits(&self, job_id: &JobId) -> bool {
-        self.jobs
-            .get(job_id)
-            .is_some_and(|record| !record.state.is_finished())
-    }
-
-    /// Drop one client's interest. `Err` when this client never requested the job, which is how a
-    /// foreign or unknown job id is refused.
-    pub fn release(&mut self, job_id: &JobId, client: ClientId) -> Result<Release, Error> {
-        let record = self
-            .jobs
-            .get_mut(job_id)
-            .filter(|record| record.requesters.contains(&client))
-            .ok_or_else(|| unknown_job(job_id))?;
-        record.interested.remove(&client);
-        Ok(
-            if record.interested.is_empty() && !record.state.is_finished() {
-                Release::Cancelled
-            } else {
-                Release::Kept
-            },
-        )
-    }
-
-    /// Release every interest this client holds and forget it as a requester. Returns the jobs that
-    /// lost their last interested client, which the owner then cancels.
-    pub fn disconnect(&mut self, client: ClientId) -> Vec<JobId> {
-        let mut orphaned = Vec::new();
-        for (job_id, record) in &mut self.jobs {
-            let held = record.requesters.remove(&client);
-            record.interested.remove(&client);
-            if held && record.interested.is_empty() && !record.state.is_finished() {
-                orphaned.push(job_id.clone());
-            }
-        }
-        orphaned
-    }
-
-    /// One client's view of one job. A job this client never requested is simply not its own.
-    /// `queue` resolves a `Pending` record to `running` or `queued`, since the record alone cannot
-    /// say which.
-    pub fn read(
-        &self,
-        job_id: &JobId,
-        client: ClientId,
-        queue: &AnalysisQueue,
-    ) -> Result<AnalysisRead<'_>, Error> {
-        let record = self
-            .jobs
-            .get(job_id)
-            .filter(|record| record.requesters.contains(&client))
-            .ok_or_else(|| unknown_job(job_id))?;
-        Ok(AnalysisRead {
-            status: record.state.status(job_id, queue),
-            identity: &record.identity,
-            report: match &record.state {
-                JobState::Ready(report) => Some(report.as_ref()),
-                _ => None,
-            },
-            error: match &record.state {
-                JobState::Failed(error) => Some(error),
-                _ => None,
-            },
-        })
-    }
-
-    /// The job's state without a client check, for the owner's own responses.
-    pub fn state_of(&self, job_id: &JobId, queue: &AnalysisQueue) -> Option<AnalysisRead<'_>> {
-        let record = self.jobs.get(job_id)?;
-        Some(AnalysisRead {
-            status: record.state.status(job_id, queue),
-            identity: &record.identity,
-            report: match &record.state {
-                JobState::Ready(report) => Some(report.as_ref()),
-                _ => None,
-            },
-            error: match &record.state {
-                JobState::Failed(error) => Some(error),
-                _ => None,
-            },
-        })
-    }
-
-    /// How many completed reports are held. Bounded by [`MAX_READY_REPORTS`].
-    pub fn reports(&self) -> usize {
-        self.jobs
-            .values()
-            .filter(|record| matches!(record.state, JobState::Ready(_)))
-            .count()
-    }
-
-    /// How many job records are held. Bounded by [`MAX_JOB_RECORDS`].
-    pub fn len(&self) -> usize {
-        self.jobs.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.jobs.is_empty()
-    }
-
-    fn insert(&mut self, job_id: JobId, record: JobRecord) {
-        self.by_identity
-            .insert(record.identity.clone(), job_id.clone());
-        self.order.push_back(job_id.clone());
-        self.jobs.insert(job_id, record);
-        self.trim();
-    }
-
-    /// Enforce both bounds: at most [`MAX_READY_REPORTS`] completed reports and at most
-    /// [`MAX_JOB_RECORDS`] records, evicting the oldest finished record first. A pending job is
-    /// never evicted, because a worker still refers to it.
-    fn trim(&mut self) {
-        while self.reports() > MAX_READY_REPORTS {
-            let Some(oldest) = self.oldest(|state| matches!(state, JobState::Ready(_))) else {
-                break;
-            };
-            self.remove(&oldest);
-        }
-        while self.jobs.len() > MAX_JOB_RECORDS {
-            let Some(oldest) = self.oldest(JobState::is_finished) else {
-                break;
-            };
-            self.remove(&oldest);
-        }
-    }
-
-    fn oldest(&self, matching: impl Fn(&JobState) -> bool) -> Option<JobId> {
-        self.order
-            .iter()
-            .find(|job_id| {
-                self.jobs
-                    .get(*job_id)
-                    .is_some_and(|record| matching(&record.state))
-            })
-            .cloned()
-    }
-
-    fn remove(&mut self, job_id: &JobId) {
-        self.order.retain(|held| held != job_id);
-        if let Some(record) = self.jobs.remove(job_id)
-            && self.by_identity.get(&record.identity) == Some(job_id)
-        {
-            self.by_identity.remove(&record.identity);
-        }
-    }
-}
-
-fn unknown_job(job_id: &JobId) -> Error {
-    Error::validation(format!("unknown analysis job {job_id} for this client"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,18 +356,6 @@ mod tests {
         AnalysisIdentity::of(asset, "sha256:test", entry, recipe, None, Some((4, 3))).unwrap()
     }
 
-    fn report(pixels: u64) -> Report {
-        let mut report = super::super::reduce(&[0, 0, 0, 255], 1, 1).unwrap();
-        report.r0 = pixels;
-        report
-    }
-
-    /// A queue that is never given a job, for tests that drive `AnalysisStore` directly and never
-    /// read a job while it is genuinely `Pending` — only `JobState::status` ever consults it.
-    fn queue() -> AnalysisQueue {
-        AnalysisQueue::new(Arc::new(|| {}))
-    }
-
     #[test]
     fn an_identity_hashes_the_recipe_and_marks_a_stack_without_an_output_stage() {
         let asset = AssetId::new();
@@ -748,91 +388,6 @@ mod tests {
         let mut foreign = encoded;
         foreign["domain"] = json!("raw-linear");
         assert!(serde_json::from_value::<AnalysisIdentity>(foreign).is_err());
-    }
-
-    #[test]
-    fn identical_identities_share_one_job_and_releases_only_cancel_the_last_interest() {
-        let asset = AssetId::new();
-        let entry = entry(&asset);
-        let recipe = entry.snapshot.recipe.clone();
-        let identity = identity(&asset, &entry, &recipe);
-        let mut store = AnalysisStore::default();
-        let one = ClientId::testing(1);
-        let two = ClientId::testing(2);
-        let (job, fresh) = store.request(identity.clone(), one);
-        assert!(fresh, "the first request schedules work");
-        let (same, again) = store.request(identity.clone(), two);
-        assert_eq!(job, same, "an identical identity joins the same job");
-        assert!(!again, "and schedules nothing");
-        assert_eq!(store.release(&job, one).unwrap(), Release::Kept);
-        assert_eq!(store.release(&job, two).unwrap(), Release::Cancelled);
-        store.cancel(&job);
-        // Both clients still read the outcome they asked for; nobody else can.
-        assert_eq!(
-            store.read(&job, one, &queue()).unwrap().status,
-            JobStatus::Cancelled
-        );
-        assert!(store.read(&job, ClientId::testing(3), &queue()).is_err());
-        // A cancelled identity is re-requestable and gets a fresh job.
-        let (fresh_job, scheduled) = store.request(identity, one);
-        assert_ne!(fresh_job, job);
-        assert!(scheduled);
-    }
-
-    #[test]
-    fn the_report_ring_and_the_job_table_stay_bounded() {
-        let asset = AssetId::new();
-        let mut entries = Vec::new();
-        let client = ClientId::testing(1);
-        let mut store = AnalysisStore::default();
-        let mut jobs = Vec::new();
-        for index in 0..MAX_READY_REPORTS + 4 {
-            let entry = entry(&asset);
-            let recipe = entry.snapshot.recipe.clone();
-            let identity = AnalysisIdentity::of(
-                &asset,
-                "sha256:test",
-                &entry,
-                &recipe,
-                None,
-                Some((index as u32 + 1, 1)),
-            )
-            .unwrap();
-            let (job, _) = store.request(identity, client);
-            store.complete(&job, Ok(report(index as u64)));
-            jobs.push(job);
-            entries.push(entry);
-        }
-        assert_eq!(store.reports(), MAX_READY_REPORTS, "oldest reports evicted");
-        assert_eq!(store.len(), MAX_READY_REPORTS);
-        for evicted in &jobs[..4] {
-            assert!(store.read(evicted, client, &queue()).is_err(), "evicted");
-        }
-        assert_eq!(
-            store
-                .read(jobs.last().unwrap(), client, &queue())
-                .unwrap()
-                .status,
-            JobStatus::Ready
-        );
-        // Finished non-report records are bounded by the job table cap.
-        for index in 0..MAX_JOB_RECORDS * 2 {
-            let entry = entry(&asset);
-            let recipe = entry.snapshot.recipe.clone();
-            let identity = AnalysisIdentity::of(
-                &asset,
-                "sha256:other",
-                &entry,
-                &recipe,
-                None,
-                Some((1, index as u32 + 1)),
-            )
-            .unwrap();
-            let (job, _) = store.request(identity, client);
-            store.supersede(&job);
-        }
-        assert!(store.len() <= MAX_JOB_RECORDS, "{}", store.len());
-        assert!(store.reports() <= MAX_READY_REPORTS);
     }
 
     /// A 64 x 48 analysis of one held colour layer, whose render reaches `gate` once per row.
@@ -953,34 +508,5 @@ mod tests {
         let report = outcome.result.expect("an analysis left alone reports");
         assert_eq!(report.r.iter().sum::<u64>(), rows * 64);
         assert_eq!(gate.reached(), rows, "every row was evaluated");
-    }
-
-    #[test]
-    fn a_disconnect_releases_every_interest_that_client_held() {
-        let asset = AssetId::new();
-        let entry = entry(&asset);
-        let recipe = entry.snapshot.recipe.clone();
-        let identity = identity(&asset, &entry, &recipe);
-        let mut store = AnalysisStore::default();
-        let one = ClientId::testing(1);
-        let two = ClientId::testing(2);
-        let (job, _) = store.request(identity, one);
-        store.request(
-            AnalysisIdentity::of(&asset, "sha256:test", &entry, &recipe, None, Some((9, 9)))
-                .unwrap(),
-            two,
-        );
-        assert!(
-            store.disconnect(two).len() == 1,
-            "two's own job is orphaned"
-        );
-        assert!(
-            store.disconnect(one).contains(&job),
-            "one's job is orphaned too"
-        );
-        assert!(
-            store.read(&job, one, &queue()).is_err(),
-            "a gone client owns nothing"
-        );
     }
 }

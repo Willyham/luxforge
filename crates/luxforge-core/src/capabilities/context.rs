@@ -13,7 +13,6 @@
 use super::{
     data::DisclosedData,
     descriptor::{AdapterAuth, AdapterDescriptor},
-    jobs::JobControl,
     resources::SharedTransport,
     secrets::{SecretKey, SecretStore, SecretValue},
     transport::{Endpoint, Method, RedirectPolicy, SendOptions, TransportRequest},
@@ -26,6 +25,7 @@ use crate::{
         ArtifactId, ArtifactMeta, ArtifactRecord, ArtifactWriter, MAX_ARTIFACT_BYTES,
         PreparedArtifact,
     },
+    jobs::JobControl,
 };
 use serde_json::{Map, Value};
 use std::{

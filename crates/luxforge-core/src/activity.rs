@@ -403,7 +403,7 @@ impl Activity {
     }
 
     /// The progress this activity currently reports on the board, if it has any and the guard
-    /// still tracks a live entry. A reader such as `module.job.read` uses this to answer with the
+    /// still tracks a live entry. A reader such as `job.read` uses this to answer with the
     /// same progress the board carries, rather than keeping its own copy.
     pub fn progress_snapshot(&self) -> Option<ActivityProgress> {
         self.id.and_then(|id| self.board.progress_of(id))

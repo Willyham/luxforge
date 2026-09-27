@@ -4,7 +4,7 @@
 //! `export.plan` for the displayed entry's suggested name, the native save dialog in the original's
 //! folder, and `export.jpeg` for that entry with the chosen destination, asked again once the source
 //! is prepared when the owner answers `preparation-required`. The job then runs on the core's export
-//! lane, and the desktop reads it with `export.read` until it ends, on a timer that exists only
+//! lane, and the desktop reads it with `job.read` until it ends, on a timer that exists only
 //! while this window's export is queued or running (performance rule 8). The status bar says what
 //! happened; the Performance section lists the running job from `activity.list` like any other.
 //!
@@ -52,7 +52,7 @@ pub(crate) struct ExportChoice {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Exporting {
     pub(crate) run: Option<ExportRun>,
-    /// An `export.read` is in flight, so the next tick waits for it.
+    /// An `job.read` is in flight, so the next tick waits for it.
     pub(crate) reading: bool,
 }
 
@@ -510,13 +510,13 @@ pub(crate) fn send_now(
     }
 }
 
-/// `export.read` for one job.
+/// `job.read` for one job.
 pub(crate) fn read_now(
     owner: &OwnerHandle,
     client: ClientId,
     job_id: &str,
 ) -> Result<Value, String> {
-    call(owner, client, "export.read", json!({"job_id": job_id})).map(|(read, _)| read)
+    call(owner, client, "job.read", json!({"job_id": job_id})).map(|(read, _)| read)
 }
 
 fn read_task(owner: OwnerHandle, client: ClientId, job_id: String) -> Task<Message> {
