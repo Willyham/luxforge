@@ -1,7 +1,7 @@
 use crate::*;
 use luxforge_core::{
     CROP_EFFECT, CropPayload, CropStage, EditorService, ModuleRegistry, Mutation, MutationOutcome,
-    ORIENTATION_EFFECT, Transform,
+    ORIENTATION_EFFECT, Transform, builtin_modules,
 };
 use std::time::Instant;
 
@@ -45,40 +45,22 @@ pub fn run(root: &Path, out: &Path) -> Result {
             .flat_map(|descriptor| descriptor.actions.iter())
             .map(|action| action.id.clone())
             .collect();
+        // The registry lists exactly the linked built-in modules, in their order, with every
+        // action each declares; which modules and actions those are is the committed descriptor
+        // snapshot's (`crates/luxforge-core/tests/modules/descriptors.rs`).
+        let linked = builtin_modules();
         ensure(
             modules
-                == [
-                    "luxforge.presets",
-                    "luxforge.pixel",
-                    "luxforge.raw",
-                    "luxforge.basic",
-                    "luxforge.presence",
-                    "luxforge.mixer",
-                    "luxforge.transform",
-                    "luxforge.crop",
-                    "luxforge.vignette",
-                ]
+                == linked
+                    .iter()
+                    .map(|module| module.descriptor().id.clone())
+                    .collect::<Vec<_>>()
                 && actions
-                    == [
-                        "apply-preset",
-                        "set-pixel",
-                        "set-raw",
-                        "set-raw-red-gain",
-                        "set-raw-blue-gain",
-                        "pick-raw-neutral",
-                        "set-basic",
-                        "reset-basic",
-                        "set-presence",
-                        "reset-presence",
-                        "set-mixer",
-                        "reset-mixer",
-                        "transform",
-                        "crop",
-                        "crop-fit",
-                        "crop-reset",
-                        "set-vignette",
-                        "reset-vignette",
-                    ],
+                    == linked
+                        .iter()
+                        .flat_map(|module| module.descriptor().actions.iter())
+                        .map(|action| action.id.clone())
+                        .collect::<Vec<_>>(),
             "Built-in module discovery changed",
         )?;
         drop(registry);

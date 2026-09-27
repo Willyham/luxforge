@@ -4,7 +4,7 @@ use super::*;
 use crate::modules::raw::RAW_EFFECT;
 use crate::{
     ActionDescriptor, BASIC_EFFECT, CROP_EFFECT, Component, ComponentMode, EFFECT_FORMAT,
-    EffectDescriptor, Layer, LayerId, Mask, ORIENTATION_EFFECT, PIXEL_EFFECT, Recipe, SourceImage,
+    EffectDescriptor, Layer, LayerId, Mask, PIXEL_EFFECT, Recipe, SourceImage,
     modules::{ActionInput, ActionPlan, Availability, EffectStage, ModuleDescriptor, StageContext},
 };
 use serde_json::{Map, Value, json};
@@ -495,30 +495,20 @@ pub(super) fn source() -> SourceImage {
 
 #[test]
 fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
+    // Every built-in module registers with every action and effect it declares; which ones those
+    // are is the committed descriptor snapshot's (`tests/modules/descriptors.rs`).
     let mut registry = ModuleRegistry::builtin();
-    assert!(registry.action("set-pixel").is_some());
-    assert!(registry.action("transform").is_some());
-    assert!(registry.effect(PIXEL_EFFECT).is_some());
-    assert!(registry.effect(ORIENTATION_EFFECT).is_some());
-    assert!(registry.action("crop").is_some());
-    assert!(registry.effect(CROP_EFFECT).is_some());
-    assert!(registry.action("set-basic").is_some());
-    assert!(registry.action("reset-basic").is_some());
-    assert!(registry.effect(BASIC_EFFECT).is_some());
-    assert!(registry.action("set-mixer").is_some());
-    assert!(registry.action("reset-mixer").is_some());
-    assert!(registry.effect(crate::MIXER_EFFECT).is_some());
-    assert!(registry.action("set-raw").is_some());
-    assert!(registry.action("pick-raw-neutral").is_some());
-    assert!(registry.effect(RAW_EFFECT).is_some());
-    assert!(registry.action("set-vignette").is_some());
-    assert!(registry.action("reset-vignette").is_some());
-    assert!(registry.effect(crate::VIGNETTE_EFFECT).is_some());
-    assert!(registry.action("set-presence").is_some());
-    assert!(registry.action("reset-presence").is_some());
-    assert!(registry.effect(crate::PRESENCE_EFFECT).is_some());
-    assert!(registry.action("apply-preset").is_some());
-    assert_eq!(registry.descriptors().len(), 9);
+    let builtin = builtin_modules();
+    for module in &builtin {
+        let descriptor = module.descriptor();
+        for action in &descriptor.actions {
+            assert!(registry.action(&action.id).is_some(), "{}", action.id);
+        }
+        for effect in &descriptor.effects {
+            assert!(registry.effect(&effect.id).is_some(), "{}", effect.id);
+        }
+    }
+    assert_eq!(registry.descriptors().len(), builtin.len());
     assert!(registry.action("edit.set-pixel").is_none());
 
     for (case, module) in [
@@ -564,7 +554,7 @@ fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
     }
     assert_eq!(
         registry.descriptors().len(),
-        9,
+        builtin.len(),
         "nothing was half-registered"
     );
     assert!(
@@ -577,7 +567,7 @@ fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
             ))
             .is_ok()
     );
-    assert_eq!(registry.descriptors().len(), 10);
+    assert_eq!(registry.descriptors().len(), builtin.len() + 1);
 }
 
 /// A module that declares no effects owns no layer and claims no effect identity, so it

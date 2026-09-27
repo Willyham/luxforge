@@ -2078,30 +2078,8 @@ mod tests {
                     .method()
             })
             .collect();
-        assert_eq!(
-            generated,
-            [
-                "edit.apply-preset",
-                "edit.set-pixel",
-                "edit.set-raw",
-                "edit.set-raw-red-gain",
-                "edit.set-raw-blue-gain",
-                "edit.pick-raw-neutral",
-                "edit.set-basic",
-                "edit.reset-basic",
-                "edit.set-presence",
-                "edit.reset-presence",
-                "edit.set-mixer",
-                "edit.reset-mixer",
-                "edit.transform",
-                "edit.crop",
-                "edit.crop-fit",
-                "edit.crop-reset",
-                "edit.set-vignette",
-                "edit.reset-vignette"
-            ]
-        );
-        // A read-only module query generates a method of its own, in its own `query.` namespace.
+        // Which methods the built-in modules generate, with their parameters, is the committed
+        // descriptor snapshot's (`tests/modules/descriptors.rs`); here each is unique and listed.
         let queries: Vec<String> = service
             .registry()
             .descriptors()
@@ -2115,7 +2093,6 @@ mod tests {
                     .method()
             })
             .collect();
-        assert_eq!(queries, ["query.neutral-sample"]);
         // The host's own `mask.*` family, published as the host descriptor in the module shape and
         // resolved through the registry's one action lookup, whose method names are the commands'
         // own identities.
@@ -2188,6 +2165,20 @@ mod tests {
             listed.len(),
             METHODS.len() + generated.len() + queries.len() + masks.len() + reads.len()
         );
+        for method in &generated {
+            assert!(listed.contains_key(method), "{method} is not discoverable");
+            assert!(
+                matches!(find(&service, method), Some(Method::Action(_))),
+                "{method} does not dispatch as an action"
+            );
+        }
+        for method in &queries {
+            assert!(listed.contains_key(method), "{method} is not discoverable");
+            assert!(
+                matches!(find(&service, method), Some(Method::Query(_))),
+                "{method} does not dispatch as a query"
+            );
+        }
         for method in &masks {
             assert!(listed.contains_key(method), "{method} is not discoverable");
             assert!(
