@@ -236,7 +236,10 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
             .as_ref()
             .and_then(|run| run.job_id.clone())
         {
-            assert!(std::time::Instant::now() < deadline, "the export never ended");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the export never ended"
+            );
             let result = read_now(&editor.owner, editor.client, &job);
             let _ = editor.update(Message::Export(ExportMessage::Read {
                 job_id: job,
