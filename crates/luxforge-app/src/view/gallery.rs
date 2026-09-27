@@ -23,7 +23,7 @@ const PAGES: [(&str, usize, usize); 13] = [
     ("Module panels", 78, 86),
     ("Mask rows and controls", 86, 93),
     ("Mask menus, fields and swatches", 93, 101),
-    ("Range", 101, 104),
+    ("Range and mask draft bar", 101, 105),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

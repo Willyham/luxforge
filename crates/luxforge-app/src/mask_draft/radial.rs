@@ -5,7 +5,9 @@
 //! handles, a centre, a rotation grip and the ring. Both ellipses and every handle are placed through
 //! mask space, `u = x · W/H`, `v = y` — the spelling the host compiles a radial through — so they
 //! stay a circle in pixels at any aspect ratio and follow a crop or a quarter turn with the picture.
-use super::editor::{DrawnShape, Grab, MaskHandle, Pen, ShapeEditor, finite};
+use super::editor::{
+    DISTANCE_DECIMALS, DrawnShape, Grab, MaskHandle, Pen, ShapeEditor, WHOLE, compact, finite,
+};
 use luxforge_core::mask::{
     ANGLE_MAX, ANGLE_MIN, DISTANCE_MAX, DISTANCE_MIN, FEATHER_MAX, FEATHER_MIN, POSITION_MAX,
     POSITION_MIN, RadialGradient,
@@ -119,14 +121,14 @@ impl ShapeEditor for RadialEditor {
 
     /// `rx × ry · angle° · feather N`: the shape's size, turn and softness. The centre is where
     /// the handles already show it, so the line spends none of its room on it.
-    fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
+    fn readout(&self) -> String {
         let radial = self.shape;
         format!(
             "{} \u{d7} {} \u{b7} {}\u{b0} \u{b7} feather {}",
-            number("radius_x", radial.radius_x),
-            number("radius_y", radial.radius_y),
-            number("angle", radial.angle),
-            number("feather", radial.feather),
+            compact(radial.radius_x, DISTANCE_DECIMALS),
+            compact(radial.radius_y, DISTANCE_DECIMALS),
+            compact(radial.angle, WHOLE),
+            compact(radial.feather, WHOLE),
         )
     }
 
