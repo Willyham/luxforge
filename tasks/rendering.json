@@ -3,7 +3,7 @@
   "plan_id": "rendering",
   "title": "Rendering, preview and analysis",
   "objective": "Keep the one render pipeline and make it smaller, faster and easier to test: a render context per test, one home for limits, a trimmed pixel-domain trait, byte-identical speedups on the tile, frame, resample, threshold, point and proxy paths, a drafted preview that skips work nobody sees, a design for viewport tiles, opaque frames, render.rs split by concept and one test per property, then stage-boundary methods before Corrections adds a new boundary.",
-  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. The domain unification left a 23-item PixelDomain trait with about ten one-sided items, three separate copies of the resample read-rectangle and two of spatial-entry orchestration in the frame drivers, and a one-megapixel parallel threshold declared five times across two crates. The pipeline also leaves the pool idle during serial tile write-back and frame zeroing, spends three power-function calls per pixel quantizing the byte resample, and runs every pass below one megapixel serially regardless of its actual cost; the core's unit tests, meanwhile, share one static render context again, the same shape of process-global state the render context was built to remove. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md.",
+  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction. The domain unification left a 23-item PixelDomain trait with about ten one-sided items, three separate copies of the resample read-rectangle and two of spatial-entry orchestration in the frame drivers, and a one-megapixel parallel threshold declared five times across two crates. The pipeline also leaves the pool idle during serial tile write-back and frame zeroing, spends three power-function calls per pixel quantizing the byte resample, and runs every pass below one megapixel serially regardless of its actual cost; the core's unit tests, meanwhile, share one static render context again, the same shape of process-global state the render context was built to remove. Every task keeps renders and samples byte-identical and measures its effect before claiming it; the owner's decisions and the programme's constraints are recorded in docs/decisions.md and docs/design/post-consolidation.md. The viewport design and accepted softness/histogram tradeoff are documented; that design task is blocked only on the proposed clipping answer, with implementation still separate.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -666,7 +666,8 @@
         "Wave 3, speed. This measurement is ordered before the masking group's own paint-latency work, so that work can attribute its figures correctly.",
         "Every preview job renders its full-resolution exact phase, and a drafted job also asks for .analyse() (crates/luxforge-app/src/app/tasks.rs, draft_set_now), after its proxy frame (crates/luxforge-core/src/preview/worker.rs). Under a paced stroke or drag that phase is always superseded before it is used, and the next position's job does not start until the superseded one notices, at its next chunk boundary. Recorded preview request-to-worker-start is 6.6/18.2 ms (p50/p95, docs/specs/performance.md, 'Bare recipe at photo size').",
         "The release's commit refresh already renders the exact frame and histogram once the gesture stops, so withholding the drafted exact phase at Fit loses nothing a released frame does not already provide.",
-        "Proposal: run editor-latency --mode paint and --mode drag with the drafted job's exact phase withheld at Fit and compare against current behaviour. If it closes the tail, add a job flag that defers a drafted job's exact phase, and its histogram, at Fit until the gesture is idle, tested at the preview queue; update the performance rules' known-costs table with the result either way."
+        "Proposal: run editor-latency --mode paint and --mode drag with the drafted job's exact phase withheld at Fit and compare against current behaviour. If it closes the tail, add a job flag that defers a drafted job's exact phase, and its histogram, at Fit until the gesture is idle, tested at the preview queue; update the performance rules' known-costs table with the result either way.",
+        "The shared pause policy also serves viewport refinement: latest accepted input drained, no pending input, draft round trip or commit, then a measured quiet interval without gesture or view motion. The interval is not specified today; this experiment defines it once. Release bypasses the interval after draining its final input, resumed motion supersedes refinement, and settled idle leaves no timer armed. Do not introduce a separate viewport timeout."
       ],
       "context_links": [
         {
@@ -700,18 +701,27 @@
           "target": "docs/engineering/performance-rules.md",
           "relevance": "The row this task's measured result updates.",
           "locator": "Known remaining costs"
+        },
+        {
+          "kind": "file",
+          "label": "Shared preview phase and pause policy",
+          "target": "docs/design/instant-preview.md",
+          "locator": "Phase order, cancellation and pause",
+          "relevance": "The proposed common idle definition and per-phase token contract; viewport implementation remains a separate change."
         }
       ],
       "acceptance_criteria": [
         "The measurement, with and without withholding the drafted exact phase at Fit, is recorded in docs/specs/performance.md with host, load and sample count.",
         "If adopted: a job flag defers a drafted job's exact phase and histogram at Fit until the gesture is idle, and the preview queue's tests cover a superseded drafted job that never renders its exact phase while the gesture continues.",
         "Renders and samples stay byte-identical on both pixel domains; only when the exact phase runs changes.",
-        "The known-costs row in docs/engineering/performance-rules.md is updated to the measured outcome, whichever way the decision goes."
+        "The known-costs row in docs/engineering/performance-rules.md is updated to the measured outcome, whichever way the decision goes.",
+        "The experiment records the common gesture-idle event and measured quiet interval, with pending-input, round-trip, resume and release behavior; any adopted policy is reused by viewport refinement and leaves no timer armed after settlement."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
           "Run editor-latency --mode paint and --mode drag at 24 MP and 60 MP with the drafted exact phase withheld at Fit, and compare against today's behaviour.",
+          "Define and measure the shared gesture-idle policy, including a held gesture that pauses, resumes, and releases while a draft round trip or preview is pending.",
           "If it closes the tail, add a job flag that defers the exact phase and histogram until the gesture is idle, and test it at the preview queue.",
           "Update the performance rules' known-costs row with the outcome."
         ],
@@ -729,13 +739,13 @@
     {
       "id": "TASK-011",
       "description": "Design viewport-tile rendering for a 100% drag from the window-rectangle walk that already exists, correct the documented blocker, and bring the histogram-during-drag question to the owner.",
-      "status": "ready",
+      "status": "blocked",
       "dependencies": [],
       "extra_context": [
-        "Wave 3, speed. This is a design task: it produces a design section and an owner answer, not the viewport-tile implementation itself.",
-        "docs/engineering/performance-rules.md's known-costs table and docs/design/instant-preview.md both say viewport tiles need 'the inverse of the geometry tail over a rectangle, which the crop contract does not define yet'. WindowPlan::of / apply (render/window.rs) already walk a needed rectangle back through exact geometry, a resample and a spatial boundary to a source rectangle, for the proxy window; that is exactly the missing piece, already built and tested.",
-        "A 100% drag today renders the whole exact frame per input: about 200-300 ms at 60 MP with a full Basic layer, against about 25 ms for a 2880x1800 viewport (5.2 MP).",
-        "Remaining design work: WindowPlan::of_rect starting from the viewport instead of the whole output; a coordinate origin for a finish unit in a cut segment (masks already map through the suffix; a finish unit is handed frame coordinates today); a source-rectangle view (free for RAW's LinearImage::with_view, a parallel copy or an origin offset for the byte path); and the owner's answer on what the histogram and clipping overlay show mid-drag, recommended as keeping them marked updating during the drag, as they already are between a proxy frame and its exact phase, since the full exact frame still renders on release."
+        "Wave 3, speed. The design section, both corrected viewport-blocker references and the owner's histogram/temporary-softness answer are recorded. Blocked only on the owner's answer to the proposed viewport clipping policy. This task is design and an owner decision, not viewport implementation.",
+        "docs/design/instant-preview.md covers the output-rectangle walk, finish-unit origins, both source domains, uncut mask/coordinate evaluation, phase tokens, shared-slot admission, pause semantics, region/full texture separation, stale-texel hiding, residency bounds, estimate namespaces and named fallbacks. WindowPlan::of / apply already provide the inverse rectangle walk; the documents no longer describe it as missing.",
+        "docs/decisions.md records acceptance of temporary softness at 100% during motion, full detail restored on pause/release, and the histogram marked updating meanwhile. The proposed remaining answer extends overlay_source: clipping follows the displayed region, stays approximate until exact region pixels arrive, uses a viewport-bounded OR grid with the existing per-side cap, and never substitutes region counts for whole-image counts. Open quality/error choices are tracked as product questions in docs/decisions.md; they do not reopen the accepted interaction priority.",
+        "The recorded 60 MP full Basic plus geometry core diagnostic is 182.5/188.9 ms p50/p95; a 2880x1800 region is 5.184 MP. There is no measured viewport render or presentation result, so the pixel-count ratio is not a speedup claim. See docs/research/interactive-adjustments.md for scope and the proposed qualification matrix."
       ],
       "context_links": [
         {
@@ -755,7 +765,7 @@
           "kind": "file",
           "label": "Viewport tiles at 100%",
           "target": "docs/design/instant-preview.md",
-          "relevance": "The stated blocker this task corrects and the design section it adds to."
+          "relevance": "The completed proposal and explicit remaining owner clipping decision; all numerical/resource choices remain proposals until qualified."
         },
         {
           "kind": "file",
@@ -763,6 +773,26 @@
           "target": "docs/engineering/performance-rules.md",
           "relevance": "The 100% drag row this task's design addresses.",
           "locator": "Known remaining costs"
+        },
+        {
+          "kind": "file",
+          "label": "Accepted interaction tradeoff",
+          "target": "docs/decisions.md",
+          "locator": "Interactive previews at 100%",
+          "relevance": "Temporary softness and an updating histogram are accepted; clipping is still a proposal."
+        },
+        {
+          "kind": "file",
+          "label": "Current clipping source selection",
+          "target": "crates/luxforge-app/src/app/overlay.rs",
+          "locator": "overlay_source",
+          "relevance": "The existing displayed-frame rule that the proposed viewport overlay extends."
+        },
+        {
+          "kind": "file",
+          "label": "Research and qualification scope",
+          "target": "docs/research/interactive-adjustments.md",
+          "relevance": "Separates source evidence, code findings, historical timings and unmeasured viewport/cache/GPU proposals."
         }
       ],
       "acceptance_criteria": [
@@ -774,9 +804,9 @@
       "test_strategy": {
         "approach": "inspection",
         "steps": [
-          "Read WindowPlan::of / apply against the viewport case and write the design section covering of_rect, the finish-unit origin and the source-rectangle view.",
-          "Correct the known-costs row and the instant-preview.md line that call the inverse-geometry-tail piece missing.",
-          "Bring the histogram-during-drag question to the owner and record the answer."
+          "Review the recorded viewport design against WindowPlan, latest-job cancellation/admission, photo-surface residency and the overlay source contract.",
+          "Check the corrected geometry references, accepted histogram answer and local Markdown anchors; cargo xtask check validates file paths but not anchors.",
+          "Present the remaining clipping recommendation to the owner and record the answer in docs/decisions.md and the proposal before marking this task complete."
         ],
         "commands": [
           "cargo xtask check"
