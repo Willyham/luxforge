@@ -102,6 +102,8 @@ fn identity(inputs: &Inputs<'_>) -> Option<String> {
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
     let editable = inputs.state.is_some() && inputs.session.preview.can_edit() && !inputs.busy;
+    // An open draft refuses Undo and Redo, so neither is offered while it is.
+    let navigable = editable && inputs.history_refusal.is_none();
     let zoom = &inputs.session.preview.view.zoom;
     TitleBarModel {
         developer: inputs.developer,
@@ -131,11 +133,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         can_open: inputs.can_open,
         // The core answers an undo with no parent entry, or a redo with nothing undone, as a no-op,
         // so neither is offered then.
-        can_undo: editable
+        can_undo: navigable
             && inputs
                 .state
                 .is_some_and(|state| state.current_entry.undo_parent.is_some()),
-        can_redo: editable && inputs.state.is_some_and(|state| !state.redo.is_empty()),
+        can_redo: navigable && inputs.state.is_some_and(|state| !state.redo.is_empty()),
         state_panel_open: inputs.session.workspace.state_panel,
         tools_panel_open: inputs.session.workspace.tools_panel,
         compare_held: inputs.compare_held,

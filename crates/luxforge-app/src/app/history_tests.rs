@@ -1,12 +1,14 @@
-//! History selection and compare: a selection of the current entry returns to current, and compare
-//! restores the selection it replaced.
+//! History selection, compare and navigation: a selection of the current entry returns to current,
+//! compare restores the selection it replaced, and an open draft refuses Undo, Redo and Restore.
 use super::{
-    message::{CropMessage, HistoryMessage},
+    message::{ControlMessage, CropMessage, HistoryMessage, SyncMessage},
     tasks::Upload,
-    testing::{entry, finish, opened},
+    testing::{
+        begun, boot, descriptors, entry, finish, open_crop, opened, patch_control, refresh_for,
+    },
     *,
 };
-use luxforge_core::{CropStage, HistoryRow};
+use luxforge_core::{AssetId, CropStage, HistoryRow};
 
 #[test]
 fn compare_remembers_the_selection_it_replaced() {
@@ -152,5 +154,121 @@ fn a_historical_preview_names_the_entry_and_keeps_the_panels_visible() {
         .expect("the crop section");
     assert!(!section.enabled && section.reset.is_some());
     let _ = std::hint::black_box(&entry_id);
+    finish(editor, catalog);
+}
+
+/// An editor on a photograph whose current entry has an entry to undo to and one to redo, with
+/// every built-in module, so a slider and the crop can each open a draft on it.
+fn navigable() -> (Editor, std::path::PathBuf, AssetId, luxforge_core::EntryId) {
+    let (mut editor, catalog) = boot();
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    let asset = AssetId::new();
+    let original = entry(&asset, 0, None);
+    let current = entry(&asset, 1, Some(&original.id));
+    let mut refresh = refresh_for(
+        &asset,
+        &current,
+        vec![current.clone(), original.clone()],
+        &[&current, &original],
+        false,
+    );
+    refresh.state.redo.push(luxforge_core::EntryId::new());
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
+    assert!(editor.workspace.title.can_undo && editor.workspace.title.can_redo);
+    (editor, catalog, asset, original.id)
+}
+
+/// Undo, Redo and Restore, each by the message every route to it sends — the title bar, Cmd+Z,
+/// the palette and the panel's Restore — are refused with `reason` and send nothing, and the title
+/// bar offers neither Undo nor Redo. Restore is tried from a historical preview of `entry`.
+pub(super) fn history_refused(editor: &mut Editor, entry: &luxforge_core::EntryId, reason: &str) {
+    assert!(
+        !editor.workspace.title.can_undo && !editor.workspace.title.can_redo,
+        "the title bar offers neither Undo nor Redo during a draft"
+    );
+    let held = editor.gesture.clone().map(|gesture| format!("{gesture:?}"));
+    let revision = editor.state.as_ref().map(|state| state.revision);
+    let selection = editor.session.preview.selection.clone();
+    for (name, message) in [
+        ("undo", HistoryMessage::Undo),
+        ("redo", HistoryMessage::Redo),
+        ("restore", HistoryMessage::Restore),
+    ] {
+        if name == "restore" {
+            editor.session.preview.selection = HistorySelection::Entry(entry.clone());
+        }
+        editor.status.clear();
+        assert!(!editor.busy, "{name}: nothing in flight before it");
+        let _ = editor.update(Message::History(message));
+        assert!(!editor.busy, "{name}: nothing was sent");
+        assert_eq!(editor.status, reason, "{name}");
+        assert_eq!(
+            editor.gesture.clone().map(|gesture| format!("{gesture:?}")),
+            held,
+            "{name}: the draft is untouched"
+        );
+        assert_eq!(editor.state.as_ref().map(|state| state.revision), revision);
+    }
+    editor.session.preview.selection = selection;
+}
+
+/// Undo, Redo and Restore commit at once, so an open slider draft refuses them as it refuses every
+/// other discrete commit; once the draft is gone they go out as before.
+#[test]
+fn history_navigation_is_refused_while_a_slider_draft_is_open() {
+    let (mut editor, catalog, asset, original) = navigable();
+    let (action, parameter) = patch_control(&editor);
+    let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
+        action: action.clone(),
+        parameter: parameter.clone(),
+        value: 25.0,
+    }));
+    begun(&mut editor, &asset, &action, 1);
+    assert!(editor.slider_gesture().is_some());
+    history_refused(
+        &mut editor,
+        &original,
+        "Finish or discard the slider draft before undoing, redoing or restoring",
+    );
+
+    editor.gesture = None;
+    editor.rederive();
+    assert!(editor.workspace.title.can_undo && editor.workspace.title.can_redo);
+    let _ = editor.update(Message::History(HistoryMessage::Undo));
+    assert!(
+        editor.busy,
+        "with no draft Undo goes out: {}",
+        editor.status
+    );
+    finish(editor, catalog);
+}
+
+/// The same for a crop draft; once it is cancelled, Redo goes out as before.
+#[test]
+fn history_navigation_is_refused_while_a_crop_draft_is_open() {
+    let (mut editor, catalog, _, original) = navigable();
+    let _ = editor.update(Message::Crop(CropMessage::Start));
+    open_crop(
+        &mut editor,
+        CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        },
+    );
+    assert!(editor.crop().is_some());
+    history_refused(
+        &mut editor,
+        &original,
+        "Apply or Cancel the crop draft before undoing, redoing or restoring",
+    );
+
+    let _ = editor.update(Message::Crop(CropMessage::Cancel));
+    let _ = editor.update(Message::History(HistoryMessage::Redo));
+    assert!(
+        editor.busy,
+        "with no draft Redo goes out: {}",
+        editor.status
+    );
     finish(editor, catalog);
 }
