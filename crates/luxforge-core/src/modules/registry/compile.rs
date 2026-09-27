@@ -468,25 +468,23 @@ impl ModuleRegistry {
         Ok(Compiled { segments })
     }
 
-    /// The stage each layer of `recipe` receives, in stack order: the source's extents for the
-    /// first layer and, for every later one, the output of the layers before it. It is the stage
-    /// [`crate::StageQuestions::stage_before`] answers for that index, folded once over the stack
-    /// by the rule [`Self::compile`] folds it with: each layer compiled against the stage it
-    /// receives ([`Self::compile_layer`]) and its declared output checked and taken
-    /// ([`Self::output_stage`]).
+    /// The stage each layer of `recipe` receives, in stack order, followed by the stack's output:
+    /// the source's extents for the first layer and, for every later one and for the output, the
+    /// output of the layers before it. Index `i` is the stage
+    /// [`crate::StageQuestions::stage_before`] answers for `i`, folded once over the stack by the
+    /// rule [`Self::compile`] folds it with: each layer compiled against the stage it receives
+    /// ([`Self::compile_layer`]) and its declared output checked and taken
+    /// ([`Self::output_stage`]). Index `layers.len()` is what a layer appended to the stack would
+    /// receive.
     ///
     /// The fold stops after the first layer whose output it cannot know (no available provider, a
     /// payload its provider refuses, or a declared output the host refuses) and reports that
-    /// layer's own input, so the answer is a prefix of the stack and never a guess. `O(layers)`
-    /// payload compiles, as a write's admission compiles them; it compiles no mask, plans no
-    /// spatial tile and reads no pixel.
-    pub fn input_stages(
-        &self,
-        source_width: u32,
-        source_height: u32,
-        recipe: &Recipe,
-    ) -> Vec<Stage> {
-        let mut stages = Vec::with_capacity(recipe.layers.len());
+    /// layer's own input, so the answer is a prefix of the stack and never a guess: it holds
+    /// `layers.len() + 1` stages only when every layer's output is known. `O(layers)` payload
+    /// compiles, as a write's admission compiles them; it compiles no mask, plans no spatial tile
+    /// and reads no pixel.
+    pub fn stages(&self, source_width: u32, source_height: u32, recipe: &Recipe) -> Vec<Stage> {
+        let mut stages = Vec::with_capacity(recipe.layers.len() + 1);
         let mut stage = Stage {
             width: source_width,
             height: source_height,
@@ -494,16 +492,17 @@ impl ModuleRegistry {
         for layer in &recipe.layers {
             stages.push(stage);
             let Some(module) = self.provider(&layer.effect_id) else {
-                break;
+                return stages;
             };
             match self
                 .compile_layer(module, layer, stage, &recipe.artifacts)
                 .and_then(|processing| Self::output_stage(&processing, stage))
             {
                 Ok(output) => stage = output,
-                Err(_) => break,
+                Err(_) => return stages,
             }
         }
+        stages.push(stage);
         stages
     }
 

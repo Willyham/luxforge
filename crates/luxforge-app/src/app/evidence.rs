@@ -282,7 +282,8 @@ enum GeneratedKind {
 /// the ordinary `render_ready` outcome instead, which is the same correlation an `--open` uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Settle {
-    /// The crop layer's truncated preview must reach the GPU and open the draft.
+    /// The crop layer's truncated preview must reach the GPU under the open frame, and a Reapply's
+    /// rebase must have answered.
     Draft,
     /// One session round trip, for a view or workspace change.
     Session,
@@ -1413,7 +1414,8 @@ impl Editor {
     }
 
     /// One crop-draft change through its own message, captured on the next rendered frame. Opening a
-    /// draft waits for the truncated preview; Apply is a mutation and waits for its pixels.
+    /// draft waits for its input stage under the frame; Apply is a mutation and waits for its
+    /// pixels. Apply, Cancel and Reapply are the one draft lifecycle's own messages.
     fn draft_step(&mut self, step: DraftStep) -> Task<Message> {
         let drafting = self.crop().is_some();
         let message = match &step {
@@ -1426,27 +1428,32 @@ impl Editor {
                     });
                 }
                 self.await_step(Settle::Draft);
-                let task = self.crop_update(if matches!(step, DraftStep::Start) {
-                    CropMessage::Start
+                let task = if matches!(step, DraftStep::Start) {
+                    self.crop_update(CropMessage::Start)
                 } else {
-                    CropMessage::Reapply
-                });
-                // A refused start never reaches the draft, so the step would wait for a frame that
-                // nothing arms; the preview request is the only thing that can settle it.
-                if self.crop_pending().is_none() {
-                    return self.fail_step("the draft could not be prepared");
+                    self.draft_message(DraftMessage::Reapply)
+                };
+                // A refused start or reapply asks for no stage, so the step would wait for a frame
+                // that nothing arms; the stage's request is the only thing that can settle it.
+                if !matches!(
+                    self.crop_stage(),
+                    Some(crate::app::crop::StageView::Rendering { .. })
+                ) {
+                    let reason = format!("the draft could not be prepared: {}", self.status);
+                    return Task::batch([task, self.fail_step(reason)]);
                 }
                 return task;
             }
             // The committed pixels are the evidence, as they are for a slider's release.
             DraftStep::Apply => {
-                return match self.crop_apply() {
-                    Ok(task) => {
-                        self.await_step(Settle::Preview);
-                        task
-                    }
-                    Err(reason) => self.fail_step(reason),
-                };
+                if self.crop().is_none() {
+                    return self.fail_step("No crop draft is open");
+                }
+                if let Some(reason) = self.release_refusal() {
+                    return self.fail_step(reason);
+                }
+                self.await_step(Settle::Preview);
+                return self.draft_message(DraftMessage::Commit);
             }
             DraftStep::Rect(rect) => return self.rect_step(*rect),
             DraftStep::AngleRail(fractions) => {
@@ -1473,7 +1480,22 @@ impl Editor {
             DraftStep::Nudge(value) => CropMessage::NudgeAngle(*value),
             DraftStep::Swap => CropMessage::Swap,
             DraftStep::Lock => CropMessage::Lock,
-            DraftStep::Cancel => CropMessage::Cancel,
+            // Ending the draft returns the session to the pointer through one `workspace.set`,
+            // which answers on a later turn. The frame waits for that answer when the mode is about
+            // to change, so the recorded mode is the one the captured frame shows.
+            DraftStep::Cancel => {
+                if !drafting {
+                    return self.fail_step("no crop draft is open");
+                }
+                let leaves_mode = self.session.workspace.mode != luxforge_core::POINTER_MODE;
+                let task = self.draft_message(DraftMessage::Cancel);
+                if leaves_mode {
+                    self.await_step(Settle::Session);
+                } else {
+                    self.capture_next_frame();
+                }
+                return task;
+            }
             DraftStep::Preset(option) => {
                 let Some(index) = crop_frame(&self.modules)
                     .map(|frame| frame.presets())
@@ -1508,35 +1530,26 @@ impl Editor {
         if !drafting && !modifier {
             return self.fail_step("no crop draft is open");
         }
-        // Ending the draft returns the session to the pointer through one `workspace.set`, which
-        // answers on a later turn. The frame waits for that answer when the mode is about to
-        // change, so the recorded mode is the one the captured frame shows.
-        let leaves_mode = matches!(step, DraftStep::Cancel)
-            && self.session.workspace.mode != luxforge_core::POINTER_MODE;
         // Setting the angle text does not change the draft; submitting it does, exactly as Enter in
         // the field does.
         let mut tasks = vec![self.crop_update(message)];
         if matches!(step, DraftStep::Angle(_)) {
             tasks.push(self.crop_update(CropMessage::SubmitAngle));
         }
-        if leaves_mode {
-            self.await_step(Settle::Session);
-        } else {
-            self.capture_next_frame();
-        }
+        self.capture_next_frame();
         Task::batch(tasks)
     }
 
     /// One change from the idle crop section: the same messages its control sends, which open the
-    /// draft seeded from the committed crop and apply the change once the draft's input stage has
-    /// arrived. The frame is the opened draft, so the step waits for it as a start does.
+    /// draft seeded from the committed crop and apply the change to it at once. The frame is the
+    /// opened draft over its input stage, so the step waits for that stage as a start does.
     fn idle_step(&mut self, messages: Vec<CropMessage>) -> Task<Message> {
         self.await_step(Settle::Draft);
         let tasks: Vec<Task<Message>> = messages
             .into_iter()
             .map(|message| self.crop_update(message))
             .collect();
-        if self.crop_pending().is_none() {
+        if self.crop().is_none() {
             return self.fail_step("the idle change could not open a draft");
         }
         Task::batch(tasks)
@@ -3142,7 +3155,6 @@ mod tests {
     use super::*;
     use crate::app::message::SyncMessage;
     use crate::app::testing::{evidence, finish, scripted};
-    use luxforge_core::CropStage;
 
     #[test]
     fn clipping_capture_requires_the_current_overlay_in_the_gpu_draw() {
@@ -3443,16 +3455,13 @@ mod tests {
         let (mut editor, catalog, _, _) = scripted(
             r#"[{"draft":{"start":true}},{"draft":{"rect":[20,10,200,150]}},{"draft":{"angle":9.0}},{"draft":{"preset":"1:1"}},{"draft":{"cancel":true}}]"#,
         );
-        // Start waits for the truncated preview; nothing is captured until the draft opens.
+        // Start opens the frame at once and waits for its input stage; nothing is captured until
+        // the stage is under the frame.
         let _ = editor.next_step();
+        assert!(editor.crop().is_some());
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Draft));
         assert!(!evidence(&editor).capture_pending);
-        editor.open_draft(CropStage {
-            width: 480,
-            height: 320,
-            angle: 0.0,
-        });
-        assert!(editor.crop().is_some());
+        crate::app::testing::open_crop(&mut editor);
         assert_eq!(evidence(&editor).awaiting, None);
         assert!(evidence(&editor).capture_pending);
 
@@ -3621,22 +3630,19 @@ mod tests {
         let record = evidence(&editor).current.clone().expect("a step record");
         assert_eq!(record["status"], json!("sent"), "{record}");
         assert_eq!(evidence(&editor).awaiting, Some(Settle::Draft));
-        assert!(!evidence(&editor).capture_pending, "nothing is drafted yet");
-        let pending = editor.crop_pending().expect("a starting draft");
-        assert!(
-            matches!(pending.queued.as_slice(), [CropMessage::Preset(_)]),
-            "{:?}",
-            pending.queued
+        assert_eq!(
+            editor.crop().expect("the change opened a draft").preset,
+            "16:9",
+            "the change applied at once"
         );
-        editor.open_draft(luxforge_core::CropStage {
-            width: 480,
-            height: 320,
-            angle: 0.0,
-        });
-        assert_eq!(editor.crop().expect("a draft").preset, "16:9");
+        assert!(
+            !evidence(&editor).capture_pending,
+            "nothing is captured before the stage"
+        );
+        crate::app::testing::open_crop(&mut editor);
         assert!(
             evidence(&editor).capture_pending,
-            "the opened draft settles the step"
+            "the stage under the changed frame settles the step"
         );
         finish(editor, catalog);
     }

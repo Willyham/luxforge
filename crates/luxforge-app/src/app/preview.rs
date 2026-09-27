@@ -11,9 +11,7 @@ use super::{
 };
 use crate::{state, state::histogram::Analysis, view};
 use iced::Task;
-use luxforge_core::{
-    CropStage, PhaseOutcome, PreviewIntent, PreviewPhase, ProxyBounds, Region, Zoom,
-};
+use luxforge_core::{PhaseOutcome, PreviewIntent, PreviewPhase, ProxyBounds, Region, Zoom};
 use serde_json::json;
 use std::{
     sync::Arc,
@@ -241,8 +239,7 @@ impl Editor {
                                     .draft
                                     .as_ref()
                                     .map(|draft| draft.draft_revision)
-                            || self.crop().is_some()
-                            || self.crop_pending().is_some()
+                            || self.crop_gesture().is_some()
                             || self
                                 .core_gesture()
                                 .is_some_and(|gesture| !gesture.draft.drained())
@@ -367,11 +364,7 @@ impl Editor {
     /// Admit a view-only pan only after gesture and crop-owned requests drain. The local scroll
     /// offset is already updated; a delayed owner pan reply never chooses the rectangle.
     pub(super) fn reconcile_view(&mut self) -> Task<Message> {
-        if !self.desired_view_dirty
-            || self.view_plan_in_flight
-            || self.crop().is_some()
-            || self.crop_pending().is_some()
-        {
+        if !self.desired_view_dirty || self.view_plan_in_flight || self.crop_gesture().is_some() {
             return Task::none();
         }
         if self
@@ -434,8 +427,7 @@ impl Editor {
             || self.view_plan_in_flight
             || self.desired_view_dirty
             || self.preview_queue.is_busy()
-            || self.crop().is_some()
-            || self.crop_pending().is_some()
+            || self.crop_gesture().is_some()
             || self
                 .core_gesture()
                 .is_some_and(|gesture| !gesture.draft.drained())
@@ -762,16 +754,12 @@ impl Editor {
                 }
                 if for_draft {
                     // The crop layer's input stage is shown in place of the photograph from
-                    // the render's own buffer, and the draft opens on it in this same update:
-                    // nothing is uploaded through the runtime, so nothing waits for it.
+                    // the render's own buffer, and the open frame is drawn over it in this same
+                    // update: nothing is uploaded through the runtime, so nothing waits for it.
                     if self.presenter.show_stage(&raster) {
-                        self.open_draft(CropStage {
-                            width: raster.width,
-                            height: raster.height,
-                            angle: 0.0,
-                        });
+                        self.crop_stage_shown();
                     } else {
-                        self.drop_crop_stage();
+                        self.crop_stage_lost();
                         self.status = "Could not show the crop's input stage".into();
                         self.settle_step(Settle::Draft);
                     }
@@ -1245,8 +1233,8 @@ impl Editor {
 
     /// The crop layer's input stage was superseded before it rendered: a newer preview request
     /// stopped its job or replaced it in the pending slot, or the stack changed while the owner was
-    /// planning it (`generation` is then `None`). No frame will come, so the draft it was for ends
-    /// as a failed one does.
+    /// planning it (`generation` is then `None`). No frame will come, so the start it was for ends
+    /// as a failed one does, and a reapply keeps its draft.
     ///
     /// It is never re-requested and never shielded from the request that superseded it. Every such
     /// request but a view change comes from a change to the stack or the selection the job was
@@ -1255,10 +1243,10 @@ impl Editor {
     /// not even be marked conflicted. Shielding it would hold the newer state's frame behind the
     /// whole input-stage render, and requesting it again would stop that frame in turn.
     pub(crate) fn draft_preview_superseded(&mut self, generation: Option<u64>) {
-        let Some(pending) = self.crop_pending() else {
+        let Some(crate::app::crop::StageView::Rendering { reapply, .. }) = self.crop_stage() else {
             return;
         };
-        let again = if pending.reapply { "reapply" } else { "start" };
+        let again = if reapply { "reapply" } else { "start" };
         self.end_pending_draft(
             format!(
                 "The crop's input stage was superseded by a newer preview: {again} the crop again"
@@ -1269,11 +1257,11 @@ impl Editor {
         );
     }
 
-    /// A starting or reapplied draft whose input stage will not arrive ends here, explicitly,
-    /// rather than waiting for pixels: a start returns to the pointer mode, a reapply keeps the
-    /// draft it was rebasing, still conflicted. The photograph on screen is the current state and
-    /// stays. The reason reaches the status bar and the log, and a scripted step waiting for the
-    /// draft ends on it.
+    /// A starting or reapplied draft whose input stage will not arrive ends its wait here,
+    /// explicitly, rather than waiting for pixels: a start is discarded and returns to the pointer
+    /// mode, a reapply keeps the draft it rebased. The photograph on screen is the current state
+    /// and stays. The reason reaches the status bar and the log, and a scripted step waiting for
+    /// the draft ends on it.
     pub(super) fn end_pending_draft(
         &mut self,
         status: String,
@@ -1281,7 +1269,7 @@ impl Editor {
         detail: &str,
         generation: Option<u64>,
     ) {
-        let reapply = self.drop_crop_stage();
+        let reapply = self.crop_stage_lost();
         self.status = status;
         self.event(
             "crop_draft_failed",

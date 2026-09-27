@@ -528,6 +528,7 @@ fn fields_are_seeded_from_the_displayed_entrys_values() {
                 artifacts: Vec::new(),
                 neutral: false,
                 input_stage: None,
+                input_orientation: None,
             })
             .collect();
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
@@ -845,6 +846,7 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
             artifacts: Vec::new(),
             neutral: false,
             input_stage: None,
+            input_orientation: None,
         }];
         Box::new(refresh)
     };

@@ -35,11 +35,6 @@ fn copy_as_json_request_writes_what_the_control_would_send() {
 fn copy_as_json_request_for_the_open_crop_draft_matches_its_own_apply() {
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 6);
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    editor.open_draft(luxforge_core::CropStage {
-        width: 480,
-        height: 320,
-        angle: 0.0,
-    });
     let (method, request) = editor
         .crop_copy_request()
         .expect("a request")

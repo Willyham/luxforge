@@ -1,7 +1,7 @@
 //! The slider gesture of a generated control, driven through the one core draft: what a drag, a
 //! release, a double-click reset and Escape send, and every race a draft closes.
 use super::{
-    message::{ControlMessage, CropMessage, HistoryMessage, SyncMessage},
+    message::{ControlMessage, CropMessage, DraftMessage, HistoryMessage, SyncMessage},
     tasks::mutation,
     testing::{
         Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, begun, boot, descriptors, draft_events, drafting,
@@ -11,7 +11,7 @@ use super::{
     *,
 };
 use crate::state::fields;
-use luxforge_core::{AssetId, CropStage, RawPayload, WhiteBalanceMode};
+use luxforge_core::{AssetId, RawPayload, WhiteBalanceMode};
 use serde_json::Map;
 
 #[test]
@@ -1139,14 +1139,7 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
 
     // A gesture while the crop draft is open.
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    crate::app::testing::open_crop(
-        &mut editor,
-        CropStage {
-            width: 480,
-            height: 320,
-            angle: 0.0,
-        },
-    );
+    crate::app::testing::open_crop(&mut editor);
     let _ = editor.update(Message::Control(ControlMessage::SliderMoved {
         action: action.clone(),
         parameter: parameter.clone(),
@@ -1154,7 +1147,7 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
     }));
     assert!(editor.slider_gesture().is_none(), "{}", editor.status);
     assert!(editor.status.contains("crop draft"), "{}", editor.status);
-    let _ = editor.update(Message::Crop(CropMessage::Cancel));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     crate::app::testing::answer_cancel(&mut editor);
 
     // The crop mode and Compare while a gesture is open.
@@ -1167,7 +1160,7 @@ fn one_draft_at_a_time_is_refused_from_either_side() {
     begun(&mut editor, &asset, "unused", 4);
     assert!(editor.slider_gesture().is_some());
     let _ = editor.update(Message::View(ViewMessage::SetMode(crop)));
-    assert!(editor.crop().is_none() && editor.crop_pending().is_none());
+    assert!(editor.crop_gesture().is_none());
     assert!(editor.status.contains("slider draft"), "{}", editor.status);
     editor.original_entry = Some(entry(&asset, 0, None).id);
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));

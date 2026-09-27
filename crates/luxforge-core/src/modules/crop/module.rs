@@ -56,6 +56,43 @@ const PRESETS: [(&str, f64); 4] = [
 const MIN_ASPECT_SIDE: f64 = 0.001;
 const MAX_ASPECT_SIDE: f64 = 100_000.0;
 
+/// What one option of `crop-fit`'s `aspect` enum names. The vocabulary is spelled here once, for
+/// the module's own planning and for a client that offers the declared options as ratio presets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CropAspect {
+    /// No ratio of its own. `crop-fit` keeps the ratio it finds — the existing crop's output ratio,
+    /// or the input stage's without one — and a frame editor offering the options as a ratio lock
+    /// reads it as the lock open.
+    Free,
+    /// The crop layer's input stage ratio, which already reflects preceding quarter turns.
+    Original,
+    /// `aspect-width` over `aspect-height`, given beside it.
+    Custom,
+    /// One named `W:H` preset, as width over height.
+    Ratio(f64),
+}
+
+impl CropAspect {
+    /// The option that names no ratio: what a frame editor shows chosen while its ratio is free.
+    pub const FREE: &'static str = FREE;
+    /// The option whose ratio is given beside it: what a frame editor shows chosen once it locks a
+    /// ratio no named option has.
+    pub const CUSTOM: &'static str = CUSTOM;
+
+    /// What a declared `aspect` option names, or `None` for one this module does not declare.
+    pub fn parse(option: &str) -> Option<Self> {
+        match option {
+            FREE => Some(Self::Free),
+            ORIGINAL => Some(Self::Original),
+            CUSTOM => Some(Self::Custom),
+            name => PRESETS
+                .iter()
+                .find(|(preset, _)| *preset == name)
+                .map(|(_, ratio)| Self::Ratio(*ratio)),
+        }
+    }
+}
+
 fn aspect_options() -> Vec<String> {
     let mut options = vec![FREE.to_owned(), ORIGINAL.to_owned()];
     options.extend(PRESETS.iter().map(|(name, _)| (*name).to_owned()));
@@ -262,6 +299,7 @@ fn crop_payload(parameters: &Map<String, Value>) -> Result<CropPayload, Error> {
 #[derive(Clone, Debug, PartialEq)]
 struct FitRequest {
     aspect: String,
+    kind: CropAspect,
     custom: Option<(f64, f64)>,
     angle: f64,
     center: Option<(f64, f64)>,
@@ -276,19 +314,15 @@ impl FitRequest {
                 .ok_or_else(|| Error::validation("parameter aspect must be a string"))?
                 .to_owned(),
         };
-        let known = aspect == FREE
-            || aspect == ORIGINAL
-            || aspect == CUSTOM
-            || PRESETS.iter().any(|(name, _)| *name == aspect);
-        if !known {
+        let Some(kind) = CropAspect::parse(&aspect) else {
             return Err(Error::validation(format!(
                 "parameter aspect must be one of {}",
                 aspect_options().join(", ")
             )));
-        }
+        };
         let width = optional_number(parameters, "aspect-width")?;
         let height = optional_number(parameters, "aspect-height")?;
-        let custom = match (aspect == CUSTOM, width, height) {
+        let custom = match (kind == CropAspect::Custom, width, height) {
             (true, Some(width), Some(height)) => Some((
                 bounded("aspect-width", width, MIN_ASPECT_SIDE, MAX_ASPECT_SIDE)?,
                 bounded("aspect-height", height, MIN_ASPECT_SIDE, MAX_ASPECT_SIDE)?,
@@ -328,6 +362,7 @@ impl FitRequest {
         };
         Ok(Self {
             aspect,
+            kind,
             custom,
             angle,
             center,
@@ -353,8 +388,8 @@ impl FitRequest {
     /// Width over height for the committed rectangle.
     fn ratio(&self, input: Stage, existing: Option<&CropPayload>) -> Result<f64, Error> {
         let stage_ratio = f64::from(input.width) / f64::from(input.height);
-        match self.aspect.as_str() {
-            FREE => match existing {
+        match self.kind {
+            CropAspect::Free => match existing {
                 // The existing crop's own output ratio, which its own angle defines.
                 Some(payload) => {
                     let rect = payload.output_rect(&input_stage(input, payload.angle))?;
@@ -362,18 +397,14 @@ impl FitRequest {
                 }
                 None => Ok(stage_ratio),
             },
-            ORIGINAL => Ok(stage_ratio),
-            CUSTOM => {
+            CropAspect::Original => Ok(stage_ratio),
+            CropAspect::Custom => {
                 let (width, height) = self.custom.ok_or_else(|| {
                     Error::validation("aspect custom has no aspect-width and aspect-height")
                 })?;
                 Ok(width / height)
             }
-            name => PRESETS
-                .iter()
-                .find(|(preset, _)| *preset == name)
-                .map(|(_, ratio)| *ratio)
-                .ok_or_else(|| Error::validation(format!("unknown aspect {name}"))),
+            CropAspect::Ratio(ratio) => Ok(ratio),
         }
     }
 }
@@ -869,6 +900,31 @@ mod tests {
                 .detail,
             "unknown action crop-something"
         );
+    }
+
+    /// Every declared `aspect` option names exactly one thing, and nothing else is an option: the
+    /// module plans with these and a client builds its ratio presets from the same reading.
+    #[test]
+    fn every_declared_aspect_option_reads_as_one_aspect() {
+        assert_eq!(
+            aspect_options()
+                .iter()
+                .map(|option| CropAspect::parse(option))
+                .collect::<Vec<_>>(),
+            [
+                Some(CropAspect::Free),
+                Some(CropAspect::Original),
+                Some(CropAspect::Ratio(1.0)),
+                Some(CropAspect::Ratio(1.5)),
+                Some(CropAspect::Ratio(4.0 / 3.0)),
+                Some(CropAspect::Ratio(16.0 / 9.0)),
+                Some(CropAspect::Custom),
+            ]
+        );
+        assert_eq!(CropAspect::parse(CropAspect::FREE), Some(CropAspect::Free));
+        for undeclared in ["wide", "5:4", " 3:2", "0:3", ""] {
+            assert_eq!(CropAspect::parse(undeclared), None, "{undeclared:?}");
+        }
     }
 
     #[test]

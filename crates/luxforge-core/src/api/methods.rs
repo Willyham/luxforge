@@ -240,7 +240,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "recipe.describe",
         RecipeDescribe,
         recipe_describe,
-        "an entry's stored layers in order with their module, title, summary, values, availability, whether each is neutral (changes nothing, by its module's own rule) and input_stage, the {width, height} the layer receives from the layers before it (null after a layer whose output cannot be known); reads and compiles payloads only and renders nothing"
+        "an entry's stored layers in order with their module, title, summary, values, availability, whether each is neutral (changes nothing, by its module's own rule), input_stage, the {width, height} the layer receives from the layers before it (null after a layer whose output cannot be known), and input_orientation, the {mirror, turns} the orientation layers before it gave that stage (null with input_stage); then output_stage and output_orientation, what a layer appended to the stack would receive; reads and compiles payloads only and renders nothing"
     ),
     service!(
         "module.list",

@@ -34,7 +34,7 @@ pub use crop::geometry::{
     BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
     guide_angle, largest_with_ratio_inside,
 };
-pub use crop::{CROP_EFFECT, CropModule};
+pub use crop::{CROP_EFFECT, CropAspect, CropModule};
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
     Control, ControlVariant, CurveBackground, CurveChannel, EffectDescriptor, EffectStage,
@@ -75,6 +75,7 @@ pub use spatial::{
     Parallelism, Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE,
     SpatialOperation, SpatialUnit,
 };
+pub(crate) use transform::stored_orientation;
 pub use transform::{ORIENTATION_EFFECT, TransformModule};
 pub use vignette::{VIGNETTE_EFFECT, VignetteModule};
 

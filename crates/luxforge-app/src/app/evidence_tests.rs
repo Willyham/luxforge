@@ -27,15 +27,15 @@ fn clipping_readiness_applies_only_to_the_ordinary_photo() {
     );
     crate::app::testing::hold_crop(
         &mut editor,
-        Some(crate::crop_draft::CropDraft::neutral(
+        crate::crop_draft::CropDraft::neutral(
             CropStage {
                 width: 4000,
                 height: 3000,
                 angle: 0.0,
             },
             0,
-        )),
-        None,
+        ),
+        crate::app::crop::StageView::Shown,
     );
     assert!(
         editor.capture_clipping_ready(),
@@ -159,15 +159,15 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
 
     crate::app::testing::hold_crop(
         &mut editor,
-        Some(crate::crop_draft::CropDraft::neutral(
+        crate::crop_draft::CropDraft::neutral(
             CropStage {
                 width: 4000,
                 height: 3000,
                 angle: 0.0,
             },
             0,
-        )),
-        None,
+        ),
+        crate::app::crop::StageView::Shown,
     );
     editor.refit_pending = true; // The queued refit was superseded by crop input-stage work.
     assert!(

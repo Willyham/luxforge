@@ -184,8 +184,8 @@ impl Kind {
         }
     }
 
-    /// What the status line calls this gesture.
-    fn noun(&self) -> &'static str {
+    /// What the status line and the Changed elsewhere notice call this gesture.
+    pub(crate) fn noun(&self) -> &'static str {
         match self {
             Self::Slider(_) => "slider draft",
             Self::Mask(_) => "mask gesture",
@@ -210,11 +210,7 @@ impl Kind {
         match self {
             Self::Slider(_) => {}
             Self::Mask(mask) => mask.shape.interrupt(),
-            Self::Crop(crop) => {
-                if let Some(frame) = &mut crop.frame {
-                    frame.interrupt();
-                }
-            }
+            Self::Crop(crop) => crop.frame.interrupt(),
         }
     }
 }
@@ -452,23 +448,46 @@ impl Editor {
         self.run(step)
     }
 
-    /// Why the open gesture cannot be committed now, in the words the status bar uses.
+    /// Why the open gesture cannot be committed now, in the words the status bar uses: the one
+    /// refusal behind a pointer release, Enter, a script's commit and every Apply button, which
+    /// reads it through the view model ([`crate::state::Inputs::apply_refusal`]), so a button never
+    /// reads enabled while the request would be refused. Every kind answers the same rules — a
+    /// brush that has painted nothing, a conflicted draft, a historical preview on screen, another
+    /// request in flight — and the crop adds only its own: a frame that commits no valid output.
     pub(crate) fn release_refusal(&self) -> Option<String> {
-        match &self.core_gesture()?.kind {
-            kind if kind.armed() => Some("Paint a stroke on the photograph first".into()),
-            Kind::Crop(_) => self.crop_refusal(),
-            _ => None,
+        let gesture = self.core_gesture()?;
+        if gesture.kind.armed() {
+            return Some("Paint a stroke on the photograph first".into());
+        }
+        if self.gesture_conflicted() {
+            return Some(format!(
+                "Changed elsewhere: discard the {} or reapply it",
+                gesture.kind.noun()
+            ));
+        }
+        if !self.session.preview.can_edit() {
+            return Some("Return to the current state to apply".into());
+        }
+        if self.busy {
+            return Some("Waiting for the last request".into());
+        }
+        match &gesture.kind {
+            Kind::Crop(crop) => crop.frame.output().err().map(|error| error.to_string()),
+            Kind::Slider(_) | Kind::Mask(_) => None,
         }
     }
 
     /// Release, Enter or Apply: commit the open core gesture once.
     pub(crate) fn release(&mut self) -> Task<Message> {
-        if let Some(reason) = self.release_refusal() {
-            self.status = reason;
-            return Task::none();
-        }
+        // The pointer is up whether or not the commit may go.
         if self.slider_gesture().is_some() {
             self.dragging = None;
+        }
+        if let Some(reason) = self.release_refusal() {
+            self.status = reason;
+            // The refused gesture's frame is the evidence of the refusal.
+            self.settle_step(Settle::SliderDraft);
+            return Task::none();
         }
         self.quiet_since = None;
         self.quiet_settle_requested = true;
@@ -492,11 +511,12 @@ impl Editor {
         self.drive(Event::Cancel)
     }
 
-    /// The Changed elsewhere notice's Reapply. The crop frame first needs its input stage read
-    /// again, which may have turned or changed size; every other gesture rebases at once.
+    /// The Changed elsewhere notice's Reapply. The crop frame is also rebased onto the stage the
+    /// current rows report, which may have turned or changed size; every other gesture only
+    /// rebases its draft.
     fn reapply(&mut self) -> Task<Message> {
-        if self.core_gesture().and_then(CoreGesture::crop).is_some() {
-            return self.crop_start(true);
+        if self.crop().is_some() {
+            return self.crop_reapply();
         }
         self.drive(Event::Reapply)
     }
@@ -1074,9 +1094,10 @@ impl Editor {
             }
         }
         let task = self.drive(Event::Reapplied(result));
-        // A crop draft's Reapply is over once its frame and its draft are both rebased.
-        if open && self.crop_gesture().is_some() {
-            self.settle_step(Settle::Draft);
+        // A crop draft's Reapply is over once its draft is rebased and the rebased frame's stage
+        // is on screen.
+        if open {
+            self.settle_crop();
         }
         task
     }

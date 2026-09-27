@@ -161,6 +161,13 @@ pub(crate) struct Inputs<'a> {
     /// The open slider, mask or crop gesture's core draft is conflicted: something else committed
     /// since it was based, and its commit waits for Discard or Reapply.
     pub(crate) gesture_conflicted: bool,
+    /// What the open gesture is called — a slider draft, a mask gesture or a crop draft — for the
+    /// one Changed elsewhere notice every kind shares.
+    pub(crate) gesture: Option<&'static str>,
+    /// Why the open gesture cannot be applied now: the app's one release refusal, which Enter,
+    /// a pointer release and every Apply button answer to. A button reads this rather than a rule
+    /// of its own, so it never reads enabled while the app would refuse the request.
+    pub(crate) apply_refusal: Option<String>,
     /// Why a preset cannot be applied, why the components gallery cannot open, and why Undo, Redo
     /// and Restore cannot run, while this client's one draft is held — the one refusal every such
     /// start answers to.
@@ -192,8 +199,6 @@ pub(crate) struct Inputs<'a> {
     /// The mask the generated module sections are bound to, which is what a masked slider edits.
     /// `None` binds them to the global layer, as they have always been.
     pub(crate) target: Option<&'a MaskId>,
-    /// The truncated preview that opens a draft is in flight.
-    pub(crate) draft_pending: bool,
     /// The draft's own input stage is on the GPU and the current state is shown.
     pub(crate) drafting: bool,
     pub(crate) crop_angle: &'a str,
@@ -381,7 +386,11 @@ impl Built {
             (stamps.modules, stamps.capabilities, stamps.menu, session),
             (inputs.busy, inputs.developer, inputs.drafting, inputs.photo),
             (inputs.crop_guide, inputs.crop_option, inputs.crop_space),
-            inputs.gesture_conflicted,
+            (
+                inputs.gesture_conflicted,
+                inputs.gesture,
+                &inputs.apply_refusal,
+            ),
             drafting_key(inputs.draft.is_some() || inputs.mask_draft.is_some()),
             (
                 inputs.dimensions,
@@ -436,7 +445,7 @@ impl Built {
             (stamps.presets, stamps.preset_form, stamps.capabilities),
             (inputs.busy, inputs.developer, inputs.modules_ready),
             (inputs.crop_angle, inputs.crop_custom, inputs.crop_guide),
-            (inputs.draft_pending, inputs.editing, inputs.dragging),
+            (inputs.editing, inputs.dragging),
             drafting_key(inputs.draft.is_some()),
             (&inputs.preset_refusal, inputs.slider_draft, inputs.target),
             inputs.display_entry,
@@ -712,6 +721,8 @@ mod tests {
         draft: Option<CropDraft>,
         /// The open crop draft's core draft is conflicted.
         crop_conflicted: bool,
+        /// What the app's release refusal answers for the open gesture.
+        apply_refusal: Option<String>,
         masks: Option<MaskListing>,
         selected_mask: Option<MaskId>,
         selected_component: Option<ComponentId>,
@@ -760,6 +771,7 @@ mod tests {
                 expanded: BTreeMap::new(),
                 draft: None,
                 crop_conflicted: false,
+                apply_refusal: None,
                 masks: None,
                 selected_mask: None,
                 selected_component: None,
@@ -851,6 +863,14 @@ mod tests {
                         .slider_draft
                         .as_ref()
                         .is_some_and(|(_, _, conflicted)| *conflicted),
+                gesture: if self.slider_draft.is_some() {
+                    Some("slider draft")
+                } else if self.mask_draft.is_some() {
+                    Some("mask gesture")
+                } else {
+                    self.draft.as_ref().map(|_| "crop draft")
+                },
+                apply_refusal: self.apply_refusal.clone(),
                 preset_refusal: (self.slider_draft.is_some() || self.draft.is_some())
                     .then(|| "Finish the open draft before applying a preset".to_owned()),
                 gallery_refusal: (self.slider_draft.is_some() || self.draft.is_some())
@@ -873,7 +893,6 @@ mod tests {
                     .selected_mask
                     .as_ref()
                     .filter(|_| crate::state::canvas::mask_workspace(&self.session.workspace.mode)),
-                draft_pending: false,
                 drafting: self.draft.is_some(),
                 crop_angle: &self.crop_angle,
                 crop_custom: ("5", "4"),
@@ -1326,7 +1345,10 @@ mod tests {
         assert_eq!(frame.presets.len(), 7, "the ratios are generated");
         assert!(workspace.canvas.notices.is_empty());
 
+        // The app's one refusal says why Apply cannot run; the section reads it as it is.
         scene.crop_conflicted = true;
+        scene.apply_refusal =
+            Some("Changed elsewhere: discard the crop draft or reapply it".into());
         let workspace = scene.derive();
         let ControlModel::CropFrame(frame) = &section(&workspace, &crop.id).controls[0] else {
             panic!("the crop section is first in its module")
@@ -1335,6 +1357,11 @@ mod tests {
         assert_eq!(
             workspace.canvas.notices[0].title, "Changed elsewhere",
             "the conflict is a notice, not a silent discard"
+        );
+        assert_eq!(
+            workspace.canvas.notices[0].body,
+            "Another client committed revision 3 while your crop draft was open. Your crop draft is kept.",
+            "the one notice names the gesture that is open"
         );
         assert_eq!(
             workspace.canvas.draft_bar.map(|bar| bar.conflicted),
@@ -2268,7 +2295,7 @@ mod tests {
     }
 
     #[test]
-    fn the_draft_bar_reads_out_the_draft_and_names_why_apply_is_refused() {
+    fn the_draft_bar_reads_out_the_draft_and_shows_the_apps_refusal() {
         let crop = crop_descriptor();
         let mut scene = Scene::new(vec![crop.clone()]).opened(Vec::new());
         scene.session.workspace.mode = crop.id.clone();
@@ -2285,12 +2312,24 @@ mod tests {
         assert_eq!(bar.readout, "480 × 320 px · 0°");
         assert!(bar.can_apply && bar.apply_reason.is_none());
 
+        // The bar decides nothing itself: Apply reads the app's one release refusal, whatever it
+        // is, conflicted or not.
         scene.crop_conflicted = true;
+        scene.apply_refusal =
+            Some("Changed elsewhere: discard the crop draft or reapply it".into());
         let bar = scene.derive().canvas.draft_bar.expect("an open draft");
         assert!(!bar.can_apply && bar.conflicted);
         assert_eq!(
             bar.apply_reason.as_deref(),
-            Some("Changed elsewhere: discard the draft or reapply it")
+            Some("Changed elsewhere: discard the crop draft or reapply it")
+        );
+        scene.crop_conflicted = false;
+        scene.apply_refusal = Some("Waiting for the last request".into());
+        let bar = scene.derive().canvas.draft_bar.expect("an open draft");
+        assert!(!bar.can_apply && !bar.conflicted);
+        assert_eq!(
+            bar.apply_reason.as_deref(),
+            Some("Waiting for the last request")
         );
     }
 

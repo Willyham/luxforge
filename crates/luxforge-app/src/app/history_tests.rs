@@ -1,14 +1,14 @@
 //! History selection, compare and navigation: a selection of the current entry returns to current,
 //! compare restores the selection it replaced, and an open draft refuses Undo, Redo and Restore.
 use super::{
-    message::{ControlMessage, CropMessage, HistoryMessage, SyncMessage},
+    message::{ControlMessage, CropMessage, DraftMessage, HistoryMessage, SyncMessage},
     tasks::Upload,
     testing::{
         begun, boot, descriptors, entry, finish, open_crop, opened, patch_control, refresh_for,
     },
     *,
 };
-use luxforge_core::{AssetId, CropStage, HistoryRow};
+use luxforge_core::{AssetId, HistoryRow};
 
 #[test]
 fn compare_remembers_the_selection_it_replaced() {
@@ -42,11 +42,6 @@ fn compare_is_refused_while_a_crop_draft_is_open() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
     editor.original_entry = Some(luxforge_core::EntryId::new());
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    editor.open_draft(CropStage {
-        width: 480,
-        height: 320,
-        angle: 0.0,
-    });
     let selection = editor.session.preview.selection.clone();
 
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
@@ -71,7 +66,7 @@ fn compare_is_refused_while_a_crop_draft_is_open() {
     assert!(!editor.busy, "nothing was sent");
 
     // With the draft gone, Compare works as before and reaches the title bar model.
-    let _ = editor.update(Message::Crop(CropMessage::Cancel));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(editor.compare_return, Some(HistorySelection::Current));
     assert!(editor.workspace.title.compare_held);
@@ -173,6 +168,7 @@ fn navigable() -> (Editor, std::path::PathBuf, AssetId, luxforge_core::EntryId) 
         false,
     );
     refresh.state.redo.push(luxforge_core::EntryId::new());
+    refresh.recipe = crate::app::testing::described_at(&current, crate::app::testing::CROP_SOURCE);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
     assert!(editor.workspace.title.can_undo && editor.workspace.title.can_redo);
     (editor, catalog, asset, original.id)
@@ -248,14 +244,7 @@ fn history_navigation_is_refused_while_a_slider_draft_is_open() {
 fn history_navigation_is_refused_while_a_crop_draft_is_open() {
     let (mut editor, catalog, _, original) = navigable();
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    open_crop(
-        &mut editor,
-        CropStage {
-            width: 480,
-            height: 320,
-            angle: 0.0,
-        },
-    );
+    open_crop(&mut editor);
     assert!(editor.crop().is_some());
     history_refused(
         &mut editor,
@@ -263,7 +252,7 @@ fn history_navigation_is_refused_while_a_crop_draft_is_open() {
         "Apply or Cancel the crop draft before undoing, redoing or restoring",
     );
 
-    let _ = editor.update(Message::Crop(CropMessage::Cancel));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     let _ = editor.update(Message::History(HistoryMessage::Redo));
     assert!(
         editor.busy,

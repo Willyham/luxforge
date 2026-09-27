@@ -246,6 +246,12 @@ fn transform_value(parameters: &Map<String, Value>) -> Result<Transform, Error> 
         .map_err(|error| Error::validation(format!("invalid transform: {error}")))
 }
 
+/// A stored orientation layer's payload, checked exactly as the transform module checks its own,
+/// so the recipe description reports the orientation a stage has been given from the same numbers.
+pub(crate) fn stored_orientation(layer: &Layer) -> Result<Orientation, Error> {
+    payload(&layer.effect_id, layer.effect_format, &layer.payload)
+}
+
 fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<Orientation, Error> {
     if effect_id != ORIENTATION_EFFECT {
         return Err(Error::incompatible(format!(
