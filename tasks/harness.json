@@ -515,7 +515,7 @@
     {
       "id": "TASK-008",
       "description": "Launch and watch every editor process `editor-latency` (every mode, viewport included), `measure` and `hardening` start through the smoke scenario library's own launch envelope and one watch loop, instead of each tool assembling arguments and polling by hand.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -526,8 +526,7 @@
         "`raw-editor` is not migrated here: the scenario-row task in this plan replaces its launch and watch loop with a smoke scenario row.",
         "Because only the smoke scenarios record a `launches` list, `verify` keeps a `Launches` enum (verify.rs:105) that hand-codes how many editor processes each tool starts. This task lets it read the count each migrated tool records instead, leaving only `raw-editor`'s case for the scenario-row task to remove.",
         "Constraint: timing figures must not move. Each watch loop's own poll rate stays a parameter rather than a shared constant, and each tool's scripts and argument lists must be byte-identical before and after. The existing dump tests (`dump_scripts`, editor_latency.rs:2446 and smoke.rs:1214) cover scripts only; the proof extends them to argument lists and to the viewport, `--zoom` and `--moving-pan` variants.",
-        "The check-repository rule table gains an entry forbidding a second editor-launch argument assembly outside the scenario library's `Launch`/`Run`.",
-        "Outstanding: the dumped scripts and argument lists are byte-identical before and after; the before-and-after `timing` tier comparison runs once on the integration branch with the wave's timing run."
+        "The check-repository rule table gains an entry forbidding a second editor-launch argument assembly outside the scenario library's `Launch`/`Run`."
       ],
       "context_links": [
         {
@@ -595,7 +594,7 @@
     {
       "id": "TASK-009",
       "description": "Move `Distribution` into a core-free test crate and use it everywhere a timing figure is computed, in xtask and in the crates' own timing tests, deleting the forwarding wrappers and every disagreeing percentile definition it replaces.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-008"
       ],
@@ -674,7 +673,7 @@
     {
       "id": "TASK-010",
       "description": "Express `raw-editor`'s edit-and-reopen journey as a smoke scenario row on the plan library, with one RAW manifest reader shared by the row, `raw-corpus` and `verify`, in place of the tool's own launch, frame verifier and pixel sampler.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-008"
       ],
@@ -755,7 +754,7 @@
     {
       "id": "TASK-011",
       "description": "Give scenarios a checks recorder and richer plan expectations (masks, notices, status, mode, zoom) so a scenario is its plan plus its pixel claims, and replace the eleven ways scenarios locate the photograph with one locator built from recorded geometry.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-008"
       ],
