@@ -187,6 +187,8 @@ pub(crate) struct Inputs<'a> {
     /// Masks whose overlay the eye has hidden. View state: a hidden mask still applies to the
     /// picture, because hiding an edit and hiding its indicator are different things.
     pub(crate) hidden_masks: &'a HashSet<MaskId>,
+    /// Every mask's coverage thumbnail, as the thumbnail worker last delivered them.
+    pub(crate) thumbnails: &'a masks::MaskThumbnails,
     /// The open mask shape gesture.
     pub(crate) mask_draft: Option<&'a MaskDraft>,
     /// The mode the next Add-component gesture will use.
@@ -433,6 +435,7 @@ impl Built {
                 inputs.selected_component,
                 inputs.hovered_component,
             ),
+            inputs.thumbnails.version,
             state,
         ));
         let tools = key((
@@ -449,6 +452,8 @@ impl Built {
             (inputs.editing, inputs.dragging),
             drafting_key(inputs.draft.is_some()),
             (&inputs.preset_refusal, inputs.slider_draft, inputs.target),
+            // The bound mask's name is its sections' scope chip, so a rename reaches the bands.
+            tools::bound_mask_name(inputs),
             inputs.display_entry,
             state,
         ));
@@ -668,6 +673,24 @@ impl Workspace {
         )
     }
 
+    /// Which sections' bands carry a scope chip, and the mask it names, for the correlated evidence
+    /// state. Only sections with a chip are listed, so outside Mask mode it is empty.
+    pub(crate) fn scopes(&self) -> serde_json::Value {
+        serde_json::Value::Object(
+            self.tools
+                .all()
+                .filter_map(|section| {
+                    section.scope.as_ref().map(|scope| {
+                        (
+                            section.module_id.clone(),
+                            serde_json::Value::from(scope.as_str()),
+                        )
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// Which sections are expanded, for the correlated evidence state.
     pub(crate) fn expanded(&self) -> serde_json::Value {
         serde_json::Value::Object(
@@ -729,6 +752,7 @@ mod tests {
         selected_component: Option<ComponentId>,
         hovered_component: Option<ComponentId>,
         hidden_masks: HashSet<MaskId>,
+        thumbnails: masks::MaskThumbnails,
         mask_draft: Option<MaskDraft>,
         session: ClientSession,
         status: String,
@@ -778,6 +802,7 @@ mod tests {
                 selected_component: None,
                 hovered_component: None,
                 hidden_masks: HashSet::new(),
+                thumbnails: masks::MaskThumbnails::default(),
                 mask_draft: None,
                 session: ClientSession::default(),
                 status: "ready".into(),
@@ -885,6 +910,7 @@ mod tests {
                 selected_component: self.selected_component.as_ref(),
                 hovered_component: self.hovered_component.as_ref(),
                 hidden_masks: &self.hidden_masks,
+                thumbnails: &self.thumbnails,
                 mask_draft: self.mask_draft.as_ref(),
                 mask_mode: ComponentMode::Add,
                 brush: crate::mask_draft::NEUTRAL_BRUSH,
@@ -3345,5 +3371,126 @@ mod tests {
                 .collect()
         };
         assert_eq!(shared(&offered[0]), shared(&offered[1]));
+    }
+
+    /// One `mask.list` row for the displayed entry, with nothing bound to it yet.
+    fn reported(
+        id: &MaskId,
+        index: usize,
+        name: &str,
+    ) -> luxforge_core::mask::commands::MaskReport {
+        luxforge_core::mask::commands::MaskReport {
+            id: id.clone(),
+            index,
+            name: name.into(),
+            amount: 100.0,
+            invert: false,
+            components: Vec::new(),
+            layers: Vec::new(),
+        }
+    }
+
+    /// A photograph open with `masks` listed for its displayed entry.
+    fn masked_scene(masks: &[(&MaskId, &str)]) -> Scene {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        scene.masks = Some(MaskListing {
+            entry_id: scene.display_entry.clone().expect("a displayed entry"),
+            masks: masks
+                .iter()
+                .enumerate()
+                .map(|(index, (id, name))| reported(id, index, name))
+                .collect(),
+        });
+        scene
+    }
+
+    /// The open mask's name is the scope chip on every maskable module's band while Mask mode has a
+    /// mask open, and on no band otherwise: outside Mask mode, and in Mask mode with no mask open,
+    /// the bands carry none. Only a module with a maskable effect ever carries one.
+    #[test]
+    fn the_scope_chip_names_the_open_mask_on_maskable_bands_in_mask_mode_only() {
+        let face = MaskId::new();
+        let mut scene = masked_scene(&[(&face, "Face")]);
+        scene.selected_mask = Some(face.clone());
+        let workspace = scene.derive();
+        assert!(
+            workspace.tools.all().all(|section| section.scope.is_none()),
+            "outside Mask mode the sections are global"
+        );
+        assert_eq!(workspace.scopes(), json!({}));
+
+        scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
+        let workspace = scene.derive();
+        let maskable = |id: &str| {
+            scene
+                .modules
+                .iter()
+                .find(|module| module.id == id)
+                .is_some_and(|module| module.effects.iter().any(|effect| effect.maskable))
+        };
+        assert!(
+            workspace.tools.all().next().is_some(),
+            "maskable bands are shown"
+        );
+        for section in workspace.tools.all() {
+            assert!(maskable(&section.module_id), "{}", section.module_id);
+            assert_eq!(
+                section.scope.as_deref(),
+                Some("Face"),
+                "{}",
+                section.module_id
+            );
+        }
+        assert_eq!(workspace.scopes()["luxforge.basic"], json!("Face"));
+
+        // A rename reaches the bands.
+        scene.masks.as_mut().expect("a listing").masks[0].name = "Portrait".into();
+        let workspace = scene.derive();
+        assert_eq!(
+            section(&workspace, "luxforge.basic").scope.as_deref(),
+            Some("Portrait")
+        );
+
+        // No mask open: nothing is bound, so nothing is scoped.
+        scene.selected_mask = None;
+        let workspace = scene.derive();
+        assert!(workspace.tools.all().all(|section| section.scope.is_none()));
+    }
+
+    /// Each mask row carries the thumbnail delivered for its own mask, by identity, and the panel's
+    /// evidence records whether one is drawn and a digest of it; a mask with none reads `null`.
+    #[test]
+    fn a_mask_row_carries_its_own_thumbnail_and_the_summary_records_it() {
+        let (sky, face) = (MaskId::new(), MaskId::new());
+        let mut scene = masked_scene(&[(&sky, "Sky"), (&face, "Face")]);
+        let mut cells = vec![0u8; 28 * 19];
+        cells[..28 * 19 / 2].fill(255);
+        let thumbnail = masks::Thumbnail {
+            cells: cells.into(),
+            width: 28,
+            height: 19,
+        };
+        scene.thumbnails = masks::MaskThumbnails {
+            version: 1,
+            masks: vec![(sky.clone(), Some(thumbnail.clone())), (face.clone(), None)],
+        };
+        let workspace = scene.derive();
+        let rows = &workspace.masks.masks;
+        assert_eq!(rows[0].thumbnail.as_ref(), Some(&thumbnail));
+        assert!(std::sync::Arc::ptr_eq(
+            &rows[0].thumbnail.as_ref().expect("the sky's").cells,
+            &thumbnail.cells
+        ));
+        assert_eq!(rows[1].thumbnail, None);
+        let summary = workspace.masks.summary();
+        assert_eq!(summary["masks"][0]["thumbnail"]["cells"], json!([28, 19]));
+        assert_eq!(summary["masks"][0]["thumbnail"]["mean"], json!(0.5));
+        assert_eq!(summary["masks"][1]["thumbnail"], Value::Null);
+        // A copy of the same bytes is another thumbnail: rows compare by identity, never by cells.
+        let copy = masks::Thumbnail {
+            cells: thumbnail.cells.to_vec().into(),
+            ..thumbnail.clone()
+        };
+        assert_ne!(copy, thumbnail);
     }
 }

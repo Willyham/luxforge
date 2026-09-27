@@ -55,6 +55,68 @@ pub(crate) struct MaskRow {
     pub(crate) unavailable: Option<String>,
     pub(crate) can_move_up: bool,
     pub(crate) can_move_down: bool,
+    /// The mask's coverage over the whole photograph, reduced to the row's thumbnail cells, or
+    /// `None` while there is none to draw: not yet delivered, a mask with nothing to describe, or
+    /// a mask that reads pixels with no operation whose input it can read. The widget draws its
+    /// placeholder then.
+    pub(crate) thumbnail: Option<Thumbnail>,
+}
+
+/// One mask's coverage thumbnail: `width × height` quantized coverage bytes, row-major, the
+/// overlay's own byte meaning ([`luxforge_core::analysis::quantize_coverage`]).
+///
+/// The cells cover the whole photograph stretched over the whole thumbnail, as the Masks panel
+/// board draws it: a 3:2 photograph fills the 28 × 19 box almost exactly, and no cell is spent on a
+/// letterbox. Cheap to clone, and compared by identity: a row keeps the same cells until the
+/// thumbnail worker delivers new ones, so comparing rows never walks the bytes.
+#[derive(Clone, Debug)]
+pub(crate) struct Thumbnail {
+    pub(crate) cells: std::sync::Arc<[u8]>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+impl PartialEq for Thumbnail {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.cells, &other.cells)
+            && (self.width, self.height) == (other.width, other.height)
+    }
+}
+
+impl Eq for Thumbnail {}
+
+impl Thumbnail {
+    /// The thumbnail's cells across and down: the row's 28 × 19 pt box at one cell per point.
+    pub(crate) const CELLS: (u32, u32) = (28, 19);
+
+    /// The mean coverage over every cell, in `[0, 1]`: a digest a captured frame's state records so
+    /// the drawn thumbnail can be correlated with the mask it describes.
+    pub(crate) fn mean(&self) -> f64 {
+        if self.cells.is_empty() {
+            return 0.0;
+        }
+        let sum: u64 = self.cells.iter().map(|cell| u64::from(*cell)).sum();
+        sum as f64 / (self.cells.len() as f64 * 255.0)
+    }
+}
+
+/// Every mask's thumbnail as the thumbnail worker last delivered them, by mask. `version` moves
+/// exactly when a delivered set differs from the one held, so the panel is derived again only
+/// then.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MaskThumbnails {
+    pub(crate) version: u64,
+    pub(crate) masks: Vec<(MaskId, Option<Thumbnail>)>,
+}
+
+impl MaskThumbnails {
+    /// The thumbnail delivered for `mask`, when there is one.
+    pub(crate) fn get(&self, mask: &MaskId) -> Option<&Thumbnail> {
+        self.masks
+            .iter()
+            .find(|(held, _)| held == mask)
+            .and_then(|(_, thumbnail)| thumbnail.as_ref())
+    }
 }
 
 /// One component's row inside the open mask.
@@ -349,6 +411,12 @@ impl MasksModel {
                 "selected": row.selected,
                 "layers": row.layers,
                 "unavailable": row.unavailable,
+                // Whether a thumbnail is drawn, its cells and the mean of its coverage, so a
+                // captured row can be told apart from the placeholder and matched to its mask.
+                "thumbnail": row.thumbnail.as_ref().map(|thumbnail| serde_json::json!({
+                    "cells": [thumbnail.width, thumbnail.height],
+                    "mean": (thumbnail.mean() * 1000.0).round() / 1000.0,
+                })),
             })).collect::<Vec<_>>(),
             "selected": self.selected.as_ref().map(MaskId::as_str),
             "components": self.components.iter().map(|row| serde_json::json!({
@@ -530,6 +598,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
             unavailable: unavailable(&report.components),
             can_move_up: enabled && report.index > 0,
             can_move_down: enabled && report.index + 1 < reports.len(),
+            thumbnail: inputs.thumbnails.get(&report.id).cloned(),
         })
         .collect();
     let open = selected

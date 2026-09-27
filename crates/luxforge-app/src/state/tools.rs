@@ -177,6 +177,10 @@ pub(crate) struct SectionModel {
     /// A word for the section's own state, shown in its band while expanded: Draft while the
     /// module's canvas draft is open.
     pub(crate) status: Option<String>,
+    /// The name of the mask this section's controls edit through, drawn as the band's accent scope
+    /// chip: set on a maskable module's section while the sections are bound to an open mask, and
+    /// `None` everywhere else, so leaving Mask mode drops it.
+    pub(crate) scope: Option<String>,
     pub(crate) version: u64,
     pub(crate) enabled: bool,
     /// Why editing is disabled, in the words the status bar would use.
@@ -575,7 +579,8 @@ fn section(
     let enabled = disabled_reason.is_none();
     let active = active(module, inputs);
     let layout = section_layout(module, inputs);
-    let digest = digest(module, inputs, expanded, enabled, active, layout);
+    let scope = scope(module, inputs);
+    let digest = digest(module, inputs, expanded, enabled, active, layout, scope);
     let version = match previous {
         Some(previous) if previous.digest == digest => return previous,
         Some(previous) => previous.version + 1,
@@ -632,6 +637,7 @@ fn section(
         controls,
         layout,
         status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
+        scope: scope.map(str::to_owned),
         version,
         enabled,
         disabled_reason,
@@ -758,6 +764,29 @@ fn edits(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
 }
 
 /// Everything this section is derived from, so an unrelated change leaves its version alone.
+/// The name of the mask the generated sections are bound to, as the displayed entry's listing
+/// names it, or `None` when they are bound to the global layer. A target the listing does not hold
+/// (a selection a moment before the listing catches up) names nothing rather than an id.
+pub(crate) fn bound_mask_name<'a>(inputs: &Inputs<'a>) -> Option<&'a str> {
+    let target = inputs.target?;
+    inputs
+        .masks
+        .filter(|listing| Some(&listing.entry_id) == inputs.display_entry)?
+        .masks
+        .iter()
+        .find(|report| &report.id == target)
+        .map(|report| report.name.as_str())
+}
+
+/// The scope chip one section's band carries: the bound mask's name on a module with a maskable
+/// effect, and nothing on any other, because only a maskable module's controls edit through it.
+fn scope<'a>(module: &ModuleDescriptor, inputs: &Inputs<'a>) -> Option<&'a str> {
+    if !module.effects.iter().any(|effect| effect.maskable) {
+        return None;
+    }
+    bound_mask_name(inputs)
+}
+
 fn digest(
     module: &ModuleDescriptor,
     inputs: &Inputs<'_>,
@@ -765,9 +794,11 @@ fn digest(
     enabled: bool,
     active: bool,
     layout: SectionLayout,
+    scope: Option<&str>,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     module.id.hash(&mut hasher);
+    scope.hash(&mut hasher);
     format!("{:?}", module.availability).hash(&mut hasher);
     (expanded, enabled, active, inputs.developer).hash(&mut hasher);
     // Which controls apply depends on the photo's kind and the target, and a control a variant
