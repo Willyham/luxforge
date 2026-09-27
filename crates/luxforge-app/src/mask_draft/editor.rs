@@ -133,13 +133,14 @@ pub(crate) trait ShapeEditor {
     /// The gesture's declared number fields, in the order its command declares them.
     fn values(&self) -> Vec<(&'static str, f64)>;
 
-    /// The draft bar's one line of this shape's numbers. `number` writes one declared field's value
-    /// as that field shows it — to its declared precision — so the bar and the panel's fields always
-    /// agree. A kind that says nothing more specific lists its numbers by name.
-    fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
+    /// The draft bar's one line of this shape's numbers. It is a readout and not an entry field, so
+    /// it is compact — positions and distances to three decimals, degrees and percentages whole
+    /// ([`compact`]) — while the panel's fields keep each parameter's declared precision. A kind
+    /// that says nothing more specific lists its numbers by name.
+    fn readout(&self) -> String {
         self.values()
             .into_iter()
-            .map(|(name, value)| format!("{name} {}", number(name, value)))
+            .map(|(name, value)| format!("{name} {}", compact(value, DISTANCE_DECIMALS)))
             .collect::<Vec<_>>()
             .join(" \u{b7} ")
     }
@@ -307,4 +308,39 @@ impl<S> Grab<S> {
 
 pub(super) fn finite(point: (f64, f64)) -> bool {
     point.0.is_finite() && point.1.is_finite()
+}
+
+/// The draft bar's decimals for a position or a mask-space distance: a thousandth of the frame's
+/// height, which is finer than a handle can be placed by pointer at Fit.
+pub(super) const DISTANCE_DECIMALS: usize = 3;
+/// The draft bar's decimals for an angle in degrees and a percentage such as a feather.
+pub(super) const WHOLE: usize = 0;
+
+/// One number as the draft bar reads it out: `decimals` places, a true minus sign, and no negative
+/// zero, so `-0.0004` at three places reads `0.000` rather than `−0.000`.
+pub(super) fn compact(value: f64, decimals: usize) -> String {
+    if !value.is_finite() {
+        return format!("{value}");
+    }
+    let text = format!("{value:.decimals$}");
+    match text.strip_prefix('-') {
+        Some(rest) if rest.bytes().all(|byte| byte == b'0' || byte == b'.') => rest.to_owned(),
+        Some(rest) => format!("\u{2212}{rest}"),
+        None => text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_readout_number_is_compact_with_a_true_minus_and_no_negative_zero() {
+        assert_eq!(compact(0.18, DISTANCE_DECIMALS), "0.180");
+        assert_eq!(compact(-12.0, WHOLE), "\u{2212}12");
+        assert_eq!(compact(59.6, WHOLE), "60");
+        assert_eq!(compact(-0.0004, DISTANCE_DECIMALS), "0.000");
+        assert_eq!(compact(-0.2, WHOLE), "0");
+        assert_eq!(compact(-1.25, DISTANCE_DECIMALS), "\u{2212}1.250");
+    }
 }

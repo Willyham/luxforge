@@ -2430,10 +2430,9 @@ mod tests {
         assert_eq!(bar.title, "Face");
         assert_eq!(bar.subject.as_deref(), Some("Radial · Add"));
         assert_eq!(bar.kind, Some(RADIAL));
-        assert_eq!(
-            bar.readout,
-            "0.1800 × 0.2400 · \u{2212}12.00° · feather 60.0"
-        );
+        // A readout, not an entry field: compact, as the board draws it, while the panel's fields
+        // keep the declared precision.
+        assert_eq!(bar.readout, "0.180 × 0.240 · \u{2212}12° · feather 60");
         assert!(bar.can_apply && !bar.done);
 
         // Editing the stored Radial 1 names it, with the mode it holds.
@@ -2461,20 +2460,24 @@ mod tests {
         let bar = scene.derive().canvas.draft_bar.expect("an open gesture");
         assert_eq!(bar.title, "New mask");
         assert_eq!(bar.subject.as_deref(), Some("Linear · Add"));
-        assert_eq!(bar.readout, "0.1000, 0.9200 → 0.1400, 0.3800");
+        assert_eq!(bar.readout, "0.100, 0.920 → 0.140, 0.380");
 
         // A brush ends with Done: each stroke committed on release, so the app's Apply refusal for
         // an armed brush is not the bar's to state. Idle, it reads the brush the next stroke takes;
         // with the stroke down, that it is painting.
         scene.apply_refusal = Some("Paint a stroke on the photograph first".into());
-        let mut painting = MaskDraft::editing(mask, brush, BRUSH, &Value::Null, NEUTRAL_BRUSH)
-            .expect("a drawn kind");
+        let held = crate::mask_draft::Brush {
+            size: 0.06,
+            feather: 50.0,
+            ..NEUTRAL_BRUSH
+        };
+        let mut painting =
+            MaskDraft::editing(mask, brush, BRUSH, &Value::Null, held).expect("a drawn kind");
         scene.mask_draft = Some(painting.clone());
         let bar = scene.derive().canvas.draft_bar.expect("an open gesture");
         assert_eq!(bar.subject.as_deref(), Some("Brush 1 · Add"));
         assert!(bar.done && bar.can_apply && bar.apply_reason.is_none());
-        assert!(bar.readout.starts_with("size "), "{}", bar.readout);
-        assert!(bar.readout.contains(" · feather "), "{}", bar.readout);
+        assert_eq!(bar.readout, "size 0.060 · feather 50");
         painting.paint_begin((0.5, 0.5));
         scene.mask_draft = Some(painting);
         let bar = scene.derive().canvas.draft_bar.expect("an open gesture");

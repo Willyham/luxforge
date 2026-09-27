@@ -3,7 +3,7 @@ use crate::{
     mask_draft::{MaskDraft, MaskDraftOp},
     state::{
         Inputs,
-        number::{NumberSpec, number_text},
+        number::number_text,
         tools::{applies, canvas_pick, pick_reachable},
     },
 };
@@ -127,20 +127,6 @@ pub(crate) fn gesture_names(draft: &MaskDraft, listing: Option<&MaskListing>) ->
             .map(|component| component.name.clone())
             .unwrap_or_else(|| luxforge_core::mask::kind_title(draft.kind())),
         mode: MaskDraftOp::Add(mode).label(),
-    }
-}
-
-/// One declared number of an open mask gesture as its field shows it: to the precision the
-/// commit's own parameter declares, with a true minus sign.
-fn declared_number(method: Option<&str>, name: &str, value: f64) -> String {
-    let text = method
-        .and_then(luxforge_core::mask::commands::find)
-        .and_then(|command| command.action.parameter(name))
-        .and_then(NumberSpec::of)
-        .map_or_else(|| number_text(value), |spec| spec.format(value));
-    match text.strip_prefix('-') {
-        Some(magnitude) => format!("\u{2212}{magnitude}"),
-        None => text,
     }
 }
 
@@ -374,13 +360,12 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
 /// already committed on release; its Apply refusal is not stated, because it offers no Apply.
 fn mask_draft_bar(inputs: &Inputs<'_>, draft: &MaskDraft) -> DraftBar {
     let names = gesture_names(draft, inputs.masks);
-    let method = draft.method();
     let done = draft.paints();
     DraftBar {
         title: names.mask,
         subject: Some(format!("{} \u{b7} {}", names.component, names.mode)),
         kind: Some(draft.kind()),
-        readout: draft.readout(&mut |name, value| declared_number(method, name, value)),
+        readout: draft.readout(),
         can_apply: done || inputs.apply_refusal.is_none(),
         conflicted: inputs.gesture_conflicted,
         apply_reason: inputs.apply_refusal.clone().filter(|_| !done),

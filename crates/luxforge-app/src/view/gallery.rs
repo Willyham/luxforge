@@ -22,7 +22,7 @@ const PAGES: [(&str, usize, usize); 12] = [
     ("Curve channels, named vector icons and Basic", 74, 78),
     ("Module panels", 78, 86),
     ("Mask rows and controls", 86, 93),
-    ("Mask menus, fields and swatches", 93, 101),
+    ("Mask menus, fields, swatches and draft bar", 93, 102),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

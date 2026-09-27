@@ -4,7 +4,7 @@
 //! every press on the photograph paints. So its editor holds the stroke in flight and the settings
 //! of the brush in the hand, and commits all three of its edits through the one command that carries
 //! a path — which of the three it is, is what the identities the draft names say.
-use super::editor::{DrawnShape, Pen, ShapeEditor, finite};
+use super::editor::{DISTANCE_DECIMALS, DrawnShape, Pen, ShapeEditor, WHOLE, compact, finite};
 use luxforge_core::mask::commands::GeometryOp;
 use serde_json::{Map, Value, json};
 
@@ -226,15 +226,15 @@ impl ShapeEditor for BrushEditor {
     /// `painting` while the stroke is down, which is all there is to say until it commits on
     /// release; between strokes, the size and feather the next one will be drawn with, which are
     /// what the bracket keys change.
-    fn readout(&self, number: &mut dyn FnMut(&'static str, f64) -> String) -> String {
+    fn readout(&self) -> String {
         if self.stroke.painting() {
             return "painting".to_owned();
         }
         let brush = self.stroke.brush;
         format!(
             "size {} \u{b7} feather {}",
-            number("size", brush.size),
-            number("feather", brush.feather),
+            compact(brush.size, DISTANCE_DECIMALS),
+            compact(brush.feather, WHOLE),
         )
     }
 
