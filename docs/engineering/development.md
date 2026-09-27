@@ -62,6 +62,34 @@ Doctor reports missing tools and the graphics environment without installing any
 
 Every evidence command refuses an existing output directory: use a fresh `artifacts/<run-id>/`. Default sample counts are functional runs: they prove the journey and give one launch count to quote, not a distribution. A p50/p95 claim needs the explicit counts stated in the [performance plan](../specs/performance.md#sample-counts-for-a-p50p95-claim). Timing commands must use release builds. A [debug build](#test-and-debug-builds) is only lightly optimized, which is why `develop` defaults to release. `check` never implies graphical or dependency-audit acceptance.
 
+### Repository rules
+
+`cargo xtask check-repository` validates the task plans and local links, then applies two rule tables in `xtask/src/repository.rs`. Each row is one rule; a refusal names the file and line, the rule, the token or dependency it found, and the table whose row to change.
+
+`SOURCE_RULES` says which files may hold which tokens. A row names its tokens, its scope (directories and file types, since `crates/luxforge-raw/vendor` holds LibRaw's C++ sources), the paths allowed to hold them (a file, a directory, or a module path such as `modules/raw` for `raw.rs` and `raw/`), its match mode, whether it covers test code, and the reason it prints. One matcher serves every row. `Whole` checks an end of the token only where the token has an identifier character there, so `app::` finds `crate::app::State` but not `snapp::`, and `RAW_EFFECT` misses `RAW_EFFECTS`. `Prefix` lets the token run on into a longer identifier, so `mozjpeg` finds `mozjpeg_sys`. A row that covers tests reads every line, comments included. A row that does not skips files that are tests by name (a `tests` directory, `tests.rs`, `*_tests.rs`), modules declared under `#[cfg(test)]` with everything under their directory, `#[cfg(test)]` items, and comment lines. No source rule reads `xtask/src/repository.rs`, which names every token in its rows and tests.
+
+| Rule | Refuses | Where |
+| --- | --- | --- |
+| `state-layer`, `view-layer`, `widget-crate` | Iced and `app::` in the view model; the core, `OwnerHandle` and `.call(` in the view; the core in `luxforge-ui` | Those directories, tests included |
+| `jpeg-codec-name`, `jpeg-through-codec` | `mozjpeg` outside `luxforge-jpeg`; decoding JPEG through `image` | Shipped crates' production code |
+| `raw-identity` | `"luxforge.raw"` and `RAW_EFFECT` outside the RAW module | Production code under `crates/` |
+| `thread-spawn` | `thread::spawn`, `thread::Builder` and `thread::scope` outside the declared worker homes: the core's source worker and owner loop, point-query worker, API transport threads, capability job lanes and latest-job worker; the desktop's diagnostics log writer; the widget crate's GPU retirement worker; the test kit's process and server threads; `verify`'s component pool | Production code under `crates/` and `xtask/` |
+| `no-pixel-image-handle` | `Handle::from_rgba`, which uploads a new texture each time it is made | `crates/` and `xtask/`, tests included |
+| `project-name` | The old working name | Every text file under `crates/` and `xtask/` |
+
+`DEPENDENCY_RULES` says which crate may depend on what. A row names the dependencies it refuses (a crate, a name prefix, a crate with a feature, or any workspace crate: a `luxforge` name or any path), the manifests it reads (`""` for the workspace root, `crates/*` for every crate), the tables it reads (normal, dev, build or `workspace.dependencies`; a target-specific table counts as the table it names), the crates allowed to declare them, and its reason. A dependency is known by its key and by the package it renames, in any spelling: a key line, a dotted key, an inline table, a multi-line value or its own `[dependencies.name]` table.
+
+| Rule | Refuses |
+| --- | --- |
+| `image-jpeg-feature`, `workspace-image-jpeg` | `image`'s `jpeg` feature in a shipped crate's normal dependencies or in `workspace.dependencies`; tests and tools add it for themselves |
+| `mozjpeg-links` | A `mozjpeg*` dependency of a shipped crate other than `luxforge-jpeg` |
+| `jpeg-codec-users`, `jpeg-codec-leaf` | A dependency on `luxforge-jpeg` from any crate but `luxforge-core`; any workspace crate or path in `luxforge-jpeg`'s manifest |
+| `independent-references` | Any workspace crate or path in `luxforge-reference`'s manifest |
+
+The check also refuses a stale row: one that reads no file, allows a path that does not exist, or shares another row's name.
+
+A task that finishes a concept adds the rule that keeps it single as a row of one of these tables, with a test that shows an allowed and a refused path; it never writes a bespoke check. A deliberate new home for something a rule confines is a change to that row's allowed paths, made in review.
+
 ### When to verify
 
 Verification is for finished work. Several agent sessions share the owner's M4, and a whole-workspace

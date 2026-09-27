@@ -182,117 +182,70 @@ fn active_plans(root: &Path, plans: &[Value], s: &Value) -> Result<Vec<String>> 
     }
     Ok(summaries)
 }
-/// The desktop's layering rule, enforced here rather than by review: the view model cannot reach a
-/// framework or the update layer above it (`app/`, which depends on it), the view cannot reach
-/// authoritative state or the owner, and the widget crate cannot reach the core at all. Each entry
-/// is a directory and the tokens it may not contain. A token that starts with an identifier
-/// character matches only at the start of a path segment, so `app::` catches `crate::app::`,
-/// `super::app::` and a grouped `use crate::{ app::... }` line alike, and nothing that merely ends
-/// in `app`.
-const BOUNDARIES: [(&str, &[&str]); 3] = [
-    (
-        "crates/luxforge-app/src/state",
-        &["use iced", "iced::", "iced_runtime", "app::"],
-    ),
-    (
-        "crates/luxforge-app/src/view",
-        &["luxforge_core", "OwnerHandle", ".call("],
-    ),
-    ("crates/luxforge-ui", &["luxforge_core"]),
+// The repository rules: what source text may say where, and which crate may depend on what. Each
+// rule is one row of `SOURCE_RULES` or `DEPENDENCY_RULES`, served by one token matcher
+// (`holds_token`) and one test-exclusion parser (`production_lines`). A task that finishes a concept
+// adds the row that keeps it single; it never writes a bespoke check. To add a rule, copy the row
+// nearest in shape, give it a new `name`, and add a test with an allowed and a refused path.
+
+/// The file holding the rule tables names every refused token in its rows and tests, so no source
+/// rule reads it.
+const RULES_FILE: &str = "xtask/src/repository.rs";
+
+/// How a source rule finds a token in a line.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Match {
+    /// A whole token: where the token starts with an identifier character it may not continue an
+    /// identifier before it, and where it ends with one no identifier may continue after it. So
+    /// `app::` finds `crate::app::State` but not `snapp::x`, and `RAW_EFFECT` misses `RAW_EFFECTS`.
+    Whole,
+    /// The start of a token, which may run on into a longer identifier: `mozjpeg` finds
+    /// `mozjpeg_sys`, and `app::` still misses `snapp::x`.
+    Prefix,
+}
+
+/// A rule about which files may hold which tokens.
+struct SourceRule {
+    /// The rule's name, printed with each refusal and unique across both tables.
+    name: &'static str,
+    /// What the rule refuses outside its allowed paths.
+    tokens: &'static [&'static str],
+    /// The directories read, relative to the root and recursively.
+    scope: &'static [&'static str],
+    /// The file extensions read in them. Rules filter by type because `crates/luxforge-raw/vendor`
+    /// holds LibRaw's C++ sources.
+    types: &'static [&'static str],
+    /// The paths that may hold the tokens, relative to the root: a file, a directory and everything
+    /// below it, or a module path without its extension (`modules/raw` for `modules/raw.rs` and
+    /// everything under `modules/raw/`).
+    allowed: &'static [&'static str],
+    /// How the tokens are found.
+    mode: Match,
+    /// Whether test code is held to the rule too. When it is, every line of every file in scope is
+    /// read, comments included. When it is not, a file that is a test by name ([`test_file`]) or
+    /// a module declared under `#[cfg(test)]` (with everything below its directory) is skipped,
+    /// and each other file is read through [`production_lines`], which also skips comment lines.
+    tests: bool,
+    /// Why the rule holds, printed with each refusal.
+    reason: &'static str,
+}
+
+/// Every text file type a repository-wide rule reads.
+const TEXT: &[&str] = &["rs", "toml", "md", "json", "wgsl", "txt"];
+
+/// The source directories of the crates a shipped binary links.
+const SHIPPED_SOURCES: &[&str] = &[
+    "crates/luxforge-core/src",
+    "crates/luxforge-app/src",
+    "crates/luxforge-ui/src",
+    "crates/luxforge-raw/src",
+    "crates/luxforge-process/src",
+    "crates/luxforge-evidence/src",
+    "crates/luxforge-jpeg/src",
 ];
 
-/// Fail on the first forbidden token, naming the file, the line and the token.
-fn boundaries(root: &Path) -> Result<usize> {
-    let mut checked = 0;
-    for (directory, forbidden) in BOUNDARIES {
-        let dir = root.join(directory);
-        if !dir.is_dir() {
-            continue;
-        }
-        for path in files(&dir)? {
-            let extension = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or_default();
-            if !matches!(extension, "rs" | "toml") {
-                continue;
-            }
-            let text = fs::read_to_string(&path)?;
-            for (number, line) in text.lines().enumerate() {
-                for token in forbidden {
-                    ensure(
-                        !contains_token(line, token),
-                        format!(
-                            "{}:{}: {directory} may not contain {token}",
-                            path.display(),
-                            number + 1
-                        ),
-                    )?;
-                }
-            }
-            checked += 1;
-        }
-    }
-    Ok(checked)
-}
-
-/// Whether `line` holds `token`. A token that starts with an identifier character must also start
-/// one, so `app::` is found in `crate::app::x` but not in `snapp::x`.
-fn contains_token(line: &str, token: &str) -> bool {
-    let identifier = |c: char| c.is_alphanumeric() || c == '_';
-    if !token.starts_with(identifier) {
-        return line.contains(token);
-    }
-    line.match_indices(token)
-        .any(|(at, _)| !line[..at].ends_with(identifier))
-}
-
-/// The references are independent by construction: `luxforge-reference` depends on no workspace
-/// crate, so nothing it builds against can reach the core it checks, directly or through a crate
-/// that depends on it. Every dependency table (normal, dev, build or target-specific) is read.
-const REFERENCE_MANIFEST: &str = "crates/luxforge-reference/Cargo.toml";
-
-/// Fail on the first dependency of the reference crate that names a `luxforge` crate or a path,
-/// naming the line; answer how many dependency lines were read.
-fn independent_references(root: &Path) -> Result<usize> {
-    let path = root.join(REFERENCE_MANIFEST);
-    let text = fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let mut table = String::new();
-    let mut checked = 0;
-    for (number, line) in text.lines().enumerate() {
-        let line = line.split('#').next().unwrap_or_default().trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') {
-            table = line.trim_matches(['[', ']']).to_owned();
-        }
-        if !table.contains("dependencies") {
-            continue;
-        }
-        let names_a_crate = line.contains("luxforge");
-        let is_a_path = line.split(['{', ',', '}']).any(|part| {
-            part.split('=')
-                .next()
-                .is_some_and(|key| key.trim() == "path")
-        });
-        ensure(
-            !names_a_crate && !is_a_path,
-            format!(
-                "{}:{}: luxforge-reference may depend on no workspace crate, so it can never \
-                 reach luxforge-core: {line}",
-                path.display(),
-                number + 1
-            ),
-        )?;
-        checked += 1;
-    }
-    Ok(checked)
-}
-
-/// The crates a shipped binary links: their non-test code and normal dependencies are held to the
-/// one JPEG codec path below.
-const SHIPPED_CRATES: [&str; 7] = [
+/// The crates a shipped binary links, whose normal dependencies the JPEG rules hold.
+const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-core",
     "crates/luxforge-app",
     "crates/luxforge-ui",
@@ -302,258 +255,260 @@ const SHIPPED_CRATES: [&str; 7] = [
     "crates/luxforge-jpeg",
 ];
 
-/// The one crate that may name `mozjpeg` (and `mozjpeg_sys`), in its sources and its manifest.
-const JPEG_CODEC: &str = "crates/luxforge-jpeg";
-
-/// The one crate that may depend on the codec crate.
-const JPEG_CODEC_USER: &str = "crates/luxforge-core";
-
-/// Ways to decode JPEG through `image`, which shipped code never uses: JPEG is read only through
-/// the codec crate. Tests may, as an independent decoder.
-const IMAGE_JPEG: [&str; 6] = [
-    "codecs::jpeg",
-    "ImageFormat::Jpeg",
-    "JpegDecoder",
-    "image::open",
-    "load_from_memory",
-    "ImageReader",
+const SOURCE_RULES: &[SourceRule] = &[
+    // The desktop's layering: the view model reaches no framework and not the update layer above
+    // it (`app/`, which depends on it). `app::` catches `crate::app::`, `super::app::` and a grouped
+    // `use crate::{ app::... }` line alike, and nothing that merely ends in `app`.
+    SourceRule {
+        name: "state-layer",
+        tokens: &["use iced", "iced::", "iced_runtime", "app::"],
+        scope: &["crates/luxforge-app/src/state"],
+        types: &["rs", "toml"],
+        allowed: &[],
+        mode: Match::Prefix,
+        tests: true,
+        reason: "the view model reaches neither Iced nor the update layer (`app/`) above it",
+    },
+    SourceRule {
+        name: "view-layer",
+        tokens: &["luxforge_core", "OwnerHandle", ".call("],
+        scope: &["crates/luxforge-app/src/view"],
+        types: &["rs", "toml"],
+        allowed: &[],
+        mode: Match::Prefix,
+        tests: true,
+        reason: "the view reads the view model, never authoritative state or the owner",
+    },
+    SourceRule {
+        name: "widget-crate",
+        tokens: &["luxforge_core"],
+        scope: &["crates/luxforge-ui"],
+        types: &["rs", "toml"],
+        allowed: &[],
+        mode: Match::Prefix,
+        tests: true,
+        reason: "the widget crate (luxforge-ui) never reaches the core",
+    },
+    // One JPEG codec path: in shipped code only `luxforge-jpeg` names `mozjpeg` (and
+    // `mozjpeg_sys`), and nothing decodes JPEG through `image`. Tests may, as an independent
+    // decoder.
+    SourceRule {
+        name: "jpeg-codec-name",
+        tokens: &["mozjpeg"],
+        scope: SHIPPED_SOURCES,
+        types: &["rs"],
+        allowed: &["crates/luxforge-jpeg"],
+        mode: Match::Prefix,
+        tests: false,
+        reason: "only the JPEG codec crate (crates/luxforge-jpeg) may name mozjpeg",
+    },
+    SourceRule {
+        name: "jpeg-through-codec",
+        tokens: &[
+            "codecs::jpeg",
+            "ImageFormat::Jpeg",
+            "JpegDecoder",
+            "image::open",
+            "load_from_memory",
+            "ImageReader",
+        ],
+        scope: SHIPPED_SOURCES,
+        types: &["rs"],
+        allowed: &[],
+        mode: Match::Prefix,
+        tests: false,
+        reason: "shipped code decodes JPEG only through crates/luxforge-jpeg, never through image",
+    },
+    // The RAW development's identity belongs to the RAW module alone: every other surface decides
+    // whether a module applies to a photo from the source kinds its effects declare, and the host's
+    // RAW source reads its layer through the module's own helper. The harness under `xtask/`
+    // drives the module as an API client does and is not product code.
+    SourceRule {
+        name: "raw-identity",
+        tokens: &["\"luxforge.raw\"", "RAW_EFFECT"],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/modules/raw"],
+        mode: Match::Whole,
+        tests: false,
+        reason: "only the RAW module (crates/luxforge-core/src/modules/raw*) and tests may name \
+                 its identity; decide applicability from the declared sources",
+    },
+    // Production threads start only in the declared worker homes, each a bounded, owned worker.
+    SourceRule {
+        name: "thread-spawn",
+        tokens: &["thread::spawn", "thread::Builder", "thread::scope"],
+        scope: &["crates", "xtask"],
+        types: &["rs"],
+        allowed: &[
+            // The core: the source worker and the owner loop, the point-query worker, the API
+            // transport's accept and connection threads, the capability job lanes and the
+            // latest-job worker.
+            "crates/luxforge-core/src/api/owner.rs",
+            "crates/luxforge-core/src/api/owner/point.rs",
+            "crates/luxforge-core/src/api/transport.rs",
+            "crates/luxforge-core/src/capabilities/jobs.rs",
+            "crates/luxforge-core/src/latest.rs",
+            // The desktop's diagnostics log writer.
+            "crates/luxforge-app/src/diagnostics.rs",
+            // The widget crate's GPU retirement worker.
+            "crates/luxforge-ui/src/photo_surface.rs",
+            // The test kit's process and server threads.
+            "crates/luxforge-testkit/src/process.rs",
+            "crates/luxforge-testkit/src/server.rs",
+            // `verify`'s component pool.
+            "xtask/src/verify.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        reason: "production threads start only in the declared worker homes",
+    },
+    SourceRule {
+        name: "no-pixel-image-handle",
+        tokens: &["Handle::from_rgba"],
+        scope: &["crates", "xtask"],
+        types: &["rs"],
+        allowed: &[],
+        mode: Match::Whole,
+        tests: true,
+        reason: "an image handle made from pixels uploads a new texture each time it is made; the \
+                 photo surface owns the photograph's GPU uploads",
+    },
+    SourceRule {
+        name: "project-name",
+        tokens: &["lightwell", "Lightwell", "LIGHTWELL"],
+        scope: &["crates", "xtask"],
+        types: TEXT,
+        allowed: &[],
+        mode: Match::Prefix,
+        tests: true,
+        reason: "the project is Luxforge; its old working name does not come back",
+    },
 ];
 
-/// The files under `src` that only a test build compiles: each module declared as
-/// `#[cfg(test)] mod name;`, and everything below its directory.
-fn test_only_files(src: &Path, sources: &[PathBuf]) -> Result<BTreeSet<PathBuf>> {
-    let mut test_only = BTreeSet::new();
-    let mut test_dirs = Vec::new();
-    for path in sources {
-        let text = fs::read_to_string(path)?;
-        let lines: Vec<&str> = text.lines().map(str::trim).collect();
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        let parent = path.parent().unwrap_or(src);
-        let dir = if ["mod", "lib", "main"].contains(&stem) {
-            parent.to_path_buf()
-        } else {
-            parent.join(stem)
-        };
-        for pair in lines.windows(2) {
-            if pair[0] != "#[cfg(test)]" {
-                continue;
-            }
-            let declaration = pair[1]
-                .trim_start_matches("pub(crate) ")
-                .trim_start_matches("pub ");
-            if let Some(name) = declaration
-                .strip_prefix("mod ")
-                .and_then(|rest| rest.strip_suffix(';'))
-            {
-                test_only.insert(dir.join(format!("{name}.rs")));
-                test_dirs.push(dir.join(name));
-            }
-        }
-    }
-    for path in sources {
-        if test_dirs.iter().any(|dir| path.starts_with(dir)) {
-            test_only.insert(path.clone());
-        }
-    }
-    Ok(test_only)
+/// The manifest tables a dependency rule reads. A target-specific table
+/// (`[target.'cfg(unix)'.dependencies]`) counts as the table it names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Table {
+    /// `[dependencies]`.
+    Normal,
+    /// `[dev-dependencies]`.
+    Dev,
+    /// `[build-dependencies]`.
+    Build,
+    /// The root manifest's `[workspace.dependencies]`.
+    Workspace,
 }
 
-/// `text` without its inline `#[cfg(test)] mod name { ... }` blocks, each ending at the closing
-/// brace indented as its `mod` line, as rustfmt writes it; each kept line with its number.
-fn non_test_lines(text: &str) -> Vec<(usize, &str)> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut kept = Vec::new();
-    let mut index = 0;
-    while index < lines.len() {
-        let line = lines[index];
-        let opens_test_module = line.trim() == "#[cfg(test)]"
-            && lines.get(index + 1).is_some_and(|next| {
-                let next = next.trim();
-                next.contains("mod ") && next.ends_with('{')
-            });
-        if opens_test_module {
-            let module = lines[index + 1];
-            let close = format!("{}}}", &module[..module.len() - module.trim_start().len()]);
-            index += 2;
-            while index < lines.len() && lines[index] != close {
-                index += 1;
-            }
-            index += 1;
-            continue;
-        }
-        kept.push((index + 1, line));
-        index += 1;
-    }
-    kept
+/// Every table a manifest can declare a dependency in.
+const EVERY_TABLE: &[Table] = &[Table::Normal, Table::Dev, Table::Build, Table::Workspace];
+
+/// Which dependencies a dependency rule refuses. A dependency is known by its key and, when it
+/// renames one, the package it names.
+#[derive(Clone, Copy)]
+enum Depends {
+    /// A dependency on exactly this crate.
+    On(&'static str),
+    /// A dependency on any crate whose name starts with this.
+    Prefixed(&'static str),
+    /// `crate` with `feature` anywhere in its declaration.
+    Feature {
+        dependency: &'static str,
+        feature: &'static str,
+    },
+    /// Any workspace crate: a `luxforge` name, or any path.
+    WorkspaceCrate,
 }
 
-/// One JPEG codec path, enforced rather than reviewed: in the shipped crates' non-test code only
-/// `luxforge-jpeg` names `mozjpeg`, nothing decodes JPEG through `image`, and no manifest gives a
-/// shipped crate `image`'s `jpeg` feature or names `mozjpeg` outside `luxforge-jpeg`; and
-/// [`jpeg_codec_dependencies`] holds. Answers how many source files were read.
-fn one_jpeg_codec(root: &Path) -> Result<usize> {
-    let mut checked = 0;
-    for krate in SHIPPED_CRATES {
-        let src = root.join(krate).join("src");
-        if src.is_dir() {
-            let sources: Vec<_> = files(&src)?
-                .into_iter()
-                .filter(|path| path.extension().is_some_and(|e| e == "rs"))
-                .collect();
-            let test_only = test_only_files(&src, &sources)?;
-            for path in sources.iter().filter(|path| !test_only.contains(*path)) {
-                let relative = path.strip_prefix(root).unwrap_or(path);
-                let relative = relative.to_string_lossy().replace('\\', "/");
-                let text = fs::read_to_string(path)?;
-                for (number, line) in non_test_lines(&text) {
-                    ensure(
-                        krate == JPEG_CODEC || !contains_token(line, "mozjpeg"),
-                        format!(
-                            "{relative}:{number}: only the JPEG codec crate ({JPEG_CODEC}) may \
-                             name mozjpeg"
-                        ),
-                    )?;
-                    for token in IMAGE_JPEG {
-                        ensure(
-                            !contains_token(line, token),
-                            format!(
-                                "{relative}:{number}: shipped code decodes JPEG only through \
-                                 {JPEG_CODEC}, not {token}"
-                            ),
-                        )?;
-                    }
-                }
-                checked += 1;
-            }
-        }
-        let manifest = root.join(krate).join("Cargo.toml");
-        if manifest.is_file() {
-            let text = fs::read_to_string(&manifest)?;
-            let mut table = String::new();
-            for (number, line) in text.lines().enumerate() {
-                let line = line.split('#').next().unwrap_or_default().trim();
-                if line.starts_with('[') {
-                    table = line.trim_matches(['[', ']']).to_owned();
-                    continue;
-                }
-                let normal = table == "dependencies" || table.ends_with(".dependencies");
-                if !normal {
-                    continue;
-                }
-                let name = line.split(['=', '.', ' ']).next().unwrap_or_default();
-                ensure(
-                    krate == JPEG_CODEC || !name.starts_with("mozjpeg"),
-                    format!(
-                        "{krate}/Cargo.toml:{}: only luxforge-jpeg links the JPEG codec",
-                        number + 1
-                    ),
-                )?;
-                ensure(
-                    name != "image" || !line.contains("jpeg"),
-                    format!(
-                        "{krate}/Cargo.toml:{}: a shipped crate may not enable image's jpeg \
-                         feature",
-                        number + 1
-                    ),
-                )?;
-            }
-        }
-    }
-    let workspace = fs::read_to_string(root.join("Cargo.toml"))?;
-    let mut table = String::new();
-    for (number, line) in workspace.lines().enumerate() {
-        let line = line.split('#').next().unwrap_or_default().trim();
-        if line.starts_with('[') {
-            table = line.trim_matches(['[', ']']).to_owned();
-            continue;
-        }
-        ensure(
-            table != "workspace.dependencies"
-                || !(line.starts_with("image ") || line.starts_with("image="))
-                || !line.contains("jpeg"),
-            format!(
-                "Cargo.toml:{}: the workspace image dependency may not enable jpeg; a test or tool \
-                 adds it for itself",
-                number + 1
-            ),
-        )?;
-    }
-    jpeg_codec_dependencies(root)?;
-    Ok(checked)
+/// A rule about which crate may depend on what.
+struct DependencyRule {
+    /// The rule's name, printed with each refusal and unique across both tables.
+    name: &'static str,
+    /// The dependencies it refuses.
+    refuses: Depends,
+    /// The crate directories whose `Cargo.toml` is read, relative to the root: `""` is the
+    /// workspace root, and `crates/*` every crate under `crates/`.
+    manifests: &'static [&'static str],
+    /// The tables read in each.
+    tables: &'static [Table],
+    /// The crate directories that may declare the dependency.
+    allowed: &'static [&'static str],
+    /// Why the rule holds, printed with each refusal.
+    reason: &'static str,
 }
 
-/// The codec crate is a leaf behind the core: in every workspace manifest (`crates/*` and `xtask`)
-/// and every dependency table, normal, dev, build or target-specific, only `luxforge-core` names
-/// `luxforge-jpeg`, and `luxforge-jpeg` itself names no `luxforge` crate and no path. Answers how
-/// many manifests were read.
-fn jpeg_codec_dependencies(root: &Path) -> Result<usize> {
-    let mut manifests = Vec::new();
-    let crates = root.join("crates");
-    if crates.is_dir() {
-        for entry in fs::read_dir(&crates)? {
-            let manifest = entry?.path().join("Cargo.toml");
-            if manifest.is_file() {
-                manifests.push(manifest);
-            }
-        }
-    }
-    let xtask = root.join("xtask/Cargo.toml");
-    if xtask.is_file() {
-        manifests.push(xtask);
-    }
-    manifests.sort();
-    for manifest in &manifests {
-        let krate = manifest
-            .parent()
-            .and_then(|dir| dir.strip_prefix(root).ok())
-            .map(|dir| dir.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_default();
-        let text = fs::read_to_string(manifest)?;
-        let mut dependencies = false;
-        for (number, line) in text.lines().enumerate() {
-            let line = line.split('#').next().unwrap_or_default().trim();
-            if line.starts_with('[') {
-                dependencies = line.contains("dependencies");
-            }
-            if !dependencies {
-                continue;
-            }
-            let at = format!("{krate}/Cargo.toml:{}", number + 1);
-            ensure(
-                krate == JPEG_CODEC_USER || !line.contains("luxforge-jpeg"),
-                format!("{at}: only luxforge-core may depend on luxforge-jpeg: {line}"),
-            )?;
-            ensure(
-                krate != JPEG_CODEC || !(line.contains("luxforge") || line.contains("path")),
-                format!("{at}: luxforge-jpeg may depend on no workspace crate: {line}"),
-            )?;
-        }
-    }
-    Ok(manifests.len())
-}
+const DEPENDENCY_RULES: &[DependencyRule] = &[
+    DependencyRule {
+        name: "image-jpeg-feature",
+        refuses: Depends::Feature {
+            dependency: "image",
+            feature: "jpeg",
+        },
+        manifests: SHIPPED_CRATES,
+        tables: &[Table::Normal],
+        allowed: &[],
+        reason: "a shipped crate may not enable image's jpeg feature; JPEG is read only through \
+                 crates/luxforge-jpeg",
+    },
+    DependencyRule {
+        name: "workspace-image-jpeg",
+        refuses: Depends::Feature {
+            dependency: "image",
+            feature: "jpeg",
+        },
+        manifests: &[""],
+        tables: &[Table::Workspace],
+        allowed: &[],
+        reason: "the workspace image dependency may not enable jpeg; a test or tool adds it for \
+                 itself",
+    },
+    DependencyRule {
+        name: "mozjpeg-links",
+        refuses: Depends::Prefixed("mozjpeg"),
+        manifests: SHIPPED_CRATES,
+        tables: &[Table::Normal],
+        allowed: &["crates/luxforge-jpeg"],
+        reason: "only luxforge-jpeg links the JPEG codec",
+    },
+    // The codec crate is a leaf behind the core.
+    DependencyRule {
+        name: "jpeg-codec-users",
+        refuses: Depends::On("luxforge-jpeg"),
+        manifests: &["crates/*", "xtask"],
+        tables: EVERY_TABLE,
+        allowed: &["crates/luxforge-core"],
+        reason: "only luxforge-core may depend on luxforge-jpeg",
+    },
+    DependencyRule {
+        name: "jpeg-codec-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-jpeg"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-jpeg may depend on no workspace crate and no path",
+    },
+    // The references are independent by construction: nothing they build against can reach the
+    // core they check, directly or through a crate that depends on it.
+    DependencyRule {
+        name: "independent-references",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-reference"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-reference may depend on no workspace crate and no path, so it can never \
+                 reach luxforge-core",
+    },
+];
 
-/// The RAW development's identity belongs to the RAW module alone: every other surface decides
-/// whether a module applies to a photo from the source kinds its effects declare, and the host's
-/// RAW source reads its layer through the module's own helper. So no product code outside the
-/// module names the module's identity or its effect constant; only the module and test code may.
-/// The harness under `xtask/` drives the module as an API client does and is not product code.
-const RAW_IDENTITY: [&str; 2] = ["\"luxforge.raw\"", "RAW_EFFECT"];
-
-/// The RAW module's own files: `modules/raw.rs` and everything under `modules/raw/`.
-const RAW_MODULE: &str = "crates/luxforge-core/src/modules/raw";
-
-/// Whether `line` holds `token` as a whole token: an identifier token must neither start nor end
-/// inside a longer identifier, so `RAW_EFFECT` is not found in `RAW_EFFECTS` or `MY_RAW_EFFECT`.
-fn holds_whole_token(line: &str, token: &str) -> bool {
+/// Whether `line` holds `token` under `mode`; see [`Match`].
+fn holds_token(line: &str, token: &str, mode: Match) -> bool {
     let identifier = |c: char| c.is_alphanumeric() || c == '_';
-    if !token.starts_with(identifier) {
-        return line.contains(token);
-    }
+    let check_start = token.starts_with(identifier);
+    let check_end = mode == Match::Whole && token.ends_with(identifier);
     line.match_indices(token).any(|(at, _)| {
-        !line[..at].ends_with(identifier) && !line[at + token.len()..].starts_with(identifier)
+        let runs_in = check_start && line[..at].ends_with(identifier);
+        let runs_on = check_end && line[at + token.len()..].starts_with(identifier);
+        !runs_in && !runs_on
     })
 }
 
@@ -622,59 +577,422 @@ fn production_lines(text: &str) -> (Vec<(usize, &str)>, Vec<&str>) {
     (lines, test_modules)
 }
 
-/// The files an out-of-line module `name` declared in `file` may live in, in either spelling.
-fn module_files(file: &Path, name: &str) -> [PathBuf; 2] {
+/// Where an out-of-line module `name` declared in `file` lives: its `name.rs`, and the directory
+/// (ending in `/`) that holds its `mod.rs` and its own submodules.
+fn module_files(file: &str, name: &str) -> (String, String) {
+    let file = Path::new(file);
     let parent = file.parent().unwrap_or(Path::new(""));
     let dir = match file.file_stem().and_then(|stem| stem.to_str()) {
         Some("mod" | "lib" | "main") | None => parent.to_path_buf(),
         Some(stem) => parent.join(stem),
     };
-    [
-        dir.join(format!("{name}.rs")),
-        dir.join(name).join("mod.rs"),
-    ]
+    (
+        slashed(&dir.join(format!("{name}.rs"))),
+        format!("{}/", slashed(&dir.join(name))),
+    )
 }
 
-/// Fail on the first product line outside the RAW module that names its identity, naming the file,
-/// the line and the token; answer how many product files were read.
-fn raw_identity(root: &Path) -> Result<usize> {
-    let module = root.join(RAW_MODULE);
-    let sources: Vec<PathBuf> = files(&root.join("crates"))?
-        .into_iter()
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
-        .collect();
-    let texts = sources
-        .iter()
-        .map(fs::read_to_string)
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let scanned: Vec<_> = texts.iter().map(|text| production_lines(text)).collect();
-    let mut test_only = BTreeSet::new();
-    for (path, (_, modules)) in sources.iter().zip(&scanned) {
-        for name in modules {
-            test_only.extend(module_files(path, name));
+/// `path` with forward slashes, as the rule tables spell paths.
+fn slashed(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Whether `path` is one of `allowed`, or lies under one; see [`SourceRule::allowed`].
+fn permitted(path: &str, allowed: &[&str]) -> bool {
+    allowed.iter().any(|entry| {
+        path == *entry
+            || path
+                .strip_prefix(entry)
+                .is_some_and(|rest| rest.starts_with('/'))
+            || Path::new(path).with_extension("") == Path::new(entry)
+    })
+}
+
+/// One dependency as a manifest declares it.
+struct Dependency {
+    /// The line that declares it: its key's, or its own table's header.
+    line: usize,
+    table: Table,
+    /// Its key and, when it renames one, the package it names.
+    names: Vec<String>,
+    /// Whether it names a path.
+    path: bool,
+    /// Its whole declaration, for its features.
+    text: String,
+}
+
+/// `text` without a trailing comment, trimmed.
+fn uncommented(line: &str) -> &str {
+    line.split('#').next().unwrap_or_default().trim()
+}
+
+/// A dotted TOML key or table name split into its parts, each unquoted, with dots inside quotes
+/// (`target.'cfg(target_os = "macos")'.dependencies`) kept.
+fn key_parts(key: &str) -> Vec<String> {
+    let mut parts = vec![String::new()];
+    let mut quote = None;
+    for c in key.chars() {
+        match quote {
+            None if c == '.' => {
+                parts.push(String::new());
+                continue;
+            }
+            None if c == '\'' || c == '"' => quote = Some(c),
+            Some(open) if c == open => quote = None,
+            _ => {}
         }
+        parts.last_mut().unwrap().push(c);
     }
-    let mut checked = 0;
-    for (path, (lines, _)) in sources.iter().zip(&scanned) {
-        let owned = path.with_extension("") == module || path.starts_with(&module);
-        if owned || test_file(path) || test_only.contains(path) {
+    parts
+        .iter()
+        .map(|part| part.trim().trim_matches(['"', '\'']).to_owned())
+        .collect()
+}
+
+/// The dependency table a header names, and the dependency when it is one dependency's own table
+/// (`[dev-dependencies.name]`); `None` for any other table.
+fn dependency_table(header: &str) -> Option<(Table, Option<String>)> {
+    let parts = key_parts(header);
+    let kind = |part: &str| match part {
+        "dependencies" => Some(Table::Normal),
+        "dev-dependencies" | "dev_dependencies" => Some(Table::Dev),
+        "build-dependencies" | "build_dependencies" => Some(Table::Build),
+        _ => None,
+    };
+    let (at, table) = match parts.first().map(String::as_str) {
+        Some("workspace") => (
+            1,
+            (parts.get(1)? == "dependencies").then_some(Table::Workspace)?,
+        ),
+        Some("target") => (2, kind(parts.get(2)?)?),
+        _ => (0, kind(parts.first()?)?),
+    };
+    match &parts[at + 1..] {
+        [] => Some((table, None)),
+        [name] => Some((table, Some(name.clone()))),
+        _ => None,
+    }
+}
+
+/// Record a dependency's `key = value` field: a path, or the package it renames.
+fn dependency_field(dependency: &mut Dependency, key: &str, value: &str) {
+    match key.trim() {
+        "path" => dependency.path = true,
+        "package" => dependency
+            .names
+            .push(value.trim().trim_matches(['"', '\'']).to_owned()),
+        _ => {}
+    }
+}
+
+/// Every dependency a manifest declares, in any table and any spelling: `name = ...`,
+/// `name.field = ...`, an inline table, and a dependency's own `[table.name]`. A value that runs
+/// over several lines, as a multi-line features array does, is read whole.
+fn dependencies(text: &str) -> Vec<Dependency> {
+    let mut found: Vec<Dependency> = Vec::new();
+    // The dependency table the lines below belong to, and whether it is one dependency's own.
+    let mut table: Option<(Table, bool)> = None;
+    let mut lines = text.lines().enumerate();
+    while let Some((index, line)) = lines.next() {
+        let mut line = uncommented(line).to_owned();
+        if line.is_empty() {
             continue;
         }
-        for (number, line) in lines {
-            for token in RAW_IDENTITY {
-                ensure(
-                    !holds_whole_token(line, token),
-                    format!(
-                        "{}:{number}: only the RAW module ({RAW_MODULE}*) and tests may name \
-                         {token}; decide applicability from the declared sources",
-                        path.display()
-                    ),
-                )?;
+        if line.starts_with('[') {
+            table = dependency_table(line.trim_matches(['[', ']'])).map(|(kind, own)| {
+                if let Some(name) = &own {
+                    found.push(Dependency {
+                        line: index + 1,
+                        table: kind,
+                        names: vec![name.clone()],
+                        path: false,
+                        text: String::new(),
+                    });
+                }
+                (kind, own.is_some())
+            });
+            continue;
+        }
+        let Some((kind, own)) = table else {
+            continue;
+        };
+        let open = |text: &str| {
+            text.chars()
+                .map(|c| match c {
+                    '[' | '{' => 1,
+                    ']' | '}' => -1,
+                    _ => 0,
+                })
+                .sum::<i64>()
+        };
+        while open(&line) > 0 {
+            let Some((_, next)) = lines.next() else {
+                break;
+            };
+            line.push(' ');
+            line.push_str(uncommented(next));
+        }
+        let (key, value) = line.split_once('=').unwrap_or((&line, ""));
+        let (key, value) = (key.trim(), value.trim());
+        if own {
+            let dependency = found.last_mut().expect("a dependency's own table");
+            dependency_field(dependency, key, value);
+            dependency.text.push_str(&line);
+            dependency.text.push('\n');
+            continue;
+        }
+        let parts = key_parts(key);
+        let mut dependency = Dependency {
+            line: index + 1,
+            table: kind,
+            names: vec![parts[0].clone()],
+            path: false,
+            text: line.clone(),
+        };
+        if let Some(field) = parts.get(1) {
+            dependency_field(&mut dependency, field, value);
+        } else if value.starts_with('{') {
+            for part in value.trim_matches(['{', '}']).split(',') {
+                if let Some((key, value)) = part.split_once('=') {
+                    dependency_field(&mut dependency, key, value);
+                }
             }
         }
-        checked += 1;
+        found.push(dependency);
     }
-    Ok(checked)
+    found
+}
+
+impl Depends {
+    fn refuses(self, dependency: &Dependency) -> bool {
+        let named = |test: &dyn Fn(&str) -> bool| dependency.names.iter().any(|n| test(n));
+        match self {
+            Depends::On(name) => named(&|n| n == name),
+            Depends::Prefixed(prefix) => named(&|n| n.starts_with(prefix)),
+            Depends::Feature {
+                dependency: name,
+                feature,
+            } => named(&|n| n == name) && holds_token(&dependency.text, feature, Match::Prefix),
+            Depends::WorkspaceCrate => dependency.path || named(&|n| n.starts_with("luxforge")),
+        }
+    }
+}
+
+/// The repository's files, each listed and read once however many rules read it.
+struct Tree<'a> {
+    root: &'a Path,
+    listings: BTreeMap<String, Vec<String>>,
+    texts: BTreeMap<String, String>,
+}
+
+impl<'a> Tree<'a> {
+    fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            listings: BTreeMap::new(),
+            texts: BTreeMap::new(),
+        }
+    }
+
+    /// Every file under `dir`, relative to the root; none when `dir` does not exist.
+    fn under(&mut self, dir: &str) -> Result<Vec<String>> {
+        if let Some(listing) = self.listings.get(dir) {
+            return Ok(listing.clone());
+        }
+        let absolute = self.root.join(dir);
+        let listing = if absolute.is_dir() {
+            files(&absolute)?
+                .iter()
+                .map(|path| slashed(path.strip_prefix(self.root).unwrap_or(path)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.listings.insert(dir.to_owned(), listing.clone());
+        Ok(listing)
+    }
+
+    fn text(&mut self, path: &str) -> Result<&str> {
+        if !self.texts.contains_key(path) {
+            let absolute = self.root.join(path);
+            let text = fs::read_to_string(&absolute)
+                .map_err(|error| format!("{}: {error}", absolute.display()))?;
+            self.texts.insert(path.to_owned(), text);
+        }
+        Ok(&self.texts[path])
+    }
+}
+
+/// What applying the rules read: the distinct source files and manifests, and how many files each
+/// rule read.
+#[derive(Default)]
+struct Applied {
+    sources: BTreeSet<String>,
+    manifests: BTreeSet<String>,
+    reads: BTreeMap<&'static str, usize>,
+}
+
+impl SourceRule {
+    fn apply(&self, tree: &mut Tree, applied: &mut Applied, refusals: &mut Vec<String>) -> Result {
+        let mut paths = Vec::new();
+        for dir in self.scope {
+            paths.extend(tree.under(dir)?.into_iter().filter(|path| {
+                path != RULES_FILE
+                    && Path::new(path)
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| self.types.contains(&extension))
+            }));
+        }
+        let mut test_modules = Vec::new();
+        if !self.tests {
+            for path in &paths {
+                for name in production_lines(tree.text(path)?).1 {
+                    test_modules.push(module_files(path, name));
+                }
+            }
+        }
+        let mut read = 0;
+        for path in &paths {
+            let test_only = !self.tests
+                && (test_file(Path::new(path))
+                    || test_modules
+                        .iter()
+                        .any(|(file, dir)| path == file || path.starts_with(dir.as_str())));
+            if test_only || permitted(path, self.allowed) {
+                continue;
+            }
+            let text = tree.text(path)?;
+            let lines = if self.tests {
+                text.lines().enumerate().map(|(i, l)| (i + 1, l)).collect()
+            } else {
+                production_lines(text).0
+            };
+            for (number, line) in lines {
+                for token in self.tokens {
+                    if holds_token(line, token, self.mode) {
+                        refusals.push(format!(
+                            "{path}:{number}: {} (source rule `{}` found `{token}`; a deliberate \
+                             new home is a change to that row of SOURCE_RULES in {RULES_FILE}, \
+                             not a new check)",
+                            self.reason, self.name
+                        ));
+                    }
+                }
+            }
+            applied.sources.insert(path.clone());
+            read += 1;
+        }
+        *applied.reads.entry(self.name).or_default() += read;
+        Ok(())
+    }
+}
+
+impl DependencyRule {
+    /// The crate directories whose manifest the rule reads that exist.
+    fn crates(&self, root: &Path) -> Result<Vec<String>> {
+        let mut crates = Vec::new();
+        for entry in self.manifests {
+            if let Some(parent) = entry.strip_suffix("/*") {
+                let dir = root.join(parent);
+                if !dir.is_dir() {
+                    continue;
+                }
+                let mut found = Vec::new();
+                for item in fs::read_dir(&dir)? {
+                    let name = item?.file_name().to_string_lossy().into_owned();
+                    found.push(format!("{parent}/{name}"));
+                }
+                found.sort();
+                crates.extend(found);
+            } else {
+                crates.push((*entry).to_owned());
+            }
+        }
+        crates.retain(|krate| root.join(krate).join("Cargo.toml").is_file());
+        Ok(crates)
+    }
+
+    fn apply(&self, tree: &mut Tree, applied: &mut Applied, refusals: &mut Vec<String>) -> Result {
+        let mut read = 0;
+        for krate in self.crates(tree.root)? {
+            let manifest = if krate.is_empty() {
+                "Cargo.toml".to_owned()
+            } else {
+                format!("{krate}/Cargo.toml")
+            };
+            let allowed = self.allowed.contains(&krate.as_str());
+            for dependency in dependencies(tree.text(&manifest)?) {
+                if !allowed
+                    && self.tables.contains(&dependency.table)
+                    && self.refuses.refuses(&dependency)
+                {
+                    refusals.push(format!(
+                        "{manifest}:{}: {} (dependency rule `{}` found `{}`; a deliberate new \
+                         dependent is a change to that row of DEPENDENCY_RULES in {RULES_FILE}, \
+                         not a new check)",
+                        dependency.line,
+                        self.reason,
+                        self.name,
+                        dependency.names.join("` as `"),
+                    ));
+                }
+            }
+            applied.manifests.insert(manifest);
+            read += 1;
+        }
+        *applied.reads.entry(self.name).or_default() += read;
+        Ok(())
+    }
+}
+
+/// Apply the named rules of both tables (every rule when `only` is empty) to the repository at
+/// `root`, failing with every refusal.
+fn apply(root: &Path, only: &[&str]) -> Result<Applied> {
+    let selected = |name: &str| only.is_empty() || only.contains(&name);
+    let mut tree = Tree::new(root);
+    let mut applied = Applied::default();
+    let mut refusals = Vec::new();
+    for rule in SOURCE_RULES.iter().filter(|rule| selected(rule.name)) {
+        rule.apply(&mut tree, &mut applied, &mut refusals)?;
+    }
+    for rule in DEPENDENCY_RULES.iter().filter(|rule| selected(rule.name)) {
+        rule.apply(&mut tree, &mut applied, &mut refusals)?;
+    }
+    ensure(refusals.is_empty(), refusals.join("\n"))?;
+    Ok(applied)
+}
+
+/// Apply every rule to the repository, and refuse a stale row: one that reads nothing, whose
+/// allowed path no longer exists, or whose name another row shares.
+fn rules(root: &Path) -> Result<Applied> {
+    let applied = apply(root, &[])?;
+    let mut names = BTreeSet::new();
+    let rows = SOURCE_RULES
+        .iter()
+        .map(|rule| (rule.name, rule.allowed))
+        .chain(
+            DEPENDENCY_RULES
+                .iter()
+                .map(|rule| (rule.name, rule.allowed)),
+        );
+    for (name, allowed) in rows {
+        ensure(
+            names.insert(name),
+            format!("two repository rules are named {name}"),
+        )?;
+        ensure(
+            applied.reads.get(name).is_some_and(|read| *read > 0),
+            format!("repository rule {name} read no file; its scope is stale"),
+        )?;
+        for entry in allowed {
+            ensure(
+                root.join(entry).exists() || root.join(format!("{entry}.rs")).is_file(),
+                format!("repository rule {name} allows {entry}, which does not exist"),
+            )?;
+        }
+    }
+    Ok(applied)
 }
 
 /// The presettable-action refusal and the one resolver that words it.
@@ -781,22 +1099,13 @@ pub fn check(root: &Path) -> Result {
         "PASS local task schemas/DAGs/order ({}), {count} local links",
         summaries.join(", ")
     );
+    let applied = rules(root)?;
     println!(
-        "PASS desktop layer boundaries ({} files)",
-        boundaries(root)?
-    );
-    println!(
-        "PASS independent references ({} dependency lines, no workspace crate)",
-        independent_references(root)?
-    );
-    println!(
-        "PASS one JPEG codec ({} shipped source files, mozjpeg only in luxforge-jpeg, which only \
-         luxforge-core depends on)",
-        one_jpeg_codec(root)?
-    );
-    println!(
-        "PASS RAW identity named only by its module ({} product files)",
-        raw_identity(root)?
+        "PASS {} source rules ({} files) and {} dependency rules ({} manifests)",
+        SOURCE_RULES.len(),
+        applied.sources.len(),
+        DEPENDENCY_RULES.len(),
+        applied.manifests.len()
     );
     println!(
         "PASS one presettable-action resolver ({} product files)",
@@ -824,6 +1133,79 @@ mod tests {
     fn active_repository_is_valid() {
         check(&root().unwrap()).unwrap();
     }
+    /// The desktop layering rules.
+    const LAYERS: &[&str] = &["state-layer", "view-layer", "widget-crate"];
+    /// The one-JPEG-codec rules.
+    const JPEG: &[&str] = &[
+        "jpeg-codec-name",
+        "jpeg-through-codec",
+        "image-jpeg-feature",
+        "workspace-image-jpeg",
+        "mozjpeg-links",
+        "jpeg-codec-users",
+        "jpeg-codec-leaf",
+    ];
+    /// Apply the named rules, each of which must exist, and answer how many distinct source files
+    /// and manifests they read.
+    fn read(root: &Path, only: &[&str]) -> Result<(usize, usize)> {
+        for name in only {
+            assert!(
+                SOURCE_RULES.iter().any(|rule| rule.name == *name)
+                    || DEPENDENCY_RULES.iter().any(|rule| rule.name == *name),
+                "no rule {name}"
+            );
+        }
+        apply(root, only).map(|applied| (applied.sources.len(), applied.manifests.len()))
+    }
+    /// The refusal the named rules make, which must be one.
+    fn refusal(root: &Path, only: &[&str], what: &str) -> String {
+        read(root, only)
+            .err()
+            .unwrap_or_else(|| panic!("{what} was accepted"))
+            .to_string()
+    }
+    #[test]
+    fn one_matcher_checks_the_ends_a_token_has() {
+        for (line, token, mode, holds) in [
+            ("use crate::app::State;", "app::", Match::Whole, true),
+            ("let snapp::x = 1;", "app::", Match::Whole, false),
+            ("let snapp::x = 1;", "app::", Match::Prefix, false),
+            ("RAW_EFFECTS", "RAW_EFFECT", Match::Whole, false),
+            ("MY_RAW_EFFECT", "RAW_EFFECT", Match::Whole, false),
+            ("crate::RAW_EFFECT)", "RAW_EFFECT", Match::Whole, true),
+            ("use mozjpeg_sys::x;", "mozjpeg", Match::Whole, false),
+            ("use mozjpeg_sys::x;", "mozjpeg", Match::Prefix, true),
+            ("owner.call(c)", ".call(", Match::Whole, true),
+        ] {
+            assert_eq!(holds_token(line, token, mode), holds, "{token} in {line}");
+        }
+    }
+    #[test]
+    fn manifests_are_read_in_every_spelling() {
+        let manifest = "[package]\nname = \"x\"\n\n[dependencies]\na = \"1\" # b\n\
+                        c.workspace = true\nd = { package = \"e\", path = \"../e\" }\n\
+                        f = { version = \"1\", features = [\n    \"g\",\n] }\n\
+                        [target.'cfg(target_os = \"macos\")'.dev-dependencies.h]\npath = \"../h\"\n\
+                        [workspace.dependencies]\ni = \"1\"\n[lints.rust]\nj = \"deny\"\n";
+        let found: Vec<_> = dependencies(manifest)
+            .into_iter()
+            .map(|d| (d.line, d.names.join("/"), d.path, d.text.contains("\"g\"")))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (5, "a".to_owned(), false, false),
+                (6, "c".to_owned(), false, false),
+                (7, "d/e".to_owned(), true, false),
+                (8, "f".to_owned(), false, true),
+                (11, "h".to_owned(), true, false),
+                (14, "i".to_owned(), false, false),
+            ]
+        );
+        let tables: Vec<_> = dependencies(manifest).iter().map(|d| d.table).collect();
+        use Table::*;
+        assert!(tables == [Normal, Normal, Normal, Normal, Dev, Workspace]);
+    }
     #[test]
     fn layer_boundaries_reject_a_forbidden_import() {
         let tmp = tempfile::tempdir().unwrap();
@@ -834,11 +1216,14 @@ mod tests {
             "use crate::state::fields::Fields;\nlet snapp::x = wrapp::y;\n",
         )
         .unwrap();
-        assert_eq!(boundaries(tmp.path()).unwrap(), 1);
+        assert_eq!(read(tmp.path(), LAYERS).unwrap(), (1, 0));
         fs::write(state.join("bad.rs"), "use iced::widget::text;\n").unwrap();
-        let error = boundaries(tmp.path()).unwrap_err().to_string();
+        let error = refusal(tmp.path(), LAYERS, "an Iced import");
         assert!(
-            error.contains("bad.rs:1") && error.contains("use iced"),
+            error.contains("state/bad.rs:1:")
+                && error.contains("`use iced`")
+                && error.contains("source rule `state-layer`")
+                && error.contains("SOURCE_RULES"),
             "{error}"
         );
         // The view model never imports the update layer, in any spelling of the path.
@@ -849,9 +1234,9 @@ mod tests {
             "/// Seeded like [`crate::app::Editor`] seeds them.\n",
         ] {
             fs::write(state.join("bad.rs"), import).unwrap();
-            let error = boundaries(tmp.path()).unwrap_err().to_string();
+            let error = refusal(tmp.path(), LAYERS, import);
             assert!(
-                error.contains("bad.rs:") && error.contains("may not contain app::"),
+                error.contains("bad.rs:") && error.contains("found `app::`"),
                 "{import:?}: {error}"
             );
         }
@@ -863,19 +1248,9 @@ mod tests {
             "\nlet state: luxforge_core::EditorState;\n",
         )
         .unwrap();
-        assert!(
-            boundaries(tmp.path())
-                .unwrap_err()
-                .to_string()
-                .contains("luxforge_core")
-        );
+        assert!(refusal(tmp.path(), LAYERS, "the core in the view").contains("`luxforge_core`"));
         fs::write(view.join("bad.rs"), "owner.call(client, request)\n").unwrap();
-        assert!(
-            boundaries(tmp.path())
-                .unwrap_err()
-                .to_string()
-                .contains(".call(")
-        );
+        assert!(refusal(tmp.path(), LAYERS, "an owner call in the view").contains("`.call(`"));
         fs::remove_file(view.join("bad.rs")).unwrap();
         let ui = tmp.path().join("crates/luxforge-ui");
         fs::create_dir_all(&ui).unwrap();
@@ -885,21 +1260,20 @@ mod tests {
         )
         .unwrap();
         assert!(
-            boundaries(tmp.path())
-                .unwrap_err()
-                .to_string()
-                .contains("luxforge-ui")
+            refusal(tmp.path(), LAYERS, "the core in the widget crate")
+                .contains("luxforge-ui/Cargo.toml:2:")
         );
     }
     #[test]
     fn the_reference_crate_may_depend_on_no_workspace_crate() {
         let tmp = tempfile::tempdir().unwrap();
-        let manifest = tmp.path().join(REFERENCE_MANIFEST);
+        let manifest = tmp.path().join("crates/luxforge-reference/Cargo.toml");
         fs::create_dir_all(manifest.parent().unwrap()).unwrap();
         let clean = "[package]\nname = \"luxforge-reference\"\n\n[dependencies]\n\n\
                      [dev-dependencies]\nserde.workspace = true # not luxforge\n";
         fs::write(&manifest, clean).unwrap();
-        assert_eq!(independent_references(tmp.path()).unwrap(), 3);
+        let rule = &["independent-references"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
         for (what, extra) in [
             (
                 "the core",
@@ -923,12 +1297,11 @@ mod tests {
             ),
         ] {
             fs::write(&manifest, format!("{clean}\n{extra}")).unwrap();
-            let error = independent_references(tmp.path())
-                .err()
-                .unwrap_or_else(|| panic!("{what} was accepted"))
-                .to_string();
+            let error = refusal(tmp.path(), rule, what);
             assert!(
-                error.contains("Cargo.toml:") && error.contains("no workspace crate"),
+                error.contains("luxforge-reference/Cargo.toml:")
+                    && error.contains("no workspace crate")
+                    && error.contains("DEPENDENCY_RULES"),
                 "{what}: {error}"
             );
         }
@@ -988,8 +1361,8 @@ mod tests {
              fn f() {\n    }\n}\n",
         );
         // The codec's lib.rs and decode.rs, the core's lib.rs and export.rs; the test modules are
-        // not read.
-        assert_eq!(one_jpeg_codec(root).unwrap(), 4);
+        // not read. And the workspace's, the codec's and the core's manifests.
+        assert_eq!(read(root, JPEG).unwrap(), (4, 3));
 
         for (what, path, text, expected) in [
             (
@@ -1008,20 +1381,17 @@ mod tests {
                 "an image JPEG decode after a test module",
                 "crates/luxforge-core/src/export.rs",
                 "#[cfg(test)]\nmod tests {\n}\nfn open(p: &Path) { image::open(p); }\n",
-                "not image::open",
+                "found `image::open`",
             ),
             (
                 "an image JPEG decode in the codec crate",
                 "crates/luxforge-jpeg/src/container.rs",
                 "let d = image::load_from_memory(b);\n",
-                "not load_from_memory",
+                "found `load_from_memory`",
             ),
         ] {
             write(path, text);
-            let error = one_jpeg_codec(root)
-                .err()
-                .unwrap_or_else(|| panic!("{what} was accepted"))
-                .to_string();
+            let error = refusal(root, JPEG, what);
             assert!(error.contains(expected), "{what}: {error}");
             fs::remove_file(root.join(path)).unwrap();
         }
@@ -1033,6 +1403,13 @@ mod tests {
                 "crates/luxforge-app/Cargo.toml",
                 "[dependencies]\nimage = { workspace = true, features = [\"jpeg\"] }\n",
                 "jpeg",
+            ),
+            (
+                "the jpeg feature in a multi-line array",
+                "crates/luxforge-app/Cargo.toml",
+                "[dependencies]\nimage = { workspace = true, features = [\n    \"png\",\n    \
+                 \"jpeg\",\n] }\n",
+                "Cargo.toml:2: a shipped crate may not enable image's jpeg feature",
             ),
             (
                 "another crate linking the codec",
@@ -1085,14 +1462,12 @@ mod tests {
         ] {
             let before = fs::read_to_string(root.join(path)).unwrap_or_default();
             write(path, text);
-            let error = one_jpeg_codec(root)
-                .err()
-                .unwrap_or_else(|| panic!("{what} was accepted"))
-                .to_string();
+            let error = refusal(root, JPEG, what);
             assert!(error.contains(expected), "{what}: {error}");
             write(path, &before);
         }
-        assert_eq!(one_jpeg_codec(root).unwrap(), 4);
+        // The app's, the test kit's and xtask's manifests are now read too.
+        assert_eq!(read(root, JPEG).unwrap(), (4, 6));
     }
 
     #[test]
@@ -1173,7 +1548,7 @@ mod tests {
         ] {
             fs::write(file, text).unwrap();
         }
-        assert_eq!(raw_identity(tmp.path()).unwrap(), 2);
+        assert_eq!(read(tmp.path(), &["raw-identity"]).unwrap(), (2, 0));
         // Anywhere else in product code either spelling is refused, after a test item too.
         for (file, text) in [
             (
@@ -1192,10 +1567,7 @@ mod tests {
         ] {
             let clean = fs::read_to_string(&file).ok();
             fs::write(&file, text).unwrap();
-            let error = raw_identity(tmp.path())
-                .err()
-                .unwrap_or_else(|| panic!("{} was accepted", file.display()))
-                .to_string();
+            let error = refusal(tmp.path(), &["raw-identity"], &file.display().to_string());
             let name = file.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
                 error.contains(&format!("{name}:")) && error.contains("only the RAW module"),
@@ -1206,7 +1578,148 @@ mod tests {
                 None => fs::remove_file(&file).unwrap(),
             }
         }
-        assert_eq!(raw_identity(tmp.path()).unwrap(), 2);
+        assert_eq!(read(tmp.path(), &["raw-identity"]).unwrap(), (2, 0));
+    }
+
+    /// Write each `(path, text)` under `root`, creating its directories.
+    fn write_all(root: &Path, files: &[(&str, &str)]) {
+        for (path, text) in files {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+    }
+
+    /// Refuse each `(path, text)` in turn, with `expected` in the refusal, removing it afterwards.
+    fn refuses_each(root: &Path, rule: &str, files: &[(&str, &str)], expected: &str) {
+        for (path, text) in files {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &[rule], path);
+            assert!(
+                error.contains(&format!("{path}:"))
+                    && error.contains(expected)
+                    && error.contains(&format!("source rule `{rule}`")),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn production_threads_start_only_in_their_homes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A declared home, test code in any spelling, and a longer identifier may.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-core/src/latest.rs",
+                    "let worker = thread::Builder::new().spawn(run);\n",
+                ),
+                ("xtask/src/verify.rs", "std::thread::scope(|scope| {});\n"),
+                (
+                    "crates/luxforge-core/src/render/linear.rs",
+                    "fn f() {}\n#[cfg(test)]\nmod tests {\n    fn t() {\n        \
+                     std::thread::spawn(|| {});\n    }\n}\nlet thread::spawner = 1;\n",
+                ),
+                (
+                    "crates/luxforge-core/tests/cancellation.rs",
+                    "thread::spawn(move || {});\n",
+                ),
+                (
+                    "crates/luxforge-testkit/src/proof_tests.rs",
+                    "thread::spawn(move || {});\n",
+                ),
+            ],
+        );
+        assert_eq!(read(root, &["thread-spawn"]).unwrap(), (1, 0));
+        // Anywhere else in production code, each spelling is refused.
+        refuses_each(
+            root,
+            "thread-spawn",
+            &[
+                (
+                    "crates/luxforge-core/src/render/spatial.rs",
+                    "let worker = std::thread::spawn(move || {});\n",
+                ),
+                ("xtask/src/main.rs", "let t = thread::Builder::new();\n"),
+                (
+                    "crates/luxforge-raw/src/lib.rs",
+                    "use std::thread;\nfn f() { thread::scope(|s| {}); }\n",
+                ),
+            ],
+            "declared worker homes",
+        );
+    }
+
+    #[test]
+    fn no_image_handle_is_made_from_pixels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Another constructor may, and the rules file names the token without being read.
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-ui/src/photo.rs",
+                    "let h = image::Handle::from_path(p);\nlet g = Handle::from_rgba8(p);\n",
+                ),
+                (RULES_FILE, "tokens: &[\"Handle::from_rgba\"],\n"),
+            ],
+        );
+        assert_eq!(read(root, &["no-pixel-image-handle"]).unwrap(), (1, 0));
+        // In product and in test code alike, it is refused.
+        refuses_each(
+            root,
+            "no-pixel-image-handle",
+            &[
+                (
+                    "crates/luxforge-app/src/view/canvas.rs",
+                    "let h = image::Handle::from_rgba(w, h, pixels);\n",
+                ),
+                (
+                    "crates/luxforge-ui/src/photo_tests.rs",
+                    "use iced::widget::image::Handle;\nHandle::from_rgba(1, 1, vec![0; 4]);\n",
+                ),
+            ],
+            "uploads a new texture",
+        );
+    }
+
+    #[test]
+    fn the_old_project_name_does_not_return() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_all(
+            root,
+            &[
+                (
+                    "crates/luxforge-core/Cargo.toml",
+                    "[package]\nname = \"luxforge-core\"\n",
+                ),
+                ("xtask/src/main.rs", "// Luxforge's own tasks.\n"),
+                // Only text files are read.
+                ("crates/luxforge-raw/vendor/libraw.cpp", "// lightwell\n"),
+            ],
+        );
+        assert_eq!(read(root, &["project-name"]).unwrap(), (2, 0));
+        refuses_each(
+            root,
+            "project-name",
+            &[
+                (
+                    "crates/luxforge-app/Cargo.toml",
+                    "[dependencies]\nlightwell-core = { path = \"../core\" }\n",
+                ),
+                ("xtask/src/main.rs", "// Lightwell's own tasks.\n"),
+                (
+                    "crates/luxforge-core/tests/fixtures.rs",
+                    "const DIR: &str = \"LIGHTWELL_FIXTURES\";\n",
+                ),
+            ],
+            "old working name",
+        );
     }
 
     fn minimal_plan(id: &str) -> Value {
