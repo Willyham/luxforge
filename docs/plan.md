@@ -15,7 +15,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 ## Output
 
 **JPEG export follow-ups.** JPEG export is delivered ([design](design/export.md)).
-- Owner decisions on the design's proposals: the title-bar menu, exporting the displayed entry, counting up the suggested name, the Keep metadata field set and the encoder
+- Choose the encoder: a faster existing package than the pinned `image` encoder, being re-investigated
 - Presets, resizing, output sharpening and other formats, each only by its own decision
 
 ## Library
