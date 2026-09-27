@@ -529,7 +529,7 @@
     {
       "id": "TASK-008",
       "description": "Put the facts clients act on into error data and make the desktop read codes and data instead of matching the core's message text.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
