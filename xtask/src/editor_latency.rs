@@ -25,7 +25,13 @@
 //! report counts them, and the release still redevelops the mosaic before the committed frame.
 //!
 //! [design]: ../../../docs/design/basic-and-histogram.md
-use crate::*;
+use crate::{
+    scenario::{
+        Launch, Launched, Run,
+        launch::{Flag, Poll, Watched, Watcher, stamp, until_exit, watch},
+    },
+    *,
+};
 use luxforge_core::{ModuleRegistry, ParameterKind};
 use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, MaskStep, PaintStep, Reference,
@@ -241,111 +247,109 @@ fn elapsed(event: &Value) -> Result<f64> {
         .ok_or_else(|| "An event carries no elapsed_ms".into())
 }
 
-/// One process's sampled CPU and resident memory during an evidence launch.
-struct ProcessObservation {
-    rss_samples: Vec<Value>,
-    peak_rss_mib: f64,
-    process_cpu_seconds: Option<f64>,
-}
+/// The one tool name every editor-latency run records itself under.
+const TOOL: &str = "editor-latency";
 
-/// Run one evidence script to completion, sampling CPU time and RSS about every 50 ms while it runs.
-fn evidence_run(
-    root: &Path,
-    bin: &Path,
-    out: &Path,
-    name: &str,
-    args: &[OsString],
-    deadline: Duration,
-) -> Result<ProcessObservation> {
-    let mut child =
-        scenario::launch::spawn_editor(root, bin, args, &out.join(format!("{name}.log")))?;
-    let start = Instant::now();
-    let watch = stats::Watch::new(root, child.child.id());
-    let mut rss = Vec::new();
-    let mut first_cpu_seconds = None;
-    let mut last_cpu_seconds = None;
-    let status = loop {
-        if let Some(status) = child.child.try_wait()? {
-            break status;
-        }
-        ensure(
-            start.elapsed() < deadline,
-            format!("The {name} run exceeded its deadline"),
-        )?;
-        if let Ok((cpu_seconds, resident)) = watch.usage()
-            && resident > 0.0
-        {
-            // `ps` may return a zero RSS row in the race after the child exits but before
-            // `try_wait` observes it. Do not let that reset the final CPU sample to zero.
-            first_cpu_seconds.get_or_insert(cpu_seconds);
-            last_cpu_seconds = Some(cpu_seconds);
-            rss.push(json!([start.elapsed().as_secs_f64() * 1000.0, resident]));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    ensure(
-        status.success(),
-        format!(
-            "The {name} run failed: {}",
-            fs::read_to_string(out.join(format!("{name}.log"))).unwrap_or_default()
-        ),
-    )?;
-    let peak = rss
-        .iter()
-        .filter_map(|row| row[1].as_f64())
-        .fold(0.0, f64::max);
-    let process_cpu_seconds = first_cpu_seconds
-        .zip(last_cpu_seconds)
-        .map(|(first, last)| last - first)
-        .filter(|delta| *delta >= 0.01);
-    Ok(ProcessObservation {
-        rss_samples: rss,
-        peak_rss_mib: peak,
-        process_cpu_seconds,
+/// Editor-latency's argument order: the evidence directory, the catalog and the data root first,
+/// then the script, the photograph and the developer flag.
+const ORDER: [Flag; 9] = [
+    Flag::Evidence,
+    Flag::Catalog,
+    Flag::DataRoot,
+    Flag::Script,
+    Flag::Open,
+    Flag::Developer,
+    Flag::Disable,
+    Flag::Endpoint,
+    Flag::Window,
+];
+
+/// Sample the editor's CPU time and RSS about every 50 ms until it exits, within the launch's
+/// deadline counted from the moment the watch starts, just after the spawn. What it returns is the
+/// process's `rss_samples`, their peak as `peak_rss_mib`, and `process_cpu_seconds`.
+fn sampled(root: &Path, name: &str) -> Watcher {
+    let (root, late) = (
+        root.to_path_buf(),
+        format!("The {name} run exceeded its deadline"),
+    );
+    Box::new(move |child, _, deadline| {
+        let start = Instant::now();
+        let sampler = stats::Watch::new(&root, child.child.id());
+        let mut rss = Vec::new();
+        let mut first_cpu_seconds = None;
+        let mut last_cpu_seconds = None;
+        let poll = Poll {
+            every: Duration::from_millis(50),
+            from: start,
+            deadline,
+            late: &late,
+        };
+        let status = until_exit(child, poll, |_| {
+            if let Ok((cpu_seconds, resident)) = sampler.usage()
+                && resident > 0.0
+            {
+                // `ps` may return a zero RSS row in the race after the child exits but before
+                // `try_wait` observes it. Do not let that reset the final CPU sample to zero.
+                first_cpu_seconds.get_or_insert(cpu_seconds);
+                last_cpu_seconds = Some(cpu_seconds);
+                rss.push(json!([start.elapsed().as_secs_f64() * 1000.0, resident]));
+            }
+            Ok(())
+        })?;
+        let peak = rss
+            .iter()
+            .filter_map(|row| row[1].as_f64())
+            .fold(0.0, f64::max);
+        let process_cpu_seconds = first_cpu_seconds
+            .zip(last_cpu_seconds)
+            .map(|(first, last)| last - first)
+            .filter(|delta| *delta >= 0.01);
+        Ok((
+            Some(status),
+            json!({"rss_samples":rss,"peak_rss_mib":peak,"process_cpu_seconds":process_cpu_seconds}),
+        ))
     })
 }
 
-/// A scripted gesture launch's arguments, the viewport journey's included; the proof curve's adds
-/// the developer flag.
-fn gesture_args(evidence: &Path, script: &Path, source: &Path, developer: bool) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![
-        "--evidence-dir".into(),
-        evidence.into(),
-        "--evidence-script".into(),
-        script.into(),
-        "--open".into(),
-        source.into(),
-    ];
+/// A scripted gesture launch, the viewport journey's included: its evidence in `<out>/app`, its
+/// console in `<name>.log` and its script kept as `file`. The proof curve's adds the developer
+/// flag.
+fn gesture_launch(
+    out: &Path,
+    name: &str,
+    file: &str,
+    steps: &[script::Step],
+    source: &Path,
+    developer: bool,
+) -> Launch {
+    let launch = Launch::named(name)
+        .evidence_dir(&out.join("app"))
+        .script(file, script::write(steps))
+        .open_all(&[source.into()])
+        .order(ORDER);
     if developer {
-        args.push("--developer".into());
+        launch.developer()
+    } else {
+        launch
     }
-    args
 }
 
-/// The hold launch's arguments: the gesture's, with the catalog that outlives it.
-fn hold_args(evidence: &Path, catalog: &Path, script: &Path, source: &Path) -> Vec<OsString> {
-    vec![
-        "--evidence-dir".into(),
-        evidence.into(),
-        "--catalog".into(),
-        catalog.into(),
-        "--evidence-script".into(),
-        script.into(),
-        "--open".into(),
-        source.into(),
-    ]
+/// The hold launch: the full Basic layer committed into a catalog that outlives it.
+fn hold_launch(catalog: &Path, source: &Path) -> Launch {
+    Launch::named("hold")
+        .catalog(catalog)
+        .script("hold-script.json", hold_script())
+        .open_all(&[source.into()])
+        .order(ORDER)
 }
 
-/// The idle launch's arguments: the held catalog, reopened by an ordinary launch.
-fn idle_args(catalog: &Path, data: &Path, source: &Path) -> Vec<OsString> {
-    vec![
-        "--catalog".into(),
-        catalog.into(),
-        "--data-root".into(),
-        data.into(),
-        "--open".into(),
-        source.into(),
-    ]
+/// The idle launch: the held catalog, reopened by an ordinary launch.
+fn idle_launch(catalog: &Path, data: &Path, source: &Path) -> Launch {
+    Launch::ordinary("idle")
+        .catalog(catalog)
+        .data_root(data)
+        .open_all(&[source.into()])
+        .order(ORDER)
 }
 
 /// One input's journey, from the `draft.set` that carried it to the frame that showed it.
@@ -987,7 +991,6 @@ fn gpu_count(frame: &Value, name: &str) -> Result<u64> {
 /// A focused native viewport journey. Event timestamps measure desktop adoption; capture-side
 /// `surface.gpu` counters report actual draw encoding and writes, never display scanout.
 fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
-    ensure(!out.exists(), "Editor latency output must be new")?;
     ensure(
         matches!(options.zoom, Some(100.0 | 200.0)),
         "--mode viewport requires --zoom 100 or --zoom 200",
@@ -1000,23 +1003,49 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
     let field = resolve_field(options.control, options.action, options.parameter)?;
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
-    fs::create_dir_all(out)?;
     let (steps, positions) = viewport_script(options, &field);
     ensure(
         steps.len() <= script::MAX_SCRIPT_STEPS,
         "Viewport script exceeds the evidence step bound",
     )?;
-    let script_file = out.join("viewport-script.json");
-    write_json(&script_file, &script::write(&steps))?;
-    let evidence = out.join("app");
-    let usage = evidence_run(
-        root,
-        bin,
+    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90))?;
+    run.check(|run| {
+        viewport(
+            run,
+            options,
+            &field,
+            &source,
+            &source_hash,
+            &steps,
+            positions,
+        )
+    })
+}
+
+/// The viewport journey's launch and its checks, in `run`.
+fn viewport(
+    run: &mut Run,
+    options: &Options,
+    field: &FieldTarget,
+    source: &Path,
+    source_hash: &str,
+    steps: &[script::Step],
+    positions: [usize; 7],
+) -> Result {
+    let out = &run.out().to_path_buf();
+    let viewport = gesture_launch(
         out,
         "viewport",
-        &gesture_args(&evidence, &script_file, &source, false),
-        Duration::from_secs(90),
-    )?;
+        "viewport-script.json",
+        steps,
+        source,
+        false,
+    )
+    .watch(sampled(run.root(), "viewport"));
+    let Launched {
+        dir: evidence,
+        watched: usage,
+    } = run.launch(viewport)?;
     let app = read_json(&evidence.join("result.json"))?;
     ensure(
         app["status"] == "captured" && app["had_input_errors"] == false,
@@ -1044,6 +1073,7 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
         )?;
     }
     let events = scenario::events(&evidence.join("events.jsonl"))?;
+    let header = run.provenance(&events)?;
     let [
         draft,
         first_pan,
@@ -1077,20 +1107,18 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
         })
         .collect();
     if regions.is_empty() {
-        write_json(
-            &out.join("latency.json"),
-            &json!({
-                "status":"unavailable",
-                "mode":"viewport",
-                "reason":"The binary emitted no region preview_displayed events; viewport evidence is unsupported, not a pass",
-                "binary_sha256":hash(bin)?,
-                "source":source,
-                "source_sha256":source_hash,
-                "zoom_percent":options.zoom,
-                "launch_mode":launch::MODE,
-            }),
-        )?;
-        ensure(hash(&source)? == source_hash, "The source changed")?;
+        let mut result = json!({
+            "status":"unavailable",
+            "mode":"viewport",
+            "reason":"The binary emitted no region preview_displayed events; viewport evidence is unsupported, not a pass",
+            "source":source,
+            "source_sha256":source_hash,
+            "zoom_percent":options.zoom,
+        });
+        stamp(&mut result, &header);
+        write_json(&out.join("latency.json"), &result)?;
+        run.record("latency", json!("unavailable"));
+        ensure(hash(source)? == source_hash, "The source changed")?;
         println!("UNAVAILABLE editor latency (viewport): {}", out.display());
         return Ok(());
     }
@@ -1223,11 +1251,9 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
         .map(|e| elapsed(e))
         .transpose()?
         .ok_or("The first draft has no region event")?;
-    let result = json!({
+    let mut result = json!({
         "status":"passed", "mode":"viewport", "zoom_percent":options.zoom,
-        "source":source, "source_sha256":source_hash, "binary_sha256":hash(bin)?,
-        "lockfile_sha256":hash(&root.join("Cargo.lock"))?, "platform":host(root)?,
-        "profile":"release", "launch_mode":launch::MODE,
+        "source":source, "source_sha256":source_hash,
         "backend":settled["state"]["backend"],
         "control_action":field.action, "control_parameter":field.parameter,
         "crop_angle_deg":options.crop, "full_basic_layer":options.basic, "mask":options.mask,
@@ -1246,13 +1272,14 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
             "photo_writes_after_settled_pan":after_pan_writes,
             "upload_bytes_before_settled_pan":gpu_count(settled,"upload_bytes")?,
             "upload_bytes_after_settled_pan":gpu_count(final_pan,"upload_bytes")?,
-            "peak_sampled_rss_mib":usage.peak_rss_mib,
+            "peak_sampled_rss_mib":usage["peak_rss_mib"],
             "note":"photo_writes and upload_bytes are the photo surface's actual texture writes, counted during draw encoding. They do not measure display scanout or backend-owned staging.",
         },
         "scope":"A held drafted slider at percentage zoom, two pans, quiet refinement, resumed motion, release, exact full-image report and a settled pan. preview_displayed is frame adoption, not confirmed GPU upload or display scanout. Captured surface.gpu counters describe actual draw encoding and texture writes.",
     });
+    stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
-    ensure(hash(&source)? == source_hash, "The source changed")?;
+    ensure(hash(source)? == source_hash, "The source changed")?;
     println!("PASS editor latency (viewport): {}", out.display());
     Ok(())
 }
@@ -1443,33 +1470,38 @@ pub fn paced_stroke_latencies(events: &[Value]) -> Result<(usize, Vec<f64>)> {
 /// values, its draft is the mask gesture's own, and its frames are paired through
 /// `mask_draft_preview` rather than `slider_draft_preview`.
 fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
-    ensure(!out.exists(), "Editor latency output must be new")?;
     ensure(
         (2..=48).contains(&options.samples),
         "Paint samples must be 2..48 positions; a stroke of one position has no path and the script takes at most 64 steps",
     )?;
-    fs::create_dir_all(out)?;
+    // The paced stroke itself takes samples × interval of real time on top of the editor's own
+    // 25 s evidence deadline; allow generously for both plus the launch wrapper.
+    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90))?;
+    run.check(|run| paint(run, options))
+}
+
+/// The paint mode's launch and its report, in `run`.
+fn paint(run: &mut Run, options: &Options) -> Result {
+    let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
     let path = paint_path(options.samples);
 
     let steps = paint_script(options, path.clone());
-    let script_file = out.join("gesture-script.json");
-    write_json(&script_file, &script::write(&steps))?;
-
     let load_start = crate::verify::load_average(root);
-    let evidence = out.join("app");
-    let args = gesture_args(&evidence, &script_file, &source, false);
-    let usage = evidence_run(
-        root,
-        bin,
+    let gesture = gesture_launch(
         out,
         "gesture",
-        &args,
-        // The paced stroke itself takes samples × interval of real time on top of the editor's own
-        // 25 s evidence deadline; allow generously for both plus the launch wrapper.
-        Duration::from_secs(90),
-    )?;
+        "gesture-script.json",
+        &steps,
+        &source,
+        false,
+    )
+    .watch(sampled(root, "gesture"));
+    let Launched {
+        dir: evidence,
+        watched: usage,
+    } = run.launch(gesture)?;
 
     let app = read_json(&evidence.join("result.json"))?;
     ensure(
@@ -1477,6 +1509,7 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         "The paint run captured nothing",
     )?;
     let events = scenario::events(&evidence.join("events.jsonl"))?;
+    let header = run.provenance(&events)?;
     ensure(
         app["had_input_errors"] == json!(false)
             && app["script"]
@@ -1537,13 +1570,8 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     let p95 = stats::Distribution::percentile(&ranked, 95);
     let load_end = crate::verify::load_average(root);
 
-    let result = json!({
+    let mut result = json!({
         "status":"passed",
-        "launch_mode":launch::MODE,
-        "platform":host(root)?,
-        "profile":"release",
-        "binary_sha256":hash(bin)?,
-        "lockfile_sha256":hash(&root.join("Cargo.lock"))?,
         "source":source,
         "source_sha256":source_hash,
         "source_dimensions":last["state"]["source_dimensions"],
@@ -1609,10 +1637,10 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         "load_threshold":launch::LOAD_THRESHOLD,
         "provisional":load_start.or(load_end).is_none_or(|load| load > launch::LOAD_THRESHOLD),
         "resources":{
-            "sampled_peak_rss_mib":usage.peak_rss_mib,
-            "sampled_process_cpu_seconds":usage.process_cpu_seconds,
+            "sampled_peak_rss_mib":usage["peak_rss_mib"],
+            "sampled_process_cpu_seconds":usage["process_cpu_seconds"],
             "scratch":last["state"]["scratch"],
-            "rss_samples":usage.rss_samples,
+            "rss_samples":usage["rss_samples"],
             "note":"RSS and process CPU time are sampled together by ps about every 50 ms. Peak RSS includes captures, GPU resources and allocator retention; CPU seconds are the first-to-last valid sampled process delta, may miss up to one polling interval at each edge, and are null when the delta is below ps's 0.01 s resolution.",
         },
         "workspace":last["state"]["workspace"],
@@ -1623,6 +1651,7 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "Source SHA-256 is unchanged",
         ],
     });
+    stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
@@ -1654,7 +1683,6 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     if options.mode == Mode::Paint {
         return run_paint(root, out, bin, &options);
     }
-    ensure(!out.exists(), "Editor latency output must be new")?;
     ensure(
         (1..=60).contains(&options.samples),
         "Samples must be 1..60; the evidence script accepts at most 64 steps",
@@ -1664,14 +1692,22 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "Curve samples must be 1..32 so every middle-point fraction stays in range",
     )?;
     let field = resolve_field(options.control, options.action, options.parameter)?;
-    fs::create_dir_all(out)?;
+    // The editor's own evidence deadline is 25 s; allow for the launch wrapper around it.
+    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(60))?;
+    run.check(|run| gesture(run, &options, &field))
+}
+
+/// A drag or commit run's launch and its report, in `run`, with the hold and idle launches after
+/// them when `--idle` asks for them.
+fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
+    let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
     // A drag needs one more value than the measured sample count: the extra one is the release,
     // whose own drafted preview the commit supersedes, so it is measured to the settled histogram
     // instead. A commit run measures every value it sends.
     let drag = options.mode == Mode::Drag;
-    let values = gesture_values(options.samples + usize::from(drag), options.control, &field);
+    let values = gesture_values(options.samples + usize::from(drag), options.control, field);
     if options.control == Control::Slider {
         ensure(
             values
@@ -1690,30 +1726,24 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         )?;
     }
 
-    let steps = gesture_script(&options, &field, &values, drag);
+    let steps = gesture_script(options, field, &values, drag);
     ensure(
         steps.len() <= script::MAX_SCRIPT_STEPS,
         "The latency script exceeds the 64-step evidence bound",
     )?;
-    let script_file = out.join("gesture-script.json");
-    write_json(&script_file, &script::write(&steps))?;
-
-    let evidence = out.join("app");
-    let args = gesture_args(
-        &evidence,
-        &script_file,
-        &source,
-        options.control == Control::Curve,
-    );
-    let usage = evidence_run(
-        root,
-        bin,
+    let gesture = gesture_launch(
         out,
         "gesture",
-        &args,
-        // The editor's own evidence deadline is 25 s; allow for the launch wrapper around it.
-        Duration::from_secs(60),
-    )?;
+        "gesture-script.json",
+        &steps,
+        &source,
+        options.control == Control::Curve,
+    )
+    .watch(sampled(root, "gesture"));
+    let Launched {
+        dir: evidence,
+        watched: usage,
+    } = run.launch(gesture)?;
 
     let app = read_json(&evidence.join("result.json"))?;
     ensure(
@@ -1721,6 +1751,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "The gesture run captured nothing",
     )?;
     let events = scenario::events(&evidence.join("events.jsonl"))?;
+    let header = run.provenance(&events)?;
     ensure(
         app["had_input_errors"] == json!(false)
             && app["script"]
@@ -1756,7 +1787,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         )?;
     }
 
-    let measured = inputs(&events, options.control, &field)?;
+    let measured = inputs(&events, options.control, field)?;
     ensure(
         measured.len() >= values.len(),
         format!(
@@ -1892,11 +1923,6 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
 
     let mut result = json!({
         "status":"passed",
-        "launch_mode":launch::MODE,
-        "platform":host(root)?,
-        "profile":"release",
-        "binary_sha256":hash(bin)?,
-        "lockfile_sha256":hash(&root.join("Cargo.lock"))?,
         "source":source,
         "source_sha256":source_hash,
         "source_dimensions":last["state"]["source_dimensions"],
@@ -1959,10 +1985,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             "note":"Two bounds show here. Within one gesture the driver keeps at most one draft round trip in flight and only the newest value waiting, so a burst of moves between two ticks is coalesced: burst_step_values against burst_step_draft_sets is that reduction. At the queue, a requested preview job whose generation never reaches a preview_displayed was superseded; every commit supersedes the drafted preview of the value it commits, and a drag's open steps drain one at a time so none of theirs is. No analysis job is superseded because a drafted preview is never analysed: the exact report is reduced only from the committed frame.",
         },
         "resources":{
-            "sampled_peak_rss_mib":usage.peak_rss_mib,
-            "sampled_process_cpu_seconds":usage.process_cpu_seconds,
+            "sampled_peak_rss_mib":usage["peak_rss_mib"],
+            "sampled_process_cpu_seconds":usage["process_cpu_seconds"],
             "scratch":last["state"]["scratch"],
-            "rss_samples":usage.rss_samples,
+            "rss_samples":usage["rss_samples"],
             "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the owner render context's colour budget at the last captured frame, with peak_bytes its high-water mark over the whole run.",
         },
         "workspace":last["state"]["workspace"],
@@ -1978,11 +2004,12 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     // Beside the rest rather than inside it: the report is already as deep as json! expands.
     result["approximate_white_balance_frames"] = approximate;
     result["zoom_percent"] = json!(options.zoom);
+    stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
     if options.idle {
-        hold_and_idle(root, out, bin, &source)?;
+        hold_and_idle(run, &source)?;
     }
     println!("PASS editor latency: {}", out.display());
     Ok(())
@@ -2155,8 +2182,16 @@ fn analyze_burst(events: &[Value], field: &FieldTarget) -> Result<BurstAnalysis>
 /// what reaches the owner, exactly as a real fast drag would, and this reads that behaviour back out
 /// of the run's own `events.jsonl`.
 fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
-    ensure(!out.exists(), "Editor latency output must be new")?;
-    fs::create_dir_all(out)?;
+    // The editor's own evidence deadline is 25 s; the burst itself paces BURST_SECONDS of values
+    // through real round trips, so this allows generously for both plus the launch wrapper around
+    // them.
+    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(60))?;
+    run.check(|run| burst(run, options))
+}
+
+/// The burst's launch and its report, in `run`.
+fn burst(run: &mut Run, options: &Options) -> Result {
+    let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
     let interval_ms = burst_interval_ms();
@@ -2175,22 +2210,19 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     )?;
 
     let steps = burst_script(options, &field, &values, interval_ms);
-    let script_file = out.join("gesture-script.json");
-    write_json(&script_file, &script::write(&steps))?;
-
-    let evidence = out.join("app");
-    let args = gesture_args(&evidence, &script_file, &source, false);
-    let usage = evidence_run(
-        root,
-        bin,
+    let gesture = gesture_launch(
         out,
         "gesture",
-        &args,
-        // The editor's own evidence deadline is 25 s; the burst itself paces BURST_SECONDS of
-        // values through real round trips, so this allows generously for both plus the launch
-        // wrapper around them.
-        Duration::from_secs(60),
-    )?;
+        "gesture-script.json",
+        &steps,
+        &source,
+        false,
+    )
+    .watch(sampled(root, "gesture"));
+    let Launched {
+        dir: evidence,
+        watched: usage,
+    } = run.launch(gesture)?;
 
     let app = read_json(&evidence.join("result.json"))?;
     ensure(
@@ -2198,6 +2230,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         "The burst run captured nothing",
     )?;
     let events = scenario::events(&evidence.join("events.jsonl"))?;
+    let header = run.provenance(&events)?;
     ensure(
         app["had_input_errors"] == json!(false)
             && app["script"]
@@ -2257,11 +2290,6 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
 
     let mut result = json!({
         "status":"passed",
-        "launch_mode":launch::MODE,
-        "platform":host(root)?,
-        "profile":"release",
-        "binary_sha256":hash(bin)?,
-        "lockfile_sha256":hash(&root.join("Cargo.lock"))?,
         "source":source,
         "source_sha256":source_hash,
         "source_dimensions":last["state"]["source_dimensions"],
@@ -2306,10 +2334,10 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "proxy":analysis.proxy,
         },
         "resources":{
-            "sampled_peak_rss_mib":usage.peak_rss_mib,
-            "sampled_process_cpu_seconds":usage.process_cpu_seconds,
+            "sampled_peak_rss_mib":usage["peak_rss_mib"],
+            "sampled_process_cpu_seconds":usage["process_cpu_seconds"],
             "scratch":last["state"]["scratch"],
-            "rss_samples":usage.rss_samples,
+            "rss_samples":usage["rss_samples"],
             "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the owner render context's colour budget at the last captured frame, with peak_bytes its high-water mark over the whole run.",
         },
         "workspace":last["state"]["workspace"],
@@ -2335,6 +2363,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     result["burst"]["adoption_note"] = json!(
         "presented_frames/presented_fps count preview_displayed adoption events. The surface can adopt several phases before one draw; draw_encoded_frames counts actual photo-surface draw encoding between captured frames, not display scanout."
     );
+    stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
@@ -2349,18 +2378,16 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
 /// own evidence deadline is shorter than the idle window. The first run commits the layer into a
 /// catalog that outlives it; the second opens the same file, which the catalog already holds, so it
 /// renders and reduces the committed stack and then has nothing left to do.
-fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
+fn hold_and_idle(run: &mut Run, source: &Path) -> Result {
+    let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
     let catalog = out.join("held-catalog.sqlite");
-    let evidence = out.join("hold");
-    let hold = out.join("hold-script.json");
-    write_json(&hold, &hold_script())?;
-    let hold_usage = evidence_run(
-        root,
-        bin,
-        out,
-        "hold",
-        &hold_args(&evidence, &catalog, &hold, source),
-        Duration::from_secs(60),
+    let Launched {
+        dir: evidence,
+        watched: hold_usage,
+    } = run.launch(
+        hold_launch(&catalog, source)
+            .deadline(Duration::from_secs(60))
+            .watch(sampled(root, "hold")),
     )?;
     let held = read_json(&evidence.join("result.json"))?;
     let frame = held["frames"]
@@ -2371,37 +2398,41 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
 
     // The second process: the same catalog, no script, left idle after its first frame.
     let data = out.join("idle-data");
-    let log = out.join("idle.log");
-    let mut child =
-        scenario::launch::spawn_editor(root, bin, &idle_args(&catalog, &data, source), &log)?;
-    let events = data.join("logs/events.jsonl");
-    let start = Instant::now();
-    loop {
-        if fs::read_to_string(&events)
-            .unwrap_or_default()
-            .contains("\"event\":\"analysis_adopted\"")
-        {
-            break;
-        }
-        ensure(
-            child.child.try_wait()?.is_none(),
-            format!(
-                "The idle process exited before its histogram: {}",
-                fs::read_to_string(&log).unwrap_or_default()
-            ),
-        )?;
-        ensure(
-            start.elapsed() < Duration::from_secs(30),
-            "The idle process never adopted a histogram",
-        )?;
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    // One second of settling, then a 30 second window: the same idle window `measure` takes.
-    let window = stats::idle_window(root, child.child.id())?;
+    let (log, events) = (out.join("idle.log"), data.join("logs/events.jsonl"));
+    let idle_root = root.clone();
+    let idle = idle_launch(&catalog, &data, source)
+        .deadline(Duration::from_secs(30))
+        .watch(Box::new(move |child, _, deadline| {
+            let poll = Poll {
+                every: Duration::from_millis(50),
+                from: Instant::now(),
+                deadline,
+                late: "The idle process never adopted a histogram",
+            };
+            let histogram = || {
+                Ok(fs::read_to_string(&events)
+                    .unwrap_or_default()
+                    .contains("\"event\":\"analysis_adopted\"")
+                    .then_some(()))
+            };
+            if let Watched::Exited(_) = watch(child, poll, histogram, |_| Ok(()))? {
+                return Err(format!(
+                    "The idle process exited before its histogram: {}",
+                    fs::read_to_string(&log).unwrap_or_default()
+                )
+                .into());
+            }
+            // One second of settling, then a 30 second window: the same idle window `measure`
+            // takes. Its events are counted while it still runs.
+            let window = stats::idle_window(&idle_root, child.child.id())?;
+            let events = scenario::events(&events)?.len();
+            Ok((None, json!({"window":window.to_json(),"events":events})))
+        }));
+    let idle = run.launch(idle)?.watched;
+    let window = &idle["window"];
     // The scratch budget travels in the state snapshot written beside a captured frame, and an
     // ordinary launch captures none, so the idle process cannot report it. The gesture process
     // above does, and it runs the same colour stack.
-    let idle_events = scenario::events(&events)?;
     write_json(
         &out.join("resources.json"),
         &json!({
@@ -2409,20 +2440,20 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
             "workload":"One 24 MP image holding a Basic layer with all ten fields non-neutral, histogram on",
             "basic_payload":full_basic(),
             "gesture_process":{
-                "sampled_peak_rss_mib":hold_usage.peak_rss_mib,
-                "sampled_process_cpu_seconds":hold_usage.process_cpu_seconds,
+                "sampled_peak_rss_mib":hold_usage["peak_rss_mib"],
+                "sampled_process_cpu_seconds":hold_usage["process_cpu_seconds"],
                 "scratch":frame["state"]["scratch"],
                 "workspace":frame["state"]["workspace"],
                 "histogram":frame["state"]["histogram"],
                 "controls":frame["state"]["controls"],
             },
             "idle_process":{
-                "duration_s":window.duration_s,
-                "cpu_percent_one_core":window.cpu_percent_one_core,
-                "rss_mib_start":window.rss_mib_start,
-                "rss_mib_end":window.rss_mib_end,
-                "rss_mib_peak":window.rss_mib_peak,
-                "events":idle_events.len(),
+                "duration_s":window["duration_s"],
+                "cpu_percent_one_core":window["cpu_percent_one_core"],
+                "rss_mib_start":window["rss_mib_start"],
+                "rss_mib_end":window["rss_mib_end"],
+                "rss_mib_peak":window["rss_mib_peak"],
+                "events":idle["events"],
                 "scratch":"not observable: the budget travels in the state snapshot beside a captured frame, and an ordinary launch captures none",
             },
             "method":"The first process commits the layer into a catalog that outlives it and is sampled by ps about every 50 ms while it edits, with its frame captures included in that RSS. The second opens the same file from that catalog, renders and reduces the committed stack, then is left alone; CPU is the ps CPU-time delta over 30 seconds after one second of settling. The child is then killed, so this is not clean-close evidence. RSS includes GPU resources and allocator retention and is not separated.",
@@ -2565,45 +2596,22 @@ mod tests {
         put("hold".into(), hold_script());
         // Every launch's arguments, as it passes them in a run written to `/out`.
         let out = Path::new("/out");
-        let arguments = |args: Vec<OsString>| {
-            json!(
-                launch::editor_args(&args)
-                    .into_iter()
-                    .map(|arg| arg.to_string_lossy().into_owned())
-                    .collect::<Vec<_>>()
-            )
-        };
-        for (name, file, developer) in [
-            ("gesture", "gesture-script.json", false),
-            ("curve", "gesture-script.json", true),
-            ("viewport", "viewport-script.json", false),
+        for (name, log, file, developer) in [
+            ("gesture", "gesture", "gesture-script.json", false),
+            ("curve", "gesture", "gesture-script.json", true),
+            ("viewport", "viewport", "viewport-script.json", false),
         ] {
-            put(
-                format!("{name}-arguments"),
-                arguments(gesture_args(
-                    &out.join("app"),
-                    &out.join(file),
-                    &source,
-                    developer,
-                )),
-            );
+            let launch = gesture_launch(out, log, file, &[], &source, developer);
+            put(format!("{name}-arguments"), json!(launch.command(out)));
         }
+        let catalog = out.join("held-catalog.sqlite");
         put(
             "hold-arguments".into(),
-            arguments(hold_args(
-                &out.join("hold"),
-                &out.join("held-catalog.sqlite"),
-                &out.join("hold-script.json"),
-                &source,
-            )),
+            json!(hold_launch(&catalog, &source).command(out)),
         );
         put(
             "idle-arguments".into(),
-            arguments(idle_args(
-                &out.join("held-catalog.sqlite"),
-                &out.join("idle-data"),
-                &source,
-            )),
+            json!(idle_launch(&catalog, &out.join("idle-data"), &source).command(out)),
         );
     }
 

@@ -24,7 +24,11 @@
 //! under the section's 0.5 s; that run is not part of `rendered`, because no RAW photograph is
 //! checked in.
 use crate::{
-    scenario::{Checked, Plan, Run, Step, launch::Guard, plan::only},
+    scenario::{
+        Checked, Plan, Run, Step,
+        launch::{self, Guard},
+        plan::only,
+    },
     *,
 };
 use luxforge_evidence::{self as script};
@@ -143,14 +147,11 @@ fn wall_ms() -> u64 {
         .unwrap_or_default()
 }
 
-/// The editor's resident memory as `ps` reports it, in bytes.
-fn ps_resident(pid: u32) -> Option<u64> {
-    let out = Command::new("ps")
-        .args(["-o", "rss=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    let kib: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
-    Some(kib * 1024)
+/// The editor's resident memory as `ps` reports it through the shared sampler, in bytes. The
+/// sampler's MiB are whole KiB over 1024, so they convert back to bytes exactly.
+fn ps_resident(root: &Path, pid: u32) -> Option<u64> {
+    let (_, mib) = stats::usage(root, pid).ok()?;
+    Some((mib * 1_048_576.0) as u64)
 }
 
 /// The editor's physical footprint as macOS's `footprint` tool reports it — the kernel ledger
@@ -177,26 +178,29 @@ fn footprint(pid: u32) -> std::result::Result<u64, String> {
         })
 }
 
-/// Wait for the editor to exit as [`crate::scenario::launch::wait`] does, reading its memory from
+/// Wait for the editor to exit through the one [`launch::watch`] loop, reading its memory from
 /// outside the process meanwhile: `ps` every [`POLL`] and `footprint` every [`FOOTPRINT_EVERY`]
-/// polls, each stamped with the wall-clock middle of the read. `footprint` needs no privileges for a process
-/// of the same user; if it fails once it is not tried again and the reason is recorded.
-pub fn watch(child: &mut Guard, timeout: Duration) -> Result<(ExitStatus, Value)> {
+/// polls, each stamped with the wall-clock middle of the read. `footprint` needs no privileges for
+/// a process of the same user; if it fails once it is not tried again and the reason is recorded.
+pub fn watch(
+    child: &mut Guard,
+    _: Instant,
+    timeout: Duration,
+) -> Result<(Option<ExitStatus>, Value)> {
+    let root = root()?;
     let pid = child.child.id();
-    let start = Instant::now();
     let mut readings = Vec::new();
     let mut footprint_error: Option<String> = None;
     let mut polls = 0usize;
-    let status = loop {
-        if let Some(status) = child.child.try_wait()? {
-            break status;
-        }
-        ensure(
-            start.elapsed() < timeout,
-            "Child timed out; killed and reaped",
-        )?;
+    let poll = launch::Poll {
+        every: POLL,
+        from: Instant::now(),
+        deadline: timeout,
+        late: "Child timed out; killed and reaped",
+    };
+    let status = launch::until_exit(child, poll, |child| {
         let before = wall_ms();
-        if let Some(resident) = ps_resident(pid) {
+        if let Some(resident) = ps_resident(&root, pid) {
             let after = wall_ms();
             readings.push(json!({"tool":"ps","wall_ms":(before + after) / 2,"span_ms":after - before,"resident_bytes":resident}));
         }
@@ -213,10 +217,10 @@ pub fn watch(child: &mut Guard, timeout: Duration) -> Result<(ExitStatus, Value)
             }
         }
         polls += 1;
-        std::thread::sleep(POLL);
-    };
+        Ok(())
+    })?;
     Ok((
-        status,
+        Some(status),
         json!({"pid":pid,"footprint_error":footprint_error,"readings":readings}),
     ))
 }

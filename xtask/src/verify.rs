@@ -105,39 +105,24 @@ impl Status {
 enum Launches {
     /// No editor process at all (`check`, the core acceptance journey, core timing diagnostics
     /// and fixture generation), or one that keeps no `launches` list of its own (`raw-authentic`'s
-    /// `cargo test` processes, `hardening`'s own handful of short-lived editor launches).
+    /// `cargo test` processes).
     None,
-    Smoke,
-    Measure,
-    Latency,
+    /// A run of the scenario library's launch envelope — every smoke scenario, `editor-latency`,
+    /// `measure` and `hardening` — which lists every editor process it started under `launches`,
+    /// however many it makes.
+    Recorded,
     RawEditor,
 }
 
-fn runs(result: &Value) -> usize {
-    result["runs"].as_array().map_or(0, Vec::len)
-}
-
 impl Launches {
-    fn count(self, dir: &Path, result: Option<&Value>) -> u64 {
+    /// The count, from the component's own `run/result.json`.
+    fn count(self, result: Option<&Value>) -> u64 {
         let Some(result) = result else { return 0 };
         match self {
             Self::None => 0,
-            // A scenario lists every editor process it started under `launches`, however many
-            // it makes.
-            Self::Smoke => result["launches"].as_array().map_or(0, Vec::len) as u64,
-            // One launch per measured run, plus the idle process, which is recorded separately.
-            Self::Measure => runs(result) as u64 + u64::from(!result["idle"].is_null()),
-            // One scripted gesture launch; `--idle` adds the hold and idle pair, and that pair is
-            // the only thing that writes `resources.json`.
-            Self::Latency => {
-                1 + if dir.join("run/resources.json").is_file() {
-                    2
-                } else {
-                    0
-                }
-            }
+            Self::Recorded => result["launches"].as_array().map_or(0, Vec::len) as u64,
             // Each trial is a scripted edit launch and a reopen launch.
-            Self::RawEditor => 2 * runs(result) as u64,
+            Self::RawEditor => 2 * result["runs"].as_array().map_or(0, Vec::len) as u64,
         }
     }
 }
@@ -330,7 +315,7 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         {
             specs.push(Spec {
                 result: Some("result.json"),
-                launches: Launches::Smoke,
+                launches: Launches::Recorded,
                 binary: true,
                 ..spec(
                     &format!("smoke-{}", scenario.name),
@@ -360,7 +345,7 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
             let path = path.to_string_lossy().into_owned();
             specs.push(Spec {
                 result: Some("result.json"),
-                launches: Launches::Smoke,
+                launches: Launches::Recorded,
                 binary: true,
                 ..spec(
                     &format!("raw-panel-{id}"),
@@ -373,7 +358,7 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
             let path = path.to_string_lossy().into_owned();
             specs.push(Spec {
                 result: Some("result.json"),
-                launches: Launches::Smoke,
+                launches: Launches::Recorded,
                 binary: true,
                 ..spec(
                     "raw-performance",
@@ -384,6 +369,7 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         }
         specs.push(Spec {
             result: Some("result.json"),
+            launches: Launches::Recorded,
             binary: true,
             ..spec("hardening", "full", &["hardening"])
         });
@@ -401,7 +387,7 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
         specs.push(Spec {
             args: vec!["editor-latency".into(), "--source".into(), twenty_four_mp()],
             result: Some("latency.json"),
-            launches: Launches::Latency,
+            launches: Launches::Recorded,
             binary: true,
             ..spec("editor-latency", "timing", &[])
         });
@@ -414,13 +400,13 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                 "burst".into(),
             ],
             result: Some("latency.json"),
-            launches: Launches::Latency,
+            launches: Launches::Recorded,
             binary: true,
             ..spec("editor-latency-burst", "timing", &[])
         });
         specs.push(Spec {
             result: Some("measurements.json"),
-            launches: Launches::Measure,
+            launches: Launches::Recorded,
             binary: true,
             ..spec("measure", "timing", &["measure"])
         });
@@ -1288,7 +1274,9 @@ fn component(
                 .result
                 .and_then(|name| optional(&dir.join("run").join(name)));
             entry.exit_code = code;
-            entry.launches = s.launches.count(&dir, result.as_ref());
+            entry.launches = s
+                .launches
+                .count(optional(&dir.join("run/result.json")).as_ref());
             entry.status = match (timed_out, code) {
                 (true, _) => Status::TimedOut,
                 (false, Some(0)) => Status::Passed,
@@ -1976,31 +1964,39 @@ mod tests {
     }
     #[test]
     fn launch_counts_come_from_what_each_component_recorded() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        assert_eq!(Launches::None.count(dir, Some(&json!({}))), 0);
-        assert_eq!(Launches::Smoke.count(dir, None), 0);
+        assert_eq!(Launches::None.count(Some(&json!({}))), 0);
+        assert_eq!(Launches::Recorded.count(None), 0);
         assert_eq!(
-            Launches::Smoke.count(dir, Some(&json!({"launches":[{"exit_code":0}]}))),
+            Launches::Recorded.count(Some(&json!({"launches":[{"exit_code":0}]}))),
             1
         );
-        let four = json!({"launches":[{"exit_code":0},{"exit_code":0},{"exit_code":0},{"exit_code":null}]});
-        assert_eq!(Launches::Smoke.count(dir, Some(&four)), 4);
-        assert_eq!(Launches::Smoke.count(dir, Some(&json!({"exit_code":0}))), 0);
-        let measure = json!({"runs":[{},{},{}],"idle":{"duration_s":30.0}});
-        assert_eq!(Launches::Measure.count(dir, Some(&measure)), 4);
+        // A launch its watcher stopped, as `measure`'s idle process and `hardening`'s ordinary
+        // launches are, is listed with no exit code and counted like any other.
+        let four = json!({"launches":[{"exit_code":0},{"exit_code":0},{"exit_code":0},{"exit_code":null,"stopped":true}]});
+        assert_eq!(Launches::Recorded.count(Some(&four)), 4);
+        assert_eq!(Launches::Recorded.count(Some(&json!({"exit_code":0}))), 0);
         assert_eq!(
-            Launches::Measure.count(dir, Some(&json!({"runs":[{},{}]}))),
-            2
-        );
-        assert_eq!(
-            Launches::RawEditor.count(dir, Some(&json!({"runs":[{},{},{}]}))),
+            Launches::RawEditor.count(Some(&json!({"runs":[{},{},{}]}))),
             6
         );
-        assert_eq!(Launches::Latency.count(dir, Some(&json!({}))), 1);
-        fs::create_dir_all(dir.join("run")).unwrap();
-        fs::write(dir.join("run/resources.json"), "{}").unwrap();
-        assert_eq!(Launches::Latency.count(dir, Some(&json!({}))), 3);
+        // Every component that launches the editor through the scenario library's envelope is
+        // counted from its recorded list; only `raw-editor` still counts its own way.
+        let manifest = [("z6".to_owned(), PathBuf::from("/raw/z6.nef"))];
+        for spec in plan(Tier::Full, Some(&manifest), true) {
+            let expected = match spec.name.as_str() {
+                "raw-editor" => Launches::RawEditor,
+                "editor-latency"
+                | "editor-latency-burst"
+                | "measure"
+                | "hardening"
+                | "raw-performance" => Launches::Recorded,
+                name if name.starts_with("smoke-") || name.starts_with("raw-panel-") => {
+                    Launches::Recorded
+                }
+                _ => Launches::None,
+            };
+            assert_eq!(spec.launches, expected, "{}", spec.name);
+        }
     }
     #[test]
     fn an_all_passed_plan_is_the_only_ok_outcome() {

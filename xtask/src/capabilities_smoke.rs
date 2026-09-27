@@ -209,7 +209,7 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
     }
     let outcome = (|| -> Result {
         run.hash(&sources)?;
-        let evidence = run.launch(launch)?;
+        let evidence = run.launch(launch)?.dir;
         let checked = plan.check(&evidence)?;
         // Everything the run wrote so far, before the checks add their own records.
         let (scanned, found) = holding(run.out(), &[&key, &wrong])?;

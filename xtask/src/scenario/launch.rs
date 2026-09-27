@@ -1,7 +1,9 @@
-//! The launch envelope every smoke runner shares: a [`Run`] owns one output directory, hashes what
-//! the run opens and the binary that opens it, makes each editor [`Launch`] the scenario asks for,
-//! records every launch in `result.json`'s `launches` list, checks the sources are unchanged and
-//! writes `result.json` and `reproduce.md`.
+//! The launch envelope every smoke runner and every timing or diagnostic tool (`editor-latency`,
+//! `measure`, `hardening`) shares: a [`Run`] owns one output directory, hashes what the run opens
+//! and the binary that opens it, makes each editor [`Launch`] the run asks for, records every
+//! launch in `result.json`'s `launches` list, checks the sources are unchanged and writes
+//! `result.json` and `reproduce.md`. A launch is waited for through the one [`watch`] loop, and a
+//! tool's report carries the one [`Run::provenance`] header.
 //!
 //! A run can also be a **replay**: the same scenario code over a copy of a recorded run, where each
 //! launch is the one recorded there rather than a new editor process. Everything after a launch —
@@ -11,6 +13,7 @@
 use crate::launch::{Background, MODE, editor_args};
 use crate::*;
 use std::{
+    convert::Infallible,
     process::{Child, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
@@ -52,22 +55,73 @@ pub fn spawn_editor(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> R
     spawn(root, bin, &editor_args(args), log)
 }
 
-pub fn wait(child: &mut Guard, timeout: Duration) -> Result<ExitStatus> {
-    let start = Instant::now();
+/// What ended a [`watch`]: the editor's exit, or what the watch was waiting for.
+pub enum Watched<T> {
+    Exited(ExitStatus),
+    Reached(T),
+}
+
+/// How a [`watch`] polls: every `every`, failing with `late` once `deadline` has passed since
+/// `from`.
+pub struct Poll<'a> {
+    pub every: Duration,
+    pub from: Instant,
+    pub deadline: Duration,
+    pub late: &'a str,
+}
+
+/// The one loop that watches a launched editor. Each poll, in order: `reached` may end the watch
+/// with what it found; the editor's exit ends it with its status; past the deadline it fails;
+/// otherwise `sample` reads what it reads, and the loop sleeps. Each caller keeps its own poll
+/// rate, deadline and samples, so a figure it takes is taken at the rate it always was.
+pub fn watch<T>(
+    child: &mut Guard,
+    poll: Poll,
+    mut reached: impl FnMut() -> Result<Option<T>>,
+    mut sample: impl FnMut(&mut Guard) -> Result,
+) -> Result<Watched<T>> {
     loop {
-        if let Some(status) = child.child.try_wait()? {
-            return Ok(status);
+        if let Some(found) = reached()? {
+            return Ok(Watched::Reached(found));
         }
-        ensure(
-            start.elapsed() < timeout,
-            "Child timed out; killed and reaped",
-        )?;
-        std::thread::sleep(Duration::from_millis(10));
+        if let Some(status) = child.child.try_wait()? {
+            return Ok(Watched::Exited(status));
+        }
+        ensure(poll.from.elapsed() < poll.deadline, poll.late)?;
+        sample(child)?;
+        std::thread::sleep(poll.every);
     }
 }
 
-/// Waits for a launched editor in place of [`wait`], and returns what it recorded while it did.
-pub type Watcher = Box<dyn FnOnce(&mut Guard, Duration) -> Result<(ExitStatus, Value)>>;
+/// A [`watch`] that ends only with the editor's exit.
+pub fn until_exit(
+    child: &mut Guard,
+    poll: Poll,
+    sample: impl FnMut(&mut Guard) -> Result,
+) -> Result<ExitStatus> {
+    match watch(child, poll, || Ok(None::<Infallible>), sample)? {
+        Watched::Exited(status) => Ok(status),
+        Watched::Reached(never) => match never {},
+    }
+}
+
+/// Wait for the child to exit, polling every 10 ms.
+pub fn wait(child: &mut Guard, timeout: Duration) -> Result<ExitStatus> {
+    let poll = Poll {
+        every: Duration::from_millis(10),
+        from: Instant::now(),
+        deadline: timeout,
+        late: "Child timed out; killed and reaped",
+    };
+    until_exit(child, poll, |_| Ok(()))
+}
+
+/// Waits for a launched editor in place of [`wait`], given the moment just before it was spawned
+/// and the launch's deadline, and returns what it recorded while it did: the editor's exit status,
+/// or `None` when the watcher is done with an editor that is still running, which the launch then
+/// ends.
+pub type Watcher =
+    Box<dyn FnOnce(&mut Guard, Instant, Duration) -> Result<(Option<ExitStatus>, Value)>>;
 
 enum ScriptFile {
     /// Written into the output directory under this name.
@@ -76,13 +130,52 @@ enum ScriptFile {
     Secret(Value),
 }
 
-/// One editor launch: what it opens and with which flags, where its evidence and log go, and the
-/// evidence script it runs. Its arguments are always assembled in one order: `--catalog`, each
-/// `--disable-module`, `--evidence-dir`, `--developer`, `--proof-endpoint`, each `--open`,
-/// `--evidence-script` and `--window-size`.
+/// One flag an editor launch can pass, for the order its arguments are assembled in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flag {
+    DataRoot,
+    Catalog,
+    Disable,
+    Evidence,
+    Developer,
+    Endpoint,
+    Open,
+    Script,
+    Window,
+}
+
+/// The order a launch assembles its flags in unless it names another with [`Launch::order`].
+pub const ORDER: [Flag; 9] = [
+    Flag::DataRoot,
+    Flag::Catalog,
+    Flag::Disable,
+    Flag::Evidence,
+    Flag::Developer,
+    Flag::Endpoint,
+    Flag::Open,
+    Flag::Script,
+    Flag::Window,
+];
+
+/// Where a launch's evidence goes.
+enum Evidence {
+    /// `<out>/<name>`.
+    Named(String),
+    /// A directory the caller names.
+    At(PathBuf),
+    /// Nowhere: an ordinary launch, not an evidence run.
+    None,
+}
+
+/// One editor launch: what it opens and with which flags, where its evidence, data and log go, the
+/// evidence script it runs, how long it may take and how it is watched. Its arguments are
+/// assembled in [`ORDER`] — `--data-root`, `--catalog`, each `--disable-module`,
+/// `--evidence-dir`, `--developer`, `--proof-endpoint`, each `--open`, `--evidence-script` and
+/// `--window-size` — unless it names another order.
 pub struct Launch {
-    evidence: String,
+    evidence: Evidence,
     log: String,
+    data_root: Option<PathBuf>,
     catalog: Option<PathBuf>,
     disabled: Vec<String>,
     developer: bool,
@@ -90,14 +183,19 @@ pub struct Launch {
     sources: Vec<PathBuf>,
     script: Option<(Value, ScriptFile)>,
     window: Option<[String; 2]>,
-    watch: Option<(String, Watcher)>,
+    order: [Flag; 9],
+    deadline: Option<Duration>,
+    exit: Option<i32>,
+    watch: Option<Watcher>,
+    keep: Option<String>,
 }
 
 impl Launch {
-    fn new(evidence: &str, log: &str) -> Self {
+    fn new(evidence: Evidence, log: &str) -> Self {
         Self {
-            evidence: evidence.into(),
+            evidence,
             log: log.into(),
+            data_root: None,
             catalog: None,
             disabled: Vec::new(),
             developer: false,
@@ -105,18 +203,40 @@ impl Launch {
             sources: Vec::new(),
             script: None,
             window: None,
+            order: ORDER,
+            deadline: None,
+            exit: None,
             watch: None,
+            keep: None,
         }
     }
 
     /// A scenario's one ordinary launch: its evidence in `app/`, its console in `subprocess.log`.
     pub fn app() -> Self {
-        Self::new("app", "subprocess.log")
+        Self::new(Evidence::Named("app".into()), "subprocess.log")
     }
 
     /// One of several launches: its evidence in `<name>/`, its console in `<name>.log`.
     pub fn named(name: &str) -> Self {
-        Self::new(name, &format!("{name}.log"))
+        Self::new(Evidence::Named(name.into()), &format!("{name}.log"))
+    }
+
+    /// A launch that is not an evidence run: the editor as a person starts it, with its data in the
+    /// [`data_root`](Self::data_root) it must be given and its console in `<name>.log`.
+    pub fn ordinary(name: &str) -> Self {
+        Self::new(Evidence::None, &format!("{name}.log"))
+    }
+
+    /// Keep the evidence in `dir` rather than in the output directory under the launch's name.
+    pub fn evidence_dir(mut self, dir: &Path) -> Self {
+        self.evidence = Evidence::At(dir.into());
+        self
+    }
+
+    /// Keep the editor's data, its diagnostics log among it, under `dir`.
+    pub fn data_root(mut self, dir: &Path) -> Self {
+        self.data_root = Some(dir.into());
+        self
     }
 
     /// Open an existing catalog rather than the evidence directory's own.
@@ -166,11 +286,67 @@ impl Launch {
         self
     }
 
-    /// Wait for the editor with `watcher` instead of [`wait`], and write what it returns into the
-    /// output directory as `file`.
-    pub fn watch(mut self, file: &str, watcher: Watcher) -> Self {
-        self.watch = Some((file.into(), watcher));
+    /// Assemble the arguments in `order`, every flag named once, instead of [`ORDER`].
+    pub fn order(mut self, order: [Flag; 9]) -> Self {
+        assert!(
+            ORDER.iter().all(|flag| order.contains(flag)),
+            "A launch order names every flag once: {order:?}"
+        );
+        self.order = order;
         self
+    }
+
+    /// Give the launch `deadline` rather than the run's.
+    pub fn deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// The launch must exit with `code` rather than succeed: an editor that is expected to refuse.
+    pub fn exits(mut self, code: i32) -> Self {
+        self.exit = Some(code);
+        self
+    }
+
+    /// Wait for the editor with `watcher` instead of [`wait`]. What it returns comes back from
+    /// [`Run::launch`].
+    pub fn watch(mut self, watcher: Watcher) -> Self {
+        self.watch = Some(watcher);
+        self
+    }
+
+    /// Also write what the watcher returns into the output directory as `file`.
+    pub fn keep(mut self, file: &str) -> Self {
+        self.keep = Some(file.into());
+        self
+    }
+
+    /// Where the launch's own record goes in a run written to `out`: its evidence directory, or an
+    /// ordinary launch's data root.
+    fn dir(&self, out: &Path) -> Result<PathBuf> {
+        match &self.evidence {
+            Evidence::Named(name) => Ok(out.join(name)),
+            Evidence::At(dir) => Ok(dir.clone()),
+            Evidence::None => self
+                .data_root
+                .clone()
+                .ok_or_else(|| "An ordinary launch needs a data root".into()),
+        }
+    }
+
+    /// The launch's evidence as `result.json` lists it: its directory inside the output directory,
+    /// or the whole path of one outside it, or null for an ordinary launch.
+    fn listed(&self, out: &Path) -> Value {
+        match &self.evidence {
+            Evidence::Named(name) => json!(name),
+            Evidence::At(dir) => json!(
+                dir.strip_prefix(out)
+                    .unwrap_or(dir)
+                    .to_string_lossy()
+                    .into_owned()
+            ),
+            Evidence::None => Value::Null,
+        }
     }
 
     /// The editor's arguments, hidden-window flag included, as [`Run::launch`] passes them in a run
@@ -182,40 +358,77 @@ impl Launch {
             ScriptFile::Kept(name) => out.join(name),
             ScriptFile::Secret(_) => out.join("script.json"),
         });
-        editor_args(&self.arguments(&out.join(&self.evidence), script.as_deref()))
+        editor_args(&self.arguments(out, script.as_deref()))
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
     }
 
-    /// The editor's arguments for this launch, before the hidden-window flag every harness launch
-    /// adds, with its evidence in `evidence` and its script, if it has one, at `script`.
-    fn arguments(&self, evidence: &Path, script: Option<&Path>) -> Vec<OsString> {
+    /// The editor's arguments for this launch in a run written to `out`, before the hidden-window
+    /// flag every harness launch adds, with its script, if it has one, at `script`.
+    fn arguments(&self, out: &Path, script: Option<&Path>) -> Vec<OsString> {
         let mut args: Vec<OsString> = Vec::new();
-        if let Some(catalog) = &self.catalog {
-            args.extend(["--catalog".into(), catalog.into()]);
-        }
-        for module in &self.disabled {
-            args.extend(["--disable-module".into(), module.into()]);
-        }
-        args.extend(["--evidence-dir".into(), evidence.into()]);
-        if self.developer {
-            args.push("--developer".into());
-        }
-        if let Some(url) = &self.endpoint {
-            args.extend(["--proof-endpoint".into(), url.into()]);
-        }
-        for source in &self.sources {
-            args.extend(["--open".into(), source.into()]);
-        }
-        if let Some(script) = script {
-            args.extend(["--evidence-script".into(), script.into()]);
-        }
-        if let Some([width, height]) = &self.window {
-            args.extend(["--window-size".into(), width.into(), height.into()]);
+        for flag in self.order {
+            match flag {
+                Flag::DataRoot => {
+                    if let Some(dir) = &self.data_root {
+                        args.extend(["--data-root".into(), dir.into()]);
+                    }
+                }
+                Flag::Catalog => {
+                    if let Some(catalog) = &self.catalog {
+                        args.extend(["--catalog".into(), catalog.into()]);
+                    }
+                }
+                Flag::Disable => {
+                    for module in &self.disabled {
+                        args.extend(["--disable-module".into(), module.into()]);
+                    }
+                }
+                Flag::Evidence => match &self.evidence {
+                    Evidence::Named(name) => {
+                        args.extend(["--evidence-dir".into(), out.join(name).into()]);
+                    }
+                    Evidence::At(dir) => args.extend(["--evidence-dir".into(), dir.into()]),
+                    Evidence::None => {}
+                },
+                Flag::Developer => {
+                    if self.developer {
+                        args.push("--developer".into());
+                    }
+                }
+                Flag::Endpoint => {
+                    if let Some(url) = &self.endpoint {
+                        args.extend(["--proof-endpoint".into(), url.into()]);
+                    }
+                }
+                Flag::Open => {
+                    for source in &self.sources {
+                        args.extend(["--open".into(), source.into()]);
+                    }
+                }
+                Flag::Script => {
+                    if let Some(script) = script {
+                        args.extend(["--evidence-script".into(), script.into()]);
+                    }
+                }
+                Flag::Window => {
+                    if let Some([width, height]) = &self.window {
+                        args.extend(["--window-size".into(), width.into(), height.into()]);
+                    }
+                }
+            }
         }
         args
     }
+}
+
+/// What a launch left: where it recorded itself — its evidence directory, or an ordinary launch's
+/// data root — and what its watcher returned, `Null` without one or in a replay.
+#[derive(Debug)]
+pub struct Launched {
+    pub dir: PathBuf,
+    pub watched: Value,
 }
 
 enum Mode {
@@ -234,6 +447,8 @@ pub struct Run {
     root: PathBuf,
     out: PathBuf,
     scenario: String,
+    /// Whether this is a run of a timing or diagnostic tool rather than of a smoke scenario.
+    tool: bool,
     mode: Mode,
     result: Value,
     sources: Vec<PathBuf>,
@@ -270,6 +485,7 @@ impl Run {
             root: root.into(),
             out: out.into(),
             scenario: scenario.into(),
+            tool: false,
             mode,
             result: json!({"scenario":scenario,"status":"failed","launch_mode":MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)}),
             sources: Vec::new(),
@@ -297,6 +513,56 @@ impl Run {
                 timeout,
             },
         ))
+    }
+
+    /// A new run of the timing or diagnostic tool `cargo xtask <tool>` into `out`, which must not
+    /// exist yet, launching `bin`, each launch within `timeout` unless it names its own deadline.
+    /// Its `result.json` names the tool, records every launch and the [`provenance`](Self::provenance)
+    /// the tool reads, and says whether the tool passed; the tool's own report sits beside it.
+    pub fn tool(
+        root: &Path,
+        out: &Path,
+        tool: &str,
+        bin: &Path,
+        timeout: Duration,
+    ) -> Result<Self> {
+        ensure(!out.exists(), format!("{tool} output must be new"))?;
+        fs::create_dir_all(out)?;
+        let mut run = Self::new(
+            root,
+            out,
+            tool,
+            Mode::Launch {
+                bin: bin.into(),
+                timeout,
+            },
+        );
+        run.tool = true;
+        run.result = json!({"tool":tool,"status":"failed","launch_mode":MODE});
+        Ok(run)
+    }
+
+    /// The provenance header every tool report carries, in one shape: how the editor was launched,
+    /// the host it ran on, the build profile the binary itself reported in `events`' `startup`
+    /// event, and the hashes of the binary and the lockfile. It is recorded in `result.json` too.
+    pub fn provenance(&mut self, events: &[Value]) -> Result<Value> {
+        let Mode::Launch { bin, .. } = &self.mode else {
+            return Err("A replay launches no binary to describe".into());
+        };
+        let debug = events
+            .iter()
+            .find(|event| event["event"] == "startup")
+            .and_then(|event| event["detail"]["debug_assertions"].as_bool())
+            .ok_or("The editor reported no build profile at startup")?;
+        let header = json!({
+            "launch_mode":MODE,
+            "platform":host(&self.root)?,
+            "profile":if debug { "debug" } else { "release" },
+            "binary_sha256":hash(bin)?,
+            "lockfile_sha256":hash(&self.root.join("Cargo.lock"))?,
+        });
+        stamp(&mut self.result, &header);
+        Ok(header)
     }
 
     /// A replay of the run recorded in `recorded`: its evidence is copied into `out`, which must
@@ -405,20 +671,27 @@ impl Run {
         Ok(())
     }
 
-    /// Make one launch and return its evidence directory. The launch is recorded before the
-    /// editor is waited for, with its exit code once it has one, and a launch that does not exit
-    /// successfully is an error. A replay makes no process: the evidence directory is the recorded
-    /// one.
-    pub fn launch(&mut self, launch: Launch) -> Result<PathBuf> {
-        let evidence = self.out.join(&launch.evidence);
+    /// Make one launch and return where it recorded itself and what its watcher returned. The
+    /// launch is recorded before the editor is waited for, with its exit code once it has one, and a
+    /// launch that does not exit as it must — successfully, or with the code it [`exits`] with — is
+    /// an error. A launch its watcher is done with while the editor still runs is ended here and
+    /// listed as `stopped`. A replay makes no process: the evidence directory is the recorded one.
+    ///
+    /// [`exits`]: Launch::exits
+    pub fn launch(&mut self, launch: Launch) -> Result<Launched> {
+        let dir = launch.dir(&self.out)?;
+        let listed = launch.listed(&self.out);
         let Mode::Launch { bin, timeout } = &self.mode else {
             ensure(
-                evidence.is_dir(),
-                format!("The recorded run has no {} directory", launch.evidence),
+                dir.is_dir(),
+                format!("The recorded run has no {} directory", dir.display()),
             )?;
-            return Ok(evidence);
+            return Ok(Launched {
+                dir,
+                watched: Value::Null,
+            });
         };
-        let (bin, timeout) = (bin.clone(), *timeout);
+        let (bin, deadline) = (bin.clone(), launch.deadline.unwrap_or(*timeout));
         // A script with a secret lives in this directory until the launch has exited.
         let mut scratch = None;
         let script = match &launch.script {
@@ -439,33 +712,47 @@ impl Run {
             None => None,
         };
         // The recorded command is what actually runs, hidden-window flag included.
-        let args = editor_args(&launch.arguments(&evidence, script.as_deref()));
+        let args = editor_args(&launch.arguments(&self.out, script.as_deref()));
         let command = std::iter::once(bin.as_os_str())
             .chain(args.iter().map(OsString::as_os_str))
             .map(|s| s.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
+        let started = Instant::now();
         let mut child = spawn(&self.root, &bin, &args, &self.out.join(&launch.log))?;
         let index = self.launches.len();
-        self.launches.push(
-            json!({"evidence":launch.evidence,"log":launch.log,"command":command,"exit_code":null}),
-        );
-        let status = match launch.watch {
-            Some((file, watcher)) => {
-                let (status, recorded) = watcher(&mut child, timeout)?;
-                write_json(&self.out.join(file), &recorded)?;
-                status
-            }
-            None => wait(&mut child, timeout)?,
+        self.launches
+            .push(json!({"evidence":listed,"log":launch.log,"command":command,"exit_code":null}));
+        let (status, watched) = match launch.watch {
+            Some(watcher) => watcher(&mut child, started, deadline)?,
+            None => (Some(wait(&mut child, deadline)?), Value::Null),
         };
+        if let Some(file) = &launch.keep {
+            write_json(&self.out.join(file), &watched)?;
+        }
+        // An editor the watcher is done with is ended before the launch counts as over.
+        drop(child);
         drop(scratch);
+        let Some(status) = status else {
+            self.launches[index]["stopped"] = json!(true);
+            return Ok(Launched { dir, watched });
+        };
         self.launches[index]["exit_code"] = json!(status.code());
-        let who = if launch.evidence == "app" {
+        let who = if listed == "app" {
             "Application".to_owned()
         } else {
             format!("Launch {}", index + 1)
         };
-        ensure(status.success(), format!("{who} exit {status}"))?;
-        Ok(evidence)
+        match launch.exit {
+            None => ensure(
+                status.success(),
+                format!("{who} exit {status}; see {}", launch.log),
+            )?,
+            Some(code) => ensure(
+                status.code() == Some(code),
+                format!("{who} exit {status}, not {code}; see {}", launch.log),
+            )?,
+        }
+        Ok(Launched { dir, watched })
     }
 
     /// Record a launch made by a child run, with what that run recorded about itself.
@@ -528,10 +815,17 @@ impl Run {
 
     fn reproduce(&self) -> Result<String> {
         let scenario = &self.scenario;
-        let mut text = format!(
-            "# Smoke run\n\nScenario: {scenario}. Status: {}.\n\nLaunch mode: {MODE}. Reproduce with `cargo xtask smoke --scenario {scenario} --output NEW_DIR --binary PATH`; on macOS each launch copies the binary into a temporary background-only bundle and the editor runs with `--hidden-window`, so no window is ever placed on the desktop. Running an argument array below directly bypasses that focus protection. `cargo xtask smoke --verify-only DIR --output NEW_DIR` reruns this run's checks over a copy of it without launching anything.\n\n",
-            self.result["status"].as_str().unwrap_or_default()
-        );
+        let status = self.result["status"].as_str().unwrap_or_default();
+        let focus = "on macOS each launch copies the binary into a temporary background-only bundle and the editor runs with `--hidden-window`, so no window is ever placed on the desktop. Running an argument array below directly bypasses that focus protection.";
+        let mut text = if self.tool {
+            format!(
+                "# {scenario} run\n\nStatus: {status}.\n\nLaunch mode: {MODE}. Reproduce with `cargo xtask {scenario} --output NEW_DIR --binary PATH` and this run's own options; {focus}\n\n"
+            )
+        } else {
+            format!(
+                "# Smoke run\n\nScenario: {scenario}. Status: {status}.\n\nLaunch mode: {MODE}. Reproduce with `cargo xtask smoke --scenario {scenario} --output NEW_DIR --binary PATH`; {focus} `cargo xtask smoke --verify-only DIR --output NEW_DIR` reruns this run's checks over a copy of it without launching anything.\n\n"
+            )
+        };
         if let Some(note) = &self.note {
             text.push_str(note);
             text.push_str("\n\n");
@@ -539,12 +833,24 @@ impl Run {
         for launch in &self.launches {
             text.push_str(&format!(
                 "Launch `{}`:\n\n```json\n{}\n```\n\n",
-                launch["evidence"].as_str().unwrap_or_default(),
+                launch["evidence"]
+                    .as_str()
+                    .or(launch["log"].as_str())
+                    .unwrap_or_default(),
                 serde_json::to_string_pretty(&launch["command"])?
             ));
         }
-        text.push_str("Actual renderer readback.\n");
+        if !self.tool {
+            text.push_str("Actual renderer readback.\n");
+        }
         Ok(text)
+    }
+}
+
+/// Write a [`Run::provenance`] header's fields into a report.
+pub fn stamp(report: &mut Value, header: &Value) {
+    for (key, value) in header.as_object().into_iter().flatten() {
+        report[key] = value.clone();
     }
 }
 
@@ -599,8 +905,8 @@ mod tests {
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect()
         };
-        let (evidence, fixture, script) = (
-            Path::new("/out/app"),
+        let (out, fixture, script) = (
+            Path::new("/out"),
             Path::new("/f/orientation-1.jpg"),
             Path::new("/out/script.json"),
         );
@@ -611,7 +917,7 @@ mod tests {
             .developer()
             .script("script.json", json!([]));
         assert_eq!(
-            strings(gallery.arguments(evidence, Some(script))),
+            strings(gallery.arguments(out, Some(script))),
             [
                 "--evidence-dir",
                 "/out/app",
@@ -628,7 +934,7 @@ mod tests {
         // A plain scenario with no script opens every source in order and sets no window.
         let repeated = Launch::app().open_all(&[fixture.into(), fixture.into()]);
         assert_eq!(
-            strings(repeated.arguments(evidence, None)),
+            strings(repeated.arguments(out, None)),
             [
                 "--evidence-dir",
                 "/out/app",
@@ -645,7 +951,7 @@ mod tests {
             .open_all(&[fixture.into()])
             .window(["1440", "900"]);
         assert_eq!(
-            strings(capabilities.arguments(evidence, Some(Path::new("/tmp/s.json")))),
+            strings(capabilities.arguments(out, Some(Path::new("/tmp/s.json")))),
             [
                 "--evidence-dir",
                 "/out/app",
@@ -669,7 +975,7 @@ mod tests {
             .disable("luxforge.crop")
             .catalog(Path::new("/out/launch1/catalog.sqlite"));
         assert_eq!(
-            strings(reopened.arguments(Path::new("/out/launch2"), None)),
+            strings(reopened.arguments(out, None)),
             [
                 "--catalog",
                 "/out/launch1/catalog.sqlite",
@@ -685,13 +991,201 @@ mod tests {
             ]
         );
         assert_eq!(
-            (reopened.evidence.as_str(), reopened.log.as_str()),
-            ("launch2", "launch2.log")
+            (reopened.listed(out), reopened.log.as_str()),
+            (json!("launch2"), "launch2.log")
         );
         let app = Launch::app();
         assert_eq!(
-            (app.evidence.as_str(), app.log.as_str()),
-            ("app", "subprocess.log")
+            (app.listed(out), app.log.as_str()),
+            (json!("app"), "subprocess.log")
+        );
+    }
+
+    /// The timing tools' launches: a data root takes its place in the order, an evidence
+    /// directory can be named, an ordinary launch passes none and records itself by its data root,
+    /// and a tool's own order puts the same flags where its launches always put them.
+    #[test]
+    fn a_launch_takes_a_data_root_an_evidence_dir_and_an_order() {
+        let strings = |args: Vec<OsString>| -> Vec<String> {
+            args.into_iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect()
+        };
+        let (out, fixture) = (Path::new("/out"), PathBuf::from("/f/photo.jpg"));
+        let degraded = Launch::ordinary("diagnostics-unavailable")
+            .open_all(std::slice::from_ref(&fixture))
+            .catalog(Path::new("/out/degraded.sqlite"))
+            .data_root(Path::new("/out/not-a-directory"));
+        assert_eq!(
+            strings(degraded.arguments(out, None)),
+            [
+                "--data-root",
+                "/out/not-a-directory",
+                "--catalog",
+                "/out/degraded.sqlite",
+                "--open",
+                "/f/photo.jpg"
+            ]
+        );
+        assert_eq!(degraded.listed(out), Value::Null);
+        assert_eq!(
+            degraded.dir(out).unwrap(),
+            Path::new("/out/not-a-directory")
+        );
+        assert!(Launch::ordinary("idle").dir(out).is_err());
+        let refused = Launch::named("initialization").evidence_dir(Path::new("/out/file/evidence"));
+        assert_eq!(
+            strings(refused.arguments(out, None)),
+            ["--evidence-dir", "/out/file/evidence"]
+        );
+        assert_eq!(refused.listed(out), json!("file/evidence"));
+        assert_eq!(refused.dir(out).unwrap(), Path::new("/out/file/evidence"));
+        // The same flags in another order: the script before the photograph, the catalog after
+        // the evidence directory and the developer flag last.
+        let order = [
+            Flag::Evidence,
+            Flag::Catalog,
+            Flag::DataRoot,
+            Flag::Script,
+            Flag::Open,
+            Flag::Developer,
+            Flag::Disable,
+            Flag::Endpoint,
+            Flag::Window,
+        ];
+        let held = Launch::named("hold")
+            .developer()
+            .open_all(std::slice::from_ref(&fixture))
+            .catalog(Path::new("/out/held.sqlite"))
+            .order(order);
+        assert_eq!(
+            strings(held.arguments(out, Some(Path::new("/out/hold-script.json")))),
+            [
+                "--evidence-dir",
+                "/out/hold",
+                "--catalog",
+                "/out/held.sqlite",
+                "--evidence-script",
+                "/out/hold-script.json",
+                "--open",
+                "/f/photo.jpg",
+                "--developer"
+            ]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "names every flag once")]
+    fn an_order_that_leaves_a_flag_out_is_refused() {
+        let mut order = ORDER;
+        order[0] = Flag::Open;
+        let _ = Launch::app().order(order);
+    }
+
+    /// The one watch loop ends on what it waits for before the editor's exit, runs its sample
+    /// between polls, and fails past its deadline.
+    #[test]
+    fn a_watch_ends_on_what_it_reaches_or_fails_late() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sleeper = || {
+            spawn(
+                &root().unwrap(),
+                &std::env::current_exe().unwrap(),
+                &[
+                    "--ignored".into(),
+                    "--exact".into(),
+                    "scenario::launch::tests::sleeping_child".into(),
+                ],
+                &tmp.path().join("child.log"),
+            )
+            .unwrap()
+        };
+        let mut child = sleeper();
+        let samples = std::cell::Cell::new(0);
+        let poll = Poll {
+            every: Duration::from_millis(1),
+            from: Instant::now(),
+            deadline: Duration::from_secs(20),
+            late: "late",
+        };
+        let reached = watch(
+            &mut child,
+            poll,
+            || Ok((samples.get() >= 3).then_some(samples.get())),
+            |_| {
+                samples.set(samples.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(matches!(reached, Watched::Reached(3)));
+        let poll = Poll {
+            every: Duration::from_millis(1),
+            from: Instant::now(),
+            deadline: Duration::from_millis(20),
+            late: "The watch ran late",
+        };
+        let error = until_exit(&mut child, poll, |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "The watch ran late");
+    }
+
+    /// A watcher done with an editor that still runs: the launch ends it, lists it as stopped
+    /// with no exit code, returns and keeps what the watcher recorded, and an ordinary launch
+    /// records itself by its data root.
+    #[test]
+    fn a_launch_its_watcher_stops_is_listed_as_stopped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("run");
+        let mut run = Run::tool(
+            &root().unwrap(),
+            &out,
+            "unit",
+            &std::env::current_exe().unwrap(),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        let data = tmp.path().join("data");
+        let launched = run
+            .launch(
+                Launch::ordinary("idle")
+                    .data_root(&data)
+                    .deadline(Duration::from_millis(1))
+                    .watch(Box::new(|_, _, deadline| {
+                        Ok((None, json!({"deadline_ms":deadline.as_millis() as u64})))
+                    }))
+                    .keep("idle.json"),
+            )
+            .unwrap();
+        assert_eq!(launched.dir, data);
+        assert_eq!(launched.watched, json!({"deadline_ms":1}));
+        assert_eq!(read_json(&out.join("idle.json")).unwrap(), launched.watched);
+        let listed = &run.launches[0];
+        assert_eq!(listed["evidence"], Value::Null);
+        assert_eq!(listed["log"], "idle.log");
+        assert_eq!(listed["stopped"], true);
+        assert_eq!(listed["exit_code"], Value::Null);
+        assert!(
+            listed["command"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("--data-root"))
+        );
+        // A launch that must refuse with one code and exits with another is the run's failure.
+        let error = run
+            .launch(Launch::named("refused").exits(2))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(", not 2; see refused.log"), "{error}");
+        assert!(run.finish(Err("stopped".into()), |_| Ok(())).is_err());
+        let result = read_json(&out.join("result.json")).unwrap();
+        assert_eq!(result["tool"], "unit");
+        assert_eq!(result["launches"].as_array().unwrap().len(), 2);
+        assert!(
+            fs::read_to_string(out.join("reproduce.md"))
+                .unwrap()
+                .starts_with("# unit run")
         );
     }
 
@@ -796,7 +1290,7 @@ mod tests {
             Some(recorded.join("launch1/unit-checks.json"))
         );
         assert_eq!(
-            run.launch(Launch::named("launch1")).unwrap(),
+            run.launch(Launch::named("launch1")).unwrap().dir,
             out.join("launch1")
         );
         assert!(run.launch(Launch::named("launch2")).is_err());
