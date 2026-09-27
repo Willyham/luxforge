@@ -566,6 +566,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         ],
         mode: Match::Whole,
         tests: false,
+        once: false,
         reason: "the harness assembles editor arguments only in the scenario library's Launch and \
                  launches the editor only through its Run (xtask/src/scenario/launch.rs)",
     },
