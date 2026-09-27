@@ -668,6 +668,11 @@ fn registry_resolves_applicability_from_the_declared_sources() {
             let error = refusal.unwrap_err();
             assert_eq!(error.kind, crate::ErrorKind::Validation);
             assert_eq!(error.detail, "Kinds does not apply to a JPEG photo");
+            assert_eq!(
+                error.data.as_deref(),
+                Some(&json!({"source": "jpeg", "module_id": descriptor.id})),
+                "{case}"
+            );
         }
     }
     for (case, sources, fragment) in [
@@ -830,6 +835,44 @@ fn a_built_in_registered_unavailable_keeps_its_declarations_and_reports_why() {
             .starts_with("unavailable effect luxforge.basic.adjust"),
         "{error}"
     );
+    assert_eq!(error.unavailable_effect_id(), Some(BASIC_EFFECT), "{error}");
+}
+
+/// Every module that checks a stored layer's effect against its own refuses a foreign one as the
+/// one unavailable-effect refusal, whose data names the effect: the field-patch modules, pixel,
+/// transform, crop and the capability proof. The RAW module refuses a foreign layer as an invalid
+/// RAW source layer and the presets module as one it has no effect for; neither is this refusal.
+#[test]
+fn every_payload_check_names_a_foreign_effect_in_its_data() {
+    let registry = ModuleRegistry::builtin();
+    let proof = crate::CapabilitiesProofModule::new("http://127.0.0.1:9/");
+    let mut modules: Vec<&dyn ToolModule> = registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| {
+            !descriptor.effects.is_empty() && descriptor.effects.iter().all(|e| e.id != RAW_EFFECT)
+        })
+        .map(|descriptor| registry.module(&descriptor.id).unwrap())
+        .collect();
+    assert_eq!(
+        modules.len(),
+        7,
+        "basic, presence, mixer, vignette, pixel, transform, crop"
+    );
+    modules.push(&proof);
+    for module in modules {
+        let error = module
+            .validate_payload("test.nobody", 1, &json!({}))
+            .unwrap_err();
+        let id = &module.descriptor().id;
+        assert_eq!(error.kind, ErrorKind::Incompatible, "{id}");
+        assert_eq!(error.detail, "unavailable effect test.nobody", "{id}");
+        assert_eq!(
+            error.data.as_deref(),
+            Some(&json!({"effect_id": "test.nobody"})),
+            "{id}"
+        );
+    }
 }
 
 /// One `add` linear gradient at full amount, over the whole frame: the mask every test below

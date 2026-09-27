@@ -17,13 +17,6 @@ use crate::{
 };
 use std::collections::HashSet;
 
-fn unavailable(effect_id: &str, layers: Vec<&str>) -> Error {
-    Error::incompatible(format!(
-        "unavailable effect {effect_id} (layers {})",
-        layers.join(", ")
-    ))
-}
-
 impl ModuleRegistry {
     /// Whether this stack may be rendered against a downscaled proxy source.
     ///
@@ -89,7 +82,7 @@ impl ModuleRegistry {
         layer.validate()?;
         let module = self
             .provider(&layer.effect_id)
-            .ok_or_else(|| unavailable(&layer.effect_id, vec![layer.id.as_str()]))?;
+            .ok_or_else(|| Error::unavailable_effect(&layer.effect_id, &[layer.id.as_str()]))?;
         self.check_artifacts(layer)?;
         module.validate_payload(&layer.effect_id, layer.effect_format, &layer.payload)
     }
@@ -211,14 +204,12 @@ impl ModuleRegistry {
     }
 
     fn unavailable_in(&self, layers: &[Layer], effect_id: &str) -> Error {
-        unavailable(
-            effect_id,
-            layers
-                .iter()
-                .filter(|layer| layer.effect_id == effect_id)
-                .map(|layer| layer.id.as_str())
-                .collect(),
-        )
+        let holding: Vec<&str> = layers
+            .iter()
+            .filter(|layer| layer.effect_id == effect_id)
+            .map(|layer| layer.id.as_str())
+            .collect();
+        Error::unavailable_effect(effect_id, &holding)
     }
 
     /// Validate a recipe against the source dimensions and fold its exact geometry into one mapping

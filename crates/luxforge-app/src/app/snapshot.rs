@@ -341,10 +341,12 @@ impl Editor {
         )
     }
 
-    /// The failure the notices were derived from, as its code and detail.
+    /// The failure the notices were derived from, as its code, detail and data.
     pub(super) fn render_error_summary(&self) -> Value {
         match &self.render_error {
-            Some((kind, detail)) => json!({"code":kind.code(),"detail":detail}),
+            Some(error) => {
+                json!({"code":error.kind.code(),"detail":error.detail,"data":error.data})
+            }
             None => Value::Null,
         }
     }

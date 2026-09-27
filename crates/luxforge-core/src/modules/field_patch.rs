@@ -853,9 +853,7 @@ impl<M: FieldPatch> FieldPatchModule<M> {
         let spec = &self.spec;
         let noun = spec.noun;
         if effect_id != spec.effect.id {
-            return Err(Error::incompatible(format!(
-                "unavailable effect {effect_id}"
-            )));
+            return Err(Error::unavailable_effect(effect_id, &[]));
         }
         if format != spec.effect.format {
             return Err(Error::incompatible(format!(

@@ -1,9 +1,7 @@
 //! Plain-data module descriptors: one serializable source for API discovery, generated controls
 //! and every validation limit a module declares.
-#[cfg(test)]
-use crate::ErrorKind;
 use crate::{
-    Error, SourceTag,
+    Error, ErrorKind, SourceTag,
     capabilities::{
         descriptor::{
             ActivationDescriptor, CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor,
@@ -1380,7 +1378,15 @@ impl ModuleDescriptor {
         if self.applies_to(kind) {
             return Ok(());
         }
-        Err(Error::validation(not_applicable(&self.title, kind)))
+        Err(self.not_applicable_refusal(ErrorKind::Validation, kind))
+    }
+
+    /// The refusal of this module on a photo of `kind`, of kind `error`: its message worded from
+    /// the title and the kind ([`not_applicable`]), and its data `{source, module_id}` naming them,
+    /// so a client acts on the kind and the module without reading the message.
+    pub(crate) fn not_applicable_refusal(&self, error: ErrorKind, kind: SourceTag) -> Error {
+        Error::new(error, not_applicable(&self.title, kind))
+            .with_data(serde_json::json!({"source": kind, "module_id": self.id}))
     }
 
     /// Reject every descriptor a client could not render or validate against.

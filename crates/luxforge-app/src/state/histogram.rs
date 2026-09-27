@@ -335,10 +335,10 @@ pub(crate) fn derive(inputs: &Inputs<'_>, previous: &HistogramModel) -> Histogra
         // No report: either the displayed frame failed to render, or none has arrived yet. A
         // failure says so with its reason; anything else is honestly pending, never an empty plot.
         if inputs.state.is_some()
-            && let Some((kind, detail)) = inputs.render_error
+            && let Some(error) = inputs.render_error
         {
             model.status = HistogramStatus::Unavailable;
-            model.reason = Some(reason(*kind, detail));
+            model.reason = Some(reason(error.kind, &error.detail));
         }
         return model;
     };

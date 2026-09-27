@@ -146,10 +146,26 @@ fn an_unavailable_provider_keeps_its_identity_and_fails_evaluation_with_its_laye
         sample(&registry, &source(), &recipe, 0, 0).unwrap_err(),
     ] {
         assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            error.unavailable_effect_id(),
+            Some("test.effect"),
+            "{error}"
+        );
     }
     assert_eq!(
         registry.validate_recipe(&recipe).unwrap_err().detail,
         expected
+    );
+    assert_eq!(
+        registry
+            .validate_recipe(&recipe)
+            .unwrap_err()
+            .data
+            .as_deref(),
+        Some(&json!({
+            "effect_id": "test.effect",
+            "layers": [first.id.as_str(), second.id.as_str()],
+        }))
     );
     assert_eq!(
         render(&registry, &source(), SnapshotId::new(), &recipe)

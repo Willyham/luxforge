@@ -381,7 +381,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     });
 
     assert_eq!(
-        editor.render_error.as_ref().map(|(kind, _)| *kind),
+        editor.render_error.as_ref().map(|error| error.kind),
         Some(ErrorKind::ResourceLimit)
     );
     assert!(
@@ -451,7 +451,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
         editor.presenter.photo().is_some()
     });
     assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
-    assert_eq!(editor.render_error, None);
+    assert!(editor.render_error.is_none());
     assert_eq!(editor.workspace.canvas.photo, PhotoView::Plain);
 
     let records = logged(&mut editor, &log);
@@ -595,8 +595,8 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         "{}",
         editor.status
     );
-    assert_eq!(
-        editor.render_error, None,
+    assert!(
+        editor.render_error.is_none(),
         "the photograph's own state did not fail"
     );
     assert!(editor.presenter.photo().is_some());
@@ -784,7 +784,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     );
     assert!(editor.crop().is_none() && editor.presenter.stage().is_none());
     assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
-    assert_eq!(editor.render_error, None);
+    assert!(editor.render_error.is_none());
     let records = logged(&mut editor, &log);
     assert_eq!(
         events(&records, "preview_exact_cancelled"),

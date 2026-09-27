@@ -22,8 +22,8 @@ pub(crate) mod tracked;
 use crate::{crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
 use luxforge_core::{
-    ClientSession, ComponentId, ComponentMode, EditorState, EntryId, ErrorKind, HistoryPage,
-    MaskId, ModuleDescriptor, RecipeDescription, Version, mask::commands::MaskListing,
+    ClientSession, ComponentId, ComponentMode, EditorState, EntryId, HistoryPage, MaskId,
+    ModuleDescriptor, RecipeDescription, Version, mask::commands::MaskListing,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -237,7 +237,7 @@ pub(crate) struct Inputs<'a> {
     /// that frame's own phase. `None` before any frame is on screen.
     pub(crate) render: Option<status::RenderTime>,
     /// The last preview failure, cleared by the next successful upload.
-    pub(crate) render_error: Option<&'a (ErrorKind, String)>,
+    pub(crate) render_error: Option<&'a luxforge_core::Error>,
     pub(crate) pointer: Option<(u32, u32)>,
     /// The report the desktop's own preview worker reduced for the displayed frame, with the
     /// identity and generation it arrived under. `None` before the first one arrives.
@@ -353,9 +353,13 @@ impl Built {
         let stamps = &inputs.stamps;
         let state = state_key(inputs);
         let session = stamps.session;
-        let render_error = inputs
-            .render_error
-            .map(|(kind, detail)| (kind.code(), detail.as_str()));
+        let render_error = inputs.render_error.map(|error| {
+            (
+                error.kind.code(),
+                error.detail.as_str(),
+                error.unavailable_effect_id(),
+            )
+        });
         let title = key((
             (
                 inputs.busy,
@@ -734,7 +738,7 @@ mod tests {
         busy: bool,
         developer: bool,
         crop_angle: String,
-        render_error: Option<(luxforge_core::ErrorKind, String)>,
+        render_error: Option<luxforge_core::Error>,
         analysis: Option<histogram::Analysis>,
         analysis_updating: bool,
         readout: Option<histogram::Readout>,
@@ -2346,10 +2350,7 @@ mod tests {
         // An unavailable provider on its own is reported by its section header, not by a notice.
         assert!(scene.derive().canvas.notices.is_empty());
 
-        scene.render_error = Some((
-            luxforge_core::ErrorKind::Incompatible,
-            format!("unavailable effect {effect} (layers l1)"),
-        ));
+        scene.render_error = Some(luxforge_core::Error::unavailable_effect(&effect, &["l1"]));
         let notice = &scene.derive().canvas.notices[0];
         assert_eq!(notice.title, "Preview is stale");
         assert_eq!(
@@ -2359,9 +2360,9 @@ mod tests {
         assert!(notice.actions.is_empty(), "Locate is a later feature");
 
         // A layer nothing provides is still named, by its effect identity.
-        scene.render_error = Some((
-            luxforge_core::ErrorKind::Incompatible,
-            "unavailable effect other.effect (layers l1)".into(),
+        scene.render_error = Some(luxforge_core::Error::unavailable_effect(
+            "other.effect",
+            &["l1"],
         ));
         assert_eq!(
             scene.derive().canvas.notices[0].body,
@@ -2376,15 +2377,49 @@ mod tests {
             (luxforge_core::ErrorKind::FileAccess, "Original not found"),
             (luxforge_core::ErrorKind::ResourceLimit, "Rendering limit"),
         ] {
-            scene.render_error = Some((kind, "the detail".into()));
+            scene.render_error = Some(luxforge_core::Error::new(kind, "the detail"));
             let notice = &scene.derive().canvas.notices[0];
             assert_eq!(notice.title, title, "{kind:?}");
             assert_eq!(notice.body, "the detail");
             assert!(notice.actions.is_empty());
         }
         // A kind the workspace has nothing to say about is left to the status bar.
-        scene.render_error = Some((luxforge_core::ErrorKind::Internal, "boom".into()));
+        scene.render_error = Some(luxforge_core::Error::internal("boom"));
         assert!(scene.derive().canvas.notices.is_empty());
+    }
+
+    /// The canvas reads what a failure is from its kind and data, never its message: the stale
+    /// notice follows the effect the data names whatever the message says, and a message that
+    /// merely reads like an unavailable effect, with no data behind it, is not one.
+    #[test]
+    fn a_render_failure_is_read_from_its_data_not_its_message() {
+        let unavailable = ModuleDescriptor {
+            availability: Availability::Unavailable {
+                reason: "disabled by --disable-module".into(),
+            },
+            ..crop_descriptor()
+        };
+        let effect = unavailable.effects[0].id.clone();
+        let mut scene = Scene::new(vec![unavailable]).opened(Vec::new());
+
+        scene.render_error = Some(
+            luxforge_core::Error::incompatible("a reworded refusal")
+                .with_data(serde_json::json!({ "effect_id": effect })),
+        );
+        let notice = &scene.derive().canvas.notices[0];
+        assert_eq!(notice.title, "Preview is stale");
+        assert_eq!(
+            notice.body,
+            "Crop is unavailable: disabled by --disable-module"
+        );
+
+        scene.render_error = Some(luxforge_core::Error::incompatible(format!(
+            "unavailable effect {effect} (layers l1)"
+        )));
+        assert!(
+            scene.derive().canvas.notices.is_empty(),
+            "an incompatible failure without the data is not an unavailable effect"
+        );
     }
 
     #[test]
@@ -2397,10 +2432,7 @@ mod tests {
         };
         let effect = unavailable.effects[0].id.clone();
         let scene = Scene::new(vec![unavailable]).opened(Vec::new());
-        let render_error = Some((
-            luxforge_core::ErrorKind::Incompatible,
-            format!("unavailable effect {effect} (layers l1)"),
-        ));
+        let render_error = Some(luxforge_core::Error::unavailable_effect(&effect, &["l1"]));
         let mut inputs = scene.inputs();
         inputs.photo = false;
         inputs.render_error = render_error.as_ref();
