@@ -1903,11 +1903,7 @@ pub(super) fn analysis_request(
     // the owner queues and answers with the job to wait for, as for every other evaluating request.
     let AnalysisPlan {
         identity,
-        source,
-        registry,
-        context,
-        recipe,
-        failure,
+        evaluation,
     } = owner.service.analysis_plan(&params.asset_id, selection)?;
     // An identical identity joins the job that already covers it, whether it is still running or
     // already holds a report: the same work is never done twice.
@@ -1924,21 +1920,17 @@ pub(super) fn analysis_request(
                 asset_id: Some(identity.asset_id.clone()),
                 control: JobControl::new(),
             });
-            match failure {
+            match evaluation {
                 // The effective recipe resolved but has no output stage the host can evaluate, so
                 // no worker is started: the job fails at once and carries the reason.
-                Some(error) => {
+                Err(error) => {
                     owner.jobs.finish(&job_id, Err(error));
                 }
-                None => {
-                    let source = source.expect("an evaluable stack carries its prepared source");
+                Ok(evaluation) => {
                     if let Some(displaced) = owner.queue.submit(AnalysisJob {
                         job_id: job_id.clone(),
                         identity,
-                        source,
-                        registry,
-                        context,
-                        recipe,
+                        evaluation,
                     }) {
                         owner.jobs.supersede(&displaced);
                     }
@@ -2078,8 +2070,13 @@ mod tests {
     fn expected_report(owner: &OwnerHandle, request: PreviewRequest) -> Value {
         let job = owner.preview_job(request).expect("a preview job");
         let raster = job
-            .source
-            .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
+            .evaluation
+            .source()
+            .render(
+                job.evaluation.registry(),
+                job.evaluation.entry().snapshot.id.clone(),
+                job.evaluation.recipe(),
+            )
             .expect("a rendered frame");
         serde_json::to_value(crate::analysis::reduce_raster(&raster).expect("a reduction"))
             .expect("an encodable report")
@@ -2978,11 +2975,20 @@ mod tests {
         let job = owner
             .preview_job(PreviewRequest::new(client, asset.clone()).draft(draft.clone()))
             .expect("the drafted preview");
-        assert_eq!(job.draft_revision, Some(1));
-        assert_eq!(job.recipe.layers.len(), 1, "the draft's planned layer");
+        assert_eq!(job.evaluation.draft_revision(), Some(1));
+        assert_eq!(
+            job.evaluation.recipe().layers.len(),
+            1,
+            "the draft's planned layer"
+        );
         let rendered = job
-            .source
-            .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
+            .evaluation
+            .source()
+            .render(
+                job.evaluation.registry(),
+                job.evaluation.entry().snapshot.id.clone(),
+                job.evaluation.recipe(),
+            )
             .expect("a drafted frame");
         assert_eq!(rendered.pixel(0, 0), Some([200, 0, 0, 255]));
 
@@ -2990,15 +2996,16 @@ mod tests {
         let stored = owner
             .preview_job(PreviewRequest::new(client, asset.clone()))
             .expect("the committed preview");
-        assert!(stored.recipe.layers.is_empty());
-        assert_eq!(stored.draft_revision, None);
+        assert!(stored.evaluation.recipe().layers.is_empty());
+        assert_eq!(stored.evaluation.draft_revision(), None);
         assert_ne!(
             stored
-                .source
+                .evaluation
+                .source()
                 .render(
-                    &stored.registry,
-                    stored.entry.snapshot.id.clone(),
-                    &stored.recipe,
+                    stored.evaluation.registry(),
+                    stored.evaluation.entry().snapshot.id.clone(),
+                    stored.evaluation.recipe(),
                 )
                 .unwrap()
                 .pixel(0, 0),
@@ -3633,7 +3640,7 @@ mod tests {
             .preview_job(PreviewRequest::new(desktop, asset_id.clone()).analyse())
             .expect("an analysing preview job");
         assert!(job.analyse);
-        let PreviewSource::Jpeg(jpeg) = &job.source else {
+        let PreviewSource::Jpeg(jpeg) = job.evaluation.source() else {
             panic!("a JPEG preview source")
         };
         let source = jpeg.rgba.clone();
@@ -3682,7 +3689,7 @@ mod tests {
             .preview_job(PreviewRequest::new(desktop, asset_id))
             .expect("another preview job");
         assert!(
-            matches!(&after.source, PreviewSource::Jpeg(jpeg) if Arc::ptr_eq(&source, &jpeg.rgba)),
+            matches!(after.evaluation.source(), PreviewSource::Jpeg(jpeg) if Arc::ptr_eq(&source, &jpeg.rgba)),
             "the verified source cache served every request; no duplicate decode"
         );
         assert!(!after.analyse, "a plain preview asks for no reduction");
@@ -5163,8 +5170,13 @@ mod tests {
     /// it: the independent reference a sample is compared against.
     fn rendered(owner: &OwnerHandle, request: PreviewRequest) -> crate::Raster {
         let job = owner.preview_job(request).expect("a preview job");
-        job.source
-            .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
+        job.evaluation
+            .source()
+            .render(
+                job.evaluation.registry(),
+                job.evaluation.entry().snapshot.id.clone(),
+                job.evaluation.recipe(),
+            )
             .expect("a rendered frame")
     }
 

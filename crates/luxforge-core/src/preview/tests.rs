@@ -4,9 +4,9 @@ use super::worker::mask_overlay_for;
 use super::*;
 use crate::{
     ActivityBoard, AssetId, BASIC_EFFECT, BoxRect, Cancel, CropStage, EFFECT_FORMAT, EntryId,
-    HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, Orientation, PIXEL_EFFECT, ProxyBounds,
-    RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, Snapshot, SnapshotId, SourceImage,
-    Transform, analysis::AnalysisIdentity, render,
+    Evaluation, HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, Orientation, PIXEL_EFFECT,
+    ProxyBounds, RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, Snapshot, SnapshotId,
+    SourceImage, Transform, render,
 };
 use crate::{Component, ComponentMode};
 use serde_json::json;
@@ -45,58 +45,78 @@ fn job(color: u8, analyse: bool) -> PreviewJob {
         restore_target: None,
     };
     let recipe = entry.snapshot.recipe.clone();
-    let identity = AnalysisIdentity::of(
-        &entry.asset_id.clone(),
-        "test",
-        &entry,
-        &recipe,
-        None,
-        Some((1, 1)),
-    )
-    .unwrap();
-    PreviewJob {
-        source: PreviewSource::Jpeg(SourceImage {
-            width: 1,
-            height: 1,
-            rgba: vec![0, 0, 0, 255].into(),
-            fingerprint: "test".into(),
-            orientation: 1,
-            capture: Default::default(),
-        }),
-        registry: Arc::new(ModuleRegistry::builtin()),
-        context: RenderContext::new(),
-        recipe,
-        layer_count: None,
-        draft_revision: None,
-        identity,
-        analyse,
-        proxy: None,
-        viewport: None,
-        intent: PreviewIntent::Immediate,
-        viewport_declined: None,
-        mask_overlay: None,
+    let source = PreviewSource::Jpeg(SourceImage {
+        width: 1,
+        height: 1,
+        rgba: vec![0, 0, 0, 255].into(),
+        fingerprint: "test".into(),
+        orientation: 1,
+        capture: Default::default(),
+    });
+    let evaluation = Evaluation::new(
+        Arc::new(ModuleRegistry::builtin()),
+        RenderContext::new(),
+        source,
         entry,
-    }
+        recipe,
+        None,
+    );
+    let mut job = PreviewJob::new(evaluation).unwrap();
+    job.analyse = analyse;
+    job
+}
+
+/// What a test job's evaluation is built from.
+struct Parts {
+    registry: Arc<ModuleRegistry>,
+    context: RenderContext,
+    source: PreviewSource,
+    recipe: Recipe,
+}
+
+/// `job` evaluating what `change` makes of its parts. An evaluation is immutable and compiled
+/// once, so a test that wants another stack, source, registry or context builds another one. The
+/// job keeps its entry, its draft and how it is presented; its identity is the new evaluation's.
+fn rebuilt(mut job: PreviewJob, change: impl FnOnce(&mut Parts)) -> PreviewJob {
+    let held = &job.evaluation;
+    let mut parts = Parts {
+        registry: held.registry().clone(),
+        context: held.context().clone(),
+        source: held.source().clone(),
+        recipe: held.recipe().clone(),
+    };
+    change(&mut parts);
+    let evaluation = Evaluation::new(
+        parts.registry,
+        parts.context,
+        parts.source,
+        held.entry().clone(),
+        parts.recipe,
+        held.draft().cloned(),
+    );
+    job.identity = evaluation.identity().unwrap();
+    job.evaluation = evaluation;
+    job
 }
 
 /// [`entry`] with one held colour layer after its pixel layer, so its render waits at `gate`
 /// while the gate is shut and otherwise renders the same picture.
 fn held_entry(gate: &Arc<crate::modules::RenderGate>, color: u8) -> PreviewJob {
-    let mut job = entry(color);
-    job.recipe.layers.push(Layer {
-        id: LayerId::new(),
-        effect_id: crate::modules::HELD_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload: json!({}),
-        artifacts: Vec::new(),
-        mask: None,
-    });
     let mut registry = ModuleRegistry::builtin();
     registry
         .register(crate::modules::HeldModule::shared(gate.clone()))
         .expect("a valid holding module");
-    job.registry = Arc::new(registry);
-    job
+    rebuilt(entry(color), |parts| {
+        parts.recipe.layers.push(Layer {
+            id: LayerId::new(),
+            effect_id: crate::modules::HELD_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({}),
+            artifacts: Vec::new(),
+            mask: None,
+        });
+        parts.registry = Arc::new(registry);
+    })
 }
 
 /// The pending slot is still newest-wins: three rapid requests run at most two jobs, the second
@@ -381,31 +401,17 @@ fn stacked_with_masks(
         undo_parent: None,
         restore_target: None,
     };
-    let identity = AnalysisIdentity::of(
-        &asset,
-        source.fingerprint(),
-        &entry,
-        &recipe,
-        None,
-        Some((width, height)),
-    )
-    .unwrap();
-    PreviewJob {
+    let evaluation = Evaluation::new(
+        Arc::new(ModuleRegistry::builtin()),
+        RenderContext::new(),
         source,
-        registry: Arc::new(ModuleRegistry::builtin()),
-        context: RenderContext::new(),
-        recipe,
-        layer_count: None,
-        draft_revision: None,
-        identity,
-        analyse: false,
-        proxy,
-        viewport: None,
-        intent: PreviewIntent::Immediate,
-        viewport_declined: None,
-        mask_overlay: None,
         entry,
-    }
+        recipe,
+        None,
+    );
+    let mut job = PreviewJob::new(evaluation).unwrap();
+    job.proxy = proxy;
+    job
 }
 
 fn wait_until(counter: &Arc<AtomicU64>, wanted: u64, what: &str) {
@@ -556,9 +562,9 @@ fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
         })
         .unwrap();
     let transform = render(
-        &job.registry,
-        job.source.input(),
-        &job.recipe,
+        job.evaluation.registry(),
+        job.evaluation.source().input(),
+        job.evaluation.recipe(),
         RenderOptions::default(),
         &RenderContext::new(),
     )
@@ -571,7 +577,7 @@ fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
             width: 128,
             height: 96,
         },
-        &job.recipe.strokes,
+        &job.evaluation.recipe().strokes,
     )
     .unwrap();
     let expected_grid = |region, cells_w, cells_h| {
@@ -632,10 +638,10 @@ fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
 fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
     let display = bounds(40, 40);
     let job = stacked(64, 48, eligible_layers(64, 48), Some(display));
-    let registry = job.registry.clone();
-    let source = job.source.clone();
-    let recipe = job.recipe.clone();
-    let snapshot = job.entry.snapshot.id.clone();
+    let registry = job.evaluation.registry().clone();
+    let source = job.evaluation.source().clone();
+    let recipe = job.evaluation.recipe().clone();
+    let snapshot = job.evaluation.entry().snapshot.id.clone();
     let plan = source
         .proxy_plan(&registry, &recipe, display)
         .expect("a plan")
@@ -733,10 +739,10 @@ fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
     );
 }
 
-/// A job compiles its stack once at each stage it renders at: once at the exact stage, whose
-/// compilation plans the proxy, renders the exact frame and gives the coverage grid its
-/// geometry, and once at the proxy stage, whose compilation renders the proxy frame and says
-/// whether it is approximate. A job without a proxy phase compiles once.
+/// A job's stack is compiled once at each stage it renders at: once at the exact stage, by its
+/// evaluation when the job is built, whose compilation plans the proxy, renders the exact frame and
+/// gives the coverage grid its geometry, and once at the proxy stage, whose compilation renders the
+/// proxy frame and says whether it is approximate. A job without a proxy phase is compiled once.
 #[test]
 fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
     let mask = gradient_mask(0.5);
@@ -750,11 +756,13 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
     };
     let mut queue = PreviewQueue::default();
     for (proxy, phases, compiles) in [(Some(bounds(40, 40)), 2, 2), (None, 1, 1)] {
-        let mut job = stacked_with_masks(64, 48, masked_basic(&mask), vec![mask.clone()], proxy)
-            .with_mask_overlay(request.clone())
-            .expect("the stack holds the mask");
         let context = RenderContext::new();
-        job.context = context.clone();
+        let job = rebuilt(
+            stacked_with_masks(64, 48, masked_basic(&mask), vec![mask.clone()], proxy),
+            |parts| parts.context = context.clone(),
+        )
+        .with_mask_overlay(request.clone())
+        .expect("the stack holds the mask");
         queue.request(job);
         let results = drain_all(&mut queue);
         assert_eq!(results.len(), phases, "{proxy:?}");
@@ -923,10 +931,10 @@ fn a_masked_recipe_is_proxy_eligible_and_its_proxy_frame_is_the_exact_recipe_at_
         vec![mask.clone()],
         Some(display),
     );
-    let registry = job.registry.clone();
-    let source = job.source.clone();
-    let recipe = job.recipe.clone();
-    let snapshot = job.entry.snapshot.id.clone();
+    let registry = job.evaluation.registry().clone();
+    let source = job.evaluation.source().clone();
+    let recipe = job.evaluation.recipe().clone();
+    let snapshot = job.evaluation.entry().snapshot.id.clone();
     registry
         .proxy_eligible(&recipe)
         .expect("a masked colour stack is proxy eligible");
@@ -1158,8 +1166,8 @@ fn a_mask_with_no_components_reports_no_approximation() {
         vec![empty.clone()],
         Some(display),
     );
-    let registry = job.registry.clone();
-    let recipe = job.recipe.clone();
+    let registry = job.evaluation.registry().clone();
+    let recipe = job.evaluation.recipe().clone();
     let mut queue = PreviewQueue::default();
     queue.request(job);
     let results = drain_all(&mut queue);
@@ -1400,9 +1408,9 @@ fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
     };
     let mut queue = PreviewQueue::default();
     let mut frame = |job: PreviewJob| {
-        let registry = job.registry.clone();
-        let source = job.source.clone();
-        let recipe = job.recipe.clone();
+        let registry = job.evaluation.registry().clone();
+        let source = job.evaluation.source().clone();
+        let recipe = job.evaluation.recipe().clone();
         queue.request(job);
         let results = drain_all(&mut queue);
         let proxy = results[0].proxy().expect("a proxy phase");
@@ -1493,13 +1501,13 @@ fn held(gate: &Arc<crate::modules::RenderGate>, proxy: Option<ProxyBounds>) -> P
         artifacts: Vec::new(),
         mask: None,
     };
-    let mut job = stacked(64, 48, vec![layer], proxy);
     let mut registry = ModuleRegistry::builtin();
     registry
         .register(crate::modules::HeldModule::shared(gate.clone()))
         .expect("a valid holding module");
-    job.registry = Arc::new(registry);
-    job
+    rebuilt(stacked(64, 48, vec![layer], proxy), |parts| {
+        parts.registry = Arc::new(registry);
+    })
 }
 
 /// Read the board until `wanted` holds. The job under test is held at a gate, so what it waits
@@ -1530,7 +1538,7 @@ fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it
     let mut queue = PreviewQueue::default();
     queue.set_activity(board.clone());
     let job = held(&gate, Some(bounds(16, 16)));
-    let asset = job.entry.asset_id.clone();
+    let asset = job.evaluation.entry().asset_id.clone();
 
     gate.shut();
     queue.request(job);
@@ -1740,13 +1748,14 @@ fn raw_job(white_balance: Option<crate::WhiteBalanceApproximation>) -> PreviewJo
         .map(|index| 0.02 + ((index * 37) % 1009) as f32 / 1100.0)
         .collect();
     let image = LinearImage::with_fingerprint(width, height, planes, "sha256:raw-wb").unwrap();
-    let mut job = job(1, true);
-    // The stock test job carries a pixel-stage layer, which is not proxy-eligible.
-    job.recipe.layers.clear();
-    job.source = PreviewSource::Raw {
-        image,
-        settings: LinearSettings { white_balance },
-    };
+    let mut job = rebuilt(job(1, true), |parts| {
+        // The stock test job carries a pixel-stage layer, which is not proxy-eligible.
+        parts.recipe.layers.clear();
+        parts.source = PreviewSource::Raw {
+            image,
+            settings: LinearSettings { white_balance },
+        };
+    });
     job.proxy = Some(ProxyBounds {
         width: 60,
         height: 60,
@@ -1771,9 +1780,13 @@ fn approximation() -> crate::WhiteBalanceApproximation {
 fn an_approximate_white_balance_is_labelled_on_both_phases_and_never_analysed() {
     let job = raw_job(Some(approximation()));
     assert!(job.analyse, "the job asked for a report");
-    assert!(job.source.approximate_white_balance());
-    let (registry, source, recipe) = (job.registry.clone(), job.source.clone(), job.recipe.clone());
-    let snapshot = job.entry.snapshot.id.clone();
+    assert!(job.evaluation.source().approximate_white_balance());
+    let (registry, source, recipe) = (
+        job.evaluation.registry().clone(),
+        job.evaluation.source().clone(),
+        job.evaluation.recipe().clone(),
+    );
+    let snapshot = job.evaluation.entry().snapshot.id.clone();
     let plan = source
         .proxy_plan(&registry, &recipe, job.proxy.unwrap())
         .unwrap()
@@ -1832,18 +1845,19 @@ fn an_approximate_white_balance_is_labelled_on_both_phases_and_never_analysed() 
 #[test]
 fn a_drafted_white_balance_hits_the_proxy_the_exact_job_built() {
     let exact = raw_job(None);
-    let mut drafted = raw_job(Some(approximation()));
+    let drafted = raw_job(Some(approximation()));
     // The same developed planes: a drafted job reads the planes the committed one did.
-    drafted.source = PreviewSource::Raw {
-        image: match &exact.source {
+    let source = PreviewSource::Raw {
+        image: match exact.evaluation.source() {
             PreviewSource::Raw { image, .. } => image.clone(),
             PreviewSource::Jpeg(_) => unreachable!(),
         },
-        settings: match &drafted.source {
+        settings: match drafted.evaluation.source() {
             PreviewSource::Raw { settings, .. } => *settings,
             PreviewSource::Jpeg(_) => unreachable!(),
         },
     };
+    let drafted = rebuilt(drafted, |parts| parts.source = source);
     let mut queue = PreviewQueue::default();
     queue.request(exact);
     let first = drain_all(&mut queue);
@@ -1869,7 +1883,7 @@ fn a_drafted_white_balance_hits_the_proxy_the_exact_job_built() {
 #[test]
 fn an_exact_raw_job_is_unlabelled_and_analysed() {
     let job = raw_job(None);
-    assert!(!job.source.approximate_white_balance());
+    assert!(!job.evaluation.source().approximate_white_balance());
     let mut queue = PreviewQueue::default();
     queue.request(job);
     let results = drain_all(&mut queue);
@@ -1911,22 +1925,22 @@ fn a_cached_raw_proxy_renders_at_the_exposure_of_the_job_that_hits_it() {
         height: 300,
     };
     let job_at = |ev: f64, analyse: bool| {
-        let mut job = job(1, analyse);
-        // The stock test job carries a pixel-stage layer, which is not proxy-eligible; one
-        // Basic exposure is the stack under test.
-        job.recipe.layers.clear();
-        job.recipe.layers.push(crate::Layer {
-            id: crate::LayerId::new(),
-            effect_id: crate::BASIC_EFFECT.into(),
-            effect_format: crate::EFFECT_FORMAT,
-            payload: json!({"exposure": ev}),
-            mask: None,
-            artifacts: Vec::new(),
+        let mut job = rebuilt(job(1, analyse), |parts| {
+            // The stock test job carries a pixel-stage layer, which is not proxy-eligible; one
+            // Basic exposure is the stack under test.
+            parts.recipe.layers = vec![crate::Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: json!({"exposure": ev}),
+                mask: None,
+                artifacts: Vec::new(),
+            }];
+            parts.source = PreviewSource::Raw {
+                image: image.clone(),
+                settings: LinearSettings::default(),
+            };
         });
-        job.source = PreviewSource::Raw {
-            image: image.clone(),
-            settings: LinearSettings::default(),
-        };
         job.proxy = Some(bounds);
         job
     };
@@ -2047,24 +2061,24 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
             whole_cells_h: 6,
         };
         let frame = render(
-            &job.registry,
-            &job.source,
-            &job.recipe,
+            job.evaluation.registry(),
+            job.evaluation.source(),
+            job.evaluation.recipe(),
             RenderOptions::default(),
-            &job.context,
+            job.evaluation.context(),
         )
         .expect("the stack compiles");
         let MaskOverlayOutcome {
             grid,
             absent: reason,
         } = mask_overlay_for(
-            &job.registry,
+            job.evaluation.registry(),
             &frame,
-            &job.recipe,
+            job.evaluation.recipe(),
             &request,
             None,
             &Cancel::never(),
-            &job.context,
+            job.evaluation.context(),
         );
         if absent {
             assert!(grid.is_none(), "a value-based mask behind a spatial layer");
@@ -2126,10 +2140,10 @@ fn the_cost_of_a_coverage_grid() {
         ] {
             let job =
                 stacked_with_masks(width, height, masked_basic(&mask), vec![mask.clone()], None);
-            let registry = job.registry.clone();
-            let source = job.source.clone();
-            let recipe = job.recipe.clone();
-            let snapshot = job.entry.snapshot.id.clone();
+            let registry = job.evaluation.registry().clone();
+            let source = job.evaluation.source().clone();
+            let recipe = job.evaluation.recipe().clone();
+            let snapshot = job.evaluation.entry().snapshot.id.clone();
             // The phase the grid is filled beside, for the figures to be stated against.
             let started = Instant::now();
             let raster = source
@@ -2216,46 +2230,50 @@ fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held(
         width: box_width,
         height: box_height,
     });
-    let mut job = job(1, false);
-    job.recipe.layers = vec![
-        Layer {
-            id: LayerId::new(),
-            effect_id: PRESENCE_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
-            payload: json!({"clarity": 60.0}),
-            artifacts: Vec::new(),
-            mask: None,
-        },
-        Layer::crop(fitted.normalized(&stage)),
-    ];
-    job.source = PreviewSource::Raw {
-        image,
-        settings: LinearSettings::default(),
-    };
+    let mut job = rebuilt(job(1, false), |parts| {
+        parts.recipe.layers = vec![
+            Layer {
+                id: LayerId::new(),
+                effect_id: PRESENCE_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"clarity": 60.0}),
+                artifacts: Vec::new(),
+                mask: None,
+            },
+            Layer::crop(fitted.normalized(&stage)),
+        ];
+        parts.source = PreviewSource::Raw {
+            image,
+            settings: LinearSettings::default(),
+        };
+    });
     let display = ProxyBounds {
         width: 480,
         height: 320,
     };
     job.proxy = Some(display);
-    let registry = job.registry.clone();
-    let recipe = job.recipe.clone();
-    let snapshot = job.entry.snapshot.id.clone();
+    let registry = job.evaluation.registry().clone();
+    let recipe = job.evaluation.recipe().clone();
+    let snapshot = job.evaluation.entry().snapshot.id.clone();
     let output = registry.compile(width, height, &recipe).unwrap().stage();
     assert!(
         output.width < width && output.height < height,
         "the crop trims the stage"
     );
     let plan = job
-        .source
+        .evaluation
+        .source()
         .proxy_plan(&registry, &recipe, display)
         .unwrap()
         .expect("a proxy is worthwhile");
     let exact_reference = job
-        .source
+        .evaluation
+        .source()
         .render(&registry, snapshot.clone(), &recipe)
         .expect("the stack renders with the target free");
     let proxy_reference = job
-        .source
+        .evaluation
+        .source()
         .proxy(plan)
         .unwrap()
         .render(&registry, snapshot, &recipe)
@@ -2263,7 +2281,7 @@ fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held(
 
     // The job renders through its own context; holding that context's whole target stands in for
     // the other evaluation.
-    let context = job.context.clone();
+    let context = job.evaluation.context().clone();
     let budget = context.spatial();
     let held = budget.reserve(budget.target(), 1);
     let mut queue = PreviewQueue::default();

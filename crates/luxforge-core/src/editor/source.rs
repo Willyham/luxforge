@@ -120,12 +120,9 @@ pub(crate) struct FilePreparation {
 }
 
 impl FilePreparation {
-    fn for_recipe(
-        registry: &crate::ModuleRegistry,
-        asset: &AssetRecord,
-        recipe: &crate::Recipe,
-    ) -> Result<Self, Error> {
-        validate_source_recipe(registry, asset, recipe)?;
+    /// The preparation of `recipe`, a stack of `asset` its caller already admitted as one
+    /// ([`EditorService::saved_entry`]).
+    fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
         let raw = match &asset.source {
             SourceKind::Jpeg => None,
             SourceKind::Raw { metadata } => Some(RawPreparation {
@@ -261,12 +258,24 @@ impl EditorService {
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
     ) -> Result<FilePreparation, Error> {
-        let state = self.state(asset_id)?;
-        let entry = match entry_id {
-            Some(id) => self.entry(asset_id, id)?,
-            None => state.current_entry,
-        };
-        FilePreparation::for_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)
+        let (asset, entry) = self.saved_entry(asset_id, entry_id)?;
+        FilePreparation::for_recipe(&asset, &entry.snapshot.recipe)
+    }
+
+    /// One saved entry of an asset, the current one unless `entry_id` names another, shared from
+    /// the entry cache, with the asset it belongs to, its stack admitted as one of that asset's
+    /// source kind ([`validate_source_recipe`]). What every question about a saved stack starts
+    /// from, an evaluation of it included ([`Self::evaluation`]): a cached head and entry read,
+    /// nothing copied but the asset record, and `O(layers)` checks.
+    pub(super) fn saved_entry(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<(AssetRecord, Arc<crate::HistoryEntry>), Error> {
+        let head = self.head(asset_id)?;
+        let entry = self.shared_entry(asset_id, entry_id.unwrap_or(&head.current))?;
+        validate_source_recipe(&self.registry, &head.asset, &entry.snapshot.recipe)?;
+        Ok((head.asset, entry))
     }
 
     /// A repeated import can reuse the one verified immutable decode without a new worker job.
@@ -296,24 +305,19 @@ impl EditorService {
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
     ) -> Result<Value, Error> {
-        let state = self.state(asset_id)?;
-        let entry = match entry_id {
-            Some(id) => self.entry(asset_id, id)?,
-            None => state.current_entry,
-        };
-        validate_source_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)?;
+        let (asset, entry) = self.saved_entry(asset_id, entry_id)?;
         let cached = self.cached_state(asset_id)?.is_some();
-        let needs_development = match development_gains(&state.asset, &entry.snapshot.recipe)? {
+        let needs_development = match development_gains(&asset, &entry.snapshot.recipe)? {
             Some(gains) => cached && self.raw_development(asset_id, gains)?.is_some(),
             None => false,
         };
         Ok(json!({
             "asset_id": asset_id,
             "entry_id": entry.id,
-            "fingerprint": state.asset.fingerprint,
-            "width": state.asset.width,
-            "height": state.asset.height,
-            "source": state.asset.source,
+            "fingerprint": asset.fingerprint,
+            "width": asset.width,
+            "height": asset.height,
+            "source": asset.source,
             "readiness": if !cached { "preparation-required" } else if needs_development { "development-required" } else { "ready" },
         }))
     }
@@ -341,14 +345,9 @@ impl EditorService {
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
     ) -> Result<PreparationNeeds, Error> {
-        let state = self.state(asset_id)?;
-        let entry = match entry_id {
-            Some(id) => self.entry(asset_id, id)?,
-            None => state.current_entry,
-        };
-        validate_source_recipe(&self.registry, &state.asset, &entry.snapshot.recipe)?;
+        let (asset, entry) = self.saved_entry(asset_id, entry_id)?;
         self.preparation_needs(Evaluated::exactly(
-            &state.asset,
+            &asset,
             &entry.id,
             &entry.snapshot.recipe,
         ))
@@ -732,11 +731,12 @@ fn reject_superseded_fields(
 
 /// Whether an evaluation may approximate a RAW white balance the developed planes do not hold.
 ///
-/// [`Self::DraftPreview`] is taken in exactly one place, [`EditorService::preview_job`] for an
-/// open draft. Every other evaluation — a committed or historical preview, `render_entry` and so
-/// every export, `sample_entry` and `sample_draft` and so the readout and `render.sample`,
-/// `analysis_plan`, and every pixel a plan or query samples from its stage context — is
-/// [`Self::Strict`].
+/// [`Self::DraftPreview`] is decided in exactly one place, the evaluation builder
+/// ([`EditorService::evaluation`]), for the preview of an open draft; `cargo xtask
+/// check-repository` keeps it there. Every other evaluation — a committed or historical preview,
+/// `render_entry` and every export, `sample_entry` and `sample_draft` and so the readout and
+/// `render.sample`, `analysis_plan`, and every pixel a plan or query samples from its stage
+/// context — is [`Self::Strict`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RawSettingsMode {
     /// The developed planes must hold the recipe's white balance; anything else is
@@ -1383,15 +1383,15 @@ mod tests {
         let is_required = |error: Error| error.kind == ErrorKind::PreparationRequired;
 
         let committed = service.preview_job(&asset, None, None, None, None).unwrap();
-        assert!(!committed.source.approximate_white_balance());
+        assert!(!committed.evaluation.source().approximate_white_balance());
 
         let mut draft = Draft::new("set-raw", asset.clone(), state.revision);
         draft.merge(Map::from_iter([("temperature".to_owned(), json!(3200.0))]));
         let drafted = service
             .preview_job(&asset, None, None, Some(&draft), None)
             .expect("a drafted white balance previews");
-        assert!(drafted.source.approximate_white_balance());
-        let PreviewSource::Raw { settings, .. } = &drafted.source else {
+        assert!(drafted.evaluation.source().approximate_white_balance());
+        let PreviewSource::Raw { settings, .. } = drafted.evaluation.source() else {
             panic!("a RAW source");
         };
         let metadata = match &state.asset.source {
@@ -1416,19 +1416,21 @@ mod tests {
             )
         );
         let rendered = drafted
-            .source
+            .evaluation
+            .source()
             .render(
                 &service.registry,
-                drafted.entry.snapshot.id.clone(),
-                &drafted.recipe,
+                drafted.evaluation.entry().snapshot.id.clone(),
+                drafted.evaluation.recipe(),
             )
             .expect("the approximate frame renders");
         let exact = committed
-            .source
+            .evaluation
+            .source()
             .render(
                 &service.registry,
-                committed.entry.snapshot.id.clone(),
-                &committed.recipe,
+                committed.evaluation.entry().snapshot.id.clone(),
+                committed.evaluation.recipe(),
             )
             .unwrap();
         assert_ne!(
@@ -1452,7 +1454,8 @@ mod tests {
             !service
                 .preview_job(&asset, None, None, Some(&exposure), None)
                 .unwrap()
-                .source
+                .evaluation
+                .source()
                 .approximate_white_balance()
         );
 
@@ -1523,7 +1526,10 @@ mod tests {
         let original = service
             .preview_job(&initial.asset.id, None, None, None, None)
             .unwrap();
-        assert!(matches!(original.source, PreviewSource::Raw { .. }));
+        assert!(matches!(
+            original.evaluation.source(),
+            PreviewSource::Raw { .. }
+        ));
         let as_shot = raw_payload(&initial.current_entry.snapshot.recipe).unwrap();
         assert_eq!(as_shot.as_shot_gains, as_shot.gains);
         // Exposure is Basic's: it leaves the source development as it was.
@@ -1589,7 +1595,8 @@ mod tests {
             service
                 .preview_job(&initial.asset.id, None, None, None, None)
                 .unwrap()
-                .source,
+                .evaluation
+                .source(),
             PreviewSource::Raw { .. }
         ));
         let undo = service
@@ -1693,7 +1700,7 @@ mod tests {
             .preview_job(&state.asset.id, None, None, None, None)
             .unwrap();
         let (PreviewSource::Jpeg(first_source), PreviewSource::Jpeg(second_source)) =
-            (&first.source, &second.source)
+            (first.evaluation.source(), second.evaluation.source())
         else {
             panic!("JPEG preview expected")
         };
@@ -1704,8 +1711,8 @@ mod tests {
         let raster = render(
             service.registry(),
             first_source,
-            first.entry.snapshot.id.clone(),
-            &first.entry.snapshot.recipe,
+            first.evaluation.entry().snapshot.id.clone(),
+            &first.evaluation.entry().snapshot.recipe,
         )
         .unwrap();
         assert!(std::sync::Arc::ptr_eq(&first_source.rgba, &raster.rgba));

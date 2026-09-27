@@ -1527,7 +1527,7 @@ fn preview_select(
 ) -> Result<Value, Error> {
     // The current entry is the live state, not a historical snapshot: selecting it is Return to
     // current, so the session keeps following later commits and editing stays enabled.
-    let selection = if service.state(&p.asset_id)?.current_entry.id == p.entry_id {
+    let selection = if service.current_entry_id(&p.asset_id)? == p.entry_id {
         HistorySelection::Current
     } else {
         service.entry(&p.asset_id, &p.entry_id)?;
@@ -1971,7 +1971,7 @@ fn selected_entry(
     match named {
         Some(entry_id) => Ok(entry_id),
         None => match &session.preview.selection {
-            HistorySelection::Current => Ok(service.state(asset_id)?.current_entry.id),
+            HistorySelection::Current => service.current_entry_id(asset_id),
             HistorySelection::Entry(id) => Ok(id.clone()),
         },
     }

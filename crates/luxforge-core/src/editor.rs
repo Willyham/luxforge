@@ -10,8 +10,7 @@
 use crate::ErrorKind;
 use crate::{
     AssetId, Draft, DraftId, EntryId, Error, HistoryEntry, HistoryRow, LayerId, MaskId,
-    ModuleRegistry, Orientation, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId,
-    StageSize,
+    ModuleRegistry, Orientation, RenderContext, SnapshotId, StageSize,
     analysis::AnalysisIdentity,
     artifacts::{ArtifactId, LiveArtifacts, PreparedArtifacts},
     source::PreparedSource,
@@ -42,6 +41,7 @@ mod source;
 mod test_support;
 
 pub(crate) use catalog::{decode, encode, now_ms, write};
+pub use evaluate::Evaluation;
 pub(crate) use evaluate::PointPlan;
 pub use masks::{MASK_FIELD, mask_target_parameter};
 pub(crate) use plan::prefix;
@@ -280,40 +280,32 @@ pub enum AnalysisSelection<'a> {
     Draft(&'a Draft),
 }
 
-/// One planned analysis job. `failure` is set when the effective recipe resolved but has no output
-/// stage the host can evaluate — an unavailable provider, or a payload the registry refuses — in
-/// which case the job is recorded failed and no worker is started.
+/// One planned analysis job: the identity that names its result, and the evaluation its worker
+/// renders or the reason the effective recipe has no output stage the host can evaluate — an
+/// unavailable provider, or a payload the registry refuses — in which case the job is recorded
+/// failed and no worker is started. A stack without an output stage has nothing to render, so its
+/// original is never prepared for it.
 #[derive(Debug)]
 pub struct AnalysisPlan {
     pub identity: AnalysisIdentity,
-    /// The buffer the worker renders, or `None` when `failure` says the stack has no output stage
-    /// at all: there is nothing to render, so the original is never prepared for it.
-    pub source: Option<PreviewSource>,
-    pub registry: Arc<ModuleRegistry>,
-    pub context: RenderContext,
-    /// The effective recipe, bound with the verified bytes of every artifact it references, which
-    /// the job holds while it runs.
-    pub recipe: Recipe,
-    pub failure: Option<Error>,
+    pub evaluation: Result<Evaluation, Error>,
 }
 
 /// One saved entry's export, frozen on the catalog owner: whatever is committed afterwards, the job
-/// renders exactly this. Its recipe carries the verified bytes of the artifacts it references and
-/// its source shares the cached allocation.
+/// renders exactly this evaluation, whose recipe carries the verified bytes of the artifacts it
+/// references and whose source shares the cached allocation.
 pub(crate) struct ExportPlan {
     /// The asset, entry, snapshot, recipe hash, source fingerprint and output stage.
     pub identity: AnalysisIdentity,
-    pub source: PreviewSource,
-    pub registry: Arc<ModuleRegistry>,
-    pub context: RenderContext,
-    pub recipe: Recipe,
+    pub evaluation: Evaluation,
     /// The original's supported EXIF fields, read once when its source was prepared.
     pub capture: Arc<crate::export::CaptureMetadata>,
 }
 
-/// What `export.plan` answers from: the entry's identity and output stage, and the original's path.
+/// What `export.plan` answers from: the entry's evaluation, which reads no source, and the
+/// original's path.
 pub(crate) struct ExportTarget {
-    pub identity: AnalysisIdentity,
+    pub evaluation: Evaluation<()>,
     pub original: PathBuf,
 }
 
@@ -321,29 +313,21 @@ pub(crate) struct ExportTarget {
 /// at request time: the samples describe that entry whatever is committed meanwhile. Its recipe
 /// carries the artifacts its stack binds, and it shares the source's allocation.
 pub(crate) struct SamplePlan {
-    source: PreviewSource,
-    registry: Arc<ModuleRegistry>,
-    context: RenderContext,
-    recipe: Recipe,
+    evaluation: Evaluation,
 }
 
 impl SamplePlan {
     /// The pixels at the centres of a `side` × `side` grid over the entry's output stage, row by
-    /// row from the top-left: `O(side² × layers)` and no frame. `checkpoint` is asked before each
-    /// point.
+    /// row from the top-left, from the evaluation's one compilation: `O(side² × layers)` and no
+    /// frame. `checkpoint` is asked before each point.
     pub(crate) fn grid(
         &self,
         side: u32,
         checkpoint: &dyn Fn() -> Result<(), Error>,
     ) -> Result<Vec<[u8; 4]>, Error> {
-        crate::render(
-            &self.registry,
-            &self.source,
-            &self.recipe,
-            RenderOptions::default(),
-            &self.context,
-        )?
-        .grid(side, checkpoint)
+        self.evaluation
+            .exact(&crate::Cancel::never())?
+            .grid(side, checkpoint)
     }
 }
 

@@ -190,15 +190,15 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let original_job = service.preview_job(&asset, Some(&original), None, None, None)?;
     let cached_preview_job_ms = milliseconds(started);
     let started = Instant::now();
-    let original_raster = match &original_job.source {
+    let original_raster = match original_job.evaluation.source() {
         PreviewSource::Jpeg(image) => render(
             service.registry(),
             image,
-            &original_job.entry.snapshot.recipe,
+            &original_job.evaluation.entry().snapshot.recipe,
             RenderOptions::default(),
             service.render_context(),
         )?
-        .frame(original_job.entry.snapshot.id)?,
+        .frame(original_job.evaluation.entry().snapshot.id.clone())?,
         PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
     };
     let original_render_ms = milliseconds(started);
@@ -270,7 +270,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     // honest baseline for the pass itself, because it materializes exactly the same frames.
     let colour_job = service.preview_job(&asset, Some(&crop_entry), None, None, None)?;
     let colour_registry = ModuleRegistry::builtin();
-    let stack = colour_job.entry.snapshot.recipe.clone();
+    let stack = colour_job.evaluation.entry().snapshot.recipe.clone();
     let identity = Recipe {
         format: stack.format,
         layers: Vec::new(),
@@ -291,17 +291,33 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     vibrance_saturation
         .layers
         .insert(index, basic_vibrance_saturation_layer(50.0, 20.0));
-    let (identity_samples, identity_stage) =
-        recipe_render_samples(&colour_registry, &colour_job.source, &identity, samples)?;
-    let (stack_samples, stack_stage) =
-        recipe_render_samples(&colour_registry, &colour_job.source, &stack, samples)?;
-    let (colour_samples, colour_stage) =
-        recipe_render_samples(&colour_registry, &colour_job.source, &coloured, samples)?;
-    let (toned_samples, toned_stage) =
-        recipe_render_samples(&colour_registry, &colour_job.source, &toned, samples)?;
+    let (identity_samples, identity_stage) = recipe_render_samples(
+        &colour_registry,
+        colour_job.evaluation.source(),
+        &identity,
+        samples,
+    )?;
+    let (stack_samples, stack_stage) = recipe_render_samples(
+        &colour_registry,
+        colour_job.evaluation.source(),
+        &stack,
+        samples,
+    )?;
+    let (colour_samples, colour_stage) = recipe_render_samples(
+        &colour_registry,
+        colour_job.evaluation.source(),
+        &coloured,
+        samples,
+    )?;
+    let (toned_samples, toned_stage) = recipe_render_samples(
+        &colour_registry,
+        colour_job.evaluation.source(),
+        &toned,
+        samples,
+    )?;
     let (vibrance_saturation_samples, vibrance_saturation_stage) = recipe_render_samples(
         &colour_registry,
-        &colour_job.source,
+        colour_job.evaluation.source(),
         &vibrance_saturation,
         samples,
     )?;
@@ -312,8 +328,12 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     balanced
         .layers
         .insert(index, basic_white_balance_layer(30.0, -10.0));
-    let (white_balance_samples, white_balance_stage) =
-        recipe_render_samples(&colour_registry, &colour_job.source, &balanced, samples)?;
+    let (white_balance_samples, white_balance_stage) = recipe_render_samples(
+        &colour_registry,
+        colour_job.evaluation.source(),
+        &balanced,
+        samples,
+    )?;
     ensure(
         stack_stage == white_balance_stage,
         "A white-balance operation changed the output stage",
@@ -326,8 +346,12 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     // the proxy renders are what a slider tick costs at Fit.
     let mut full_basic = stack.clone();
     full_basic.layers.insert(index, basic_full_layer());
-    let (full_basic_samples, full_basic_stage) =
-        recipe_render_samples(&colour_registry, &colour_job.source, &full_basic, samples)?;
+    let (full_basic_samples, full_basic_stage) = recipe_render_samples(
+        &colour_registry,
+        colour_job.evaluation.source(),
+        &full_basic,
+        samples,
+    )?;
     ensure(
         stack_stage == full_basic_stage,
         "The full Basic layer changed the output stage",
@@ -335,7 +359,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let full_basic_render = distribution(full_basic_samples);
     let plan = render(
         &colour_registry,
-        &colour_job.source,
+        colour_job.evaluation.source(),
         &full_basic,
         RenderOptions::default(),
         &RenderContext::new(),
@@ -346,7 +370,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let mut proxy_source = None;
     for _ in 0..samples {
         let started = Instant::now();
-        let built = colour_job.source.proxy(plan)?;
+        let built = colour_job.evaluation.source().proxy(plan)?;
         proxy_build.push(milliseconds(started));
         proxy_source = Some(built);
     }
@@ -422,15 +446,15 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let cold_job = service.preview_job(&asset, Some(&original), None, None, None)?;
     let cold_source_and_job_ms = milliseconds(started);
     let started = Instant::now();
-    let cold_raster = match &cold_job.source {
+    let cold_raster = match cold_job.evaluation.source() {
         PreviewSource::Jpeg(image) => render(
             service.registry(),
             image,
-            &cold_job.entry.snapshot.recipe,
+            &cold_job.evaluation.entry().snapshot.recipe,
             RenderOptions::default(),
             service.render_context(),
         )?
-        .frame(cold_job.entry.snapshot.id)?,
+        .frame(cold_job.evaluation.entry().snapshot.id.clone())?,
         PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
     };
     let cold_original_render_ms = milliseconds(started);

@@ -6,7 +6,7 @@
 //! leaves its exports running, as it leaves capability jobs.
 use super::{Call, Owner};
 use crate::{
-    AssetId, EntryId, Error, JobId, JobStatus, RenderOptions,
+    AssetId, EntryId, Error, JobId, JobStatus,
     activity::ActivitySpec,
     api::announce_once,
     api::params::host_params,
@@ -70,7 +70,7 @@ pub(in crate::api) fn plan(
         (Some(directory), Some(stem)) => publish::suggest(directory, stem),
         _ => None,
     };
-    let identity = target.identity;
+    let identity = target.evaluation.identity()?;
     Ok(json!({
         "asset_id": identity.asset_id,
         "entry_id": identity.entry_id,
@@ -195,23 +195,16 @@ impl ExportJob {
         phase(RENDERING)?;
         let ExportPlan {
             identity,
-            source,
-            registry,
-            context,
-            recipe,
+            evaluation,
             capture,
         } = plan;
-        // The frame is the render's own exact frame, inside the evaluated-frame limit; the encoder
-        // reads it in place. The source, the recipe and its artifacts are released with the render.
-        let frame = crate::render(
-            &registry,
-            source.input(),
-            &recipe,
-            RenderOptions::exact(control.render_cancel()),
-            &context,
-        )?
-        .frame(identity.snapshot_id.clone())?;
-        drop((source, recipe));
+        // The frame is the render's own exact frame, from the compilation the plan made, inside the
+        // evaluated-frame limit; the encoder reads it in place. The source, the recipe and its
+        // artifacts are released with the evaluation.
+        let frame = evaluation
+            .exact(control.render_cancel())?
+            .frame(identity.snapshot_id.clone())?;
+        drop(evaluation);
         let mut staged = destination.stage()?;
         phase(ENCODING)?;
         let exif = keep_metadata.then(|| capture.exif_payload(frame.width, frame.height));

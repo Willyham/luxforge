@@ -13,9 +13,9 @@ use crate::{
     state::histogram::Analysis,
 };
 use luxforge_core::{
-    AssetId, AssetRecord, ClientSession, Draft, DraftId, EditorState, EntryId, HistoryEntry,
-    HistoryPage, HistoryRow, Lineage, LineageStep, ModuleDescriptor, PreviewJob, RecipeDescription,
-    SourceImage,
+    AssetId, AssetRecord, ClientSession, Draft, DraftId, EditorState, EntryId, Evaluation,
+    HistoryEntry, HistoryPage, HistoryRow, Lineage, LineageStep, ModuleDescriptor, PreviewJob,
+    RecipeDescription, SourceImage,
 };
 use serde_json::{Value, json};
 use std::{collections::VecDeque, path::PathBuf, sync::Arc, sync::atomic::Ordering};
@@ -24,6 +24,38 @@ pub(crate) use crate::state::testing::{
     CROP_ASPECTS, Z6_AS_SHOT, Z6_CAM_XYZ, controls_descriptor, crop_descriptor, crop_layer,
     described, described_at, descriptors, entry, listed, raw_entry, raw_source,
 };
+
+/// What a test preview job's evaluation is built from.
+pub(crate) struct Parts {
+    pub(crate) registry: Arc<luxforge_core::ModuleRegistry>,
+    pub(crate) source: luxforge_core::PreviewSource,
+    pub(crate) entry: HistoryEntry,
+    pub(crate) recipe: luxforge_core::Recipe,
+}
+
+/// `job` evaluating what `change` makes of its parts. An evaluation is immutable and compiled
+/// once, so a test that wants another stack, source, entry or registry builds another one. The job
+/// keeps its draft and how it is presented; its identity is the new evaluation's.
+pub(crate) fn rebuild(job: &mut PreviewJob, change: impl FnOnce(&mut Parts)) {
+    let held = &job.evaluation;
+    let mut parts = Parts {
+        registry: held.registry().clone(),
+        source: held.source().clone(),
+        entry: held.entry().clone(),
+        recipe: held.recipe().clone(),
+    };
+    change(&mut parts);
+    let evaluation = Evaluation::new(
+        parts.registry,
+        held.context().clone(),
+        parts.source,
+        parts.entry,
+        parts.recipe,
+        held.draft().cloned(),
+    );
+    job.identity = evaluation.identity().expect("a test analysis identity");
+    job.evaluation = evaluation;
+}
 
 pub(crate) fn boot() -> (Editor, PathBuf) {
     let catalog = std::env::temp_dir().join(format!(
@@ -165,10 +197,11 @@ pub(crate) fn refresh_for(
             masks: Vec::new(),
         },
         original: None,
-        job: PreviewJob {
-            registry: std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin()),
-            context: luxforge_core::RenderContext::new(),
-            source: luxforge_core::PreviewSource::Jpeg(SourceImage {
+        // The histogram is a later task; this preview asks for no reduction.
+        job: PreviewJob::new(Evaluation::new(
+            Arc::new(luxforge_core::ModuleRegistry::builtin()),
+            luxforge_core::RenderContext::new(),
+            luxforge_core::PreviewSource::Jpeg(SourceImage {
                 width: 1,
                 height: 1,
                 rgba: vec![0, 0, 0, 255].into(),
@@ -176,27 +209,11 @@ pub(crate) fn refresh_for(
                 orientation: 1,
                 capture: Default::default(),
             }),
-            recipe: current.snapshot.recipe.clone(),
-            entry: current.clone(),
-            layer_count: None,
-            draft_revision: None,
-            // The histogram is a later task; this preview asks for no reduction.
-            identity: luxforge_core::analysis::AnalysisIdentity::of(
-                &current.asset_id,
-                "f",
-                current,
-                &current.snapshot.recipe,
-                None,
-                Some((1, 1)),
-            )
-            .expect("a test analysis identity"),
-            analyse: false,
-            proxy: None,
-            viewport: None,
-            intent: luxforge_core::PreviewIntent::Immediate,
-            viewport_declined: None,
-            mask_overlay: None,
-        },
+            current.clone(),
+            current.snapshot.recipe.clone(),
+            None,
+        ))
+        .expect("a test preview job"),
         session: ClientSession::default(),
         request: None,
         skipped: Vec::new(),

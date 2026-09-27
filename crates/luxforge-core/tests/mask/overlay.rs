@@ -259,9 +259,9 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
         whole_cells_w: cells_w,
         whole_cells_h: cells_h,
     }));
-    let registry = job.registry.clone();
-    let recipe = job.recipe.clone();
-    let source = job.source.dimensions();
+    let registry = job.evaluation.registry().clone();
+    let recipe = job.evaluation.recipe().clone();
+    let source = job.evaluation.source().dimensions();
     let held = recipe
         .masks
         .iter()
@@ -366,9 +366,9 @@ fn the_grid_follows_the_picture_through_the_geometry_tail() {
         whole_cells_w: cells_w,
         whole_cells_h: cells_h,
     }));
-    let registry = job.registry.clone();
-    let recipe = job.recipe.clone();
-    let source = job.source.dimensions();
+    let registry = job.evaluation.registry().clone();
+    let recipe = job.evaluation.recipe().clone();
+    let source = job.evaluation.source().dimensions();
     let held = recipe
         .masks
         .iter()
@@ -430,9 +430,9 @@ fn one_components_grid_is_that_components_own_contribution() {
             whole_cells_w: cells_w,
             whole_cells_h: cells_h,
         }));
-        let registry = job.registry.clone();
-        let recipe = job.recipe.clone();
-        let source = job.source.dimensions();
+        let registry = job.evaluation.registry().clone();
+        let recipe = job.evaluation.recipe().clone();
+        let source = job.evaluation.source().dimensions();
         let result = exact(job);
         let overlay = result
             .exact()
@@ -703,9 +703,9 @@ fn a_value_based_grid_is_read_on_the_pixel_mask_sample_input_answers() {
         whole_cells_w: cells_w,
         whole_cells_h: cells_h,
     }));
-    let registry = job.registry.clone();
-    let recipe = job.recipe.clone();
-    let (width, height) = job.source.dimensions();
+    let registry = job.evaluation.registry().clone();
+    let recipe = job.evaluation.recipe().clone();
+    let (width, height) = job.evaluation.source().dimensions();
     let held = recipe
         .masks
         .iter()
@@ -810,7 +810,7 @@ fn the_value_based_grid_is_the_coverage_the_render_applies() {
         whole_cells_w: cells_w,
         whole_cells_h: cells_h,
     }));
-    let source = match &job.source {
+    let source = match job.evaluation.source() {
         luxforge_core::PreviewSource::Jpeg(image) => image.clone(),
         other => panic!("the JPEG fixture is not a {other:?}"),
     };
@@ -937,9 +937,9 @@ fn a_painted_mask_with_a_limited_stroke_has_a_grid() {
         whole_cells_w: cells_w,
         whole_cells_h: cells_h,
     }));
-    let registry = job.registry.clone();
-    let recipe = job.recipe.clone();
-    let (width, height) = job.source.dimensions();
+    let registry = job.evaluation.registry().clone();
+    let recipe = job.evaluation.recipe().clone();
+    let (width, height) = job.evaluation.source().dimensions();
     let held = recipe
         .masks
         .iter()
@@ -1064,7 +1064,8 @@ fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
     let _ = state;
     let job = f.job(f.preview());
     let held = job
-        .recipe
+        .evaluation
+        .recipe()
         .masks
         .iter()
         .find(|held| held.id == mask)
@@ -1141,7 +1142,7 @@ fn the_overlay_view_state_round_trips_and_commits_nothing() {
         json!({"asset_id": f.asset_value}),
     );
     let before_masks = f.call("masks", "mask.list", json!({"asset_id": f.asset_value}));
-    let before_stack = f.job(f.preview()).recipe.clone();
+    let before_stack = f.job(f.preview()).evaluation.recipe().clone();
     let before_report = exact(f.job(f.preview().analyse()))
         .exact()
         .and_then(|exact| exact.report.clone())
@@ -1195,8 +1196,8 @@ fn the_overlay_view_state_round_trips_and_commits_nothing() {
         "the mask table is unchanged"
     );
     assert_eq!(
-        f.job(f.preview()).recipe,
-        before_stack,
+        f.job(f.preview()).evaluation.recipe(),
+        &before_stack,
         "the stack a preview renders is the same stack"
     );
     assert_eq!(

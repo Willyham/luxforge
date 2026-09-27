@@ -150,13 +150,24 @@ fn an_unprepared_artifact_is_prepared_by_a_source_job_and_the_retry_succeeds() {
     let preview = owner
         .preview_job(PreviewRequest::new(client, asset.clone()))
         .unwrap();
-    assert_eq!(preview.recipe.artifacts.iter().next().unwrap().id, artifact);
+    assert_eq!(
+        preview
+            .evaluation
+            .recipe()
+            .artifacts
+            .iter()
+            .next()
+            .unwrap()
+            .id,
+        artifact
+    );
     let frame = preview
-        .source
+        .evaluation
+        .source()
         .render(
-            &preview.registry,
-            preview.entry.snapshot.id.clone(),
-            &preview.recipe,
+            preview.evaluation.registry(),
+            preview.evaluation.entry().snapshot.id.clone(),
+            preview.evaluation.recipe(),
         )
         .unwrap();
     assert_eq!(frame.pixel(3, 4), Some(expected));

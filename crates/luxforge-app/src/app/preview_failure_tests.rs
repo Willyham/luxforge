@@ -20,7 +20,7 @@ use super::{
     tasks::SyncResult,
     testing::{
         CROP_SOURCE, attach_log, core_draft, crop_layer, described_at, entry, finish, hold_crop,
-        logged, open_crop, opened, refresh_for,
+        logged, open_crop, opened, rebuild, refresh_for,
     },
 };
 use crate::state::{canvas::PhotoView, histogram::HistogramStatus};
@@ -149,17 +149,6 @@ impl Hold {
     /// Hold `job`: one gate layer ahead of its stack — inside a truncated job's prefix — rendered
     /// by the built-in modules and this gate's.
     fn hold(&self, job: &mut PreviewJob) {
-        job.recipe.layers.insert(
-            0,
-            Layer {
-                id: LayerId::new(),
-                effect_id: HELD_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: json!({}),
-                mask: None,
-                artifacts: Vec::new(),
-            },
-        );
         job.layer_count = job.layer_count.map(|count| count + 1);
         let mut registry = ModuleRegistry::builtin();
         registry
@@ -183,7 +172,20 @@ impl Hold {
                 gate: self.0.clone(),
             }))
             .expect("a valid holding module");
-        job.registry = Arc::new(registry);
+        rebuild(job, |parts| {
+            parts.recipe.layers.insert(
+                0,
+                Layer {
+                    id: LayerId::new(),
+                    effect_id: HELD_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload: json!({}),
+                    mask: None,
+                    artifacts: Vec::new(),
+                },
+            );
+            parts.registry = Arc::new(registry);
+        });
     }
 
     fn open(&self) {
@@ -301,7 +303,9 @@ fn committed(
     let mut lineage = vec![current];
     lineage.extend(older.iter().copied());
     let mut refresh = refresh_for(asset, current, page, &lineage, false);
-    refresh.job.source = PreviewSource::Jpeg(source);
+    rebuild(&mut refresh.job, |parts| {
+        parts.source = PreviewSource::Jpeg(source);
+    });
     refresh
 }
 
@@ -674,7 +678,7 @@ fn draft_job(editor: &Editor, source: SourceImage) -> PreviewJob {
     let current = &state.current_entry;
     let layer_index = editor.crop().expect("an open crop draft").layer_index;
     let mut job = refresh_for(&state.asset.id, current, Vec::new(), &[current], false).job;
-    job.source = PreviewSource::Jpeg(source);
+    rebuild(&mut job, |parts| parts.source = PreviewSource::Jpeg(source));
     job.layer_count = Some(layer_index);
     job
 }
@@ -885,7 +889,8 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Crop(CropMessage::Start));
     let mut job = draft_job(&editor, small());
-    job.entry = entry(&asset, 5, Some(&job.entry.id));
+    let stale = entry(&asset, 5, Some(&job.evaluation.entry().id));
+    rebuild(&mut job, |parts| parts.entry = stale);
     let _ = editor.dispatch(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
     assert_eq!(
         editor.draft_generation, None,

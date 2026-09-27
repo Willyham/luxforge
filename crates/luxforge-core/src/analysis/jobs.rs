@@ -16,8 +16,7 @@ use super::{DOMAIN, Report, deserialize_domain, reduce_raster_cancellable};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    AssetId, DraftStamp, EntryId, Error, HistoryEntry, JobId, ModuleRegistry, PreviewSource,
-    Recipe, RenderContext, RenderOptions, SnapshotId,
+    AssetId, DraftStamp, EntryId, Error, Evaluation, HistoryEntry, JobId, Recipe, SnapshotId,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     latest::{Latest, Running, WAITING_RESULTS},
 };
@@ -125,16 +124,14 @@ impl AnalysisIdentity {
     }
 }
 
-/// What one job needs to run: the immutable source buffer, the shared registry and the effective
-/// recipe, bound with the verified bytes of the artifacts it references, which the job holds until
-/// the worker is done with them. The worker holds no catalog handle and no session.
+/// What one job needs to run: the evaluation the catalog owner planned — the immutable source
+/// buffer, the shared registry and the effective recipe, bound with the verified bytes of the
+/// artifacts it references, and its one compilation — which the job holds until the worker is done
+/// with it. The worker holds no catalog handle and no session, and compiles nothing.
 pub struct AnalysisJob {
     pub job_id: JobId,
     pub identity: AnalysisIdentity,
-    pub source: PreviewSource,
-    pub registry: Arc<ModuleRegistry>,
-    pub context: RenderContext,
-    pub recipe: Recipe,
+    pub evaluation: Evaluation,
 }
 
 impl std::fmt::Debug for AnalysisJob {
@@ -282,10 +279,7 @@ fn analyse(
     let AnalysisJob {
         job_id,
         identity,
-        source,
-        registry,
-        context,
-        recipe,
+        evaluation,
     } = job;
     let activity = board.map(|board| {
         board.begin(ActivitySpec {
@@ -297,23 +291,18 @@ fn analyse(
         })
     });
     let cancel = running.abandoned();
-    let result = crate::render(
-        &registry,
-        &source,
-        &recipe,
-        RenderOptions::exact(cancel),
-        &context,
-    )
-    .and_then(|render| render.frame(identity.snapshot_id.clone()))
-    .and_then(|raster| {
-        let report = reduce_raster_cancellable(&raster, cancel);
-        // No per-result raster is retained: the frame is released here, before the bounded
-        // report travels back to the owner.
-        drop(raster);
-        report
-    });
-    // The render has compiled the stack; the artifacts it was bound with go with it.
-    drop(recipe);
+    let result = evaluation
+        .exact(cancel)
+        .and_then(|render| render.frame(identity.snapshot_id.clone()))
+        .and_then(|raster| {
+            let report = reduce_raster_cancellable(&raster, cancel);
+            // No per-result raster is retained: the frame is released here, before the bounded
+            // report travels back to the owner.
+            drop(raster);
+            report
+        });
+    // The frame is rendered; the artifacts the stack was bound with go with its evaluation.
+    drop(evaluation);
     // The activity ends before the outcome is handed over, so a client that reads the job as
     // finished never still finds it listed as running.
     if let Some(activity) = activity {
@@ -405,23 +394,15 @@ mod tests {
             }],
             ..entry.snapshot.recipe.clone()
         };
-        let mut registry = ModuleRegistry::builtin();
+        let mut registry = crate::ModuleRegistry::builtin();
         registry
             .register(crate::modules::HeldModule::shared(gate.clone()))
             .expect("a valid holding module");
         let (width, height) = (64, 48);
-        AnalysisJob {
-            job_id: JobId::new(),
-            identity: AnalysisIdentity::of(
-                &asset,
-                "sha256:test",
-                &entry,
-                &recipe,
-                None,
-                Some((width, height)),
-            )
-            .unwrap(),
-            source: PreviewSource::Jpeg(crate::SourceImage {
+        let evaluation = Evaluation::new(
+            Arc::new(registry),
+            crate::RenderContext::new(),
+            crate::PreviewSource::Jpeg(crate::SourceImage {
                 width,
                 height,
                 rgba: [40, 90, 160, 255].repeat((width * height) as usize).into(),
@@ -429,9 +410,14 @@ mod tests {
                 orientation: 1,
                 capture: Default::default(),
             }),
-            registry: Arc::new(registry),
-            context: crate::RenderContext::new(),
+            entry,
             recipe,
+            None,
+        );
+        AnalysisJob {
+            job_id: JobId::new(),
+            identity: evaluation.identity().unwrap(),
+            evaluation,
         }
     }
 

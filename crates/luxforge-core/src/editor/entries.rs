@@ -485,6 +485,40 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// The current entry's id is read from the asset's head alone: with nothing cached it decodes
+    /// the head's two stored values and no entry and no stroke, keeps no entry, and once the head
+    /// is cached it decodes nothing.
+    #[test]
+    fn the_current_entry_id_reads_the_head_and_never_the_entry() {
+        let catalog = temp("entry-cache-head-only.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let state = service.state(&asset).unwrap();
+        let painted = next_entry(
+            &state,
+            brushed(
+                &state.current_entry.snapshot.recipe,
+                &[stroke(1), stroke(2)],
+            ),
+        );
+        drop(service);
+        commit(&catalog, &painted);
+
+        let service = EditorService::open(&catalog).unwrap();
+        read_counts::take();
+        assert_eq!(service.current_entry_id(&asset).unwrap(), painted.id);
+        assert_eq!(
+            read_counts::take(),
+            (2, 0),
+            "the asset's interpretation and its redo list"
+        );
+        assert_eq!(service.cached(), (0, 1), "the head, and no entry");
+        assert_eq!(service.current_entry_id(&asset).unwrap(), painted.id);
+        assert_eq!(read_counts::take(), (0, 0), "a cached head");
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// Cloning a recipe shares its strokes, so a read that copies a cached entry out copies
     /// pointers and no stroke's positions.
     #[test]

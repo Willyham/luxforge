@@ -5,7 +5,7 @@ use crate::artifacts::{
     ArtifactId, collect_files, object_path,
     testing::{APPLY_PLAIN, APPLY_TINT, TINT_EFFECT, TINT_MODULE, TintModule},
 };
-use crate::{Layer, Mutation};
+use crate::{Layer, Mutation, Recipe};
 use rusqlite::params;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -213,7 +213,8 @@ fn branches_versions_previews_and_restores_keep_their_artifacts() {
         .preview_job(&asset, Some(&second), None, None, None)
         .unwrap();
     assert_eq!(
-        job.recipe
+        job.evaluation
+            .recipe()
             .artifacts
             .iter()
             .map(|artifact| artifact.id.clone())
@@ -221,8 +222,13 @@ fn branches_versions_previews_and_restores_keep_their_artifacts() {
         std::slice::from_ref(&b)
     );
     let previewed = job
-        .source
-        .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
+        .evaluation
+        .source()
+        .render(
+            job.evaluation.registry(),
+            job.evaluation.entry().snapshot.id.clone(),
+            job.evaluation.recipe(),
+        )
         .unwrap();
     assert_eq!(previewed.rgba, second_frame.rgba);
     // Restoring it brings the same stack back as a new entry.
@@ -678,16 +684,22 @@ fn jobs_pin_their_artifacts_and_an_unprepared_one_needs_preparation() {
     let plan = service
         .analysis_plan(&asset, AnalysisSelection::Current)
         .unwrap();
-    assert_eq!(plan.recipe.artifacts.len(), 1);
+    let evaluation = plan.evaluation.as_ref().expect("an evaluable stack");
+    assert_eq!(evaluation.recipe().artifacts.len(), 1);
     drop(plan);
     // Evicting everything the owner kept ready leaves the job's own recipe holding the bytes: it
     // still compiles.
-    let held = Arc::downgrade(job.recipe.artifacts.get(&artifact).unwrap());
+    let held = Arc::downgrade(job.evaluation.recipe().artifacts.get(&artifact).unwrap());
     service.clear_prepared_artifacts();
     assert!(held.upgrade().is_some(), "the job holds it");
     let rendered = job
-        .source
-        .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
+        .evaluation
+        .source()
+        .render(
+            job.evaluation.registry(),
+            job.evaluation.entry().snapshot.id.clone(),
+            job.evaluation.recipe(),
+        )
         .unwrap();
     assert_eq!(rendered.rgba, expected.rgba);
     drop(job);

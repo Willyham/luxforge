@@ -384,7 +384,7 @@ impl EditorService {
         }
         let mut next = Some(match from {
             Some(entry_id) => entry_id.clone(),
-            None => self.state(asset_id)?.current_entry.id,
+            None => self.current_entry_id(asset_id)?,
         });
         let mut steps = Vec::new();
         while let Some(entry_id) = next.take() {

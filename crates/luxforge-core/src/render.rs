@@ -1490,16 +1490,15 @@ pub(crate) fn grid_centres(side: u32, width: u32, height: u32) -> Vec<(u32, u32)
         .collect()
 }
 
-/// Map one pixel of a recipe's output stage back to the content-stage pixel it shows: the source
-/// after EXIF orientation, the stage the first layer receives. A point outside the output stage is a
-/// validation error naming that stage. Cost is linear in the layer count and no frame is allocated,
-/// so the canvas pick and the API query share one implementation.
-/// Locate through compiled geometry using dimensions only; source pixels are never needed.
-pub(crate) fn locate_dimensions(
-    registry: &ModuleRegistry,
+/// Map one pixel of the output stage of a stack compiled against a `width` × `height` content stage
+/// back to the content-stage pixel it shows: the source after EXIF orientation, the stage the first
+/// layer receives. A point outside the output stage is a validation error naming that stage. Cost is
+/// linear in the layer count, reusing the caller's compilation, and no frame is allocated, so the
+/// canvas pick and the API query share one implementation. Source pixels are never needed.
+pub(crate) fn locate(
+    compiled: &Compiled,
     width: u32,
     height: u32,
-    recipe: &Recipe,
     x: u32,
     y: u32,
 ) -> Result<ContentPoint, Error> {
@@ -1532,10 +1531,9 @@ pub(crate) fn locate_dimensions(
             nearest_index(v, previous.height),
         )
     }
-    let compiled = registry.compile(width, height, recipe)?;
     let stage = compiled.stage();
     let (content_x, content_y) =
-        walk(&compiled, compiled.segments.len() - 1, x, y).ok_or_else(|| {
+        walk(compiled, compiled.segments.len() - 1, x, y).ok_or_else(|| {
             Error::validation(format!(
                 "point ({x}, {y}) is outside the {}x{} rendered image",
                 stage.width, stage.height
@@ -1552,7 +1550,7 @@ pub(crate) fn locate_dimensions(
 /// The whole geometry tail of one recipe as one affine map between the content stage and the output
 /// stage, in both directions.
 ///
-/// This is [`locate_dimensions`] in closed form. That walks a point back through the compiled
+/// This is [`locate`] in closed form. That walks a point back through the compiled
 /// segments, which is right for a pick and wrong for a gesture that follows the pointer, so the
 /// composition happens once here and the caller maps positions itself. Every step of the tail
 /// composes: an exact step is an integer signed permutation with an integer translation, a spatial
@@ -1577,7 +1575,7 @@ pub fn stage_transform(
 }
 
 /// [`stage_transform`] of a stack already compiled against a `width` × `height` content stage.
-pub(super) fn transform_of(
+pub(crate) fn transform_of(
     compiled: &Compiled,
     width: u32,
     height: u32,
@@ -2196,6 +2194,24 @@ mod tests {
         ModuleRegistry::builtin()
     }
 
+    /// [`locate`] through a fresh compilation of `recipe` against a `width` × `height` stage.
+    fn locate_recipe(
+        registry: &ModuleRegistry,
+        width: u32,
+        height: u32,
+        recipe: &Recipe,
+        x: u32,
+        y: u32,
+    ) -> Result<ContentPoint, Error> {
+        locate(
+            &registry.compile(width, height, recipe)?,
+            width,
+            height,
+            x,
+            y,
+        )
+    }
+
     /// The one read-rectangle rule holds every tap a resample's output window reads, in a frame at
     /// the stage's origin or a window of it, at any angle and scale, including taps clamped to an
     /// edge the output maps beyond; it never leaves the input and answers nothing it cannot bound.
@@ -2483,7 +2499,7 @@ mod tests {
     }
 
     /// Where one pixel of a stage lands after the exact layers that follow it, evaluated one layer
-    /// at a time and independently of the renderer: the direction `locate_dimensions` walks
+    /// at a time and independently of the renderer: the direction `locate` walks
     /// backwards. `None` when a crop discards it. Pixel layers move nothing, so they are skipped.
     fn forward(width: u32, height: u32, layers: &[Layer], x: u32, y: u32) -> Option<(u32, u32)> {
         let (mut width, mut height, mut x, mut y) = (width, height, x, y);
@@ -3086,9 +3102,8 @@ mod tests {
                         ..Recipe::default()
                     };
                     let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-                    let locate = |x, y| {
-                        locate_dimensions(&registry, source.width, source.height, &recipe, x, y)
-                    };
+                    let locate =
+                        |x, y| locate_recipe(&registry, source.width, source.height, &recipe, x, y);
                     // Every output pixel names a content pixel that the stepwise forward map puts
                     // back where it was found, and the rendered bytes are that content pixel's.
                     for y in 0..raster.height {
@@ -3190,7 +3205,7 @@ mod tests {
                     let (x, y) = forward(reference.width, reference.height, &tail, i, j)
                         .expect("exact transforms keep every pixel");
                     let located =
-                        locate_dimensions(&registry, source.width, source.height, &recipe, x, y)
+                        locate_recipe(&registry, source.width, source.height, &recipe, x, y)
                             .unwrap();
                     let (u, v) = reference.position(&source, i, j);
                     assert_eq!(
@@ -3317,12 +3332,12 @@ mod tests {
         tails
     }
 
-    /// `stage_transform` is `locate_dimensions` in closed form, so the two must name the same
+    /// `stage_transform` is `locate` in closed form, so the two must name the same
     /// content pixel.
     ///
     /// The strong direction is `inverse`: rounding the continuous content coordinate it gives for an
     /// output pixel center to the pixel that contains it must be, exactly, the pixel
-    /// `locate_dimensions` walks to. That is not the same arithmetic — `locate_dimensions` rounds at
+    /// `locate` walks to. That is not the same arithmetic — `locate` rounds at
     /// the resample and then applies the exact steps before it as integers, while this composes
     /// everything continuously and rounds once at the end — so the agreement is a real check on the
     /// half-pixel convention and on the composition order, not a re-run of the walk.
@@ -3367,8 +3382,7 @@ mod tests {
                      where the two rounding orders are allowed to differ"
                 );
                 let located =
-                    locate_dimensions(&registry, source.width, source.height, &recipe, x, y)
-                        .unwrap();
+                    locate_recipe(&registry, source.width, source.height, &recipe, x, y).unwrap();
                 assert_eq!(
                     (located.content_x, located.content_y),
                     (nearest_index(u, width), nearest_index(v, height)),
@@ -3388,7 +3402,7 @@ mod tests {
     ///
     /// For every exact tail this is exact. `forward` is then a signed permutation of continuous
     /// coordinates, so it carries the pixel containing the content point onto the pixel containing
-    /// its image, and `locate_dimensions` walks straight back to it.
+    /// its image, and `locate` walks straight back to it.
     ///
     /// A straightened crop cannot be exact in the index domain, and the reason is arithmetic rather
     /// than approximate: taking the output *pixel* the projection lands in discards up to half a
@@ -3429,8 +3443,7 @@ mod tests {
                 located_points += 1;
                 let (x, y) = (qx.floor() as u32, qy.floor() as u32);
                 let located =
-                    locate_dimensions(&registry, source.width, source.height, &recipe, x, y)
-                        .unwrap();
+                    locate_recipe(&registry, source.width, source.height, &recipe, x, y).unwrap();
                 let (content_x, content_y) = (px.floor() as u32, py.floor() as u32);
                 if !resamples {
                     assert_eq!(
@@ -3511,7 +3524,7 @@ mod tests {
         let registry = geometry_registry();
         let (width, height) = (32, 24);
 
-        // An effect no module provides: `extents` and `locate_dimensions` report it this way too.
+        // An effect no module provides: `extents` and `locate` report it this way too.
         let recipe = Recipe {
             format: crate::RECIPE_FORMAT,
             layers: vec![Layer {
