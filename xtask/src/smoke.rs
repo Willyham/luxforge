@@ -769,33 +769,11 @@ pub fn launch_all(mut run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> R
         let mut checked = Vec::with_capacity(scenario.launches.len());
         for spec in scenario.launches {
             let plan = (spec.plan)(&sources);
-            let mut launch = if spec.name == APP.name {
-                Launch::app()
-            } else {
-                Launch::named(spec.name)
-            };
             if let Some(earlier) = spec.catalog {
                 let catalog = run.out().join(earlier).join("catalog.sqlite");
                 ensure(catalog.is_file(), format!("Launch {earlier} wrote no catalog"))?;
-                launch = launch.catalog(&catalog);
             }
-            for module in spec.disable {
-                launch = launch.disable(module);
-            }
-            if spec.developer {
-                launch = launch.developer();
-            }
-            launch = launch.open_all(&sources);
-            if plan.scripted() {
-                launch = launch.script(spec.script, plan.script());
-            }
-            if let Some(window) = scenario.window {
-                launch = launch.window(window);
-            }
-            if let Some((file, watch)) = spec.watch {
-                launch = launch.watch(file, Box::new(watch));
-            }
-            let evidence = run.launch(launch)?;
+            let evidence = run.launch(launch_of(scenario, spec, &plan, &sources, run.out()))?;
             checked.push(plan.check(&evidence)?);
         }
         (scenario.verify)(run, &checked)?;
@@ -809,6 +787,41 @@ pub fn launch_all(mut run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> R
         );
         Ok(())
     })
+}
+
+/// The launch `spec` makes over `sources` in a run whose output directory is `out`.
+fn launch_of(
+    scenario: &Scenario,
+    spec: &LaunchSpec,
+    plan: &Plan,
+    sources: &[PathBuf],
+    out: &Path,
+) -> Launch {
+    let mut launch = if spec.name == APP.name {
+        Launch::app()
+    } else {
+        Launch::named(spec.name)
+    };
+    if let Some(earlier) = spec.catalog {
+        launch = launch.catalog(&out.join(earlier).join("catalog.sqlite"));
+    }
+    for module in spec.disable {
+        launch = launch.disable(module);
+    }
+    if spec.developer {
+        launch = launch.developer();
+    }
+    launch = launch.open_all(sources);
+    if plan.scripted() {
+        launch = launch.script(spec.script, plan.script());
+    }
+    if let Some(window) = scenario.window {
+        launch = launch.window(window);
+    }
+    if let Some((file, watch)) = spec.watch {
+        launch = launch.watch(file, Box::new(watch));
+    }
+    launch
 }
 
 /// A launch that opens each source in turn, one frame per open.
@@ -1206,8 +1219,9 @@ mod tests {
         assert!(find("nothing").is_err());
     }
 
-    /// Every launch's script, written as a launch writes it, into `$SCRIPT_DUMP/<scenario>/`: the
-    /// proof that moving a scenario onto its plan left the script it runs byte for byte the same.
+    /// Every launch's script, written as a launch writes it, and its argument list, into
+    /// `$SCRIPT_DUMP/<scenario>/`: the proof that a change to the plans or to the launch envelope
+    /// left the script each launch runs and the arguments it passes byte for byte the same.
     /// `performance` is written again over a RAW source as `performance-raw`.
     #[test]
     #[ignore]
@@ -1229,6 +1243,13 @@ mod tests {
                 if plan.scripted() {
                     put(scenario.name, spec.script, plan.kept());
                 }
+                // The editor's arguments, as the launch passes them in a run written to `/out`.
+                let out = Path::new("/out");
+                put(
+                    scenario.name,
+                    &format!("{}-arguments.json", spec.name),
+                    json!(launch_of(scenario, spec, &plan, &sources, out).command(out)),
+                );
             }
         }
         let raw = (find("performance").unwrap().launches[0].plan)(&[PathBuf::from("/x/photo.NEF")]);

@@ -305,6 +305,49 @@ fn evidence_run(
     })
 }
 
+/// A scripted gesture launch's arguments, the viewport journey's included; the proof curve's adds
+/// the developer flag.
+fn gesture_args(evidence: &Path, script: &Path, source: &Path, developer: bool) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![
+        "--evidence-dir".into(),
+        evidence.into(),
+        "--evidence-script".into(),
+        script.into(),
+        "--open".into(),
+        source.into(),
+    ];
+    if developer {
+        args.push("--developer".into());
+    }
+    args
+}
+
+/// The hold launch's arguments: the gesture's, with the catalog that outlives it.
+fn hold_args(evidence: &Path, catalog: &Path, script: &Path, source: &Path) -> Vec<OsString> {
+    vec![
+        "--evidence-dir".into(),
+        evidence.into(),
+        "--catalog".into(),
+        catalog.into(),
+        "--evidence-script".into(),
+        script.into(),
+        "--open".into(),
+        source.into(),
+    ]
+}
+
+/// The idle launch's arguments: the held catalog, reopened by an ordinary launch.
+fn idle_args(catalog: &Path, data: &Path, source: &Path) -> Vec<OsString> {
+    vec![
+        "--catalog".into(),
+        catalog.into(),
+        "--data-root".into(),
+        data.into(),
+        "--open".into(),
+        source.into(),
+    ]
+}
+
 /// One input's journey, from the `draft.set` that carried it to the frame that showed it.
 struct Input {
     value: f64,
@@ -971,14 +1014,7 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
         bin,
         out,
         "viewport",
-        &[
-            "--evidence-dir".into(),
-            evidence.clone().into_os_string(),
-            "--evidence-script".into(),
-            script_file.into_os_string(),
-            "--open".into(),
-            source.clone().into_os_string(),
-        ],
+        &gesture_args(&evidence, &script_file, &source, false),
         Duration::from_secs(90),
     )?;
     let app = read_json(&evidence.join("result.json"))?;
@@ -1423,14 +1459,7 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
 
     let load_start = crate::verify::load_average(root);
     let evidence = out.join("app");
-    let args: Vec<OsString> = vec![
-        "--evidence-dir".into(),
-        evidence.clone().into_os_string(),
-        "--evidence-script".into(),
-        script_file.clone().into_os_string(),
-        "--open".into(),
-        source.clone().into_os_string(),
-    ];
+    let args = gesture_args(&evidence, &script_file, &source, false);
     let usage = evidence_run(
         root,
         bin,
@@ -1670,17 +1699,12 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     write_json(&script_file, &script::write(&steps))?;
 
     let evidence = out.join("app");
-    let mut args: Vec<OsString> = vec![
-        "--evidence-dir".into(),
-        evidence.clone().into_os_string(),
-        "--evidence-script".into(),
-        script_file.clone().into_os_string(),
-        "--open".into(),
-        source.clone().into_os_string(),
-    ];
-    if options.control == Control::Curve {
-        args.push("--developer".into());
-    }
+    let args = gesture_args(
+        &evidence,
+        &script_file,
+        &source,
+        options.control == Control::Curve,
+    );
     let usage = evidence_run(
         root,
         bin,
@@ -2155,14 +2179,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     write_json(&script_file, &script::write(&steps))?;
 
     let evidence = out.join("app");
-    let args: Vec<OsString> = vec![
-        "--evidence-dir".into(),
-        evidence.clone().into_os_string(),
-        "--evidence-script".into(),
-        script_file.clone().into_os_string(),
-        "--open".into(),
-        source.clone().into_os_string(),
-    ];
+    let args = gesture_args(&evidence, &script_file, &source, false);
     let usage = evidence_run(
         root,
         bin,
@@ -2342,16 +2359,7 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
         bin,
         out,
         "hold",
-        &[
-            "--evidence-dir".into(),
-            evidence.clone().into_os_string(),
-            "--catalog".into(),
-            catalog.clone().into_os_string(),
-            "--evidence-script".into(),
-            hold.into_os_string(),
-            "--open".into(),
-            source.to_path_buf().into_os_string(),
-        ],
+        &hold_args(&evidence, &catalog, &hold, source),
         Duration::from_secs(60),
     )?;
     let held = read_json(&evidence.join("result.json"))?;
@@ -2364,19 +2372,8 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
     // The second process: the same catalog, no script, left idle after its first frame.
     let data = out.join("idle-data");
     let log = out.join("idle.log");
-    let mut child = scenario::launch::spawn_editor(
-        root,
-        bin,
-        &[
-            "--catalog".into(),
-            catalog.into_os_string(),
-            "--data-root".into(),
-            data.clone().into_os_string(),
-            "--open".into(),
-            source.to_path_buf().into_os_string(),
-        ],
-        &log,
-    )?;
+    let mut child =
+        scenario::launch::spawn_editor(root, bin, &idle_args(&catalog, &data, source), &log)?;
     let events = data.join("logs/events.jsonl");
     let start = Instant::now();
     loop {
@@ -2439,8 +2436,9 @@ mod tests {
     use super::*;
 
     /// Every script this harness can write, into `$SCRIPT_DUMP/editor-latency/`, over each mode,
-    /// control and precondition: the proof that a change to how scripts are written leaves the
-    /// scripts these measurements run the same.
+    /// control, precondition, zoom and `--moving-pan`, and every launch's argument list: the proof
+    /// that a change to how scripts are written or launches are made leaves the scripts these
+    /// measurements run and the arguments they pass the same.
     #[test]
     #[ignore]
     fn dump_scripts() {
@@ -2463,59 +2461,150 @@ mod tests {
         for crop in [None, Some(8.0)] {
             for mask in [false, true] {
                 for basic in [false, true] {
-                    let options = |control| Options {
-                        source: &source,
-                        samples: 5,
-                        mode: Mode::Drag,
-                        control,
-                        action: None,
-                        parameter: None,
-                        crop,
-                        idle: false,
-                        basic,
-                        mask,
-                        zoom: None,
-                        moving_pan: false,
-                    };
-                    let tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
-                    for (control, name, field) in [
-                        (Control::Slider, "slider", FieldTarget::basic_exposure()),
-                        (Control::Slider, "mixer", mixer()),
-                        (Control::Curve, "curve", FieldTarget::basic_exposure()),
-                    ] {
-                        for drag in [true, false] {
-                            let values = gesture_values(5 + usize::from(drag), control, &field);
-                            put(
-                                format!("{name}-{}-{tag}", if drag { "drag" } else { "commit" }),
-                                script::write(&gesture_script(
-                                    &options(control),
-                                    &field,
-                                    &values,
-                                    drag,
-                                )),
-                            );
+                    for zoom in [None, Some(200.0)] {
+                        let options = |control, zoom, moving_pan| Options {
+                            source: &source,
+                            samples: 5,
+                            mode: Mode::Drag,
+                            control,
+                            action: None,
+                            parameter: None,
+                            crop,
+                            idle: false,
+                            basic,
+                            mask,
+                            zoom,
+                            moving_pan,
+                        };
+                        let mut tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
+                        if let Some(zoom) = zoom {
+                            tag.push_str(&format!("-zoom{zoom}"));
                         }
-                        if control == Control::Slider {
-                            let values = field.burst_values();
-                            put(
-                                format!("{name}-burst-{tag}"),
-                                script::write(&burst_script(
-                                    &options(control),
-                                    &field,
-                                    &values,
-                                    burst_interval_ms(),
-                                )),
-                            );
+                        for (control, name, field) in [
+                            (Control::Slider, "slider", FieldTarget::basic_exposure()),
+                            (Control::Slider, "mixer", mixer()),
+                            (Control::Curve, "curve", FieldTarget::basic_exposure()),
+                        ] {
+                            for drag in [true, false] {
+                                let values = gesture_values(5 + usize::from(drag), control, &field);
+                                put(
+                                    format!(
+                                        "{name}-{}-{tag}",
+                                        if drag { "drag" } else { "commit" }
+                                    ),
+                                    script::write(&gesture_script(
+                                        &options(control, zoom, false),
+                                        &field,
+                                        &values,
+                                        drag,
+                                    )),
+                                );
+                            }
+                            if control == Control::Slider {
+                                // `--moving-pan` needs a zoom, so it is written only beside one.
+                                let pans: &[bool] = if zoom.is_some() {
+                                    &[false, true]
+                                } else {
+                                    &[false]
+                                };
+                                for &moving_pan in pans {
+                                    let values = field.burst_values();
+                                    put(
+                                        format!(
+                                            "{name}-burst-{tag}{}",
+                                            if moving_pan { "-movingpan" } else { "" }
+                                        ),
+                                        script::write(&burst_script(
+                                            &options(control, zoom, moving_pan),
+                                            &field,
+                                            &values,
+                                            burst_interval_ms(),
+                                        )),
+                                    );
+                                }
+                            }
+                        }
+                        put(
+                            format!("paint-{tag}"),
+                            script::write(&paint_script(
+                                &options(Control::Slider, zoom, false),
+                                paint_path(6),
+                            )),
+                        );
+                    }
+                    // The viewport journey runs only at 100 or 200 percent.
+                    for zoom in [100.0, 200.0] {
+                        let options = Options {
+                            source: &source,
+                            samples: 5,
+                            mode: Mode::Viewport,
+                            control: Control::Slider,
+                            action: None,
+                            parameter: None,
+                            crop,
+                            idle: false,
+                            basic,
+                            mask,
+                            zoom: Some(zoom),
+                            moving_pan: false,
+                        };
+                        let tag =
+                            format!("crop{}-mask{mask}-basic{basic}-zoom{zoom}", crop.is_some());
+                        for (name, field) in [
+                            ("slider", FieldTarget::basic_exposure()),
+                            ("mixer", mixer()),
+                        ] {
+                            let (steps, positions) = viewport_script(&options, &field);
+                            put(format!("{name}-viewport-{tag}"), script::write(&steps));
+                            put(format!("{name}-viewport-{tag}-positions"), json!(positions));
                         }
                     }
-                    put(
-                        format!("paint-{tag}"),
-                        script::write(&paint_script(&options(Control::Slider), paint_path(6))),
-                    );
                 }
             }
         }
         put("hold".into(), hold_script());
+        // Every launch's arguments, as it passes them in a run written to `/out`.
+        let out = Path::new("/out");
+        let arguments = |args: Vec<OsString>| {
+            json!(
+                launch::editor_args(&args)
+                    .into_iter()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            )
+        };
+        for (name, file, developer) in [
+            ("gesture", "gesture-script.json", false),
+            ("curve", "gesture-script.json", true),
+            ("viewport", "viewport-script.json", false),
+        ] {
+            put(
+                format!("{name}-arguments"),
+                arguments(gesture_args(
+                    &out.join("app"),
+                    &out.join(file),
+                    &source,
+                    developer,
+                )),
+            );
+        }
+        put(
+            "hold-arguments".into(),
+            arguments(hold_args(
+                &out.join("hold"),
+                &out.join("held-catalog.sqlite"),
+                &out.join("hold-script.json"),
+                &source,
+            )),
+        );
+        put(
+            "idle-arguments".into(),
+            arguments(idle_args(
+                &out.join("held-catalog.sqlite"),
+                &out.join("idle-data"),
+                &source,
+            )),
+        );
     }
 
     /// The default Basic exposure target: the field the synthetic burst events carry, and a
