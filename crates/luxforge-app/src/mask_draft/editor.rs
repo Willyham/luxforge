@@ -7,8 +7,12 @@
 //! to be, which host method the release commits through and what the figure looks like. The draft
 //! ([`super::MaskDraft`]) and the canvas ([`crate::mask_canvas`]) hold a [`DrawnShape`] and never ask
 //! which kind it is: they call its [`ShapeEditor`], and the one place a kind is matched is
-//! [`DrawnShape`]'s dereference below. Adding a drawn kind is one module beside [`super::linear`],
-//! [`super::radial`] and [`super::brush`], one variant and one row of [`DRAWN_KINDS`].
+//! [`DrawnShape`]'s dereference below. Adding a drawn kind whose geometry is named numbers is one
+//! module beside [`super::linear`], [`super::radial`] and [`super::brush`], one variant, one row of
+//! [`DRAWN_KINDS`] and a [`MaskHandle`] variant for each new handle. A kind whose geometry is not
+//! numbers, or whose gesture is neither a handle drag nor a paint, needs more: the editor's values
+//! and fields are numbers and the canvas knows those two gestures (`docs/design/masking-workspace.md`,
+//! "What a new kind still needs").
 //!
 //! Nothing here holds a framework type. A figure is described through a [`Pen`] in normalized
 //! content coordinates and mask-space distances, and the canvas implements the pen, so a shape's
@@ -237,6 +241,16 @@ pub(crate) fn drawable(kind: &str) -> bool {
 /// This kind's geometry is a drawn path, so its gesture paints rather than drags handles.
 pub(crate) fn paintable(kind: &str) -> bool {
     drawn_kind(kind).is_some_and(|row| row.paints)
+}
+
+/// The kind a paint gesture draws: this table's painted row. The panel's Brush section starts and
+/// re-arms a stroke through it, so it names no kind of its own.
+pub(crate) fn painted_kind() -> &'static str {
+    DRAWN_KINDS
+        .iter()
+        .find(|row| row.paints)
+        .map(|row| row.kind)
+        .expect("the drawn-kind table holds the painted kind")
 }
 
 /// A handle's drag state: which handle, what the shape was when the press landed and where it

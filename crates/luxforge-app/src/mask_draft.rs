@@ -118,15 +118,17 @@ mod linear;
 mod radial;
 
 pub(crate) use brush::{Brush, BrushStroke, NEUTRAL_BRUSH};
-pub(crate) use editor::{DrawnShape, MaskHandle, Pen, drawable, paintable};
+pub(crate) use editor::{DrawnShape, MaskHandle, Pen, drawable, paintable, painted_kind};
 #[cfg(test)]
 pub(crate) use {linear::NEUTRAL, radial::NEUTRAL_RADIAL};
 
-/// The drawn kinds' tokens, from the host's own vocabulary, for the callers that name one.
+/// The drawn kinds' tokens, for the tests that name one. Product code asks the drawn-kind table
+/// instead ([`drawable`], [`paintable`], [`painted_kind`]).
 #[cfg(test)]
 pub(crate) const LINEAR: &str = linear::KIND;
 #[cfg(test)]
 pub(crate) const RADIAL: &str = radial::KIND;
+#[cfg(test)]
 pub(crate) const BRUSH: &str = brush::KIND;
 
 /// What releasing this draft commits.
@@ -563,6 +565,9 @@ mod tests {
         );
         // A kind this build draws nothing for opens no draft at all, so nothing is spelled out here.
         assert!(MaskDraft::creating("cloud", NEUTRAL_BRUSH).is_none());
+        // The panel starts a paint gesture through the table's one painted row, which is the brush.
+        assert_eq!(painted_kind(), BRUSH);
+        assert!(paintable(painted_kind()) && !paintable(LINEAR) && !paintable(RADIAL));
         // A painted kind has no *generated* method — there is no number a `mask.set-brush` could
         // patch — so all three of its edits go through the one command that carries a path, and the
         // identities it names say which of the three the stroke was.

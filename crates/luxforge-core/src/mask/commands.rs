@@ -30,9 +30,9 @@
 //! and patchable by being *registered*, rather than by someone remembering a second table: this
 //! module declares no geometry of its own and knows no kind by name.
 use super::{
-    BRUSH, REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_geometry_is_drawn,
-    component_parameters, component_sample_limit, component_sample_parameters,
-    declared_geometry_kinds, knows_component_kind, sampling_kinds,
+    REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_geometry_is_drawn, component_parameters,
+    component_sample_limit, component_sample_parameters, declared_geometry_kinds,
+    knows_component_kind, sampling_kinds, stroke_kind,
 };
 use super::{SAMPLES_FIELD, rules};
 #[cfg(test)]
@@ -40,7 +40,7 @@ use crate::ErrorKind;
 use crate::{
     ActionDescriptor, CanvasInteraction, ChoiceStyle, Component, ComponentId, ComponentMode,
     Control, Error, Layer, LayerId, Mask, MaskId, ModuleDescriptor, ModuleRegistry, NumberStyle,
-    ParameterDescriptor, Recipe,
+    ParameterDescriptor, ParameterKind, Recipe,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
     path::{
         self, POINTS_PER_STROKE, POSTED_POINTS_PER_STROKE, SIZE_MAX, SIZE_MIN, Stroke, StrokeId,
@@ -1012,16 +1012,21 @@ fn plan_add_stroke(
             declared_mode()?;
             rules::room_for_mask(next.masks.len())?;
             let mut mask = Mask::new(next_mask_name(next));
-            let name = mask.next_component_name(BRUSH);
+            let name = mask.next_component_name(stroke_kind());
             // The first component of a mask is always add, exactly as `mask.create-<kind>` makes it.
-            let component = Component::new(name, ComponentMode::Add, BRUSH, strokes_payload(&[id]));
+            let component = Component::new(
+                name,
+                ComponentMode::Add,
+                stroke_kind(),
+                strokes_payload(&[id]),
+            );
             let component_id = component.id.clone();
             let mask_id = mask.id.clone();
             mask.components.push(component);
             mask.validate()?;
             next.masks.push(mask);
             Ok((
-                format!("Add {}", spoken(BRUSH)),
+                format!("Add {}", spoken(stroke_kind())),
                 false,
                 Some(mask_id),
                 Some(component_id),
@@ -1034,15 +1039,15 @@ fn plan_add_stroke(
             let mode = optional_mode(parameters)?.unwrap_or(ComponentMode::Add);
             let mask = &mut next.masks[index];
             rules::room_for_component(&mask.name, mask.components.len())?;
-            let name = mask.next_component_name(BRUSH);
-            let component = Component::new(name, mode, BRUSH, strokes_payload(&[id]));
+            let name = mask.next_component_name(stroke_kind());
+            let component = Component::new(name, mode, stroke_kind(), strokes_payload(&[id]));
             let component_id = component.id.clone();
             mask.components.push(component);
             mask.validate()?;
             let base = if mode == ComponentMode::Add {
-                format!("Add {}", spoken(BRUSH))
+                format!("Add {}", spoken(stroke_kind()))
             } else {
-                format!("Add {} {}", mode.as_str(), spoken(BRUSH))
+                format!("Add {} {}", mode.as_str(), spoken(stroke_kind()))
             };
             let mask_id = mask.id.clone();
             Ok((base, false, Some(mask_id), Some(component_id), Vec::new()))
@@ -1115,7 +1120,8 @@ fn plan_delete_stroke(next: &mut Recipe, target: &MaskTarget) -> Result<Planned,
     Ok((base, false, Some(mask_id), Some(component_id), Vec::new()))
 }
 
-/// The component a stroke may reach: one whose geometry is drawn as a path.
+/// The component a stroke may reach: one whose geometry is drawn as a path, which the kind table
+/// answers ([`component_geometry_is_drawn`]) so the command family matches on no kind of its own.
 ///
 /// A component of a kind this build cannot evaluate is `incompatible`, exactly as rendering it is; a
 /// known kind whose geometry is declared numbers is a `validation` refusal naming the patch method
@@ -1124,7 +1130,7 @@ fn strokes_reach(component: &Component) -> Result<(), Error> {
     if !knows_component_kind(&component.kind) {
         return Err(unknown_kind(&component.kind));
     }
-    if component.kind != BRUSH {
+    if !component_geometry_is_drawn(&component.kind) {
         return Err(Error::validation(format!(
             "component {} is a {} component, whose geometry is declared rather than drawn; patch it \
              with mask.set-{}",
@@ -1970,7 +1976,7 @@ static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
             .choice_style(ChoiceStyle::Segmented),
         Control::toggle("mask.set-component-invert", "invert", "Invert component"),
     ];
-    // Every handle has a number field, for every kind, generated from the same declarations the
+    // Every number a kind declares has a number field, generated from the same declarations the
     // patch method declares. The control's **action** names the kind it belongs to — a radius is a
     // `mask.set-radial` control and a gradient endpoint a `mask.set-linear` one — so a panel selects
     // the controls of the component it has open without a second table saying which are which, and a
@@ -1987,18 +1993,33 @@ static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
             })
             .expect("every kind generates its patch method")
             .method;
-        controls.extend(
-            component_parameters(kind, false)
-                .expect("a kind from the host's own table")
-                .into_iter()
-                .map(|parameter| {
-                    Control::number(action, &parameter.name, control_label(&parameter.name))
-                        .number_style(NumberStyle::Field)
-                }),
-        );
+        controls.extend(geometry_controls(
+            action,
+            component_parameters(kind, false).expect("a kind from the host's own table"),
+        ));
     }
     controls
 });
+
+/// The number fields one kind's patch method `action` gets from its declared `parameters`: one per
+/// parameter whose declared kind is a number, and none for any other.
+///
+/// A number field is the one widget this path generates, so it is bound only where it can edit what
+/// the parameter declares. A geometry parameter of another kind — a polygon's `points` vertex list
+/// — gets no control from here rather than a number field that could never hold its value; its
+/// editor is the kind's own canvas gesture or a control of its own kind.
+fn geometry_controls(
+    action: &'static str,
+    parameters: Vec<ParameterDescriptor>,
+) -> impl Iterator<Item = Control> {
+    parameters
+        .into_iter()
+        .filter(|parameter| matches!(parameter.kind, ParameterKind::Number { .. }))
+        .map(move |parameter| {
+            Control::number(action, &parameter.name, control_label(&parameter.name))
+                .number_style(NumberStyle::Field)
+        })
+}
 
 /// A stored field's name as a control shows it: `x0` is `X0`, `radius_x` is `Radius X`. Short
 /// segments stay upper case because they are axis names, not words.
@@ -2023,7 +2044,6 @@ fn control_label(field: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ParameterKind;
 
     fn registry() -> ModuleRegistry {
         ModuleRegistry::builtin()
@@ -2362,6 +2382,11 @@ mod tests {
             .filter(|kind| component_geometry_is_drawn(kind))
             .collect();
         assert_eq!(drawn, vec!["brush"]);
+        assert_eq!(
+            drawn,
+            vec![stroke_kind()],
+            "a stroke starts a component of the one drawn kind"
+        );
         for kind in drawn {
             assert!(knows_component_kind(kind));
             assert!(component_parameters(kind, true).is_none());
@@ -3434,5 +3459,167 @@ mod tests {
                 .detail,
             "missing required parameter component for action mask.set-linear"
         );
+    }
+
+    #[test]
+    fn a_generated_number_field_binds_only_a_number_parameter() {
+        // A kind whose geometry holds a vertex list beside its numbers — the polygon proposed next —
+        // gets a field for each number and nothing for the list, rather than a number field that
+        // could never hold its value.
+        let generated: Vec<Control> = geometry_controls(
+            "mask.set-polygon",
+            vec![
+                ParameterDescriptor::points("points", 3, 64),
+                ParameterDescriptor::number("feather", 0.0, 1.0),
+                ParameterDescriptor::integer("sides", 3, 64),
+                ParameterDescriptor::boolean("closed"),
+            ],
+        )
+        .collect();
+        assert_eq!(
+            generated,
+            vec![
+                Control::number("mask.set-polygon", "feather", "Feather")
+                    .number_style(NumberStyle::Field)
+            ]
+        );
+        // And every kind registered today is all numbers, so each of its declared parameters has
+        // exactly one field, in declaration order, and nothing else is generated for it.
+        for kind in declared_geometry_kinds() {
+            let action = geometry(GeometryOp::Set, kind)
+                .expect("every kind generates its patch method")
+                .method;
+            let fields: Vec<&str> = controls()
+                .iter()
+                .filter_map(|control| match control {
+                    Control::Number {
+                        action: bound,
+                        parameter,
+                        ..
+                    } if bound == action => Some(parameter.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let declared: Vec<String> = component_parameters(kind, false)
+                .expect("the table's own kind")
+                .into_iter()
+                .map(|parameter| parameter.name)
+                .collect();
+            assert_eq!(fields, declared, "{kind}");
+        }
+    }
+
+    #[test]
+    fn the_host_descriptor_meets_the_rules_a_module_descriptor_does() {
+        let host = descriptor();
+        host.validate_host()
+            .expect("the host's mask descriptor is a valid host descriptor");
+        assert!(
+            registry()
+                .host_descriptors()
+                .iter()
+                .all(|published| std::ptr::eq(*published, host))
+        );
+        // The three allowances are the host's alone: its method-name identities, its payload field
+        // names and its identity parameters are each refused on a module.
+        let error = host
+            .validate()
+            .expect_err("a module may not declare mask.*");
+        assert_eq!(error.detail, "invalid action identity mask.delete");
+        let module_like = |action: ActionDescriptor| ModuleDescriptor {
+            id: "luxforge.masks".to_owned(),
+            title: "Masks".to_owned(),
+            actions: vec![action],
+            ..ModuleDescriptor::default()
+        };
+        let radial = geometry(GeometryOp::Create, "radial")
+            .expect("a generated radial")
+            .action
+            .clone();
+        let payload_names = module_like(ActionDescriptor {
+            id: "create-radial".to_owned(),
+            ..radial
+        });
+        assert_eq!(
+            payload_names.validate().expect_err("radius_x").detail,
+            "invalid parameter name radius_x of action create-radial"
+        );
+        let delete = find("mask.delete").expect("mask.delete").action.clone();
+        let identities = module_like(ActionDescriptor {
+            id: "delete".to_owned(),
+            ..delete
+        });
+        assert!(
+            identities
+                .validate()
+                .expect_err("an identity parameter")
+                .detail
+                .contains("which only a host command declares")
+        );
+
+        // Everything else a module is held to still holds, and a host identity is a method name and
+        // nothing looser: a malformed one is refused as a module's is.
+        for (id, refused) in [
+            (
+                "mask.Create-linear",
+                "invalid action identity mask.Create-linear",
+            ),
+            ("create-linear", "invalid action identity create-linear"),
+            ("mask.", "invalid action identity mask."),
+            (
+                "mask.create.linear",
+                "invalid action identity mask.create.linear",
+            ),
+            (
+                "Mask.create-linear",
+                "invalid action identity Mask.create-linear",
+            ),
+        ] {
+            let mut broken = host.clone();
+            broken.actions[0].id = id.to_owned();
+            assert_eq!(broken.validate_host().expect_err(id).detail, refused);
+        }
+        let mut repeated = host.clone();
+        repeated.actions[1].id = repeated.actions[0].id.clone();
+        assert_eq!(
+            repeated.validate_host().expect_err("a duplicate").detail,
+            "duplicate action mask.delete"
+        );
+        let mut unbound = host.clone();
+        unbound
+            .controls
+            .push(Control::number("mask.set-radial", "radius", "Radius"));
+        assert_eq!(
+            unbound
+                .validate_host()
+                .expect_err("an undeclared parameter")
+                .detail,
+            "action mask.set-radial has no parameter radius"
+        );
+
+        // A variant applies only on the global target, and a host control always addresses a mask,
+        // so a host control that declares one is refused, at any depth.
+        let variant = |control: Control| {
+            let replacement = control.clone();
+            control.variant(crate::ControlVariant::control(
+                crate::SourceTag::Raw,
+                "luxforge.raw",
+                replacement,
+            ))
+        };
+        let mut top = host.clone();
+        top.controls[0] = variant(top.controls[0].clone());
+        let mut nested = host.clone();
+        let first = nested.controls.remove(0);
+        nested
+            .controls
+            .insert(0, Control::group("Mask", vec![variant(first)]));
+        for broken in [top, nested] {
+            assert_eq!(
+                broken.validate_host().expect_err("a variant").detail,
+                "number control of host descriptor luxforge.masks declares variants, which apply \
+                 only on the global target a host control never addresses"
+            );
+        }
     }
 }

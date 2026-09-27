@@ -77,14 +77,23 @@ pub use range::{
 /// payload, so the command family can edit the list without knowing what else that payload holds.
 pub const SAMPLES_FIELD: &str = "samples";
 
-/// The component kind a stroke reaches: the one kind whose geometry is a drawn path rather than
-/// declared numbers.
+/// The brush's kind token, for the desktop's brush editor and for tests.
 ///
-/// `mask.add-stroke` creates a component of this kind and appends to one, and refuses a component of
-/// any other kind by name — it cannot be read from [`component_geometry_is_drawn`] alone, which says
-/// *whether* a kind is drawn and not *which* kind a drawn path belongs to. It is the kind table's
-/// own token, so the command family still spells no kind of its own.
+/// A kind's token is named only where `cargo xtask check-repository`'s kind rule allows: this
+/// module, the kind's own file and the desktop's drawn-kind table and editors. Everywhere else asks
+/// the table a question instead — [`component_geometry_is_drawn`] for whether a stroke may reach a
+/// component, `stroke_kind` for the kind a new stroke's component is.
 pub const BRUSH: &str = brush::KIND;
+
+/// The component kind `mask.add-stroke` creates when a stroke starts a component: the one kind whose
+/// geometry is a drawn path rather than declared numbers.
+///
+/// It cannot be read from [`component_geometry_is_drawn`] alone, which says *whether* a kind is
+/// drawn and not *which* kind a new stroke belongs to, so the kind table answers it here and the
+/// command family spells no kind of its own.
+pub(crate) fn stroke_kind() -> &'static str {
+    BRUSH
+}
 
 /// The smallest legal stored distance, in mask-space units, where one unit is the content stage's
 /// height. Every falloff divides by a stored distance, so this floor is what replaces a runtime
@@ -116,9 +125,12 @@ fn smooth(s: f64) -> f64 {
 ///
 /// This is the **one** table describing a component kind, and the one place a component is
 /// dispatched on its kind: [`validate_component_kinds`] and [`CompiledMask::new`] look the kind up
-/// here and call its row, and nothing else in the host matches on a kind token. Adding a kind is
-/// therefore one module beside `linear` and `radial` — its payload, its [`ComponentField`] and its
-/// two functions — and one row here.
+/// here and call its row, and nothing else in the host matches on a kind token — the command family
+/// asks [`component_geometry_is_drawn`] and [`stroke_kind`] instead, and `cargo xtask
+/// check-repository` refuses a kind's token named outside this module, the kind's own file and the
+/// desktop's drawn-kind table and editors. Adding a kind of declared numbers is therefore one module
+/// beside `linear` and `radial` — its payload, its [`ComponentField`] and its two functions — and
+/// one row here.
 ///
 /// It is what makes retention of an unknown kind work — a component's `kind` and `payload` are to a
 /// component what `effect_id` and `payload` are to a layer, so a kind no entry here claims is refused
@@ -207,8 +219,11 @@ struct ColourSamples {
     parameters: fn() -> Vec<ParameterDescriptor>,
 }
 
-/// Every component kind this build knows. A later kind is one more entry with its own module beside
-/// `linear` and `radial`, and nothing else here changes.
+/// Every component kind this build knows. A later kind whose geometry is declared numbers and whose
+/// coverage reads only its payload, the stage and the stroke table is one more entry with its own
+/// module beside `linear` and `radial`, and nothing else here changes; one that needs more — a
+/// non-number geometry parameter, an artifact bound at compile time — is listed in
+/// `docs/design/masking-workspace.md`, "What a new kind still needs".
 const COMPONENT_KINDS: &[ComponentKind] = &[
     ComponentKind {
         kind: linear::KIND,

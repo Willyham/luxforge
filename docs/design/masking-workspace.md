@@ -54,7 +54,7 @@ Every row above is a plain-data widget in `luxforge-ui` fed by the view model: `
 
 ## Kinds proposed next
 
-The kind table is the delivered one: a kind that declares geometry parameters is creatable, addable and patchable through generated commands, and the panel lists only registered kinds. Three additions are proposed, in this order.
+The kind table is the delivered one: a kind that declares geometry parameters is creatable, addable and patchable through generated commands, and the panel lists only registered kinds. Three additions are proposed, in this order. None of them is one module and one row; what each still needs is listed [below](#what-a-new-kind-still-needs), and none of that is built until a kind is authorized.
 
 ### Polygon
 
@@ -76,6 +76,33 @@ Subject, Sky and Background, and later People and Objects, are a **model** kind 
 | Runtime | Local inference needs an inference runtime, and the capabilities contract refuses `local-runtime` today. That refusal is the first thing this phase has to lift, with a measured choice: a pure-Rust runtime (`tract`, Apache-2.0/MIT) keeps the toolchain rule and the licence rule, at the cost of a smaller operator set; ONNX Runtime is broader and native. The decision is the owner's and is recorded below; nothing here assumes either |
 
 What a model selection is honest about, on its row: the model's name and version, when it was computed, and that it is a *stored* selection that ages with the source and the model. Lightroom's "mask needs update" becomes a stated reason and two explicit actions.
+
+### What a new kind still needs
+
+A kind whose geometry is a flat list of declared numbers and whose coverage reads only its payload, the stage and the stroke table is one core module and one row of the kind table; drawing it on the canvas adds one editor module, one `DrawnShape` variant, one row of the desktop's drawn-kind table and a `MaskHandle` variant for each new handle. Linear, radial and the ranges are that shape. The two proposed kinds are not, and each reaches further.
+
+**Polygon** (a `points` vertex list beside a number):
+
+| Where | What it needs |
+| --- | --- |
+| Core kind | `mask/polygon.rs` (payload, stage-free validation, parameters, `ComponentField`: coverage, support rectangle, smallest feature) and one row of `COMPONENT_KINDS`. The generated `mask.create-polygon`, `mask.add-polygon` and `mask.set-polygon` accept a `points` parameter through the generic check as they are |
+| Reference and study | The frozen equation in the [mask study](mask-study.md) and its `f64` transcription in `crates/luxforge-reference/src/mask.rs`, with the bit-identity tests the other kinds have |
+| Panel fields | The generated number fields bind only number parameters, so `feather` gets one and `points` none. A vertex list is edited on the canvas or by a control kind that does not exist yet; a points parameter carries no default, so the kind is not offered as a button (`component_geometry_is_defaulted`) |
+| Shape editor | `ShapeEditor` is numbers-only: `values` answers `(name, f64)` pairs and `set_field` takes one `f64`, and the draft's field message, its commit fields and the panel's field binding carry the same. A vertex list needs a JSON-geometry form of the editor and of those three paths |
+| Handles | `MaskHandle` is a closed enum of the linear and radial handles; a vertex needs an indexed handle, its hit test and its pointer (whether it moves the figure) |
+| Canvas gestures | The canvas knows two gesture families, a handle drag with a sweep from empty space and a paint; placing vertices one click at a time is a third. The pointer semantics — what a press, a move and a release mean — belong in each editor rather than in the canvas's branches |
+| Figure | The `Pen`'s line, ellipse and path draw a closed outline; a feather band drawn off the outline needs either an offset polyline from the editor or a new pen primitive |
+| Evidence | The panel's kind icon and letter, the state capture, a smoke scenario and the user guide |
+
+**Model selection** (a stored raster referenced as an artifact):
+
+| Where | What it needs |
+| --- | --- |
+| Core kind | `mask/model.rs` and one row of `COMPONENT_KINDS`, position-based, with its `artifact` parameter declared through the delivered `artifact` parameter kind; the panel's generated fields cover its numbers and nothing binds the artifact, which only the task and `mask.set-model` set |
+| Compile binding | The kind table's compile binding carries the stage, the recipe's stroke table and the mask's name, and no artifacts. A model kind has to be bound at compile time to its prepared artifact, so the binding widens and every place a mask is compiled — the registry's stack compile that renders and samples, the preview worker and the coverage field — passes the prepared artifacts in |
+| Artifact discovery | Artifacts are referenced by layers today (`Layer::artifacts`), and preparation, pinning and retention are found from layers. A mask component that references one has to be found the same way: admission checks it exists, the prepared-artifact cache pins it for every masked layer that draws the mask, and retention keeps it while any recipe or history entry references it |
+| Resource, task and runtime | The pinned model resource, `task.select-<class>`, and the runtime decision below |
+| Staleness | The recorded source fingerprint and model version reported by `mask.list`, and the row's Needs recompute state with its two actions |
 
 ### Edge-aware refinement (phase F)
 
