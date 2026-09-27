@@ -1,6 +1,6 @@
 # JPEG export
 
-Status: implemented and verified on the M4 Mac; measured in the [performance plan](../specs/performance.md#jpeg-export). This design implements the accepted export contract in [decisions](../decisions.md#editing-and-storage) and [crop and export](../specs/single-image.md#export): quality 90, a native destination picker suggesting `-edited.jpg`, never overwriting an existing file or a source alias, and optional metadata stripped by default with a Keep metadata option. Where this design chooses something the accepted contract does not decide, it is listed under [proposals](#proposals) and stays a proposal until the owner decides.
+Status: implemented and verified on the M4 Mac; measured in the [performance plan](../specs/performance.md#jpeg-export). This design implements the accepted export contract in [decisions](../decisions.md#editing-and-storage) and [crop and export](../specs/single-image.md#export): quality 90, a native destination picker suggesting `-edited.jpg`, never overwriting an existing file or a source alias, and optional metadata stripped by default with a Keep metadata option. What this design chose beyond that contract was accepted by the owner on 2026-09-27 and is listed under [decisions](#decisions); the encoder stays open.
 
 Export writes one committed entry's exact render to a new JPEG file. It never touches the original, the catalog's history or any existing file.
 
@@ -55,15 +55,15 @@ The title bar's Export button, beside Open, offers **Export JPEG…** and **Expo
 - Nothing runs on the catalog owner beyond planning in `O(layers)` and short file-system checks on the destination. The render uses the shared Rayon pool and render context, so an export and a preview pace each other rather than one starving the other.
 - Wall time and peak additional memory for 24 and 60 MP JPEG sources and one RAW per supported camera are measured once the feature is complete and recorded in the [performance plan](../specs/performance.md).
 
-## Proposals
+## Decisions
 
-Chosen for this build where the accepted contract is silent, awaiting the owner:
+Accepted by the owner on 2026-09-27:
 
 1. The title-bar Export button opens a two-item menu, with `Cmd+E` and `Shift+Cmd+E`, rather than a dialog or a state-panel section.
 2. The desktop exports the displayed entry, including a history preview, and never a draft.
 3. The suggested name counts up (`-edited-2.jpg`) when `-edited.jpg` is taken, so the save dialog does not open on a name that will be refused.
 4. Keep metadata carries exactly the EXIF fields in the table above and no IPTC or XMP.
-5. The pinned `image` crate's baseline encoder, which writes full-resolution chroma (4:4:4) with the standard Huffman tables and adds no dependency. Measured against `jpeg-encoder` 0.7.1 on the generated 24 and 60 MP pattern JPEGs at quality 90 (encode only, shared host): `image` 119 and 293 ms, 702 KB and 1.7 MB; `jpeg-encoder` at 4:2:0 61 and 152 ms, 403 KB and 993 KB; at 4:4:4 110 and 273 ms at the same size as `image`. Halving the encode and the file by subsampling chroma is a quality choice, not a free win, and the encode is small beside the exact render. `jpeg-encoder`'s optimized Huffman tables at 4:2:0 baseline also produce files the bundled `zune-jpeg` 0.5.15 decodes wrongly (libjpeg-turbo decodes them correctly), which would break re-importing an export.
+5. **Open, being re-investigated at the owner's request, who prefers a faster existing package:** the pinned `image` crate's baseline encoder, which writes full-resolution chroma (4:4:4) with the standard Huffman tables and adds no dependency. Measured against `jpeg-encoder` 0.7.1 on the generated 24 and 60 MP pattern JPEGs at quality 90 (encode only, shared host): `image` 119 and 293 ms, 702 KB and 1.7 MB; `jpeg-encoder` at 4:2:0 61 and 152 ms, 403 KB and 993 KB; at 4:4:4 110 and 273 ms at the same size as `image`. Halving the encode and the file by subsampling chroma is a quality choice, not a free win, and the encode is small beside the exact render. `jpeg-encoder`'s optimized Huffman tables at 4:2:0 baseline also produce files the bundled `zune-jpeg` 0.5.15 decodes wrongly (libjpeg-turbo decodes them correctly), which would break re-importing an export.
 6. The method names `export.plan`, `export.jpeg`, `export.read` and `export.cancel`. When one job table and one job API land, `export.read` and `export.cancel` fold into them.
 
-Not in this build: presets, resizing, other formats, output sharpening, batch export, durable export records, and the earlier state-panel export proposal; each would need its own decision.
+Also accepted: the build follows the accepted export contract rather than the earlier state-panel proposal with presets, resizing, unique names by default and durable export records, which stays unadopted; and the export lane is its own instance of the existing lane runner until one job table exists. Not in this build: presets, resizing, other formats, output sharpening, batch export and durable export records; each would need its own decision.

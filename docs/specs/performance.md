@@ -1862,7 +1862,7 @@ Release `luxforge-json` at `4bb339b`, native M4 Pro, 27 September 2026, warm fil
 | Fujifilm X100VI RAF | 331 / 338 | 3.92 MiB | 7728 × 5152 | 889 → 897 MiB (+8) |
 | DJI Air 2S DNG | 243 / 251 | 6.08 MiB | 5464 × 3640 | 450 → 458 MiB (+8) |
 
-Encoding alone, measured separately with the pinned `image` encoder, is 119 ms at 24 MP and 293 ms at 60 MP ([export design](../design/export.md#proposals)), so it is most of an export's time. The peak figures are `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once, so each difference is how far one export raises the process's peak, not the export's own allocation: a JPEG export's exact frame lands above the decoded source's peak, while a RAW export's frame fits under the peak RAW development already reached.
+Encoding alone, measured separately with the pinned `image` encoder, is 119 ms at 24 MP and 293 ms at 60 MP ([export design](../design/export.md#decisions)), so it is most of an export's time. The peak figures are `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once, so each difference is how far one export raises the process's peak, not the export's own allocation: a JPEG export's exact frame lands above the decoded source's peak, while a RAW export's frame fits under the peak RAW development already reached.
 
 ## Method
 
