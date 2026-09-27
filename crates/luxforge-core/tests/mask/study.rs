@@ -1,4 +1,4 @@
-//! TASK-001: independent proofs for the frozen mask coverage mathematics — mask
+//! Independent proofs for the frozen mask coverage mathematics — mask
 //! space, the component composition algebra and the linear and radial falloffs.
 //!
 //! This binary shares no code with `luxforge-core`'s production sources. The

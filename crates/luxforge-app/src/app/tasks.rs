@@ -160,10 +160,11 @@ pub(crate) struct Upload {
 }
 
 /// What one live-refresh poll found. One poll answers every kind of change: the asset's state is
-/// read back when an event that is neither a preset nor a capability one arrived, the preset
-/// library when a `preset.*` event did, and `capabilities` says a capability method (`module.*` or
-/// `task.*`) was used, whose changes the asset state does not show; a gap in the log, which could
-/// have hidden any of them, asks for all three.
+/// read back when an event names the open asset at a revision the desktop does not hold, or names
+/// it with no revision (a version), the preset library when a `preset.*` event arrived, and
+/// `capabilities` says a capability method (`module.*` or `task.*`) was used, whose changes the
+/// asset state does not show; a gap in the log, which could have hidden any of them, asks for all
+/// three. An event naming another asset, or none, reads nothing back.
 ///
 /// The poll is the only reader of the event log, so its `sequence` is the only one the desktop's
 /// event cursor ever takes: the log's newest sequence as `events.since` answered it, which every
@@ -1472,13 +1473,13 @@ pub(crate) fn versions_task(
 pub(crate) fn sync_task(
     owner: OwnerHandle,
     client: ClientId,
-    asset_id: AssetId,
+    held: (AssetId, u64),
     after: u64,
     own: Vec<String>,
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     owner_task(
-        move || sync_now(&owner, client, asset_id, after, &own, proxy),
+        move || sync_now(&owner, client, held, after, &own, proxy),
         |value| Message::Sync(SyncMessage::Synced(value)),
     )
 }
@@ -1533,6 +1534,12 @@ fn is_library_event(method: &str) -> bool {
 /// reads nothing else, and a preset event from another client costs one `preset.list` and no asset
 /// refresh or preview.
 ///
+/// `held` is the asset on screen and the revision the desktop holds of it. Only an event that names
+/// that asset is read back, and one naming a revision at or below the held one is skipped: the
+/// desktop already shows it. A change to another photograph, an import of one, or an artifact
+/// collection costs the poll nothing. A version names the asset and no revision, since it moves
+/// none, so it is read back.
+///
 /// `own` names this desktop's requests whose answers already read their changes back and reached
 /// the screen. Their events are read and skipped, so a commit of this desktop's own costs its poll
 /// nothing; any other event, including one of this desktop's whose read-back never arrived, is
@@ -1541,7 +1548,7 @@ fn is_library_event(method: &str) -> bool {
 pub(crate) fn sync_now(
     owner: &OwnerHandle,
     client: ClientId,
-    asset_id: AssetId,
+    (asset_id, held): (AssetId, u64),
     after: u64,
     own: &[String],
     proxy: Option<ProxyBounds>,
@@ -1565,10 +1572,10 @@ pub(crate) fn sync_now(
             .iter()
             .any(|event| capability_event(&event.method));
     let asset = events.gap
-        || events
-            .events
-            .iter()
-            .any(|event| !is_library_event(&event.method) && !capability_event(&event.method));
+        || events.events.iter().any(|event| {
+            event.asset_id.as_ref() == Some(&asset_id)
+                && event.revision.is_none_or(|revision| revision > held)
+        });
     let presets = if library {
         Some(list_presets(owner, client)?)
     } else {
@@ -2020,6 +2027,94 @@ mod tests {
         opened.finish();
     }
 
+    /// The event sync reads back only changes to the photograph on screen that it does not already
+    /// hold. Against a real owner with two photographs: another client's import of a second one and
+    /// its edit there cost the poll nothing past `events.since` — no refresh and no preview job —
+    /// and neither does the open photograph's own import event, whose revision the desktop holds.
+    /// An edit to the open photograph is read back, and read again from the same cursor once the
+    /// desktop holds its revision, it is skipped. A version named on the open photograph moves no
+    /// revision and is still read back.
+    #[test]
+    fn the_event_sync_reads_back_only_the_open_photographs_changes_it_does_not_hold() {
+        let (opened, _) = Opened::new();
+        let agent = opened.owner.register();
+        let (queued, _) = call(
+            &opened.owner,
+            agent,
+            "catalog.import",
+            json!({"path": Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-2.jpg"), "mutation": request()}),
+        )
+        .unwrap();
+        let job = queued["job_id"].as_str().unwrap().to_owned();
+        let ready = wait_source_job(&opened.owner, agent, &job).unwrap();
+        let other: AssetId = parse(ready["asset"]["asset"]["id"].clone()).unwrap();
+        assert_ne!(other, opened.asset);
+        call(
+            &opened.owner,
+            agent,
+            "edit.transform",
+            json!({"asset_id": other, "mutation": mutation(0), "transform": "rotate-left"}),
+        )
+        .unwrap();
+        let held = opened.refresh.state.revision;
+        let poll = |after: u64, held: u64| {
+            owner_calls::take();
+            let polled = sync_now(
+                &opened.owner,
+                opened.client,
+                (opened.asset.clone(), held),
+                after,
+                &[],
+                None,
+            )
+            .expect("the poll answers");
+            (polled, owner_calls::take())
+        };
+        let (polled, calls) = poll(0, held);
+        assert!(
+            polled.refresh.is_none(),
+            "another photograph's import and edit read nothing back"
+        );
+        assert_eq!(calls, ["events.since"], "and plan no preview job");
+        let cursor = polled.sequence;
+
+        call(
+            &opened.owner,
+            agent,
+            "edit.transform",
+            json!({"asset_id": opened.asset, "mutation": mutation(held), "transform": "rotate-right"}),
+        )
+        .unwrap();
+        let (polled, calls) = poll(cursor, held);
+        let refresh = polled
+            .refresh
+            .expect("the open photograph's edit is read back");
+        assert_eq!(refresh.state.revision, held + 1);
+        assert!(calls.contains(&"preview_job".to_owned()));
+        let (again, calls) = poll(cursor, held + 1);
+        assert!(
+            again.refresh.is_none(),
+            "the same event is skipped once its revision is held"
+        );
+        assert_eq!(calls, ["events.since"]);
+
+        call(
+            &opened.owner,
+            agent,
+            "version.create",
+            json!({"asset_id": opened.asset, "name": "Kept", "mutation": request()}),
+        )
+        .unwrap();
+        let (polled, _) = poll(again.sequence, held + 1);
+        let versions = polled
+            .refresh
+            .expect("a version is read back")
+            .versions
+            .expect("with the versions");
+        assert_eq!(versions.len(), 1);
+        opened.finish();
+    }
+
     /// A commit is merged on the desktop only when the state read is the one the commit left: when
     /// another client's commit landed in between, the refresh reads what an event from elsewhere
     /// reads, page and lineage included, so no entry goes missing from the loaded page.
@@ -2096,10 +2191,11 @@ mod tests {
         let mut cursor = editor.api_sequence;
         let mut poll = |editor: &mut Editor| {
             let own = editor.own_requests.iter().cloned().collect::<Vec<_>>();
+            let revision = editor.state.as_ref().expect("a photograph").revision;
             let polled = sync_now(
                 &owner,
                 client,
-                asset.clone(),
+                (asset.clone(), revision),
                 editor.api_sequence,
                 &own,
                 None,

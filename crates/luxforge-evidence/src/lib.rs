@@ -151,6 +151,9 @@ pub enum Step {
     Capability(CapabilityStep),
     /// One Masks-panel view or mask-canvas gesture.
     Mask(MaskStep),
+    /// The title bar's Export menu opened, or one export written into the run's evidence
+    /// directory through the same chain the menu starts, bypassing only the save dialog.
+    Export(ExportStep),
 }
 
 impl Step {
@@ -242,6 +245,7 @@ impl Step {
             }
             Self::Capability(step) => step.validate(),
             Self::Mask(step) => step.validate(),
+            Self::Export(step) => step.validate(),
         }
     }
 }
@@ -979,6 +983,44 @@ pub enum PaletteStep {
     Run(String),
 }
 
+/// One Export gesture: `{"menu": true}` presses the title bar's Export button, which opens its
+/// menu; `{"file": {"name": "a.jpg", "keep_metadata": true}}` exports the displayed entry to that
+/// file in the run's evidence directory, the name standing in for the save dialog's answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportStep {
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    Menu,
+    File(ExportFile),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportFile {
+    /// A file name, without any directory: the export is written beside the run's frames.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub keep_metadata: bool,
+}
+
+impl ExportStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Menu => Ok(()),
+            Self::File(file) => {
+                text(&file.name, "export file name")?;
+                let plain = std::path::Path::new(&file.name)
+                    .file_name()
+                    .is_some_and(|name| name == file.name.as_str());
+                if !plain || file.name.contains(['/', '\\']) {
+                    return Err("export file name takes a file name, not a path".into());
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// One library preset, by its exact name, and by its group when two groups hold that name. A step
 /// that matches no row, or more than one, fails rather than guessing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1105,6 +1147,9 @@ pub enum CapabilityAction {
     Apply,
     /// Cancel the module's newest live job.
     Cancel,
+    /// Open or close the permissions list, which reads its rows when it opens.
+    Permissions,
+    /// Revoke a grant by its index in the open permissions list.
     Revoke(usize),
     /// Capture once every job the desktop tracks for the module has finished.
     Settle,
@@ -1145,6 +1190,8 @@ struct CapabilityWire {
     apply: Option<True>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cancel: Option<True>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    permissions: Option<True>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     revoke: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1187,7 +1234,7 @@ enum Consent {
 }
 
 /// The gesture keys of a capability step, of which a step takes exactly one.
-const CAPABILITY_GESTURES: &str = "section, set, secret, profile, install, remove, activate, task, consent, apply, cancel, revoke or settle";
+const CAPABILITY_GESTURES: &str = "section, set, secret, profile, install, remove, activate, task, consent, apply, cancel, permissions, revoke or settle";
 
 impl TryFrom<CapabilityWire> for CapabilityStep {
     type Error = String;
@@ -1241,6 +1288,9 @@ impl TryFrom<CapabilityWire> for CapabilityStep {
         if wire.cancel.is_some() {
             actions.push(CapabilityAction::Cancel);
         }
+        if wire.permissions.is_some() {
+            actions.push(CapabilityAction::Permissions);
+        }
         if let Some(index) = wire.revoke {
             actions.push(CapabilityAction::Revoke(index));
         }
@@ -1276,6 +1326,7 @@ impl From<CapabilityStep> for CapabilityWire {
             consent: None,
             apply: None,
             cancel: None,
+            permissions: None,
             revoke: None,
             settle: None,
         };
@@ -1318,6 +1369,7 @@ impl From<CapabilityStep> for CapabilityWire {
             }
             CapabilityAction::Apply => wire.apply = Some(True),
             CapabilityAction::Cancel => wire.cancel = Some(True),
+            CapabilityAction::Permissions => wire.permissions = Some(True),
             CapabilityAction::Revoke(index) => wire.revoke = Some(index),
             CapabilityAction::Settle => wire.settle = Some(True),
         }

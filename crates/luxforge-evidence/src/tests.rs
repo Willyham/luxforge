@@ -690,6 +690,34 @@ fn preset_steps_round_trip() {
 }
 
 #[test]
+fn export_steps_round_trip_and_take_a_bare_file_name() {
+    let steps = round_trip(json!([
+        {"export":{"menu":true}},
+        {"export":{"file":{"name":"a.jpg"}}},
+        {"export":{"file":{"name":"b.jpeg","keep_metadata":true}}},
+    ]));
+    assert_eq!(steps[0], Step::export_menu());
+    assert_eq!(steps[1], Step::export("a.jpg", false));
+    assert_eq!(steps[2], Step::export("b.jpeg", true));
+    for (script, expected) in [
+        (json!({"export":{"menu":false}}), "takes true"),
+        (json!({"export":{"file":{}}}), "missing field `name`"),
+        (json!({"export":{"file":{"name":" "}}}), "export file name"),
+        (
+            json!({"export":{"file":{"name":"out/a.jpg"}}}),
+            "not a path",
+        ),
+        (json!({"export":{"file":{"name":".."}}}), "not a path"),
+        (
+            json!({"export":{"file":{"name":"a.jpg","quality":90}}}),
+            "unknown field `quality`",
+        ),
+    ] {
+        refused(json!([script]), expected);
+    }
+}
+
+#[test]
 fn capability_steps_round_trip_and_record_a_secret_as_redacted() {
     let module = "luxforge.capabilities";
     let steps = round_trip(json!([

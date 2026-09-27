@@ -44,6 +44,10 @@ pub(crate) enum PaletteAction {
     Redo,
     ReturnCurrent,
     Restore,
+    /// Export the displayed entry as a JPEG, choosing where in the save dialog.
+    Export {
+        keep_metadata: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,7 +101,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
 /// what it currently does.
 fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
     let workspace = &inputs.session.workspace;
-    vec![
+    let mut entries = vec![
         (
             "Pointer".to_owned(),
             "workspace.set".to_owned(),
@@ -141,6 +145,21 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             "history.restore".to_owned(),
             PaletteAction::Restore,
         ),
+    ];
+    entries.extend(
+        crate::state::title::EXPORT_ITEMS
+            .iter()
+            .map(|(label, keep_metadata)| {
+                (
+                    (*label).to_owned(),
+                    "export.jpeg".to_owned(),
+                    PaletteAction::Export {
+                        keep_metadata: *keep_metadata,
+                    },
+                )
+            }),
+    );
+    entries.extend([
         (
             toggle_label(workspace.state_panel, "state panel"),
             "workspace.set".to_owned(),
@@ -157,7 +176,8 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             "resources.read \u{b7} activity.list".to_owned(),
             PaletteAction::TogglePerformance,
         ),
-    ]
+    ]);
+    entries
 }
 
 /// What a toggle entry calls itself: it always names the action it would take, not the state it is

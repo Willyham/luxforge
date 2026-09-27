@@ -323,9 +323,9 @@ masked-colour row above uses, so the difference between the rows is the mask and
   rectangle has stopped growing: 8 → 32 strokes is 2.0 and 5.6 ms a stroke, 32 → 64 is 1.9 and
   4.8 ms, a ratio of 2.5 against the 2.5 the pixel counts predict. That is what a per-pixel field
   evaluation looks like, and it is the same shape the component table above measures.
-- **The compile is not a cost worth naming.** Building the grid index and checking the occupancy cap
-  takes 0.003 ms for one stroke and 0.029 ms for sixty-four at 24 MP, and less at 60 MP because the
-  work is in the strokes rather than the stage. It is charged to the gesture, once, before a pixel is
+- **The compile is not a cost worth naming.** Building the grid index takes 0.003 ms for one
+  stroke and 0.029 ms for sixty-four at 24 MP, and less at 60 MP because the work is in the strokes
+  rather than the stage. It is charged to the gesture, once, before a pixel is
   read — a thousandth of the frame it precedes.
 - **A point query stays a point query.** `Render::sample` through a brush mask answers in 0.0023 ms
   at one stroke and 0.0385 ms at sixty-four, on both stage sizes: it rasterizes nothing
@@ -1731,16 +1731,15 @@ The unchanged-camera comparisons ran at load 3.2–6.5; final Fuji comparisons r
 processes increases from 917.3 MB to 933.2–933.4 MB (decimal bytes); this includes preparation and
 measurement, not just live demosaic scratch. The faster development uses about 19% more process CPU.
 
-Explicit Markesteijn heap scratch is globally capped at eight × 988,208 bytes, or 7,905,664 bytes,
-including the source-caller job. Stack arrays, tables, allocator overhead and full image buffers
-are additional. Callback cancellation, native faults, nested callers and teardown are tested;
+Explicit Markesteijn heap scratch is capped at eight × 988,208 bytes, or 7,905,664 bytes, for the
+one development the source worker runs at a time, including the source-caller job. Stack arrays,
+tables, allocator overhead and full image buffers are additional. Callback cancellation, native faults, nested callers and teardown are tested;
 no partial output is adopted.
 
 ### Bayer mosaic normalization
 
 For Bayer sources above one megapixel, native normalization submits 16-row batches to the existing
-shared executor before the RCD call. At most eight callbacks are admitted under
-the shared cap. Normalization writes the existing mosaic allocation, adds no per-worker scratch,
+shared executor before the RCD call. At most eight callbacks run at once. Normalization writes the existing mosaic allocation, adds no per-worker scratch,
 checks cancellation per row and retains the serial path for X-Trans. Whole normalized mosaics and
 RGB planes match bit for bit against the scalar serial oracle on authentic Nikon Z6 and DJI Air 2S
 Bayer inputs. Output guards, partial final batches, cancellation and worker-error behavior are
@@ -1791,7 +1790,7 @@ been repeated since.
 
 RCD runs its 194 px tiles as jobs of the same executor as Markesteijn, checking cancellation before
 every tile ([native demosaic parallelism](../design/native-demosaic-parallelism.md)). Each job holds
-one 978,536-byte scratch set under the shared eight-slot cap. Complete RGB planes match the pre-change
+one 978,536-byte scratch set under the same eight-lane cap. Complete RGB planes match the pre-change
 serial digest on the Z6 and Air 2S and the serial raster at every worker count.
 
 Native M4 Pro, 14 cores, release, 26 September 2026, one-minute load 3.2 to 4.1. Each run is the
@@ -1903,8 +1902,7 @@ The throughput gain does not materially move the proxy median; its p95 increases
 Earlier schedules were rejected because a preview waiter could steal long native work: draining
 row groups gave 216 ms proxy p95, one row per callback still about 64 ms, and a four-worker cap
 still about 60 ms. Ordinary pool callbacks now contain at most eight tiles. The dependent final
-two rows run on the existing external source caller, with the same global scratch admission and
-without holding a permit across a join.
+two rows run on the existing external source caller, which holds nothing across a join.
 
 A separate phase sweep starts preview work 0/75/125/175/225/275/325 ms after the RAW barrier,
 five trials at each offset and four renders per trial. The seven 20-observation proxy p95 values
@@ -1953,6 +1951,20 @@ evidence. RCD runs bounded tile jobs; its quiet-host timing and preview contenti
 measured. Startup attribution, GPU texture transfer, GPU
 execution and SIMD/assembly remain open; CPU RGBA publication already writes directly into the
 frame owner, and no additional savings are assigned to it.
+
+### JPEG export
+
+Release `luxforge-json` on the owner's M4 Pro, 27 September 2026, warm file cache, driven over its line-delimited JSON by a throwaway script: `catalog.import`, the preparation job, one `edit.set-basic` committing `exposure: 0.3`, then five exports of that entry back to back, each timed from sending `export.jpeg` to `export.read` first answering `ready`, polled every 20 ms. Five samples give a median and a maximum, not a p95. No RAW export needed a preparation: the committed edit had already developed the entry's settings. The `image` column is the first build, which encoded with the `image` crate, at one-minute load 3.9 to 5.2; the libjpeg-turbo column is the current build, which encodes through `mozjpeg`, at one-minute load 2.8 after waiting for the host to settle (5- and 15-minute loads 10.8 and 13.7 from other sessions). The two runs were not back to back, so the comparison is indicative; the encoder alone, measured back to back, is 48 against 111 ms at 24 MP and 121 against 274 ms at 60 MP ([export design](../design/export.md#decisions)).
+
+| Source | Export wall p50 / max of 5, libjpeg-turbo (ms) | Same, `image` (ms) | Output, libjpeg-turbo | Dimensions |
+| --- | ---: | ---: | ---: | --- |
+| 24 MP JPEG (generated) | 90 / 110 | 158 / 176 | 688 KiB | 6000 × 4000 |
+| 60 MP JPEG (generated) | 170 / 175 | 363 / 386 | 1.63 MiB | 10000 × 6000 |
+| Nikon Z6 NEF | 118 / 127 | 220 / 230 | 2.35 MiB | 4024 × 6048 |
+| Fujifilm X100VI RAF | 185 / 193 | 331 / 338 | 4.36 MiB | 7728 × 5152 |
+| DJI Air 2S DNG | 120 / 131 | 243 / 251 | 6.29 MiB | 5464 × 3640 |
+
+Peak memory was measured with the `image` encoder only: `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once. One export raised the process peak from 173 to 285 MiB at 24 MP and from 416 to 661 MiB at 60 MP, and by 1 to 8 MiB for the three RAWs, whose frame fits under the peak RAW development already reached. Each difference is how far one export raises the process's peak, not the export's own allocation. The libjpeg-turbo encoder streams 16 rows at a time into the file, as the `image` encoder streamed blocks, so it adds no whole-frame buffer; its peak has not been re-measured.
 
 ## Method
 

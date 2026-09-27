@@ -2,6 +2,7 @@
 //! as a client drives them, against loopback servers, isolated directories, an in-memory secret
 //! store and a network that counts every lookup and connection. Nothing here leaves the machine.
 use super::{
+    descriptor::CapabilityKind,
     grants::{DENY, GRANT, GRANTS_FILE, LIST, REVOKE},
     host::{ACTIVATE, DEACTIVATE, HostConfig, STATUS},
     jobs::{JOB_CANCEL, JOB_READ, LANE_QUEUE},
@@ -285,13 +286,23 @@ impl Owner {
         )
     }
 
-    /// Install one resource from a local file holding exactly its pinned bytes, and wait.
-    fn install_from_file(&self, fixture: &Fixture, resource: &str, bytes: &[u8]) -> Value {
-        let path = fixture.root.join(format!("{resource}.local"));
-        fs::write(&path, bytes).unwrap();
+    /// Grant the download of one resource, install it from its pinned URL on the fixture's
+    /// server, and wait.
+    fn install_downloaded(&self, fixture: &Fixture, resource: &str) -> Value {
+        let capability = fixture
+            .descriptor
+            .capabilities
+            .iter()
+            .find(|capability| {
+                matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id } if id == resource)
+            })
+            .expect("a download capability for the resource")
+            .id
+            .clone();
+        self.grant_download(fixture, &capability, resource);
         let queued = self.ok(
             INSTALL,
-            json!({"module_id": MODULE, "resource_id": resource, "source": {"kind": "file", "path": path}}),
+            json!({"module_id": MODULE, "resource_id": resource}),
         );
         self.finished(&queued["job_id"])
     }
@@ -626,6 +637,10 @@ fn a_denial_is_reported_in_the_next_consent_error_and_a_grant_clears_it() {
     let again = owner.fail(INSTALL, install.clone());
     assert_eq!(again.code, "consent-required");
     assert_eq!(again.data.unwrap()["consent"]["denied"], json!(true));
+    assert_eq!(
+        owner.status(MODULE)["permissions"],
+        json!({"live": 0, "revoked": 0, "denials": 1})
+    );
     assert_eq!(server.hits(), 0, "nothing was downloaded without a grant");
     assert_eq!(owner.handle.capability_threads(), 0, "nothing was queued");
     owner.ok_as(
@@ -915,7 +930,7 @@ fn a_running_activation_stops_promptly_and_releases_what_it_loaded() {
     fixture.probe.hold.store(true, Ordering::SeqCst);
     let owner = fixture.start();
     owner.set(json!({"label": "tint"}));
-    owner.install_from_file(&fixture, "palette", PALETTE);
+    owner.install_downloaded(&fixture, "palette");
     let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     owner.until(&queued["job_id"], |job| {
         job["progress"]["fraction"] == json!(0.5)
@@ -1048,8 +1063,13 @@ fn an_activation_goes_active_then_inactive_and_status_reports_each_step() {
     assert_eq!(status["settings"]["missing"], json!([]));
     assert_eq!(status["resources"][0]["state"], json!("installed"));
     assert_eq!(status["resources"][1]["state"], json!("not-installed"));
+    // Status counts the module's grants and denials; the records are read through the list.
     assert_eq!(
-        status["permissions"]["grants"][0]["grant_id"],
+        status["permissions"],
+        json!({"live": 1, "revoked": 0, "denials": 0})
+    );
+    assert_eq!(
+        owner.ok(LIST, json!({"module_id": MODULE}))["grants"][0]["grant_id"],
         grant["grant"]["grant_id"]
     );
     let jobs: Vec<&str> = status["jobs"]
@@ -1112,7 +1132,7 @@ fn a_failed_activation_reads_failed_and_releases_its_partial_state() {
     fixture.probe.fail.store(true, Ordering::SeqCst);
     let owner = fixture.start();
     owner.set(json!({"label": "tint"}));
-    owner.install_from_file(&fixture, "palette", PALETTE);
+    owner.install_downloaded(&fixture, "palette");
     let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     let failed = owner.finished(&queued["job_id"]);
     assert_eq!(failed["status"], json!("failed"));
@@ -1142,7 +1162,7 @@ fn a_settings_change_that_invalidates_activation_deactivates_the_module() {
     let fixture = Fixture::new("invalidates", &server);
     let owner = fixture.start();
     owner.set(json!({"label": "tint"}));
-    owner.install_from_file(&fixture, "palette", PALETTE);
+    owner.install_downloaded(&fixture, "palette");
     let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     owner.finished(&queued["job_id"]);
     // A field that does not invalidate activation leaves the module active.
@@ -1206,7 +1226,7 @@ fn a_download_installs_the_pinned_bytes_with_their_record() {
         json!({
             "format": 1, "module_id": MODULE, "resource_id": "palette", "version": "1.0.0",
             "url": server.url("/palette"), "sha256": sha256_hex(PALETTE), "bytes": 12,
-            "license": "CC0-1.0", "provenance": "Generated for tests", "source": "download",
+            "license": "CC0-1.0", "provenance": "Generated for tests",
             "actor": "test", "installed_ms": installed_ms,
         })
     );
@@ -1378,13 +1398,6 @@ fn an_install_beyond_the_quota_is_refused_before_it_is_queued() {
         "{}",
         refused.message
     );
-    let path = fixture.root.join("palette.local");
-    fs::write(&path, PALETTE).unwrap();
-    let refused = owner.fail(
-        INSTALL,
-        json!({"module_id": MODULE, "resource_id": "palette", "source": {"kind": "file", "path": path}}),
-    );
-    assert_eq!(refused.code, "resource-limit");
     assert_eq!(owner.handle.capability_threads(), 0, "nothing was queued");
     assert_eq!(server.hits(), 0);
     fixture.assert_clean("palette", "over quota");
@@ -1412,7 +1425,7 @@ fn what_a_crash_leaves_is_not_installed_and_the_next_install_removes_it() {
         refused.data.unwrap()["requirements"],
         json!([{"kind": "resource", "id": "palette", "state": "not-installed"}])
     );
-    let done = owner.install_from_file(&fixture, "palette", PALETTE);
+    let done = owner.install_downloaded(&fixture, "palette");
     assert_eq!(done["status"], json!("ready"));
     assert!(!stale.exists(), "the stale staging directory was removed");
     assert!(!fixture.resources().join(STAGING_DIR).exists());
@@ -1421,35 +1434,56 @@ fn what_a_crash_leaves_is_not_installed_and_the_next_install_removes_it() {
 }
 
 #[test]
-fn a_local_file_installs_without_a_grant_only_when_its_bytes_match() {
+fn an_install_takes_only_the_pinned_url_and_refuses_a_caller_path() {
     let server = serving();
-    let fixture = Fixture::new("local", &server);
+    let fixture = Fixture::new("pinned-only", &server);
     let owner = fixture.start();
-    let done = owner.install_from_file(&fixture, "palette", PALETTE);
-    assert_eq!(done["status"], json!("ready"), "{done}");
-    let marker: Value = serde_json::from_slice(
-        &fs::read(fixture.version_dir("palette").join(INSTALLED_FILE)).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(marker["source"], json!("file"));
-    assert_eq!(marker["url"], json!(server.url("/palette")));
-    let mismatch = owner.install_from_file(&fixture, "swatch", b"sixteen bytes!!!");
-    assert_eq!(mismatch["status"], json!("failed"));
-    assert_eq!(
-        mismatch["error"]["message"],
-        json!("swatch does not match its pinned hash")
-    );
-    fixture.assert_clean("swatch", "mismatched local file");
-    let longer = owner.install_from_file(&fixture, "swatch", b"sixteen byte set and more");
-    assert_eq!(longer["error"]["code"], json!("resource-limit"));
-    fixture.assert_clean("swatch", "longer local file");
-    let missing = owner.fail(
+    // A file holding exactly the pinned bytes is still not a source: no client names a path the
+    // owner reads.
+    let path = fixture.root.join("palette.local");
+    fs::write(&path, PALETTE).unwrap();
+    for client in [owner.edit, owner.admin] {
+        let refused = owner.fail_as(
+            client,
+            INSTALL,
+            json!({"module_id": MODULE, "resource_id": "palette", "source": {"kind": "file", "path": path}}),
+        );
+        assert_eq!(refused.code, "validation", "{}", refused.message);
+        assert!(
+            refused.message.contains("unknown variant `file`"),
+            "{}",
+            refused.message
+        );
+    }
+    let refused = owner.fail(
         INSTALL,
-        json!({"module_id": MODULE, "resource_id": "swatch", "source": {"kind": "file", "path": fixture.root.join("absent")}}),
+        json!({"module_id": MODULE, "resource_id": "palette", "source": {"kind": "download", "path": path}}),
     );
-    assert_eq!(missing.code, "validation");
-    assert_eq!(fixture.net.total(), 0, "a local install touches no network");
-    assert_eq!(server.hits(), 0);
+    assert_eq!(refused.code, "validation", "{}", refused.message);
+    assert!(
+        refused.message.contains("unknown field `path`"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(owner.handle.capability_threads(), 0, "nothing was queued");
+    fixture.assert_clean("palette", "a caller path");
+    // The declared URL, named or by default, is the one source, under its grant.
+    assert_eq!(
+        owner
+            .fail(
+                INSTALL,
+                json!({"module_id": MODULE, "resource_id": "palette", "source": {"kind": "download"}}),
+            )
+            .code,
+        "consent-required"
+    );
+    owner.grant_download(&fixture, "palette", "palette");
+    let queued = owner.ok(
+        INSTALL,
+        json!({"module_id": MODULE, "resource_id": "palette", "source": {"kind": "download"}}),
+    );
+    assert_eq!(owner.finished(&queued["job_id"])["status"], json!("ready"));
+    assert_eq!(server.hits(), 1);
     owner.stop();
 }
 
@@ -1459,8 +1493,8 @@ fn removing_a_required_resource_deactivates_the_module_and_deletes_only_the_reso
     let fixture = Fixture::new("remove", &server);
     let owner = fixture.start();
     owner.set(json!({"label": "tint"}));
-    owner.install_from_file(&fixture, "palette", PALETTE);
-    owner.install_from_file(&fixture, "swatch", SWATCH);
+    owner.install_downloaded(&fixture, "palette");
+    owner.install_downloaded(&fixture, "swatch");
     let queued = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     owner.finished(&queued["job_id"]);
     let catalog = fs::read(fixture.catalog()).unwrap();
@@ -1513,7 +1547,7 @@ fn removing_a_required_resource_deactivates_the_module_and_deletes_only_the_reso
         .events()
         .into_iter()
         .map(|(method, _)| method)
-        .filter(|method| method != SET)
+        .filter(|method| method != SET && method != GRANT)
         .collect();
     // The palette's removal is announced twice: when it deactivated the module and when the
     // resource was gone.

@@ -12,7 +12,7 @@ pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
 
 pub use transport::{LocalServer, LocalSessionInfo, serve_json_lines, serve_json_lines_with};
 
-use crate::{Draft, DraftId, Error, PreviewSession};
+use crate::{AssetId, Draft, DraftId, Error, PreviewSession};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -79,12 +79,56 @@ impl ApiResponse {
     }
 }
 
+/// One change in the owner's event log: the request it was made under and, when the change has
+/// one, the asset it changed and the revision it left that asset at. A version names its asset but
+/// no revision, since naming an entry moves none; a change to the preset library, a module or the
+/// artifact store names no asset.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiEvent {
     pub sequence: u64,
     pub method: String,
     pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<AssetId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+}
+
+/// What a change is announced as: the method and request identity a client watching
+/// `events.since` sees, and the asset and revision it changed when it has them. A job carries the
+/// origin of the request that started it, and a change it causes later is announced under it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    pub method: String,
+    pub request_id: String,
+    pub asset_id: Option<AssetId>,
+    pub revision: Option<u64>,
+}
+
+impl Origin {
+    pub fn new(method: &str, request_id: &str) -> Self {
+        Self {
+            method: method.to_owned(),
+            request_id: request_id.to_owned(),
+            asset_id: None,
+            revision: None,
+        }
+    }
+
+    /// The same request, naming the asset it changed and, when that moved it, the revision it left.
+    pub(crate) fn changed(mut self, asset_id: AssetId, revision: Option<u64>) -> Self {
+        self.asset_id = Some(asset_id);
+        self.revision = revision;
+        self
+    }
+}
+
+/// Announce `origin` once, however many changes a request made.
+pub(crate) fn announce_once(announce: &mut Vec<Origin>, origin: &Origin) {
+    if !announce.contains(origin) {
+        announce.push(origin.clone());
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

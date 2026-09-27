@@ -246,10 +246,10 @@ pub(crate) struct PacedStroke {
 /// xtask writes them, so a step has one spelling on both ends.
 pub(crate) use luxforge_evidence::{
     CapabilityAction, CapabilitySection, CapabilityStep, ControlsStep, CurveStep, CurveStepEvent,
-    DoubleClickStep, DraftStep, DragHandle, FieldStep, GroupStep, MaskRow, MaskStep, PaintStep,
-    PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick, PreviewStep, Reference,
-    ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd, SliderStep, Step, TabStep,
-    ViewIdleStep, ViewStep, WorkspaceStep,
+    DoubleClickStep, DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, MaskRow, MaskStep,
+    PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick, PreviewStep,
+    Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd, SliderStep, Step,
+    TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
 };
 
 #[derive(Clone, Copy)]
@@ -302,6 +302,8 @@ pub(crate) enum Settle {
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
+    /// An export step's job has ended — written, failed or cancelled — or its request was refused.
+    Export,
 }
 
 /// The photograph the capture must actually read back. A render can be adopted before its texture
@@ -696,6 +698,41 @@ impl Editor {
             Step::Pan { x, y } => self.pan_step(x, y),
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
+            Step::Export(step) => self.export_step(step),
+        }
+    }
+
+    /// Press the title bar's Export button, capturing its open menu; or export the displayed entry
+    /// into the evidence directory through the chain the menu starts, with the step's file name in
+    /// place of the save dialog's answer, and capture once the job has ended.
+    fn export_step(&mut self, step: ExportStep) -> Task<Message> {
+        if !self.can_export() {
+            let reason = if self.state.is_none() {
+                "no photograph is open"
+            } else {
+                "Export is disabled"
+            };
+            return self.fail_step(reason);
+        }
+        match step {
+            ExportStep::Menu => {
+                let task = self.update(Message::View(ViewMessage::OpenMenu(MenuTarget::Export)));
+                self.capture_next_frame();
+                task
+            }
+            ExportStep::File(file) => {
+                let Some(dir) = self.evidence.as_ref().map(|evidence| evidence.dir.clone()) else {
+                    return Task::none();
+                };
+                let dir = std::path::absolute(&dir).unwrap_or(dir);
+                self.note_step(json!({"destination":file.name}));
+                self.await_step(Settle::Export);
+                let task = self.export_start(file.keep_metadata, Some(dir.join(&file.name)));
+                if !self.export.active() {
+                    return self.fail_step(format!("the export was not started: {}", self.status));
+                }
+                task
+            }
         }
     }
 
@@ -2540,6 +2577,8 @@ impl Editor {
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
+            // An evidence run opens no save dialog, so the entry only closes the palette.
+            PaletteAction::Export { .. } => self.capture_next_frame(),
         }
     }
 

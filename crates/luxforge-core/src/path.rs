@@ -65,39 +65,106 @@ pub const COORDINATE_MAX: f64 = 2.0;
 const GRID_MIN: i32 = (COORDINATE_MIN * COORDINATE_STEPS_PER_UNIT) as i32;
 const GRID_MAX: i32 = (COORDINATE_MAX * COORDINATE_STEPS_PER_UNIT) as i32;
 
-/// The decimation tolerance, in grid steps: a captured position dropped by [`decimate`] is at most
-/// this far from the polyline that is kept.
+/// The decimation tolerance as a fraction of the stroke's own radius: a captured position dropped by
+/// [`decimate`] is at most this share of the radius from the polyline that is kept.
 ///
-/// Two steps, so a decimated path is within 2 px of the captured one on a 16384 px stage and within
-/// half a pixel on a 4096 px one — below what a person can see and far below what a brush of any
-/// usable radius draws.
-pub const DECIMATION_TOLERANCE_STEPS: f64 = 2.0;
+/// Relative, because what a kept position costs grows with the radius. A brush component's grid
+/// index takes its cell side from the largest radius and records a segment in every cell its
+/// radius-grown box reaches, so one cell counts every segment within about one and a half radii of
+/// it: at a fixed tolerance a large brush keeps every whole-pixel position a pointer posts and lists
+/// hundreds of them in one cell. Four per cent is sized from the scrub measurement in
+/// `docs/design/masking.md#the-occupancy-cap`: at two per cent a six-pass scrub still puts 66
+/// segments in one cell at radius 0.05, at three the worst measured cell holds 55 and at four 47, so
+/// four is the round share that keeps every measured workload at the default and smaller sizes under
+/// the cap with a margin. The stored path then stays within a twenty-fifth of the radius of the
+/// drawn one.
+pub const DECIMATION_TOLERANCE_OF_RADIUS: f64 = 0.04;
 
-/// The tolerance of [`decimate`] in normalized units, which is what a client posting a path reads.
-pub const DECIMATION_TOLERANCE: f64 = DECIMATION_TOLERANCE_STEPS / COORDINATE_STEPS_PER_UNIT;
+/// The least decimation tolerance, in grid steps, whatever the radius: two steps, within 2 px of the
+/// captured path on a 16384 px stage and half a pixel on a 4096 px one, below what a person can see.
+/// A radius under fifty steps takes this floor rather than a smaller share of itself, so a small
+/// brush never stores more positions than two steps keep.
+pub const DECIMATION_TOLERANCE_MIN_STEPS: f64 = 2.0;
 
-/// The whole deviation a captured position may end up at from the stored path, in normalized units,
-/// and the bound a stored path is checked against: the decimation tolerance plus the half diagonal
-/// of one grid cell.
+/// The least decimation tolerance in normalized units, which is what a client posting a path reads.
+pub const DECIMATION_TOLERANCE_MIN: f64 =
+    DECIMATION_TOLERANCE_MIN_STEPS / COORDINATE_STEPS_PER_UNIT;
+
+/// The half diagonal of one stored grid cell, in normalized units: how far snapping moves a position
+/// on its own.
 ///
-/// The second term is `sqrt(2)/2` of a step and not half a step, because the two coordinates are
-/// rounded independently: a position in the far corner of its cell moves by the cell's half
-/// diagonal, not by half a step. The measured worst case over randomized captured paths sits just
-/// under this and over `2.5` steps, which is what caught the half-step spelling.
-pub const STORED_DEVIATION: f64 =
-    (DECIMATION_TOLERANCE_STEPS + std::f64::consts::FRAC_1_SQRT_2) / COORDINATE_STEPS_PER_UNIT;
+/// It is `sqrt(2)/2` of a step and not half a step, because the two coordinates are rounded
+/// independently: a position in the far corner of its cell moves by the cell's half diagonal, not by
+/// half a step. The measured worst case over randomized captured paths sits just under the tolerance
+/// plus this, which is what caught the half-step spelling.
+pub const GRID_ROUNDING: f64 = std::f64::consts::FRAC_1_SQRT_2 / COORDINATE_STEPS_PER_UNIT;
 
-/// Positions one stroke may hold after decimation. A stroke longer than this is refused by name
-/// rather than stored: at two grid steps of tolerance, 1024 positions describe a path far longer
-/// than any single drag across a frame.
+/// The decimation tolerance of a stroke whose radius is `size_steps` grid steps as stored: the
+/// relative share of that radius, never less than the floor. Reading the stored radius rather than
+/// the posted one is what makes a desktop that decimates before it posts and a host that decimates
+/// what it was posted use one number.
+fn tolerance_steps(size_steps: i32) -> f64 {
+    (DECIMATION_TOLERANCE_OF_RADIUS * f64::from(size_steps)).max(DECIMATION_TOLERANCE_MIN_STEPS)
+}
+
+/// The decimation tolerance of a stroke of radius `size`, in normalized units.
+pub fn decimation_tolerance(size: f64) -> f64 {
+    tolerance_steps(quantize(size)) / COORDINATE_STEPS_PER_UNIT
+}
+
+/// The whole deviation a captured position may end up at from the stored path of a stroke of radius
+/// `size`, in normalized units, and the bound a stored path is checked against: the decimation
+/// tolerance plus [`GRID_ROUNDING`].
+pub fn stored_deviation(size: f64) -> f64 {
+    decimation_tolerance(size) + GRID_ROUNDING
+}
+
+/// Positions one stroke may hold **after decimation**: the bound on the stored stroke. A stroke
+/// longer than this is refused by name rather than stored: at a tolerance of at least two grid
+/// steps, 1024 positions describe a path far longer than any single drag across a frame.
 pub const POINTS_PER_STROKE: usize = 1024;
 
-/// The lowest and highest legal stroke radius, in normalized units where one unit is the content
-/// stage's height. A radius is stored on the same grid as a position, so the floor is one grid step
-/// — the smallest radius that is still a radius at the largest admissible stage — and the ceiling
-/// covers the whole stage from any point on it.
-pub const SIZE_MIN: f64 = 1.0 / COORDINATE_STEPS_PER_UNIT;
+/// Positions one posted path may hold **before decimation**: the bound a `points` parameter
+/// declares, checked on the raw path a client sends, which [`Stroke::capture`] then decimates and
+/// holds to [`POINTS_PER_STROKE`].
+///
+/// It is a separate number on purpose. A path is posted raw — an agent need not decimate — so the
+/// stored bound applied before decimation would refuse a long drag that decimates to a handful of
+/// positions, and a posted bound applied after it would bound nothing. Sixteen times the stored
+/// bound is a minute of continuous pointer at 240 Hz, which no gesture reaches, and it still keeps
+/// one request under the transport's one-megabyte line at any coordinate spelling and one
+/// decimation pass bounded.
+pub const POSTED_POINTS_PER_STROKE: usize = 16 * POINTS_PER_STROKE;
+
+/// The legal stroke radius, in normalized units where one unit is the content stage's height: the
+/// **one** range every reader of a radius holds — the declared `size` a painting command takes,
+/// [`Stroke::capture`] on the posted radius, the recheck of a stored stroke and the compile that
+/// draws it — and the one each of them names when it refuses ([`size_range`]).
+///
+/// The floor is the smallest distance a frozen falloff divides by
+/// ([`crate::mask::DISTANCE_MIN`]), so no radius a stroke can hold ever makes a divisor smaller than
+/// the study allows; stored on the grid it is two steps. The ceiling covers the whole stage from any
+/// point on it, well inside the study's largest distance.
+pub const SIZE_MIN: f64 = crate::mask::DISTANCE_MIN;
 pub const SIZE_MAX: f64 = 2.0;
+
+/// Whether `size` is a legal stroke radius: finite and inside [`SIZE_MIN`]`..=`[`SIZE_MAX`].
+pub fn size_is_legal(size: f64) -> bool {
+    size.is_finite() && (SIZE_MIN..=SIZE_MAX).contains(&size)
+}
+
+/// The legal stroke radius as every refusal of one spells it.
+pub fn size_range() -> String {
+    format!("{SIZE_MIN}..={SIZE_MAX}")
+}
+
+/// The refusal of a posted radius outside [`size_range`].
+fn illegal_size() -> Error {
+    Error::validation(format!(
+        "stroke size must be a number within {}",
+        size_range()
+    ))
+}
 
 /// The bounds a stored [`ColourLimit`]'s refine takes, read from the colour range's own declaration
 /// rather than restated: it is the same slider on the same axis with the same meaning, so the editor
@@ -292,10 +359,11 @@ impl Eq for Stroke {}
 impl Stroke {
     /// Capture a stroke from a path a client posted.
     ///
-    /// The path is snapped to the stored grid and decimated there, so the same posted path always
-    /// produces the same stored positions and therefore the same [`StrokeId`]. Everything checkable
-    /// is checked by name: every coordinate finite and in range, every setting in range, and the
-    /// decimated length within [`POINTS_PER_STROKE`].
+    /// The path is snapped to the stored grid and decimated there, at the tolerance its own radius
+    /// takes, so the same posted path at the same size always produces the same stored positions and
+    /// therefore the same [`StrokeId`]. Everything checkable is checked by name: every setting in
+    /// range, every coordinate finite and in range, and the decimated length within
+    /// [`POINTS_PER_STROKE`].
     pub fn capture(
         points: &[[f64; 2]],
         size: f64,
@@ -303,7 +371,20 @@ impl Stroke {
         flow: f64,
         erase: bool,
     ) -> Result<Self, Error> {
-        let grid = decimate_to_grid(points)?;
+        if !size_is_legal(size) {
+            return Err(illegal_size());
+        }
+        for (field, value, min, max) in
+            [("feather", feather, 0.0, 100.0), ("flow", flow, 0.0, 100.0)]
+        {
+            if !value.is_finite() || !(min..=max).contains(&value) {
+                return Err(Error::validation(format!(
+                    "stroke {field} must be a number within {min}..={max}"
+                )));
+            }
+        }
+        let size = quantize(size);
+        let grid = decimate_to_grid(points, size)?;
         if grid.len() > POINTS_PER_STROKE {
             return Err(Error::resource_limit(format!(
                 "stroke has {} positions after decimation; the limit is {POINTS_PER_STROKE} \
@@ -311,20 +392,9 @@ impl Stroke {
                 grid.len()
             )));
         }
-        for (field, value, min, max) in [
-            ("size", size, SIZE_MIN, SIZE_MAX),
-            ("feather", feather, 0.0, 100.0),
-            ("flow", flow, 0.0, 100.0),
-        ] {
-            if !value.is_finite() || !(min..=max).contains(&value) {
-                return Err(Error::validation(format!(
-                    "stroke {field} must be a number within {min}..={max}"
-                )));
-            }
-        }
         Ok(Self {
             points: grid,
-            size: quantize(size),
+            size,
             feather: feather.round() as i32,
             flow: flow.round() as i32,
             erase,
@@ -429,11 +499,11 @@ impl Stroke {
         {
             return bad("position");
         }
-        if !in_grid(self.size)
-            || self.size < 1
-            || f64::from(self.size) > SIZE_MAX * COORDINATE_STEPS_PER_UNIT
-        {
-            return bad("size");
+        if !size_is_legal(self.size()) {
+            return Err(Error::incompatible(format!(
+                "stored stroke {id} has an invalid size; a stroke size is within {}",
+                size_range()
+            )));
         }
         if !(0..=100).contains(&self.feather) {
             return bad("feather");
@@ -455,21 +525,26 @@ fn quantize(value: f64) -> i32 {
     (value * COORDINATE_STEPS_PER_UNIT).round() as i32
 }
 
-/// Decimate a captured path to the stored grid.
+/// Decimate a captured path of a stroke of radius `size` to the stored grid.
 ///
 /// This is the whole decimation contract, and it is deterministic: snap every position to the grid,
-/// drop the ones that repeat, then run Ramer–Douglas–Peucker on the grid at
-/// [`DECIMATION_TOLERANCE_STEPS`]. Running on the grid rather than before it is what makes the
+/// drop the ones that repeat, then run Ramer–Douglas–Peucker on the grid at the stroke's own
+/// tolerance, [`DECIMATION_TOLERANCE_OF_RADIUS`] of its radius as stored and never less than
+/// [`DECIMATION_TOLERANCE_MIN_STEPS`]. Running on the grid rather than before it is what makes the
 /// result stable — two captures that round to the same grid path decimate identically whatever
 /// their last bits were — and it is why the bound a stored path keeps to the captured one is
-/// [`STORED_DEVIATION`] rather than the tolerance alone.
+/// [`stored_deviation`] rather than the tolerance alone.
 ///
-/// The desktop calls this before it posts a stroke, so the host receives a path that is already on
-/// the grid and already short; re-running it here on the posted path is idempotent and is what makes
-/// a path posted by an agent that did not decimate arrive at the same stored bytes as one drawn by
-/// hand.
-pub fn decimate(points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, Error> {
-    Ok(decimate_to_grid(points)?
+/// The desktop calls this with its brush's size before it posts a stroke, so the host receives a
+/// path that is already on the grid and already short; re-running it on the posted path at the same
+/// size is idempotent and is what makes a path posted by an agent that did not decimate arrive at the
+/// same stored bytes as one drawn by hand. A size no stroke can be captured at is refused by name,
+/// exactly as [`Stroke::capture`] refuses it.
+pub fn decimate(points: &[[f64; 2]], size: f64) -> Result<Vec<[f64; 2]>, Error> {
+    if !size_is_legal(size) {
+        return Err(illegal_size());
+    }
+    Ok(decimate_to_grid(points, quantize(size))?
         .into_iter()
         .map(|[x, y]| {
             [
@@ -480,7 +555,7 @@ pub fn decimate(points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, Error> {
         .collect())
 }
 
-fn decimate_to_grid(points: &[[f64; 2]]) -> Result<Vec<[i32; 2]>, Error> {
+fn decimate_to_grid(points: &[[f64; 2]], size_steps: i32) -> Result<Vec<[i32; 2]>, Error> {
     if points.is_empty() {
         return Err(Error::validation("a path must hold at least one position"));
     }
@@ -499,19 +574,20 @@ fn decimate_to_grid(points: &[[f64; 2]]) -> Result<Vec<[i32; 2]>, Error> {
             snapped.push(point);
         }
     }
-    Ok(reduce(&snapped))
+    Ok(reduce(&snapped, tolerance_steps(size_steps)))
 }
 
-/// Ramer–Douglas–Peucker on grid coordinates, iterative so a long captured path cannot overflow the
-/// stack, and comparing squared distances so nothing is decided by a square root.
-fn reduce(points: &[[i32; 2]]) -> Vec<[i32; 2]> {
+/// Ramer–Douglas–Peucker on grid coordinates at `tolerance` grid steps, iterative so a long captured
+/// path cannot overflow the stack, and comparing squared distances so nothing is decided by a square
+/// root.
+fn reduce(points: &[[i32; 2]], tolerance: f64) -> Vec<[i32; 2]> {
     if points.len() < 3 {
         return points.to_vec();
     }
     let mut keep = vec![false; points.len()];
     keep[0] = true;
     keep[points.len() - 1] = true;
-    let tolerance2 = DECIMATION_TOLERANCE_STEPS * DECIMATION_TOLERANCE_STEPS;
+    let tolerance2 = tolerance * tolerance;
     let mut stack = vec![(0_usize, points.len() - 1)];
     while let Some((first, last)) = stack.pop() {
         if last <= first + 1 {

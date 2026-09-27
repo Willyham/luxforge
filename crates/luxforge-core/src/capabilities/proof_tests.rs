@@ -1162,12 +1162,9 @@ fn removing_the_resource_deactivates_the_module_and_the_accepted_tint_still_rend
 fn a_running_activation_of_the_proof_module_is_cancelled_by_a_deactivation() {
     let fixture = Fixture::with_activation_delay("proof-activation", Duration::from_secs(60));
     let owner = fixture.start();
-    let path = fixture.root.join("palette.local");
-    fs::write(&path, crate::PROOF_PALETTE).unwrap();
-    let installed = owner.ok(
-        INSTALL,
-        json!({"module_id": MODULE, "resource_id": "proof-palette", "source": {"kind": "file", "path": path}}),
-    );
+    let install = json!({"module_id": MODULE, "resource_id": "proof-palette"});
+    owner.grant(&owner.fail(INSTALL, install.clone()));
+    let installed = owner.ok(INSTALL, install);
     assert_eq!(owner.finished(&installed["job_id"])["status"], "ready");
     let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
     let deadline = Instant::now() + Duration::from_secs(20);

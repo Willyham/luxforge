@@ -20,7 +20,7 @@ What the rendered captures show is a panel built from the generic controls befor
 | Rename is a field plus a Rename button above the components | Persistent chrome for a rare action | Rename in the row's menu, editing the name in place |
 | Nothing marks that the module sections below are bound to a mask except their position | A slider under "Basic" looks global | The band carries the open mask's name as an accent **scope chip**; leaving Mask mode drops it |
 
-Each of these is a widget change in `lightwell-ui` or a layout change in the panel's view; none changes a command, a request or a label.
+Each of these is a widget change in `luxforge-ui` or a layout change in the panel's view; none changes a command, a request or a label.
 
 ## The Masks panel
 
@@ -50,7 +50,7 @@ The delivered keys stay: `M`, `⇧M`, `[` `]`, `⇧[` `⇧]`, held `⌥` to eras
 
 ### What is drawn from what
 
-Every row above is a plain-data widget in `lightwell-ui` fed by the view model: `mask_row`, `component_row`, `mode_control`, `overlay_control`, `range_slider` (below) and `coverage_thumbnail`. The thumbnail is drawn from the coverage grid the exact preview phase already returns for a mask, reduced to 28 × 19 cells and cached by the grid's identity; it costs no render and no allocation beyond the cells. The scope chip is a `chip` in the band with the accent style. Nothing new is authoritative: the selected mask, the selected component, the armed brush and the overlay mode are the session's, and the panel derives from them.
+Every row above is a plain-data widget in `luxforge-ui` fed by the view model: `mask_row`, `component_row`, `mode_control`, `overlay_control`, `range_slider` (below) and `coverage_thumbnail`. The thumbnail is drawn from the coverage grid the exact preview phase already returns for a mask, reduced to 28 × 19 cells and cached by the grid's identity; it costs no render and no allocation beyond the cells. The scope chip is a `chip` in the band with the accent style. Nothing new is authoritative: the selected mask, the selected component, the armed brush and the overlay mode are the session's, and the panel derives from them.
 
 ## Kinds proposed next
 
@@ -106,7 +106,7 @@ The luminance range's four numbers are the histogram's own axis, and today they 
 - **Parity.** Every control on a row sends the command the delivered `Copy as JSON request` shows, proved by the existing app parity tests extended to the new widgets; `X`, `⌫` and the reorder keys send `mask.set-component-invert`, `mask.delete-component` or `mask.delete`, and `mask.reorder-component` or `mask.reorder`.
 - **Density.** The default board's panel contents fit 830 pt at 1440 × 900, checked by the scenario's placement expectations.
 - **Model selections**, when authorized: the resource installs and verifies under the delivered flow; the task publishes an artifact whose bytes are identical across two runs on the same source and model; `render.sample` equals the rendered byte for a model component; a changed source marks the component stale and Recompute replaces the artifact as one entry; an uninstalled model still renders the stored selection; peak memory and time per model at 24 MP and 60 MP are recorded in the performance plan before the model is pinned.
-- **Polygon and range widget**: the kind's study and `f64` reference before it ships; the widget's geometry functions tested in `lightwell-ui` with no `lightwell-core` link; the gallery gains their states.
+- **Polygon and range widget**: the kind's study and `f64` reference before it ships; the widget's geometry functions tested in `luxforge-ui` with no `luxforge-core` link; the gallery gains their states.
 
 ## Decisions
 

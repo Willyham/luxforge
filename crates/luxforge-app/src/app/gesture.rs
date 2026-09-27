@@ -116,6 +116,8 @@ pub(crate) enum Starting {
     Preset,
     /// A discrete control's one commit: a button, a toggle, a choice or a field's Enter.
     Action,
+    /// Undo, Redo or Restore, which move the current entry at once.
+    History,
     /// A preview of the committed state for the view's own sake: a refit to new bounds, or a new
     /// mask overlay.
     Refit,
@@ -144,6 +146,7 @@ impl Starting {
             Self::Compare => "before comparing with the original",
             Self::Preset => "before applying a preset",
             Self::Action => "before running another edit",
+            Self::History => "before undoing, redoing or restoring",
             Self::Refit => "before refitting the preview",
         }
     }

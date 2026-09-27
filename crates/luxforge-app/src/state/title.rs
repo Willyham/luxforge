@@ -1,6 +1,6 @@
 //! The title bar model: what is open, the view controls and the things that act on the whole photo.
 use crate::{
-    state::{Inputs, canvas::ZoomView, histogram},
+    state::{Inputs, MenuTarget, canvas::ZoomView, histogram},
     view,
 };
 use luxforge_core::{SourceKind, Zoom};
@@ -17,6 +17,27 @@ pub(crate) const OPEN_TOOLTIP: &str = if cfg!(target_os = "macos") {
 } else {
     "Open (Ctrl+O)"
 };
+
+/// Export's tooltip, with the shortcut the keymap gives its first item on this platform.
+pub(crate) const EXPORT_TOOLTIP: &str = if cfg!(target_os = "macos") {
+    "Export JPEG (\u{2318}E)"
+} else {
+    "Export JPEG (Ctrl+E)"
+};
+
+/// The Export menu's two items, in order: what each is labelled and whether it keeps metadata.
+/// The palette offers the same two, under the same labels.
+pub(crate) const EXPORT_ITEMS: [(&str, bool); 2] = [
+    ("Export JPEG\u{2026}", false),
+    ("Export JPEG, keep metadata\u{2026}", true),
+];
+
+/// Whether an export can start: a photograph is open, no request or dialog is in flight, and this
+/// window is not already exporting. One export per window is all the desktop runs; the core would
+/// queue more.
+pub(crate) fn can_export(open: bool, busy: bool, picker_open: bool, exporting: bool) -> bool {
+    open && !busy && !picker_open && !exporting
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TitleBarModel {
@@ -38,6 +59,10 @@ pub(crate) struct TitleBarModel {
     /// A photograph is open, so the view controls act on something.
     pub(crate) can_view: bool,
     pub(crate) can_open: bool,
+    /// The Export button is enabled.
+    pub(crate) can_export: bool,
+    /// The Export button's menu is open under it.
+    pub(crate) export_menu_open: bool,
     pub(crate) can_undo: bool,
     pub(crate) can_redo: bool,
     pub(crate) state_panel_open: bool,
@@ -102,6 +127,8 @@ fn identity(inputs: &Inputs<'_>) -> Option<String> {
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
     let editable = inputs.state.is_some() && inputs.session.preview.can_edit() && !inputs.busy;
+    // An open draft refuses Undo and Redo, so neither is offered while it is.
+    let navigable = editable && inputs.history_refusal.is_none();
     let zoom = &inputs.session.preview.view.zoom;
     TitleBarModel {
         developer: inputs.developer,
@@ -129,13 +156,15 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         },
         can_view: inputs.state.is_some(),
         can_open: inputs.can_open,
+        can_export: inputs.can_export,
+        export_menu_open: inputs.can_export && matches!(inputs.menu, Some(MenuTarget::Export)),
         // The core answers an undo with no parent entry, or a redo with nothing undone, as a no-op,
         // so neither is offered then.
-        can_undo: editable
+        can_undo: navigable
             && inputs
                 .state
                 .is_some_and(|state| state.current_entry.undo_parent.is_some()),
-        can_redo: editable && inputs.state.is_some_and(|state| !state.redo.is_empty()),
+        can_redo: navigable && inputs.state.is_some_and(|state| !state.redo.is_empty()),
         state_panel_open: inputs.session.workspace.state_panel,
         tools_panel_open: inputs.session.workspace.tools_panel,
         compare_held: inputs.compare_held,

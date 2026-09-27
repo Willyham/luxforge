@@ -749,7 +749,7 @@ fn qualifying_settings_are_neutral_only_when_the_amount_they_qualify_is() {
             because(
                 "MaskGroupBasedCorrections",
                 "What=Mask",
-                "Luxforge has no masks or local corrections"
+                "Lightroom masks and local corrections are not imported"
             ),
             because("ParametricLights", "5", CURVE),
             because("ParametricShadowSplit", "30", CURVE),

@@ -10,7 +10,7 @@
 //! controls (`controls.rs`), declared actions (`actions.rs`), the pointer and canvas picks
 //! (`pointer.rs`), crop (`crop.rs`), masks (`masks.rs`), the core-draft lifecycle (`gesture.rs`),
 //! presets (`presets.rs`), capabilities (`capabilities.rs`), the Performance section
-//! (`performance.rs`) and evidence mode (`evidence.rs`). Routing is one match on the calling
+//! (`performance.rs`), export (`export.rs`) and evidence mode (`evidence.rs`). Routing is one match on the calling
 //! thread: it adds no task and no runtime hop.
 mod actions;
 #[cfg(test)]
@@ -26,6 +26,9 @@ pub(crate) mod draft;
 pub(crate) mod evidence;
 #[cfg(test)]
 mod evidence_tests;
+pub(crate) mod export;
+#[cfg(test)]
+mod export_tests;
 pub(crate) mod gesture;
 mod history;
 #[cfg(test)]
@@ -440,6 +443,8 @@ pub(crate) struct Editor {
     /// The state panel's Performance section: its flag, what it has read and its one read in
     /// flight. It samples only while expanded with the state panel shown.
     pub(crate) performance: performance::Sampler,
+    /// The one export this window runs, from the press to its last read.
+    pub(crate) export: export::Exporting,
     /// The whole screen as plain data. After every message, only the sections whose inputs moved
     /// are built again ([`state::Built`]).
     pub(crate) workspace: Workspace,
@@ -643,6 +648,7 @@ impl Editor {
             presets: Tracked::default(),
             preset_form: Tracked::default(),
             performance: performance::Sampler::open(),
+            export: export::Exporting::default(),
             workspace: Workspace::default(),
             built: state::Built::default(),
         };
@@ -852,6 +858,7 @@ impl Editor {
             gesture_conflicted: self.gesture_conflicted(),
             preset_refusal: self.gesture_refusal(Starting::Preset),
             gallery_refusal: self.gesture_refusal(Starting::Gallery),
+            history_refusal: self.gesture_refusal(Starting::History),
             draft: self.crop(),
             masks: self.masks.as_ref(),
             selected_mask: self.selected_mask.as_ref(),
@@ -878,6 +885,7 @@ impl Editor {
             status: &self.status,
             busy: self.busy,
             can_open: !self.busy && self.evidence.is_none(),
+            can_export: self.can_export(),
             developer: self.developer,
             compare_held: self.compare_return.is_some(),
             scale_factor: self.scale_factor,
@@ -937,6 +945,7 @@ impl Editor {
             Message::Preset(message) => self.preset_update(message),
             Message::Capability(message) => self.capability_update(message),
             Message::Performance(message) => self.performance_update(message),
+            Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
             Message::Close => self.close(),
         }
@@ -1012,6 +1021,7 @@ impl Editor {
             mask_drafting: self.mask_gesture().is_some(),
             mask_brush: self.mask_mode_active(),
             palette_open: self.palette_open,
+            export_menu_open: matches!(*self.menu, Some(MenuTarget::Export)),
             mode_active: self.session.workspace.mode != POINTER_MODE,
             modes: self
                 .modules
@@ -1117,6 +1127,9 @@ impl Editor {
         // Capability jobs are read while one the desktop follows is queued or running, and never
         // otherwise; the interval is justified where it is declared.
         subscriptions.extend(self.capability_poll_subscription());
+        // The running export is read on its own timer, which exists only while its job is queued
+        // or running; the interval is justified where it is declared.
+        subscriptions.extend(self.export_poll_subscription());
         Subscription::batch(subscriptions)
     }
 }

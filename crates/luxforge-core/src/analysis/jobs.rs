@@ -872,6 +872,7 @@ mod tests {
                 rgba: [40, 90, 160, 255].repeat((width * height) as usize).into(),
                 fingerprint: "sha256:test".into(),
                 orientation: 1,
+                capture: Default::default(),
             }),
             registry: Arc::new(registry),
             context: crate::RenderContext::new(),

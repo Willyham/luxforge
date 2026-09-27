@@ -332,7 +332,11 @@ impl Editor {
         if !self.sync_wanted || self.syncing || self.busy || self.evidence.is_some() {
             return Task::none();
         }
-        let Some(asset) = self.state.as_ref().map(|state| state.asset.id.clone()) else {
+        let Some(held) = self
+            .state
+            .as_ref()
+            .map(|state| (state.asset.id.clone(), state.revision))
+        else {
             return Task::none();
         };
         self.sync_wanted = false;
@@ -341,7 +345,7 @@ impl Editor {
         sync_task(
             self.owner.clone(),
             self.client,
-            asset,
+            held,
             self.api_sequence,
             self.own_requests.iter().cloned().collect(),
             proxy,

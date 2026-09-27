@@ -99,7 +99,7 @@ CREATE TABLE presets (
 );
 ```
 
-A catalog of an earlier format is refused by name, as every format change has been; choose a new catalog path. The current format is 7, the merged shape: it holds the [derived-artifact](module-capabilities.md#derived-artifacts) tables and the [mask](masking.md) table and stroke store beside the library's own format 5 table, and refuses the format 6 each of those two branches wrote. The desktop's default catalog lives in the configuration directory, so in practice the library is per installation.
+A catalog of an earlier format is refused by name, as every format change has been; choose a new catalog path. The current catalog format is described in [versions and lineage](versions-and-lineage.md#storage-catalog-format-10). The desktop's default catalog lives in the configuration directory, so in practice the library is per installation.
 
 **Record.** `{id, name, group, settings, origin, report, actor, created_ms, updated_ms, unavailable}`:
 
@@ -198,7 +198,8 @@ A mapped value is a **value transfer**: the same number on a control with the sa
 | `WhiteBalance` | none | Neutral when the preset carries `IncrementalTemperature` or `IncrementalTint` and no `Temperature` or `Tint`, because the incremental values then carry the white balance. Otherwise **refused**: `As Shot`, `Auto` and the named modes set RAW white balance, which no field patch can do |
 | `CameraProfile` and a nested `Look` | none | Neutral when they name Lightroom's default profile (`Adobe Standard` or `Adobe Color`), because Luxforge keeps its own neutral rendering. Any other profile is unsupported, because Luxforge has no profiles |
 | Earlier process-version fields: `Exposure`, `Contrast`, `Brightness`, `Shadows`, `FillLight`, `HighlightRecovery`, `Clarity`, `ToneCurve`, `ToneCurveName` and the `Auto*` switches of those versions | none | Neutral in a Process 2012 or later preset, because Lightroom does not render them there. In an earlier-process preset they are **refused**, because their meaning and domains differ from the 2012 fields |
-| Tone curves, parametric curve, colour grading and split toning, sharpening, noise reduction, grain, lens and chromatic-aberration corrections, lens vignetting, defringe, transform and upright, calibration, black-and-white conversion and mix, Auto Tone, masks and local corrections, spot removal, red eye, crop | none | **Unsupported**: Luxforge has no such tool. Neutral when the setting is at its neutral value, or when it only qualifies an amount that is itself neutral: a sharpening radius when `Sharpness` is 0, a grain size when `GrainAmount` is 0, a hue when its saturation is 0, a mix when `ConvertToGrayscale` is false, a crop rectangle when `HasCrop` is false, and an identity curve |
+| `MaskGroupBasedCorrections`, `GradientBasedCorrections`, `CircularGradientBasedCorrections`, `PaintBasedCorrections` | none | **Unsupported**: Lightroom masks and local corrections are not imported. Luxforge has its own [masks](masking.md), targeted at delivered modules rather than carried over from a preset. Neutral when the setting is empty |
+| Tone curves, parametric curve, colour grading and split toning, sharpening, noise reduction, grain, lens and chromatic-aberration corrections, lens vignetting, defringe, transform and upright, calibration, black-and-white conversion and mix, Auto Tone, spot removal, red eye, crop | none | **Unsupported**: Luxforge has no such tool. Neutral when the setting is at its neutral value, or when it only qualifies an amount that is itself neutral: a sharpening radius when `Sharpness` is 0, a grain size when `GrainAmount` is 0, a hue when its saturation is 0, a mix when `ConvertToGrayscale` is false, a crop rectangle when `HasCrop` is false, and an identity curve |
 | `PostCropVignetteStyle`, `PostCropVignetteHighlightContrast` | none | Luxforge draws one vignette style. Neutral when the vignette amount is 0 or the setting is at its default (style 1, contrast 0), otherwise unsupported |
 | Panel switches: `Enable*` in templates | none | Never settings themselves. When one is `false`, the settings of that panel are not in effect in the preset. Mapped settings of that panel are **refused** (`disabled in the preset`), and unsupported ones are neutral |
 | Preset metadata: `PresetType`, `UUID`, `Cluster`, `Supports*`, `Version`, `ProcessVersion`, `HasSettings`, `RequiresRGBTables`, `CameraModelRestriction`, `Copyright`, `ContactInfo`, `Name`, `ShortName`, `SortName`, `Group`, `Description`, and sidecar bookkeeping such as `RawFileName` and `AlreadyApplied` | none | Recorded in `origin` where useful and never reported as settings |
@@ -255,7 +256,7 @@ The library is listed at startup, after each of the desktop's own preset calls, 
 
 The owner asked for this work to proceed without blocking. These are proposals the owner can revise:
 
-1. Presets are catalog data (format 7), not files in a settings folder. Sharing goes through export and import of the `.lfpreset` document.
+1. Presets are catalog data (see [versions and lineage](versions-and-lineage.md#storage-catalog-format-10)), not files in a settings folder. Sharing goes through export and import of the `.lfpreset` document.
 2. Only field-patch actions are presettable, so RAW source settings, transforms and crop are excluded.
 3. `apply-preset` carries the settings, not a library reference.
 4. Imports are value transfers for the controls Luxforge has. Lightroom's RAW Kelvin and tint are refused until a calibrated conversion exists. Nothing is clamped.

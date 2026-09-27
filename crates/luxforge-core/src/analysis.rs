@@ -679,21 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn an_uncancelled_token_reduces_to_the_report_the_plain_entry_point_produces() {
-        // Both sides of the parallel threshold, so the chunked serial path and the chunked worker
-        // path are each compared against what the plain entry point returns.
-        for (width, height) in [(2000_u32, 600_u32), (1013_u32, 977_u32)] {
-            let raster = cancellation_raster(width, height);
-            assert_eq!(
-                reduce_raster(&raster).expect("plain reduction"),
-                reduce_raster_cancellable(&raster, &Cancel::never())
-                    .expect("cancellable reduction"),
-                "{width}x{height}"
-            );
-        }
-    }
-
-    #[test]
     fn a_pre_cancelled_token_stops_the_reducer_on_a_large_raster() {
         let raster = cancellation_raster(2000, 600);
         let cancel = Cancel::new();

@@ -35,6 +35,7 @@ step_from! {
     PresetCreateStep => PresetCreate,
     CapabilityStep => Capability,
     MaskStep => Mask,
+    ExportStep => Export,
 }
 
 impl Step {
@@ -95,6 +96,19 @@ impl Step {
             name: name.into(),
             group: None,
         })
+    }
+
+    /// Press the title bar's Export button, which opens its menu.
+    pub fn export_menu() -> Self {
+        Self::Export(ExportStep::Menu)
+    }
+
+    /// Export the displayed entry to `name` in the run's evidence directory.
+    pub fn export(name: impl Into<String>, keep_metadata: bool) -> Self {
+        Self::Export(ExportStep::File(ExportFile {
+            name: name.into(),
+            keep_metadata,
+        }))
     }
 
     pub fn preset_import(path: impl Into<String>) -> Self {
