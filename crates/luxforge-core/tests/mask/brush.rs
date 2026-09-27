@@ -506,13 +506,24 @@ impl Painting {
         points: &[[f64; 2]],
         request: &str,
     ) -> Result<luxforge_core::ActionResult, luxforge_core::Error> {
+        self.paint_at(target, points, 0.05, request)
+    }
+
+    /// [`Self::paint`] with a brush of radius `size`.
+    fn paint_at(
+        &mut self,
+        target: &luxforge_core::mask::commands::MaskTarget,
+        points: &[[f64; 2]],
+        size: f64,
+        request: &str,
+    ) -> Result<luxforge_core::ActionResult, luxforge_core::Error> {
         let mutation = self.mutation(request);
         self.service.run_action(
             &self.asset,
             mutation,
             luxforge_core::mask::commands::ADD_STROKE,
             target.request(json!({
-                "points": points, "size": 0.05, "feather": 50.0, "flow": 100.0,
+                "points": points, "size": size, "feather": 50.0, "flow": 100.0,
                 "erase": false, "colour_refine": 50.0,
             })),
         )
@@ -644,6 +655,65 @@ fn an_adjustment_through_a_painted_mask_is_never_refused_for_occupancy() {
         .service
         .render_current(&painting.asset)
         .expect("the masked stack renders");
+}
+
+/// The 1024-position bound is a bound on the **stored** stroke. A raw path an agent posts is checked
+/// generously and decimated first, so 2000 positions along one straight drag are one two-position
+/// stroke; a path that is still longer than the bound after decimation is refused by that bound's
+/// own name, and nothing commits.
+#[test]
+fn a_raw_path_is_bounded_after_decimation_not_before() {
+    use luxforge_core::{
+        mask::commands::MaskTarget,
+        path::{COORDINATE_STEPS_PER_UNIT, POINTS_PER_STROKE},
+    };
+    let mut painting = Painting::open("raw-path");
+    let raw: Vec<[f64; 2]> = (0..2000)
+        .map(|index| [0.2 + 0.6 * f64::from(index) / 1999.0, 0.5])
+        .collect();
+    let painted = painting
+        .paint(&MaskTarget::default(), &raw, "raw")
+        .unwrap_or_else(|error| {
+            panic!("a raw 2000-position path that decimates to two was refused: {error}")
+        });
+    let masks = painting.masks();
+    let strokes = masks["masks"][0]["components"][0]["payload"]["strokes"]
+        .as_array()
+        .expect("the brush lists its strokes")
+        .clone();
+    assert_eq!(strokes.len(), 1, "{masks}");
+
+    // Every other position eight grid steps off the line: a small brush's two-step tolerance keeps
+    // all of them, so 1100 posted positions are 1100 stored ones, over the bound.
+    let incompressible: Vec<[f64; 2]> = (0..POINTS_PER_STROKE + 76)
+        .map(|index| {
+            let along = index as f64 * 8.0 / COORDINATE_STEPS_PER_UNIT;
+            let across = if index % 2 == 0 { 0.0 } else { 8.0 } / COORDINATE_STEPS_PER_UNIT;
+            [0.1 + along, 0.5 + across]
+        })
+        .collect();
+    let target = MaskTarget {
+        mask: painted.mask.clone(),
+        component: painted.component.clone(),
+        ..MaskTarget::default()
+    };
+    let revision = painting.service.state(&painting.asset).unwrap().revision;
+    let error = painting
+        .paint_at(&target, &incompressible, 0.001, "incompressible")
+        .expect_err("a stroke over the bound after decimation");
+    assert_eq!(error.kind, ErrorKind::ResourceLimit);
+    assert_eq!(
+        error.detail,
+        format!(
+            "stroke has {} positions after decimation; the limit is {POINTS_PER_STROKE} points \
+             per stroke",
+            POINTS_PER_STROKE + 76
+        )
+    );
+    assert_eq!(
+        painting.service.state(&painting.asset).unwrap().revision,
+        revision
+    );
 }
 
 /// More strokes than a component may hold is refused by name, without a stage and without the store,

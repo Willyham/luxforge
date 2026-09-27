@@ -119,17 +119,52 @@ pub fn stored_deviation(size: f64) -> f64 {
     decimation_tolerance(size) + GRID_ROUNDING
 }
 
-/// Positions one stroke may hold after decimation. A stroke longer than this is refused by name
-/// rather than stored: at a tolerance of at least two grid steps, 1024 positions describe a path far
-/// longer than any single drag across a frame.
+/// Positions one stroke may hold **after decimation**: the bound on the stored stroke. A stroke
+/// longer than this is refused by name rather than stored: at a tolerance of at least two grid
+/// steps, 1024 positions describe a path far longer than any single drag across a frame.
 pub const POINTS_PER_STROKE: usize = 1024;
 
-/// The lowest and highest legal stroke radius, in normalized units where one unit is the content
-/// stage's height. A radius is stored on the same grid as a position, so the floor is one grid step
-/// — the smallest radius that is still a radius at the largest admissible stage — and the ceiling
-/// covers the whole stage from any point on it.
-pub const SIZE_MIN: f64 = 1.0 / COORDINATE_STEPS_PER_UNIT;
+/// Positions one posted path may hold **before decimation**: the bound a `points` parameter
+/// declares, checked on the raw path a client sends, which [`Stroke::capture`] then decimates and
+/// holds to [`POINTS_PER_STROKE`].
+///
+/// It is a separate number on purpose. A path is posted raw — an agent need not decimate — so the
+/// stored bound applied before decimation would refuse a long drag that decimates to a handful of
+/// positions, and a posted bound applied after it would bound nothing. Sixteen times the stored
+/// bound is a minute of continuous pointer at 240 Hz, which no gesture reaches, and it still keeps
+/// one request under the transport's one-megabyte line at any coordinate spelling and one
+/// decimation pass bounded.
+pub const POSTED_POINTS_PER_STROKE: usize = 16 * POINTS_PER_STROKE;
+
+/// The legal stroke radius, in normalized units where one unit is the content stage's height: the
+/// **one** range every reader of a radius holds — the declared `size` a painting command takes,
+/// [`Stroke::capture`] on the posted radius, the recheck of a stored stroke and the compile that
+/// draws it — and the one each of them names when it refuses ([`size_range`]).
+///
+/// The floor is the smallest distance a frozen falloff divides by
+/// ([`crate::mask::DISTANCE_MIN`]), so no radius a stroke can hold ever makes a divisor smaller than
+/// the study allows; stored on the grid it is two steps. The ceiling covers the whole stage from any
+/// point on it, well inside the study's largest distance.
+pub const SIZE_MIN: f64 = crate::mask::DISTANCE_MIN;
 pub const SIZE_MAX: f64 = 2.0;
+
+/// Whether `size` is a legal stroke radius: finite and inside [`SIZE_MIN`]`..=`[`SIZE_MAX`].
+pub fn size_is_legal(size: f64) -> bool {
+    size.is_finite() && (SIZE_MIN..=SIZE_MAX).contains(&size)
+}
+
+/// The legal stroke radius as every refusal of one spells it.
+pub fn size_range() -> String {
+    format!("{SIZE_MIN}..={SIZE_MAX}")
+}
+
+/// The refusal of a posted radius outside [`size_range`].
+fn illegal_size() -> Error {
+    Error::validation(format!(
+        "stroke size must be a number within {}",
+        size_range()
+    ))
+}
 
 /// The bounds a stored [`ColourLimit`]'s refine takes, read from the colour range's own declaration
 /// rather than restated: it is the same slider on the same axis with the same meaning, so the editor
@@ -336,11 +371,12 @@ impl Stroke {
         flow: f64,
         erase: bool,
     ) -> Result<Self, Error> {
-        for (field, value, min, max) in [
-            ("size", size, SIZE_MIN, SIZE_MAX),
-            ("feather", feather, 0.0, 100.0),
-            ("flow", flow, 0.0, 100.0),
-        ] {
+        if !size_is_legal(size) {
+            return Err(illegal_size());
+        }
+        for (field, value, min, max) in
+            [("feather", feather, 0.0, 100.0), ("flow", flow, 0.0, 100.0)]
+        {
             if !value.is_finite() || !(min..=max).contains(&value) {
                 return Err(Error::validation(format!(
                     "stroke {field} must be a number within {min}..={max}"
@@ -463,11 +499,11 @@ impl Stroke {
         {
             return bad("position");
         }
-        if !in_grid(self.size)
-            || self.size < 1
-            || f64::from(self.size) > SIZE_MAX * COORDINATE_STEPS_PER_UNIT
-        {
-            return bad("size");
+        if !size_is_legal(self.size()) {
+            return Err(Error::incompatible(format!(
+                "stored stroke {id} has an invalid size; a stroke size is within {}",
+                size_range()
+            )));
         }
         if !(0..=100).contains(&self.feather) {
             return bad("feather");
@@ -505,10 +541,8 @@ fn quantize(value: f64) -> i32 {
 /// same stored bytes as one drawn by hand. A size no stroke can be captured at is refused by name,
 /// exactly as [`Stroke::capture`] refuses it.
 pub fn decimate(points: &[[f64; 2]], size: f64) -> Result<Vec<[f64; 2]>, Error> {
-    if !size.is_finite() || !(SIZE_MIN..=SIZE_MAX).contains(&size) {
-        return Err(Error::validation(format!(
-            "stroke size must be a number within {SIZE_MIN}..={SIZE_MAX}"
-        )));
+    if !size_is_legal(size) {
+        return Err(illegal_size());
     }
     Ok(decimate_to_grid(points, quantize(size))?
         .into_iter()
