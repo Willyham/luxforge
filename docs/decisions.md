@@ -190,6 +190,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - Do masking's remaining recorded defaults stand — masks as a target for the delivered modules rather than a local-adjustment module of their own, the idempotent component algebra, a radial that selects inside, one stroke amount instead of Flow and Density, and the A-to-D phase order with brushes before range selections?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
+- Export: are the [export design's proposals](design/export.md#proposals) accepted — the title bar's two-item menu with Cmd+E and Shift+Cmd+E, exporting the displayed entry including a history preview, a suggested name that counts up, the Keep metadata EXIF field set without IPTC or XMP, and the pinned `image` encoder at 4:4:4?
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - Where do Detail's sharpening and noise reduction run: before tone, and shown at Fit? Spatial layers are placed after all colour work today. Decide before the Detail design.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?

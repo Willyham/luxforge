@@ -10,15 +10,13 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 3. Speed: the byte-identical speedups on the preview, RAW-development and gesture paths, each measured before and after
 4. Structure: the simplifications that follow once each path is single
 5. Tests: each property proven once per layer, and fewer test binaries
-6. Roadmap groundwork, done first when its milestone below starts: MCP (`events.wait`, typed host parameters, the headless binary's crate), the library and Locate (per-photo selection, a paged catalog, relocation, surface ids), JPEG export (an export job lane on the bound evaluation), Corrections (stage-boundary methods, per-tile input regions, generic path primitives), and a new geometry module (a carry hook)
+6. Roadmap groundwork, done first when its milestone below starts: MCP (`events.wait`, typed host parameters, the headless binary's crate), the library and Locate (per-photo selection, a paged catalog, relocation, surface ids), JPEG export (its lane joins the one job table), Corrections (stage-boundary methods, per-tile input regions, generic path primitives), and a new geometry module (a carry hook)
 
 ## Output
 
-**JPEG export.** Write a recipe's render to a new file without touching the original.
-- Colour and metadata contracts, proven on fixtures
-- Export from a snapshot: quality 90, no overwrites, metadata stripped by default with a Keep metadata option
-- Desktop and API controls
-- RAW recipes through the same exporter
+**JPEG export follow-ups.** JPEG export is delivered ([design](design/export.md)).
+- Owner decisions on the design's proposals: the title-bar menu, exporting the displayed entry, counting up the suggested name, the Keep metadata field set and the encoder
+- Presets, resizing, output sharpening and other formats, each only by its own decision
 
 ## Library
 
@@ -86,7 +84,6 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 ## Inspection
 
 **Performance panel follow-ups** ([design](design/performance-panel.md)). The Performance section, the activity board and the resource counters are delivered.
-- Publish export jobs to the activity board when export lands, as capability jobs already publish with their progress
 - Cancel listed work from the section, through the cancel each job already has
 - GPU time and allocations on Linux (DRM `fdinfo`) and Windows (D3DKMT), and native checks of the CPU and memory counters there
 - Attribute memory to the prepared source, the proxy and the GPU textures in `resources.read`

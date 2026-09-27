@@ -1,6 +1,6 @@
 # Crop, export and conflicts
 
-Status: the M4 crop module is implemented; export, Locate and MCP remain editor follow-ups. History behavior comes from [layers and history](edit-history.md).
+Status: the M4 crop module and JPEG export are implemented; Locate and MCP remain editor follow-ups. History behavior comes from [layers and history](edit-history.md).
 
 ## Viewport and coordinates
 
@@ -62,11 +62,11 @@ A draft is transient. A draft on an existing crop layer opens at exactly its com
 
 An agent commit during a human draft keeps the draft and marks it conflicted, offering Discard or explicit Reapply against the latest revision followed by revalidation: Reapply re-reads the crop layer's input stage, carries the frame onto it and then rebases the core draft with `draft.reapply`, and Apply stays refused until both have happened. When the commit changed the orientation ahead of the crop, Reapply first carries the draft through that change exactly as a transform carries a committed crop, and a locked ratio turns with a quarter turn, so the frame keeps selecting the same content. Stale revisions never overwrite silently. Restore, undo and redo do not discard drafts implicitly. During history preview, changes require Return to current or Restore first. Current-state notifications do not retarget the selected historical entry.
 
-## Export (follow-up)
+## Export
 
-Export evaluates the committed snapshot and writes a new JPEG at source-scale crop dimensions, quality 90 by default, freezing the revision and metadata option so later changes cannot affect an in-flight job. No resize presets, watermarks or batch export. Output is sRGB with a valid embedded profile, normalized orientation, regenerated dimensions and no obsolete thumbnail. Keep metadata starts off, omitting optional EXIF, IPTC and XMP capture, camera, creator, copyright and GPS fields; when on, the explicitly supported valid fields are retained with corrected structural information. The reader and writer, exact field policy and tolerances must be proven; private manufacturer metadata round-tripping is not promised.
+Export evaluates a saved entry's snapshot, frozen when the request is accepted, and writes a new baseline JPEG at the recipe's output size (source scale, after orientation, transforms and crop) at quality 90. No resize presets, watermarks or batch export. Output is 8-bit sRGB with an embedded sRGB profile, normalized orientation and no thumbnail. Keep metadata starts off, and the file then carries no EXIF, IPTC or XMP; when on, one EXIF segment carries the supported descriptive, camera, capture and GPS fields with Orientation 1, the sRGB colour space and the output's dimensions. Private manufacturer metadata is not round-tripped.
 
-A native destination picker suggests the source stem plus `-edited.jpg`. Reject every existing file and source alias, including symlinks and hardlinks. Write and flush a temporary file in the destination directory and publish without replacement; failure or cancellation removes only temporary output. Inspect output pixels, tags, profile, orientation and dimensions independently in both metadata modes.
+The desktop's save dialog suggests the source stem plus `-edited.jpg`, counting up when that name is taken. Anything already at the destination is refused, so no existing file, symlink or hard link to an original is ever written through. A temporary file in the destination directory is written, synced and published without replacement; failure or cancellation removes only temporary output. The [export design](../design/export.md) holds the exact rules, fields, API and bounds.
 
 Manual Locate and the MCP adapter are specified in [source recovery](source-recovery.md) and [architecture](../design/architecture.md#agent-contract); MCP adds no separate feature logic.
 
@@ -78,6 +78,6 @@ Manual Locate and the MCP adapter are specified in [source recovery](source-reco
 4. Apply, Cancel, reset, undo, redo, preview, restore, edit again and reopen: exactly one action per commit and every snapshot retained.
 5. Live UI and API clients with stale revisions, draft conflicts, restore and preview during reconnect, malformed input and failed writes; compare complete stacks and decoded output.
 6. Native M4 rendered content correlated with state, logs, entry IDs, revisions and render generation, plus queue, memory and latency measurements and unchanged original hashes.
-7. Follow-ups add verified Locate, both export metadata modes, MCP interoperability and complete package acceptance.
+7. Follow-ups add verified Locate, MCP interoperability and complete package acceptance.
 
 RAW, PNG, tonal controls, a multi-image library and externally loaded modules remain later scope. A Lightroom-style interaction reference does not imply Adobe rendering compatibility.

@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Read the original's supported EXIF fields once at source preparation and write the export's own EXIF segment.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The reader runs on the source worker over bytes it already read; it never fails a preparation.",
@@ -50,7 +50,7 @@
     {
       "id": "TASK-002",
       "description": "Encode a rendered frame as a baseline quality-90 JPEG with an sRGB profile, and stage and publish it without replacing anything.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The encoder streams into the staged file; no whole encoded buffer exists.",
@@ -92,7 +92,7 @@
     {
       "id": "TASK-003",
       "description": "Run export as a job: freeze the target on the owner, render and write it on an export lane, and expose export.plan, export.jpeg, export.read and export.cancel.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -142,7 +142,7 @@
     {
       "id": "TASK-004",
       "description": "Export from the desktop: the title bar's Export menu, Cmd+E and Shift+Cmd+E, palette entries, the native save dialog and status, with an export smoke scenario.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -191,7 +191,7 @@
     {
       "id": "TASK-005",
       "description": "Verify export end to end on the M4 Mac, measure it, and update the specs, feature status and user guide.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004"
       ],

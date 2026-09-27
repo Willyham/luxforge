@@ -1,6 +1,6 @@
 # JPEG export
 
-Status: in implementation ([plan](../../tasks/export.json)). This design implements the accepted export contract in [decisions](../decisions.md#editing-and-storage) and [crop and export](../specs/single-image.md#export-follow-up): quality 90, a native destination picker suggesting `-edited.jpg`, never overwriting an existing file or a source alias, and optional metadata stripped by default with a Keep metadata option. Where this design chooses something the accepted contract does not decide, it is listed under [proposals](#proposals) and stays a proposal until the owner decides.
+Status: implemented and verified on the M4 Mac ([plan](../../tasks/export.json)). This design implements the accepted export contract in [decisions](../decisions.md#editing-and-storage) and [crop and export](../specs/single-image.md#export-follow-up): quality 90, a native destination picker suggesting `-edited.jpg`, never overwriting an existing file or a source alias, and optional metadata stripped by default with a Keep metadata option. Where this design chooses something the accepted contract does not decide, it is listed under [proposals](#proposals) and stays a proposal until the owner decides.
 
 Export writes one committed entry's exact render to a new JPEG file. It never touches the original, the catalog's history or any existing file.
 
