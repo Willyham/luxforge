@@ -46,7 +46,7 @@ Native M4 Pro, release builds, warm filesystem cache, synthetic fixtures. Diagno
 
 ### Sample counts for a p50/p95 claim
 
-Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. The `measure` medians and p95 figures recorded below were taken with that tool's own interpolated median and its own uncapped `p95 = sorted[n·95/100]` index, before every timing tool shared one nearest-rank `Distribution` (`xtask/src/stats.rs`), so a `measure` figure taken after that change — most visibly its median at an even sample count, such as a 30-launch p95 claim — can read slightly differently from the same measurement recorded here.
+Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. Every p50 and p95, in `xtask`'s timing tools and in the crates' own ignored timing tests alike, is now read from one nearest-rank `Distribution` (`luxforge-testbase`): `sorted[ceil(percent·n/100) − 1]`, always one of the samples, never interpolated. Figures recorded below before that change were taken with the tool's or test's own definition and can read one rank apart from the same measurement taken now. The `measure` medians and p95 figures used an interpolated median and an uncapped `p95 = sorted[n·95/100]` index, so an even-count median differs most. The crates' timing tests mostly used the upper median `sorted[n/2]` (or `sorted[round((n−1)/2)]`), which at an even count is one rank above nearest-rank's p50: `presence_timing` and `spatial_timing` at 10 runs, `masked_spatial_zero_coverage_timing` at 6, `capability_timing` at 30 and 200, the Fit-proxy contention diagnostics in `render/linear.rs` at 30 (theirs was `sorted[ceil((n−1)·q)]`), `resources_cost` and the process sampler's `cost` at their even counts, and the preset inspection timing at 20. Their p95s, and every figure at an odd count, are unchanged.
 
 | Measurement | Result |
 | --- | --- |
@@ -249,7 +249,8 @@ stage). Each is rendered under the rule before tiles were proved uncovered one b
 outside `bounds()` — and under the proof, alternating run by run and swapping which goes first, with
 every pair of frames asserted byte-identical. `cargo test --release --locked --package luxforge-core
 --lib -- --ignored masked_spatial_zero_coverage_timing --nocapture`, M4 MacBook Pro, p50 and the
-slowest of 6 runs each.
+slowest of 6 runs each. The p50 recorded here is the 4th of 6, the test's upper median before it read
+the shared nearest-rank `Distribution`, whose p50 is the 3rd.
 
 | Mask | Outside bounds only: p50 / slowest ms | Proved per tile: p50 / slowest ms | Tiles copied / evaluated, before → after |
 | --- | --- | --- | --- |
@@ -1210,7 +1211,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 
 ### Core cost of the units
 
-`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs, one operation over a textured frame, with the process's CPU time over each run as a percentage of one core (p50). Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial target allows in flight at once when no other evaluation holds any of it. The Presence rows ran on 23 September 2026 at a one-minute load of 9.6 to 13; the box-blur rows are the primitive's own earlier run, whose test unit ignores the scheduling below.
+`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs (the p50 recorded here is the 6th of 10, the tests' upper median before they read the shared nearest-rank `Distribution`, whose p50 is the 5th; the p95 is the 10th either way), one operation over a textured frame, with the process's CPU time over each run as a percentage of one core (p50). Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial target allows in flight at once when no other evaluation holds any of it. The Presence rows ran on 23 September 2026 at a one-minute load of 9.6 to 13; the box-blur rows are the primitive's own earlier run, whose test unit ignores the scheduling below.
 
 | Stage | Operation | p50 / p95 ms | CPU | Summed halo | Working set | Concurrency | Budget peak |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1371,7 +1372,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 
 ### The framework's own costs
 
-`cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start.
+`cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start. The p50s recorded here are the upper median (the 16th of 30, the 101st of 200) the test took before it read the shared nearest-rank `Distribution`, whose p50 is the 15th and the 100th; the p95s are unchanged.
 
 | Measurement | p50 / p95 | Samples |
 | --- | --- | --- |
@@ -1417,7 +1418,7 @@ The 24.8 MB above is the executable at `5f77f58`; the features added since accou
 
 ## Performance section, activity board and resource counters
 
-Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds, 2026-09-23, on a host shared with other sessions: one-minute load averages are given per run. The baseline is commit 9fb1fbb, the tree before this work, built in its own worktree.
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds, 2026-09-23, on a host shared with other sessions: one-minute load averages are given per run. The baseline is commit 9fb1fbb, the tree before this work, built in its own worktree. The `resources_cost` and GPU-walk p50s below are the upper median (the 501st of 1000 reads, the 101st of 200 walks) those tests took before they read the shared nearest-rank `Distribution`, whose p50 is the 500th and the 100th; their p95s are unchanged.
 
 | Measurement | Result | Scope |
 | --- | --- | --- |

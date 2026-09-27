@@ -1559,9 +1559,10 @@ mod jpeg_tests {
             .and_then(|value| value.parse().ok())
             .unwrap_or(7);
         let adapter = |bytes: &[u8]| decode_upright(bytes).unwrap().rgba;
-        let median = |mut values: Vec<f64>| {
-            values.sort_by(f64::total_cmp);
-            values[values.len() / 2]
+        let centre = |values: Vec<f64>| {
+            luxforge_testbase::Distribution::of(values)
+                .expect("LUXFORGE_JPEG_SAMPLES is at least 1")
+                .p50
         };
         for path in paths.split(':') {
             let bytes = std::fs::read(path).unwrap();
@@ -1598,8 +1599,8 @@ mod jpeg_tests {
                 }
                 rounds.push(serde_json::json!({
                     "order": if previous_first { "previous first" } else { "adapter first" },
-                    "previous_median_ms": median(previous),
-                    "adapter_median_ms": median(ours),
+                    "previous_median_ms": centre(previous),
+                    "adapter_median_ms": centre(ours),
                 }));
             }
             println!(

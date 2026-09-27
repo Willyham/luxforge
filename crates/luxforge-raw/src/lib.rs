@@ -1818,14 +1818,6 @@ mod tests {
             }
         }
 
-        fn p50_p95(values: impl Iterator<Item = u128>) -> (u128, u128) {
-            let mut values: Vec<u128> = values.collect();
-            values.sort_unstable();
-            let p50 = values[(values.len() - 1) / 2];
-            let p95 = values[(values.len() * 95).div_ceil(100) - 1];
-            (p50, p95)
-        }
-
         fn host_output(command: &str, args: &[&str]) -> String {
             Command::new(command)
                 .args(args)
@@ -1962,13 +1954,18 @@ mod tests {
             }
             let load_end = host_output("uptime", &[]);
             for (variant, observations) in [("serial", &serial), ("parallel", &parallel)] {
-                let (wall_p50, wall_p95) = p50_p95(observations.iter().map(|v| v.wall_ns));
-                let (cpu_p50, cpu_p95) = p50_p95(observations.iter().map(|v| v.cpu_ns));
-                let (norm_p50, norm_p95) =
-                    p50_p95(observations.iter().map(|v| v.normalization_ns as u128));
-                let (demosaic_p50, demosaic_p95) =
-                    p50_p95(observations.iter().map(|v| v.demosaic_ns as u128));
-                writeln!(file, "# summary source={name}; variant={variant}; n=30; wall_p50_p95_ns={wall_p50}/{wall_p95}; process_cpu_p50_p95_ns={cpu_p50}/{cpu_p95}; normalization_p50_p95_ns={norm_p50}/{norm_p95}; demosaic_p50_p95_ns={demosaic_p50}/{demosaic_p95}").unwrap();
+                // Nanosecond counts well below 2^53, so each is exact as an f64.
+                let ns = |field: fn(&Observation) -> u128| {
+                    luxforge_testbase::Distribution::of(
+                        observations.iter().map(|v| field(v) as f64),
+                    )
+                    .expect("thirty observations")
+                };
+                let wall = ns(|v| v.wall_ns);
+                let cpu = ns(|v| v.cpu_ns);
+                let norm = ns(|v| v.normalization_ns as u128);
+                let demosaic = ns(|v| v.demosaic_ns as u128);
+                writeln!(file, "# summary source={name}; variant={variant}; n=30; wall_p50_p95_ns={:.0}/{:.0}; process_cpu_p50_p95_ns={:.0}/{:.0}; normalization_p50_p95_ns={:.0}/{:.0}; demosaic_p50_p95_ns={:.0}/{:.0}", wall.p50, wall.p95, cpu.p50, cpu.p95, norm.p50, norm.p95, demosaic.p50, demosaic.p95).unwrap();
             }
             let final_usage = usage();
             writeln!(file, "# scope source={name}; mode={:?}; dimensions={}x{}; source_sha256={expected_hash}; host_cpu=Apple M4 Pro 14-core (owner host); arch={cpu_model}; load_start={load_start}; load_end={load_end}; max_admitted_callbacks={callback_cap}; shared_admission_slot_limit=8; normalizer_extra_scratch_bytes=0; process_high_water_rss_bytes_with_serial_oracle_held={}; retained mosaic development includes normalization, demosaic, output plane allocation and final divide; excludes file read/decode, correction warp, GPU and presentation; exact RGB bit comparison is outside each call timer; no build/test is scheduled alongside the profile; other process CPU is not separately sampled", raw.metadata.mode, raw.metadata.sensor_width, raw.metadata.sensor_height, peak_rss_bytes(&final_usage)).unwrap();

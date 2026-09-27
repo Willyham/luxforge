@@ -1171,7 +1171,7 @@ mod tests {
         },
     };
     use luxforge_reference::srgb;
-    use luxforge_testbase::Gate;
+    use luxforge_testbase::{Distribution, Gate};
     use serde_json::{Map, Value, json};
     use std::{
         borrow::Cow,
@@ -4130,14 +4130,14 @@ mod tests {
                 samples.push(started.elapsed().as_secs_f64() * 1000.0);
                 assert_eq!((raster.width, raster.height), (width, height));
             }
-            samples.sort_by(f64::total_cmp);
-            let p50 = samples[samples.len() / 2];
-            let p95 = samples[(samples.len() as f64 * 0.95).ceil() as usize - 1];
+            let ms = Distribution::of(samples).expect("runs ran");
             println!(
-                "{width}x{height} box blur r={radius}: p50 {p50:.0} ms, p95 {p95:.0} ms over \
+                "{width}x{height} box blur r={radius}: p50 {:.0} ms, p95 {:.0} ms over \
                  {} runs; working set {:.1} MiB, concurrency {}, budget peak {:.1} MiB, \
                  target {:.1} MiB",
-                samples.len(),
+                ms.p50,
+                ms.p95,
+                ms.count,
                 plan.working_set() as f64 / MIB,
                 context.spatial().concurrency(plan.working_set()),
                 context.spatial().peak() as f64 / MIB,
@@ -4228,16 +4228,16 @@ mod tests {
                             samples.push(started.elapsed().as_secs_f64() * 1000.0);
                             assert_eq!((raster.width, raster.height), (width, height));
                         }
-                        samples.sort_by(f64::total_cmp);
-                        let p50 = samples[samples.len() / 2];
-                        let p95 = samples[samples.len() - 1];
+                        let ms = Distribution::of(samples).expect("runs ran");
                         let (copied, evaluated) = masked_tile_counts();
-                        let runs = samples.len() as u64;
+                        let runs = ms.count as u64;
                         println!(
                             "{width}x{height} presence clarity +100 x{count} {}, {shape}: p50 \
-                             {p50:.0} ms, p95 {p95:.0} ms over {runs} runs; tiles per run copied \
+                             {:.0} ms, p95 {:.0} ms over {runs} runs; tiles per run copied \
                              {}, evaluated {}; budget peak {:.1} MiB of {:.1} MiB",
                             if masked { "masked" } else { "unmasked" },
+                            ms.p50,
+                            ms.p95,
                             copied / runs,
                             evaluated / runs,
                             context.spatial().peak() as f64 / MIB,
@@ -4358,14 +4358,12 @@ mod tests {
                 );
             }
             for (index, (rule, _)) in rules.iter().enumerate() {
-                let samples = &mut samples[index];
-                samples.sort_by(f64::total_cmp);
-                let p50 = samples[samples.len() / 2];
-                let max = samples[samples.len() - 1];
+                let ms = Distribution::of(samples[index].iter().copied()).expect("runs ran");
                 let (copied, evaluated) = counts[index];
                 println!(
-                    "{width}x{height} presence clarity +100, {shape}, copy {rule}: p50 {p50:.0} ms, \
-                     max {max:.0} ms over {runs} runs; tiles copied {copied}, evaluated {evaluated}",
+                    "{width}x{height} presence clarity +100, {shape}, copy {rule}: p50 {:.0} ms, \
+                     max {:.0} ms over {runs} runs; tiles copied {copied}, evaluated {evaluated}",
+                    ms.p50, ms.max,
                 );
             }
         }
@@ -4448,15 +4446,15 @@ mod tests {
                     samples.push(started.elapsed().as_secs_f64() * 1000.0);
                     assert_eq!((raster.width, raster.height), (width, height));
                 }
-                samples.sort_by(f64::total_cmp);
-                let p50 = samples[samples.len() / 2];
-                let p95 = samples[samples.len() - 1];
+                let ms = Distribution::of(samples).expect("runs ran");
                 let (copied, evaluated) = masked_tile_counts();
-                let runs = samples.len() as u64;
+                let runs = ms.count as u64;
                 println!(
                     "{width}x{height} presence clarity +100 x1, mask of {count} whole-frame \
-                     components: p50 {p50:.0} ms, p95 {p95:.0} ms over {runs} runs; tiles per run \
+                     components: p50 {:.0} ms, p95 {:.0} ms over {runs} runs; tiles per run \
                      copied {}, evaluated {}; budget peak {:.1} MiB of {:.1} MiB",
+                    ms.p50,
+                    ms.p95,
                     copied / runs,
                     evaluated / runs,
                     context.spatial().peak() as f64 / MIB,
